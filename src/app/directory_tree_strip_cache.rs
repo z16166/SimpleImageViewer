@@ -20,7 +20,10 @@ use std::collections::HashMap;
 use eframe::egui::{self, ColorImage, TextureOptions};
 use image::imageops::FilterType;
 
-use crate::loader::{DecodedImage, PreviewStage, preview_aspect_matches_logical};
+use crate::loader::{
+    DecodedImage, PreviewStage, decoded_looks_like_black_placeholder,
+    preview_aspect_matches_logical,
+};
 
 pub(crate) const DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE: u32 = 128;
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
@@ -29,6 +32,7 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub index: usize,
     pub decoded: DecodedImage,
     pub logical: (u32, u32),
+    pub stage: PreviewStage,
 }
 
 pub(crate) struct DirectoryTreeStripCache {
@@ -124,6 +128,12 @@ impl DirectoryTreeStripCache {
         current_index: usize,
         total_count: usize,
     ) {
+        if decoded_looks_like_black_placeholder(decoded) {
+            self.textures.remove(&index);
+            self.preview_max_side.remove(&index);
+            self.preview_stage.remove(&index);
+            return;
+        }
         if !should_replace_strip_thumbnail(
             self.preview_max_side.get(&index).copied(),
             self.preview_stage.get(&index).copied(),
@@ -187,6 +197,14 @@ impl DirectoryTreeStripCache {
         self.logical_sizes.retain(|index, _| keep(*index));
     }
 
+    /// Drop GPU-backed egui textures after a wgpu surface format hot-swap. CPU-side
+    /// logical sizes are kept so regeneration can validate aspect ratio.
+    pub(crate) fn clear_gpu_textures(&mut self) {
+        self.textures.clear();
+        self.preview_max_side.clear();
+        self.preview_stage.clear();
+    }
+
     fn evict_if_needed(&mut self, current_index: usize, total_count: usize) {
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
             let to_remove = self.textures.keys().copied().max_by_key(|&idx| {
@@ -220,6 +238,9 @@ pub(crate) fn should_replace_strip_thumbnail(
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
 ) -> bool {
+    if decoded_looks_like_black_placeholder(decoded) {
+        return false;
+    }
     if !decoded_rgba_size_valid(decoded) {
         return false;
     }
@@ -313,7 +334,7 @@ mod tests {
 
     #[test]
     fn strip_cache_upgrades_refined_preview_over_initial_bootstrap() {
-        let refined = DecodedImage::new(2048, 512, vec![0; 2048 * 512 * 4]);
+        let refined = DecodedImage::new(2048, 512, vec![180; 2048 * 512 * 4]);
         assert!(should_replace_strip_thumbnail(
             Some(512),
             Some(PreviewStage::Initial),
@@ -324,7 +345,47 @@ mod tests {
     }
 
     #[test]
+    fn strip_cache_rejects_black_refined_over_initial_preview() {
+        let good = DecodedImage::new(128, 64, vec![200; 128 * 64 * 4]);
+        let black = DecodedImage::new(4096, 2048, vec![0; 4096 * 2048 * 4]);
+        assert!(!should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Initial),
+            &black,
+            PreviewStage::Refined,
+            Some((4096, 2048)),
+        ));
+        assert!(should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Initial),
+            &good,
+            PreviewStage::Refined,
+            Some((4096, 2048)),
+        ));
+    }
+
+    #[test]
     fn strip_preview_accepts_panorama_after_integer_rounding() {
         assert!(preview_aspect_matches_logical(3, 128, 1000, 50_000));
+    }
+
+    #[test]
+    fn clear_gpu_textures_keeps_logical_sizes_for_regeneration() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        let decoded = DecodedImage::new(64, 32, vec![128; 64 * 32 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &decoded,
+            PreviewStage::Refined,
+            Some((640, 320)),
+            &ctx,
+            0,
+            1,
+        );
+        assert!(cache.contains(0));
+        cache.clear_gpu_textures();
+        assert!(!cache.contains(0));
+        assert_eq!(cache.logical_sizes().get(&0), Some(&(640, 320)));
     }
 }

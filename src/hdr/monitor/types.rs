@@ -50,6 +50,11 @@ impl HdrMonitorSignature {
             Self::from_viewport(viewport.input.viewport())
         })
     }
+
+    pub(crate) fn native_pixels_per_point(&self) -> Option<f32> {
+        self.native_pixels_per_point_milli
+            .map(|milli| milli as f32 / 1000.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

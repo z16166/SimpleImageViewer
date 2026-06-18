@@ -1535,6 +1535,7 @@ fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
         directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
+        directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
         directory_tree_strip_preview_tx: {
             let (tx, _rx) = crossbeam_channel::unbounded();

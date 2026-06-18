@@ -74,23 +74,34 @@ pub fn effective_monitor_selection(
 }
 
 /// `viewport_outer_rect_screen_px` is the main image window outer rect
-/// ([`HdrMonitorSignature::outer_rect`] from [`egui::ViewportId::ROOT`]). On Windows we
-/// resolve DXGI from that rect's center via `MonitorFromPoint` whenever it is plausible.
+/// ([`HdrMonitorSignature::outer_rect`] from [`egui::ViewportId::ROOT`], in UI points).
+/// On Windows we scale by [`HdrMonitorSignature::native_pixels_per_point`] and resolve
+/// DXGI from that physical top-left (+20 px inset, same as spawn probe).
 /// Deferred child viewports must not influence HDR policy even when they become the largest
-/// native top-level window (e.g. a maximized directory-tree panel).
-///
-/// Before egui publishes a plausible ROOT rect at startup, we fall back to the largest visible
-/// top-level `HWND` for this process.
+/// native top-level window (e.g. a maximized directory-tree panel). When ROOT has not yet
+/// published a plausible outer rect, the probe fails closed and the caller keeps the last
+/// good selection (typically the spawn-time DXGI seed).
 #[cfg(target_os = "windows")]
 pub fn active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
+    main_window_outer_top_left: Option<[i32; 2]>,
+    native_pixels_per_point: Option<f32>,
+    settings_spawn_top_left: Option<[i32; 2]>,
 ) -> Result<HdrMonitorSelection, String> {
-    windows_active_monitor_hdr_status(viewport_outer_rect_screen_px)
+    windows_active_monitor_hdr_status(
+        viewport_outer_rect_screen_px,
+        main_window_outer_top_left,
+        native_pixels_per_point,
+        settings_spawn_top_left,
+    )
 }
 
 #[cfg(target_os = "macos")]
 pub fn active_monitor_hdr_status(
     _viewport_outer_rect_screen_px: Option<[i32; 4]>,
+    _main_window_outer_top_left: Option<[i32; 2]>,
+    _native_pixels_per_point: Option<f32>,
+    _settings_spawn_top_left: Option<[i32; 2]>,
 ) -> Result<HdrMonitorSelection, String> {
     macos_active_monitor_hdr_status()
 }
@@ -98,6 +109,9 @@ pub fn active_monitor_hdr_status(
 #[cfg(target_os = "linux")]
 pub fn active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
+    _main_window_outer_top_left: Option<[i32; 2]>,
+    _native_pixels_per_point: Option<f32>,
+    _settings_spawn_top_left: Option<[i32; 2]>,
 ) -> Result<HdrMonitorSelection, String> {
     if crate::hdr::platform::linux_native_hdr_platform_eligible() {
         wayland::active_monitor_hdr_status(viewport_outer_rect_screen_px)
@@ -109,6 +123,9 @@ pub fn active_monitor_hdr_status(
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn active_monitor_hdr_status(
     _viewport_outer_rect_screen_px: Option<[i32; 4]>,
+    _main_window_outer_top_left: Option<[i32; 2]>,
+    _native_pixels_per_point: Option<f32>,
+    _settings_spawn_top_left: Option<[i32; 2]>,
 ) -> Result<HdrMonitorSelection, String> {
     Err("active monitor HDR probing is not implemented on this platform".to_string())
 }

@@ -93,6 +93,10 @@ impl HdrOutputStateSnapshot {
             target_format,
         }
     }
+
+    pub(crate) fn target_format(&self) -> Option<wgpu::TextureFormat> {
+        self.target_format
+    }
 }
 
 pub(crate) fn hdr_output_state_changed(
@@ -461,6 +465,7 @@ pub struct ImageViewerApp {
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
     pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,

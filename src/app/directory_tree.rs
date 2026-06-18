@@ -29,7 +29,10 @@ use crate::app::directory_tree_strip_cache::{
     decoded_rgba_size_valid,
 };
 use crate::loader::REFINEMENT_POOL;
-use crate::loader::{DecodedImage, TiledImageSource, preview_aspect_matches_logical};
+use crate::loader::{
+    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
+    preview_aspect_matches_logical,
+};
 use crate::settings::BrowseMode;
 use crate::ui::osd::{format_file_modified, format_file_size};
 
@@ -45,6 +48,9 @@ const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
 const DIRECTORY_TREE_COL_THUMB_WIDTH: f32 = 48.0;
 const DIRECTORY_TREE_IMAGE_ROW_HEIGHT: f32 = 48.0;
+const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
+const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
+const MAX_STRIP_GENERATE_INFLIGHT: usize = 4;
 const DIRECTORY_TREE_EXPAND_ICON_WIDTH: f32 = 18.0;
 const DIRECTORY_TREE_FOLDER_ICON_WIDTH: f32 = 18.0;
 const DIRECTORY_TREE_ROW_HEIGHT: f32 = 24.0;
@@ -125,6 +131,7 @@ pub(crate) struct DirectoryTreeState {
     image_list_keyboard_active: bool,
     preview_textures: HashMap<usize, egui::TextureHandle>,
     preview_logical_sizes: HashMap<usize, (u32, u32)>,
+    image_list_visible_row_range: Option<(usize, usize)>,
 }
 
 impl Default for DirectoryTreeState {
@@ -146,6 +153,7 @@ impl Default for DirectoryTreeState {
             image_list_keyboard_active: false,
             preview_textures: HashMap::new(),
             preview_logical_sizes: HashMap::new(),
+            image_list_visible_row_range: None,
         }
     }
 }
@@ -371,10 +379,8 @@ impl DirectoryTreeState {
         textures: &HashMap<usize, egui::TextureHandle>,
         logical_sizes: &HashMap<usize, (u32, u32)>,
     ) {
-        self.preview_textures
-            .retain(|index, _| *index < self.image_rows.len());
-        self.preview_logical_sizes
-            .retain(|index, _| *index < self.image_rows.len());
+        self.preview_textures.clear();
+        self.preview_logical_sizes.clear();
         for (&index, handle) in textures {
             if index < self.image_rows.len() {
                 self.preview_textures.insert(index, handle.clone());
@@ -589,8 +595,10 @@ impl ImageViewerApp {
 
         self.ensure_directory_tree_strip_thumbnails(ctx);
 
-        {
+        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+        let request_viewport_repaint = {
             let mut state = self.directory_tree.state.lock();
+            let previous_index = state.current_index;
             state.sync_images(
                 &self.image_files,
                 &self.file_byte_len_by_index,
@@ -600,15 +608,17 @@ impl ImageViewerApp {
                 self.status_message.clone(),
                 &self.directory_tree.metadata_request_tx,
             );
+            let repaint =
+                state.scroll_image_list_to_current || state.current_index != previous_index;
             state.sync_preview_textures(
                 self.directory_tree_strip_cache.textures(),
                 self.directory_tree_strip_cache.logical_sizes(),
             );
-        }
+            repaint
+        };
 
         let state = Arc::clone(&self.directory_tree.state);
         let command_tx = self.directory_tree.command_tx.clone();
-        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
         let builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
             .with_inner_size([DIRECTORY_TREE_DEFAULT_WIDTH, DIRECTORY_TREE_DEFAULT_HEIGHT])
@@ -625,6 +635,10 @@ impl ImageViewerApp {
             let mut state = state.lock();
             draw_directory_tree_window(ui, &mut state, &command_tx);
         });
+
+        if request_viewport_repaint {
+            ctx.request_repaint_of(viewport_id);
+        }
     }
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
@@ -653,6 +667,10 @@ impl ImageViewerApp {
         if let Some((width, height)) = self.texture_cache.get_original_res(index) {
             return Some((width, height));
         }
+        if let Some(&(width, height)) = self.directory_tree_strip_cache.logical_sizes().get(&index)
+        {
+            return Some((width, height));
+        }
         if let Some(tm) = self.prefetched_tiles.get(&index) {
             let source = tm.get_source();
             return Some((source.width(), source.height()));
@@ -676,11 +694,6 @@ impl ImageViewerApp {
             return Some(tm.get_source());
         }
         None
-    }
-
-    fn index_uses_tiled_strip_source(&self, index: usize) -> bool {
-        self.tiled_sdr_source_for_index(index).is_some()
-            || self.texture_cache.is_preview_placeholder(index)
     }
 
     pub(crate) fn try_sync_strip_from_tile_manager_preview(&mut self, index: usize) {
@@ -730,12 +743,152 @@ impl ImageViewerApp {
         );
     }
 
+    fn strip_index_handled_by_preload_pipeline(&self, index: usize) -> bool {
+        if self.tiled_sdr_source_for_index(index).is_some() {
+            return true;
+        }
+        self.deferred_sdr_uploads
+            .get(&index)
+            .is_some_and(|decoded| !crate::loader::decoded_looks_like_black_placeholder(decoded))
+    }
+
+    fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
+        if index >= self.image_files.len() {
+            return false;
+        }
+        if self.strip_index_handled_by_preload_pipeline(index) {
+            return false;
+        }
+        if self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        if self.directory_tree_strip_cold_attempted.contains(&index) {
+            return false;
+        }
+        if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+            if self
+                .directory_tree_strip_cache
+                .is_valid_for_logical(index, logical)
+            {
+                return false;
+            }
+        } else if self.directory_tree_strip_cache.contains(index) {
+            return false;
+        }
+        true
+    }
+
+    fn collect_cold_strip_thumbnail_candidates(
+        &self,
+        visible_row_range: Option<(usize, usize)>,
+    ) -> Vec<usize> {
+        let total = self.image_files.len();
+        if total == 0 {
+            return Vec::new();
+        }
+        let current = self.current_index.min(total.saturating_sub(1));
+        let mut ordered = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |index: usize| {
+            if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {
+                ordered.push(index);
+            }
+        };
+
+        if let Some((start, end)) = visible_row_range {
+            for index in start..end.min(total) {
+                push(index);
+            }
+        }
+
+        for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
+            push(current.saturating_sub(delta));
+            if current + delta < total {
+                push(current + delta);
+            }
+        }
+
+        for index in 0..total {
+            push(index);
+        }
+        ordered
+    }
+
+    pub(crate) fn try_generate_cold_directory_tree_strip_thumbnail(&mut self, index: usize) {
+        if !self.strip_index_needs_cold_thumbnail(index) {
+            return;
+        }
+        let path = self.image_files[index].clone();
+        self.directory_tree_strip_cold_attempted.insert(index);
+        self.directory_tree_strip_generate_inflight.insert(index);
+        let tx = self.directory_tree_strip_preview_tx.clone();
+        let max_side = DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE;
+        REFINEMENT_POOL.spawn(move || {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] cold worker start idx={} path={}",
+                index,
+                path.display()
+            );
+            #[cfg(target_os = "windows")]
+            let com_ok = crate::wic::ComGuard::new().is_ok();
+            #[cfg(not(target_os = "windows"))]
+            let com_ok = true;
+
+            let mut decoded = DecodedImage::new(0, 0, Vec::new());
+            let mut logical = (0u32, 0u32);
+            if com_ok {
+                match generate_directory_tree_thumb_from_path(&path, max_side) {
+                    Ok((preview, logical_size)) => {
+                        decoded = preview;
+                        logical = logical_size;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[DirectoryTree] Cold strip preview failed for index {index} ({}): {err}",
+                            path.display()
+                        );
+                    }
+                }
+            } else {
+                log::warn!(
+                    "[DirectoryTree] COM init failed for cold strip preview worker index {index}"
+                );
+            }
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={}",
+                index,
+                decoded.width,
+                decoded.height,
+                logical.0,
+                logical.1,
+                preview_aspect_matches_logical(
+                    decoded.width,
+                    decoded.height,
+                    logical.0,
+                    logical.1,
+                )
+            );
+            if let Err(err) = tx.send(DirectoryTreeStripPreviewJobResult {
+                index,
+                decoded,
+                logical,
+                stage: PreviewStage::Initial,
+            }) {
+                log::warn!(
+                    "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
+                );
+            }
+        });
+    }
+
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
             self.directory_tree_strip_generate_inflight
                 .remove(&result.index);
             if result.decoded.width == 0 || result.decoded.height == 0 {
                 self.directory_tree_strip_tiled_attempted
+                    .remove(&result.index);
+                self.directory_tree_strip_cold_attempted
                     .remove(&result.index);
                 continue;
             }
@@ -747,6 +900,8 @@ impl ImageViewerApp {
                     result.decoded.height
                 );
                 self.directory_tree_strip_tiled_attempted
+                    .remove(&result.index);
+                self.directory_tree_strip_cold_attempted
                     .remove(&result.index);
                 continue;
             }
@@ -766,12 +921,14 @@ impl ImageViewerApp {
                 );
                 self.directory_tree_strip_tiled_attempted
                     .remove(&result.index);
+                self.directory_tree_strip_cold_attempted
+                    .remove(&result.index);
                 continue;
             }
             self.cache_directory_tree_strip_thumbnail(
                 result.index,
                 &result.decoded,
-                crate::loader::PreviewStage::Refined,
+                result.stage,
                 Some(result.logical),
                 ctx,
             );
@@ -781,6 +938,10 @@ impl ImageViewerApp {
             {
                 self.directory_tree_strip_tiled_attempted
                     .remove(&result.index);
+            } else {
+                ctx.request_repaint();
+                let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+                ctx.request_repaint_of(viewport_id);
             }
         }
     }
@@ -847,6 +1008,7 @@ impl ImageViewerApp {
                 index,
                 decoded,
                 logical,
+                stage: PreviewStage::Refined,
             }) {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
             }
@@ -912,10 +1074,17 @@ impl ImageViewerApp {
 
         let deferred_indices: Vec<usize> = self.deferred_sdr_uploads.keys().copied().collect();
         for index in deferred_indices {
-            if self.index_uses_tiled_strip_source(index) {
+            if self.tiled_sdr_source_for_index(index).is_some() {
                 continue;
             }
             if self.directory_tree_strip_cache.contains(index) {
+                continue;
+            }
+            if self
+                .deferred_sdr_uploads
+                .get(&index)
+                .is_some_and(crate::loader::decoded_looks_like_black_placeholder)
+            {
                 continue;
             }
             let Some(decoded) = self.deferred_sdr_uploads.get(&index).cloned() else {
@@ -924,10 +1093,27 @@ impl ImageViewerApp {
             self.cache_directory_tree_strip_thumbnail(
                 index,
                 &decoded,
-                crate::loader::PreviewStage::Initial,
+                PreviewStage::Initial,
                 self.directory_tree_strip_logical_size(index),
                 ctx,
             );
+        }
+
+        let visible_row_range = self
+            .directory_tree
+            .state
+            .lock()
+            .image_list_visible_row_range;
+        let cold_candidates = self.collect_cold_strip_thumbnail_candidates(visible_row_range);
+        let inflight_room = MAX_STRIP_GENERATE_INFLIGHT
+            .saturating_sub(self.directory_tree_strip_generate_inflight.len());
+        let mut cold_scheduled = 0usize;
+        for index in cold_candidates {
+            if cold_scheduled >= MAX_COLD_STRIP_GENERATES_PER_FRAME.min(inflight_room) {
+                break;
+            }
+            self.try_generate_cold_directory_tree_strip_thumbnail(index);
+            cold_scheduled += 1;
         }
 
         self.directory_tree_strip_cache
@@ -936,6 +1122,14 @@ impl ImageViewerApp {
             .retain(|index| *index < self.image_files.len());
         self.directory_tree_strip_generate_inflight
             .retain(|index| *index < self.image_files.len());
+        self.directory_tree_strip_cold_attempted
+            .retain(|index| *index < self.image_files.len());
+    }
+
+    pub(crate) fn invalidate_directory_tree_strip_gpu_textures(&mut self) {
+        self.directory_tree_strip_cache.clear_gpu_textures();
+        self.directory_tree_strip_tiled_attempted.clear();
+        self.directory_tree_strip_cold_attempted.clear();
     }
 }
 
@@ -1354,6 +1548,7 @@ fn draw_image_file_list(
         let total_rows = state.image_rows.len();
         let current_index = state.current_index;
         let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
+            state.image_list_visible_row_range = Some((row_range.start, row_range.end));
             for row_index in row_range {
                 let Some(row) = state.image_rows.get(row_index) else {
                     continue;
@@ -1596,6 +1791,24 @@ fn min_scroll_offset_to_show_row(
     None
 }
 
+fn wrapped_image_list_index(current: usize, delta: i32, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let next = match delta {
+        1 => (current + 1) % len,
+        -1 => {
+            if current == 0 {
+                len - 1
+            } else {
+                current - 1
+            }
+        }
+        _ => return None,
+    };
+    if next == current { None } else { Some(next) }
+}
+
 fn try_handle_image_list_arrow_keys(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
@@ -1611,16 +1824,16 @@ fn try_handle_image_list_arrow_keys(
     }
 
     let current = state.current_index;
-    let last = state.image_rows.len().saturating_sub(1);
+    let len = state.image_rows.len();
     let mut next = None;
     ui.input(|input| {
         if input.key_pressed(egui::Key::ArrowDown) {
-            next = Some((current + 1).min(last));
+            next = wrapped_image_list_index(current, 1, len);
         } else if input.key_pressed(egui::Key::ArrowUp) {
-            next = Some(current.saturating_sub(1));
+            next = wrapped_image_list_index(current, -1, len);
         }
     });
-    let Some(index) = next.filter(|&index| index != current) else {
+    let Some(index) = next else {
         return;
     };
 
@@ -1989,6 +2202,48 @@ mod tests {
 
         assert_eq!(state.image_rows[0].modified_unix, Some(1_700_000_000));
         assert!(state.image_rows[1].modified_unix.is_none());
+    }
+
+    #[test]
+    fn sync_images_marks_list_scroll_when_current_index_changes() {
+        let (metadata_tx, _metadata_rx) = crossbeam_channel::unbounded();
+        let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+        let mut state = DirectoryTreeState::default();
+        state.image_rows = paths
+            .iter()
+            .map(|path| DirectoryTreeFileRow {
+                path: path.clone(),
+                name: directory_display_name(path),
+                size_bytes: 0,
+                modified_unix: None,
+            })
+            .collect();
+        state.current_index = 0;
+        state.scroll_image_list_to_current = false;
+
+        state.sync_images(
+            &paths,
+            &[0, 0],
+            &[None, None],
+            1,
+            false,
+            String::new(),
+            &metadata_tx,
+        );
+
+        assert_eq!(state.current_index, 1);
+        assert!(state.scroll_image_list_to_current);
+    }
+
+    #[test]
+    fn wrapped_image_list_index_loops_at_bounds() {
+        assert_eq!(wrapped_image_list_index(0, -1, 10), Some(9));
+        assert_eq!(wrapped_image_list_index(9, 1, 10), Some(0));
+        assert_eq!(wrapped_image_list_index(4, 1, 10), Some(5));
+        assert_eq!(wrapped_image_list_index(4, -1, 10), Some(3));
+        assert!(wrapped_image_list_index(0, -1, 1).is_none());
+        assert!(wrapped_image_list_index(0, 1, 1).is_none());
+        assert!(wrapped_image_list_index(0, 1, 0).is_none());
     }
 
     #[test]

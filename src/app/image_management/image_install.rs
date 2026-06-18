@@ -298,13 +298,15 @@ impl ImageViewerApp {
                 }
             }
         }
-        self.cache_directory_tree_strip_thumbnail(
-            idx,
-            fallback,
-            crate::loader::PreviewStage::Refined,
-            Some((hdr.width, hdr.height)),
-            ctx,
-        );
+        if !sdr_fallback_is_placeholder {
+            self.cache_directory_tree_strip_thumbnail(
+                idx,
+                fallback,
+                crate::loader::PreviewStage::Refined,
+                Some((hdr.width, hdr.height)),
+                ctx,
+            );
+        }
     }
 
     pub(super) fn handle_hdr_sdr_fallback_update(

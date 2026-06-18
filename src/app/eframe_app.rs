@@ -401,8 +401,22 @@ impl eframe::App for ImageViewerApp {
         self.sync_loader_hdr_callback_upload_snapshot();
 
         let hdr_content_visible = self.current_hdr_render_path().is_some();
-        self.hdr_monitor_state
-            .refresh_from_viewport(ctx, now, hdr_content_visible);
+        let main_window_outer_top_left = self
+            .cached_window_placement
+            .map(|placement| placement.outer_position)
+            .or_else(|| {
+                ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+                    let rect = viewport.input.viewport().outer_rect?;
+                    Some([rect.min.x.round() as i32, rect.min.y.round() as i32])
+                })
+            });
+        self.hdr_monitor_state.refresh_from_viewport(
+            ctx,
+            now,
+            hdr_content_visible,
+            main_window_outer_top_left,
+            self.settings.window_spawn_top_left_for_hdr(),
+        );
         let previous_hdr_output_state = HdrOutputStateSnapshot::new(
             self.hdr_capabilities.output_mode,
             self.hdr_capabilities.native_presentation_enabled,
@@ -535,6 +549,9 @@ impl eframe::App for ImageViewerApp {
             self.hdr_target_format,
         );
         if hdr_output_state_changed(previous_hdr_output_state, next_hdr_output_state) {
+            if previous_hdr_output_state.target_format() != next_hdr_output_state.target_format() {
+                self.invalidate_directory_tree_strip_gpu_textures();
+            }
             if let Some(selection) = self.effective_hdr_monitor_selection() {
                 log::info!(
                     "[HDR] presentation active: output_mode={:?} native_presentation={} \

@@ -117,150 +117,82 @@ fn dxgi_hdr_selection_for_monitor_handle(
     Err("active DXGI output was not found".to_string())
 }
 
+/// Convert egui viewport outer top-left (UI points) to physical screen pixels for Win32.
 #[cfg(target_os = "windows")]
-fn windows_screen_rect_area(rect: &windows::Win32::Foundation::RECT) -> i64 {
-    i64::from(rect.right.saturating_sub(rect.left))
-        * i64::from(rect.bottom.saturating_sub(rect.top))
+pub(crate) fn outer_top_left_to_physical_screen_px(
+    top_left: [i32; 2],
+    native_pixels_per_point: Option<f32>,
+) -> [i32; 2] {
+    let scale = native_pixels_per_point
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
+    [
+        (top_left[0] as f32 * scale).round() as i32,
+        (top_left[1] as f32 * scale).round() as i32,
+    ]
 }
 
-/// Collect visible root unowned top-level HWNDs for this process (Z-order: front to back).
+/// Same monitor lookup as [`super::probe::spawn_monitor_hdr_status`]: bias ~20px inside
+/// the ROOT outer top-left in **physical screen pixels** so boundary pixels do not flip to
+/// a neighbour display. egui reports outer rects in UI points; spawn-time probing uses the
+/// persisted physical position from settings.
 #[cfg(target_os = "windows")]
-fn windows_collect_process_tl_hwnds() -> Vec<windows::Win32::Foundation::HWND> {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetWindow, GetWindowThreadProcessId,
-        IsWindowVisible,
+fn dxgi_selection_for_outer_top_left(
+    top_left: [i32; 2],
+    native_pixels_per_point: Option<f32>,
+) -> Result<HdrMonitorSelection, String> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+
+    let physical = outer_top_left_to_physical_screen_px(top_left, native_pixels_per_point);
+    let point = POINT {
+        x: physical[0] + 20,
+        y: physical[1] + 20,
     };
-
-    struct CollectState {
-        process_id: u32,
-        hwnds: Vec<HWND>,
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY) };
+    if monitor.is_invalid() {
+        return Err("active window monitor was not found".to_string());
     }
-
-    unsafe extern "system" fn enum_collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let state = unsafe { &mut *(lparam.0 as *mut CollectState) };
-        let mut process_id = 0_u32;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-        }
-        if process_id != state.process_id {
-            return true.into();
-        }
-        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            return true.into();
-        }
-        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
-            return true.into();
-        }
-        if !unsafe { GetWindow(hwnd, GW_OWNER) }
-            .unwrap_or_default()
-            .is_invalid()
-        {
-            return true.into();
-        }
-        state.hwnds.push(hwnd);
-        true.into()
-    }
-
-    let mut state = CollectState {
-        process_id: std::process::id(),
-        hwnds: Vec::new(),
-    };
-    let _ = unsafe {
-        EnumWindows(
-            Some(enum_collect),
-            LPARAM((&mut state as *mut CollectState) as isize),
-        )
-    };
-    state.hwnds
-}
-
-#[cfg(target_os = "windows")]
-fn windows_pick_tl_hwnd_largest_screen_area(
-    candidates: &[windows::Win32::Foundation::HWND],
-) -> Option<windows::Win32::Foundation::HWND> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-
-    let mut best: Option<(HWND, i64)> = None;
-    for &hwnd in candidates {
-        let mut rect = windows::Win32::Foundation::RECT::default();
-        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
-            continue;
-        }
-        let area = windows_screen_rect_area(&rect);
-        if area <= 0 {
-            continue;
-        }
-        if best.map_or(true, |(_, a)| area > a) {
-            best = Some((hwnd, area));
-        }
-    }
-    best.map(|(hwnd, _)| hwnd)
+    log::info!(
+        "[HDR] active-monitor probe: origin=cached_outer_top_left logical=({}, {}) \
+         physical=({}, {}) npp={native_pixels_per_point:?} probe_point=({}, {}) \
+         monitor_handle={monitor:?}",
+        top_left[0],
+        top_left[1],
+        physical[0],
+        physical[1],
+        point.x,
+        point.y,
+    );
+    dxgi_hdr_selection_for_monitor_handle(monitor)
 }
 
 #[cfg(target_os = "windows")]
 pub(crate) fn windows_active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
+    main_window_outer_top_left: Option<[i32; 2]>,
+    native_pixels_per_point: Option<f32>,
+    settings_spawn_top_left: Option<[i32; 2]>,
 ) -> Result<HdrMonitorSelection, String> {
-    use windows::Win32::Foundation::{POINT, RECT};
-    use windows::Win32::Graphics::Gdi::{
-        MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    if let Some(top_left) = main_window_outer_top_left {
+        return dxgi_selection_for_outer_top_left(top_left, native_pixels_per_point);
+    }
 
-    // Always anchor HDR policy to the main image window (`ViewportId::ROOT` outer rect).
-    // Deferred child viewports (directory tree navigation) can become the largest
-    // top-level HWND when maximized; the old "largest HWND wins" fallback then moved
-    // the probe to the child window and made HDR tone mapping / swap-chain state
-    // oscillate while the main canvas flickered.
-    if let Some([vl, vt, vr, vb]) =
-        plausible_main_viewport_outer_rect(viewport_outer_rect_screen_px)
+    // Persisted spawn placement is already in physical screen pixels.
+    if let Some(spawn_top_left) = settings_spawn_top_left {
+        return dxgi_selection_for_outer_top_left(spawn_top_left, None);
+    }
+
+    // Before ROOT placement is cached, reuse the outer rect top-left with the same +20 bias.
+    if let Some([vl, vt, _, _]) = plausible_main_viewport_outer_rect(viewport_outer_rect_screen_px)
     {
-        let cx = (vl + vr) / 2;
-        let cy = (vt + vb) / 2;
-        let monitor = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };
-        log::debug!(
-            "[HDR] active-monitor probe: origin=main_viewport_outer_rect center_screen=({cx},{cy}) \
-             vp_area={} monitor_handle={monitor:?}",
-            i64::from(vr.saturating_sub(vl)).max(0) * i64::from(vb.saturating_sub(vt)).max(0),
-        );
-        if monitor.is_invalid() {
-            return Err("active window monitor was not found".to_string());
-        }
-        return dxgi_hdr_selection_for_monitor_handle(monitor);
+        return dxgi_selection_for_outer_top_left([vl, vt], native_pixels_per_point);
     }
 
-    let candidates = windows_collect_process_tl_hwnds();
-    if candidates.is_empty() {
-        return Err("Simple Image Viewer window handle was not found".to_string());
-    }
-
-    // Startup fallback before egui publishes a plausible ROOT outer rect.
-    let hwnd = windows_pick_tl_hwnd_largest_screen_area(&candidates).unwrap_or(candidates[0]);
-    let mut rect = RECT::default();
-    let hwnd_rect_ok = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok();
-
-    let monitor = if hwnd_rect_ok {
-        let cx = (rect.left + rect.right) / 2;
-        let cy = (rect.top + rect.bottom) / 2;
-        let m = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };
-        log::debug!(
-            "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} center_screen=({cx},{cy}) monitor_handle={m:?}"
-        );
-        m
-    } else {
-        let m = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-        log::debug!(
-            "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} monitor_handle={m:?} (GetWindowRect failed; used MonitorFromWindow)"
-        );
-        m
-    };
-    if monitor.is_invalid() {
-        return Err("active window monitor was not found".to_string());
-    }
-
-    dxgi_hdr_selection_for_monitor_handle(monitor)
+    Err(
+        "main viewport outer rect unavailable for HDR probe (will retry when ROOT publishes a plausible rect)"
+            .to_string(),
+    )
 }
 
 /// Returns the main-window outer rect when it is large enough to trust for HDR probing.
@@ -276,7 +208,22 @@ pub(crate) fn plausible_main_viewport_outer_rect(
 
 #[cfg(all(test, target_os = "windows"))]
 mod viewport_probe_tests {
-    use super::plausible_main_viewport_outer_rect;
+    use super::{
+        outer_top_left_to_physical_screen_px, plausible_main_viewport_outer_rect,
+        windows_active_monitor_hdr_status,
+    };
+
+    #[test]
+    fn outer_top_left_to_physical_scales_by_native_pixels_per_point() {
+        assert_eq!(
+            outer_top_left_to_physical_screen_px([1914, 170], Some(1.25)),
+            [2393, 213]
+        );
+        assert_eq!(
+            outer_top_left_to_physical_screen_px([2461, 192], None),
+            [2461, 192]
+        );
+    }
 
     #[test]
     fn plausible_main_viewport_outer_rect_accepts_typical_main_window() {
@@ -293,6 +240,12 @@ mod viewport_probe_tests {
             plausible_main_viewport_outer_rect(Some([0, 0, 10, 10])),
             None
         );
+    }
+
+    #[test]
+    fn active_monitor_probe_fails_closed_without_plausible_main_outer_rect() {
+        assert!(windows_active_monitor_hdr_status(None, None, None, None).is_err());
+        assert!(windows_active_monitor_hdr_status(Some([0, 0, 10, 10]), None, None, None).is_err());
     }
 }
 

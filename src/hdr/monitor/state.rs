@@ -95,15 +95,15 @@ impl HdrMonitorState {
         ctx: &egui::Context,
         now: Instant,
         hdr_content_visible: bool,
+        main_window_outer_top_left: Option<[i32; 2]>,
+        settings_spawn_top_left: Option<[i32; 2]>,
     ) -> Option<&HdrMonitorSelection> {
         let signature = HdrMonitorSignature::from_main_viewport(ctx);
 
-        // When a spawn-time DXGI probe already seeded a valid selection (via
-        // `with_initial_selection`), record the first HWND signature without
-        // re-probing.  The runtime probe relies on the HWND rect, which the OS
-        // may not have placed yet on the first frame — `MonitorFromPoint` at a
-        // tiny default-rect centre would land on the wrong display and overwrite
-        // the correct seed.
+        // When a spawn-time DXGI probe already seeded a valid selection, record the first
+        // viewport signature without re-probing. Runtime probing uses the cached ROOT
+        // outer top-left (+20 px, same as spawn); running too early can mis-classify while
+        // deferred child viewports are still appearing.
         if self.last_signature.is_none() && self.selection.is_some() {
             self.last_signature = Some(signature);
             return self.selection.as_ref();
@@ -113,9 +113,29 @@ impl HdrMonitorState {
             return self.selection.as_ref();
         }
 
+        #[cfg(target_os = "windows")]
+        {
+            let has_probe_anchor = main_window_outer_top_left.is_some()
+                || signature
+                    .outer_rect
+                    .is_some_and(|[left, top, right, bottom]| {
+                        i64::from(right.saturating_sub(left)).max(0)
+                            * i64::from(bottom.saturating_sub(top)).max(0)
+                            >= 64 * 64
+                    });
+            if !has_probe_anchor && self.selection.is_some() {
+                return self.selection.as_ref();
+            }
+        }
+
         self.last_signature = Some(signature);
         self.last_probe_at = Some(now);
-        match active_monitor_hdr_status(signature.outer_rect) {
+        match active_monitor_hdr_status(
+            signature.outer_rect,
+            main_window_outer_top_left,
+            signature.native_pixels_per_point(),
+            settings_spawn_top_left,
+        ) {
             Ok(selection) => {
                 if self.selection.as_ref() != Some(&selection) {
                     log::debug!(

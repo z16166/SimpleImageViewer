@@ -14,7 +14,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::loader::DecodedImage;
+
 const PREVIEW_ASPECT_TOLERANCE: f32 = 0.08;
+
+pub(crate) fn decoded_looks_like_black_placeholder(decoded: &DecodedImage) -> bool {
+    let rgba = decoded.rgba();
+    if rgba.len() < 4 {
+        return true;
+    }
+    let pixel_count = rgba.len() / 4;
+    let stride = (pixel_count / 64).max(1);
+    rgba.chunks_exact(4)
+        .step_by(stride)
+        .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
+}
 
 fn preview_aspect_tolerance(
     preview_width: u32,
@@ -62,5 +76,16 @@ mod tests {
     #[test]
     fn accepts_panorama_preview_after_integer_rounding() {
         assert!(preview_aspect_matches_logical(3, 128, 1000, 50_000));
+    }
+
+    #[test]
+    fn black_placeholder_detection_samples_large_buffers() {
+        let black = DecodedImage::new(4096, 2048, vec![0; 4096 * 2048 * 4]);
+        assert!(decoded_looks_like_black_placeholder(&black));
+
+        let mut rgba = vec![0; 256 * 256 * 4];
+        rgba[0] = 10;
+        let colored = DecodedImage::new(256, 256, rgba);
+        assert!(!decoded_looks_like_black_placeholder(&colored));
     }
 }

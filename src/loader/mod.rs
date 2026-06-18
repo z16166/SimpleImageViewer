@@ -30,6 +30,7 @@ mod types;
 
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
+pub(crate) use preview_aspect::decoded_looks_like_black_placeholder;
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
 pub use preview_aspect::preview_aspect_matches_logical;
@@ -45,6 +46,7 @@ pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels
 pub use texture_cache::TextureCache;
 pub use types::*;
 
+pub(crate) use decode::generate_directory_tree_thumb_from_path;
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
     hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,

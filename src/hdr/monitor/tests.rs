@@ -206,7 +206,7 @@ fn linux_wayland_eligibility_gates_probe_error_message() {
     );
     #[cfg(target_os = "linux")]
     if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
-        let err = active_monitor_hdr_status(None).unwrap_err();
+        let err = active_monitor_hdr_status(None, None, None, None).unwrap_err();
         assert!(
             err.contains("Wayland session"),
             "expected Wayland gate error, got: {err}"
