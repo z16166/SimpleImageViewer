@@ -30,6 +30,7 @@ use crate::app::directory_tree_strip_cache::{
     decoded_rgba_size_valid,
 };
 use crate::app::types::CachedWindowPlacement;
+use crate::directory_tree_places::types::KnownFolderKind;
 use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
 use crate::loader::REFINEMENT_POOL;
 use crate::loader::{
@@ -58,16 +59,16 @@ const DIRECTORY_TREE_IMAGE_ROW_HEIGHT: f32 = 48.0;
 const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
 const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
 const MAX_STRIP_GENERATE_INFLIGHT: usize = 4;
-const DIRECTORY_TREE_EXPAND_ICON_WIDTH: f32 = 18.0;
-const DIRECTORY_TREE_FOLDER_ICON_WIDTH: f32 = 18.0;
-const DIRECTORY_TREE_ROW_HEIGHT: f32 = 24.0;
+const DIRECTORY_TREE_EXPAND_ICON_WIDTH: f32 = 14.0;
+const DIRECTORY_TREE_FOLDER_ICON_WIDTH: f32 = 16.0;
+const DIRECTORY_TREE_ROW_HEIGHT: f32 = 22.0;
 const DIRECTORY_TREE_HEADER_HEIGHT: f32 = 22.0;
 const DIRECTORY_TREE_COL_SIZE_WIDTH: f32 = 88.0;
 const DIRECTORY_TREE_COL_MODIFIED_WIDTH: f32 = 172.0;
 const DIRECTORY_TREE_COL_SIZE_MIN_WIDTH: f32 = 56.0;
 const DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH: f32 = 96.0;
 const DIRECTORY_TREE_COL_NAME_MIN_WIDTH: f32 = 32.0;
-const DIRECTORY_TREE_INDENT: f32 = 16.0;
+const DIRECTORY_TREE_INDENT: f32 = 14.0;
 const THIS_PC_TREE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
 const NETWORK_TREE_PATH: &str = "\\\\?\\siv-tree\\Network";
 
@@ -2262,28 +2263,324 @@ fn is_non_browsable_system_directory_name(name: &str) -> bool {
     )
 }
 
-fn paint_tree_expand_icon(ui: &mut egui::Ui, expanded: bool, response: &egui::Response) {
-    let openness = if expanded { 1.0 } else { 0.0 };
-    egui::collapsing_header::paint_default_icon(ui, openness, response);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectoryTreeNodeIcon {
+    Folder,
+    ThisPc,
+    Network,
+    Drive,
+    KnownFolder(KnownFolderKind),
 }
 
-fn paint_tree_folder_icon(ui: &mut egui::Ui, rect: egui::Rect) {
-    let icon_rect = egui::Rect::from_center_size(
-        rect.center(),
-        egui::vec2(rect.width() * 0.82, rect.height() * 0.72),
+fn known_folder_kind_for_tree_path(
+    state: &DirectoryTreeState,
+    path: &Path,
+) -> Option<KnownFolderKind> {
+    state
+        .known_folders
+        .iter()
+        .find(|entry| entry.tree_path == path)
+        .map(|entry| entry.kind)
+}
+
+fn is_places_drive_root(state: &DirectoryTreeState, path: &Path) -> bool {
+    state
+        .nodes
+        .get(&this_pc_tree_path())
+        .is_some_and(|node| node.children.iter().any(|child| child.as_path() == path))
+}
+
+fn directory_tree_node_icon(state: &DirectoryTreeState, path: &Path) -> DirectoryTreeNodeIcon {
+    if is_this_pc_tree_path(path) {
+        return DirectoryTreeNodeIcon::ThisPc;
+    }
+    if is_network_tree_path(path) {
+        return DirectoryTreeNodeIcon::Network;
+    }
+    if let Some(kind) = known_folder_kind_for_tree_path(state, path) {
+        return DirectoryTreeNodeIcon::KnownFolder(kind);
+    }
+    if is_places_drive_root(state, path) {
+        return DirectoryTreeNodeIcon::Drive;
+    }
+    DirectoryTreeNodeIcon::Folder
+}
+
+fn directory_tree_node_expandable(node: &DirectoryTreeNode, path: &Path) -> bool {
+    if is_places_sentinel_path(path) {
+        return true;
+    }
+    node.loading || !node.children_loaded || !node.children.is_empty()
+}
+
+fn paint_tree_expand_chevron(ui: &mut egui::Ui, expanded: bool, response: &egui::Response) {
+    let stroke = egui::Stroke::new(
+        1.15_f32,
+        ui.visuals()
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.72),
     );
-    let color = ui.visuals().widgets.inactive.fg_stroke.color;
-    let body = egui::Rect::from_min_max(
-        icon_rect.left_bottom() + egui::vec2(0.0, -icon_rect.height() * 0.62),
-        icon_rect.right_bottom(),
-    );
-    let tab = egui::Rect::from_min_max(
-        icon_rect.left_top() + egui::vec2(0.0, icon_rect.height() * 0.12),
-        icon_rect.left_top() + egui::vec2(icon_rect.width() * 0.58, icon_rect.height() * 0.42),
-    );
-    ui.painter()
-        .rect_filled(body, 2.0, color.gamma_multiply(0.82));
-    ui.painter().rect_filled(tab, 1.5, color);
+    let center = response.rect.center();
+    let half = 3.5;
+    if expanded {
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(-half, -half * 0.35),
+                center + egui::vec2(0.0, half * 0.75),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(0.0, half * 0.75),
+                center + egui::vec2(half, -half * 0.35),
+            ],
+            stroke,
+        );
+    } else {
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(-half * 0.55, -half),
+                center + egui::vec2(half * 0.75, 0.0),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(half * 0.75, 0.0),
+                center + egui::vec2(-half * 0.55, half),
+            ],
+            stroke,
+        );
+    }
+}
+
+fn paint_directory_tree_node_icon(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    icon: DirectoryTreeNodeIcon,
+    palette: &ThemePalette,
+) {
+    let size = rect.width().min(rect.height()) * 0.78;
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.15_f32, palette.text_normal.gamma_multiply(0.88));
+    let accent = palette.accent2;
+    let fill = accent.gamma_multiply(0.82);
+    let soft_fill = accent.gamma_multiply(0.28);
+
+    match icon {
+        DirectoryTreeNodeIcon::Folder => {
+            let body = egui::Rect::from_min_max(
+                icon_rect.left_bottom() + egui::vec2(0.0, -icon_rect.height() * 0.52),
+                icon_rect.right_bottom(),
+            );
+            let tab = egui::Rect::from_min_max(
+                icon_rect.left_top() + egui::vec2(0.0, icon_rect.height() * 0.18),
+                icon_rect.left_top()
+                    + egui::vec2(icon_rect.width() * 0.56, icon_rect.height() * 0.46),
+            );
+            painter.rect(body, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+            painter.rect(tab, 1.0, fill, stroke, egui::StrokeKind::Inside);
+        }
+        DirectoryTreeNodeIcon::ThisPc => {
+            let screen = egui::Rect::from_center_size(
+                icon_rect.center() + egui::vec2(0.0, -icon_rect.height() * 0.08),
+                egui::vec2(icon_rect.width() * 0.88, icon_rect.height() * 0.58),
+            );
+            painter.rect(screen, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+            let stand_w = icon_rect.width() * 0.34;
+            painter.line_segment(
+                [
+                    screen.center_bottom() + egui::vec2(-stand_w * 0.5, 0.0),
+                    screen.center_bottom() + egui::vec2(stand_w * 0.5, 0.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    screen.center_bottom(),
+                    icon_rect.center_bottom() + egui::vec2(0.0, -1.0),
+                ],
+                stroke,
+            );
+        }
+        DirectoryTreeNodeIcon::Network => {
+            let center = icon_rect.center();
+            let radius = icon_rect.width() * 0.34;
+            painter.circle_stroke(center, radius, stroke);
+            painter.line_segment(
+                [
+                    center + egui::vec2(-radius, 0.0),
+                    center + egui::vec2(radius, 0.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, -radius),
+                    center + egui::vec2(0.0, radius),
+                ],
+                stroke,
+            );
+            painter.circle_filled(center, 1.6, fill);
+        }
+        DirectoryTreeNodeIcon::Drive => {
+            let body = egui::Rect::from_center_size(
+                icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.06),
+                egui::vec2(icon_rect.width() * 0.82, icon_rect.height() * 0.52),
+            );
+            painter.rect(body, 2.0, soft_fill, stroke, egui::StrokeKind::Inside);
+            painter.line_segment(
+                [
+                    body.left_center() + egui::vec2(body.width() * 0.18, 0.0),
+                    body.right_center() + egui::vec2(-body.width() * 0.18, 0.0),
+                ],
+                stroke,
+            );
+        }
+        DirectoryTreeNodeIcon::KnownFolder(kind) => match kind {
+            KnownFolderKind::Documents => {
+                let page = egui::Rect::from_center_size(
+                    icon_rect.center(),
+                    egui::vec2(icon_rect.width() * 0.72, icon_rect.height() * 0.86),
+                );
+                painter.rect(page, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+                for offset in [0.22, 0.38, 0.54] {
+                    painter.line_segment(
+                        [
+                            page.left_center()
+                                + egui::vec2(page.width() * 0.18, -page.height() * offset),
+                            page.right_center()
+                                + egui::vec2(-page.width() * 0.18, -page.height() * offset),
+                        ],
+                        stroke,
+                    );
+                }
+            }
+            KnownFolderKind::Pictures => {
+                let frame = egui::Rect::from_center_size(
+                    icon_rect.center(),
+                    egui::vec2(icon_rect.width() * 0.82, icon_rect.height() * 0.72),
+                );
+                painter.rect(frame, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+                let hill = [
+                    frame.left_bottom() + egui::vec2(frame.width() * 0.08, -frame.height() * 0.18),
+                    frame.center_bottom()
+                        + egui::vec2(-frame.width() * 0.08, -frame.height() * 0.42),
+                    frame.right_bottom()
+                        + egui::vec2(-frame.width() * 0.08, -frame.height() * 0.18),
+                ];
+                painter.add(egui::Shape::closed_line(hill.to_vec(), stroke));
+                painter.circle_filled(
+                    frame.right_top() + egui::vec2(-frame.width() * 0.22, frame.height() * 0.22),
+                    1.5,
+                    fill,
+                );
+            }
+            KnownFolderKind::Music => {
+                let center = icon_rect.center();
+                painter.circle_stroke(
+                    center + egui::vec2(-icon_rect.width() * 0.12, icon_rect.height() * 0.16),
+                    icon_rect.width() * 0.14,
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(icon_rect.width() * 0.02, -icon_rect.height() * 0.18),
+                        center + egui::vec2(icon_rect.width() * 0.28, -icon_rect.height() * 0.34),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(icon_rect.width() * 0.28, -icon_rect.height() * 0.34),
+                        center + egui::vec2(icon_rect.width() * 0.28, icon_rect.height() * 0.24),
+                    ],
+                    stroke,
+                );
+            }
+            KnownFolderKind::Videos => {
+                let frame = egui::Rect::from_center_size(
+                    icon_rect.center(),
+                    egui::vec2(icon_rect.width() * 0.82, icon_rect.height() * 0.62),
+                );
+                painter.rect(frame, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+                let play = [
+                    frame.center() + egui::vec2(-frame.width() * 0.12, -frame.height() * 0.18),
+                    frame.center() + egui::vec2(-frame.width() * 0.12, frame.height() * 0.18),
+                    frame.center() + egui::vec2(frame.width() * 0.18, 0.0),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    play.to_vec(),
+                    fill,
+                    egui::Stroke::NONE,
+                ));
+            }
+            KnownFolderKind::Downloads => {
+                let tray = egui::Rect::from_center_size(
+                    icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.16),
+                    egui::vec2(icon_rect.width() * 0.78, icon_rect.height() * 0.34),
+                );
+                painter.rect(tray, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+                painter.line_segment(
+                    [
+                        icon_rect.center_top() + egui::vec2(0.0, icon_rect.height() * 0.08),
+                        icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.08),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.08),
+                        icon_rect.center()
+                            + egui::vec2(-icon_rect.width() * 0.16, -icon_rect.height() * 0.02),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.08),
+                        icon_rect.center()
+                            + egui::vec2(icon_rect.width() * 0.16, -icon_rect.height() * 0.02),
+                    ],
+                    stroke,
+                );
+            }
+            KnownFolderKind::Desktop => {
+                let screen = egui::Rect::from_center_size(
+                    icon_rect.center() + egui::vec2(0.0, -icon_rect.height() * 0.08),
+                    egui::vec2(icon_rect.width() * 0.82, icon_rect.height() * 0.54),
+                );
+                painter.rect(screen, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
+            }
+            KnownFolderKind::Profile => {
+                let head = icon_rect.center() + egui::vec2(0.0, -icon_rect.height() * 0.12);
+                painter.circle_stroke(head, icon_rect.width() * 0.16, stroke);
+                painter.circle_stroke(
+                    head + egui::vec2(0.0, icon_rect.height() * 0.24),
+                    icon_rect.width() * 0.24,
+                    stroke,
+                );
+            }
+        },
+    }
+}
+
+fn paint_tree_expand_icon(ui: &mut egui::Ui, expanded: bool, response: &egui::Response) {
+    paint_tree_expand_chevron(ui, expanded, response);
+}
+
+fn paint_tree_folder_icon(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    icon: DirectoryTreeNodeIcon,
+    palette: &ThemePalette,
+) {
+    paint_directory_tree_node_icon(ui, rect, icon, palette);
 }
 
 fn directory_tree_row_selected_fill(palette: &ThemePalette) -> egui::Color32 {
@@ -2600,6 +2897,9 @@ fn draw_directory_node(
         return false;
     };
 
+    let icon = directory_tree_node_icon(state, path);
+    let expandable = directory_tree_node_expandable(&node, path);
+
     let mut scrolled = false;
 
     let row_width = ui.available_width();
@@ -2613,9 +2913,9 @@ fn draw_directory_node(
             if node.loading {
                 ui.add_sized(
                     [DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_ROW_HEIGHT],
-                    egui::Spinner::new(),
+                    egui::Spinner::new().size(DIRECTORY_TREE_ROW_HEIGHT * 0.55),
                 );
-            } else {
+            } else if expandable {
                 let expand_response = ui.allocate_response(
                     egui::vec2(DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_ROW_HEIGHT),
                     egui::Sense::click(),
@@ -2625,13 +2925,15 @@ fn draw_directory_node(
                     let _ =
                         command_tx.send(DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()));
                 }
+            } else {
+                ui.add_space(DIRECTORY_TREE_EXPAND_ICON_WIDTH);
             }
 
             let folder_rect = ui.allocate_exact_size(
                 egui::vec2(DIRECTORY_TREE_FOLDER_ICON_WIDTH, DIRECTORY_TREE_ROW_HEIGHT),
                 egui::Sense::hover(),
             );
-            paint_tree_folder_icon(ui, folder_rect.0);
+            paint_tree_folder_icon(ui, folder_rect.0, icon, palette);
 
             let selected = state
                 .selected_dir
@@ -4023,6 +4325,53 @@ mod tests {
                 "original_index={original_index} asc={asc_index} desc={desc_index}"
             );
         }
+    }
+
+    #[test]
+    fn directory_tree_node_icon_distinguishes_places_roots() {
+        use crate::directory_tree_places::types::{KnownFolderKind, known_folder_tree_path};
+
+        let docs_fs = PathBuf::from("/tmp/siv-known-docs");
+        let drive = PathBuf::from("/tmp/siv-drive");
+        let places = DirectoryTreePlaces {
+            known_folders: vec![KnownFolderEntry {
+                kind: KnownFolderKind::Pictures,
+                display_name: "Pictures".to_string(),
+                tree_path: known_folder_tree_path(KnownFolderKind::Pictures),
+                filesystem_path: docs_fs.clone(),
+            }],
+            drives: vec![crate::directory_tree_places::types::DriveEntry {
+                display_name: "Data".to_string(),
+                path: drive.clone(),
+            }],
+            this_pc_label: "This PC".to_string(),
+            network_label: "Network".to_string(),
+        };
+
+        let mut state = DirectoryTreeState::default();
+        state.initialize_places(places);
+        state.ensure_network_visible();
+
+        assert_eq!(
+            directory_tree_node_icon(&state, &this_pc_tree_path()),
+            DirectoryTreeNodeIcon::ThisPc
+        );
+        assert_eq!(
+            directory_tree_node_icon(&state, &network_tree_path()),
+            DirectoryTreeNodeIcon::Network
+        );
+        assert_eq!(
+            directory_tree_node_icon(&state, &known_folder_tree_path(KnownFolderKind::Pictures)),
+            DirectoryTreeNodeIcon::KnownFolder(KnownFolderKind::Pictures)
+        );
+        assert_eq!(
+            directory_tree_node_icon(&state, &drive),
+            DirectoryTreeNodeIcon::Drive
+        );
+        assert_eq!(
+            directory_tree_node_icon(&state, &PathBuf::from("/tmp/ordinary")),
+            DirectoryTreeNodeIcon::Folder
+        );
     }
 
     #[test]
