@@ -48,7 +48,6 @@ const DIRECTORY_TREE_EMBEDDED_MIN_WIDTH: f32 = 320.0;
 const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 const DIRECTORY_TREE_DEFAULT_WIDTH: f32 = 820.0;
-const DIRECTORY_TREE_DEFAULT_HEIGHT: f32 = 640.0;
 const DIRECTORY_TREE_LEFT_WIDTH: f32 = 340.0;
 const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 240.0;
 const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
@@ -424,10 +423,6 @@ impl DirectoryTreeState {
         Some(children_request(tree_path, browse_path, self.generation))
     }
 
-    pub(crate) fn set_root(&mut self, _root: PathBuf) {
-        // Legacy no-op; tree uses initialize_places().
-    }
-
     pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
         if is_unc_path(&dir) {
             self.ensure_network_visible();
@@ -698,21 +693,6 @@ impl DirectoryTreeState {
         } else {
             None
         }
-    }
-
-    fn request_children_if_needed(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
-        let node = self.nodes.get_mut(path)?;
-        if node.children_loaded || node.loading {
-            return None;
-        }
-        node.loading = true;
-        node.error = None;
-        let browse_path = node.browse_path.clone();
-        Some(children_request(
-            path.to_path_buf(),
-            browse_path,
-            self.generation,
-        ))
     }
 
     fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
@@ -2246,13 +2226,16 @@ fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(path).map_err(|err| err.to_string())?;
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
+        let child = entry.path();
+        let Ok(meta) = child.symlink_metadata() else {
             continue;
         };
-        if !file_type.is_dir() || file_type.is_symlink() {
+        if !meta.is_dir() {
             continue;
         }
-        let child = entry.path();
+        if crate::scanner::is_directory_traversal_boundary_metadata(&meta) {
+            continue;
+        }
         if is_non_browsable_system_directory(&child) {
             continue;
         }
@@ -3874,6 +3857,7 @@ mod tests {
         assert_eq!(thumb.left(), row_rect.left() + 4.0);
     }
 
+    #[test]
     fn filesystem_ancestor_chain_lists_volume_root_to_target() {
         let target = PathBuf::from(r"F:\iphone15\2026-05-27");
         let chain = filesystem_ancestor_chain(&target);
@@ -4043,7 +4027,7 @@ mod tests {
 
     #[test]
     fn reveal_known_folder_does_not_expand_this_pc() {
-        use crate::directory_tree_places::{KnownFolderKind, known_folder_tree_path};
+        use crate::directory_tree_places::types::{KnownFolderKind, known_folder_tree_path};
 
         let docs_fs = PathBuf::from("/tmp/siv-known-docs");
         let places = DirectoryTreePlaces {

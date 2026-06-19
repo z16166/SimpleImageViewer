@@ -31,18 +31,44 @@ pub fn is_supported_extension(ext: &OsStr) -> bool {
 
 /// Helper to check if a file is marked as "offline" (Windows specific).
 pub fn is_offline(path: &Path) -> bool {
-    if let Ok(meta) = std::fs::metadata(path) {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
         is_offline_meta(&meta)
     } else {
         false
     }
 }
 
+/// Returns true when a directory must not be descended into during scans.
+///
+/// Uses [`std::fs::symlink_metadata`] fields only (no [`std::fs::read_link`]):
+/// symlinks via [`std::fs::FileType::is_symlink`], Windows junctions via
+/// [`FILE_ATTRIBUTE_REPARSE_POINT`](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants).
+pub fn is_directory_traversal_boundary_metadata(metadata: &Metadata) -> bool {
+    let file_type = metadata.file_type();
+    if !file_type.is_dir() {
+        return false;
+    }
+    if file_type.is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(target_os = "windows")]
 fn is_offline_meta(metadata: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    // Attributes indicating the file data is not fully present locally:
+    // OneDrive / cloud placeholder files: detect via attribute flags only (no read_link,
+    // no reparse-tag IO). See FILE_ATTRIBUTE_OFFLINE and recall-on-access bits.
     const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
     const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x40000;
     const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
@@ -124,6 +150,19 @@ pub fn scan_directory(
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
+                .process_read_dir(|_depth, _path, _state, children| {
+                    for child in children.iter_mut() {
+                        if let Ok(entry) = child {
+                            if entry.file_type.is_dir()
+                                && entry.metadata().ok().is_some_and(|meta| {
+                                    is_directory_traversal_boundary_metadata(&meta)
+                                })
+                            {
+                                entry.read_children_path = None;
+                            }
+                        }
+                    }
+                })
                 .into_iter()
                 .flatten()
             {
@@ -238,9 +277,12 @@ pub fn scan_directory(
                             image_candidates += 1;
                         }
                         let p = e.path();
-                        let Ok(meta) = e.metadata() else {
+                        let Ok(meta) = p.symlink_metadata() else {
                             continue;
                         };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             files.push((p, len, modified_unix));
                         }
@@ -290,9 +332,12 @@ pub fn scan_directory(
                             image_candidates += 1;
                         }
                         let p = e.path();
-                        let Ok(meta) = e.metadata() else {
+                        let Ok(meta) = p.symlink_metadata() else {
                             continue;
                         };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             batch.push((p, len, modified_unix));
                             if batch.len() >= BATCH_SIZE {
@@ -659,5 +704,22 @@ mod tests {
             scan_names(dir.path(), PairedRawJpegHandling::ShowBoth),
             vec!["DSC08268.ARW", "DSC08268.JPG"]
         );
+    }
+
+    #[test]
+    fn directory_traversal_boundary_skips_symlink_directory() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let dir = TempScanDir::new();
+            let target = dir.path().join("target");
+            std::fs::create_dir(&target).expect("create target directory");
+            let link = dir.path().join("link");
+            symlink(&target, &link).expect("create directory symlink");
+            assert!(super::is_directory_traversal_boundary_metadata(
+                &std::fs::symlink_metadata(&link).expect("symlink metadata")
+            ));
+        }
     }
 }

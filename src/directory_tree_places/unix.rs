@@ -125,12 +125,13 @@ fn collect_mount_dirs(root: &Path, out: &mut HashSet<PathBuf>) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
+        let Ok(meta) = path.symlink_metadata() else {
             continue;
         };
-        if file_type.is_dir() {
-            out.insert(path);
+        if !meta.is_dir() || crate::scanner::is_directory_traversal_boundary_metadata(&meta) {
+            continue;
         }
+        out.insert(path);
     }
 }
 

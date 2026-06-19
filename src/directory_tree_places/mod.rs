@@ -20,7 +20,7 @@ pub mod types;
 
 mod fs;
 
-pub use types::{DirectoryTreePlaces, KnownFolderEntry, KnownFolderKind, known_folder_tree_path};
+pub use types::{DirectoryTreePlaces, KnownFolderEntry};
 
 #[cfg(windows)]
 mod windows;
