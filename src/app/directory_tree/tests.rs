@@ -380,12 +380,15 @@ fn preview_texture_contain_rect_preserves_aspect_ratio() {
 fn image_list_columns_do_not_overlap_when_panel_is_narrow() {
     let row_rect = egui::Rect::from_min_size(
         egui::pos2(0.0, 0.0),
-        egui::vec2(320.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
+        egui::vec2(
+            320.0,
+            crate::settings::DirectoryTreeListPreviewSize::Small.thumb_px(),
+        ),
     );
-    let columns = image_list_column_layout(row_rect.width(), 4.0, 72.0, 148.0, true);
+    let columns = image_list_column_layout(row_rect.width(), 4.0, 72.0, 148.0, 48.0);
     let spacing = 4.0;
-    let thumb = image_list_thumb_column(row_rect, spacing, true);
-    let name = image_list_name_column(row_rect, &columns, spacing, true);
+    let thumb = image_list_thumb_column(row_rect, spacing, 48.0);
+    let name = image_list_name_column(row_rect, &columns, spacing, 48.0);
     let size = image_list_size_column(row_rect, &columns, spacing);
     let modified = image_list_modified_column(row_rect, &columns, spacing);
     assert!(thumb.right() <= name.left());
@@ -395,7 +398,7 @@ fn image_list_columns_do_not_overlap_when_panel_is_narrow() {
 
 #[test]
 fn image_list_columns_use_content_widths_when_panel_is_wide() {
-    let columns = image_list_column_layout(640.0, 4.0, 72.0, 148.0, true);
+    let columns = image_list_column_layout(640.0, 4.0, 72.0, 148.0, 48.0);
     assert_eq!(columns.size_w, 72.0);
     assert_eq!(columns.modified_w, 148.0);
 }
@@ -404,10 +407,13 @@ fn image_list_columns_use_content_widths_when_panel_is_wide() {
 fn image_list_thumb_column_has_fixed_width() {
     let row_rect = egui::Rect::from_min_size(
         egui::pos2(10.0, 0.0),
-        egui::vec2(400.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
+        egui::vec2(
+            400.0,
+            crate::settings::DirectoryTreeListPreviewSize::Small.thumb_px(),
+        ),
     );
-    let thumb = image_list_thumb_column(row_rect, 4.0, true);
-    assert!((thumb.width() - DIRECTORY_TREE_COL_THUMB_WIDTH).abs() < f32::EPSILON);
+    let thumb = image_list_thumb_column(row_rect, 4.0, 48.0);
+    assert!((thumb.width() - 48.0).abs() < f32::EPSILON);
     assert_eq!(thumb.left(), row_rect.left() + 4.0);
 }
 

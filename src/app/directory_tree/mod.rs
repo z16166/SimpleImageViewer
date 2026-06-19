@@ -38,8 +38,6 @@ pub(super) const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 240.0;
 pub(super) const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
 pub(super) const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 pub(super) const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
-pub(super) const DIRECTORY_TREE_COL_THUMB_WIDTH: f32 = 48.0;
-pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT: f32 = 48.0;
 pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT: f32 = 22.0;
 pub(super) const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
 pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
@@ -179,7 +177,38 @@ pub(crate) struct DirectoryTreeState {
     image_list_sort_active: bool,
     image_list_reordering: bool,
     show_list_previews: bool,
+    list_preview_thumb_px: f32,
+    list_preview_strip_max_side: u32,
     panel_layout_dirty: bool,
+}
+
+/// Snapshot of list-preview layout passed from settings into draw/sync paths.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DirectoryTreeListPreviewLayout {
+    pub show_previews: bool,
+    pub thumb_px: f32,
+    pub strip_max_side: u32,
+}
+
+impl DirectoryTreeListPreviewLayout {
+    pub(super) fn from_settings(settings: &crate::settings::Settings) -> Self {
+        let size = settings.directory_tree_list_preview_size;
+        Self {
+            show_previews: settings.directory_tree_show_list_previews,
+            thumb_px: if settings.directory_tree_show_list_previews {
+                size.thumb_px()
+            } else {
+                0.0
+            },
+            strip_max_side: size.strip_max_side(),
+        }
+    }
+
+    pub(super) fn apply_to_state(self, state: &mut DirectoryTreeState) {
+        state.show_list_previews = self.show_previews;
+        state.list_preview_thumb_px = self.thumb_px;
+        state.list_preview_strip_max_side = self.strip_max_side;
+    }
 }
 
 impl Default for DirectoryTreeState {
@@ -221,6 +250,9 @@ impl Default for DirectoryTreeState {
             image_list_sort_active: false,
             image_list_reordering: false,
             show_list_previews: true,
+            list_preview_thumb_px: crate::settings::DirectoryTreeListPreviewSize::Small.thumb_px(),
+            list_preview_strip_max_side: crate::settings::DirectoryTreeListPreviewSize::Small
+                .strip_max_side(),
             panel_layout_dirty: false,
         }
     }

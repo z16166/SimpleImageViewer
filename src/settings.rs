@@ -108,6 +108,42 @@ impl DirectoryTreeNavStyle {
     }
 }
 
+/// Discrete strip-preview sizes for the directory-tree image list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryTreeListPreviewSize {
+    #[default]
+    Small,
+    Medium,
+    Large,
+}
+
+impl DirectoryTreeListPreviewSize {
+    pub fn thumb_px(self) -> f32 {
+        match self {
+            Self::Small => 48.0,
+            Self::Medium => 64.0,
+            Self::Large => 80.0,
+        }
+    }
+
+    pub fn strip_max_side(self) -> u32 {
+        match self {
+            Self::Small => 128,
+            Self::Medium => 192,
+            Self::Large => 256,
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Small => rust_i18n::t!("directory_tree.preview_size.small").to_string(),
+            Self::Medium => rust_i18n::t!("directory_tree.preview_size.medium").to_string(),
+            Self::Large => rust_i18n::t!("directory_tree.preview_size.large").to_string(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RawDemosaicMode & RawDemosaicMethod
 // ---------------------------------------------------------------------------
@@ -359,6 +395,8 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub directory_tree_show_list_previews: bool,
     #[serde(default)]
+    pub directory_tree_list_preview_size: DirectoryTreeListPreviewSize,
+    #[serde(default)]
     pub last_copy_cut_dir: Option<PathBuf>,
     #[serde(default)]
     pub minimize_to_tray_on_close: bool,
@@ -472,6 +510,7 @@ impl Default for Settings {
             directory_tree_image_list_panel_width: None,
             directory_tree_embedded_panel_width: None,
             directory_tree_show_list_previews: true,
+            directory_tree_list_preview_size: DirectoryTreeListPreviewSize::Small,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
         }

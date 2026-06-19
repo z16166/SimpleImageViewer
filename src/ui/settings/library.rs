@@ -15,7 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
-use crate::settings::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling};
+use crate::settings::{
+    BrowseMode, DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedRawJpegHandling,
+};
 use crate::ui::utils::{
     path_display_box, settings_card, stable_selectable_value, styled_button, themed_labeled_toggle,
 };
@@ -24,6 +26,7 @@ use rust_i18n::t;
 
 const PAIRED_RAW_JPEG_COMBO_WIDTH: f32 = 180.0;
 const DIRECTORY_TREE_NAV_STYLE_COMBO_WIDTH: f32 = 180.0;
+const DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH: f32 = 120.0;
 
 pub(super) fn draw_library_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: &mut bool) {
     ui.vertical(|ui| {
@@ -158,6 +161,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         }
 
         let old_list_previews = app.settings.directory_tree_show_list_previews;
+        let old_preview_size = app.settings.directory_tree_list_preview_size;
         ui.add_enabled_ui(app.settings.show_directory_tree_nav, |ui| {
             if themed_labeled_toggle(
                 ui,
@@ -168,7 +172,36 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             .changed()
                 && old_list_previews != app.settings.directory_tree_show_list_previews
             {
-                app.on_directory_tree_list_previews_changed(ui.ctx());
+                app.on_directory_tree_list_preview_settings_changed(ui.ctx());
+            }
+
+            ui.add_enabled_ui(app.settings.directory_tree_show_list_previews, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t!("label.directory_tree_list_preview_size"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("directory_tree_list_preview_size_combo")
+                            .width(DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH)
+                            .selected_text(app.settings.directory_tree_list_preview_size.label())
+                            .show_ui(ui, |ui| {
+                                ui.set_min_width(DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH);
+                                for size in [
+                                    DirectoryTreeListPreviewSize::Small,
+                                    DirectoryTreeListPreviewSize::Medium,
+                                    DirectoryTreeListPreviewSize::Large,
+                                ] {
+                                    stable_selectable_value(
+                                        ui,
+                                        &mut app.settings.directory_tree_list_preview_size,
+                                        size,
+                                        size.label(),
+                                    );
+                                }
+                            });
+                    });
+                });
+            });
+            if old_preview_size != app.settings.directory_tree_list_preview_size {
+                app.on_directory_tree_list_preview_settings_changed(ui.ctx());
             }
         });
 

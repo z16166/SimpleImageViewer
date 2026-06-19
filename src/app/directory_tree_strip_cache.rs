@@ -26,7 +26,6 @@ use crate::loader::{
     preview_aspect_matches_logical,
 };
 
-pub(crate) const DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE: u32 = 128;
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
@@ -150,6 +149,7 @@ impl DirectoryTreeStripCache {
         ctx: &egui::Context,
         current_index: usize,
         total_count: usize,
+        strip_max_side: u32,
     ) {
         if decoded_looks_like_black_placeholder(decoded) {
             self.textures.remove(&index);
@@ -167,16 +167,15 @@ impl DirectoryTreeStripCache {
         ) {
             return;
         }
-        let thumb =
-            match downsample_decoded_for_strip(decoded, DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE) {
-                Ok(thumb) => thumb,
-                Err(err) => {
-                    log::warn!(
-                        "[DirectoryTree] Strip thumbnail downsample failed for index {index}: {err}"
-                    );
-                    return;
-                }
-            };
+        let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
+            Ok(thumb) => thumb,
+            Err(err) => {
+                log::warn!(
+                    "[DirectoryTree] Strip thumbnail downsample failed for index {index}: {err}"
+                );
+                return;
+            }
+        };
         let color_image = ColorImage::from_rgba_unmultiplied(
             [thumb.width as usize, thumb.height as usize],
             thumb.rgba(),
@@ -340,7 +339,16 @@ mod tests {
         let total = DIRECTORY_TREE_STRIP_CACHE_MAX + 5;
         for index in 0..total {
             let decoded = DecodedImage::new(32, 32, vec![255; 32 * 32 * 4]);
-            cache.upsert_from_decoded(index, &decoded, PreviewStage::Refined, None, &ctx, 0, total);
+            cache.upsert_from_decoded(
+                index,
+                &decoded,
+                PreviewStage::Refined,
+                None,
+                &ctx,
+                0,
+                total,
+                128,
+            );
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
         assert!(cache.contains(0));
@@ -416,6 +424,7 @@ mod tests {
             &ctx,
             0,
             1,
+            128,
         );
         assert!(cache.contains(0));
         cache.clear_gpu_textures();

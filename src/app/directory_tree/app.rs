@@ -6,8 +6,7 @@ use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE, DirectoryTreeStripPreviewJobResult,
-    decoded_rgba_size_valid,
+    DirectoryTreeStripPreviewJobResult, decoded_rgba_size_valid,
 };
 use crate::app::types::CachedWindowPlacement;
 use crate::directory_tree_places::DirectoryTreePlaces;
@@ -30,9 +29,9 @@ use super::{
     DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
     DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT,
     DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
-    DIRECTORY_TREE_VIEWPORT_ID, DirectoryTreeCommand, DirectoryTreeState, ImageListSortColumn,
-    MAX_COLD_STRIP_GENERATES_PER_FRAME, MAX_STRIP_GENERATE_INFLIGHT,
-    MAX_TILED_STRIP_GENERATES_PER_FRAME, is_places_sentinel_path,
+    DIRECTORY_TREE_VIEWPORT_ID, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
+    DirectoryTreeState, ImageListSortColumn, MAX_COLD_STRIP_GENERATES_PER_FRAME,
+    MAX_STRIP_GENERATE_INFLIGHT, MAX_TILED_STRIP_GENERATES_PER_FRAME, is_places_sentinel_path,
 };
 
 impl ImageViewerApp {
@@ -546,7 +545,8 @@ impl ImageViewerApp {
                 self.defer_directory_tree_file_list_sync();
                 return false;
             };
-            state.show_list_previews = false;
+            DirectoryTreeListPreviewLayout::from_settings(&self.settings)
+                .apply_to_state(&mut state);
             let cleared = !state.preview_textures.is_empty();
             if cleared {
                 state.clear_list_preview_textures();
@@ -570,7 +570,7 @@ impl ImageViewerApp {
             self.defer_directory_tree_file_list_sync();
             return false;
         };
-        state.show_list_previews = self.settings.directory_tree_show_list_previews;
+        DirectoryTreeListPreviewLayout::from_settings(&self.settings).apply_to_state(&mut state);
         let updated = state.sync_preview_textures(
             self.directory_tree_strip_cache.textures(),
             self.directory_tree_strip_cache.logical_sizes(),
@@ -804,7 +804,8 @@ impl ImageViewerApp {
                 self.defer_directory_tree_file_list_sync();
                 return;
             };
-            state.show_list_previews = self.settings.directory_tree_show_list_previews;
+            DirectoryTreeListPreviewLayout::from_settings(&self.settings)
+                .apply_to_state(&mut state);
             let preview_updated = if self.directory_tree_list_previews_active() {
                 state.sync_preview_textures(
                     self.directory_tree_strip_cache.textures(),
@@ -912,7 +913,7 @@ impl ImageViewerApp {
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
-        let show_list_previews = self.settings.directory_tree_show_list_previews;
+        let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let mut builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
             .with_inner_size(inner_size)
@@ -957,7 +958,7 @@ impl ImageViewerApp {
                     root_wake.as_ref(),
                     &palette,
                     false,
-                    show_list_previews,
+                    list_preview,
                 );
                 state.scanning
             };
@@ -980,7 +981,7 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
-        let show_list_previews = self.settings.directory_tree_show_list_previews;
+        let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
         let has_places = state.try_lock().is_some_and(|guard| guard.places_loaded);
         if !has_places {
@@ -1030,7 +1031,7 @@ impl ImageViewerApp {
                     root_wake.as_ref(),
                     &palette,
                     true,
-                    show_list_previews,
+                    list_preview,
                 );
                 if state.scanning {
                     ui.ctx().request_repaint();
@@ -1140,6 +1141,9 @@ impl ImageViewerApp {
             ctx,
             self.current_index,
             self.image_files.len(),
+            self.settings
+                .directory_tree_list_preview_size
+                .strip_max_side(),
         );
     }
 
@@ -1363,7 +1367,10 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
-        let max_side = DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE;
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             crate::preload_debug!(
                 "[PreloadDebug][Strip] cold worker start idx={} path={}",
@@ -1611,7 +1618,10 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
         let tx = self.directory_tree_strip_preview_tx.clone();
-        let max_side = DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE;
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             let mut decoded = DecodedImage::new(0, 0, Vec::new());
             crate::preload_debug!(
@@ -1848,12 +1858,12 @@ impl ImageViewerApp {
         self.directory_tree_settings_active() && self.settings.directory_tree_show_list_previews
     }
 
-    pub(crate) fn on_directory_tree_list_previews_changed(&mut self, ctx: &egui::Context) {
-        if !self.settings.directory_tree_show_list_previews {
-            self.invalidate_directory_tree_strip_gpu_textures();
-            if let Some(mut state) = self.directory_tree.state.try_lock() {
-                state.clear_list_preview_textures();
-            }
+    pub(crate) fn on_directory_tree_list_preview_settings_changed(&mut self, ctx: &egui::Context) {
+        self.invalidate_directory_tree_strip_gpu_textures();
+        if let Some(mut state) = self.directory_tree.state.try_lock() {
+            state.clear_list_preview_textures();
+            DirectoryTreeListPreviewLayout::from_settings(&self.settings)
+                .apply_to_state(&mut state);
         }
         ctx.request_repaint();
         self.queue_save();
