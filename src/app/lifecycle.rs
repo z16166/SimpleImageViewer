@@ -476,6 +476,8 @@ impl ImageViewerApp {
             root_redraw_wake: None,
             directory_tree_theme,
             pending_directory_tree_repaint: false,
+            pending_directory_tree_select_index: None,
+            pending_directory_tree_state_sync: false,
             scan_generation: 0,
             scan_results_pending_since: None,
             pending_preload_after_directory_scan: false,

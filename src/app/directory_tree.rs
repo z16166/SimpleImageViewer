@@ -593,7 +593,7 @@ impl ImageViewerApp {
                 }
                 DirectoryTreeCommand::SelectImage(index) => {
                     if index < self.image_files.len() {
-                        self.navigate_to(index, ctx);
+                        self.pending_directory_tree_select_index = Some(index);
                         let mut state = self.directory_tree.state.lock();
                         state.current_index = index;
                         state.scroll_image_list_to_current = true;
@@ -610,10 +610,19 @@ impl ImageViewerApp {
         }
     }
 
+    fn directory_tree_settings_active(&self) -> bool {
+        self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
+    }
+
     fn directory_tree_viewport_active(&self) -> bool {
-        self.settings.browse_mode == BrowseMode::Tree
-            && self.settings.show_directory_tree_nav
-            && self.directory_tree.state.lock().root.is_some()
+        if !self.directory_tree_settings_active() {
+            return false;
+        }
+        match self.directory_tree.state.try_lock() {
+            Some(state) => state.root.is_some(),
+            // Embedded panel may hold the lock during paint; still treat as active.
+            None => true,
+        }
     }
 
     pub(crate) fn directory_tree_nav_is_detached(&self) -> bool {
@@ -647,6 +656,16 @@ impl ImageViewerApp {
         } else {
             Self::directory_tree_viewport_has_os_focus(ctx)
         }
+    }
+
+    pub(crate) fn directory_tree_embedded_list_captures_main_navigation(&self) -> bool {
+        if !self.directory_tree_nav_is_embedded() || !self.directory_tree_settings_active() {
+            return false;
+        }
+        self.directory_tree
+            .state
+            .try_lock()
+            .is_some_and(|state| state.image_list_keyboard_active)
     }
 
     pub(crate) fn on_directory_tree_nav_style_changed(
@@ -707,8 +726,10 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn release_directory_tree_list_keyboard_capture(&mut self) {
-        if self.directory_tree_viewport_active() {
-            self.directory_tree.state.lock().image_list_keyboard_active = false;
+        if self.directory_tree_settings_active() {
+            if let Some(mut state) = self.directory_tree.state.try_lock() {
+                state.image_list_keyboard_active = false;
+            }
         }
     }
 
@@ -746,16 +767,37 @@ impl ImageViewerApp {
         Some(Self::directory_tree_viewport_id())
     }
 
+    pub(crate) fn process_pending_directory_tree_state_sync(&mut self, ctx: &egui::Context) {
+        if !self.pending_directory_tree_state_sync {
+            return;
+        }
+        if self.directory_tree.state.try_lock().is_none() {
+            return;
+        }
+        self.pending_directory_tree_state_sync = false;
+        self.sync_directory_tree_file_list_state(ctx);
+    }
+
+    fn defer_directory_tree_file_list_sync(&mut self) {
+        self.pending_directory_tree_state_sync = true;
+    }
+
     /// Sync scan results into the directory-tree file list without registering the viewport.
     /// Safe to call from `logic()` after `process_scan_results`.
     pub(crate) fn sync_directory_tree_file_list_state(&mut self, ctx: &egui::Context) {
-        if !self.directory_tree_viewport_active() {
+        if !self.directory_tree_settings_active() {
             return;
         }
 
         let viewport_id = self.directory_tree_repaint_viewport_id();
         let request_viewport_repaint = {
-            let mut state = self.directory_tree.state.lock();
+            let Some(mut state) = self.directory_tree.state.try_lock() else {
+                self.defer_directory_tree_file_list_sync();
+                return;
+            };
+            if state.root.is_none() {
+                return;
+            }
             let previous_index = state.current_index;
             let previous_scanning = state.scanning;
             let previous_row_count = state.image_rows.len();
@@ -835,7 +877,9 @@ impl ImageViewerApp {
                 .map(|guard| guard.clone())
                 .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
             let scanning = {
-                let mut state = state.lock();
+                let Some(mut state) = state.try_lock() else {
+                    return;
+                };
                 draw_directory_tree_window(
                     ui,
                     &mut state,
@@ -857,7 +901,7 @@ impl ImageViewerApp {
 
     /// Draw the directory tree inside a resizable left panel on the main window.
     pub(crate) fn draw_embedded_directory_tree_panel(&mut self, ui: &mut egui::Ui) {
-        if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_embedded() {
+        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
             return;
         }
 
@@ -866,9 +910,15 @@ impl ImageViewerApp {
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
         let default_width = state
-            .lock()
-            .left_panel_width
-            .max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH);
+            .try_lock()
+            .map(|guard| guard.left_panel_width.max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH))
+            .unwrap_or(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH);
+        let has_root = state
+            .try_lock()
+            .is_some_and(|guard| guard.root.is_some());
+        if !has_root {
+            return;
+        }
 
         egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
             .resizable(true)
@@ -879,22 +929,34 @@ impl ImageViewerApp {
                     .lock()
                     .map(|guard| guard.clone())
                     .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-                let scanning = {
-                    let mut state = state.lock();
-                    draw_directory_tree_window(
-                        ui,
-                        &mut state,
-                        &command_tx,
-                        root_wake.as_ref(),
-                        &palette,
-                        true,
-                    );
-                    state.scanning
+                let Some(mut state) = state.try_lock() else {
+                    return;
                 };
-                if scanning {
+                draw_directory_tree_window(
+                    ui,
+                    &mut state,
+                    &command_tx,
+                    root_wake.as_ref(),
+                    &palette,
+                    true,
+                );
+                if state.scanning {
                     ui.ctx().request_repaint();
                 }
             });
+    }
+
+    /// Apply a directory-tree list selection queued in `process_directory_tree_events`.
+    /// Runs from `logic()` only (never from `ui()`): `navigate_to` may pump the Windows
+    /// message loop and must not block on `directory_tree.state` held by embedded paint.
+    pub(crate) fn process_pending_directory_tree_select(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.pending_directory_tree_select_index.take() else {
+            return;
+        };
+        if index >= self.image_files.len() {
+            return;
+        }
+        self.navigate_to(index, ctx);
     }
 
     /// Drain directory scans, apply tree commands, sync the file list, then run strip/preloads.
@@ -925,18 +987,21 @@ impl ImageViewerApp {
 
     /// Strip-thumbnail polling/generation and deferred main-image preloads after a scan.
     pub(crate) fn run_directory_tree_logic_updates(&mut self, ctx: &egui::Context) {
-        if !self.directory_tree_viewport_active() {
+        if !self.directory_tree_settings_active() {
             return;
         }
 
         self.ensure_directory_tree_strip_thumbnails(ctx);
 
-        {
-            let mut state = self.directory_tree.state.lock();
-            state.sync_preview_textures(
-                self.directory_tree_strip_cache.textures(),
-                self.directory_tree_strip_cache.logical_sizes(),
-            );
+        if let Some(mut state) = self.directory_tree.state.try_lock() {
+            if state.root.is_some() {
+                state.sync_preview_textures(
+                    self.directory_tree_strip_cache.textures(),
+                    self.directory_tree_strip_cache.logical_sizes(),
+                );
+            }
+        } else {
+            self.defer_directory_tree_file_list_sync();
         }
         let viewport_id = self.directory_tree_repaint_viewport_id();
         ctx.request_repaint_of(viewport_id);
@@ -1432,13 +1497,19 @@ impl ImageViewerApp {
             );
         }
 
-        let (visible_row_range, scroll_to_current_pending) = {
-            let state = self.directory_tree.state.lock();
-            (
-                state.image_list_visible_row_range,
-                state.scroll_image_list_to_current,
-            )
+        let (visible_row_range, scroll_to_current_pending, defer_sync) = {
+            match self.directory_tree.state.try_lock() {
+                Some(state) => (
+                    state.image_list_visible_row_range,
+                    state.scroll_image_list_to_current,
+                    false,
+                ),
+                None => (None, false, true),
+            }
         };
+        if defer_sync {
+            self.defer_directory_tree_file_list_sync();
+        }
         let cold_candidates = self
             .collect_cold_strip_thumbnail_candidates(visible_row_range, scroll_to_current_pending);
         let inflight_room = MAX_STRIP_GENERATE_INFLIGHT
@@ -2023,8 +2094,6 @@ fn draw_image_file_list(
         });
         state.image_list_scroll_offset_y = scroll_output.state.offset.y;
     });
-
-    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx, embedded);
 
     if state.scanning && state.image_rows.is_empty() {
         ui.allocate_ui_with_layout(

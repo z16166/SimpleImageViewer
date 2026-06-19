@@ -635,6 +635,8 @@ impl eframe::App for ImageViewerApp {
         self.process_file_op_results();
         self.sync_directory_tree_file_list_state(ctx);
         self.run_directory_tree_logic_updates(ctx);
+        self.process_pending_directory_tree_state_sync(ctx);
+        self.process_pending_directory_tree_select(ctx);
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
         // mode preemption) and needs a full restart — same path as toggling the checkbox.
@@ -698,12 +700,12 @@ impl eframe::App for ImageViewerApp {
         // style there are wrong and would corrupt dark-theme widget colors on the main window.
         self.sync_theme_and_visuals(&ctx);
         self.sync_directory_tree_keyboard_focus_with_viewports(&ctx);
+        // Draw embedded tree before keyboard so the file list can consume arrow keys first.
+        self.draw_embedded_directory_tree_panel(ui);
         // Keyboard must run from ROOT ui(), not logic(): logic() runs before integration.update
         // applies raw_input and also runs on deferred child repaints with the wrong pass input.
         self.handle_keyboard(&ctx);
 
-        // Directory tree: embedded panel or detached auxiliary viewport (draw-only in logic).
-        self.draw_embedded_directory_tree_panel(ui);
         self.prepare_directory_tree_file_list_viewport(&ctx);
 
         // Draw image canvas (fills the remaining central area)
