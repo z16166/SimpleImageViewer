@@ -42,8 +42,8 @@ const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 const DIRECTORY_TREE_DEFAULT_WIDTH: f32 = 820.0;
 const DIRECTORY_TREE_DEFAULT_HEIGHT: f32 = 640.0;
-const DIRECTORY_TREE_LEFT_WIDTH: f32 = 280.0;
-const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 200.0;
+const DIRECTORY_TREE_LEFT_WIDTH: f32 = 340.0;
+const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 240.0;
 const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
 const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
@@ -798,6 +798,7 @@ impl ImageViewerApp {
         }
         let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
         ctx.request_repaint_of(viewport_id);
+        self.mark_directory_tree_repaint_pending();
         self.wake_root_for_logic();
 
         if self.pending_preload_after_directory_scan {
@@ -943,9 +944,23 @@ impl ImageViewerApp {
         true
     }
 
+    fn visible_cold_strip_indices(
+        visible_row_range: Option<(usize, usize)>,
+        scroll_to_current_pending: bool,
+        total: usize,
+    ) -> Vec<usize> {
+        if scroll_to_current_pending || total == 0 {
+            return Vec::new();
+        }
+        visible_row_range
+            .map(|(start, end)| (start..end.min(total)).collect())
+            .unwrap_or_default()
+    }
+
     fn collect_cold_strip_thumbnail_candidates(
         &self,
         visible_row_range: Option<(usize, usize)>,
+        scroll_to_current_pending: bool,
     ) -> Vec<usize> {
         let total = self.image_files.len();
         if total == 0 {
@@ -960,10 +975,10 @@ impl ImageViewerApp {
             }
         };
 
-        if let Some((start, end)) = visible_row_range {
-            for index in start..end.min(total) {
-                push(index);
-            }
+        for index in
+            Self::visible_cold_strip_indices(visible_row_range, scroll_to_current_pending, total)
+        {
+            push(index);
         }
 
         for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
@@ -1187,6 +1202,15 @@ impl ImageViewerApp {
 
         self.poll_directory_tree_strip_preview_results(ctx);
 
+        self.directory_tree_strip_cold_attempted.retain(|index| {
+            self.directory_tree_strip_cache.contains(*index)
+                || self.directory_tree_strip_generate_inflight.contains(index)
+        });
+        self.directory_tree_strip_tiled_attempted.retain(|index| {
+            self.directory_tree_strip_cache.contains(*index)
+                || self.directory_tree_strip_generate_inflight.contains(index)
+        });
+
         let mut tiled_indices: Vec<usize> = self.prefetched_tiles.keys().copied().collect();
         if let Some(tm) = &self.tile_manager {
             if !tiled_indices.contains(&tm.image_index) {
@@ -1264,12 +1288,15 @@ impl ImageViewerApp {
             );
         }
 
-        let visible_row_range = self
-            .directory_tree
-            .state
-            .lock()
-            .image_list_visible_row_range;
-        let cold_candidates = self.collect_cold_strip_thumbnail_candidates(visible_row_range);
+        let (visible_row_range, scroll_to_current_pending) = {
+            let state = self.directory_tree.state.lock();
+            (
+                state.image_list_visible_row_range,
+                state.scroll_image_list_to_current,
+            )
+        };
+        let cold_candidates = self
+            .collect_cold_strip_thumbnail_candidates(visible_row_range, scroll_to_current_pending);
         let inflight_room = MAX_STRIP_GENERATE_INFLIGHT
             .saturating_sub(self.directory_tree_strip_generate_inflight.len());
         let mut cold_scheduled = 0usize;
@@ -2464,6 +2491,15 @@ mod tests {
 
         assert_eq!(state.image_rows[0].modified_unix, Some(1_700_000_000));
         assert!(state.image_rows[1].modified_unix.is_none());
+    }
+
+    #[test]
+    fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
+        assert!(ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), true, 200).is_empty());
+        assert_eq!(
+            ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), false, 200),
+            (100..110).collect::<Vec<_>>()
+        );
     }
 
     #[test]
