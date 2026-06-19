@@ -497,6 +497,8 @@ impl ImageViewerApp {
             ),
             cached_window_placement: None,
             cached_restore_placement: None,
+            cached_directory_tree_window_placement: None,
+            cached_directory_tree_restore_placement: None,
             requested_target_format,
             active_target_format,
             requested_rgb10a2_pq_encode,
@@ -706,6 +708,7 @@ impl ImageViewerApp {
         if app.settings.browse_mode == crate::settings::BrowseMode::Tree
             && app.settings.show_directory_tree_nav
         {
+            app.restore_saved_directory_tree_panel_layout();
             let saved_selected = app.settings.tree_nav_selected_dir.clone();
             if let Some(root) = app
                 .settings

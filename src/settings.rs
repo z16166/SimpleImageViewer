@@ -327,6 +327,30 @@ pub struct Settings {
     /// artifact (e.g. `[-7,-7]`) instead of a restorable outer top-left.
     #[serde(default)]
     pub window_maximized_screen_center: Option<[i32; 2]>,
+    /// Detached directory-tree navigation window placement (see main window fields above).
+    #[serde(default)]
+    pub directory_tree_window_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_restore_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_restore_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_maximized_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_maximized: bool,
+    #[serde(default)]
+    pub directory_tree_window_maximized_screen_center: Option<[i32; 2]>,
+    /// Folder tree panel width inside the directory-tree navigation UI.
+    #[serde(default)]
+    pub directory_tree_folder_panel_width: Option<f32>,
+    /// Image file list panel width inside the directory-tree navigation UI.
+    #[serde(default)]
+    pub directory_tree_image_list_panel_width: Option<f32>,
+    /// Embedded navigation side panel width on the main window.
+    #[serde(default)]
+    pub directory_tree_embedded_panel_width: Option<f32>,
     #[serde(default)]
     pub last_copy_cut_dir: Option<PathBuf>,
     #[serde(default)]
@@ -430,6 +454,16 @@ impl Default for Settings {
             window_maximized_inner_size: None,
             window_maximized: false,
             window_maximized_screen_center: None,
+            directory_tree_window_outer_position: None,
+            directory_tree_window_inner_size: None,
+            directory_tree_window_restore_outer_position: None,
+            directory_tree_window_restore_inner_size: None,
+            directory_tree_window_maximized_inner_size: None,
+            directory_tree_window_maximized: false,
+            directory_tree_window_maximized_screen_center: None,
+            directory_tree_folder_panel_width: None,
+            directory_tree_image_list_panel_width: None,
+            directory_tree_embedded_panel_width: None,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
         }
@@ -500,6 +534,46 @@ impl Settings {
             self.window_inner_size
                 .map(|[w, h]| [w as f32, h as f32])
                 .unwrap_or([1280.0, 800.0])
+        }
+    }
+
+    /// Outer top-left used when spawning the detached directory-tree window.
+    pub fn directory_tree_startup_outer_position(&self) -> Option<[f32; 2]> {
+        if self.directory_tree_window_maximized {
+            if let Some(pos) = self.directory_tree_window_restore_outer_position {
+                return Some([pos[0] as f32, pos[1] as f32]);
+            }
+            let restore_inner = self
+                .directory_tree_window_restore_inner_size
+                .or(self.directory_tree_window_inner_size)
+                .unwrap_or([820, 640]);
+            if let Some(center) = self.directory_tree_window_maximized_screen_center
+                && let Some(top_left) =
+                    Self::restore_outer_top_left_for_screen_center(center, restore_inner)
+            {
+                return Some([top_left[0] as f32, top_left[1] as f32]);
+            }
+            return self
+                .directory_tree_window_outer_position
+                .and_then(Self::valid_outer_position)
+                .map(|[x, y]| [x as f32, y as f32]);
+        }
+        self.directory_tree_window_outer_position
+            .map(|[x, y]| [x as f32, y as f32])
+    }
+
+    /// Client size used when spawning the detached directory-tree window.
+    pub fn directory_tree_startup_inner_size(&self) -> [f32; 2] {
+        if self.directory_tree_window_maximized {
+            self.directory_tree_window_maximized_inner_size
+                .or(self.directory_tree_window_inner_size)
+                .or(self.directory_tree_window_restore_inner_size)
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([820.0, 640.0])
+        } else {
+            self.directory_tree_window_inner_size
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([820.0, 640.0])
         }
     }
 
@@ -898,6 +972,20 @@ mod tests {
         };
 
         assert_eq!(settings.startup_outer_position(), Some([0.0, 0.0]));
+    }
+
+    #[test]
+    fn directory_tree_maximized_startup_outer_position_prefers_saved_restore() {
+        let settings = Settings {
+            directory_tree_window_maximized: true,
+            directory_tree_window_restore_outer_position: Some([120, 80]),
+            directory_tree_window_maximized_screen_center: Some([9999, 9999]),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.directory_tree_startup_outer_position(),
+            Some([120.0, 80.0])
+        );
     }
 
     #[test]

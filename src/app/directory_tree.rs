@@ -24,6 +24,7 @@ use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
+use crate::app::types::CachedWindowPlacement;
 use crate::app::directory_tree_strip_cache::{
     DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE, DirectoryTreeStripPreviewJobResult,
     decoded_rgba_size_valid,
@@ -33,7 +34,7 @@ use crate::loader::{
     DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
     preview_aspect_matches_logical,
 };
-use crate::settings::BrowseMode;
+use crate::settings::{BrowseMode, Settings};
 use crate::theme::ThemePalette;
 use crate::ui::osd::{format_file_modified, format_file_size};
 
@@ -129,6 +130,8 @@ pub(crate) struct DirectoryTreeState {
     scanning: bool,
     scan_status: String,
     left_panel_width: f32,
+    image_list_panel_width: f32,
+    embedded_nav_panel_width: f32,
     scroll_image_list_to_current: bool,
     scroll_folder_to_selected: bool,
     image_list_scroll_offset_y: f32,
@@ -155,6 +158,8 @@ impl Default for DirectoryTreeState {
             scanning: false,
             scan_status: String::new(),
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
+            image_list_panel_width: DIRECTORY_TREE_RIGHT_MIN_WIDTH,
+            embedded_nav_panel_width: 0.0,
             scroll_image_list_to_current: false,
             scroll_folder_to_selected: false,
             image_list_scroll_offset_y: 0.0,
@@ -573,6 +578,7 @@ impl ImageViewerApp {
         let request = {
             let mut state = runtime.state.lock();
             state.set_root(root.clone());
+            self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
             state.request_children_if_needed(&root)
         };
         if let Some(request) = request {
@@ -716,12 +722,134 @@ impl ImageViewerApp {
         }
         {
             let mut state = self.directory_tree.state.lock();
+            self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
             state.left_panel_width = clamp_directory_tree_left_panel_width(
                 state.left_panel_width,
                 DIRECTORY_TREE_DEFAULT_WIDTH,
             );
+            reconcile_directory_tree_panel_widths(&mut state, DIRECTORY_TREE_DEFAULT_WIDTH);
         }
         ctx.request_repaint();
+    }
+
+    fn apply_saved_directory_tree_panel_layout_to_state(&self, state: &mut DirectoryTreeState) {
+        if let Some(width) = self.settings.directory_tree_folder_panel_width {
+            state.left_panel_width = width;
+        }
+        if let Some(width) = self.settings.directory_tree_image_list_panel_width {
+            state.image_list_panel_width = width;
+        }
+    }
+
+    pub(crate) fn restore_saved_directory_tree_panel_layout(&self) {
+        let mut state = self.directory_tree.state.lock();
+        self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
+    }
+
+    pub(crate) fn persist_directory_tree_layout_to_settings(&mut self) {
+        if !self.directory_tree_settings_active() {
+            return;
+        }
+        let Some(state) = self.directory_tree.state.try_lock() else {
+            return;
+        };
+        self.settings.directory_tree_folder_panel_width = Some(state.left_panel_width);
+        self.settings.directory_tree_image_list_panel_width = Some(state.image_list_panel_width);
+        if self.directory_tree_nav_is_embedded() && state.embedded_nav_panel_width > 0.0 {
+            self.settings.directory_tree_embedded_panel_width = Some(
+                state
+                    .embedded_nav_panel_width
+                    .max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
+            );
+        }
+    }
+
+    pub(crate) fn persist_directory_tree_window_placement_to_settings(
+        settings: &mut crate::settings::Settings,
+        placement: CachedWindowPlacement,
+        restore: Option<CachedWindowPlacement>,
+    ) {
+        settings.directory_tree_window_maximized = placement.maximized;
+        settings.directory_tree_window_outer_position = Some(placement.outer_position);
+        settings.directory_tree_window_inner_size = Some(placement.inner_size);
+        settings.directory_tree_window_maximized_screen_center = Some(placement.outer_center);
+        if placement.maximized {
+            settings.directory_tree_window_maximized_inner_size = Some(placement.inner_size);
+            let restore_inner = restore
+                .map(|p| p.inner_size)
+                .or(settings.directory_tree_window_restore_inner_size)
+                .unwrap_or(placement.inner_size);
+            if let Some(restore) = restore {
+                settings.directory_tree_window_restore_outer_position =
+                    Some(restore.outer_position);
+                settings.directory_tree_window_restore_inner_size = Some(restore.inner_size);
+            } else if let Some(pos) =
+                crate::settings::Settings::valid_outer_position(placement.outer_position)
+            {
+                settings.directory_tree_window_restore_outer_position = Some(pos);
+                settings.directory_tree_window_restore_inner_size = Some(restore_inner);
+            } else if let Some(top_left) =
+                crate::settings::Settings::restore_outer_top_left_for_screen_center(
+                    placement.outer_center,
+                    restore_inner,
+                )
+            {
+                settings.directory_tree_window_restore_outer_position = Some(top_left);
+                settings.directory_tree_window_restore_inner_size = Some(restore_inner);
+            }
+        } else {
+            settings.directory_tree_window_restore_outer_position = Some(placement.outer_position);
+            settings.directory_tree_window_restore_inner_size = Some(placement.inner_size);
+            settings.directory_tree_window_maximized_inner_size = None;
+        }
+    }
+
+    pub(crate) fn cache_directory_tree_viewport_placement(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_detached() {
+            return;
+        }
+        let Some(placement) =
+            ctx.viewport_for(Self::directory_tree_viewport_id(), |viewport| {
+                let viewport = viewport.input.viewport();
+                let outer_rect = viewport.outer_rect?;
+                let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+                let center = outer_rect.center();
+                Some(CachedWindowPlacement {
+                    outer_position: [
+                        outer_rect.min.x.round() as i32,
+                        outer_rect.min.y.round() as i32,
+                    ],
+                    outer_center: [center.x.round() as i32, center.y.round() as i32],
+                    inner_size: [
+                        inner_size.x.round().max(1.0) as u32,
+                        inner_size.y.round().max(1.0) as u32,
+                    ],
+                    maximized: viewport.maximized.unwrap_or(false),
+                })
+            })
+        else {
+            return;
+        };
+        if !placement.maximized
+            && Settings::valid_outer_position(placement.outer_position).is_some()
+        {
+            self.cached_directory_tree_restore_placement = Some(placement);
+        }
+        self.cached_directory_tree_window_placement = Some(placement);
+    }
+
+    fn directory_tree_embedded_panel_default_width(settings: &Settings) -> f32 {
+        if let Some(width) = settings.directory_tree_embedded_panel_width {
+            return width.max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH);
+        }
+        let folder = settings
+            .directory_tree_folder_panel_width
+            .unwrap_or(DIRECTORY_TREE_LEFT_WIDTH);
+        let list = settings
+            .directory_tree_image_list_panel_width
+            .unwrap_or(DIRECTORY_TREE_RIGHT_MIN_WIDTH);
+        (folder + DIRECTORY_TREE_SPLITTER_GRAB_WIDTH + list)
+            .max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH)
     }
 
     pub(crate) fn directory_tree_viewport_id() -> egui::ViewportId {
@@ -894,17 +1022,31 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = std::sync::Arc::clone(&self.directory_tree_theme);
-        let builder = egui::ViewportBuilder::default()
+        let inner_size = self.settings.directory_tree_startup_inner_size();
+        let outer_position = self.settings.directory_tree_startup_outer_position();
+        let startup_maximized = self.settings.directory_tree_window_maximized;
+        let mut builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
-            .with_inner_size([DIRECTORY_TREE_DEFAULT_WIDTH, DIRECTORY_TREE_DEFAULT_HEIGHT])
+            .with_inner_size(inner_size)
             .with_min_inner_size([DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_MIN_HEIGHT])
             .with_resizable(true)
-            .with_close_button(true);
+            .with_close_button(true)
+            .with_maximized(false);
+        if let Some(pos) = outer_position {
+            builder = builder.with_position(pos);
+        }
 
         ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 let _ = command_tx.send(DirectoryTreeCommand::CloseWindow);
                 return;
+            }
+
+            let maximize_id = ui.id().with("directory_tree_startup_maximize");
+            if startup_maximized && !ui.data(|d| d.get_temp::<bool>(maximize_id).unwrap_or(false)) {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                ui.data_mut(|d| d.insert_temp(maximize_id, true));
             }
 
             let palette = theme
@@ -944,10 +1086,7 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
-        let default_width = state
-            .try_lock()
-            .map(|guard| guard.left_panel_width.max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH))
-            .unwrap_or(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH);
+        let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
         let has_root = state
             .try_lock()
             .is_some_and(|guard| guard.root.is_some());
@@ -1780,6 +1919,35 @@ fn clamp_directory_tree_left_panel_width(width: f32, viewport_width: f32) -> f32
     width.clamp(min_left, max_left)
 }
 
+fn reconcile_directory_tree_panel_widths(state: &mut DirectoryTreeState, viewport_width: f32) {
+    let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
+    let min_list = DIRECTORY_TREE_RIGHT_MIN_WIDTH;
+    let (min_left, max_left) = directory_tree_left_panel_width_limits(viewport_width);
+
+    if viewport_width <= splitter_w {
+        state.left_panel_width = 0.0;
+        state.image_list_panel_width = 0.0;
+        return;
+    }
+
+    let available = viewport_width - splitter_w;
+    let mut left_w = state.left_panel_width.clamp(min_left, max_left);
+    let mut list_w = state.image_list_panel_width.max(min_list);
+
+    if left_w + list_w > available {
+        list_w = (available - left_w).max(min_list);
+    } else if left_w + list_w < available {
+        list_w = available - left_w;
+    }
+
+    list_w = list_w.clamp(min_list, (available - min_left).max(0.0));
+    left_w = (available - list_w).clamp(min_left, max_left);
+    list_w = available - left_w;
+
+    state.left_panel_width = left_w;
+    state.image_list_panel_width = list_w;
+}
+
 fn draw_directory_tree_top_panels(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
@@ -1791,12 +1959,11 @@ fn draw_directory_tree_top_panels(
 ) {
     let viewport_height = panel_size.y;
     let viewport_width = panel_size.x;
-    state.left_panel_width =
-        clamp_directory_tree_left_panel_width(state.left_panel_width, viewport_width);
+    reconcile_directory_tree_panel_widths(state, viewport_width);
 
     let left_w = state.left_panel_width;
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
-    let right_w = (viewport_width - left_w - splitter_w).max(0.0);
+    let right_w = state.image_list_panel_width;
 
     let origin = ui.cursor().min;
     let left_rect = egui::Rect::from_min_size(origin, egui::vec2(left_w, viewport_height));
@@ -1828,6 +1995,7 @@ fn draw_directory_tree_top_panels(
             state.left_panel_width + splitter_response.drag_delta().x,
             viewport_width,
         );
+        reconcile_directory_tree_panel_widths(state, viewport_width);
         ui.ctx().request_repaint();
     }
     if splitter_response.hovered() || splitter_response.dragged() {
@@ -1845,6 +2013,9 @@ fn draw_directory_tree_top_panels(
         splitter_rect.y_range(),
         splitter_stroke,
     );
+    if embedded {
+        state.embedded_nav_panel_width = viewport_width;
+    }
 }
 
 fn preview_texture_contain_rect(
@@ -2813,6 +2984,26 @@ mod tests {
         assert!(min <= max);
         assert_eq!(min, 174.0);
         assert_eq!(clamp_directory_tree_left_panel_width(340.0, 364.0), 174.0);
+    }
+
+    #[test]
+    fn reconcile_directory_tree_panel_widths_honors_saved_split() {
+        let mut state = DirectoryTreeState::default();
+        state.left_panel_width = 280.0;
+        state.image_list_panel_width = 320.0;
+        reconcile_directory_tree_panel_widths(&mut state, 640.0);
+        assert_eq!(state.left_panel_width, 280.0);
+        assert_eq!(state.image_list_panel_width, 350.0);
+    }
+
+    #[test]
+    fn reconcile_directory_tree_panel_widths_shrinks_when_viewport_is_narrow() {
+        let mut state = DirectoryTreeState::default();
+        state.left_panel_width = 340.0;
+        state.image_list_panel_width = 400.0;
+        reconcile_directory_tree_panel_widths(&mut state, 364.0);
+        assert!(state.left_panel_width + state.image_list_panel_width <= 354.0);
+        assert!(state.image_list_panel_width >= DIRECTORY_TREE_RIGHT_MIN_WIDTH);
     }
 
     #[test]

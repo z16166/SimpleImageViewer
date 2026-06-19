@@ -359,6 +359,8 @@ pub struct ImageViewerApp {
     /// Last non-maximized placement observed this session (valid outer top-left).
     /// Used when closing maximized so the next spawn targets the same monitor.
     pub(crate) cached_restore_placement: Option<CachedWindowPlacement>,
+    pub(crate) cached_directory_tree_window_placement: Option<CachedWindowPlacement>,
+    pub(crate) cached_directory_tree_restore_placement: Option<CachedWindowPlacement>,
     /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
     /// swap-chain target format whenever the active monitor's HDR capability
     /// changes. The same mailbox is registered with `WgpuConfiguration`, so

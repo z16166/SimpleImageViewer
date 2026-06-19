@@ -67,6 +67,14 @@ impl eframe::App for ImageViewerApp {
                 self.settings.window_maximized_inner_size = None;
             }
         }
+        self.persist_directory_tree_layout_to_settings();
+        if let Some(placement) = self.cached_directory_tree_window_placement {
+            ImageViewerApp::persist_directory_tree_window_placement_to_settings(
+                &mut self.settings,
+                placement,
+                self.cached_directory_tree_restore_placement,
+            );
+        }
         // Shut down the async saver thread first: dropping the sender closes the
         // channel, causing the saver's `recv()` loop to exit after finishing any
         // in-progress write. This eliminates the race between the saver and our
@@ -277,6 +285,8 @@ impl eframe::App for ImageViewerApp {
                 );
             }
         }
+
+        self.cache_directory_tree_viewport_placement(&ctx);
 
         // Global mouse activity detection to wake up Music HUD
         if ctx.input(|i| i.pointer.delta().length_sq() > 0.0) {

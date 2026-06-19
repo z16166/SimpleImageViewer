@@ -1476,6 +1476,8 @@ fn make_test_app() -> ImageViewerApp {
         hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
         cached_window_placement: None,
         cached_restore_placement: None,
+        cached_directory_tree_window_placement: None,
+        cached_directory_tree_restore_placement: None,
         requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat::new(),
         active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat::new(),
         requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode::new(),
