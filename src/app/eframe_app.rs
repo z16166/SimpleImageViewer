@@ -68,6 +68,13 @@ impl eframe::App for ImageViewerApp {
             }
         }
         self.persist_directory_tree_layout_to_settings();
+        #[cfg(feature = "preload-debug")]
+        log::info!(
+            "[PreloadDebug][Panel] on_exit save folder={:?} list={:?} embedded={:?}",
+            self.settings.directory_tree_folder_panel_width,
+            self.settings.directory_tree_image_list_panel_width,
+            self.settings.directory_tree_embedded_panel_width
+        );
         if let Some(placement) = self.cached_directory_tree_window_placement {
             ImageViewerApp::persist_directory_tree_window_placement_to_settings(
                 &mut self.settings,
@@ -367,6 +374,7 @@ impl eframe::App for ImageViewerApp {
             }
 
             self.process_directory_scan_pipeline(ctx);
+            self.run_directory_tree_logic_updates(ctx);
 
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
@@ -643,10 +651,15 @@ impl eframe::App for ImageViewerApp {
         self.process_music_scan_results();
         self.check_auto_switch(ctx);
         self.process_file_op_results();
-        self.sync_directory_tree_file_list_state(ctx);
         self.run_directory_tree_logic_updates(ctx);
+        self.sync_directory_tree_file_list_state(ctx);
         self.process_pending_directory_tree_state_sync(ctx);
+        let had_tree_select = self.pending_directory_tree_select_index.is_some();
         self.process_pending_directory_tree_select(ctx);
+        if had_tree_select {
+            self.run_directory_tree_logic_updates(ctx);
+            self.sync_directory_tree_file_list_state(ctx);
+        }
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
         // mode preemption) and needs a full restart — same path as toggling the checkbox.

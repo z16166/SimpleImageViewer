@@ -1544,6 +1544,7 @@ fn make_test_app() -> ImageViewerApp {
             tx
         },
         directory_tree_strip_preview_rx: crossbeam_channel::never(),
+        directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,
@@ -1566,6 +1567,7 @@ fn make_test_app() -> ImageViewerApp {
         scan_generation: 0,
         scan_results_pending_since: None,
         pending_preload_after_directory_scan: false,
+        directory_tree_strip_bootstrap_after_scan: false,
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),

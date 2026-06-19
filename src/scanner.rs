@@ -40,10 +40,9 @@ pub fn is_offline(path: &Path) -> bool {
 
 /// Returns true when a directory must not be descended into during scans.
 ///
-/// Uses [`std::fs::symlink_metadata`] fields only (no [`std::fs::read_link`]):
-/// symlinks via [`std::fs::FileType::is_symlink`], Windows junctions via
-/// [`FILE_ATTRIBUTE_REPARSE_POINT`](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants).
-pub fn is_directory_traversal_boundary_metadata(metadata: &Metadata) -> bool {
+/// Uses [`std::fs::symlink_metadata`] fields only (no [`std::fs::read_link`]) for symlinks;
+/// on Windows, junction mount points are detected via a single `read_link` on reparse dirs.
+pub fn is_directory_traversal_boundary_metadata(path: &Path, metadata: &Metadata) -> bool {
     let file_type = metadata.file_type();
     if !file_type.is_dir() {
         return false;
@@ -57,15 +56,19 @@ pub fn is_directory_traversal_boundary_metadata(metadata: &Metadata) -> bool {
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
         if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
+            // Junctions are mount-point reparse tags; cloud/sync reparse dirs remain browsable.
+            return std::fs::read_link(path).is_ok();
         }
     }
+    #[cfg(not(windows))]
+    let _ = path;
     false
 }
 
 /// Skip descending into a directory using [`DirEntry::file_type`] when possible.
 /// On Windows, pass directory [`Metadata`] from the same [`read_dir`] entry to detect junctions.
 pub fn skip_directory_traversal_entry(
+    path: &Path,
     file_type: &std::fs::FileType,
     metadata: Option<&Metadata>,
 ) -> bool {
@@ -75,7 +78,36 @@ pub fn skip_directory_traversal_entry(
     if file_type.is_symlink() {
         return true;
     }
-    metadata.is_some_and(is_directory_traversal_boundary_metadata)
+    if is_non_browsable_system_directory(path) {
+        return true;
+    }
+    metadata.is_some_and(|meta| is_directory_traversal_boundary_metadata(path, meta))
+}
+
+/// Shell/system folders that should not appear in the directory tree or recursive scans.
+pub fn is_non_browsable_system_directory(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(is_non_browsable_system_directory_name)
+}
+
+fn is_non_browsable_system_directory_name(name: &OsStr) -> bool {
+    name.eq_ignore_ascii_case(OsStr::new("$RECYCLE.BIN"))
+        || name.eq_ignore_ascii_case(OsStr::new("SYSTEM VOLUME INFORMATION"))
+        || name.eq_ignore_ascii_case(OsStr::new("$WINDOWS.~BT"))
+        || name.eq_ignore_ascii_case(OsStr::new("$WINDOWS.~WS"))
+        || name.eq_ignore_ascii_case(OsStr::new("CONFIG.MSI"))
+}
+
+fn finish_scan_cancelled(
+    generation: u64,
+    tx: &Sender<ScanMessage>,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
+) {
+    log::info!("[Scanner] Scan cancelled (generation={generation})");
+    let _ = tx.send(ScanMessage::Done { generation });
+    if let Some(wake) = wake_ui {
+        wake();
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -165,25 +197,31 @@ pub fn scan_directory(
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
-                .process_read_dir(|_depth, _path, _state, children| {
+                .process_read_dir(|_depth, path, _state, children| {
+                    if is_non_browsable_system_directory(path) {
+                        for child in children.iter_mut() {
+                            if let Ok(entry) = child {
+                                entry.read_children_path = None;
+                            }
+                        }
+                        return;
+                    }
                     for child in children.iter_mut() {
                         if let Ok(entry) = child {
                             if !entry.file_type.is_dir() {
                                 continue;
                             }
+                            let child_path = entry.path();
+                            if is_non_browsable_system_directory(&child_path) {
+                                entry.read_children_path = None;
+                                continue;
+                            }
                             let skip = if entry.file_type.is_symlink() {
                                 true
                             } else {
-                                #[cfg(windows)]
-                                {
-                                    entry.metadata().ok().is_some_and(|meta| {
-                                        is_directory_traversal_boundary_metadata(&meta)
-                                    })
-                                }
-                                #[cfg(not(windows))]
-                                {
-                                    false
-                                }
+                                entry.metadata().ok().is_some_and(|meta| {
+                                    is_directory_traversal_boundary_metadata(&child_path, &meta)
+                                })
                             };
                             if skip {
                                 entry.read_children_path = None;
@@ -199,7 +237,7 @@ pub fn scan_directory(
                     walk_entries += 1;
                 }
                 if cancel.load(Ordering::Relaxed) {
-                    log::info!("[Scanner] Scan cancelled for {:?}", dir);
+                    finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
                     return;
                 }
 
@@ -284,7 +322,7 @@ pub fn scan_directory(
                         dir_entries += 1;
                     }
                     if cancel.load(Ordering::Relaxed) {
-                        log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
+                        finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
                         return;
                     }
 
@@ -342,7 +380,7 @@ pub fn scan_directory(
                         dir_entries += 1;
                     }
                     if cancel.load(Ordering::Relaxed) {
-                        log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
+                        finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
                         return;
                     }
 
@@ -752,6 +790,7 @@ mod tests {
             let link = dir.path().join("link");
             symlink(&target, &link).expect("create directory symlink");
             assert!(super::is_directory_traversal_boundary_metadata(
+                &link,
                 &std::fs::symlink_metadata(&link).expect("symlink metadata")
             ));
         }

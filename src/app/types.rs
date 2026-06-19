@@ -29,6 +29,7 @@ pub(crate) type RootRedrawWake = Arc<dyn Fn() + Send + Sync>;
 
 use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
+use crate::directory_tree_places::DirectoryTreePlaces;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::pixel_inspector::PixelHoverCache;
@@ -478,6 +479,9 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_preview_rx: crossbeam_channel::Receiver<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,
+    /// Background Places loader; polled from `logic()`.
+    pub(crate) directory_tree_places_load_rx:
+        Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
@@ -522,6 +526,7 @@ pub struct ImageViewerApp {
     pub(crate) scan_results_pending_since: Option<std::time::Instant>,
     /// Main-window preloads are deferred until the directory-tree file list viewport paints.
     pub(crate) pending_preload_after_directory_scan: bool,
+    pub(crate) directory_tree_strip_bootstrap_after_scan: bool,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,

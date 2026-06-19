@@ -896,7 +896,9 @@ impl GlowWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
-        integration.maybe_autosave(app.as_mut(), Some(&window));
+        if viewport_id == ViewportId::ROOT {
+            integration.maybe_autosave(app.as_mut(), Some(&window));
+        }
 
         if is_invisible_or_minimized(&window) {
             // On Mac, a minimized Window uses up all CPU:
@@ -909,8 +911,7 @@ impl GlowWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
-        } else if cfg!(target_os = "windows")
-            && viewport_id == ViewportId::ROOT
+        } else if viewport_id == ViewportId::ROOT
             && let Some(aux_viewport_id) =
                 self.app
                     .take_pending_auxiliary_viewport_repaint(&self.integration.egui_ctx)
@@ -927,8 +928,7 @@ impl GlowWinitRunning<'_> {
             } else {
                 Ok(EventResult::Wait)
             }
-        } else if cfg!(target_os = "windows")
-            && let Some(root_window_id) = root_window_id_for_repaint
+        } else if let Some(root_window_id) = root_window_id_for_repaint
         {
             Ok(EventResult::RepaintNow(root_window_id))
         } else {

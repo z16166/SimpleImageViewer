@@ -940,7 +940,9 @@ impl WgpuWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec() - vsync_secs); // don't count auto-save time as part of regular frame time
 
-        integration.maybe_autosave(app.as_mut(), window_opt.as_deref());
+        if viewport_id == ViewportId::ROOT {
+            integration.maybe_autosave(app.as_mut(), window_opt.as_deref());
+        }
 
         if let Some(window) = &window_opt
             && is_invisible_or_minimized(window)
@@ -955,8 +957,7 @@ impl WgpuWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
-        } else if cfg!(target_os = "windows")
-            && viewport_id == ViewportId::ROOT
+        } else if viewport_id == ViewportId::ROOT
             && let Some(aux_viewport_id) =
                 app.take_pending_auxiliary_viewport_repaint(&integration.egui_ctx)
         {
@@ -971,8 +972,7 @@ impl WgpuWinitRunning<'_> {
             } else {
                 Ok(EventResult::Wait)
             }
-        } else if cfg!(target_os = "windows")
-            && let Some(root_window_id) = root_window_id_for_repaint
+        } else if let Some(root_window_id) = root_window_id_for_repaint
         {
             // request_redraw alone is not enough on Windows when ROOT did not receive the
             // RedrawRequested that triggered this child paint; paint ROOT synchronously.

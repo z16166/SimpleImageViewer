@@ -28,6 +28,7 @@ pub(super) fn load() -> DirectoryTreePlaces {
     DirectoryTreePlaces {
         known_folders: load_known_folders(),
         drives: enumerate_volumes(),
+        network_locations: Vec::new(),
         this_pc_label: rust_i18n::t!("directory_tree.places").to_string(),
         network_label: rust_i18n::t!("directory_tree.network").to_string(),
     }
@@ -99,6 +100,7 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
     {
         if let Some(user) = std::env::var_os("USER") {
             collect_mount_dirs(&PathBuf::from("/media").join(user), &mut paths);
+            collect_mount_dirs(&PathBuf::from("/run/media").join(user), &mut paths);
         }
         collect_mount_dirs(Path::new("/mnt"), &mut paths);
     }
@@ -130,6 +132,7 @@ fn collect_mount_dirs(root: &Path, out: &mut HashSet<PathBuf>) {
         };
         if !file_type.is_dir()
             || crate::scanner::skip_directory_traversal_entry(
+                &path,
                 &file_type,
                 entry.metadata().ok().as_ref(),
             )

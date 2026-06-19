@@ -56,6 +56,9 @@ impl ComSession {
                     should_uninitialize: false,
                 };
             }
+            log::warn!(
+                "[DirectoryTreePlaces] CoInitializeEx failed with unexpected HRESULT: {hr:?}"
+            );
         }
         Self {
             should_uninitialize: false,
@@ -78,6 +81,9 @@ pub(super) fn load() -> DirectoryTreePlaces {
     DirectoryTreePlaces {
         known_folders: load_known_folders(),
         drives: enumerate_filesystem_drives(),
+        // Network shell enumeration can block for many seconds on startup; UNC paths
+        // mount lazily via `ensure_network_visible` when needed.
+        network_locations: Vec::new(),
         this_pc_label: rust_i18n::t!("directory_tree.this_pc").to_string(),
         network_label: rust_i18n::t!("directory_tree.network").to_string(),
     }
@@ -149,19 +155,22 @@ fn known_folder_path(folder_id: &GUID) -> Option<PathBuf> {
 }
 
 fn enumerate_filesystem_drives() -> Vec<DriveEntry> {
-    unsafe {
-        let computer: IShellItem =
-            match SHGetKnownFolderItem(&FOLDERID_ComputerFolder, KF_FLAG_DEFAULT, None) {
-                Ok(item) => item,
-                Err(_) => return Vec::new(),
-            };
+    enumerate_shell_filesystem_children(&FOLDERID_ComputerFolder)
+}
 
-        let enum_items: IEnumShellItems = match computer.BindToHandler(None, &BHID_EnumItems) {
+fn enumerate_shell_filesystem_children(folder_id: &GUID) -> Vec<DriveEntry> {
+    unsafe {
+        let root: IShellItem = match SHGetKnownFolderItem(folder_id, KF_FLAG_DEFAULT, None) {
+            Ok(item) => item,
+            Err(_) => return Vec::new(),
+        };
+
+        let enum_items: IEnumShellItems = match root.BindToHandler(None, &BHID_EnumItems) {
             Ok(items) => items,
             Err(_) => return Vec::new(),
         };
 
-        let mut drives = Vec::new();
+        let mut entries = Vec::new();
         let mut batch = [None];
 
         loop {
@@ -196,10 +205,10 @@ fn enumerate_filesystem_drives() -> Vec<DriveEntry> {
                 continue;
             }
 
-            drives.push(DriveEntry { display_name, path });
+            entries.push(DriveEntry { display_name, path });
         }
 
-        drives
+        entries
     }
 }
 

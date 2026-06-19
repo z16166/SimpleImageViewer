@@ -70,6 +70,8 @@ pub struct DriveEntry {
 pub struct DirectoryTreePlaces {
     pub known_folders: Vec<KnownFolderEntry>,
     pub drives: Vec<DriveEntry>,
+    /// Shell-enumerated network locations with filesystem paths (Windows).
+    pub network_locations: Vec<DriveEntry>,
     pub this_pc_label: String,
     pub network_label: String,
 }

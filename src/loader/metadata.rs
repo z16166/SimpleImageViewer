@@ -48,7 +48,7 @@ pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
             if reader.read_exact(&mut blob).is_ok() {
                 if let Ok(img) = image::load_from_memory(&blob) {
                     let rgba = img.into_rgba8();
-                    log::info!(
+                    log::debug!(
                         "[{}] Extracted EXIF thumbnail ({}x{}) from offset {}",
                         path.file_name()
                             .and_then(|n| n.to_str())

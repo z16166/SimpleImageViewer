@@ -46,13 +46,22 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     path: &Path,
     max_side: u32,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
+    let first_exif = extract_exif_thumbnail(path);
+    if let Some(exif) = first_exif.as_ref() {
+        let logical = probe_still_image_logical_size(path).unwrap_or((exif.width, exif.height));
+        if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
+            let decoded = downsample_decoded_to_max_side(exif, max_side)?;
+            return Ok((decoded, logical));
+        }
+    }
+
     let path_buf = path.to_path_buf();
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf)?;
     let logical = logical_size_from_image_data(&image_data);
 
-    if let Some(exif) = extract_exif_thumbnail(path) {
+    if let Some(exif) = first_exif.as_ref() {
         if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
-            let decoded = downsample_decoded_to_max_side(&exif, max_side)?;
+            let decoded = downsample_decoded_to_max_side(exif, max_side)?;
             return Ok((decoded, logical));
         }
     }
@@ -65,6 +74,15 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         ));
     }
     Ok((decoded, logical))
+}
+
+fn probe_still_image_logical_size(path: &Path) -> Option<(u32, u32)> {
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 fn open_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageData, String> {

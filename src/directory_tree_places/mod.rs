@@ -64,6 +64,7 @@ fn stub_load() -> DirectoryTreePlaces {
     DirectoryTreePlaces {
         known_folders,
         drives: Vec::new(),
+        network_locations: Vec::new(),
         this_pc_label: rust_i18n::t!("directory_tree.places").to_string(),
         network_label: rust_i18n::t!("directory_tree.network").to_string(),
     }

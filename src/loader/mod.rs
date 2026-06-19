@@ -34,7 +34,7 @@ pub(crate) use preview_aspect::decoded_looks_like_black_placeholder;
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
 pub use preview_aspect::preview_aspect_matches_logical;
-pub(crate) use preview_caps::REFINEMENT_POOL;
+pub(crate) use preview_caps::DIRECTORY_TREE_STRIP_POOL;
 #[allow(unused_imports)]
 // `MONITOR_PREVIEW_CAP` is part of the public loader re-export surface.
 pub use preview_caps::{

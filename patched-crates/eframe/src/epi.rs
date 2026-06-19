@@ -160,6 +160,11 @@ pub trait App {
     /// This fork also invokes `logic` from `run_ui_and_paint` for every viewport paint
     /// (see `wgpu_integration.rs` / `glow_integration.rs` and `epi_integration.rs`).
     ///
+    /// **Frame on deferred viewports:** the [`Frame`] passed to [`Self::logic`] (and to
+    /// deferred UI callbacks) still refers to the ROOT integration frame (native window id,
+    /// storage, etc.). Do not use it for child-window file dialogs; use viewport-scoped
+    /// helpers instead.
+    ///
     /// You may NOT show any ui or do any painting during the call to [`Self::logic`].
     ///
     /// The [`egui::Context`] can be cloned and saved if you like.
@@ -170,7 +175,8 @@ pub trait App {
     }
 
     /// Simple Image Viewer fork: after ROOT paints, synchronously repaint auxiliary viewports
-    /// (e.g. directory-tree window) when [`Self::refresh_global_ui_style`] marks them pending.
+    /// (e.g. directory-tree window) when the app marks them pending via
+    /// [`egui::Context::request_repaint_of`].
     fn take_pending_auxiliary_viewport_repaint(
         &mut self,
         _ctx: &egui::Context,

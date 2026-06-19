@@ -416,7 +416,7 @@ impl ImageViewerApp {
             .expect("spawn siv-context-file-ops worker");
 
         let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
-            crossbeam_channel::unbounded();
+            crossbeam_channel::bounded(16);
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
             .name("font-families".to_string())
@@ -481,6 +481,7 @@ impl ImageViewerApp {
             scan_generation: 0,
             scan_results_pending_since: None,
             pending_preload_after_directory_scan: false,
+            directory_tree_strip_bootstrap_after_scan: false,
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
@@ -558,6 +559,7 @@ impl ImageViewerApp {
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,
+            directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,
@@ -711,29 +713,12 @@ impl ImageViewerApp {
         {
             app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();
-            let saved_selected = app.settings.tree_nav_selected_dir.clone();
-            if let Some(root) = app
-                .settings
-                .tree_nav_root_dir
-                .clone()
-                .or_else(|| app.settings.last_image_dir.clone())
-            {
-                app.initialize_directory_tree_root(root);
-            }
-            if let Some(dir) = saved_selected.or_else(|| app.settings.last_image_dir.clone()) {
+            if let Some(dir) = app.saved_directory_tree_selection_dir() {
                 app.settings.tree_nav_selected_dir = Some(dir.clone());
-                let child_requests = {
-                    let mut state = app.directory_tree.state.lock();
-                    state.set_selected_dir(dir.clone());
-                    let mut requests = state.reveal_selected_dir();
-                    if let Some(request) = state.expand_tree_for_filesystem_dir(&dir) {
-                        requests.push(request);
-                    }
-                    requests
-                };
-                for request in child_requests {
-                    let _ = app.directory_tree.children_request_tx.send(request);
-                }
+                app.directory_tree
+                    .state
+                    .lock()
+                    .set_selected_dir(dir.clone());
                 app.load_directory(dir);
             }
         } else if let Some(dir) = app.settings.last_image_dir.clone() {

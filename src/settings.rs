@@ -18,6 +18,10 @@ use crate::theme::AppTheme;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default inner size (width, height) for the detached directory-tree window.
+pub const DIRECTORY_TREE_DEFAULT_INNER_WIDTH: u32 = 820;
+pub const DIRECTORY_TREE_DEFAULT_INNER_HEIGHT: u32 = 640;
+
 // ---------------------------------------------------------------------------
 // ScaleMode
 // ---------------------------------------------------------------------------
@@ -546,7 +550,10 @@ impl Settings {
             let restore_inner = self
                 .directory_tree_window_restore_inner_size
                 .or(self.directory_tree_window_inner_size)
-                .unwrap_or([820, 640]);
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT,
+                ]);
             if let Some(center) = self.directory_tree_window_maximized_screen_center
                 && let Some(top_left) =
                     Self::restore_outer_top_left_for_screen_center(center, restore_inner)
@@ -569,11 +576,17 @@ impl Settings {
                 .or(self.directory_tree_window_inner_size)
                 .or(self.directory_tree_window_restore_inner_size)
                 .map(|[w, h]| [w as f32, h as f32])
-                .unwrap_or([820.0, 640.0])
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+                ])
         } else {
             self.directory_tree_window_inner_size
                 .map(|[w, h]| [w as f32, h as f32])
-                .unwrap_or([820.0, 640.0])
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+                ])
         }
     }
 
@@ -767,6 +780,14 @@ impl Settings {
                         hdr_max_display_nits,
                         ..s
                     };
+                    #[cfg(feature = "preload-debug")]
+                    log::info!(
+                        "[PreloadDebug][Panel] settings loaded path={:?} folder={:?} list={:?} embedded={:?}",
+                        path,
+                        merged.directory_tree_folder_panel_width,
+                        merged.directory_tree_image_list_panel_width,
+                        merged.directory_tree_embedded_panel_width
+                    );
                     #[cfg(target_os = "linux")]
                     {
                         if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
@@ -790,6 +811,14 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         let path = settings_path();
+        #[cfg(feature = "preload-debug")]
+        log::info!(
+            "[PreloadDebug][Panel] settings save path={:?} folder={:?} list={:?} embedded={:?}",
+            path,
+            self.directory_tree_folder_panel_width,
+            self.directory_tree_image_list_panel_width,
+            self.directory_tree_embedded_panel_width
+        );
         let payload = {
             #[cfg(target_os = "linux")]
             {
@@ -972,6 +1001,22 @@ mod tests {
         };
 
         assert_eq!(settings.startup_outer_position(), Some([0.0, 0.0]));
+    }
+
+    #[test]
+    fn directory_tree_window_settings_default_to_none() {
+        let settings: Settings =
+            serde_yaml::from_str("browse_mode: tree\nshow_directory_tree_nav: true")
+                .expect("deserialize tree settings");
+        assert!(settings.directory_tree_window_inner_size.is_none());
+        assert!(!settings.directory_tree_window_maximized);
+        assert_eq!(
+            settings.directory_tree_startup_inner_size(),
+            [
+                crate::settings::DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                crate::settings::DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+            ]
+        );
     }
 
     #[test]

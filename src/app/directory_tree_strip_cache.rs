@@ -32,6 +32,7 @@ pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub index: usize,
     pub path: PathBuf,
+    pub image_list_generation: u64,
     pub decoded: DecodedImage,
     pub logical: (u32, u32),
     pub stage: PreviewStage,
@@ -42,6 +43,7 @@ pub(crate) struct DirectoryTreeStripCache {
     preview_max_side: HashMap<usize, u32>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
+    gpu_revision: u64,
 }
 
 impl Default for DirectoryTreeStripCache {
@@ -51,6 +53,7 @@ impl Default for DirectoryTreeStripCache {
             preview_max_side: HashMap::new(),
             preview_stage: HashMap::new(),
             logical_sizes: HashMap::new(),
+            gpu_revision: 0,
         }
     }
 }
@@ -75,6 +78,14 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn logical_sizes(&self) -> &HashMap<usize, (u32, u32)> {
         &self.logical_sizes
+    }
+
+    pub(crate) fn gpu_revision(&self) -> u64 {
+        self.gpu_revision
+    }
+
+    fn bump_gpu_revision(&mut self) {
+        self.gpu_revision = self.gpu_revision.wrapping_add(1);
     }
 
     pub(crate) fn preview_dimensions(&self, index: usize) -> Option<(u32, u32)> {
@@ -126,6 +137,7 @@ impl DirectoryTreeStripCache {
         self.textures.insert(index, texture);
         self.preview_max_side.insert(index, preview_max_side);
         self.preview_stage.insert(index, stage);
+        self.bump_gpu_revision();
         self.evict_if_needed(current_index, total_count);
     }
 
@@ -143,6 +155,7 @@ impl DirectoryTreeStripCache {
             self.textures.remove(&index);
             self.preview_max_side.remove(&index);
             self.preview_stage.remove(&index);
+            self.bump_gpu_revision();
             return;
         }
         if !should_replace_strip_thumbnail(
@@ -180,6 +193,7 @@ impl DirectoryTreeStripCache {
         self.textures.insert(index, handle);
         self.preview_max_side.insert(index, preview_max_side);
         self.preview_stage.insert(index, stage);
+        self.bump_gpu_revision();
         self.evict_if_needed(current_index, total_count);
     }
 
@@ -221,6 +235,7 @@ impl DirectoryTreeStripCache {
         self.textures.clear();
         self.preview_max_side.clear();
         self.preview_stage.clear();
+        self.bump_gpu_revision();
     }
 
     fn evict_if_needed(&mut self, current_index: usize, total_count: usize) {
@@ -241,6 +256,7 @@ impl DirectoryTreeStripCache {
             self.preview_max_side.remove(&idx);
             self.preview_stage.remove(&idx);
             self.logical_sizes.remove(&idx);
+            self.bump_gpu_revision();
         }
     }
 }
@@ -323,7 +339,7 @@ mod tests {
         let mut cache = DirectoryTreeStripCache::default();
         let total = DIRECTORY_TREE_STRIP_CACHE_MAX + 5;
         for index in 0..total {
-            let decoded = DecodedImage::new(32, 32, vec![0; 32 * 32 * 4]);
+            let decoded = DecodedImage::new(32, 32, vec![255; 32 * 32 * 4]);
             cache.upsert_from_decoded(index, &decoded, PreviewStage::Refined, None, &ctx, 0, total);
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
@@ -405,5 +421,21 @@ mod tests {
         cache.clear_gpu_textures();
         assert!(!cache.contains(0));
         assert_eq!(cache.logical_sizes().get(&0), Some(&(640, 320)));
+    }
+
+    #[test]
+    fn insert_from_texture_handle_bumps_gpu_revision() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        assert_eq!(cache.gpu_revision(), 0);
+        let rgba = vec![255u8; 8 * 8 * 4];
+        let handle = ctx.load_texture(
+            "strip_insert_test",
+            egui::ColorImage::from_rgba_unmultiplied([8, 8], &rgba),
+            egui::TextureOptions::LINEAR,
+        );
+        cache.insert_from_texture_handle(0, handle, PreviewStage::Refined, 8, Some((80, 80)), 0, 1);
+        assert!(cache.contains(0));
+        assert_eq!(cache.gpu_revision(), 1);
     }
 }

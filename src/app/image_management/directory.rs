@@ -16,6 +16,9 @@
 
 use super::*;
 
+const SCAN_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SCAN_RESULT_CHANNEL_BOUND: usize = 64;
+
 impl ImageViewerApp {
     pub(crate) fn open_directory_dialog(&mut self, frame: &eframe::Frame) {
         let mut dialog = crate::app::rfd_parent::file_dialog_for_main_window(frame);
@@ -85,6 +88,7 @@ impl ImageViewerApp {
         self.loader.set_generation(self.generation);
         self.prefetch_prev_generation = None;
         self.pending_preload_after_directory_scan = false;
+        self.directory_tree_strip_bootstrap_after_scan = false;
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             self.invalidate_directory_tree_strip_gpu_textures();
             self.directory_tree_strip_generate_inflight.clear();
@@ -105,7 +109,7 @@ impl ImageViewerApp {
             .to_string_lossy()
             .to_string();
 
-        if crate::app::directory_tree::is_non_browsable_system_directory(&dir) {
+        if crate::scanner::is_non_browsable_system_directory(&dir) {
             self.scanning = false;
             self.status_message = t!("directory_tree.skip_scan", dir = dir_name).to_string();
             return;
@@ -117,7 +121,7 @@ impl ImageViewerApp {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = crossbeam_channel::bounded(SCAN_RESULT_CHANNEL_BOUND);
         self.scan_rx = Some(rx);
         self.scan_results_pending_since = Some(std::time::Instant::now());
         self.scanning = true;
@@ -290,7 +294,7 @@ impl ImageViewerApp {
         let scan_generation = self.scan_generation;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = crossbeam_channel::bounded(SCAN_RESULT_CHANNEL_BOUND);
         self.scan_rx = Some(rx);
         self.scan_results_pending_since = Some(std::time::Instant::now());
         self.scanning = true;
@@ -320,6 +324,28 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn process_scan_results(&mut self) {
+        if self.scanning {
+            if let Some(since) = self.scan_results_pending_since {
+                if since.elapsed() > SCAN_STALL_TIMEOUT {
+                    log::warn!(
+                        "[Scan] timed out after {}s (gen={}); cancelling",
+                        SCAN_STALL_TIMEOUT.as_secs(),
+                        self.scan_generation
+                    );
+                    if let Some(cancel) = self.scan_cancel.take() {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    self.scan_rx = None;
+                    self.scanning = false;
+                    self.scan_results_pending_since = None;
+                    self.status_message = t!("directory_tree.scan_timeout").to_string();
+                    if self.refresh_scan_in_progress {
+                        self.finish_refresh_scan_state();
+                    }
+                }
+            }
+        }
+
         if self.scanning && self.scan_rx.is_none() {
             log::error!(
                 "[Scan] scanning=true but scan_rx is None; clearing stuck scan state (gen={})",
@@ -508,6 +534,7 @@ impl ImageViewerApp {
                             t!("status.found", count = count.to_string()).to_string();
                         if self.defer_main_preload_for_directory_tree_list() {
                             self.pending_preload_after_directory_scan = true;
+                            self.directory_tree_strip_bootstrap_after_scan = true;
                         } else {
                             self.schedule_preloads(true);
                         }
@@ -534,6 +561,7 @@ impl ImageViewerApp {
         if first_batch_current_load_pending && !done {
             if self.defer_main_preload_for_directory_tree_list() {
                 self.pending_preload_after_directory_scan = true;
+                self.directory_tree_strip_bootstrap_after_scan = true;
             } else {
                 self.schedule_current_image_load_if_needed();
             }

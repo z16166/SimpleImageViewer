@@ -168,3 +168,33 @@ pub(crate) static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|
         }
     }
 });
+
+/// Dedicated pool for directory-tree strip thumbnails so scrolling the file list
+/// does not starve main-window HQ refinement work.
+const DIRECTORY_TREE_STRIP_POOL_MAX_THREADS: usize = 2;
+
+pub(crate) static DIRECTORY_TREE_STRIP_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(DIRECTORY_TREE_STRIP_POOL_MAX_THREADS)
+        .thread_name(|i| format!("dir-tree-strip-{i}"))
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(
+                "[Loader] Failed to create directory-tree strip pool: {}. Falling back to default pool.",
+                e
+            );
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .or_else(|fallback_err| {
+                    log::error!(
+                        "[Loader] Fallback directory-tree strip pool failed: {fallback_err}; using global rayon pool"
+                    );
+                    rayon::ThreadPoolBuilder::new().build()
+                })
+                .expect("rayon thread pool initialization failed")
+        }
+    }
+});
