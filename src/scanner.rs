@@ -63,6 +63,21 @@ pub fn is_directory_traversal_boundary_metadata(metadata: &Metadata) -> bool {
     false
 }
 
+/// Skip descending into a directory using [`DirEntry::file_type`] when possible.
+/// On Windows, pass directory [`Metadata`] from the same [`read_dir`] entry to detect junctions.
+pub fn skip_directory_traversal_entry(
+    file_type: &std::fs::FileType,
+    metadata: Option<&Metadata>,
+) -> bool {
+    if !file_type.is_dir() {
+        return file_type.is_symlink();
+    }
+    if file_type.is_symlink() {
+        return true;
+    }
+    metadata.is_some_and(is_directory_traversal_boundary_metadata)
+}
+
 #[cfg(target_os = "windows")]
 fn is_offline_meta(metadata: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
@@ -153,11 +168,24 @@ pub fn scan_directory(
                 .process_read_dir(|_depth, _path, _state, children| {
                     for child in children.iter_mut() {
                         if let Ok(entry) = child {
-                            if entry.file_type.is_dir()
-                                && entry.metadata().ok().is_some_and(|meta| {
-                                    is_directory_traversal_boundary_metadata(&meta)
-                                })
-                            {
+                            if !entry.file_type.is_dir() {
+                                continue;
+                            }
+                            let skip = if entry.file_type.is_symlink() {
+                                true
+                            } else {
+                                #[cfg(windows)]
+                                {
+                                    entry.metadata().ok().is_some_and(|meta| {
+                                        is_directory_traversal_boundary_metadata(&meta)
+                                    })
+                                }
+                                #[cfg(not(windows))]
+                                {
+                                    false
+                                }
+                            };
+                            if skip {
                                 entry.read_children_path = None;
                             }
                         }
@@ -276,13 +304,16 @@ pub fn scan_directory(
                         {
                             image_candidates += 1;
                         }
-                        let p = e.path();
-                        let Ok(meta) = p.symlink_metadata() else {
+                        let Ok(file_type) = e.file_type() else {
                             continue;
                         };
-                        if meta.file_type().is_symlink() {
+                        if file_type.is_symlink() {
                             continue;
                         }
+                        let p = e.path();
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             files.push((p, len, modified_unix));
                         }
@@ -331,13 +362,16 @@ pub fn scan_directory(
                         {
                             image_candidates += 1;
                         }
-                        let p = e.path();
-                        let Ok(meta) = p.symlink_metadata() else {
+                        let Ok(file_type) = e.file_type() else {
                             continue;
                         };
-                        if meta.file_type().is_symlink() {
+                        if file_type.is_symlink() {
                             continue;
                         }
+                        let p = e.path();
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             batch.push((p, len, modified_unix));
                             if batch.len() >= BATCH_SIZE {

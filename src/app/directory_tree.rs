@@ -2228,13 +2228,16 @@ fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
         let child = entry.path();
-        let Ok(meta) = child.symlink_metadata() else {
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if !meta.is_dir() {
+        if !file_type.is_dir() {
             continue;
         }
-        if crate::scanner::is_directory_traversal_boundary_metadata(&meta) {
+        if crate::scanner::skip_directory_traversal_entry(
+            &file_type,
+            entry.metadata().ok().as_ref(),
+        ) {
             continue;
         }
         if is_non_browsable_system_directory(&child) {
