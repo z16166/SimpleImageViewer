@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.0] - 2026-06-19
+
+### Added
+- **Directory tree navigation**: Browse folders in an embedded side panel or a separate window, with thumbnail previews in the image list beside the tree.
+- **Places shortcuts**: Jump to Desktop, Documents, Pictures, Downloads, and other common folders, plus **This PC** drives and **Network** shares when you open a UNC path.
+- **Sortable folder image list**: Click **Name**, **Size**, or **Date modified** column headers to sort the current folder's images ascending or descending.
+
+### Improved
+- **Directory tree layout**: Drag the splitter between the folder tree and image list; panel widths are remembered for embedded and detached layouts.
+- **Directory tree icons**: This PC, drives, known folders, and ordinary folders use distinct icons; expand arrows are lighter and easier to scan.
+
 ## [2.6.4] - 2026-06-18
 
 ### Improved
