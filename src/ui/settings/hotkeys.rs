@@ -18,7 +18,7 @@ use crate::app::ImageViewerApp;
 use crate::hotkeys::model::{
     HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file,
 };
-use crate::ui::utils::{styled_button, styled_button_widget};
+use crate::ui::utils::{stable_selectable_value, styled_button, styled_button_widget};
 use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 use std::time::Instant;
@@ -448,7 +448,8 @@ pub(super) fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx:
                     .show_ui(ui, |ui| {
                         ui.set_min_width(280.0);
                         for desc in crate::hotkeys::model::all_action_descriptors() {
-                            ui.selectable_value(
+                            stable_selectable_value(
+                                ui,
                                 &mut app.hotkeys_add_row_action,
                                 desc.id,
                                 localized_hotkey_action_label(desc.id),

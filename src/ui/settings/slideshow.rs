@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{ImageViewerApp, TransitionStyle};
-use crate::ui::utils::{settings_card, themed_labeled_toggle};
+use crate::ui::utils::{settings_card, stable_selectable_value, themed_labeled_toggle};
 use eframe::egui;
 use rust_i18n::t;
 
@@ -199,47 +199,56 @@ fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     .selected_text(app.settings.transition_style.label())
                     .width(avail)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::None,
                             TransitionStyle::None.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Fade,
                             TransitionStyle::Fade.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::ZoomFade,
                             TransitionStyle::ZoomFade.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Slide,
                             TransitionStyle::Slide.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Push,
                             TransitionStyle::Push.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::PageFlip,
                             TransitionStyle::PageFlip.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Ripple,
                             TransitionStyle::Ripple.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Curtain,
                             TransitionStyle::Curtain.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.transition_style,
                             TransitionStyle::Random,
                             TransitionStyle::Random.label(),

@@ -227,7 +227,8 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             if ui
                 .add_sized(
                     [ui.available_width(), SETTINGS_TAB_ITEM_HEIGHT],
-                    egui::Button::selectable(selected, t!(tab.label_key()).to_string()),
+                    egui::Button::selectable(selected, t!(tab.label_key()).to_string())
+                        .frame_when_inactive(true),
                 )
                 .clicked()
             {

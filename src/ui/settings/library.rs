@@ -16,7 +16,9 @@
 
 use crate::app::ImageViewerApp;
 use crate::settings::{BrowseMode, PairedRawJpegHandling};
-use crate::ui::utils::{path_display_box, settings_card, styled_button, themed_labeled_toggle};
+use crate::ui::utils::{
+    path_display_box, settings_card, stable_selectable_value, styled_button, themed_labeled_toggle,
+};
 use eframe::egui::{self, RichText};
 use rust_i18n::t;
 
@@ -170,17 +172,20 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                     .selected_text(app.settings.paired_raw_jpeg_handling.label())
                     .show_ui(ui, |ui| {
                         ui.set_min_width(PAIRED_RAW_JPEG_COMBO_WIDTH);
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::ShowBoth,
                             PairedRawJpegHandling::ShowBoth.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::SkipRaw,
                             PairedRawJpegHandling::SkipRaw.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::SkipJpeg,
                             PairedRawJpegHandling::SkipJpeg.label(),

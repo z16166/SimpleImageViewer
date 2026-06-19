@@ -35,6 +35,7 @@ use crate::loader::{
 };
 use crate::settings::BrowseMode;
 use crate::ui::osd::{format_file_modified, format_file_size};
+use crate::ui::utils::stable_selectable_label;
 
 const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
@@ -1587,8 +1588,7 @@ fn draw_directory_node(
             paint_tree_folder_icon(ui, folder_rect.0);
 
             let selected = state.selected_dir.as_deref() == Some(path);
-            let name_response = ui
-                .selectable_label(selected, node.display_name.as_str())
+            let name_response = stable_selectable_label(ui, selected, node.display_name.as_str())
                 .on_hover_text(path.to_string_lossy());
             if scroll_to_selected && selected {
                 name_response.scroll_to_me(Some(egui::Align::Center));

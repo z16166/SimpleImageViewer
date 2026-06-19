@@ -18,7 +18,7 @@
 
 use crate::app::{AppTheme, ImageViewerApp};
 use crate::theme::ThemePalette;
-use crate::ui::utils::{settings_card, setup_fonts, setup_visuals};
+use crate::ui::utils::{settings_card, setup_fonts, setup_visuals, stable_selectable_label};
 use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
@@ -171,7 +171,7 @@ fn view_font_family_combo(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<Appear
         .show_ui(ui, |ui| {
             for family in &app.font_families {
                 let label = font_family_label(family);
-                if ui.selectable_label(family == &selected, label).clicked() {
+                if stable_selectable_label(ui, family == &selected, label).clicked() {
                     out.push(AppearanceMsg::FontFamilyChanged(family.clone()));
                 }
             }
@@ -191,10 +191,7 @@ fn view_language_combo(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<Appearanc
         .width(control_w)
         .show_ui(ui, |ui| {
             for (code, label) in language_options() {
-                if ui
-                    .selectable_label(code == selected.as_str(), &label)
-                    .clicked()
-                {
+                if stable_selectable_label(ui, code == selected.as_str(), &label).clicked() {
                     out.push(AppearanceMsg::LanguageChanged(code.to_string()));
                 }
             }
@@ -213,7 +210,7 @@ fn view_theme_combo(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMs
         .width(control_w)
         .show_ui(ui, |ui| {
             for (theme, label) in theme_options() {
-                if ui.selectable_label(selected == theme, &label).clicked() {
+                if stable_selectable_label(ui, selected == theme, &label).clicked() {
                     out.push(AppearanceMsg::ThemeChanged(theme));
                 }
             }
