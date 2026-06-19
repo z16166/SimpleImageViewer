@@ -136,6 +136,10 @@ pub(crate) struct DirectoryTreeState {
     preview_textures: HashMap<usize, egui::TextureHandle>,
     preview_logical_sizes: HashMap<usize, (u32, u32)>,
     image_list_visible_row_range: Option<(usize, usize)>,
+    image_list_col_size_w: f32,
+    image_list_col_modified_w: f32,
+    image_list_col_widths_font_size: f32,
+    image_list_col_widths_dirty: bool,
 }
 
 impl Default for DirectoryTreeState {
@@ -158,6 +162,10 @@ impl Default for DirectoryTreeState {
             preview_textures: HashMap::new(),
             preview_logical_sizes: HashMap::new(),
             image_list_visible_row_range: None,
+            image_list_col_size_w: DIRECTORY_TREE_COL_SIZE_WIDTH,
+            image_list_col_modified_w: DIRECTORY_TREE_COL_MODIFIED_WIDTH,
+            image_list_col_widths_font_size: 0.0,
+            image_list_col_widths_dirty: true,
         }
     }
 }
@@ -376,6 +384,7 @@ impl DirectoryTreeState {
         if scanning {
             self.image_list_keyboard_active = false;
         }
+        self.image_list_col_widths_dirty = true;
     }
 
     pub(crate) fn sync_preview_textures(
@@ -395,6 +404,32 @@ impl DirectoryTreeState {
                 self.preview_logical_sizes.insert(index, size);
             }
         }
+    }
+
+    fn ensure_image_list_column_widths(
+        &mut self,
+        painter: &egui::Painter,
+        body_font: &egui::FontId,
+        header_size: &str,
+        header_modified: &str,
+    ) {
+        let font_size = body_font.size;
+        if !self.image_list_col_widths_dirty
+            && (self.image_list_col_widths_font_size - font_size).abs() < f32::EPSILON
+        {
+            return;
+        }
+        let (size_w, modified_w) = measure_image_list_content_column_widths(
+            painter,
+            body_font,
+            header_size,
+            header_modified,
+            &self.image_rows,
+        );
+        self.image_list_col_size_w = size_w;
+        self.image_list_col_modified_w = modified_w;
+        self.image_list_col_widths_font_size = font_size;
+        self.image_list_col_widths_dirty = false;
     }
 
     fn request_file_metadata(
@@ -2035,7 +2070,20 @@ fn draw_image_file_list(
     let row_height = DIRECTORY_TREE_IMAGE_ROW_HEIGHT;
     let row_spacing = ui.spacing().item_spacing.y;
     let row_height_with_spacing = row_height + row_spacing;
-    let column_layout = image_list_column_layout(ui.available_width(), ui.spacing().item_spacing.x);
+    let body_font =
+        egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
+    state.ensure_image_list_column_widths(
+        ui.painter(),
+        &body_font,
+        &t!("directory_tree.col_size"),
+        &t!("directory_tree.col_modified"),
+    );
+    let column_layout = image_list_column_layout(
+        ui.available_width(),
+        ui.spacing().item_spacing.x,
+        state.image_list_col_size_w,
+        state.image_list_col_modified_w,
+    );
 
     draw_image_details_header(ui, &column_layout, palette);
 
@@ -2113,18 +2161,49 @@ struct ImageListColumnLayout {
     modified_w: f32,
 }
 
-fn image_list_column_layout(row_width: f32, spacing_x: f32) -> ImageListColumnLayout {
+const IMAGE_LIST_COL_CELL_PADDING: f32 = 4.0;
+/// Fixed `YYYY/MM/DD HH:MM:SS` cell sample; all modified cells use this format.
+const IMAGE_LIST_MODIFIED_CELL_SAMPLE: &str = "2000/01/01 00:00:00";
+
+fn measure_image_list_content_column_widths(
+    painter: &egui::Painter,
+    body_font: &egui::FontId,
+    header_size: &str,
+    header_modified: &str,
+    rows: &[DirectoryTreeFileRow],
+) -> (f32, f32) {
+    let measure = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), body_font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let mut size_w = measure(header_size);
+    for row in rows {
+        size_w = size_w.max(measure(&format_file_size(row.size_bytes)));
+    }
+    let modified_w = measure(header_modified)
+        .max(measure(IMAGE_LIST_MODIFIED_CELL_SAMPLE))
+        .max(measure("-"));
+    (
+        size_w + IMAGE_LIST_COL_CELL_PADDING,
+        modified_w + IMAGE_LIST_COL_CELL_PADDING,
+    )
+}
+
+fn image_list_column_layout(
+    row_width: f32,
+    spacing_x: f32,
+    ideal_size_w: f32,
+    ideal_modified_w: f32,
+) -> ImageListColumnLayout {
     let thumb_w = DIRECTORY_TREE_COL_THUMB_WIDTH;
     let gutters = spacing_x * 4.0;
-    let ideal_fixed = thumb_w
-        + DIRECTORY_TREE_COL_SIZE_WIDTH
-        + DIRECTORY_TREE_COL_MODIFIED_WIDTH
-        + gutters
-        + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
+    let ideal_fixed = thumb_w + ideal_size_w + ideal_modified_w + gutters + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
     if row_width >= ideal_fixed {
         return ImageListColumnLayout {
-            size_w: DIRECTORY_TREE_COL_SIZE_WIDTH,
-            modified_w: DIRECTORY_TREE_COL_MODIFIED_WIDTH,
+            size_w: ideal_size_w,
+            modified_w: ideal_modified_w,
         };
     }
 
@@ -2132,13 +2211,13 @@ fn image_list_column_layout(row_width: f32, spacing_x: f32) -> ImageListColumnLa
         (row_width - gutters - thumb_w - DIRECTORY_TREE_COL_NAME_MIN_WIDTH).max(0.0);
     let mut modified_w = (available_for_right_cols * 0.62).clamp(
         DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
-        DIRECTORY_TREE_COL_MODIFIED_WIDTH,
+        ideal_modified_w,
     );
     let mut size_w =
-        (available_for_right_cols - modified_w).clamp(0.0, DIRECTORY_TREE_COL_SIZE_WIDTH);
+        (available_for_right_cols - modified_w).clamp(0.0, ideal_size_w);
     if size_w < DIRECTORY_TREE_COL_SIZE_MIN_WIDTH && available_for_right_cols > 0.0 {
         size_w = available_for_right_cols
-            .min(DIRECTORY_TREE_COL_SIZE_WIDTH)
+            .min(ideal_size_w)
             .min(DIRECTORY_TREE_COL_SIZE_MIN_WIDTH);
         modified_w = (available_for_right_cols - size_w).max(0.0);
     }
@@ -2836,7 +2915,7 @@ mod tests {
             egui::pos2(0.0, 0.0),
             egui::vec2(320.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
         );
-        let columns = image_list_column_layout(row_rect.width(), 4.0);
+        let columns = image_list_column_layout(row_rect.width(), 4.0, 72.0, 148.0);
         let spacing = 4.0;
         let thumb = image_list_thumb_column(row_rect, spacing);
         let name = image_list_name_column(row_rect, &columns, spacing);
@@ -2848,10 +2927,10 @@ mod tests {
     }
 
     #[test]
-    fn image_list_columns_use_ideal_widths_when_panel_is_wide() {
-        let columns = image_list_column_layout(640.0, 4.0);
-        assert_eq!(columns.size_w, DIRECTORY_TREE_COL_SIZE_WIDTH);
-        assert_eq!(columns.modified_w, DIRECTORY_TREE_COL_MODIFIED_WIDTH);
+    fn image_list_columns_use_content_widths_when_panel_is_wide() {
+        let columns = image_list_column_layout(640.0, 4.0, 72.0, 148.0);
+        assert_eq!(columns.size_w, 72.0);
+        assert_eq!(columns.modified_w, 148.0);
     }
 
     #[test]
