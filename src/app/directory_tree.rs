@@ -660,6 +660,13 @@ impl ImageViewerApp {
                 egui::ViewportCommand::Close,
             );
         }
+        {
+            let mut state = self.directory_tree.state.lock();
+            state.left_panel_width = clamp_directory_tree_left_panel_width(
+                state.left_panel_width,
+                DIRECTORY_TREE_DEFAULT_WIDTH,
+            );
+        }
         ctx.request_repaint();
     }
 
@@ -1652,6 +1659,21 @@ fn draw_directory_tree_window(
     );
 }
 
+fn directory_tree_left_panel_width_limits(viewport_width: f32) -> (f32, f32) {
+    let viewport_width = viewport_width.max(0.0);
+    let layout_cap =
+        (viewport_width - DIRECTORY_TREE_SPLITTER_GRAB_WIDTH - DIRECTORY_TREE_RIGHT_MIN_WIDTH)
+            .max(0.0);
+    let max_left = (viewport_width * DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO).min(layout_cap);
+    let min_left = DIRECTORY_TREE_LEFT_MIN_WIDTH.min(max_left);
+    (min_left, max_left.max(min_left))
+}
+
+fn clamp_directory_tree_left_panel_width(width: f32, viewport_width: f32) -> f32 {
+    let (min_left, max_left) = directory_tree_left_panel_width_limits(viewport_width);
+    width.clamp(min_left, max_left)
+}
+
 fn draw_directory_tree_top_panels(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
@@ -1663,16 +1685,12 @@ fn draw_directory_tree_top_panels(
 ) {
     let viewport_height = panel_size.y;
     let viewport_width = panel_size.x;
-    let max_left_width = (viewport_width * DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO)
-        .max(DIRECTORY_TREE_LEFT_MIN_WIDTH)
-        .min(viewport_width - DIRECTORY_TREE_SPLITTER_GRAB_WIDTH - DIRECTORY_TREE_RIGHT_MIN_WIDTH);
-    state.left_panel_width = state
-        .left_panel_width
-        .clamp(DIRECTORY_TREE_LEFT_MIN_WIDTH, max_left_width);
+    state.left_panel_width =
+        clamp_directory_tree_left_panel_width(state.left_panel_width, viewport_width);
 
     let left_w = state.left_panel_width;
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
-    let right_w = (viewport_width - left_w - splitter_w).max(DIRECTORY_TREE_RIGHT_MIN_WIDTH);
+    let right_w = (viewport_width - left_w - splitter_w).max(0.0);
 
     let origin = ui.cursor().min;
     let left_rect = egui::Rect::from_min_size(origin, egui::vec2(left_w, viewport_height));
@@ -1700,8 +1718,10 @@ fn draw_directory_tree_top_panels(
     let splitter_id = ui.id().with("directory_tree_splitter");
     let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
     if splitter_response.dragged() {
-        state.left_panel_width = (state.left_panel_width + splitter_response.drag_delta().x)
-            .clamp(DIRECTORY_TREE_LEFT_MIN_WIDTH, max_left_width);
+        state.left_panel_width = clamp_directory_tree_left_panel_width(
+            state.left_panel_width + splitter_response.drag_delta().x,
+            viewport_width,
+        );
         ui.ctx().request_repaint();
     }
     if splitter_response.hovered() || splitter_response.dragged() {
@@ -2637,6 +2657,14 @@ mod tests {
 
         assert_eq!(state.image_rows[0].modified_unix, Some(1_700_000_000));
         assert!(state.image_rows[1].modified_unix.is_none());
+    }
+
+    #[test]
+    fn left_panel_width_limits_stay_ordered_on_narrow_viewport() {
+        let (min, max) = directory_tree_left_panel_width_limits(364.0);
+        assert!(min <= max);
+        assert_eq!(min, 174.0);
+        assert_eq!(clamp_directory_tree_left_panel_width(340.0, 364.0), 174.0);
     }
 
     #[test]

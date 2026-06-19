@@ -91,7 +91,7 @@ pub enum DirectoryTreeNavStyle {
 
 impl Default for DirectoryTreeNavStyle {
     fn default() -> Self {
-        Self::Detached
+        Self::Embedded
     }
 }
 
@@ -386,7 +386,7 @@ impl Default for Settings {
             recursive: false,
             browse_mode: BrowseMode::Linear,
             show_directory_tree_nav: false,
-            directory_tree_nav_style: DirectoryTreeNavStyle::Detached,
+            directory_tree_nav_style: DirectoryTreeNavStyle::Embedded,
             tree_nav_root_dir: None,
             tree_nav_selected_dir: None,
             fullscreen: false,
@@ -739,7 +739,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowseMode, PairedRawJpegHandling, Settings};
+    use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {
@@ -775,7 +775,7 @@ mod tests {
         assert!(!settings.show_directory_tree_nav);
         assert_eq!(
             settings.directory_tree_nav_style,
-            DirectoryTreeNavStyle::Detached
+            DirectoryTreeNavStyle::Embedded
         );
         assert!(settings.tree_nav_root_dir.is_none());
         assert!(settings.tree_nav_selected_dir.is_none());
