@@ -768,6 +768,13 @@ impl eframe::App for ImageViewerApp {
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
     }
+
+    fn take_pending_auxiliary_viewport_repaint(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> Option<egui::ViewportId> {
+        self.take_pending_directory_tree_repaint()
+    }
 }
 
 impl ImageViewerApp {
@@ -794,6 +801,8 @@ impl ImageViewerApp {
 
         if style_changed {
             setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+            self.sync_directory_tree_theme_snapshot();
+            self.mark_directory_tree_repaint_pending();
             self.request_directory_tree_viewport_repaint(ctx);
         }
     }
@@ -809,7 +818,9 @@ impl ImageViewerApp {
             self.cached_palette = new_palette;
         }
         setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+        self.sync_directory_tree_theme_snapshot();
         ctx.request_repaint();
+        self.mark_directory_tree_repaint_pending();
         self.request_directory_tree_viewport_repaint(ctx);
         self.wake_root_for_logic();
     }

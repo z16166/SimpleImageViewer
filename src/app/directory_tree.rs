@@ -34,8 +34,8 @@ use crate::loader::{
     preview_aspect_matches_logical,
 };
 use crate::settings::BrowseMode;
+use crate::theme::ThemePalette;
 use crate::ui::osd::{format_file_modified, format_file_size};
-use crate::ui::utils::stable_selectable_label;
 
 const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
@@ -627,6 +627,26 @@ impl ImageViewerApp {
         }
     }
 
+    pub(crate) fn sync_directory_tree_theme_snapshot(&mut self) {
+        if let Ok(mut theme) = self.directory_tree_theme.lock() {
+            *theme = self.cached_palette.clone();
+        }
+    }
+
+    pub(crate) fn mark_directory_tree_repaint_pending(&mut self) {
+        if self.directory_tree_viewport_active() {
+            self.pending_directory_tree_repaint = true;
+        }
+    }
+
+    pub(crate) fn take_pending_directory_tree_repaint(&mut self) -> Option<egui::ViewportId> {
+        if !self.pending_directory_tree_repaint || !self.directory_tree_viewport_active() {
+            return None;
+        }
+        self.pending_directory_tree_repaint = false;
+        Some(Self::directory_tree_viewport_id())
+    }
+
     /// Sync scan results into the directory-tree file list without registering the viewport.
     /// Safe to call from `logic()` after `process_scan_results`.
     pub(crate) fn sync_directory_tree_file_list_state(&mut self, ctx: &egui::Context) {
@@ -696,6 +716,7 @@ impl ImageViewerApp {
         let state = Arc::clone(&self.directory_tree.state);
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
+        let theme = std::sync::Arc::clone(&self.directory_tree_theme);
         let builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
             .with_inner_size([DIRECTORY_TREE_DEFAULT_WIDTH, DIRECTORY_TREE_DEFAULT_HEIGHT])
@@ -709,9 +730,19 @@ impl ImageViewerApp {
                 return;
             }
 
+            let palette = theme
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
             let scanning = {
                 let mut state = state.lock();
-                draw_directory_tree_window(ui, &mut state, &command_tx, root_wake.as_ref());
+                draw_directory_tree_window(
+                    ui,
+                    &mut state,
+                    &command_tx,
+                    root_wake.as_ref(),
+                    &palette,
+                );
                 state.scanning
             };
             if scanning {
@@ -1383,18 +1414,73 @@ fn paint_tree_folder_icon(ui: &mut egui::Ui, rect: egui::Rect) {
     ui.painter().rect_filled(tab, 1.5, color);
 }
 
+fn directory_tree_row_selected_fill(palette: &ThemePalette) -> egui::Color32 {
+    if palette.is_dark {
+        egui::Color32::from_gray(78)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(
+            palette.accent2.r(),
+            palette.accent2.g(),
+            palette.accent2.b(),
+            30,
+        )
+    }
+}
+
+fn directory_tree_row_selected_text(palette: &ThemePalette) -> egui::Color32 {
+    if palette.is_dark {
+        egui::Color32::from_gray(210)
+    } else {
+        palette.accent2
+    }
+}
+
+fn paint_directory_tree_folder_name(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    selected: bool,
+    hovered: bool,
+    name: &str,
+    palette: &ThemePalette,
+) {
+    if selected {
+        ui.painter()
+            .rect_filled(rect, 3.0, directory_tree_row_selected_fill(palette));
+    } else if hovered {
+        ui.painter().rect_filled(rect, 3.0, palette.widget_hover);
+    }
+    let text_color = if selected {
+        directory_tree_row_selected_text(palette)
+    } else {
+        palette.text_normal
+    };
+    let font = egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
+    ui.painter().text(
+        rect.left_center() + egui::vec2(4.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        font,
+        text_color,
+    );
+}
+
 fn draw_directory_tree_window(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
+    palette: &ThemePalette,
 ) {
     ui.visuals_mut().button_frame = false;
+    ui.visuals_mut().override_text_color = Some(palette.text_normal);
+    ui.painter()
+        .rect_filled(ui.max_rect(), 0.0, palette.panel_bg);
     draw_directory_tree_top_panels(
         ui,
         state,
         command_tx,
         root_wake,
+        palette,
         egui::vec2(ui.available_width(), ui.available_height()),
     );
 }
@@ -1404,6 +1490,7 @@ fn draw_directory_tree_top_panels(
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
+    palette: &ThemePalette,
     panel_size: egui::Vec2,
 ) {
     let viewport_height = panel_size.y;
@@ -1433,13 +1520,13 @@ fn draw_directory_tree_top_panels(
     ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
         ui.set_clip_rect(left_rect);
         ui.set_width(left_w);
-        draw_folder_panel(ui, state, command_tx, root_wake);
+        draw_folder_panel(ui, state, command_tx, root_wake, palette);
     });
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
         ui.set_clip_rect(right_rect);
         ui.set_width(right_w);
-        draw_image_file_list(ui, state, command_tx);
+        draw_image_file_list(ui, state, command_tx, palette);
     });
 
     let splitter_id = ui.id().with("directory_tree_splitter");
@@ -1482,7 +1569,7 @@ fn preview_texture_contain_rect(
 
 fn paint_image_list_thumbnail(
     painter: &egui::Painter,
-    visuals: &egui::Visuals,
+    palette: &ThemePalette,
     thumb_rect: egui::Rect,
     texture: Option<&egui::TextureHandle>,
     logical_size: Option<(u32, u32)>,
@@ -1497,7 +1584,7 @@ fn paint_image_list_thumbnail(
             preview_aspect_matches_logical(texture_w as u32, texture_h as u32, logical_w, logical_h)
         });
         if aspect_ok && texture_w > 0.0 && texture_h > 0.0 {
-            painter.rect_filled(inner, 1.0, visuals.widgets.noninteractive.weak_bg_fill);
+            painter.rect_filled(inner, 1.0, palette.widget_bg);
             let image_rect = preview_texture_contain_rect(inner, texture_w, texture_h);
             painter.image(
                 texture.id(),
@@ -1509,7 +1596,7 @@ fn paint_image_list_thumbnail(
         }
     }
     if !drew_texture {
-        painter.rect_filled(inner, 1.0, visuals.widgets.noninteractive.weak_bg_fill);
+        painter.rect_filled(inner, 1.0, palette.widget_bg);
     }
 }
 
@@ -1518,6 +1605,7 @@ fn draw_folder_panel(
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
+    palette: &ThemePalette,
 ) {
     let scroll_to_selected = state.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
@@ -1527,6 +1615,7 @@ fn draw_folder_panel(
                 state,
                 command_tx,
                 root_wake,
+                palette,
                 &root,
                 0,
                 scroll_to_selected,
@@ -1556,6 +1645,7 @@ fn draw_directory_node(
     state: &DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
+    palette: &ThemePalette,
     path: &Path,
     depth: usize,
     scroll_to_selected: bool,
@@ -1598,8 +1688,20 @@ fn draw_directory_node(
             paint_tree_folder_icon(ui, folder_rect.0);
 
             let selected = state.selected_dir.as_deref() == Some(path);
-            let name_response = stable_selectable_label(ui, selected, node.display_name.as_str())
-                .on_hover_text(path.to_string_lossy());
+            let name_width = ui.available_width().max(1.0);
+            let (name_rect, name_response) = ui.allocate_exact_size(
+                egui::vec2(name_width, DIRECTORY_TREE_ROW_HEIGHT),
+                egui::Sense::click(),
+            );
+            paint_directory_tree_folder_name(
+                ui,
+                name_rect,
+                selected,
+                name_response.hovered(),
+                node.display_name.as_str(),
+                palette,
+            );
+            let name_response = name_response.on_hover_text(path.to_string_lossy());
             if scroll_to_selected && selected {
                 name_response.scroll_to_me(Some(egui::Align::Center));
                 scrolled = true;
@@ -1632,6 +1734,7 @@ fn draw_directory_node(
                 state,
                 command_tx,
                 root_wake,
+                palette,
                 &child,
                 depth + 1,
                 scroll_to_selected,
@@ -1646,6 +1749,7 @@ fn draw_image_file_list(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
+    palette: &ThemePalette,
 ) {
     let panel_rect = ui.max_rect();
     let list_focus_id = ui.id().with("directory_tree_image_list");
@@ -1673,7 +1777,7 @@ fn draw_image_file_list(
     let row_height_with_spacing = row_height + row_spacing;
     let column_layout = image_list_column_layout(ui.available_width(), ui.spacing().item_spacing.x);
 
-    draw_image_details_header(ui, &column_layout);
+    draw_image_details_header(ui, &column_layout, palette);
 
     let viewport_height = (ui.available_height() - status_height).max(row_height_with_spacing);
 
@@ -1720,6 +1824,7 @@ fn draw_image_file_list(
                     state.preview_logical_sizes.get(&row_index).copied(),
                     command_tx,
                     list_enabled,
+                    palette,
                 );
                 if clicked {
                     ui.memory_mut(|mem| mem.request_focus(list_focus_id));
@@ -1888,7 +1993,11 @@ fn truncate_single_line_text(
     out
 }
 
-fn draw_image_details_header(ui: &mut egui::Ui, columns: &ImageListColumnLayout) {
+fn draw_image_details_header(
+    ui: &mut egui::Ui,
+    columns: &ImageListColumnLayout,
+    palette: &ThemePalette,
+) {
     let header_width = ui.available_width();
     let header_rect = egui::Rect::from_min_size(
         ui.cursor().min,
@@ -1901,7 +2010,7 @@ fn draw_image_details_header(ui: &mut egui::Ui, columns: &ImageListColumnLayout)
     let spacing_x = ui.spacing().item_spacing.x;
     let header_font =
         egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
-    let weak = ui.visuals().weak_text_color();
+    let weak = palette.text_muted;
     let paint_header = |text: String, column: egui::Rect, halign: egui::Align| {
         let galley = ui.painter().layout_no_wrap(text, header_font.clone(), weak);
         paint_clipped_galley(ui.painter(), galley, column, weak, halign);
@@ -2015,6 +2124,7 @@ fn draw_image_details_row(
     logical_size: Option<(u32, u32)>,
     command_tx: &Sender<DirectoryTreeCommand>,
     list_enabled: bool,
+    palette: &ThemePalette,
 ) -> bool {
     let row_width = ui.available_width();
     let (row_rect, response) = ui.allocate_exact_size(
@@ -2024,26 +2134,20 @@ fn draw_image_details_row(
     if ui.is_rect_visible(row_rect) {
         if selected {
             ui.painter()
-                .rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill);
+                .rect_filled(row_rect, 0.0, directory_tree_row_selected_fill(palette));
         } else if response.hovered() {
             ui.painter()
-                .rect_filled(row_rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                .rect_filled(row_rect, 0.0, palette.widget_hover);
         }
 
         let spacing_x = ui.spacing().item_spacing.x;
         let thumb_column = image_list_thumb_column(row_rect, spacing_x);
-        paint_image_list_thumbnail(
-            ui.painter(),
-            ui.visuals(),
-            thumb_column,
-            texture,
-            logical_size,
-        );
+        paint_image_list_thumbnail(ui.painter(), palette, thumb_column, texture, logical_size);
 
         let text_color = if selected {
-            ui.visuals().selection.stroke.color
+            directory_tree_row_selected_text(palette)
         } else {
-            ui.visuals().text_color()
+            palette.text_normal
         };
         let body_font =
             egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);

@@ -910,6 +910,24 @@ impl GlowWinitRunning<'_> {
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
         } else if cfg!(target_os = "windows")
+            && viewport_id == ViewportId::ROOT
+            && let Some(aux_viewport_id) =
+                self.app
+                    .take_pending_auxiliary_viewport_repaint(&self.integration.egui_ctx)
+        {
+            let aux_window_id = self
+                .glutin
+                .borrow()
+                .viewports
+                .get(&aux_viewport_id)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id());
+            if let Some(aux_window_id) = aux_window_id {
+                Ok(EventResult::RepaintNow(aux_window_id))
+            } else {
+                Ok(EventResult::Wait)
+            }
+        } else if cfg!(target_os = "windows")
             && let Some(root_window_id) = root_window_id_for_repaint
         {
             Ok(EventResult::RepaintNow(root_window_id))

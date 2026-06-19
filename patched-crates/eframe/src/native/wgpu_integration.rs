@@ -956,6 +956,22 @@ impl WgpuWinitRunning<'_> {
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
         } else if cfg!(target_os = "windows")
+            && viewport_id == ViewportId::ROOT
+            && let Some(aux_viewport_id) =
+                app.take_pending_auxiliary_viewport_repaint(&integration.egui_ctx)
+        {
+            let aux_window_id = shared
+                .borrow()
+                .viewports
+                .get(&aux_viewport_id)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id());
+            if let Some(aux_window_id) = aux_window_id {
+                Ok(EventResult::RepaintNow(aux_window_id))
+            } else {
+                Ok(EventResult::Wait)
+            }
+        } else if cfg!(target_os = "windows")
             && let Some(root_window_id) = root_window_id_for_repaint
         {
             // request_redraw alone is not enough on Windows when ROOT did not receive the

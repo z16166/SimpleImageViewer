@@ -169,6 +169,15 @@ pub trait App {
         _ = (ctx, frame);
     }
 
+    /// Simple Image Viewer fork: after ROOT paints, synchronously repaint auxiliary viewports
+    /// (e.g. directory-tree window) when [`Self::refresh_global_ui_style`] marks them pending.
+    fn take_pending_auxiliary_viewport_repaint(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> Option<egui::ViewportId> {
+        None
+    }
+
     /// Called each time the UI needs repainting, which may be many times per second.
     ///
     /// The given [`egui::Ui`] has no margin or background color.

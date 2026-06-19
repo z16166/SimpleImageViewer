@@ -1557,6 +1557,8 @@ fn make_test_app() -> ImageViewerApp {
         scan_rx: None,
         scan_cancel: None,
         root_redraw_wake: None,
+        directory_tree_theme: std::sync::Arc::new(std::sync::Mutex::new(ThemePalette::dark())),
+        pending_directory_tree_repaint: false,
         scan_generation: 0,
         scan_results_pending_since: None,
         pending_preload_after_directory_scan: false,
