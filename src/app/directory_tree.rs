@@ -695,6 +695,7 @@ impl ImageViewerApp {
 
         if request_viewport_repaint {
             ctx.request_repaint_of(viewport_id);
+            self.mark_directory_tree_repaint_pending();
         }
         if self.directory_tree_viewport_active() {
             // Keep ROOT painting while the tree viewport is open. logic() may run on a child

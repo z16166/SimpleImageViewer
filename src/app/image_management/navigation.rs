@@ -627,6 +627,7 @@ impl ImageViewerApp {
         }
         self.trigger_current_hdr_fallback_refinement_if_needed();
         self.try_start_pending_transition_if_ready();
+        self.sync_directory_tree_file_list_state(ctx);
     }
 
     pub(crate) fn navigate_next(&mut self, ctx: &egui::Context) {

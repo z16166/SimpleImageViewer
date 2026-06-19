@@ -634,6 +634,7 @@ impl eframe::App for ImageViewerApp {
         self.check_auto_switch(ctx);
         self.handle_keyboard(ctx);
         self.process_file_op_results();
+        self.sync_directory_tree_file_list_state(ctx);
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
         // mode preemption) and needs a full restart — same path as toggling the checkbox.
