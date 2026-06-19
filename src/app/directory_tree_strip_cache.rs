@@ -16,6 +16,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
 use image::imageops::FilterType;
@@ -30,6 +31,7 @@ pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub index: usize,
+    pub path: PathBuf,
     pub decoded: DecodedImage,
     pub logical: (u32, u32),
     pub stage: PreviewStage,
@@ -49,6 +51,15 @@ impl Default for DirectoryTreeStripCache {
             preview_max_side: HashMap::new(),
             preview_stage: HashMap::new(),
             logical_sizes: HashMap::new(),
+        }
+    }
+}
+
+fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
+    let taken = std::mem::take(map);
+    for (old_idx, value) in taken {
+        if old_idx < old_to_new.len() {
+            map.insert(old_to_new[old_idx], value);
         }
     }
 }
@@ -188,6 +199,13 @@ impl DirectoryTreeStripCache {
         if let Some(logical) = self.logical_sizes.remove(&from) {
             self.logical_sizes.insert(to, logical);
         }
+    }
+
+    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
+        permute_usize_hashmap(&mut self.textures, old_to_new);
+        permute_usize_hashmap(&mut self.preview_max_side, old_to_new);
+        permute_usize_hashmap(&mut self.preview_stage, old_to_new);
+        permute_usize_hashmap(&mut self.logical_sizes, old_to_new);
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {

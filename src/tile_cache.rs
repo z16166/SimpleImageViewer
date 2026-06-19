@@ -220,6 +220,31 @@ impl TilePixelCache {
         }
     }
 
+    pub fn permute_images(&mut self, old_to_new: &[usize]) {
+        if old_to_new.is_empty() {
+            return;
+        }
+        let keys: Vec<_> = self.entries.keys().copied().collect();
+        for key in keys {
+            let idx = key.0;
+            if idx >= old_to_new.len() {
+                continue;
+            }
+            let new_idx = old_to_new[idx];
+            if new_idx == idx {
+                continue;
+            }
+            if let Some(pixels) = self.entries.remove(&key) {
+                self.entries.insert((new_idx, key.1, key.2), pixels);
+            }
+        }
+        for item in self.lru.iter_mut() {
+            if item.0 < old_to_new.len() {
+                item.0 = old_to_new[item.0];
+            }
+        }
+    }
+
     pub fn remove_images_except(&mut self, except_idx: usize) {
         let keys_to_remove: Vec<_> = self
             .entries

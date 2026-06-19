@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -91,11 +92,20 @@ fn is_places_sentinel_path(path: &Path) -> bool {
     is_this_pc_tree_path(path) || is_network_tree_path(path)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum ImageListSortColumn {
+    #[default]
+    Name,
+    Size,
+    Modified,
+}
+
 #[derive(Debug)]
 pub(crate) enum DirectoryTreeCommand {
     SelectDirectory(PathBuf),
     ToggleExpanded(PathBuf),
     SelectImage(usize),
+    SortImageList(ImageListSortColumn),
     CloseWindow,
 }
 
@@ -172,6 +182,10 @@ pub(crate) struct DirectoryTreeState {
     image_list_col_widths_dirty: bool,
     network_label: String,
     network_visible: bool,
+    image_list_sort_column: ImageListSortColumn,
+    image_list_sort_ascending: bool,
+    image_list_sort_active: bool,
+    image_list_reordering: bool,
 }
 
 impl Default for DirectoryTreeState {
@@ -203,6 +217,10 @@ impl Default for DirectoryTreeState {
             image_list_col_widths_dirty: true,
             network_label: String::new(),
             network_visible: false,
+            image_list_sort_column: ImageListSortColumn::default(),
+            image_list_sort_ascending: true,
+            image_list_sort_active: false,
+            image_list_reordering: false,
         }
     }
 }
@@ -798,6 +816,55 @@ impl ImageViewerApp {
         self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
     }
 
+    fn apply_directory_tree_image_list_sort(
+        &mut self,
+        column: ImageListSortColumn,
+        ascending: bool,
+    ) -> bool {
+        if self.scanning || self.image_files.is_empty() {
+            return false;
+        }
+
+        let len = self.image_files.len();
+        if len <= 1 {
+            return false;
+        }
+
+        let order = image_list_sort_order(
+            len,
+            column,
+            ascending,
+            &self.image_files,
+            &self.file_byte_len_by_index,
+            &self.file_modified_unix_by_index,
+        );
+
+        let already_sorted = order
+            .iter()
+            .enumerate()
+            .all(|(new_idx, &old_idx)| new_idx == old_idx);
+        if already_sorted {
+            return false;
+        }
+
+        let current_path = self.image_files.get(self.current_index).cloned();
+        let mut old_to_new = vec![0usize; len];
+        for (new_idx, &old_idx) in order.iter().enumerate() {
+            old_to_new[old_idx] = new_idx;
+        }
+
+        self.permute_image_file_arrays(&order);
+        self.permute_index_keyed_caches(&old_to_new);
+        if let Some(path) = current_path {
+            if let Some(index) = self.image_files.iter().position(|entry| entry == &path) {
+                self.current_index = index;
+                self.image_status.set_current_index(self.current_index);
+                self.raw_metadata.set_current_index(self.current_index);
+            }
+        }
+        true
+    }
+
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {
         self.settings.browse_mode = BrowseMode::Tree;
         self.settings.show_directory_tree_nav = true;
@@ -874,6 +941,14 @@ impl ImageViewerApp {
                     ctx.request_repaint();
                 }
                 DirectoryTreeCommand::SelectImage(index) => {
+                    if self
+                        .directory_tree
+                        .state
+                        .try_lock()
+                        .is_some_and(|state| !image_list_interaction_enabled(&state))
+                    {
+                        continue;
+                    }
                     if index < self.image_files.len() {
                         self.pending_directory_tree_select_index = Some(index);
                         let mut state = self.directory_tree.state.lock();
@@ -882,6 +957,44 @@ impl ImageViewerApp {
                         ctx.request_repaint();
                         self.request_directory_tree_viewport_repaint(ctx);
                     }
+                }
+                DirectoryTreeCommand::SortImageList(column) => {
+                    let (sort_column, sort_ascending) = {
+                        let mut state = self.directory_tree.state.lock();
+                        if !image_list_sorting_available(&state) {
+                            continue;
+                        }
+                        let ascending = if state.image_list_sort_column == column {
+                            !state.image_list_sort_ascending
+                        } else {
+                            true
+                        };
+                        state.image_list_sort_column = column;
+                        state.image_list_sort_ascending = ascending;
+                        state.image_list_sort_active = true;
+                        state.image_list_reordering = true;
+                        (column, ascending)
+                    };
+
+                    let changed =
+                        self.apply_directory_tree_image_list_sort(sort_column, sort_ascending);
+                    {
+                        let mut state = self.directory_tree.state.lock();
+                        state.image_list_reordering = false;
+                        if changed {
+                            state.image_list_generation =
+                                state.image_list_generation.wrapping_add(1);
+                            state.current_index = self.current_index;
+                            state.image_list_col_widths_dirty = true;
+                            state.scroll_image_list_to_current = true;
+                        }
+                    }
+                    if changed {
+                        self.sync_directory_tree_file_list_state(ctx);
+                        self.wake_root_for_logic();
+                    }
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
                 }
                 DirectoryTreeCommand::CloseWindow => {
                     self.settings.show_directory_tree_nav = false;
@@ -1215,6 +1328,10 @@ impl ImageViewerApp {
             let previous_index = state.current_index;
             let previous_scanning = state.scanning;
             let previous_row_count = state.image_rows.len();
+            let resort_after_scan =
+                previous_scanning && !self.scanning && state.image_list_sort_active;
+            let resort_column = state.image_list_sort_column;
+            let resort_ascending = state.image_list_sort_ascending;
             state.sync_images(
                 &self.image_files,
                 &self.file_byte_len_by_index,
@@ -1245,10 +1362,33 @@ impl ImageViewerApp {
                 self.directory_tree_strip_cache.textures(),
                 self.directory_tree_strip_cache.logical_sizes(),
             );
-            repaint
+            (repaint, resort_after_scan, resort_column, resort_ascending)
         };
 
-        if request_viewport_repaint {
+        if request_viewport_repaint.1
+            && self.apply_directory_tree_image_list_sort(
+                request_viewport_repaint.2,
+                request_viewport_repaint.3,
+            )
+        {
+            if let Some(mut state) = self.directory_tree.state.try_lock() {
+                state.sync_images(
+                    &self.image_files,
+                    &self.file_byte_len_by_index,
+                    &self.file_modified_unix_by_index,
+                    self.current_index,
+                    self.scanning,
+                    self.status_message.clone(),
+                    &self.directory_tree.metadata_request_tx,
+                );
+                state.image_list_generation = state.image_list_generation.wrapping_add(1);
+                state.current_index = self.current_index;
+                state.image_list_col_widths_dirty = true;
+                state.scroll_image_list_to_current = true;
+            }
+        }
+
+        if request_viewport_repaint.0 {
             ctx.request_repaint_of(viewport_id);
             self.mark_directory_tree_repaint_pending();
         }
@@ -1683,6 +1823,7 @@ impl ImageViewerApp {
             );
             if let Err(err) = tx.send(DirectoryTreeStripPreviewJobResult {
                 index,
+                path,
                 decoded,
                 logical,
                 stage: PreviewStage::Initial,
@@ -1694,10 +1835,90 @@ impl ImageViewerApp {
         });
     }
 
+    fn clear_strip_preview_attempt_state(&mut self, index: usize) {
+        self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_tiled_attempted.remove(&index);
+        self.directory_tree_strip_cold_attempted.remove(&index);
+    }
+
+    fn strip_preview_result_matches_index(
+        &self,
+        result: &DirectoryTreeStripPreviewJobResult,
+    ) -> bool {
+        self.image_files.get(result.index) == Some(&result.path)
+    }
+
+    fn try_apply_relocated_strip_preview_result(
+        &mut self,
+        result: DirectoryTreeStripPreviewJobResult,
+        ctx: &egui::Context,
+    ) -> bool {
+        self.clear_strip_preview_attempt_state(result.index);
+        let Some(new_index) = self
+            .image_files
+            .iter()
+            .position(|path| path == &result.path)
+        else {
+            return false;
+        };
+        self.clear_strip_preview_attempt_state(new_index);
+
+        if result.decoded.width == 0 || result.decoded.height == 0 {
+            return false;
+        }
+        if !decoded_rgba_size_valid(&result.decoded) {
+            log::warn!(
+                "[DirectoryTree] Relocated strip preview size mismatch for {}: {}x{}",
+                result.path.display(),
+                result.decoded.width,
+                result.decoded.height
+            );
+            return false;
+        }
+        if !preview_aspect_matches_logical(
+            result.decoded.width,
+            result.decoded.height,
+            result.logical.0,
+            result.logical.1,
+        ) {
+            log::warn!(
+                "[DirectoryTree] Relocated strip preview aspect mismatch for {}: {}x{} vs {}x{}",
+                result.path.display(),
+                result.decoded.width,
+                result.decoded.height,
+                result.logical.0,
+                result.logical.1
+            );
+            return false;
+        }
+
+        self.cache_directory_tree_strip_thumbnail(
+            new_index,
+            &result.decoded,
+            result.stage,
+            Some(result.logical),
+            ctx,
+        );
+        if !self
+            .directory_tree_strip_cache
+            .is_valid_for_logical(new_index, result.logical)
+        {
+            self.directory_tree_strip_tiled_attempted.remove(&new_index);
+            return false;
+        }
+        ctx.request_repaint();
+        ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+        true
+    }
+
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
             self.directory_tree_strip_generate_inflight
                 .remove(&result.index);
+            if !self.strip_preview_result_matches_index(&result) {
+                let _ = self.try_apply_relocated_strip_preview_result(result, ctx);
+                continue;
+            }
             if result.decoded.width == 0 || result.decoded.height == 0 {
                 self.directory_tree_strip_tiled_attempted
                     .remove(&result.index);
@@ -1775,6 +1996,7 @@ impl ImageViewerApp {
             return;
         }
 
+        let path = self.image_files.get(index).cloned().unwrap_or_default();
         self.directory_tree_strip_tiled_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
@@ -1818,6 +2040,7 @@ impl ImageViewerApp {
             );
             if let Err(err) = tx.send(DirectoryTreeStripPreviewJobResult {
                 index,
+                path,
                 decoded,
                 logical,
                 stage: PreviewStage::Refined,
@@ -2539,11 +2762,14 @@ fn draw_image_file_list(
         state.image_list_col_modified_w,
     );
 
-    draw_image_details_header(ui, &column_layout, palette);
+    draw_image_details_header(ui, state, &column_layout, palette, command_tx);
 
+    let interaction_enabled = image_list_interaction_enabled(state);
     let viewport_height = (ui.available_height() - status_height).max(row_height_with_spacing);
 
-    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx, embedded);
+    if interaction_enabled {
+        try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx, embedded);
+    }
 
     let mut pending_scroll_offset = None;
     if list_enabled && state.scroll_image_list_to_current && !state.image_rows.is_empty() {
@@ -2558,7 +2784,7 @@ fn draw_image_file_list(
         state.scroll_image_list_to_current = false;
     }
 
-    ui.add_enabled_ui(list_enabled, |ui| {
+    ui.add_enabled_ui(list_enabled && interaction_enabled, |ui| {
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("directory_tree_images")
             .auto_shrink([false, false])
@@ -2585,7 +2811,7 @@ fn draw_image_file_list(
                     state.preview_textures.get(&row_index),
                     state.preview_logical_sizes.get(&row_index).copied(),
                     command_tx,
-                    list_enabled,
+                    list_enabled && interaction_enabled,
                     palette,
                 );
                 if clicked {
@@ -2788,10 +3014,99 @@ fn truncate_single_line_text(
     out
 }
 
+fn image_list_interaction_enabled(state: &DirectoryTreeState) -> bool {
+    !state.scanning && !state.image_list_reordering
+}
+
+fn image_list_sorting_available(state: &DirectoryTreeState) -> bool {
+    image_list_interaction_enabled(state) && !state.image_rows.is_empty()
+}
+
+fn image_list_sort_order(
+    len: usize,
+    column: ImageListSortColumn,
+    ascending: bool,
+    paths: &[PathBuf],
+    sizes: &[u64],
+    modified: &[Option<i64>],
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    order.sort_by(|&left, &right| {
+        let ordering = compare_image_list_sort_keys(left, right, column, paths, sizes, modified);
+        let primary = if ascending {
+            ordering
+        } else {
+            ordering.reverse()
+        };
+        primary.then_with(|| {
+            if ascending {
+                left.cmp(&right)
+            } else {
+                right.cmp(&left)
+            }
+        })
+    });
+    order
+}
+
+fn compare_image_list_sort_keys(
+    left: usize,
+    right: usize,
+    column: ImageListSortColumn,
+    paths: &[PathBuf],
+    sizes: &[u64],
+    modified: &[Option<i64>],
+) -> Ordering {
+    match column {
+        ImageListSortColumn::Name => paths[left]
+            .file_name()
+            .map(|name| name.to_ascii_lowercase())
+            .cmp(
+                &paths[right]
+                    .file_name()
+                    .map(|name| name.to_ascii_lowercase()),
+            ),
+        ImageListSortColumn::Size => sizes
+            .get(left)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&sizes.get(right).copied().unwrap_or(0)),
+        ImageListSortColumn::Modified => compare_optional_unix_time(
+            modified.get(left).copied().flatten(),
+            modified.get(right).copied().flatten(),
+        ),
+    }
+}
+
+fn compare_optional_unix_time(left: Option<i64>, right: Option<i64>) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn image_list_sort_indicator(
+    column: ImageListSortColumn,
+    state: &DirectoryTreeState,
+) -> &'static str {
+    if !state.image_list_sort_active || state.image_list_sort_column != column {
+        return "";
+    }
+    if state.image_list_sort_ascending {
+        " ▲"
+    } else {
+        " ▼"
+    }
+}
+
 fn draw_image_details_header(
     ui: &mut egui::Ui,
+    state: &DirectoryTreeState,
     columns: &ImageListColumnLayout,
     palette: &ThemePalette,
+    command_tx: &Sender<DirectoryTreeCommand>,
 ) {
     let header_width = ui.available_width();
     let header_rect = egui::Rect::from_min_size(
@@ -2806,21 +3121,39 @@ fn draw_image_details_header(
     let header_font =
         egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
     let weak = palette.text_muted;
-    let paint_header = |text: String, column: egui::Rect, halign: egui::Align| {
-        let galley = ui.painter().layout_no_wrap(text, header_font.clone(), weak);
-        paint_clipped_galley(ui.painter(), galley, column, weak, halign);
-    };
+    let sorting_enabled = image_list_sorting_available(state);
+
+    let paint_header =
+        |column: ImageListSortColumn, label: String, rect: egui::Rect, halign: egui::Align| {
+            let text = format!("{}{}", label, image_list_sort_indicator(column, state));
+            let galley = ui.painter().layout_no_wrap(text, header_font.clone(), weak);
+            paint_clipped_galley(ui.painter(), galley, rect, weak, halign);
+            if sorting_enabled {
+                let response = ui.interact(
+                    rect,
+                    ui.id().with(("image_list_sort", column)),
+                    egui::Sense::click(),
+                );
+                if response.clicked() {
+                    let _ = command_tx.send(DirectoryTreeCommand::SortImageList(column));
+                }
+            }
+        };
+
     paint_header(
+        ImageListSortColumn::Name,
         t!("directory_tree.col_name").to_string(),
         image_list_name_column(header_rect, columns, spacing_x),
         egui::Align::LEFT,
     );
     paint_header(
+        ImageListSortColumn::Size,
         t!("directory_tree.col_size").to_string(),
         image_list_size_column(header_rect, columns, spacing_x),
         egui::Align::RIGHT,
     );
     paint_header(
+        ImageListSortColumn::Modified,
         t!("directory_tree.col_modified").to_string(),
         image_list_modified_column(header_rect, columns, spacing_x),
         egui::Align::LEFT,
@@ -2884,7 +3217,7 @@ fn try_handle_image_list_arrow_keys(
     let list_has_focus = ui.memory(|mem| mem.has_focus(list_focus_id));
     if !(state.image_list_keyboard_active || list_has_focus)
         || state.image_rows.is_empty()
-        || state.scanning
+        || !image_list_interaction_enabled(state)
     {
         return;
     }
@@ -3634,6 +3967,78 @@ mod tests {
         assert!(state.nodes.contains_key(&this_pc_tree_path()));
         assert!(!state.network_visible);
         assert!(!state.nodes.contains_key(&network_tree_path()));
+    }
+
+    #[test]
+    fn compare_image_list_sort_keys_orders_by_name_case_insensitive() {
+        let paths = vec![
+            PathBuf::from(r"C:\beta.jpg"),
+            PathBuf::from(r"C:\Alpha.jpg"),
+        ];
+        assert_eq!(
+            compare_image_list_sort_keys(0, 1, ImageListSortColumn::Name, &paths, &[], &[],),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn compare_image_list_sort_keys_puts_missing_modified_last() {
+        assert_eq!(compare_optional_unix_time(Some(10), None), Ordering::Less);
+        assert_eq!(
+            compare_optional_unix_time(None, Some(10)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn image_list_sort_desc_mirrors_asc_index_even_with_tied_keys() {
+        const LEN: usize = 15;
+        let paths: Vec<PathBuf> = (0..LEN)
+            .map(|index| PathBuf::from(format!(r"C:\img_{index:02}.jpg")))
+            .collect();
+        let sizes = vec![100u64; LEN];
+        let modified = vec![Some(1_700_000_000i64); LEN];
+
+        let asc_order = image_list_sort_order(
+            LEN,
+            ImageListSortColumn::Modified,
+            true,
+            &paths,
+            &sizes,
+            &modified,
+        );
+        let mut asc_paths = Vec::with_capacity(LEN);
+        for &old_index in &asc_order {
+            asc_paths.push(paths[old_index].clone());
+        }
+
+        let desc_order = image_list_sort_order(
+            LEN,
+            ImageListSortColumn::Modified,
+            false,
+            &asc_paths,
+            &sizes,
+            &modified,
+        );
+        let mut asc_to_desc = vec![0usize; LEN];
+        for (new_idx, &old_idx) in desc_order.iter().enumerate() {
+            asc_to_desc[old_idx] = new_idx;
+        }
+
+        let mut unsorted_to_asc = vec![0usize; LEN];
+        for (new_idx, &old_idx) in asc_order.iter().enumerate() {
+            unsorted_to_asc[old_idx] = new_idx;
+        }
+
+        for original_index in 0..LEN {
+            let asc_index = unsorted_to_asc[original_index];
+            let desc_index = asc_to_desc[asc_index];
+            assert_eq!(
+                asc_index + desc_index,
+                LEN - 1,
+                "original_index={original_index} asc={asc_index} desc={desc_index}"
+            );
+        }
     }
 
     #[test]

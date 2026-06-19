@@ -288,6 +288,16 @@ impl RawMetadataStore {
         }
     }
 
+    pub(crate) fn permute_indices(&mut self, old_to_new: &[usize]) {
+        let taken = std::mem::take(&mut self.by_index);
+        for (old_idx, info) in taken {
+            if old_idx < old_to_new.len() {
+                self.by_index.insert(old_to_new[old_idx], info);
+            }
+        }
+        self.sync_tracked_params_for_current();
+    }
+
     pub(crate) fn retain_only_indices(&mut self, keep: impl Fn(usize) -> bool) {
         self.by_index.retain(|&idx, _| keep(idx));
         self.sync_tracked_params_for_current();
