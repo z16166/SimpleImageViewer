@@ -1,7 +1,5 @@
 // Directory tree navigation UI drawing.
 
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crossbeam_channel::Sender;
@@ -9,7 +7,6 @@ use eframe::egui;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
-use crate::app::RootRedrawWake;
 use crate::directory_tree_places::KnownFolderEntry;
 use crate::directory_tree_places::types::KnownFolderKind;
 use crate::loader::preview_aspect_matches_logical;
@@ -17,18 +14,17 @@ use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
 use crate::ui::osd::{format_file_modified, format_file_size};
 
-use super::sort::{compare_image_list_sort_keys, file_name_sort_key, image_list_sort_indicator};
+use super::sort::image_list_sort_indicator;
 use super::{
-    DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_MODIFIED_WIDTH,
-    DIRECTORY_TREE_COL_NAME_MIN_WIDTH, DIRECTORY_TREE_COL_SIZE_MIN_WIDTH,
-    DIRECTORY_TREE_COL_SIZE_WIDTH, DIRECTORY_TREE_COL_THUMB_WIDTH,
-    DIRECTORY_TREE_EMBEDDED_MIN_WIDTH, DIRECTORY_TREE_EXPAND_ICON_WIDTH,
-    DIRECTORY_TREE_FOLDER_ICON_WIDTH, DIRECTORY_TREE_HEADER_HEIGHT,
-    DIRECTORY_TREE_IMAGE_ROW_HEIGHT, DIRECTORY_TREE_INDENT, DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO,
-    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT,
-    DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DirectoryTreeCommand, DirectoryTreeFileRow,
-    DirectoryTreeNode, DirectoryTreeState, ImageListSortColumn, is_network_tree_path,
-    is_places_sentinel_path, is_this_pc_tree_path, network_tree_path, this_pc_tree_path,
+    DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
+    DIRECTORY_TREE_COL_SIZE_MIN_WIDTH, DIRECTORY_TREE_COL_THUMB_WIDTH,
+    DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_FOLDER_ICON_WIDTH,
+    DIRECTORY_TREE_HEADER_HEIGHT, DIRECTORY_TREE_IMAGE_ROW_HEIGHT, DIRECTORY_TREE_INDENT,
+    DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO, DIRECTORY_TREE_LEFT_MIN_WIDTH,
+    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
+    DirectoryTreeCommand, DirectoryTreeFileRow, DirectoryTreeNode, DirectoryTreeState,
+    ImageListSortColumn, is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path,
+    network_tree_path, this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,10 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
@@ -21,13 +18,11 @@ use crate::loader::{
 };
 use crate::path_location::is_unc_path;
 use crate::settings::{BrowseMode, Settings};
-use crate::theme::ThemePalette;
-use crate::ui::osd::{format_file_modified, format_file_size};
 
 use super::sort::image_list_sort_order;
 use super::ui::{
-    directory_tree_panel_layout, draw_directory_tree_window, image_list_interaction_enabled,
-    image_list_sorting_available, unc_share_root,
+    draw_directory_tree_window, image_list_interaction_enabled, image_list_sorting_available,
+    unc_share_root,
 };
 use super::workers::strip_worker_com_initialized;
 use super::{

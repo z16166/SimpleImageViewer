@@ -9,7 +9,9 @@ use super::ui::{
     image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
     unc_share_root, wrapped_image_list_index,
 };
+use super::workers::read_child_directories;
 use super::*;
+use crate::app::ImageViewerApp;
 use std::cmp::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -17,30 +17,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use parking_lot::Mutex;
-use rust_i18n::t;
 
-use crate::app::ImageViewerApp;
-use crate::app::directory_tree_strip_cache::{
-    DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE, DirectoryTreeStripPreviewJobResult,
-    decoded_rgba_size_valid,
-};
-use crate::app::types::CachedWindowPlacement;
-use crate::directory_tree_places::types::KnownFolderKind;
 use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
-use crate::loader::DIRECTORY_TREE_STRIP_POOL;
-use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
-    preview_aspect_matches_logical,
-};
 use crate::path_location::is_unc_path;
-use crate::settings::{BrowseMode, Settings};
-use crate::theme::ThemePalette;
-use crate::ui::osd::{format_file_modified, format_file_size};
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
@@ -824,10 +807,7 @@ use ui::{
     measure_image_list_content_column_widths, should_expand_this_pc_for_path,
     unc_share_display_name, unc_share_root,
 };
-use workers::{
-    directory_tree_children_worker_loop, directory_tree_metadata_worker_loop,
-    read_child_directories, strip_worker_com_initialized,
-};
+use workers::{directory_tree_children_worker_loop, directory_tree_metadata_worker_loop};
 
 #[cfg(test)]
 mod tests;
