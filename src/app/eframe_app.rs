@@ -21,7 +21,7 @@ use rust_i18n::t;
 
 use crate::ipc::IpcMessage;
 use crate::settings::Settings;
-use crate::ui::utils::setup_visuals;
+use crate::ui::utils::setup_visuals_with_font_size;
 
 use super::types::{
     CachedWindowPlacement, HdrOutputStateSnapshot, ImageViewerApp, hdr_output_state_changed,
@@ -774,20 +774,44 @@ impl ImageViewerApp {
     /// System-theme trailing detection and DPI-driven style refresh. Must run from the ROOT
     /// `ui()` pass only (see comment in `ui()`).
     fn sync_theme_and_visuals(&mut self, ctx: &Context) {
+        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
+        let mut style_changed = false;
+
         if let Some(new_palette) = self
             .settings
             .theme
             .resolve_if_changed(&mut self.theme_cache)
         {
             self.cached_palette = new_palette;
-            setup_visuals(ctx, &self.settings, &self.cached_palette);
+            style_changed = true;
         }
 
         let ppp = ctx.pixels_per_point();
         if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
             self.cached_pixels_per_point = ppp;
-            setup_visuals(ctx, &self.settings, &self.cached_palette);
+            style_changed = true;
         }
+
+        if style_changed {
+            setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+            self.request_directory_tree_viewport_repaint(ctx);
+        }
+    }
+
+    /// Re-apply theme palette, egui visuals/fonts, and repaint auxiliary viewports.
+    pub(crate) fn refresh_global_ui_style(&mut self, ctx: &Context) {
+        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
+        if let Some(new_palette) = self
+            .settings
+            .theme
+            .resolve_if_changed(&mut self.theme_cache)
+        {
+            self.cached_palette = new_palette;
+        }
+        setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+        ctx.request_repaint();
+        self.request_directory_tree_viewport_repaint(ctx);
+        self.wake_root_for_logic();
     }
 
     fn build_tray_state(was_maximized: bool) -> Option<super::types::TrayState> {

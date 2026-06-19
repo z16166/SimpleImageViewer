@@ -40,6 +40,15 @@ fn normalize_widget_layout_strokes(widgets: &mut egui::style::Widgets) {
 }
 
 pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
+    setup_visuals_with_font_size(ctx, settings, palette, settings.font_size);
+}
+
+pub fn setup_visuals_with_font_size(
+    ctx: &Context,
+    _settings: &Settings,
+    palette: &ThemePalette,
+    font_size: f32,
+) {
     let mut visuals = if palette.is_dark {
         egui::Visuals::dark()
     } else {
@@ -153,6 +162,12 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     ctx.set_visuals(visuals);
     ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
 
+    apply_global_text_style(ctx, font_size);
+}
+
+/// Apply font metrics and spacing after [`setup_visuals`] colors. Shared by the main window
+/// and appearance settings (including live font-size preview).
+pub fn apply_global_text_style(ctx: &Context, font_size: f32) {
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(
         crate::constants::UI_ITEM_SPACING_X,
@@ -167,15 +182,14 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(3);
     style.spacing.scroll.foreground_color = false;
 
-    let size = settings.font_size;
     for id in style.text_styles.values_mut() {
-        id.size = size;
+        id.size = font_size;
     }
     if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
-        id.size = size * 1.25;
+        id.size = font_size * 1.25;
     }
     if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
-        id.size = size * 0.8;
+        id.size = font_size * 0.8;
     }
 
     ctx.set_global_style(style);

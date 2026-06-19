@@ -617,6 +617,16 @@ impl ImageViewerApp {
             && self.directory_tree.state.lock().root.is_some()
     }
 
+    pub(crate) fn directory_tree_viewport_id() -> egui::ViewportId {
+        egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID)
+    }
+
+    pub(crate) fn request_directory_tree_viewport_repaint(&self, ctx: &egui::Context) {
+        if self.directory_tree_viewport_active() {
+            ctx.request_repaint_of(Self::directory_tree_viewport_id());
+        }
+    }
+
     /// Sync scan results into the directory-tree file list without registering the viewport.
     /// Safe to call from `logic()` after `process_scan_results`.
     pub(crate) fn sync_directory_tree_file_list_state(&mut self, ctx: &egui::Context) {

@@ -18,7 +18,7 @@
 
 use crate::app::{AppTheme, ImageViewerApp};
 use crate::theme::ThemePalette;
-use crate::ui::utils::{settings_card, setup_fonts, setup_visuals, stable_selectable_label};
+use crate::ui::utils::{settings_card, setup_fonts, stable_selectable_label};
 use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
@@ -43,11 +43,12 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
     match msg {
         AppearanceMsg::FontSizePreview(size) => {
             app.temp_font_size = Some(size);
+            app.refresh_global_ui_style(egui_ctx);
         }
         AppearanceMsg::FontSizeCommit(size) => {
             app.settings.font_size = size;
             app.temp_font_size = None;
-            setup_visuals(egui_ctx, &app.settings, &app.cached_palette);
+            app.refresh_global_ui_style(egui_ctx);
             app.queue_save();
         }
         AppearanceMsg::FontFamilyChanged(family) => {
@@ -58,6 +59,7 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
                 app.settings.font_family = old_family;
                 app.is_font_error = true;
             } else {
+                app.refresh_global_ui_style(egui_ctx);
                 app.queue_save();
             }
         }
@@ -72,6 +74,7 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
         }
         AppearanceMsg::ThemeChanged(theme) => {
             app.settings.theme = theme;
+            app.refresh_global_ui_style(egui_ctx);
             app.queue_save();
         }
     }
