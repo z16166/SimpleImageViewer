@@ -43,7 +43,7 @@ pub use types::{FileOpResult, HardwareTier, ImageViewerApp};
 
 pub(crate) use types::{
     AnimationPlayback, CurrentHdrImage, CurrentHdrTiledImage, LightweightFileOpJob,
-    PendingAnimUpload, SettingsTab,
+    PendingAnimUpload, RootRedrawWake, SettingsTab,
 };
 
 pub(crate) use directory_tree::DirectoryTreeRuntime;

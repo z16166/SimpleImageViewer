@@ -484,6 +484,30 @@ impl DirectoryTreeState {
 }
 
 impl ImageViewerApp {
+    /// Lazily capture a root-window redraw hook (Windows child viewports do not wake ROOT).
+    pub(crate) fn ensure_root_redraw_wake(&mut self, frame: &eframe::Frame) {
+        if self.root_redraw_wake.is_some() {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(window) = frame.winit_window() {
+            let window = Arc::clone(window);
+            self.root_redraw_wake = Some(Arc::new(move || {
+                window.request_redraw();
+            }));
+        }
+    }
+
+    pub(crate) fn wake_root_for_logic(&self) {
+        if let Some(wake) = &self.root_redraw_wake {
+            wake();
+        }
+    }
+
+    pub(crate) fn root_redraw_wake_handle(&self) -> Option<crate::app::RootRedrawWake> {
+        self.root_redraw_wake.clone()
+    }
+
     pub(crate) fn effective_scan_recursive(&self) -> bool {
         self.settings.effective_scan_recursive()
     }
@@ -555,6 +579,7 @@ impl ImageViewerApp {
                     }
                     self.load_directory(path);
                     self.queue_save();
+                    self.wake_root_for_logic();
                     ctx.request_repaint();
                 }
                 DirectoryTreeCommand::ToggleExpanded(path) => {
@@ -585,20 +610,25 @@ impl ImageViewerApp {
         }
     }
 
-    pub(crate) fn draw_directory_tree_viewport(&mut self, ctx: &egui::Context) {
-        if self.settings.browse_mode != BrowseMode::Tree
-            || !self.settings.show_directory_tree_nav
-            || self.directory_tree.state.lock().root.is_none()
-        {
+    fn directory_tree_viewport_active(&self) -> bool {
+        self.settings.browse_mode == BrowseMode::Tree
+            && self.settings.show_directory_tree_nav
+            && self.directory_tree.state.lock().root.is_some()
+    }
+
+    /// Sync scan results into the directory-tree file list without registering the viewport.
+    /// Safe to call from `logic()` after `process_scan_results`.
+    pub(crate) fn sync_directory_tree_file_list_state(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_viewport_active() {
             return;
         }
-
-        self.ensure_directory_tree_strip_thumbnails(ctx);
 
         let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
         let request_viewport_repaint = {
             let mut state = self.directory_tree.state.lock();
             let previous_index = state.current_index;
+            let previous_scanning = state.scanning;
+            let previous_row_count = state.image_rows.len();
             state.sync_images(
                 &self.image_files,
                 &self.file_byte_len_by_index,
@@ -608,8 +638,23 @@ impl ImageViewerApp {
                 self.status_message.clone(),
                 &self.directory_tree.metadata_request_tx,
             );
-            let repaint =
-                state.scroll_image_list_to_current || state.current_index != previous_index;
+            let repaint = state.scroll_image_list_to_current
+                || state.current_index != previous_index
+                || state.scanning != previous_scanning
+                || state.image_rows.len() != previous_row_count;
+            #[cfg(feature = "preload-debug")]
+            if repaint
+                && (state.scanning != previous_scanning
+                    || state.image_rows.len() != previous_row_count)
+            {
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] directory tree viewport repaint: scanning {} -> {} rows {} -> {}",
+                    previous_scanning,
+                    state.scanning,
+                    previous_row_count,
+                    state.image_rows.len()
+                );
+            }
             state.sync_preview_textures(
                 self.directory_tree_strip_cache.textures(),
                 self.directory_tree_strip_cache.logical_sizes(),
@@ -617,8 +662,29 @@ impl ImageViewerApp {
             repaint
         };
 
+        if request_viewport_repaint {
+            ctx.request_repaint_of(viewport_id);
+        }
+        if self.directory_tree_viewport_active() {
+            // Keep ROOT painting while the tree viewport is open. logic() may run on a child
+            // repaint; egui repaint requests alone do not wake ROOT on Windows.
+            self.wake_root_for_logic();
+            if self.scanning || self.scan_results_pending_since.is_some() {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Register the directory-tree viewport (draw only; state is synced from `logic()`).
+    pub(crate) fn prepare_directory_tree_file_list_viewport(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_viewport_active() {
+            return;
+        }
+
+        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
         let state = Arc::clone(&self.directory_tree.state);
         let command_tx = self.directory_tree.command_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
         let builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
             .with_inner_size([DIRECTORY_TREE_DEFAULT_WIDTH, DIRECTORY_TREE_DEFAULT_HEIGHT])
@@ -632,12 +698,68 @@ impl ImageViewerApp {
                 return;
             }
 
-            let mut state = state.lock();
-            draw_directory_tree_window(ui, &mut state, &command_tx);
+            let scanning = {
+                let mut state = state.lock();
+                draw_directory_tree_window(ui, &mut state, &command_tx, root_wake.as_ref());
+                state.scanning
+            };
+            if scanning {
+                if let Some(wake) = &root_wake {
+                    wake();
+                }
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
         });
+    }
 
-        if request_viewport_repaint {
-            ctx.request_repaint_of(viewport_id);
+    /// Drain directory scans, apply tree commands, sync the file list, then run strip/preloads.
+    /// Must run at the start of `logic()` (before HDR/GPU work) and again after tree selection
+    /// so a scan that finishes on a background thread is not left in `scan_rx` until the next
+    /// frame's heavy upload path (see preload-debug `wait_ms` logs).
+    pub(crate) fn process_directory_scan_pipeline(&mut self, ctx: &egui::Context) {
+        self.process_scan_results();
+        self.process_directory_tree_events(ctx);
+        self.process_scan_results();
+        self.sync_directory_tree_file_list_state(ctx);
+        #[cfg(feature = "preload-debug")]
+        if let Some(since) = self.scan_results_pending_since {
+            let wait_ms = crate::preload_debug::elapsed_ms(since);
+            if wait_ms > 100 {
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] scan still pending after pipeline wait_ms={} scanning={} scan_rx={}",
+                    wait_ms,
+                    self.scanning,
+                    self.scan_rx.is_some()
+                );
+            }
+        }
+        if !self.scanning {
+            self.run_directory_tree_logic_updates(ctx);
+        }
+    }
+
+    /// Strip-thumbnail polling/generation and deferred main-image preloads after a scan.
+    pub(crate) fn run_directory_tree_logic_updates(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_viewport_active() {
+            return;
+        }
+
+        self.ensure_directory_tree_strip_thumbnails(ctx);
+
+        {
+            let mut state = self.directory_tree.state.lock();
+            state.sync_preview_textures(
+                self.directory_tree_strip_cache.textures(),
+                self.directory_tree_strip_cache.logical_sizes(),
+            );
+        }
+        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+        ctx.request_repaint_of(viewport_id);
+        self.wake_root_for_logic();
+
+        if self.pending_preload_after_directory_scan {
+            self.pending_preload_after_directory_scan = false;
+            self.schedule_preloads(true);
         }
     }
 
@@ -1254,12 +1376,14 @@ fn draw_directory_tree_window(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
+    root_wake: Option<&crate::app::RootRedrawWake>,
 ) {
     ui.visuals_mut().button_frame = false;
     draw_directory_tree_top_panels(
         ui,
         state,
         command_tx,
+        root_wake,
         egui::vec2(ui.available_width(), ui.available_height()),
     );
 }
@@ -1268,6 +1392,7 @@ fn draw_directory_tree_top_panels(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
+    root_wake: Option<&crate::app::RootRedrawWake>,
     panel_size: egui::Vec2,
 ) {
     let viewport_height = panel_size.y;
@@ -1297,7 +1422,7 @@ fn draw_directory_tree_top_panels(
     ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
         ui.set_clip_rect(left_rect);
         ui.set_width(left_w);
-        draw_folder_panel(ui, state, command_tx);
+        draw_folder_panel(ui, state, command_tx, root_wake);
     });
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
@@ -1381,11 +1506,20 @@ fn draw_folder_panel(
     ui: &mut egui::Ui,
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
+    root_wake: Option<&crate::app::RootRedrawWake>,
 ) {
     let scroll_to_selected = state.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
         if let Some(root) = state.root.clone() {
-            let scrolled = draw_directory_node(ui, state, command_tx, &root, 0, scroll_to_selected);
+            let scrolled = draw_directory_node(
+                ui,
+                state,
+                command_tx,
+                root_wake,
+                &root,
+                0,
+                scroll_to_selected,
+            );
             if scrolled {
                 state.scroll_folder_to_selected = false;
             }
@@ -1410,6 +1544,7 @@ fn draw_directory_node(
     ui: &mut egui::Ui,
     state: &DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
+    root_wake: Option<&crate::app::RootRedrawWake>,
     path: &Path,
     depth: usize,
     scroll_to_selected: bool,
@@ -1461,6 +1596,11 @@ fn draw_directory_node(
             }
             if name_response.clicked() {
                 let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory(path.to_path_buf()));
+                if let Some(wake) = root_wake {
+                    wake();
+                }
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                ui.ctx().request_repaint();
             }
         },
     );
@@ -1477,8 +1617,15 @@ fn draw_directory_node(
 
     if node.expanded {
         for child in node.children {
-            scrolled |=
-                draw_directory_node(ui, state, command_tx, &child, depth + 1, scroll_to_selected);
+            scrolled |= draw_directory_node(
+                ui,
+                state,
+                command_tx,
+                root_wake,
+                &child,
+                depth + 1,
+                scroll_to_selected,
+            );
         }
     }
 
@@ -1492,7 +1639,7 @@ fn draw_image_file_list(
 ) {
     let panel_rect = ui.max_rect();
     let list_focus_id = ui.id().with("directory_tree_image_list");
-    let list_enabled = !state.scanning;
+    let list_enabled = !state.scanning || !state.image_rows.is_empty();
     if list_enabled {
         let panel_response = ui.interact(panel_rect, list_focus_id, egui::Sense::click());
         if panel_response.clicked() {
@@ -1506,7 +1653,7 @@ fn draw_image_file_list(
         return;
     }
 
-    let status_height = if state.scanning {
+    let status_height = if state.scanning && state.image_rows.is_empty() {
         DIRECTORY_TREE_ROW_HEIGHT
     } else {
         0.0
@@ -1575,7 +1722,7 @@ fn draw_image_file_list(
 
     try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx);
 
-    if state.scanning {
+    if state.scanning && state.image_rows.is_empty() {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), status_height),
             egui::Layout::left_to_right(egui::Align::Center),

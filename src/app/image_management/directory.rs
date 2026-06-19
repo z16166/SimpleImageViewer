@@ -36,6 +36,8 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
+        #[cfg(feature = "preload-debug")]
+        let load_started = std::time::Instant::now();
         // Abandon an in-progress F5 refresh before starting a new directory scan; otherwise
         // `process_scan_results` treats completion as refresh and skips new-directory reset.
         self.finish_refresh_scan_state();
@@ -45,6 +47,9 @@ impl ImageViewerApp {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.scan_rx = None;
+
+        #[cfg(feature = "preload-debug")]
+        let after_cancel_ms = crate::preload_debug::elapsed_ms(load_started);
 
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             if self.settings.tree_nav_root_dir.is_none() {
@@ -76,6 +81,16 @@ impl ImageViewerApp {
         self.current_file_name.clear();
         self.osd.invalidate();
         self.loader.cancel_all();
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.prefetch_prev_generation = None;
+        self.pending_preload_after_directory_scan = false;
+        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
+            self.invalidate_directory_tree_strip_gpu_textures();
+            self.directory_tree_strip_generate_inflight.clear();
+        }
+        #[cfg(feature = "preload-debug")]
+        let after_cleanup_ms = crate::preload_debug::elapsed_ms(load_started);
         self.pan_offset = Vec2::ZERO;
         // Match `navigate_to` / file-open semantics: prior folder's manual zoom and rotation
         // must not carry over (fit scale is multiplied by `zoom_factor`, so a leftover ~7.5×
@@ -84,13 +99,11 @@ impl ImageViewerApp {
         self.current_rotation = 0;
         self.error_message = None;
         self.is_font_error = false;
-        self.scanning = true;
         let dir_name = dir
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
         if crate::app::directory_tree::is_non_browsable_system_directory(&dir) {
             self.scanning = false;
@@ -98,18 +111,44 @@ impl ImageViewerApp {
             return;
         }
 
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        let scan_generation = self.scan_generation;
+
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
 
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
+        self.scan_results_pending_since = Some(std::time::Instant::now());
+        self.scanning = true;
+        self.status_message = t!("status.scanning", dir = dir_name).to_string();
+        let recursive = self.effective_scan_recursive();
+        let paired = self.settings.paired_raw_jpeg_handling;
+        #[cfg(feature = "preload-debug")]
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] load_directory spawn: dir={} recursive={} paired={:?} gen={} cancel_phase_ms={} cleanup_phase_ms={} total_before_spawn_ms={}",
+                dir.display(),
+                recursive,
+                paired,
+                scan_generation,
+                after_cancel_ms,
+                after_cleanup_ms,
+                crate::preload_debug::elapsed_ms(load_started)
+            );
+        }
         scanner::scan_directory(
             dir,
-            self.effective_scan_recursive(),
-            self.settings.paired_raw_jpeg_handling,
+            recursive,
+            paired,
+            scan_generation,
             tx,
             cancel,
+            self.root_redraw_wake_handle(),
         );
+        // Scan thread may finish before this returns; drain without blocking (checklist #3).
+        self.process_scan_results();
+        self.wake_root_for_logic();
     }
 
     /// Refresh the image file list for the current directory (bound to F5).
@@ -234,7 +273,6 @@ impl ImageViewerApp {
         self.set_current_index(0);
         self.error_message = None;
         self.is_font_error = false;
-        self.scanning = true;
         self.invalidate_random_slideshow_order();
 
         let dir_name = dir
@@ -242,22 +280,29 @@ impl ImageViewerApp {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
         // Cancel any previous (already-running) scan.
         if let Some(cancel) = self.scan_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        self.scan_rx = None;
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        let scan_generation = self.scan_generation;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
+        self.scan_results_pending_since = Some(std::time::Instant::now());
+        self.scanning = true;
+        self.status_message = t!("status.scanning", dir = dir_name).to_string();
         scanner::scan_directory(
             dir,
             self.effective_scan_recursive(),
             self.settings.paired_raw_jpeg_handling,
+            scan_generation,
             tx,
             cancel,
+            self.root_redraw_wake_handle(),
         );
     }
 
@@ -275,164 +320,42 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn process_scan_results(&mut self) {
-        let rx = match self.scan_rx.take() {
-            Some(rx) => rx,
-            None => return,
-        };
+        if self.scanning && self.scan_rx.is_none() {
+            log::error!(
+                "[Scan] scanning=true but scan_rx is None; clearing stuck scan state (gen={})",
+                self.scan_generation
+            );
+            self.scanning = false;
+            self.scan_results_pending_since = None;
+            return;
+        }
 
+        if self.scan_rx.is_none() {
+            return;
+        }
+
+        #[cfg(feature = "preload-debug")]
+        let drain_started = std::time::Instant::now();
+
+        let active_generation = self.scan_generation;
         let mut done = false;
         let mut first_batch_current_load_pending = false;
+        #[cfg(feature = "preload-debug")]
+        let mut batch_count = 0usize;
 
-        // Drain all available messages this frame (non-blocking)
+        // Drain all available messages this frame (non-blocking). Keep `scan_rx` in place
+        // until Done/disconnect so we never lose the receiver while `scanning` is true.
         loop {
-            match rx.try_recv() {
-                Ok(msg) => {
-                    match msg {
-                        ScanMessage::Batch(batch) => {
-                            let is_first_batch = self.image_files.is_empty();
-                            for (path, len, modified_unix) in batch {
-                                self.image_files.push(path);
-                                self.file_byte_len_by_index.push(len);
-                                self.file_modified_unix_by_index.push(modified_unix);
-                            }
-
-                            let count = self.image_files.len();
-                            self.status_message =
-                                t!("status.scanning_found", count = count.to_string()).to_string();
-
-                            // On first batch: resolve initial position and start preloading.
-                            // For refresh scans, initial_image is kept None; for startup scans,
-                            // resolve_initial_position() delays clearing initial_image to None until
-                            // scanning is complete so that it survives the final sorted Done pass.
-                            if is_first_batch && count > 0 {
-                                if !self.refresh_scan_in_progress {
-                                    self.resolve_initial_position();
-                                    self.maybe_prefetch_startup_raw_open();
-                                }
-                                // Auto-close the settings panel only during the very first
-                                // startup scan (images_ever_loaded == false).
-                                if !self.images_ever_loaded {
-                                    self.show_settings = false;
-                                }
-                                self.images_ever_loaded = true;
-                                first_batch_current_load_pending = true;
-                            }
-                        }
-                        ScanMessage::Done => {
-                            done = true;
-                            self.scanning = false;
-
-                            if self.image_files.is_empty() {
-                                self.status_message = t!("status.not_found").to_string();
-                                // Bug fix: clear refresh state even when directory is empty,
-                                // otherwise refresh_scan_in_progress stays true forever and
-                                // blocks all navigation and future F5 presses.
-                                self.finish_refresh_scan_state();
-                            } else {
-                                // Re-sort the full list now that all batches have arrived.
-                                debug_assert_eq!(
-                                    self.image_files.len(),
-                                    self.file_byte_len_by_index.len()
-                                );
-                                debug_assert_eq!(
-                                    self.image_files.len(),
-                                    self.file_modified_unix_by_index.len()
-                                );
-                                let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
-                                    std::mem::take(&mut self.image_files)
-                                        .into_iter()
-                                        .zip(std::mem::take(&mut self.file_byte_len_by_index))
-                                        .zip(std::mem::take(&mut self.file_modified_unix_by_index))
-                                        .map(|((path, len), modified)| (path, len, modified))
-                                        .collect();
-                                combined.sort_by(|a, b| a.0.cmp(&b.0));
-                                let mut paths = Vec::with_capacity(combined.len());
-                                let mut sizes = Vec::with_capacity(combined.len());
-                                let mut modified = Vec::with_capacity(combined.len());
-                                for (path, len, mtime) in combined {
-                                    paths.push(path);
-                                    sizes.push(len);
-                                    modified.push(mtime);
-                                }
-                                self.image_files = paths;
-                                self.file_byte_len_by_index = sizes;
-                                self.file_modified_unix_by_index = modified;
-
-                                if self.refresh_scan_in_progress {
-                                    // Refresh path: relocate using the stable anchor path so that
-                                    // the position survives multi-batch scans. Then clear all other
-                                    // index-keyed states except the resolved new_idx.
-                                    if let Some(anchor) = self.refresh_anchor_path.take() {
-                                        // Find where the anchor file landed after sorting.
-                                        if let Some(new_idx) = self.find_index_for_path(&anchor) {
-                                            // Relocate kept state from temporary index 0 to new_idx.
-                                            self.relocate_index_keyed_cache(0, new_idx);
-
-                                            // Wipe all other index-keyed states except the current resolved image at new_idx.
-                                            self.clear_index_keyed_state_after_list_reorder_except_index(new_idx);
-                                            self.invalidate_random_slideshow_order();
-
-                                            self.set_current_index(new_idx);
-                                        } else {
-                                            // Anchor file was deleted or not found in the new list:
-                                            // wipe all index-keyed states completely and fall back to index 0.
-                                            self.clear_index_keyed_state_after_list_reorder();
-                                            self.invalidate_random_slideshow_order();
-                                            self.set_current_index(0);
-
-                                            // Request loading of the fallback index 0 file
-                                            let fallback_path = self.image_files[0].clone();
-                                            self.loader.request_load(
-                                                0,
-                                                self.generation,
-                                                fallback_path,
-                                                self.settings.raw_high_quality,
-                                                self.raw_demosaic_mode_for_index(0),
-                                            );
-                                        }
-                                    } else {
-                                        // anchor path not set (e.g. list was empty at F5 time)
-                                        self.clear_index_keyed_state_after_list_reorder();
-                                        self.invalidate_random_slideshow_order();
-                                        self.resolve_initial_position();
-                                    }
-                                } else {
-                                    // CRITICAL: Global sort finished; all index-keyed caches and
-                                    // pending loads may now point at the wrong file.
-                                    self.clear_index_keyed_state_after_list_reorder();
-                                    self.invalidate_random_slideshow_order();
-
-                                    // Regular new-directory scan: reset pan/zoom/rotation.
-                                    self.set_zoom_factor(1.0);
-                                    self.pan_offset = Vec2::ZERO;
-                                    self.current_rotation = 0;
-
-                                    // Re-resolve position after global sort.
-                                    self.resolve_initial_position();
-                                }
-
-                                self.refresh_current_file_name();
-
-                                let count = self.image_files.len();
-                                self.status_message =
-                                    t!("status.found", count = count.to_string()).to_string();
-                                self.schedule_preloads(true);
-
-                                self.finish_refresh_scan_state();
-                            }
-                            break;
-                        }
-                    }
-                }
+            let msg = match self.scan_rx.as_ref().unwrap().try_recv() {
+                Ok(msg) => msg,
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     done = true;
                     self.scanning = false;
+                    self.scan_results_pending_since = None;
                     if self.image_files.is_empty() {
                         self.status_message = t!("status.not_found").to_string();
                     }
-                    // Scan thread disconnected unexpectedly: clean up refresh state if active
-                    // and restore slideshow so playback is not left permanently paused.
                     if self.refresh_scan_in_progress {
                         self.refresh_anchor_path = None;
                         log::warn!("[RefreshFileList] Scan thread disconnected; refresh aborted");
@@ -440,21 +363,196 @@ impl ImageViewerApp {
                     }
                     break;
                 }
+            };
+
+            #[cfg(feature = "preload-debug")]
+            if let Some(since) = self.scan_results_pending_since.take() {
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] results drained after spawn wait_ms={}",
+                    crate::preload_debug::elapsed_ms(since)
+                );
+            }
+
+            match msg {
+                ScanMessage::Batch { generation, files } if generation == active_generation => {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        batch_count += 1;
+                        crate::preload_debug!(
+                            "[PreloadDebug][Scan] process batch #{batch_count}: added={} total={} drain_ms={}",
+                            files.len(),
+                            self.image_files.len() + files.len(),
+                            crate::preload_debug::elapsed_ms(drain_started)
+                        );
+                    }
+                    let is_first_batch = self.image_files.is_empty();
+                    for (path, len, modified_unix) in files {
+                        self.image_files.push(path);
+                        self.file_byte_len_by_index.push(len);
+                        self.file_modified_unix_by_index.push(modified_unix);
+                    }
+
+                    let count = self.image_files.len();
+                    self.status_message =
+                        t!("status.scanning_found", count = count.to_string()).to_string();
+
+                    if is_first_batch && count > 0 {
+                        if !self.refresh_scan_in_progress {
+                            self.resolve_initial_position();
+                            self.maybe_prefetch_startup_raw_open();
+                        }
+                        if !self.images_ever_loaded {
+                            self.show_settings = false;
+                        }
+                        self.images_ever_loaded = true;
+                        first_batch_current_load_pending = true;
+                    }
+                }
+                ScanMessage::Batch { generation, .. } => {
+                    log::debug!(
+                        "[Scan] ignoring stale batch: message_gen={generation} active_gen={active_generation}"
+                    );
+                }
+                ScanMessage::Done { generation } if generation == active_generation => {
+                    self.scan_results_pending_since = None;
+                    #[cfg(feature = "preload-debug")]
+                    let done_started = std::time::Instant::now();
+                    done = true;
+                    self.scanning = false;
+
+                    if self.image_files.is_empty() {
+                        self.status_message = t!("status.not_found").to_string();
+                        self.finish_refresh_scan_state();
+                    } else {
+                        debug_assert_eq!(self.image_files.len(), self.file_byte_len_by_index.len());
+                        debug_assert_eq!(
+                            self.image_files.len(),
+                            self.file_modified_unix_by_index.len()
+                        );
+                        let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
+                            std::mem::take(&mut self.image_files)
+                                .into_iter()
+                                .zip(std::mem::take(&mut self.file_byte_len_by_index))
+                                .zip(std::mem::take(&mut self.file_modified_unix_by_index))
+                                .map(|((path, len), modified)| (path, len, modified))
+                                .collect();
+                        combined.sort_by(|a, b| a.0.cmp(&b.0));
+                        #[cfg(feature = "preload-debug")]
+                        crate::preload_debug!(
+                            "[PreloadDebug][Scan] process done sort_ms={} files={}",
+                            crate::preload_debug::elapsed_ms(done_started),
+                            combined.len()
+                        );
+                        let mut paths = Vec::with_capacity(combined.len());
+                        let mut sizes = Vec::with_capacity(combined.len());
+                        let mut modified = Vec::with_capacity(combined.len());
+                        for (path, len, mtime) in combined {
+                            paths.push(path);
+                            sizes.push(len);
+                            modified.push(mtime);
+                        }
+                        self.image_files = paths;
+                        self.file_byte_len_by_index = sizes;
+                        self.file_modified_unix_by_index = modified;
+
+                        if self.refresh_scan_in_progress {
+                            if let Some(anchor) = self.refresh_anchor_path.take() {
+                                if let Some(new_idx) = self.find_index_for_path(&anchor) {
+                                    self.relocate_index_keyed_cache(0, new_idx);
+                                    self.clear_index_keyed_state_after_list_reorder_except_index(
+                                        new_idx,
+                                    );
+                                    self.invalidate_random_slideshow_order();
+                                    self.set_current_index(new_idx);
+                                } else {
+                                    self.clear_index_keyed_state_after_list_reorder();
+                                    self.invalidate_random_slideshow_order();
+                                    self.set_current_index(0);
+
+                                    let fallback_path = self.image_files[0].clone();
+                                    self.loader.request_load(
+                                        0,
+                                        self.generation,
+                                        fallback_path,
+                                        self.settings.raw_high_quality,
+                                        self.raw_demosaic_mode_for_index(0),
+                                    );
+                                }
+                            } else {
+                                self.clear_index_keyed_state_after_list_reorder();
+                                self.invalidate_random_slideshow_order();
+                                self.resolve_initial_position();
+                            }
+                        } else {
+                            #[cfg(feature = "preload-debug")]
+                            let before_clear_ms = crate::preload_debug::elapsed_ms(done_started);
+                            self.clear_index_keyed_state_after_list_reorder();
+                            #[cfg(feature = "preload-debug")]
+                            crate::preload_debug!(
+                                "[PreloadDebug][Scan] process done clear_index_keyed_state_ms={}",
+                                crate::preload_debug::elapsed_ms(done_started) - before_clear_ms
+                            );
+                            self.invalidate_random_slideshow_order();
+
+                            self.set_zoom_factor(1.0);
+                            self.pan_offset = Vec2::ZERO;
+                            self.current_rotation = 0;
+
+                            self.resolve_initial_position();
+                        }
+
+                        self.refresh_current_file_name();
+
+                        let count = self.image_files.len();
+                        self.status_message =
+                            t!("status.found", count = count.to_string()).to_string();
+                        if self.defer_main_preload_for_directory_tree_list() {
+                            self.pending_preload_after_directory_scan = true;
+                        } else {
+                            self.schedule_preloads(true);
+                        }
+
+                        self.finish_refresh_scan_state();
+                    }
+                    #[cfg(feature = "preload-debug")]
+                    crate::preload_debug!(
+                        "[PreloadDebug][Scan] process done complete: files={} done_handler_ms={} drain_total_ms={}",
+                        self.image_files.len(),
+                        crate::preload_debug::elapsed_ms(done_started),
+                        crate::preload_debug::elapsed_ms(drain_started)
+                    );
+                    break;
+                }
+                ScanMessage::Done { generation } => {
+                    log::debug!(
+                        "[Scan] ignoring stale done: message_gen={generation} active_gen={active_generation}"
+                    );
+                }
             }
         }
 
         if first_batch_current_load_pending && !done {
-            self.schedule_current_image_load_if_needed();
+            if self.defer_main_preload_for_directory_tree_list() {
+                self.pending_preload_after_directory_scan = true;
+            } else {
+                self.schedule_current_image_load_if_needed();
+            }
         }
 
-        if !done {
-            // Put the receiver back if scanning is still in progress
-            self.scan_rx = Some(rx);
+        if done {
+            self.scan_rx = None;
+            self.scan_cancel = None;
         }
     }
 
     pub(crate) fn find_index_for_path(&self, path: &std::path::Path) -> Option<usize> {
         find_index_for_path_impl(&self.image_files, path)
+    }
+
+    pub(crate) fn defer_main_preload_for_directory_tree_list(&self) -> bool {
+        self.settings.browse_mode == crate::settings::BrowseMode::Tree
+            && self.settings.show_directory_tree_nav
+            && !self.refresh_scan_in_progress
     }
 
     /// Resolve the starting image index from initial_image or resume settings.

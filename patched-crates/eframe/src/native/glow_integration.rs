@@ -705,6 +705,38 @@ impl GlowWinitRunning<'_> {
         // ------------------------------------------------------------
         // The update function, which could call immediate viewports,
         // so make sure we don't hold any locks here required by the immediate viewports rendeer.
+        //
+        // Simple Image Viewer fork (KEEP when merging upstream eframe): same rationale as
+        // wgpu_integration.rs -- App::logic must run when a deferred child viewport
+        // repaints, not only when ROOT repaints.
+        //
+        {
+            profiling::scope!("App::logic");
+            self.app
+                .logic(&self.integration.egui_ctx, &mut self.integration.frame);
+        }
+
+        let root_window_id_for_repaint = if viewport_id != ViewportId::ROOT {
+            {
+                let glutin = self.glutin.borrow();
+                if let Some(root_vp) = glutin.viewports.get(&ViewportId::ROOT) {
+                    if let Some(root_window) = root_vp.window.as_ref() {
+                        root_window.request_redraw();
+                    }
+                }
+            }
+            self.integration
+                .egui_ctx
+                .request_repaint_of(ViewportId::ROOT);
+            self.glutin
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id())
+        } else {
+            None
+        };
 
         let full_output = self.integration.update(
             self.app.as_mut(),
@@ -877,6 +909,10 @@ impl GlowWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if cfg!(target_os = "windows")
+            && let Some(root_window_id) = root_window_id_for_repaint
+        {
+            Ok(EventResult::RepaintNow(root_window_id))
         } else {
             Ok(EventResult::Wait)
         }

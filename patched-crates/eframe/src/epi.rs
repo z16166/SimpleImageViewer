@@ -150,8 +150,15 @@ impl CreationContext<'_> {
 
 /// Implement this trait to write apps that can be compiled for both web/wasm and desktop/native using [`eframe`](https://github.com/emilk/egui/tree/main/crates/eframe).
 pub trait App {
-    /// Called once before each call to [`Self::ui`],
-    /// and additionally also called when the UI is hidden, but [`egui::Context::request_repaint`] was called.
+    /// Called once before each call to [`Self::ui`] on web, and on native before each
+    /// viewport paint (ROOT **and** deferred child viewports).
+    ///
+    /// **Simple Image Viewer fork:** upstream native eframe only called `logic` from the
+    /// ROOT viewport update path. Deferred child windows run only their UI callback; on
+    /// Windows the main window often gets no `RedrawRequested` while a child is focused,
+    /// so shared state (scan drains, loaders, timers) would stall until ROOT is refocused.
+    /// This fork also invokes `logic` from `run_ui_and_paint` for every viewport paint
+    /// (see `wgpu_integration.rs` / `glow_integration.rs` and `epi_integration.rs`).
     ///
     /// You may NOT show any ui or do any painting during the call to [`Self::logic`].
     ///

@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
 
+/// Calls [`winit::window::Window::request_redraw`] on the root viewport window.
+pub(crate) type RootRedrawWake = Arc<dyn Fn() + Send + Sync>;
+
 use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
@@ -501,6 +504,14 @@ pub struct ImageViewerApp {
     pub(crate) music_scan_path: Option<PathBuf>,
     pub(crate) scan_rx: Option<Receiver<crate::scanner::ScanMessage>>,
     pub(crate) scan_cancel: Option<Arc<AtomicBool>>,
+    /// Wakes the root winit window so `App::logic()` runs while a child viewport is focused.
+    pub(crate) root_redraw_wake: Option<crate::app::RootRedrawWake>,
+    /// Monotonic id for the active directory scan; stale channel messages are ignored.
+    pub(crate) scan_generation: u64,
+    /// Set when a directory scan is spawned; used by preload-debug queue-wait logs.
+    pub(crate) scan_results_pending_since: Option<std::time::Instant>,
+    /// Main-window preloads are deferred until the directory-tree file list viewport paints.
+    pub(crate) pending_preload_after_directory_scan: bool,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,

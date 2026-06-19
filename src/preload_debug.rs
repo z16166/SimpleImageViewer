@@ -38,6 +38,12 @@ pub(crate) fn path_is_raw(path: &std::path::Path) -> bool {
 }
 
 #[cfg(feature = "preload-debug")]
+#[inline]
+pub(crate) fn elapsed_ms(start: std::time::Instant) -> u128 {
+    start.elapsed().as_millis()
+}
+
+#[cfg(feature = "preload-debug")]
 pub(crate) fn summarize_image_data(data: &crate::loader::ImageData) -> String {
     use crate::loader::ImageData;
     match data {

@@ -754,6 +754,47 @@ impl WgpuWinitRunning<'_> {
         }
 
         // ------------------------------------------------------------
+        //
+        // Simple Image Viewer fork (KEEP when merging upstream eframe)
+        // -----------------------------------------------------------------
+        // Upstream calls App::logic only from the ROOT path inside EpiIntegration::update.
+        // Deferred child viewports (show_viewport_deferred) run only their UI callback.
+        // On Windows the main window often gets no RedrawRequested while a child OS window
+        // is focused, so logic() never runs: scan channel drains, loaders, and timers stall
+        // until the user refocuses the main window (e.g. from the taskbar).
+        // request_repaint_of(ROOT) from the child is not reliable in that state.
+        //
+        // Fix: call App::logic here before integration.update for every viewport paint.
+        // ROOT no longer calls logic inside update (see epi_integration.rs below).
+        //
+        {
+            profiling::scope!("App::logic");
+            app.logic(&integration.egui_ctx, &mut integration.frame);
+        }
+
+        // logic() may drain loaders and install GPU textures, but only ROOT ui()/paint draws
+        // the main canvas. When only a deferred child repaints, wake ROOT's OS window.
+        let root_window_id_for_repaint = if viewport_id != ViewportId::ROOT {
+            {
+                let shared_lock = shared.borrow();
+                if let Some(root_vp) = shared_lock.viewports.get(&ViewportId::ROOT) {
+                    if let Some(root_window) = root_vp.window.as_ref() {
+                        root_window.request_redraw();
+                    }
+                }
+            }
+            integration
+                .egui_ctx
+                .request_repaint_of(ViewportId::ROOT);
+            shared
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id())
+        } else {
+            None
+        };
 
         // Runs the update, which could call immediate viewports,
         // so make sure we hold no locks here!
@@ -914,6 +955,12 @@ impl WgpuWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if cfg!(target_os = "windows")
+            && let Some(root_window_id) = root_window_id_for_repaint
+        {
+            // request_redraw alone is not enough on Windows when ROOT did not receive the
+            // RedrawRequested that triggered this child paint; paint ROOT synchronously.
+            Ok(EventResult::RepaintNow(root_window_id))
         } else {
             Ok(EventResult::Wait)
         }

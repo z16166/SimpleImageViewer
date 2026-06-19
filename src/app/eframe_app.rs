@@ -147,6 +147,7 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+        self.ensure_root_redraw_wake(frame);
         // Poll tray commands (handlers wake the event loop via request_repaint).
         while let Ok(cmd) = self.tray_cmd_rx.try_recv() {
             match cmd {
@@ -355,6 +356,8 @@ impl eframe::App for ImageViewerApp {
                 self.last_switch_time += dt;
             }
 
+            self.process_directory_scan_pipeline(ctx);
+
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
 
@@ -375,6 +378,9 @@ impl eframe::App for ImageViewerApp {
             self.invalidate_view_text_layout();
             ctx.request_repaint();
         }
+
+        let scanning_at_frame_start = self.scanning;
+        self.process_directory_scan_pipeline(ctx);
 
         // Pull the live swap-chain target format every frame so all downstream
         // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,
@@ -572,25 +578,6 @@ impl eframe::App for ImageViewerApp {
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
         self.sync_linux_vulkan_hdr_metadata();
 
-        // Automatic theme refresh (for System theme trailing detection)
-        // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
-        if let Some(new_palette) = self
-            .settings
-            .theme
-            .resolve_if_changed(&mut self.theme_cache)
-        {
-            self.cached_palette = new_palette;
-            // Always refresh visuals if resolve_if_changed returns Some, to ensure
-            // all style properties (including those not in is_dark) are synchronized.
-            setup_visuals(ctx, &self.settings, &self.cached_palette);
-        }
-
-        let ppp = ctx.pixels_per_point();
-        if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
-            self.cached_pixels_per_point = ppp;
-            setup_visuals(ctx, &self.settings, &self.cached_palette);
-        }
-
         // Poll persistence errors from the saver thread
         while let Ok(err) = self.save_error_rx.try_recv() {
             log::error!("Settings persistence error: {}", err);
@@ -632,14 +619,18 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        self.process_loaded_images(ctx, &mut Some(frame));
-        self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame));
-        self.process_scan_results();
-        self.process_directory_tree_events(ctx);
+        if scanning_at_frame_start != self.scanning {
+            ctx.request_repaint();
+        }
+        if !self.scanning {
+            self.process_loaded_images(ctx, &mut Some(frame));
+            self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame));
+            // Upload deferred CPU pixels for the outgoing frame before navigation captures
+            // `prev_texture` (preloaded neighbors often skip GPU upload until display).
+            self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
+            self.wake_root_for_logic();
+        }
         self.process_music_scan_results();
-        // Upload deferred CPU pixels for the outgoing frame before navigation captures
-        // `prev_texture` (preloaded neighbors often skip GPU upload until display).
-        self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
         self.check_auto_switch(ctx);
         self.handle_keyboard(ctx);
         self.process_file_op_results();
@@ -701,6 +692,14 @@ impl eframe::App for ImageViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Theme/visual sync runs here (ROOT ui pass), not in logic(). With the eframe fork,
+        // logic() also runs when a deferred child viewport repaints; pixels_per_point and
+        // style there are wrong and would corrupt dark-theme widget colors on the main window.
+        self.sync_theme_and_visuals(&ctx);
+
+        // Directory-tree auxiliary viewport (state synced in `logic()`; draw-only here).
+        self.prepare_directory_tree_file_list_viewport(&ctx);
+
         // Draw image canvas (fills the central area)
         self.draw_image_canvas_ui(ui);
 
@@ -749,8 +748,6 @@ impl eframe::App for ImageViewerApp {
             self.last_show_settings = false;
         }
 
-        self.draw_directory_tree_viewport(&ctx);
-
         // Detect modal transitions: None → Some means a new dialog just opened.
         // Incrementing modal_generation makes the egui::Window Id unique for this
         // opening — egui has no position memory from previous openings, so the
@@ -774,6 +771,25 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
+    /// System-theme trailing detection and DPI-driven style refresh. Must run from the ROOT
+    /// `ui()` pass only (see comment in `ui()`).
+    fn sync_theme_and_visuals(&mut self, ctx: &Context) {
+        if let Some(new_palette) = self
+            .settings
+            .theme
+            .resolve_if_changed(&mut self.theme_cache)
+        {
+            self.cached_palette = new_palette;
+            setup_visuals(ctx, &self.settings, &self.cached_palette);
+        }
+
+        let ppp = ctx.pixels_per_point();
+        if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
+            self.cached_pixels_per_point = ppp;
+            setup_visuals(ctx, &self.settings, &self.cached_palette);
+        }
+    }
+
     fn build_tray_state(was_maximized: bool) -> Option<super::types::TrayState> {
         let icon_data = crate::startup::icon::load_icon();
         let icon =

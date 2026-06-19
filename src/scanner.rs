@@ -80,9 +80,12 @@ pub enum ScanMessage {
     /// An incremental batch of discovered files (already filtered, not yet globally sorted).
     /// Tuple is `(path, byte length, modified unix seconds)` from the same [`std::fs::metadata`]
     /// probe used during scan, so the UI thread can budget preloads without additional syscalls.
-    Batch(Vec<(PathBuf, u64, Option<i64>)>),
+    Batch {
+        generation: u64,
+        files: Vec<(PathBuf, u64, Option<i64>)>,
+    },
     /// Scanning is complete. No more batches will follow.
-    Done,
+    Done { generation: u64 },
 }
 
 /// Number of files to accumulate before sending a batch to the UI.
@@ -92,19 +95,42 @@ pub fn scan_directory(
     dir: PathBuf,
     recursive: bool,
     paired_raw_jpeg_handling: PairedRawJpegHandling,
+    generation: u64,
     tx: Sender<ScanMessage>,
     cancel: Arc<AtomicBool>,
+    wake_ui: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
     std::thread::spawn(move || {
+        #[cfg(feature = "preload-debug")]
+        let scan_started = std::time::Instant::now();
+        crate::preload_debug!(
+            "[PreloadDebug][Scan] thread start: dir={} recursive={} paired={:?} needs_pair_index={}",
+            dir.display(),
+            recursive,
+            paired_raw_jpeg_handling,
+            paired_raw_jpeg_handling.needs_pair_index()
+        );
         if recursive {
             let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
             let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
+            #[cfg(feature = "preload-debug")]
+            let mut walk_entries = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_files = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_ext_probes = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_images = 0usize;
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
                 .into_iter()
                 .flatten()
             {
+                #[cfg(feature = "preload-debug")]
+                {
+                    walk_entries += 1;
+                }
                 if cancel.load(Ordering::Relaxed) {
                     log::info!("[Scanner] Scan cancelled for {:?}", dir);
                     return;
@@ -112,13 +138,27 @@ pub fn scan_directory(
 
                 // 1. [Cheapest] Check file_type from directory entry (no syscall on most OSs)
                 if entry.file_type().is_file() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        walk_files += 1;
+                    }
                     // 2. [Cheap] Check extension without constructing full PathBuf
                     let is_img = Path::new(entry.file_name())
                         .extension()
-                        .map(|ext| is_supported_extension(ext))
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                walk_ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
                         .unwrap_or(false);
 
                     if is_img {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            walk_images += 1;
+                        }
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
                         let Ok(meta) = entry.metadata() else {
@@ -130,7 +170,7 @@ pub fn scan_directory(
                             } else {
                                 batch.push((path, len, modified_unix));
                                 if batch.len() >= BATCH_SIZE {
-                                    send_scan_batch(&mut batch, &tx);
+                                    send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
                                 }
                             }
                         }
@@ -138,18 +178,44 @@ pub fn scan_directory(
                 }
             }
 
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] recursive walk done: entries={} files={} ext_probes={} images={} walk_ms={}",
+                walk_entries,
+                walk_files,
+                walk_ext_probes,
+                walk_images,
+                crate::preload_debug::elapsed_ms(scan_started)
+            );
+
             if paired_raw_jpeg_handling.needs_pair_index() {
                 // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
                 // batches before the scan finishes could expose a file that should be skipped
                 // because its pair appears later.
-                send_scanned_files(files, paired_raw_jpeg_handling, &tx);
+                send_scanned_files(
+                    files,
+                    paired_raw_jpeg_handling,
+                    generation,
+                    &tx,
+                    wake_ui.as_ref(),
+                );
             } else {
-                send_scan_batch(&mut batch, &tx);
+                send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
+            #[cfg(feature = "preload-debug")]
+            let mut dir_entries = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut ext_probes = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut image_candidates = 0usize;
             if paired_raw_jpeg_handling.needs_pair_index() {
                 let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
                 for e in entries.flatten() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        dir_entries += 1;
+                    }
                     if cancel.load(Ordering::Relaxed) {
                         log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
                         return;
@@ -157,10 +223,20 @@ pub fn scan_directory(
 
                     let is_supported = Path::new(&e.file_name())
                         .extension()
-                        .map(|ext| is_supported_extension(ext))
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
                         .unwrap_or(false);
 
                     if is_supported {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            image_candidates += 1;
+                        }
                         let p = e.path();
                         let Ok(meta) = e.metadata() else {
                             continue;
@@ -170,10 +246,28 @@ pub fn scan_directory(
                         }
                     }
                 }
-                send_scanned_files(files, paired_raw_jpeg_handling, &tx);
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] read_dir done (pair index): entries={} ext_probes={} images={} read_ms={}",
+                    dir_entries,
+                    ext_probes,
+                    image_candidates,
+                    crate::preload_debug::elapsed_ms(scan_started)
+                );
+                send_scanned_files(
+                    files,
+                    paired_raw_jpeg_handling,
+                    generation,
+                    &tx,
+                    wake_ui.as_ref(),
+                );
             } else {
                 let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
                 for e in entries.flatten() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        dir_entries += 1;
+                    }
                     if cancel.load(Ordering::Relaxed) {
                         log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
                         return;
@@ -181,10 +275,20 @@ pub fn scan_directory(
 
                     let is_supported = Path::new(&e.file_name())
                         .extension()
-                        .map(|ext| is_supported_extension(ext))
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
                         .unwrap_or(false);
 
                     if is_supported {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            image_candidates += 1;
+                        }
                         let p = e.path();
                         let Ok(meta) = e.metadata() else {
                             continue;
@@ -192,33 +296,79 @@ pub fn scan_directory(
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             batch.push((p, len, modified_unix));
                             if batch.len() >= BATCH_SIZE {
-                                send_scan_batch(&mut batch, &tx);
+                                send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
                             }
                         }
                     }
                 }
-                send_scan_batch(&mut batch, &tx);
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] read_dir done: entries={} ext_probes={} images={} read_ms={}",
+                    dir_entries,
+                    ext_probes,
+                    image_candidates,
+                    crate::preload_debug::elapsed_ms(scan_started)
+                );
+                send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
             }
+        } else {
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] read_dir failed: dir={}",
+                dir.display()
+            );
         }
 
-        let _ = tx.send(ScanMessage::Done);
+        let _ = tx.send(ScanMessage::Done { generation });
+        if let Some(wake) = wake_ui.as_ref() {
+            wake();
+        }
+        crate::preload_debug!(
+            "[PreloadDebug][Scan] thread done sent: dir={} total_ms={}",
+            dir.display(),
+            crate::preload_debug::elapsed_ms(scan_started)
+        );
     });
 }
 
-fn send_scan_batch(batch: &mut Vec<(PathBuf, u64, Option<i64>)>, tx: &Sender<ScanMessage>) {
+fn send_scan_batch(
+    batch: &mut Vec<(PathBuf, u64, Option<i64>)>,
+    generation: u64,
+    tx: &Sender<ScanMessage>,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
+) {
     if batch.is_empty() {
         return;
     }
+    #[cfg(feature = "preload-debug")]
+    let send_started = std::time::Instant::now();
     batch.sort_by(|a, b| a.0.cmp(&b.0));
-    let _ = tx.send(ScanMessage::Batch(std::mem::take(batch)));
+    #[cfg(feature = "preload-debug")]
+    let batch_count = batch.len();
+    let _ = tx.send(ScanMessage::Batch {
+        generation,
+        files: std::mem::take(batch),
+    });
+    if let Some(wake) = wake_ui {
+        wake();
+    }
     batch.reserve(BATCH_SIZE);
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][Scan] batch sent: count={} send_ms={}",
+        batch_count,
+        crate::preload_debug::elapsed_ms(send_started)
+    );
 }
 
 fn send_scanned_files(
     mut files: Vec<(PathBuf, u64, Option<i64>)>,
     paired_raw_jpeg_handling: PairedRawJpegHandling,
+    generation: u64,
     tx: &Sender<ScanMessage>,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) {
+    #[cfg(feature = "preload-debug")]
+    let send_started = std::time::Instant::now();
     if paired_raw_jpeg_handling.needs_pair_index() {
         filter_raw_jpeg_pairs(&mut files, paired_raw_jpeg_handling);
     }
@@ -226,17 +376,48 @@ fn send_scanned_files(
     // Keep global ordering stable across batches. This holds all paths until the scan finishes,
     // which costs more memory than sorting per batch, but per-batch sorting is not globally sorted.
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    #[cfg(feature = "preload-debug")]
+    let total_files = files.len();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
+    #[cfg(feature = "preload-debug")]
+    let mut batches_sent = 0usize;
     for file in files {
         batch.push(file);
         if batch.len() >= BATCH_SIZE {
-            let _ = tx.send(ScanMessage::Batch(std::mem::take(&mut batch)));
+            let _ = tx.send(ScanMessage::Batch {
+                generation,
+                files: std::mem::take(&mut batch),
+            });
+            if let Some(wake) = wake_ui {
+                wake();
+            }
             batch.reserve(BATCH_SIZE);
+            #[cfg(feature = "preload-debug")]
+            {
+                batches_sent += 1;
+            }
         }
     }
     if !batch.is_empty() {
-        let _ = tx.send(ScanMessage::Batch(batch));
+        let _ = tx.send(ScanMessage::Batch {
+            generation,
+            files: batch,
+        });
+        if let Some(wake) = wake_ui {
+            wake();
+        }
+        #[cfg(feature = "preload-debug")]
+        {
+            batches_sent += 1;
+        }
     }
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][Scan] send_scanned_files: files={} batches={} ms={}",
+        total_files,
+        batches_sent,
+        crate::preload_debug::elapsed_ms(send_started)
+    );
 }
 
 fn filter_raw_jpeg_pairs(
@@ -390,14 +571,16 @@ mod tests {
             dir.to_path_buf(),
             false,
             paired_raw_jpeg_handling,
+            1,
             tx,
             Arc::new(AtomicBool::new(false)),
+            None,
         );
 
         let mut files = Vec::new();
         loop {
             match rx.recv().expect("scan message") {
-                ScanMessage::Batch(batch) => {
+                ScanMessage::Batch { files: batch, .. } => {
                     files.extend(batch.into_iter().map(|(path, _, _)| {
                         path.file_name()
                             .expect("file name")
@@ -405,7 +588,7 @@ mod tests {
                             .into_owned()
                     }));
                 }
-                ScanMessage::Done => break,
+                ScanMessage::Done { .. } => break,
             }
         }
         files.sort();
