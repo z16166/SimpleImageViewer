@@ -1597,6 +1597,7 @@ fn make_test_app() -> ImageViewerApp {
         file_op_tx,
         lightweight_file_op_tx,
         last_mouse_wheel_nav: 0.0,
+        last_canvas_rect: None,
         last_keyboard_nav: None,
         save_tx,
         save_error_rx,

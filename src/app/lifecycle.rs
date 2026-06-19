@@ -598,6 +598,7 @@ impl ImageViewerApp {
             print_status_rx: None,
             pending_anim_frames: HashMap::new(),
             last_mouse_wheel_nav: 0.0,
+            last_canvas_rect: None,
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
@@ -708,6 +709,7 @@ impl ImageViewerApp {
         if app.settings.browse_mode == crate::settings::BrowseMode::Tree
             && app.settings.show_directory_tree_nav
         {
+            app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();
             let saved_selected = app.settings.tree_nav_selected_dir.clone();
             if let Some(root) = app
@@ -723,7 +725,11 @@ impl ImageViewerApp {
                 let child_requests = {
                     let mut state = app.directory_tree.state.lock();
                     state.set_selected_dir(dir.clone());
-                    state.reveal_selected_dir()
+                    let mut requests = state.reveal_selected_dir();
+                    if let Some(request) = state.expand_tree_for_filesystem_dir(&dir) {
+                        requests.push(request);
+                    }
+                    requests
                 };
                 for request in child_requests {
                     let _ = app.directory_tree.children_request_tx.send(request);

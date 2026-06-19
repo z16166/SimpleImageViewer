@@ -24,16 +24,18 @@ use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
-use crate::app::types::CachedWindowPlacement;
 use crate::app::directory_tree_strip_cache::{
     DIRECTORY_TREE_STRIP_THUMBNAIL_MAX_SIDE, DirectoryTreeStripPreviewJobResult,
     decoded_rgba_size_valid,
 };
+use crate::app::types::CachedWindowPlacement;
+use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
 use crate::loader::REFINEMENT_POOL;
 use crate::loader::{
     DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
     preview_aspect_matches_logical,
 };
+use crate::path_location::is_unc_path;
 use crate::settings::{BrowseMode, Settings};
 use crate::theme::ThemePalette;
 use crate::ui::osd::{format_file_modified, format_file_size};
@@ -66,6 +68,28 @@ const DIRECTORY_TREE_COL_SIZE_MIN_WIDTH: f32 = 56.0;
 const DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH: f32 = 96.0;
 const DIRECTORY_TREE_COL_NAME_MIN_WIDTH: f32 = 32.0;
 const DIRECTORY_TREE_INDENT: f32 = 16.0;
+const THIS_PC_TREE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
+const NETWORK_TREE_PATH: &str = "\\\\?\\siv-tree\\Network";
+
+fn this_pc_tree_path() -> PathBuf {
+    PathBuf::from(THIS_PC_TREE_PATH)
+}
+
+fn network_tree_path() -> PathBuf {
+    PathBuf::from(NETWORK_TREE_PATH)
+}
+
+fn is_this_pc_tree_path(path: &Path) -> bool {
+    path.as_os_str() == this_pc_tree_path().as_os_str()
+}
+
+fn is_network_tree_path(path: &Path) -> bool {
+    path.as_os_str() == network_tree_path().as_os_str()
+}
+
+fn is_places_sentinel_path(path: &Path) -> bool {
+    is_this_pc_tree_path(path) || is_network_tree_path(path)
+}
 
 #[derive(Debug)]
 pub(crate) enum DirectoryTreeCommand {
@@ -77,7 +101,8 @@ pub(crate) enum DirectoryTreeCommand {
 
 #[derive(Debug)]
 pub(crate) struct DirectoryChildrenRequest {
-    path: PathBuf,
+    tree_path: PathBuf,
+    browse_path: PathBuf,
     generation: u64,
 }
 
@@ -104,7 +129,7 @@ struct DirectoryTreeFileRow {
 
 #[derive(Debug)]
 pub(crate) struct DirectoryChildrenResult {
-    path: PathBuf,
+    tree_path: PathBuf,
     generation: u64,
     result: Result<Vec<PathBuf>, String>,
 }
@@ -112,6 +137,7 @@ pub(crate) struct DirectoryChildrenResult {
 #[derive(Debug, Clone)]
 pub(crate) struct DirectoryTreeNode {
     display_name: String,
+    browse_path: PathBuf,
     expanded: bool,
     loading: bool,
     children_loaded: bool,
@@ -120,7 +146,8 @@ pub(crate) struct DirectoryTreeNode {
 }
 
 pub(crate) struct DirectoryTreeState {
-    root: Option<PathBuf>,
+    places_loaded: bool,
+    known_folders: Vec<KnownFolderEntry>,
     selected_dir: Option<PathBuf>,
     nodes: HashMap<PathBuf, DirectoryTreeNode>,
     generation: u64,
@@ -143,12 +170,15 @@ pub(crate) struct DirectoryTreeState {
     image_list_col_modified_w: f32,
     image_list_col_widths_font_size: f32,
     image_list_col_widths_dirty: bool,
+    network_label: String,
+    network_visible: bool,
 }
 
 impl Default for DirectoryTreeState {
     fn default() -> Self {
         Self {
-            root: None,
+            places_loaded: false,
+            known_folders: Vec::new(),
             selected_dir: None,
             nodes: HashMap::new(),
             generation: 0,
@@ -171,7 +201,33 @@ impl Default for DirectoryTreeState {
             image_list_col_modified_w: DIRECTORY_TREE_COL_MODIFIED_WIDTH,
             image_list_col_widths_font_size: 0.0,
             image_list_col_widths_dirty: true,
+            network_label: String::new(),
+            network_visible: false,
         }
+    }
+}
+
+fn directory_tree_node(display_name: impl Into<String>, browse_path: PathBuf) -> DirectoryTreeNode {
+    DirectoryTreeNode {
+        display_name: display_name.into(),
+        browse_path: browse_path.clone(),
+        expanded: false,
+        loading: false,
+        children_loaded: false,
+        children: Vec::new(),
+        error: None,
+    }
+}
+
+fn children_request(
+    tree_path: PathBuf,
+    browse_path: PathBuf,
+    generation: u64,
+) -> DirectoryChildrenRequest {
+    DirectoryChildrenRequest {
+        tree_path,
+        browse_path,
+        generation,
     }
 }
 
@@ -226,87 +282,230 @@ impl DirectoryTreeRuntime {
 }
 
 impl DirectoryTreeState {
-    pub(crate) fn set_root(&mut self, root: PathBuf) {
-        if self.root.as_ref() == Some(&root) {
-            return;
+    pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
+        self.generation = self.generation.wrapping_add(1);
+        self.places_loaded = true;
+        self.known_folders = places.known_folders;
+        self.network_label = places.network_label;
+        self.network_visible = false;
+        self.nodes.clear();
+
+        let drive_paths: Vec<PathBuf> = places
+            .drives
+            .iter()
+            .map(|drive| drive.path.clone())
+            .collect();
+        self.nodes.insert(
+            this_pc_tree_path(),
+            DirectoryTreeNode {
+                display_name: places.this_pc_label,
+                browse_path: this_pc_tree_path(),
+                expanded: false,
+                loading: false,
+                children_loaded: true,
+                children: drive_paths.clone(),
+                error: None,
+            },
+        );
+
+        for entry in &self.known_folders {
+            self.nodes.insert(
+                entry.tree_path.clone(),
+                DirectoryTreeNode {
+                    display_name: entry.display_name.clone(),
+                    browse_path: entry.filesystem_path.clone(),
+                    expanded: false,
+                    loading: false,
+                    children_loaded: false,
+                    children: Vec::new(),
+                    error: None,
+                },
+            );
         }
 
-        self.generation = self.generation.wrapping_add(1);
-        self.root = Some(root.clone());
-        self.selected_dir = Some(root.clone());
-        self.nodes.clear();
+        for drive in places.drives {
+            self.nodes
+                .entry(drive.path.clone())
+                .or_insert_with(|| directory_tree_node(drive.display_name, drive.path));
+        }
+    }
+
+    fn ensure_network_visible(&mut self) {
+        if self.network_visible {
+            return;
+        }
+        self.network_visible = true;
         self.nodes.insert(
-            root.clone(),
+            network_tree_path(),
             DirectoryTreeNode {
-                display_name: directory_display_name(&root),
-                expanded: true,
+                display_name: self.network_label.clone(),
+                browse_path: network_tree_path(),
+                expanded: false,
                 loading: false,
-                children_loaded: false,
+                children_loaded: true,
                 children: Vec::new(),
                 error: None,
             },
         );
     }
 
+    fn known_folder_for_filesystem_path(&self, path: &Path) -> Option<&KnownFolderEntry> {
+        self.known_folders
+            .iter()
+            .filter(|entry| {
+                path == entry.filesystem_path.as_path() || path.starts_with(&entry.filesystem_path)
+            })
+            .max_by_key(|entry| entry.filesystem_path.components().count())
+    }
+
+    fn reveal_ancestor_chain(&self, selected: &Path) -> Vec<PathBuf> {
+        if let Some(entry) = self.known_folder_for_filesystem_path(selected) {
+            let mut chain = vec![entry.tree_path.clone()];
+            if selected != entry.filesystem_path.as_path() {
+                if let Ok(relative) = selected.strip_prefix(&entry.filesystem_path) {
+                    let mut current = entry.filesystem_path.clone();
+                    for component in relative.components() {
+                        current.push(component);
+                        chain.push(current.clone());
+                    }
+                }
+            }
+            return chain;
+        }
+
+        if is_unc_path(selected) {
+            if let Some(share) = unc_share_root(selected) {
+                return directory_ancestor_chain(&share, selected);
+            }
+        }
+
+        filesystem_ancestor_chain(selected)
+    }
+
+    pub(crate) fn expand_tree_for_filesystem_dir(
+        &mut self,
+        dir: &Path,
+    ) -> Option<DirectoryChildrenRequest> {
+        let tree_path = if let Some(entry) = self.known_folder_for_filesystem_path(dir) {
+            if dir == entry.filesystem_path.as_path() {
+                entry.tree_path.clone()
+            } else {
+                dir.to_path_buf()
+            }
+        } else {
+            dir.to_path_buf()
+        };
+        let node = self.nodes.get_mut(&tree_path)?;
+        node.expanded = true;
+        if node.children_loaded || node.loading {
+            return None;
+        }
+        node.loading = true;
+        node.error = None;
+        let browse_path = node.browse_path.clone();
+        Some(children_request(tree_path, browse_path, self.generation))
+    }
+
+    pub(crate) fn set_root(&mut self, _root: PathBuf) {
+        // Legacy no-op; tree uses initialize_places().
+    }
+
     pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
+        if is_unc_path(&dir) {
+            self.ensure_network_visible();
+            if let Some(share_root) = unc_share_root(&dir) {
+                self.ensure_network_share_mounted(&share_root);
+            }
+        }
         self.selected_dir = Some(dir.clone());
+        let tree_key = self
+            .known_folder_for_filesystem_path(&dir)
+            .filter(|entry| entry.filesystem_path == dir)
+            .map(|entry| entry.tree_path.clone())
+            .unwrap_or_else(|| dir.clone());
+        let display_name = self
+            .known_folder_for_filesystem_path(&dir)
+            .filter(|entry| entry.filesystem_path == dir)
+            .map(|entry| entry.display_name.clone())
+            .unwrap_or_else(|| directory_display_name(&dir));
         self.nodes
-            .entry(dir.clone())
-            .or_insert_with(|| DirectoryTreeNode {
-                display_name: directory_display_name(&dir),
-                expanded: false,
-                loading: false,
-                children_loaded: false,
-                children: Vec::new(),
-                error: None,
-            });
+            .entry(tree_key)
+            .or_insert_with(|| directory_tree_node(display_name, dir));
         self.scroll_folder_to_selected = true;
     }
 
     pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {
-        let Some(root) = self.root.clone() else {
-            return Vec::new();
-        };
         let Some(selected) = self.selected_dir.clone() else {
             return Vec::new();
         };
+        if !self.places_loaded {
+            return Vec::new();
+        }
 
-        let chain = directory_ancestor_chain(&root, &selected);
+        let chain = self.reveal_ancestor_chain(&selected);
         let mut requests = Vec::new();
-        for path in chain.iter().take(chain.len().saturating_sub(1)) {
-            self.nodes
-                .entry(path.clone())
-                .or_insert_with(|| DirectoryTreeNode {
-                    display_name: directory_display_name(path),
-                    expanded: false,
-                    loading: false,
-                    children_loaded: false,
-                    children: Vec::new(),
-                    error: None,
-                });
-            if let Some(node) = self.nodes.get_mut(path) {
+
+        if should_expand_this_pc_for_path(&selected, &self.known_folders) {
+            if let Some(node) = self.nodes.get_mut(&this_pc_tree_path()) {
                 node.expanded = true;
-                if !node.children_loaded && !node.loading {
-                    node.loading = true;
-                    node.error = None;
-                    requests.push(DirectoryChildrenRequest {
-                        path: path.clone(),
-                        generation: self.generation,
-                    });
-                }
             }
         }
-        self.nodes
-            .entry(selected.clone())
-            .or_insert_with(|| DirectoryTreeNode {
-                display_name: directory_display_name(&selected),
-                expanded: false,
-                loading: false,
-                children_loaded: false,
-                children: Vec::new(),
-                error: None,
-            });
+
+        if is_unc_path(&selected) {
+            self.ensure_network_visible();
+            if let Some(share_root) = unc_share_root(&selected) {
+                self.ensure_network_share_mounted(&share_root);
+            }
+            if let Some(node) = self.nodes.get_mut(&network_tree_path()) {
+                node.expanded = true;
+            }
+        }
+
+        for path in chain.iter().take(chain.len().saturating_sub(1)) {
+            if is_places_sentinel_path(path) {
+                continue;
+            }
+            self.nodes
+                .entry(path.clone())
+                .or_insert_with(|| directory_tree_node(directory_display_name(path), path.clone()));
+            let Some(node) = self.nodes.get_mut(path) else {
+                continue;
+            };
+            node.expanded = true;
+            if !node.children_loaded && !node.loading {
+                node.loading = true;
+                node.error = None;
+                let browse_path = node.browse_path.clone();
+                requests.push(children_request(path.clone(), browse_path, self.generation));
+            }
+        }
+        let selected_tree_key = self
+            .known_folder_for_filesystem_path(&selected)
+            .filter(|entry| entry.filesystem_path == selected)
+            .map(|entry| entry.tree_path.clone())
+            .unwrap_or_else(|| selected.clone());
+        self.nodes.entry(selected_tree_key).or_insert_with(|| {
+            directory_tree_node(directory_display_name(&selected), selected.clone())
+        });
         requests
+    }
+
+    fn ensure_network_share_mounted(&mut self, share_root: &Path) {
+        self.ensure_network_visible();
+        let share_path = share_root.to_path_buf();
+        if let Some(network) = self.nodes.get_mut(&network_tree_path()) {
+            if !network
+                .children
+                .iter()
+                .any(|child| child.as_os_str() == share_path.as_os_str())
+            {
+                network.children.push(share_path.clone());
+                network.children.sort();
+            }
+        }
+        self.nodes.entry(share_path.clone()).or_insert_with(|| {
+            directory_tree_node(unc_share_display_name(&share_path), share_path.clone())
+        });
     }
 
     pub(crate) fn sync_images(
@@ -466,13 +665,18 @@ impl DirectoryTreeState {
     fn toggle_expanded(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
         let node = self.nodes.get_mut(path)?;
         node.expanded = !node.expanded;
+        if is_places_sentinel_path(path) {
+            return None;
+        }
         if node.expanded && !node.children_loaded && !node.loading {
             node.loading = true;
             node.error = None;
-            Some(DirectoryChildrenRequest {
-                path: path.to_path_buf(),
-                generation: self.generation,
-            })
+            let browse_path = node.browse_path.clone();
+            Some(children_request(
+                path.to_path_buf(),
+                browse_path,
+                self.generation,
+            ))
         } else {
             None
         }
@@ -485,10 +689,12 @@ impl DirectoryTreeState {
         }
         node.loading = true;
         node.error = None;
-        Some(DirectoryChildrenRequest {
-            path: path.to_path_buf(),
-            generation: self.generation,
-        })
+        let browse_path = node.browse_path.clone();
+        Some(children_request(
+            path.to_path_buf(),
+            browse_path,
+            self.generation,
+        ))
     }
 
     fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
@@ -496,7 +702,7 @@ impl DirectoryTreeState {
             return;
         }
 
-        let Some(node) = self.nodes.get_mut(&result.path) else {
+        let Some(node) = self.nodes.get_mut(&result.tree_path) else {
             return;
         };
 
@@ -507,16 +713,9 @@ impl DirectoryTreeState {
                 node.children = children.clone();
                 node.error = None;
                 for child in children {
-                    self.nodes
-                        .entry(child.clone())
-                        .or_insert_with(|| DirectoryTreeNode {
-                            display_name: directory_display_name(&child),
-                            expanded: false,
-                            loading: false,
-                            children_loaded: false,
-                            children: Vec::new(),
-                            error: None,
-                        });
+                    self.nodes.entry(child.clone()).or_insert_with(|| {
+                        directory_tree_node(directory_display_name(&child), child)
+                    });
                 }
             }
             Err(err) => {
@@ -567,6 +766,38 @@ impl ImageViewerApp {
         }
     }
 
+    pub(crate) fn ensure_directory_tree_places_loaded(&mut self) {
+        if self
+            .directory_tree
+            .state
+            .try_lock()
+            .is_some_and(|state| state.places_loaded)
+        {
+            return;
+        }
+        let places = crate::directory_tree_places::load();
+        let saved_dir = if self.settings.browse_mode == BrowseMode::Tree {
+            self.settings
+                .tree_nav_selected_dir
+                .clone()
+                .or_else(|| self.settings.last_image_dir.clone())
+        } else {
+            self.settings.last_image_dir.clone()
+        };
+        let mut state = self.directory_tree.state.lock();
+        state.initialize_places(places);
+        if saved_dir
+            .as_ref()
+            .is_some_and(|path| is_unc_path(path.as_path()))
+        {
+            state.ensure_network_visible();
+            if let Some(share) = saved_dir.as_ref().and_then(|path| unc_share_root(path)) {
+                state.ensure_network_share_mounted(&share);
+            }
+        }
+        self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
+    }
+
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {
         self.settings.browse_mode = BrowseMode::Tree;
         self.settings.show_directory_tree_nav = true;
@@ -574,14 +805,18 @@ impl ImageViewerApp {
         self.settings.tree_nav_selected_dir = Some(root.clone());
         self.settings.last_image_dir = Some(root.clone());
 
+        self.ensure_directory_tree_places_loaded();
         let runtime = &self.directory_tree;
-        let request = {
+        let requests = {
             let mut state = runtime.state.lock();
-            state.set_root(root.clone());
-            self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
-            state.request_children_if_needed(&root)
+            state.set_selected_dir(root.clone());
+            let mut requests = state.reveal_selected_dir();
+            if let Some(request) = state.expand_tree_for_filesystem_dir(&root) {
+                requests.push(request);
+            }
+            requests
         };
-        if let Some(request) = request {
+        for request in requests {
             let _ = runtime.children_request_tx.send(request);
         }
     }
@@ -612,6 +847,9 @@ impl ImageViewerApp {
         while let Ok(command) = self.directory_tree.command_rx.try_recv() {
             match command {
                 DirectoryTreeCommand::SelectDirectory(path) => {
+                    if is_places_sentinel_path(&path) {
+                        continue;
+                    }
                     self.settings.browse_mode = BrowseMode::Tree;
                     self.settings.show_directory_tree_nav = true;
                     self.settings.tree_nav_selected_dir = Some(path.clone());
@@ -619,6 +857,9 @@ impl ImageViewerApp {
                         let mut state = self.directory_tree.state.lock();
                         state.set_selected_dir(path.clone());
                         state.image_list_keyboard_active = false;
+                        if let Some(request) = state.expand_tree_for_filesystem_dir(&path) {
+                            let _ = self.directory_tree.children_request_tx.send(request);
+                        }
                     }
                     self.load_directory(path);
                     self.queue_save();
@@ -651,7 +892,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn directory_tree_settings_active(&self) -> bool {
+    pub(crate) fn directory_tree_settings_active(&self) -> bool {
         self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
     }
 
@@ -660,7 +901,7 @@ impl ImageViewerApp {
             return false;
         }
         match self.directory_tree.state.try_lock() {
-            Some(state) => state.root.is_some(),
+            Some(state) => state.places_loaded,
             // Embedded panel may hold the lock during paint; still treat as active.
             None => true,
         }
@@ -808,26 +1049,24 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_detached() {
             return;
         }
-        let Some(placement) =
-            ctx.viewport_for(Self::directory_tree_viewport_id(), |viewport| {
-                let viewport = viewport.input.viewport();
-                let outer_rect = viewport.outer_rect?;
-                let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
-                let center = outer_rect.center();
-                Some(CachedWindowPlacement {
-                    outer_position: [
-                        outer_rect.min.x.round() as i32,
-                        outer_rect.min.y.round() as i32,
-                    ],
-                    outer_center: [center.x.round() as i32, center.y.round() as i32],
-                    inner_size: [
-                        inner_size.x.round().max(1.0) as u32,
-                        inner_size.y.round().max(1.0) as u32,
-                    ],
-                    maximized: viewport.maximized.unwrap_or(false),
-                })
+        let Some(placement) = ctx.viewport_for(Self::directory_tree_viewport_id(), |viewport| {
+            let viewport = viewport.input.viewport();
+            let outer_rect = viewport.outer_rect?;
+            let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+            let center = outer_rect.center();
+            Some(CachedWindowPlacement {
+                outer_position: [
+                    outer_rect.min.x.round() as i32,
+                    outer_rect.min.y.round() as i32,
+                ],
+                outer_center: [center.x.round() as i32, center.y.round() as i32],
+                inner_size: [
+                    inner_size.x.round().max(1.0) as u32,
+                    inner_size.y.round().max(1.0) as u32,
+                ],
+                maximized: viewport.maximized.unwrap_or(false),
             })
-        else {
+        }) else {
             return;
         };
         if !placement.maximized
@@ -850,6 +1089,18 @@ impl ImageViewerApp {
             .unwrap_or(DIRECTORY_TREE_RIGHT_MIN_WIDTH);
         (folder + DIRECTORY_TREE_SPLITTER_GRAB_WIDTH + list)
             .max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH)
+    }
+
+    pub(crate) fn embedded_nav_panel_width_estimate(&self) -> f32 {
+        if let Some(width) = self.settings.directory_tree_embedded_panel_width {
+            return width.max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH);
+        }
+        if let Some(state) = self.directory_tree.state.try_lock() {
+            if state.embedded_nav_panel_width > 0.0 {
+                return state.embedded_nav_panel_width;
+            }
+        }
+        Self::directory_tree_embedded_panel_default_width(&self.settings)
     }
 
     pub(crate) fn directory_tree_viewport_id() -> egui::ViewportId {
@@ -958,7 +1209,7 @@ impl ImageViewerApp {
                 self.defer_directory_tree_file_list_sync();
                 return;
             };
-            if state.root.is_none() {
+            if !state.places_loaded {
                 return;
             }
             let previous_index = state.current_index;
@@ -1087,10 +1338,8 @@ impl ImageViewerApp {
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
-        let has_root = state
-            .try_lock()
-            .is_some_and(|guard| guard.root.is_some());
-        if !has_root {
+        let has_places = state.try_lock().is_some_and(|guard| guard.places_loaded);
+        if !has_places {
             return;
         }
 
@@ -1168,7 +1417,7 @@ impl ImageViewerApp {
         self.ensure_directory_tree_strip_thumbnails(ctx);
 
         if let Some(mut state) = self.directory_tree.state.try_lock() {
-            if state.root.is_some() {
+            if state.places_loaded {
                 state.sync_preview_textures(
                     self.directory_tree_strip_cache.textures(),
                     self.directory_tree_strip_cache.logical_sizes(),
@@ -1719,9 +1968,9 @@ fn directory_tree_children_worker_loop(
     children_result_tx: Sender<DirectoryChildrenResult>,
 ) {
     while let Ok(request) = request_rx.recv() {
-        let result = read_child_directories(&request.path);
+        let result = read_child_directories(&request.browse_path);
         let _ = children_result_tx.send(DirectoryChildrenResult {
-            path: request.path,
+            tree_path: request.tree_path,
             generation: request.generation,
             result,
         });
@@ -2074,20 +2323,46 @@ fn draw_folder_panel(
 ) {
     let scroll_to_selected = state.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
-        if let Some(root) = state.root.clone() {
-            let scrolled = draw_directory_node(
+        if !state.places_loaded {
+            return;
+        }
+        let mut scrolled = false;
+        for entry in &state.known_folders {
+            scrolled |= draw_directory_node(
                 ui,
                 state,
                 command_tx,
                 root_wake,
                 palette,
-                &root,
+                &entry.tree_path,
                 0,
                 scroll_to_selected,
             );
-            if scrolled {
-                state.scroll_folder_to_selected = false;
-            }
+        }
+        scrolled |= draw_directory_node(
+            ui,
+            state,
+            command_tx,
+            root_wake,
+            palette,
+            &this_pc_tree_path(),
+            0,
+            scroll_to_selected,
+        );
+        if state.network_visible {
+            scrolled |= draw_directory_node(
+                ui,
+                state,
+                command_tx,
+                root_wake,
+                palette,
+                &network_tree_path(),
+                0,
+                scroll_to_selected,
+            );
+        }
+        if scrolled {
+            state.scroll_folder_to_selected = false;
         }
     });
 }
@@ -2152,7 +2427,10 @@ fn draw_directory_node(
             );
             paint_tree_folder_icon(ui, folder_rect.0);
 
-            let selected = state.selected_dir.as_deref() == Some(path);
+            let selected = state
+                .selected_dir
+                .as_deref()
+                .is_some_and(|selected| selected == node.browse_path.as_path());
             let name_width = ui.available_width().max(1.0);
             let (name_rect, name_response) = ui.allocate_exact_size(
                 egui::vec2(name_width, DIRECTORY_TREE_ROW_HEIGHT),
@@ -2166,13 +2444,19 @@ fn draw_directory_node(
                 node.display_name.as_str(),
                 palette,
             );
-            let name_response = name_response.on_hover_text(path.to_string_lossy());
+            let name_response = name_response.on_hover_text(node.browse_path.to_string_lossy());
             if scroll_to_selected && selected {
                 name_response.scroll_to_me(Some(egui::Align::Center));
                 scrolled = true;
             }
             if name_response.clicked() {
-                let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory(path.to_path_buf()));
+                if is_places_sentinel_path(path) {
+                    let _ =
+                        command_tx.send(DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()));
+                } else {
+                    let browse_path = node.browse_path.clone();
+                    let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory(browse_path));
+                }
                 if let Some(wake) = root_wake {
                     wake();
                 }
@@ -2241,8 +2525,7 @@ fn draw_image_file_list(
     let row_height = DIRECTORY_TREE_IMAGE_ROW_HEIGHT;
     let row_spacing = ui.spacing().item_spacing.y;
     let row_height_with_spacing = row_height + row_spacing;
-    let body_font =
-        egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
+    let body_font = egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
     state.ensure_image_list_column_widths(
         ui.painter(),
         &body_font,
@@ -2345,7 +2628,11 @@ fn measure_image_list_content_column_widths(
 ) -> (f32, f32) {
     let measure = |text: &str| {
         painter
-            .layout_no_wrap(text.to_owned(), body_font.clone(), egui::Color32::PLACEHOLDER)
+            .layout_no_wrap(
+                text.to_owned(),
+                body_font.clone(),
+                egui::Color32::PLACEHOLDER,
+            )
             .size()
             .x
     };
@@ -2370,7 +2657,8 @@ fn image_list_column_layout(
 ) -> ImageListColumnLayout {
     let thumb_w = DIRECTORY_TREE_COL_THUMB_WIDTH;
     let gutters = spacing_x * 4.0;
-    let ideal_fixed = thumb_w + ideal_size_w + ideal_modified_w + gutters + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
+    let ideal_fixed =
+        thumb_w + ideal_size_w + ideal_modified_w + gutters + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
     if row_width >= ideal_fixed {
         return ImageListColumnLayout {
             size_w: ideal_size_w,
@@ -2384,8 +2672,7 @@ fn image_list_column_layout(
         DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
         ideal_modified_w,
     );
-    let mut size_w =
-        (available_for_right_cols - modified_w).clamp(0.0, ideal_size_w);
+    let mut size_w = (available_for_right_cols - modified_w).clamp(0.0, ideal_size_w);
     if size_w < DIRECTORY_TREE_COL_SIZE_MIN_WIDTH && available_for_right_cols > 0.0 {
         size_w = available_for_right_cols
             .min(ideal_size_w)
@@ -2720,10 +3007,126 @@ fn draw_image_details_row(
 }
 
 fn directory_display_name(path: &Path) -> String {
+    if is_places_sentinel_path(path) {
+        return String::new();
+    }
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn should_expand_this_pc_for_path(selected: &Path, known_folders: &[KnownFolderEntry]) -> bool {
+    if is_unc_path(selected) {
+        return false;
+    }
+    if known_folders.iter().any(|entry| {
+        selected == entry.filesystem_path.as_path() || selected.starts_with(&entry.filesystem_path)
+    }) {
+        return false;
+    }
+    let Some(root) = volume_root_for_path(selected) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        let _ = root;
+        return true;
+    }
+    #[cfg(not(windows))]
+    {
+        root.components().count() > 1 || root.as_os_str() == "/"
+    }
+}
+
+fn filesystem_ancestor_chain(target: &Path) -> Vec<PathBuf> {
+    if let Some(root) = volume_root_for_path(target) {
+        if target == root.as_path() {
+            return vec![root];
+        }
+        let mut chain = vec![root.clone()];
+        if let Ok(relative) = target.strip_prefix(&root) {
+            let mut current = root;
+            for component in relative.components() {
+                current.push(component);
+                chain.push(current.clone());
+            }
+        } else {
+            chain.push(target.to_path_buf());
+        }
+        return chain;
+    }
+
+    let mut chain = vec![target.to_path_buf()];
+    let mut current = target.to_path_buf();
+    while current.pop() {
+        chain.push(current.clone());
+    }
+    chain.reverse();
+    chain
+}
+
+fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
+    if let Some(share_root) = unc_share_root(path) {
+        return Some(share_root);
+    }
+
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        let bytes = text.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            return Some(PathBuf::from(format!("{}:\\", bytes[0] as char)));
+        }
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(rest) = path.strip_prefix("/Volumes") {
+            if let Some(name) = rest.components().next() {
+                return Some(PathBuf::from("/Volumes").join(name.as_os_str()));
+            }
+        }
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for prefix in ["/media", "/mnt"] {
+            if let Ok(rest) = path.strip_prefix(prefix) {
+                if let Some(name) = rest.components().next() {
+                    return Some(PathBuf::from(prefix).join(name.as_os_str()));
+                }
+            }
+        }
+        if path.has_root() {
+            return Some(PathBuf::from("/"));
+        }
+        return None;
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    path.parent().map(|parent| parent.to_path_buf())
+}
+
+fn unc_share_root(path: &Path) -> Option<PathBuf> {
+    if !is_unc_path(path) {
+        return None;
+    }
+    let text = path.to_string_lossy();
+    let trimmed = text.trim_start_matches(r"\\").trim_start_matches("//");
+    let mut parts = trimmed.split(['\\', '/']).filter(|part| !part.is_empty());
+    let server = parts.next()?;
+    let share = parts.next()?;
+    Some(PathBuf::from(format!(r"\\{server}\{share}")))
+}
+
+fn unc_share_display_name(share_root: &Path) -> String {
+    let text = share_root.to_string_lossy();
+    text.trim_start_matches(r"\\")
+        .trim_start_matches("//")
+        .to_string()
 }
 
 fn directory_ancestor_chain(root: &Path, target: &Path) -> Vec<PathBuf> {
@@ -2828,7 +3231,7 @@ mod tests {
         let child = PathBuf::from("/tmp/siv-dir-tree-test-child");
 
         let mut state = DirectoryTreeState {
-            root: Some(root.clone()),
+            places_loaded: true,
             selected_dir: Some(root.clone()),
             generation: 2,
             ..DirectoryTreeState::default()
@@ -2837,6 +3240,7 @@ mod tests {
             root.clone(),
             DirectoryTreeNode {
                 display_name: "root".to_string(),
+                browse_path: root.clone(),
                 expanded: true,
                 loading: true,
                 children_loaded: false,
@@ -2846,7 +3250,7 @@ mod tests {
         );
 
         state.apply_children_result(DirectoryChildrenResult {
-            path: root.clone(),
+            tree_path: root.clone(),
             generation: 1,
             result: Ok(vec![child.clone()]),
         });
@@ -2864,7 +3268,7 @@ mod tests {
         let child = PathBuf::from("/tmp/siv-dir-tree-test-child-2");
 
         let mut state = DirectoryTreeState {
-            root: Some(root.clone()),
+            places_loaded: true,
             selected_dir: Some(root.clone()),
             generation: 1,
             ..DirectoryTreeState::default()
@@ -2873,6 +3277,7 @@ mod tests {
             root.clone(),
             DirectoryTreeNode {
                 display_name: "root".to_string(),
+                browse_path: root.clone(),
                 expanded: true,
                 loading: true,
                 children_loaded: false,
@@ -2882,7 +3287,7 @@ mod tests {
         );
 
         state.apply_children_result(DirectoryChildrenResult {
-            path: root.clone(),
+            tree_path: root.clone(),
             generation: 1,
             result: Ok(vec![child.clone()]),
         });
@@ -2899,7 +3304,7 @@ mod tests {
         let root = PathBuf::from("/tmp/siv-dir-tree-test-missing");
 
         let mut state = DirectoryTreeState {
-            root: Some(root.clone()),
+            places_loaded: true,
             selected_dir: Some(root.clone()),
             generation: 1,
             ..DirectoryTreeState::default()
@@ -2908,6 +3313,7 @@ mod tests {
             root.clone(),
             DirectoryTreeNode {
                 display_name: "root".to_string(),
+                browse_path: root.clone(),
                 expanded: true,
                 loading: true,
                 children_loaded: false,
@@ -2917,7 +3323,7 @@ mod tests {
         );
 
         state.apply_children_result(DirectoryChildrenResult {
-            path: root.clone(),
+            tree_path: root.clone(),
             generation: 1,
             result: Err("permission denied".to_string()),
         });
@@ -3135,6 +3541,60 @@ mod tests {
         assert_eq!(thumb.left(), row_rect.left() + 4.0);
     }
 
+    fn filesystem_ancestor_chain_lists_volume_root_to_target() {
+        let target = PathBuf::from(r"F:\iphone15\2026-05-27");
+        let chain = filesystem_ancestor_chain(&target);
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0], PathBuf::from(r"F:\"));
+        assert_eq!(chain[1], PathBuf::from(r"F:\iphone15"));
+        assert_eq!(chain[2], target);
+    }
+
+    #[test]
+    fn unc_share_root_extracts_server_and_share() {
+        let path = PathBuf::from("//192.168.2.1/pictures/2024/06");
+        assert_eq!(
+            unc_share_root(&path),
+            Some(PathBuf::from("//192.168.2.1/pictures"))
+        );
+    }
+
+    #[test]
+    fn filesystem_ancestor_chain_lists_unc_share_to_target() {
+        let target = PathBuf::from("//192.168.2.1/pictures/2024/06");
+        let chain = filesystem_ancestor_chain(&target);
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0], PathBuf::from("//192.168.2.1/pictures"));
+        assert_eq!(chain[1], PathBuf::from("//192.168.2.1/pictures/2024"));
+        assert_eq!(chain[2], target);
+    }
+
+    #[test]
+    fn reveal_selected_dir_mounts_unc_share_under_network() {
+        let places = DirectoryTreePlaces {
+            known_folders: Vec::new(),
+            drives: Vec::new(),
+            this_pc_label: "This PC".to_string(),
+            network_label: "Network".to_string(),
+        };
+
+        let mut state = DirectoryTreeState::default();
+        state.initialize_places(places);
+        state.set_selected_dir(PathBuf::from("//192.168.2.1/pictures/2024"));
+
+        assert!(state.network_visible);
+        let network = state.nodes.get(&network_tree_path()).expect("network node");
+        assert_eq!(
+            network.children,
+            vec![PathBuf::from("//192.168.2.1/pictures")]
+        );
+        assert!(
+            state
+                .nodes
+                .contains_key(&PathBuf::from("//192.168.2.1/pictures"))
+        );
+    }
+
     #[test]
     fn directory_ancestor_chain_lists_root_to_target() {
         let root = PathBuf::from(r"F:\");
@@ -3147,33 +3607,61 @@ mod tests {
     }
 
     #[test]
-    fn set_root_resets_nodes_and_bumps_generation() {
-        let first = PathBuf::from("/tmp/siv-dir-tree-first");
-        let second = PathBuf::from("/tmp/siv-dir-tree-second");
+    fn initialize_places_resets_nodes_and_bumps_generation() {
+        let places = DirectoryTreePlaces {
+            known_folders: Vec::new(),
+            drives: Vec::new(),
+            this_pc_label: "This PC".to_string(),
+            network_label: "Network".to_string(),
+        };
 
         let mut state = DirectoryTreeState::default();
-        state.set_root(first.clone());
+        state.initialize_places(places.clone());
         assert_eq!(state.generation, 1);
-        assert_eq!(state.root.as_deref(), Some(first.as_path()));
-        assert_eq!(state.selected_dir.as_deref(), Some(first.as_path()));
-        assert_eq!(state.nodes.len(), 1);
+        assert!(state.places_loaded);
+        assert!(state.nodes.contains_key(&this_pc_tree_path()));
+        assert!(!state.network_visible);
+        assert!(!state.nodes.contains_key(&network_tree_path()));
 
         state.nodes.insert(
             PathBuf::from("/tmp/siv-dir-tree-stale"),
-            DirectoryTreeNode {
-                display_name: "stale".to_string(),
-                expanded: false,
-                loading: false,
-                children_loaded: true,
-                children: Vec::new(),
-                error: None,
-            },
+            directory_tree_node("stale", PathBuf::from("/tmp/siv-dir-tree-stale")),
         );
 
-        state.set_root(second.clone());
+        state.initialize_places(places);
         assert_eq!(state.generation, 2);
-        assert_eq!(state.root.as_deref(), Some(second.as_path()));
         assert_eq!(state.nodes.len(), 1);
-        assert!(state.nodes.contains_key(&second));
+        assert!(state.nodes.contains_key(&this_pc_tree_path()));
+        assert!(!state.network_visible);
+        assert!(!state.nodes.contains_key(&network_tree_path()));
+    }
+
+    #[test]
+    fn reveal_known_folder_does_not_expand_this_pc() {
+        use crate::directory_tree_places::{KnownFolderKind, known_folder_tree_path};
+
+        let docs_fs = PathBuf::from("/tmp/siv-known-docs");
+        let places = DirectoryTreePlaces {
+            known_folders: vec![KnownFolderEntry {
+                kind: KnownFolderKind::Documents,
+                display_name: "Documents".to_string(),
+                tree_path: known_folder_tree_path(KnownFolderKind::Documents),
+                filesystem_path: docs_fs.clone(),
+            }],
+            drives: Vec::new(),
+            this_pc_label: "This PC".to_string(),
+            network_label: "Network".to_string(),
+        };
+
+        let mut state = DirectoryTreeState::default();
+        state.initialize_places(places);
+        state.set_selected_dir(docs_fs);
+        let _requests = state.reveal_selected_dir();
+        assert!(
+            !state
+                .nodes
+                .get(&this_pc_tree_path())
+                .is_some_and(|node| node.expanded)
+        );
     }
 }

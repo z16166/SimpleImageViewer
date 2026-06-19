@@ -222,7 +222,7 @@ impl ImageViewerApp {
             outgoing_index,
             source_tex.as_ref(),
             source_hdr.as_ref(),
-            ctx.input(|i| i.content_rect()),
+            self.canvas_rect_for_layout(ctx),
         );
 
         // Setup transition if enabled. We defer transition start until the target

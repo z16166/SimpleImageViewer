@@ -40,6 +40,7 @@ fn should_show_loading_hint(
 
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
+        self.last_canvas_rect = Some(ui.max_rect());
         // Block canvas mouse interaction when a modal dialog is open.
         // egui::Modal renders its own dimming overlay, so we do not need to
         // draw one manually here any more.

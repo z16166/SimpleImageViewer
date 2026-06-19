@@ -104,6 +104,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         {
             if app.settings.show_directory_tree_nav {
                 app.settings.browse_mode = BrowseMode::Tree;
+                app.ensure_directory_tree_places_loaded();
                 if let Some(root) = app
                     .settings
                     .tree_nav_root_dir

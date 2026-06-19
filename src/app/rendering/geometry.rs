@@ -116,6 +116,23 @@ impl ImageViewerApp {
         PlaneLayout::from_dest(img_size, rotation, dest)
     }
 
+    /// Layout rect for the image canvas. Prefer the last painted canvas area so navigation
+    /// hold/transition geometry matches the embedded directory-tree side panel.
+    pub(crate) fn canvas_rect_for_layout(&self, ctx: &Context) -> Rect {
+        if let Some(rect) = self.last_canvas_rect {
+            return rect;
+        }
+        let content = ctx.input(|i| i.content_rect());
+        if self.directory_tree_settings_active() && self.directory_tree_nav_is_embedded() {
+            let panel_width = self.embedded_nav_panel_width_estimate();
+            let min_x = content.min.x + panel_width;
+            if min_x < content.max.x {
+                return Rect::from_min_max(Pos2::new(min_x, content.min.y), content.max);
+            }
+        }
+        content
+    }
+
     /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.
     pub(crate) fn apply_rotation_with_tracking(&mut self, clockwise: bool, ctx: &Context) {
         if self.image_files.is_empty() {

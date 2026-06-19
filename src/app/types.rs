@@ -584,6 +584,8 @@ pub struct ImageViewerApp {
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,
+    /// Canvas area from the latest ROOT `draw_image_canvas_ui` pass (excludes embedded tree panel).
+    pub(crate) last_canvas_rect: Option<egui::Rect>,
 
     /// Last egui time when keyboard Next/Prev was applied (throttles key repeat).
     pub(crate) last_keyboard_nav: Option<f64>,
