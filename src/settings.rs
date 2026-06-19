@@ -355,6 +355,9 @@ pub struct Settings {
     /// Embedded navigation side panel width on the main window.
     #[serde(default)]
     pub directory_tree_embedded_panel_width: Option<f32>,
+    /// Strip previews in the directory-tree image list (disable for faster scans).
+    #[serde(default = "default_true")]
+    pub directory_tree_show_list_previews: bool,
     #[serde(default)]
     pub last_copy_cut_dir: Option<PathBuf>,
     #[serde(default)]
@@ -468,6 +471,7 @@ impl Default for Settings {
             directory_tree_folder_panel_width: None,
             directory_tree_image_list_panel_width: None,
             directory_tree_embedded_panel_width: None,
+            directory_tree_show_list_previews: true,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
         }

@@ -66,6 +66,7 @@ btn.open_release_page: "開啟發行頁面"
 # Labels / Checkboxes
 label.recursive_scan: "遞迴掃描子目錄"
 label.show_directory_tree_nav: "顯示目錄樹導覽視窗"
+label.directory_tree_show_list_previews: "在導覽列表中顯示圖片預覽"
 label.directory_tree_nav_style: "導覽視窗樣式"
 directory_tree_nav_style.embedded: "嵌入主視窗"
 directory_tree_nav_style.detached: "獨立視窗"

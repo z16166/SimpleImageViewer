@@ -580,6 +580,7 @@ impl ImageViewerApp {
     pub(crate) fn defer_main_preload_for_directory_tree_list(&self) -> bool {
         self.settings.browse_mode == crate::settings::BrowseMode::Tree
             && self.settings.show_directory_tree_nav
+            && self.settings.directory_tree_show_list_previews
             && !self.refresh_scan_in_progress
     }
 

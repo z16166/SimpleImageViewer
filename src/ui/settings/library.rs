@@ -157,6 +157,21 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             app.queue_save();
         }
 
+        let old_list_previews = app.settings.directory_tree_show_list_previews;
+        ui.add_enabled_ui(app.settings.show_directory_tree_nav, |ui| {
+            if themed_labeled_toggle(
+                ui,
+                &mut app.settings.directory_tree_show_list_previews,
+                t!("label.directory_tree_show_list_previews"),
+                &palette,
+            )
+            .changed()
+                && old_list_previews != app.settings.directory_tree_show_list_previews
+            {
+                app.on_directory_tree_list_previews_changed(ui.ctx());
+            }
+        });
+
         let old_recursive = app.settings.recursive;
         if app.settings.browse_mode == BrowseMode::Tree {
             ui.add_enabled_ui(false, |ui| {

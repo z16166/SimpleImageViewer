@@ -541,6 +541,22 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() {
             return false;
         }
+        if !self.directory_tree_list_previews_active() {
+            let Some(mut state) = self.directory_tree.state.try_lock() else {
+                self.defer_directory_tree_file_list_sync();
+                return false;
+            };
+            state.show_list_previews = false;
+            let cleared = !state.preview_textures.is_empty();
+            if cleared {
+                state.clear_list_preview_textures();
+            }
+            drop(state);
+            if cleared {
+                ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+            }
+            return cleared;
+        }
         let revision = self.directory_tree_strip_cache.gpu_revision();
         #[cfg(feature = "preload-debug")]
         let cache_count = self.directory_tree_strip_cache.textures().len();
@@ -554,6 +570,7 @@ impl ImageViewerApp {
             self.defer_directory_tree_file_list_sync();
             return false;
         };
+        state.show_list_previews = self.settings.directory_tree_show_list_previews;
         let updated = state.sync_preview_textures(
             self.directory_tree_strip_cache.textures(),
             self.directory_tree_strip_cache.logical_sizes(),
@@ -787,11 +804,19 @@ impl ImageViewerApp {
                 self.defer_directory_tree_file_list_sync();
                 return;
             };
-            let preview_updated = state.sync_preview_textures(
-                self.directory_tree_strip_cache.textures(),
-                self.directory_tree_strip_cache.logical_sizes(),
-                self.directory_tree_strip_cache.gpu_revision(),
-            );
+            state.show_list_previews = self.settings.directory_tree_show_list_previews;
+            let preview_updated = if self.directory_tree_list_previews_active() {
+                state.sync_preview_textures(
+                    self.directory_tree_strip_cache.textures(),
+                    self.directory_tree_strip_cache.logical_sizes(),
+                    self.directory_tree_strip_cache.gpu_revision(),
+                )
+            } else if !state.preview_textures.is_empty() {
+                state.clear_list_preview_textures();
+                true
+            } else {
+                false
+            };
             if !state.places_loaded {
                 (preview_updated, false, ImageListSortColumn::default(), true)
             } else {
@@ -887,6 +912,7 @@ impl ImageViewerApp {
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
+        let show_list_previews = self.settings.directory_tree_show_list_previews;
         let mut builder = egui::ViewportBuilder::default()
             .with_title(t!("directory_tree.title").to_string())
             .with_inner_size(inner_size)
@@ -931,6 +957,7 @@ impl ImageViewerApp {
                     root_wake.as_ref(),
                     &palette,
                     false,
+                    show_list_previews,
                 );
                 state.scanning
             };
@@ -953,6 +980,7 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
+        let show_list_previews = self.settings.directory_tree_show_list_previews;
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
         let has_places = state.try_lock().is_some_and(|guard| guard.places_loaded);
         if !has_places {
@@ -1002,6 +1030,7 @@ impl ImageViewerApp {
                     root_wake.as_ref(),
                     &palette,
                     true,
+                    show_list_previews,
                 );
                 if state.scanning {
                     ui.ctx().request_repaint();
@@ -1100,7 +1129,7 @@ impl ImageViewerApp {
         logical_size: Option<(u32, u32)>,
         ctx: &egui::Context,
     ) {
-        if index >= self.image_files.len() {
+        if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
             return;
         }
         self.directory_tree_strip_cache.upsert_from_decoded(
@@ -1634,7 +1663,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn ensure_directory_tree_strip_thumbnails(&mut self, ctx: &egui::Context) {
-        if self.settings.browse_mode != BrowseMode::Tree || !self.settings.show_directory_tree_nav {
+        if !self.directory_tree_list_previews_active() {
             return;
         }
 
@@ -1813,5 +1842,20 @@ impl ImageViewerApp {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
+    }
+
+    fn directory_tree_list_previews_active(&self) -> bool {
+        self.directory_tree_settings_active() && self.settings.directory_tree_show_list_previews
+    }
+
+    pub(crate) fn on_directory_tree_list_previews_changed(&mut self, ctx: &egui::Context) {
+        if !self.settings.directory_tree_show_list_previews {
+            self.invalidate_directory_tree_strip_gpu_textures();
+            if let Some(mut state) = self.directory_tree.state.try_lock() {
+                state.clear_list_preview_textures();
+            }
+        }
+        ctx.request_repaint();
+        self.queue_save();
     }
 }

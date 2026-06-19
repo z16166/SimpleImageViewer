@@ -382,10 +382,10 @@ fn image_list_columns_do_not_overlap_when_panel_is_narrow() {
         egui::pos2(0.0, 0.0),
         egui::vec2(320.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
     );
-    let columns = image_list_column_layout(row_rect.width(), 4.0, 72.0, 148.0);
+    let columns = image_list_column_layout(row_rect.width(), 4.0, 72.0, 148.0, true);
     let spacing = 4.0;
-    let thumb = image_list_thumb_column(row_rect, spacing);
-    let name = image_list_name_column(row_rect, &columns, spacing);
+    let thumb = image_list_thumb_column(row_rect, spacing, true);
+    let name = image_list_name_column(row_rect, &columns, spacing, true);
     let size = image_list_size_column(row_rect, &columns, spacing);
     let modified = image_list_modified_column(row_rect, &columns, spacing);
     assert!(thumb.right() <= name.left());
@@ -395,7 +395,7 @@ fn image_list_columns_do_not_overlap_when_panel_is_narrow() {
 
 #[test]
 fn image_list_columns_use_content_widths_when_panel_is_wide() {
-    let columns = image_list_column_layout(640.0, 4.0, 72.0, 148.0);
+    let columns = image_list_column_layout(640.0, 4.0, 72.0, 148.0, true);
     assert_eq!(columns.size_w, 72.0);
     assert_eq!(columns.modified_w, 148.0);
 }
@@ -406,7 +406,7 @@ fn image_list_thumb_column_has_fixed_width() {
         egui::pos2(10.0, 0.0),
         egui::vec2(400.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
     );
-    let thumb = image_list_thumb_column(row_rect, 4.0);
+    let thumb = image_list_thumb_column(row_rect, 4.0, true);
     assert!((thumb.width() - DIRECTORY_TREE_COL_THUMB_WIDTH).abs() < f32::EPSILON);
     assert_eq!(thumb.left(), row_rect.left() + 4.0);
 }

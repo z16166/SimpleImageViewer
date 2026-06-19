@@ -40,6 +40,7 @@ pub(super) const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 pub(super) const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
 pub(super) const DIRECTORY_TREE_COL_THUMB_WIDTH: f32 = 48.0;
 pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT: f32 = 48.0;
+pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT: f32 = 22.0;
 pub(super) const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
 pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
 pub(super) const MAX_STRIP_GENERATE_INFLIGHT: usize = 2;
@@ -177,6 +178,7 @@ pub(crate) struct DirectoryTreeState {
     image_list_sort_ascending: bool,
     image_list_sort_active: bool,
     image_list_reordering: bool,
+    show_list_previews: bool,
     panel_layout_dirty: bool,
 }
 
@@ -218,6 +220,7 @@ impl Default for DirectoryTreeState {
             image_list_sort_ascending: true,
             image_list_sort_active: false,
             image_list_reordering: false,
+            show_list_previews: true,
             panel_layout_dirty: false,
         }
     }
@@ -641,6 +644,13 @@ impl DirectoryTreeState {
         if scanning {
             self.image_list_keyboard_active = false;
         }
+        self.image_list_col_widths_dirty = true;
+    }
+
+    pub(crate) fn clear_list_preview_textures(&mut self) {
+        self.preview_textures.clear();
+        self.preview_logical_sizes.clear();
+        self.preview_textures_sync_revision = 0;
         self.image_list_col_widths_dirty = true;
     }
 

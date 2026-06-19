@@ -19,7 +19,8 @@ use super::{
     DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
     DIRECTORY_TREE_COL_SIZE_MIN_WIDTH, DIRECTORY_TREE_COL_THUMB_WIDTH,
     DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_FOLDER_ICON_WIDTH,
-    DIRECTORY_TREE_HEADER_HEIGHT, DIRECTORY_TREE_IMAGE_ROW_HEIGHT, DIRECTORY_TREE_INDENT,
+    DIRECTORY_TREE_HEADER_HEIGHT, DIRECTORY_TREE_IMAGE_ROW_HEIGHT,
+    DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT, DIRECTORY_TREE_INDENT,
     DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO, DIRECTORY_TREE_LEFT_MIN_WIDTH,
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
     DirectoryTreeCommand, DirectoryTreeFileRow, DirectoryTreeNode, DirectoryTreeState,
@@ -400,6 +401,14 @@ fn paint_directory_tree_folder_name(
     );
 }
 
+pub(super) fn image_list_row_height(show_previews: bool) -> f32 {
+    if show_previews {
+        DIRECTORY_TREE_IMAGE_ROW_HEIGHT
+    } else {
+        DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT
+    }
+}
+
 pub(super) fn image_list_interaction_enabled(state: &DirectoryTreeState) -> bool {
     !state.scanning && !state.image_list_reordering
 }
@@ -415,7 +424,9 @@ pub(super) fn draw_directory_tree_window(
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
     embedded: bool,
+    show_list_previews: bool,
 ) {
+    state.show_list_previews = show_list_previews;
     ui.visuals_mut().button_frame = false;
     ui.visuals_mut().override_text_color = Some(palette.text_normal);
     ui.painter()
@@ -818,7 +829,7 @@ fn draw_image_file_list(
     } else {
         0.0
     };
-    let row_height = DIRECTORY_TREE_IMAGE_ROW_HEIGHT;
+    let row_height = image_list_row_height(state.show_list_previews);
     let row_spacing = ui.spacing().item_spacing.y;
     let row_height_with_spacing = row_height + row_spacing;
     let body_font = egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
@@ -833,6 +844,7 @@ fn draw_image_file_list(
         ui.spacing().item_spacing.x,
         state.image_list_col_size_w,
         state.image_list_col_modified_w,
+        state.show_list_previews,
     );
 
     draw_image_details_header(ui, state, &column_layout, palette, command_tx);
@@ -882,6 +894,8 @@ fn draw_image_file_list(
                     row_index == current_index,
                     &column_layout,
                     &body_font,
+                    state.show_list_previews,
+                    row_height,
                     state.preview_textures.get(&row_index),
                     state.preview_logical_sizes.get(&row_index).copied(),
                     command_tx,
@@ -954,9 +968,14 @@ pub(super) fn image_list_column_layout(
     spacing_x: f32,
     ideal_size_w: f32,
     ideal_modified_w: f32,
+    show_previews: bool,
 ) -> ImageListColumnLayout {
-    let thumb_w = DIRECTORY_TREE_COL_THUMB_WIDTH;
-    let gutters = spacing_x * 4.0;
+    let thumb_w = if show_previews {
+        DIRECTORY_TREE_COL_THUMB_WIDTH
+    } else {
+        0.0
+    };
+    let gutters = spacing_x * if show_previews { 4.0 } else { 3.0 };
     let ideal_fixed =
         thumb_w + ideal_size_w + ideal_modified_w + gutters + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
     if row_width >= ideal_fixed {
@@ -982,11 +1001,20 @@ pub(super) fn image_list_column_layout(
     ImageListColumnLayout { size_w, modified_w }
 }
 
-pub(super) fn image_list_thumb_column(row_rect: egui::Rect, spacing_x: f32) -> egui::Rect {
+pub(super) fn image_list_thumb_column(
+    row_rect: egui::Rect,
+    spacing_x: f32,
+    show_previews: bool,
+) -> egui::Rect {
     let left = row_rect.left() + spacing_x;
+    let width = if show_previews {
+        DIRECTORY_TREE_COL_THUMB_WIDTH
+    } else {
+        0.0
+    };
     egui::Rect::from_min_max(
         egui::pos2(left, row_rect.top()),
-        egui::pos2(left + DIRECTORY_TREE_COL_THUMB_WIDTH, row_rect.bottom()),
+        egui::pos2(left + width, row_rect.bottom()),
     )
 }
 
@@ -1021,8 +1049,9 @@ pub(super) fn image_list_name_column(
     row_rect: egui::Rect,
     columns: &ImageListColumnLayout,
     spacing_x: f32,
+    show_previews: bool,
 ) -> egui::Rect {
-    let thumb = image_list_thumb_column(row_rect, spacing_x);
+    let thumb = image_list_thumb_column(row_rect, spacing_x, show_previews);
     let size = image_list_size_column(row_rect, columns, spacing_x);
     let left = thumb.right() + spacing_x;
     let right = (size.left() - spacing_x).max(left);
@@ -1130,7 +1159,7 @@ fn draw_image_details_header(
     paint_header(
         ImageListSortColumn::Name,
         t!("directory_tree.col_name").to_string(),
-        image_list_name_column(header_rect, columns, spacing_x),
+        image_list_name_column(header_rect, columns, spacing_x, state.show_list_previews),
         egui::Align::LEFT,
     );
     paint_header(
@@ -1241,6 +1270,8 @@ fn draw_image_details_row(
     selected: bool,
     columns: &ImageListColumnLayout,
     body_font: &egui::FontId,
+    show_previews: bool,
+    row_height: f32,
     texture: Option<&egui::TextureHandle>,
     logical_size: Option<(u32, u32)>,
     command_tx: &Sender<DirectoryTreeCommand>,
@@ -1248,10 +1279,8 @@ fn draw_image_details_row(
     palette: &ThemePalette,
 ) -> bool {
     let row_width = ui.available_width();
-    let (row_rect, response) = ui.allocate_exact_size(
-        egui::vec2(row_width, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
-        egui::Sense::click(),
-    );
+    let (row_rect, response) =
+        ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::click());
     if ui.is_rect_visible(row_rect) {
         if selected {
             ui.painter()
@@ -1262,8 +1291,10 @@ fn draw_image_details_row(
         }
 
         let spacing_x = ui.spacing().item_spacing.x;
-        let thumb_column = image_list_thumb_column(row_rect, spacing_x);
-        paint_image_list_thumbnail(ui.painter(), palette, thumb_column, texture, logical_size);
+        if show_previews {
+            let thumb_column = image_list_thumb_column(row_rect, spacing_x, true);
+            paint_image_list_thumbnail(ui.painter(), palette, thumb_column, texture, logical_size);
+        }
 
         let text_color = if selected {
             directory_tree_row_selected_text(palette)
@@ -1277,7 +1308,7 @@ fn draw_image_details_row(
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| String::from("-"));
 
-        let name_column = image_list_name_column(row_rect, columns, spacing_x);
+        let name_column = image_list_name_column(row_rect, columns, spacing_x, show_previews);
         let size_column = image_list_size_column(row_rect, columns, spacing_x);
         let modified_column = image_list_modified_column(row_rect, columns, spacing_x);
 
