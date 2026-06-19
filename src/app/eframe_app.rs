@@ -632,7 +632,6 @@ impl eframe::App for ImageViewerApp {
         }
         self.process_music_scan_results();
         self.check_auto_switch(ctx);
-        self.handle_keyboard(ctx);
         self.process_file_op_results();
         self.sync_directory_tree_file_list_state(ctx);
         self.run_directory_tree_logic_updates(ctx);
@@ -698,6 +697,10 @@ impl eframe::App for ImageViewerApp {
         // logic() also runs when a deferred child viewport repaints; pixels_per_point and
         // style there are wrong and would corrupt dark-theme widget colors on the main window.
         self.sync_theme_and_visuals(&ctx);
+        self.sync_directory_tree_keyboard_focus_with_viewports(&ctx);
+        // Keyboard must run from ROOT ui(), not logic(): logic() runs before integration.update
+        // applies raw_input and also runs on deferred child repaints with the wrong pass input.
+        self.handle_keyboard(&ctx);
 
         // Directory-tree auxiliary viewport (state synced in `logic()`; draw-only here).
         self.prepare_directory_tree_file_list_viewport(&ctx);

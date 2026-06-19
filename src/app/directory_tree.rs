@@ -621,6 +621,49 @@ impl ImageViewerApp {
         egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID)
     }
 
+    pub(crate) fn root_viewport_has_os_focus(ctx: &egui::Context) -> bool {
+        Self::viewport_has_os_focus(ctx, egui::ViewportId::ROOT)
+    }
+
+    pub(crate) fn directory_tree_viewport_has_os_focus(ctx: &egui::Context) -> bool {
+        Self::viewport_has_os_focus(ctx, Self::directory_tree_viewport_id())
+    }
+
+    fn viewport_has_os_focus(ctx: &egui::Context, viewport_id: egui::ViewportId) -> bool {
+        ctx.input(|i| {
+            i.raw
+                .viewports
+                .get(&viewport_id)
+                .and_then(|info| info.focused)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Release directory-tree list keyboard capture when the main window is focused.
+    pub(crate) fn sync_directory_tree_keyboard_focus_with_viewports(
+        &mut self,
+        ctx: &egui::Context,
+    ) {
+        if !self.directory_tree_viewport_active() {
+            return;
+        }
+        if Self::root_viewport_has_os_focus(ctx) && !Self::directory_tree_viewport_has_os_focus(ctx)
+        {
+            self.release_directory_tree_list_keyboard_capture();
+        }
+    }
+
+    pub(crate) fn release_directory_tree_list_keyboard_capture(&mut self) {
+        if self.directory_tree_viewport_active() {
+            self.directory_tree.state.lock().image_list_keyboard_active = false;
+        }
+    }
+
+    pub(crate) fn deactivate_directory_tree_list_keyboard(&mut self, ctx: &egui::Context) {
+        self.release_directory_tree_list_keyboard_capture();
+        ctx.memory_mut(|mem| mem.request_focus(egui::Id::NULL));
+    }
+
     pub(crate) fn request_directory_tree_viewport_repaint(&self, ctx: &egui::Context) {
         if self.directory_tree_viewport_active() {
             ctx.request_repaint_of(Self::directory_tree_viewport_id());
@@ -2109,6 +2152,10 @@ fn try_handle_image_list_arrow_keys(
     list_focus_id: egui::Id,
     command_tx: &Sender<DirectoryTreeCommand>,
 ) {
+    if !ImageViewerApp::directory_tree_viewport_has_os_focus(ui.ctx()) {
+        return;
+    }
+
     let list_has_focus = ui.memory(|mem| mem.has_focus(list_focus_id));
     if !(state.image_list_keyboard_active || list_has_focus)
         || state.image_rows.is_empty()

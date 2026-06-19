@@ -59,6 +59,9 @@ impl ImageViewerApp {
                     Sense::click_and_drag()
                 };
                 let canvas_resp = ui.allocate_rect(screen_rect, sense);
+                if canvas_resp.clicked() {
+                    self.deactivate_directory_tree_list_keyboard(ui.ctx());
+                }
                 if !self.scanning {
                     self.flush_deferred_sdr_upload_for_index(self.current_index, ui.ctx());
                 }
