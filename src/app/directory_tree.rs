@@ -38,6 +38,9 @@ use crate::theme::ThemePalette;
 use crate::ui::osd::{format_file_modified, format_file_size};
 
 const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
+const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
+const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
+const DIRECTORY_TREE_EMBEDDED_MIN_WIDTH: f32 = 320.0;
 const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 const DIRECTORY_TREE_DEFAULT_WIDTH: f32 = 820.0;
@@ -553,8 +556,7 @@ impl ImageViewerApp {
                 let _ = self.directory_tree.children_request_tx.send(request);
             }
             ctx.request_repaint();
-            let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
-            ctx.request_repaint_of(viewport_id);
+            self.request_directory_tree_viewport_repaint(ctx);
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
@@ -563,8 +565,7 @@ impl ImageViewerApp {
                 .lock()
                 .apply_metadata_result(result);
             ctx.request_repaint();
-            let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
-            ctx.request_repaint_of(viewport_id);
+            self.request_directory_tree_viewport_repaint(ctx);
         }
 
         while let Ok(command) = self.directory_tree.command_rx.try_recv() {
@@ -597,9 +598,7 @@ impl ImageViewerApp {
                         state.current_index = index;
                         state.scroll_image_list_to_current = true;
                         ctx.request_repaint();
-                        let viewport_id =
-                            egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
-                        ctx.request_repaint_of(viewport_id);
+                        self.request_directory_tree_viewport_repaint(ctx);
                     }
                 }
                 DirectoryTreeCommand::CloseWindow => {
@@ -615,6 +614,53 @@ impl ImageViewerApp {
         self.settings.browse_mode == BrowseMode::Tree
             && self.settings.show_directory_tree_nav
             && self.directory_tree.state.lock().root.is_some()
+    }
+
+    pub(crate) fn directory_tree_nav_is_detached(&self) -> bool {
+        matches!(
+            self.settings.directory_tree_nav_style,
+            crate::settings::DirectoryTreeNavStyle::Detached
+        )
+    }
+
+    pub(crate) fn directory_tree_nav_is_embedded(&self) -> bool {
+        matches!(
+            self.settings.directory_tree_nav_style,
+            crate::settings::DirectoryTreeNavStyle::Embedded
+        )
+    }
+
+    pub(crate) fn directory_tree_repaint_viewport_id(&self) -> egui::ViewportId {
+        if self.directory_tree_nav_is_detached() {
+            Self::directory_tree_viewport_id()
+        } else {
+            egui::ViewportId::ROOT
+        }
+    }
+
+    pub(crate) fn directory_tree_list_accepts_keyboard_input(
+        ctx: &egui::Context,
+        embedded: bool,
+    ) -> bool {
+        if embedded {
+            Self::root_viewport_has_os_focus(ctx)
+        } else {
+            Self::directory_tree_viewport_has_os_focus(ctx)
+        }
+    }
+
+    pub(crate) fn on_directory_tree_nav_style_changed(
+        &mut self,
+        ctx: &egui::Context,
+        was_detached: bool,
+    ) {
+        if was_detached && self.directory_tree_nav_is_embedded() {
+            ctx.send_viewport_cmd_to(
+                Self::directory_tree_viewport_id(),
+                egui::ViewportCommand::Close,
+            );
+        }
+        ctx.request_repaint();
     }
 
     pub(crate) fn directory_tree_viewport_id() -> egui::ViewportId {
@@ -644,7 +690,7 @@ impl ImageViewerApp {
         &mut self,
         ctx: &egui::Context,
     ) {
-        if !self.directory_tree_viewport_active() {
+        if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_detached() {
             return;
         }
         if Self::root_viewport_has_os_focus(ctx) && !Self::directory_tree_viewport_has_os_focus(ctx)
@@ -666,7 +712,7 @@ impl ImageViewerApp {
 
     pub(crate) fn request_directory_tree_viewport_repaint(&self, ctx: &egui::Context) {
         if self.directory_tree_viewport_active() {
-            ctx.request_repaint_of(Self::directory_tree_viewport_id());
+            ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
         }
     }
 
@@ -677,13 +723,16 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn mark_directory_tree_repaint_pending(&mut self) {
-        if self.directory_tree_viewport_active() {
+        if self.directory_tree_viewport_active() && self.directory_tree_nav_is_detached() {
             self.pending_directory_tree_repaint = true;
         }
     }
 
     pub(crate) fn take_pending_directory_tree_repaint(&mut self) -> Option<egui::ViewportId> {
-        if !self.pending_directory_tree_repaint || !self.directory_tree_viewport_active() {
+        if !self.directory_tree_nav_is_detached()
+            || !self.pending_directory_tree_repaint
+            || !self.directory_tree_viewport_active()
+        {
             return None;
         }
         self.pending_directory_tree_repaint = false;
@@ -697,7 +746,7 @@ impl ImageViewerApp {
             return;
         }
 
-        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+        let viewport_id = self.directory_tree_repaint_viewport_id();
         let request_viewport_repaint = {
             let mut state = self.directory_tree.state.lock();
             let previous_index = state.current_index;
@@ -750,13 +799,13 @@ impl ImageViewerApp {
         }
     }
 
-    /// Register the directory-tree viewport (draw only; state is synced from `logic()`).
+    /// Register the detached directory-tree viewport (draw only; state is synced from `logic()`).
     pub(crate) fn prepare_directory_tree_file_list_viewport(&mut self, ctx: &egui::Context) {
-        if !self.directory_tree_viewport_active() {
+        if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_detached() {
             return;
         }
 
-        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+        let viewport_id = Self::directory_tree_viewport_id();
         let state = Arc::clone(&self.directory_tree.state);
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
@@ -786,6 +835,7 @@ impl ImageViewerApp {
                     &command_tx,
                     root_wake.as_ref(),
                     &palette,
+                    false,
                 );
                 state.scanning
             };
@@ -796,6 +846,48 @@ impl ImageViewerApp {
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
         });
+    }
+
+    /// Draw the directory tree inside a resizable left panel on the main window.
+    pub(crate) fn draw_embedded_directory_tree_panel(&mut self, ui: &mut egui::Ui) {
+        if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_embedded() {
+            return;
+        }
+
+        let state = Arc::clone(&self.directory_tree.state);
+        let command_tx = self.directory_tree.command_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
+        let theme = Arc::clone(&self.directory_tree_theme);
+        let default_width = state
+            .lock()
+            .left_panel_width
+            .max(DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH);
+
+        egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+            .resizable(true)
+            .default_size(default_width)
+            .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
+            .show_inside(ui, |ui| {
+                let palette = theme
+                    .lock()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+                let scanning = {
+                    let mut state = state.lock();
+                    draw_directory_tree_window(
+                        ui,
+                        &mut state,
+                        &command_tx,
+                        root_wake.as_ref(),
+                        &palette,
+                        true,
+                    );
+                    state.scanning
+                };
+                if scanning {
+                    ui.ctx().request_repaint();
+                }
+            });
     }
 
     /// Drain directory scans, apply tree commands, sync the file list, then run strip/preloads.
@@ -839,9 +931,12 @@ impl ImageViewerApp {
                 self.directory_tree_strip_cache.logical_sizes(),
             );
         }
-        let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
+        let viewport_id = self.directory_tree_repaint_viewport_id();
         ctx.request_repaint_of(viewport_id);
         self.mark_directory_tree_repaint_pending();
+        if self.directory_tree_nav_is_embedded() {
+            ctx.request_repaint();
+        }
         self.wake_root_for_logic();
 
         if self.pending_preload_after_directory_scan {
@@ -1163,8 +1258,7 @@ impl ImageViewerApp {
                     .remove(&result.index);
             } else {
                 ctx.request_repaint();
-                let viewport_id = egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
-                ctx.request_repaint_of(viewport_id);
+                ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
             }
         }
     }
@@ -1541,6 +1635,7 @@ fn draw_directory_tree_window(
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
+    embedded: bool,
 ) {
     ui.visuals_mut().button_frame = false;
     ui.visuals_mut().override_text_color = Some(palette.text_normal);
@@ -1553,6 +1648,7 @@ fn draw_directory_tree_window(
         root_wake,
         palette,
         egui::vec2(ui.available_width(), ui.available_height()),
+        embedded,
     );
 }
 
@@ -1563,6 +1659,7 @@ fn draw_directory_tree_top_panels(
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
     panel_size: egui::Vec2,
+    embedded: bool,
 ) {
     let viewport_height = panel_size.y;
     let viewport_width = panel_size.x;
@@ -1597,7 +1694,7 @@ fn draw_directory_tree_top_panels(
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
         ui.set_clip_rect(right_rect);
         ui.set_width(right_w);
-        draw_image_file_list(ui, state, command_tx, palette);
+        draw_image_file_list(ui, state, command_tx, palette, embedded);
     });
 
     let splitter_id = ui.id().with("directory_tree_splitter");
@@ -1821,6 +1918,7 @@ fn draw_image_file_list(
     state: &mut DirectoryTreeState,
     command_tx: &Sender<DirectoryTreeCommand>,
     palette: &ThemePalette,
+    embedded: bool,
 ) {
     let panel_rect = ui.max_rect();
     let list_focus_id = ui.id().with("directory_tree_image_list");
@@ -1852,7 +1950,7 @@ fn draw_image_file_list(
 
     let viewport_height = (ui.available_height() - status_height).max(row_height_with_spacing);
 
-    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx);
+    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx, embedded);
 
     let mut pending_scroll_offset = None;
     if list_enabled && state.scroll_image_list_to_current && !state.image_rows.is_empty() {
@@ -1906,7 +2004,7 @@ fn draw_image_file_list(
         state.image_list_scroll_offset_y = scroll_output.state.offset.y;
     });
 
-    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx);
+    try_handle_image_list_arrow_keys(ui, state, list_focus_id, command_tx, embedded);
 
     if state.scanning && state.image_rows.is_empty() {
         ui.allocate_ui_with_layout(
@@ -2151,8 +2249,9 @@ fn try_handle_image_list_arrow_keys(
     state: &mut DirectoryTreeState,
     list_focus_id: egui::Id,
     command_tx: &Sender<DirectoryTreeCommand>,
+    embedded: bool,
 ) {
-    if !ImageViewerApp::directory_tree_viewport_has_os_focus(ui.ctx()) {
+    if !ImageViewerApp::directory_tree_list_accepts_keyboard_input(ui.ctx(), embedded) {
         return;
     }
 

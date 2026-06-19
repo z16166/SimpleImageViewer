@@ -82,6 +82,28 @@ impl Default for BrowseMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryTreeNavStyle {
+    Embedded,
+    Detached,
+}
+
+impl Default for DirectoryTreeNavStyle {
+    fn default() -> Self {
+        Self::Detached
+    }
+}
+
+impl DirectoryTreeNavStyle {
+    pub fn label(self) -> String {
+        match self {
+            Self::Embedded => rust_i18n::t!("directory_tree_nav_style.embedded").to_string(),
+            Self::Detached => rust_i18n::t!("directory_tree_nav_style.detached").to_string(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RawDemosaicMode & RawDemosaicMethod
 // ---------------------------------------------------------------------------
@@ -173,6 +195,8 @@ pub struct Settings {
     pub browse_mode: BrowseMode,
     #[serde(default)]
     pub show_directory_tree_nav: bool,
+    #[serde(default)]
+    pub directory_tree_nav_style: DirectoryTreeNavStyle,
     #[serde(default)]
     pub tree_nav_root_dir: Option<PathBuf>,
     #[serde(default)]
@@ -362,6 +386,7 @@ impl Default for Settings {
             recursive: false,
             browse_mode: BrowseMode::Linear,
             show_directory_tree_nav: false,
+            directory_tree_nav_style: DirectoryTreeNavStyle::Detached,
             tree_nav_root_dir: None,
             tree_nav_selected_dir: None,
             fullscreen: false,
@@ -748,6 +773,10 @@ mod tests {
 
         assert_eq!(settings.browse_mode, BrowseMode::Linear);
         assert!(!settings.show_directory_tree_nav);
+        assert_eq!(
+            settings.directory_tree_nav_style,
+            DirectoryTreeNavStyle::Detached
+        );
         assert!(settings.tree_nav_root_dir.is_none());
         assert!(settings.tree_nav_selected_dir.is_none());
     }

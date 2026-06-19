@@ -702,10 +702,11 @@ impl eframe::App for ImageViewerApp {
         // applies raw_input and also runs on deferred child repaints with the wrong pass input.
         self.handle_keyboard(&ctx);
 
-        // Directory-tree auxiliary viewport (state synced in `logic()`; draw-only here).
+        // Directory tree: embedded panel or detached auxiliary viewport (draw-only in logic).
+        self.draw_embedded_directory_tree_panel(ui);
         self.prepare_directory_tree_file_list_viewport(&ctx);
 
-        // Draw image canvas (fills the central area)
+        // Draw image canvas (fills the remaining central area)
         self.draw_image_canvas_ui(ui);
 
         if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
