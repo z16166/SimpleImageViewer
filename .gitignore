@@ -29,6 +29,7 @@ test_large.bmp
 !CMakeLists.txt
 scratch/
 .worktrees/
+/review/
 
 # Local test fixtures / corpora (not versioned)
 tests/data/*

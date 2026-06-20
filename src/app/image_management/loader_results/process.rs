@@ -27,6 +27,16 @@ impl ImageViewerApp {
         ctx: &egui::Context,
         frame: &mut Option<&mut eframe::Frame>,
     ) {
+        #[cfg(feature = "preload-debug")]
+        let loaded_started = std::time::Instant::now();
+        if self.scanning {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] process_loaded_images skipped while scanning frame_ms={}",
+                crate::preload_debug::elapsed_ms(loaded_started)
+            );
+            return;
+        }
         self.flush_deferred_sdr_upload_for_current(ctx);
         let is_transitioning = self.transition_start.is_some();
 
@@ -693,6 +703,17 @@ impl ImageViewerApp {
             self.loader.repush_back(output);
         }
         self.try_start_pending_transition_if_ready();
+        #[cfg(feature = "preload-debug")]
+        {
+            let frame_ms = crate::preload_debug::elapsed_ms(loaded_started);
+            if frame_ms > 16 {
+                crate::preload_debug!(
+                    "[PreloadDebug] process_loaded_images frame_ms={} generation={}",
+                    frame_ms,
+                    self.generation
+                );
+            }
+        }
     }
 
     // Runs on the main thread during the update/event phase (`process_loaded_images`),

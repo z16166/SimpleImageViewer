@@ -19,6 +19,15 @@
 use eframe::egui;
 use std::collections::HashMap;
 
+fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
+    let taken = std::mem::take(map);
+    for (old_idx, value) in taken {
+        if old_idx < old_to_new.len() {
+            map.insert(old_to_new[old_idx], value);
+        }
+    }
+}
+
 pub struct TextureCache {
     pub textures: HashMap<usize, egui::TextureHandle>,
     /// Original image dimensions (may differ from texture size for Tiled previews).
@@ -89,6 +98,12 @@ impl TextureCache {
         if let Some(tiled) = self.is_tiled.remove(&from) {
             self.is_tiled.insert(to, tiled);
         }
+    }
+
+    pub fn permute(&mut self, old_to_new: &[usize]) {
+        permute_usize_hashmap(&mut self.textures, old_to_new);
+        permute_usize_hashmap(&mut self.original_res, old_to_new);
+        permute_usize_hashmap(&mut self.is_tiled, old_to_new);
     }
 
     /// Check if the image at index is a Tiled/Large image.

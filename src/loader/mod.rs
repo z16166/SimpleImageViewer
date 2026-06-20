@@ -21,6 +21,7 @@ mod hdr_fallback;
 mod metadata;
 mod orchestrator;
 mod orientation;
+mod preview_aspect;
 mod preview_caps;
 mod raw_osd;
 mod texture_cache;
@@ -29,8 +30,13 @@ mod types;
 
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
+pub(crate) use preview_aspect::decoded_looks_like_black_placeholder;
 #[allow(unused_imports)]
-// Re-export-only surface for `crate::loader::*`; rustc may lint `MONITOR_PREVIEW_CAP`.
+// Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
+pub use preview_aspect::preview_aspect_matches_logical;
+pub(crate) use preview_caps::DIRECTORY_TREE_STRIP_POOL;
+#[allow(unused_imports)]
+// `MONITOR_PREVIEW_CAP` is part of the public loader re-export surface.
 pub use preview_caps::{
     GPU_DEMOSAIC_SUPPORTED, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side,
     refresh_hq_preview_monitor_cap,
@@ -40,6 +46,8 @@ pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels
 pub use texture_cache::TextureCache;
 pub use types::*;
 
+pub(crate) use decode::downsample_decoded_for_strip;
+pub(crate) use decode::generate_directory_tree_thumb_from_path;
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
     hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
@@ -47,7 +55,7 @@ pub(crate) use hdr_fallback::{
     hdr_to_sdr_with_user_tone, raw_gpu_source_has_bootstrap_preview,
     static_hdr_background_plane_upload_eligible,
 };
-pub(crate) use metadata::extract_exif_thumbnail;
+pub(crate) use metadata::{extract_exif_thumbnail, extract_exif_thumbnail_from_mmap};
 pub(crate) use orientation::{
     apply_exif_orientation_to_hdr_pair, apply_exif_orientation_to_image_data,
     hdr_gain_map_decode_capacity,

@@ -41,6 +41,7 @@ mod navigation;
 mod preload;
 mod preview;
 
+#[cfg(test)]
 fn has_startup_target(
     initial_image: Option<&PathBuf>,
     resume_last_image: bool,
@@ -398,6 +399,7 @@ fn should_request_repaint_for_asset_update(
     }
 }
 
+#[cfg(test)]
 fn image_file_size_pairs_with_missing_sizes_as_zero(
     image_files: Vec<PathBuf>,
     file_byte_len_by_index: Vec<u64>,
@@ -409,6 +411,27 @@ fn image_file_size_pairs_with_missing_sizes_as_zero(
                 .into_iter()
                 .chain(std::iter::repeat(0)),
         )
+        .collect()
+}
+
+fn image_file_entries_with_missing_tail(
+    image_files: Vec<PathBuf>,
+    file_byte_len_by_index: Vec<u64>,
+    file_modified_unix_by_index: Vec<Option<i64>>,
+) -> Vec<(PathBuf, u64, Option<i64>)> {
+    image_files
+        .into_iter()
+        .zip(
+            file_byte_len_by_index
+                .into_iter()
+                .chain(std::iter::repeat(0)),
+        )
+        .zip(
+            file_modified_unix_by_index
+                .into_iter()
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|((path, len), modified)| (path, len, modified))
         .collect()
 }
 
@@ -845,6 +868,9 @@ impl ImageViewerApp {
         if self.transition_start.is_some() {
             return;
         }
+        if self.current_index >= self.image_files.len() {
+            return;
+        }
         if self
             .hdr_placeholder_fallback_indices
             .contains(&self.current_index)
@@ -956,6 +982,16 @@ pub(super) fn accepts_background_image_generation_with_loader(
         idx,
         generation,
     )
+}
+
+/// HQ loader previews are tagged with the load generation; a prefetched [`TileManager`] promoted
+/// via `prefetch_tile_hit` bumps `tm.generation` once while the in-flight preview still carries
+/// the install generation.
+pub(super) fn preview_generation_matches_prefetched_tile(
+    preview_generation: u64,
+    tile_generation: u64,
+) -> bool {
+    preview_generation == tile_generation || preview_generation.wrapping_add(1) == tile_generation
 }
 
 /// High-quality RAW navigation requires an HDR plane entry. Prefetch eviction may drop HDR while
@@ -1173,14 +1209,48 @@ mod background_image_generation_tests {
             34, 100, 19, None, 34, 18
         ));
     }
+
+    #[test]
+    fn current_index_accepts_inflight_loader_preview_after_prefetch_promotion() {
+        // Background preload tagged HQ preview with load_gen=5; user navigated to the image
+        // (current_gen=7) before the preview arrived. prefetch_prev_generation must carry load_gen.
+        assert!(accepts_background_image_generation(5, 12, 7, Some(5), 5, 5));
+        assert!(!accepts_background_image_generation(
+            5,
+            12,
+            7,
+            Some(6),
+            5,
+            5
+        ));
+    }
+
+    #[test]
+    fn neighbor_prefetch_preview_accepted_within_generation_tolerance() {
+        // idx=6 HQ preview (load_gen=10) arrives while viewing idx=5 (gen=12).
+        assert!(accepts_background_image_generation(5, 12, 12, None, 6, 10));
+    }
+}
+
+#[cfg(test)]
+mod prefetched_preview_generation_tests {
+    use super::preview_generation_matches_prefetched_tile;
+
+    #[test]
+    fn matches_load_generation_or_one_promotion_bump() {
+        assert!(preview_generation_matches_prefetched_tile(10, 10));
+        assert!(preview_generation_matches_prefetched_tile(10, 11));
+        assert!(!preview_generation_matches_prefetched_tile(10, 12));
+        assert!(!preview_generation_matches_prefetched_tile(10, 9));
+    }
 }
 
 fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {
     if image_count == 0 {
         return usize::MAX;
     }
-    let dist_forward = (candidate + image_count - current_index % image_count) % image_count;
-    let dist_backward = (current_index + image_count - candidate % image_count) % image_count;
+    let dist_forward = (candidate + image_count - current_index) % image_count;
+    let dist_backward = (current_index + image_count - candidate) % image_count;
     dist_forward.min(dist_backward)
 }
 
@@ -1193,13 +1263,16 @@ fn prefetch_window_contains(
     prefetch_circular_distance(current_index, image_count, candidate) <= max_distance
 }
 
-fn should_schedule_first_batch_preload(
-    is_first_batch: bool,
-    count: usize,
-    scan_done: bool,
-    startup_target_pending: bool,
-) -> bool {
-    is_first_batch && count > 0 && !scan_done && !startup_target_pending
+#[cfg(test)]
+mod prefetch_circular_distance_tests {
+    use super::prefetch_circular_distance;
+
+    #[test]
+    fn wraps_correctly() {
+        assert_eq!(prefetch_circular_distance(0, 10, 5), 5);
+        assert_eq!(prefetch_circular_distance(9, 10, 0), 1);
+        assert_eq!(prefetch_circular_distance(0, 10, 9), 1);
+    }
 }
 
 fn first_cached_hdr_still_for_index(

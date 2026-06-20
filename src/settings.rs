@@ -18,6 +18,10 @@ use crate::theme::AppTheme;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default inner size (width, height) for the detached directory-tree window.
+pub const DIRECTORY_TREE_DEFAULT_INNER_WIDTH: u32 = 820;
+pub const DIRECTORY_TREE_DEFAULT_INNER_HEIGHT: u32 = 640;
+
 // ---------------------------------------------------------------------------
 // ScaleMode
 // ---------------------------------------------------------------------------
@@ -65,6 +69,77 @@ impl PairedRawJpegHandling {
             Self::ShowBoth => rust_i18n::t!("paired_raw_jpeg.show_both").to_string(),
             Self::SkipRaw => rust_i18n::t!("paired_raw_jpeg.skip_raw").to_string(),
             Self::SkipJpeg => rust_i18n::t!("paired_raw_jpeg.skip_jpeg").to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowseMode {
+    Linear,
+    Tree,
+}
+
+impl Default for BrowseMode {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryTreeNavStyle {
+    Embedded,
+    Detached,
+}
+
+impl Default for DirectoryTreeNavStyle {
+    fn default() -> Self {
+        Self::Embedded
+    }
+}
+
+impl DirectoryTreeNavStyle {
+    pub fn label(self) -> String {
+        match self {
+            Self::Embedded => rust_i18n::t!("directory_tree_nav_style.embedded").to_string(),
+            Self::Detached => rust_i18n::t!("directory_tree_nav_style.detached").to_string(),
+        }
+    }
+}
+
+/// Discrete strip-preview sizes for the directory-tree image list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryTreeListPreviewSize {
+    #[default]
+    Small,
+    Medium,
+    Large,
+}
+
+impl DirectoryTreeListPreviewSize {
+    pub fn thumb_px(self) -> f32 {
+        match self {
+            Self::Small => 48.0,
+            Self::Medium => 64.0,
+            Self::Large => 80.0,
+        }
+    }
+
+    pub fn strip_max_side(self) -> u32 {
+        match self {
+            Self::Small => 128,
+            Self::Medium => 192,
+            Self::Large => 256,
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Small => rust_i18n::t!("directory_tree.preview_size.small").to_string(),
+            Self::Medium => rust_i18n::t!("directory_tree.preview_size.medium").to_string(),
+            Self::Large => rust_i18n::t!("directory_tree.preview_size.large").to_string(),
         }
     }
 }
@@ -156,6 +231,16 @@ define_transition_styles!(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     // Image browsing
+    #[serde(default)]
+    pub browse_mode: BrowseMode,
+    #[serde(default)]
+    pub show_directory_tree_nav: bool,
+    #[serde(default)]
+    pub directory_tree_nav_style: DirectoryTreeNavStyle,
+    #[serde(default)]
+    pub tree_nav_root_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub tree_nav_selected_dir: Option<PathBuf>,
     #[serde(default)]
     pub recursive: bool,
     /// Not persisted — app always starts windowed so the OS title bar is visible.
@@ -282,6 +367,35 @@ pub struct Settings {
     /// artifact (e.g. `[-7,-7]`) instead of a restorable outer top-left.
     #[serde(default)]
     pub window_maximized_screen_center: Option<[i32; 2]>,
+    /// Detached directory-tree navigation window placement (see main window fields above).
+    #[serde(default)]
+    pub directory_tree_window_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_restore_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_restore_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_maximized_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub directory_tree_window_maximized: bool,
+    #[serde(default)]
+    pub directory_tree_window_maximized_screen_center: Option<[i32; 2]>,
+    /// Folder tree panel width inside the directory-tree navigation UI.
+    #[serde(default)]
+    pub directory_tree_folder_panel_width: Option<f32>,
+    /// Image file list panel width inside the directory-tree navigation UI.
+    #[serde(default)]
+    pub directory_tree_image_list_panel_width: Option<f32>,
+    /// Embedded navigation side panel width on the main window.
+    #[serde(default)]
+    pub directory_tree_embedded_panel_width: Option<f32>,
+    /// Strip previews in the directory-tree image list (disable for faster scans).
+    #[serde(default = "default_true")]
+    pub directory_tree_show_list_previews: bool,
+    #[serde(default)]
+    pub directory_tree_list_preview_size: DirectoryTreeListPreviewSize,
     #[serde(default)]
     pub last_copy_cut_dir: Option<PathBuf>,
     #[serde(default)]
@@ -339,6 +453,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             recursive: false,
+            browse_mode: BrowseMode::Linear,
+            show_directory_tree_nav: false,
+            directory_tree_nav_style: DirectoryTreeNavStyle::Embedded,
+            tree_nav_root_dir: None,
+            tree_nav_selected_dir: None,
             fullscreen: false,
             last_image_dir: None,
             auto_switch: false,
@@ -380,6 +499,18 @@ impl Default for Settings {
             window_maximized_inner_size: None,
             window_maximized: false,
             window_maximized_screen_center: None,
+            directory_tree_window_outer_position: None,
+            directory_tree_window_inner_size: None,
+            directory_tree_window_restore_outer_position: None,
+            directory_tree_window_restore_inner_size: None,
+            directory_tree_window_maximized_inner_size: None,
+            directory_tree_window_maximized: false,
+            directory_tree_window_maximized_screen_center: None,
+            directory_tree_folder_panel_width: None,
+            directory_tree_image_list_panel_width: None,
+            directory_tree_embedded_panel_width: None,
+            directory_tree_show_list_previews: true,
+            directory_tree_list_preview_size: DirectoryTreeListPreviewSize::Small,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
         }
@@ -387,6 +518,13 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(crate) fn effective_scan_recursive(&self) -> bool {
+        match self.browse_mode {
+            BrowseMode::Linear => self.recursive,
+            BrowseMode::Tree => false,
+        }
+    }
+
     /// Windows reports negative outer positions (e.g. `[-7,-7]`, `[-8,-8]`) while
     /// maximized; these are not valid restore coordinates. `(0, 0)` is valid.
     pub fn is_maximized_position_artifact([x, y]: [i32; 2]) -> bool {
@@ -443,6 +581,55 @@ impl Settings {
             self.window_inner_size
                 .map(|[w, h]| [w as f32, h as f32])
                 .unwrap_or([1280.0, 800.0])
+        }
+    }
+
+    /// Outer top-left used when spawning the detached directory-tree window.
+    pub fn directory_tree_startup_outer_position(&self) -> Option<[f32; 2]> {
+        if self.directory_tree_window_maximized {
+            if let Some(pos) = self.directory_tree_window_restore_outer_position {
+                return Some([pos[0] as f32, pos[1] as f32]);
+            }
+            let restore_inner = self
+                .directory_tree_window_restore_inner_size
+                .or(self.directory_tree_window_inner_size)
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT,
+                ]);
+            if let Some(center) = self.directory_tree_window_maximized_screen_center
+                && let Some(top_left) =
+                    Self::restore_outer_top_left_for_screen_center(center, restore_inner)
+            {
+                return Some([top_left[0] as f32, top_left[1] as f32]);
+            }
+            return self
+                .directory_tree_window_outer_position
+                .and_then(Self::valid_outer_position)
+                .map(|[x, y]| [x as f32, y as f32]);
+        }
+        self.directory_tree_window_outer_position
+            .map(|[x, y]| [x as f32, y as f32])
+    }
+
+    /// Client size used when spawning the detached directory-tree window.
+    pub fn directory_tree_startup_inner_size(&self) -> [f32; 2] {
+        if self.directory_tree_window_maximized {
+            self.directory_tree_window_maximized_inner_size
+                .or(self.directory_tree_window_inner_size)
+                .or(self.directory_tree_window_restore_inner_size)
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+                ])
+        } else {
+            self.directory_tree_window_inner_size
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([
+                    DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                    DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+                ])
         }
     }
 
@@ -636,6 +823,14 @@ impl Settings {
                         hdr_max_display_nits,
                         ..s
                     };
+                    #[cfg(feature = "preload-debug")]
+                    log::info!(
+                        "[PreloadDebug][Panel] settings loaded path={:?} folder={:?} list={:?} embedded={:?}",
+                        path,
+                        merged.directory_tree_folder_panel_width,
+                        merged.directory_tree_image_list_panel_width,
+                        merged.directory_tree_embedded_panel_width
+                    );
                     #[cfg(target_os = "linux")]
                     {
                         if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
@@ -659,6 +854,14 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         let path = settings_path();
+        #[cfg(feature = "preload-debug")]
+        log::info!(
+            "[PreloadDebug][Panel] settings save path={:?} folder={:?} list={:?} embedded={:?}",
+            path,
+            self.directory_tree_folder_panel_width,
+            self.directory_tree_image_list_panel_width,
+            self.directory_tree_embedded_panel_width
+        );
         let payload = {
             #[cfg(target_os = "linux")]
             {
@@ -682,7 +885,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{PairedRawJpegHandling, Settings};
+    use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {
@@ -708,6 +911,30 @@ mod tests {
             settings.paired_raw_jpeg_handling,
             PairedRawJpegHandling::ShowBoth
         );
+    }
+
+    #[test]
+    fn browse_mode_defaults_to_linear() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert_eq!(settings.browse_mode, BrowseMode::Linear);
+        assert!(!settings.show_directory_tree_nav);
+        assert_eq!(
+            settings.directory_tree_nav_style,
+            DirectoryTreeNavStyle::Embedded
+        );
+        assert!(settings.tree_nav_root_dir.is_none());
+        assert!(settings.tree_nav_selected_dir.is_none());
+    }
+
+    #[test]
+    fn effective_scan_recursive_respects_browse_mode() {
+        let mut settings = Settings::default();
+        settings.recursive = true;
+        assert!(settings.effective_scan_recursive());
+
+        settings.browse_mode = BrowseMode::Tree;
+        assert!(!settings.effective_scan_recursive());
     }
 
     #[test]
@@ -817,6 +1044,83 @@ mod tests {
         };
 
         assert_eq!(settings.startup_outer_position(), Some([0.0, 0.0]));
+    }
+
+    #[test]
+    fn directory_tree_window_settings_default_to_none() {
+        let settings: Settings =
+            serde_yaml::from_str("browse_mode: tree\nshow_directory_tree_nav: true")
+                .expect("deserialize tree settings");
+        assert!(settings.directory_tree_window_inner_size.is_none());
+        assert!(!settings.directory_tree_window_maximized);
+        assert_eq!(
+            settings.directory_tree_startup_inner_size(),
+            [
+                crate::settings::DIRECTORY_TREE_DEFAULT_INNER_WIDTH as f32,
+                crate::settings::DIRECTORY_TREE_DEFAULT_INNER_HEIGHT as f32,
+            ]
+        );
+    }
+
+    #[test]
+    fn directory_tree_window_settings_yaml_roundtrip() {
+        let yaml = r#"browse_mode: tree
+directory_tree_window_inner_size: [800, 600]
+directory_tree_window_outer_position: [100, 50]
+directory_tree_window_maximized: true
+directory_tree_window_restore_outer_position: [120, 80]
+directory_tree_window_restore_inner_size: [900, 700]
+directory_tree_window_maximized_inner_size: [1920, 1080]
+directory_tree_window_maximized_screen_center: [960, 540]
+"#;
+        let settings: Settings = serde_yaml::from_str(yaml).expect("deserialize window fields");
+        assert_eq!(settings.directory_tree_window_inner_size, Some([800, 600]));
+        assert_eq!(
+            settings.directory_tree_window_outer_position,
+            Some([100, 50])
+        );
+        assert!(settings.directory_tree_window_maximized);
+        assert_eq!(
+            settings.directory_tree_window_restore_outer_position,
+            Some([120, 80])
+        );
+        assert_eq!(
+            settings.directory_tree_window_restore_inner_size,
+            Some([900, 700])
+        );
+        assert_eq!(
+            settings.directory_tree_window_maximized_inner_size,
+            Some([1920, 1080])
+        );
+        assert_eq!(
+            settings.directory_tree_window_maximized_screen_center,
+            Some([960, 540])
+        );
+
+        let roundtrip = serde_yaml::to_string(&settings).expect("serialize settings");
+        let again: Settings = serde_yaml::from_str(&roundtrip).expect("re-deserialize settings");
+        assert_eq!(
+            settings.directory_tree_window_maximized,
+            again.directory_tree_window_maximized
+        );
+        assert_eq!(
+            settings.directory_tree_window_restore_inner_size,
+            again.directory_tree_window_restore_inner_size
+        );
+    }
+
+    #[test]
+    fn directory_tree_maximized_startup_outer_position_prefers_saved_restore() {
+        let settings = Settings {
+            directory_tree_window_maximized: true,
+            directory_tree_window_restore_outer_position: Some([120, 80]),
+            directory_tree_window_maximized_screen_center: Some([9999, 9999]),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.directory_tree_startup_outer_position(),
+            Some([120.0, 80.0])
+        );
     }
 
     #[test]

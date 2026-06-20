@@ -705,6 +705,44 @@ impl GlowWinitRunning<'_> {
         // ------------------------------------------------------------
         // The update function, which could call immediate viewports,
         // so make sure we don't hold any locks here required by the immediate viewports rendeer.
+        //
+        // Simple Image Viewer fork (KEEP when merging upstream eframe): same rationale as
+        // wgpu_integration.rs -- App::logic must run when a deferred child viewport
+        // repaints, not only when ROOT repaints.
+        //
+        {
+            profiling::scope!("App::logic");
+            self.integration.frame.painting_viewport_id = viewport_id;
+            self.app.logic(
+                &self.integration.egui_ctx,
+                &mut self.integration.frame,
+                crate::epi::LogicPass {
+                    painting_viewport_id: viewport_id,
+                },
+            );
+        }
+
+        let root_window_id_for_repaint = if viewport_id != ViewportId::ROOT {
+            {
+                let glutin = self.glutin.borrow();
+                if let Some(root_vp) = glutin.viewports.get(&ViewportId::ROOT) {
+                    if let Some(root_window) = root_vp.window.as_ref() {
+                        root_window.request_redraw();
+                    }
+                }
+            }
+            self.integration
+                .egui_ctx
+                .request_repaint_of(ViewportId::ROOT);
+            self.glutin
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id())
+        } else {
+            None
+        };
 
         let full_output = self.integration.update(
             self.app.as_mut(),
@@ -864,7 +902,22 @@ impl GlowWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
-        integration.maybe_autosave(app.as_mut(), Some(&window));
+        // Simple Image Viewer patch: same wall-clock autosave fix as wgpu_integration (ISSUE-20).
+        let root_window_for_autosave = if viewport_id == ViewportId::ROOT {
+            None
+        } else {
+            glutin
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.clone())
+        };
+        let autosave_window = if viewport_id == ViewportId::ROOT {
+            Some(window.as_ref())
+        } else {
+            root_window_for_autosave.as_deref()
+        };
+        integration.maybe_autosave(app.as_mut(), autosave_window);
 
         if is_invisible_or_minimized(&window) {
             // On Mac, a minimized Window uses up all CPU:
@@ -877,6 +930,26 @@ impl GlowWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if viewport_id == ViewportId::ROOT
+            && let Some(aux_viewport_id) =
+                self.app
+                    .take_pending_auxiliary_viewport_repaint(&self.integration.egui_ctx)
+        {
+            let aux_window_id = self
+                .glutin
+                .borrow()
+                .viewports
+                .get(&aux_viewport_id)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id());
+            if let Some(aux_window_id) = aux_window_id {
+                Ok(EventResult::RepaintNow(aux_window_id))
+            } else {
+                Ok(EventResult::Wait)
+            }
+        } else if let Some(root_window_id) = root_window_id_for_repaint
+        {
+            Ok(EventResult::RepaintNow(root_window_id))
         } else {
             Ok(EventResult::Wait)
         }

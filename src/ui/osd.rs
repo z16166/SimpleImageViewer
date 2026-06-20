@@ -777,26 +777,121 @@ impl OsdRenderer {
     }
 }
 
+/// Longest rendered size strings (`B`/`KB`/… units are not localized).
+pub const FORMAT_FILE_SIZE_WIDTH_SAMPLES: &[&str] = &[
+    "1023 B",
+    "1023.9 KB",
+    "1023.9 MB",
+    "1023.9 GB",
+    "1023.9 TB",
+    "1023.9 PB",
+    "1023.9 EB",
+];
+
 pub fn format_file_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * KB;
     const GB: f64 = 1024.0 * MB;
+    const TB: f64 = 1024.0 * GB;
+    const PB: f64 = 1024.0 * TB;
+    const EB: f64 = 1024.0 * PB;
+    let bytes_f = bytes as f64;
     if bytes < 1024 {
-        format!("{bytes} bytes")
-    } else if (bytes as f64) < MB {
-        format!("{:.1} KB", bytes as f64 / KB)
-    } else if (bytes as f64) < GB {
-        format!("{:.1} MB", bytes as f64 / MB)
+        format!("{bytes} B")
+    } else if bytes_f < MB {
+        format!("{:.1} KB", bytes_f / KB)
+    } else if bytes_f < GB {
+        format!("{:.1} MB", bytes_f / MB)
+    } else if bytes_f < TB {
+        format!("{:.1} GB", bytes_f / GB)
+    } else if bytes_f < PB {
+        format!("{:.1} TB", bytes_f / TB)
+    } else if bytes_f < EB {
+        format!("{:.1} PB", bytes_f / PB)
     } else {
-        format!("{:.1} GB", bytes as f64 / GB)
+        format!("{:.1} EB", bytes_f / EB)
     }
+}
+
+pub fn format_file_modified(unix_secs: i64) -> String {
+    if unix_secs <= 0 {
+        return String::new();
+    }
+    format_file_modified_impl(unix_secs)
+}
+
+fn format_local_datetime_parts(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> String {
+    format!("{year:04}/{month:02}/{day:02} {hour:02}:{minute:02}:{second:02}")
+}
+
+#[cfg(windows)]
+fn format_file_modified_impl(unix_secs: i64) -> String {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
+    use windows::Win32::System::Time::FileTimeToSystemTime;
+
+    let ticks = (unix_secs + 11644473600) * 10_000_000;
+    let mut file_time = FILETIME {
+        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: ((ticks >> 32) & 0xFFFF_FFFF) as u32,
+    };
+    let mut local_file_time = FILETIME::default();
+    unsafe {
+        let _ = FileTimeToLocalFileTime(&file_time, &mut local_file_time);
+    }
+    file_time = local_file_time;
+
+    let mut system_time = windows::Win32::Foundation::SYSTEMTIME::default();
+    unsafe {
+        if FileTimeToSystemTime(&file_time, &mut system_time).is_err() {
+            return String::new();
+        }
+    }
+
+    format_local_datetime_parts(
+        system_time.wYear as i32,
+        system_time.wMonth as u32,
+        system_time.wDay as u32,
+        system_time.wHour as u32,
+        system_time.wMinute as u32,
+        system_time.wSecond as u32,
+    )
+}
+
+#[cfg(unix)]
+fn format_file_modified_impl(unix_secs: i64) -> String {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let time = unix_secs;
+    unsafe {
+        libc::localtime_r(&time, &mut tm);
+    }
+    format_local_datetime_parts(
+        tm.tm_year + 1900,
+        (tm.tm_mon + 1) as u32,
+        tm.tm_mday as u32,
+        tm.tm_hour as u32,
+        tm.tm_min as u32,
+        tm.tm_sec as u32,
+    )
+}
+
+#[cfg(not(any(windows, unix)))]
+fn format_file_modified_impl(unix_secs: i64) -> String {
+    unix_secs.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         HdrOsdFrame, ImageOsdFrame, ImageOsdMode, OsdEvent, OsdRenderer, format_file_size,
-        quantize_osd_zoom_pct,
+        format_local_datetime_parts, quantize_osd_zoom_pct,
     };
     use crate::hdr::status::HdrRenderPath;
     use crate::hdr::types::{HdrColorSpace, HdrOutputMode};
@@ -804,10 +899,25 @@ mod tests {
 
     #[test]
     fn formats_file_sizes_with_binary_units() {
-        assert_eq!(format_file_size(42), "42 bytes");
+        assert_eq!(format_file_size(42), "42 B");
+        assert_eq!(format_file_size(1023), "1023 B");
+        assert_eq!(format_file_size(1024), "1.0 KB");
         assert_eq!(format_file_size(1536), "1.5 KB");
         assert_eq!(format_file_size(2 * 1024 * 1024), "2.0 MB");
         assert_eq!(format_file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+        assert_eq!(format_file_size(1024_u64 * 1024 * 1024 * 1024), "1.0 TB");
+    }
+
+    #[test]
+    fn format_local_datetime_parts_zero_pads_all_fields() {
+        assert_eq!(
+            format_local_datetime_parts(2025, 6, 23, 13, 57, 8),
+            "2025/06/23 13:57:08"
+        );
+        assert_eq!(
+            format_local_datetime_parts(2026, 4, 7, 0, 24, 5),
+            "2026/04/07 00:24:05"
+        );
     }
 
     #[test]

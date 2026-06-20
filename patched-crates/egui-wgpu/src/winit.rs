@@ -583,14 +583,21 @@ impl Painter {
             .active_target_format
             .set(requested_format);
 
-        let (width, height) = {
-            let s = self.surfaces.get(&viewport_id).expect("surface exists");
-            (s.width, s.height)
-        };
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, w, h);
-        } else if let Some(s) = self.surfaces.get_mut(&viewport_id) {
-            s.needs_reconfigure = true;
+        // Reconfigure every viewport surface. Deferred child windows (e.g. a
+        // directory-tree panel) keep their own swap chains; updating only the
+        // viewport that triggered the request leaves siblings on the old format
+        // and causes `RenderPipeline targets are incompatible with render pass`.
+        let viewport_ids: Vec<ViewportId> = self.surfaces.keys().copied().collect();
+        for vid in viewport_ids {
+            let (width, height) = match self.surfaces.get(&vid) {
+                Some(s) => (s.width, s.height),
+                None => continue,
+            };
+            if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                self.resize_and_generate_depth_texture_view_and_msaa_view(vid, w, h);
+            } else if let Some(s) = self.surfaces.get_mut(&vid) {
+                s.needs_reconfigure = true;
+            }
         }
     }
 
@@ -743,6 +750,7 @@ impl Painter {
         // at the end of the function. Early-exits inside the block use
         // `break 'render` rather than `return` so that the deferred swap
         // chain hot-swap still gets a chance to run after the frame.
+        let mut reconfigure_all_surfaces = false;
         'render: {
         let Some(render_state) = self.render_state.as_mut() else {
             break 'render;
@@ -831,6 +839,18 @@ impl Painter {
                 break 'render;
             }
         };
+
+        let pipeline_format = render_state.renderer.read().output_color_format();
+        if output_frame.texture.format() != pipeline_format {
+            log::warn!(
+                "egui-wgpu: viewport {viewport_id:?} swap-chain format {:?} \
+                 does not match egui pipeline {:?}; reconfiguring all surfaces",
+                output_frame.texture.format(),
+                pipeline_format
+            );
+            reconfigure_all_surfaces = true;
+            break 'render;
+        }
 
         let mut capture_buffer = None;
         {
@@ -989,6 +1009,23 @@ impl Painter {
         } // 'render block — releases the mutable borrows of `self.render_state` /
           //                  `self.surfaces` so the deferred swap-chain switch
           //                  below can take a fresh `&mut self`.
+
+        if reconfigure_all_surfaces {
+            let viewport_ids: Vec<ViewportId> = self.surfaces.keys().copied().collect();
+            for vid in viewport_ids {
+                let (width, height) = {
+                    let s = self.surfaces.get(&vid).expect("surface exists");
+                    (s.width, s.height)
+                };
+                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                    self.resize_and_generate_depth_texture_view_and_msaa_view(vid, w, h);
+                } else if let Some(s) = self.surfaces.get_mut(&vid) {
+                    s.needs_reconfigure = true;
+                }
+            }
+            self.context.request_repaint();
+            return vsync_sec;
+        }
 
         // ----- runtime swap-chain target-format switch (deferred to end-of-frame) -----
         //

@@ -131,6 +131,10 @@ pub trait TiledImageSource: Send + Sync {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>>;
     /// Generate a downscaled preview of the full image.
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
+    /// Downscaled preview representing full-image geometry (embedded EXIF thumbs may be skipped).
+    fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        self.generate_preview(max_w, max_h)
+    }
     /// Optionally provide the full pixel buffer if already in memory.
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>>;
 

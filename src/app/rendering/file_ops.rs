@@ -137,6 +137,9 @@ impl ImageViewerApp {
             if self.current_index < self.file_byte_len_by_index.len() {
                 self.file_byte_len_by_index.remove(self.current_index);
             }
+            if self.current_index < self.file_modified_unix_by_index.len() {
+                self.file_modified_unix_by_index.remove(self.current_index);
+            }
         } else {
             // CRITICAL: Drop all resources holding the file BEFORE attempting to delete it.
             // On Windows, WIC's IStream and memmap2 will keep the file locked if we don't drop them.
@@ -153,7 +156,7 @@ impl ImageViewerApp {
             // Successfully unlinked from UI, now delete in background
             let tx = self.file_op_tx.clone();
 
-            std::thread::spawn(move || {
+            self.background_threads.spawn("siv-delete-file", move || {
                 // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
                 std::thread::sleep(DELETE_FLUSH_DELAY);
 
@@ -174,6 +177,9 @@ impl ImageViewerApp {
             self.image_files.remove(original_index);
             if original_index < self.file_byte_len_by_index.len() {
                 self.file_byte_len_by_index.remove(original_index);
+            }
+            if original_index < self.file_modified_unix_by_index.len() {
+                self.file_modified_unix_by_index.remove(original_index);
             }
         }
 
@@ -254,7 +260,7 @@ impl ImageViewerApp {
         // file, which is permitted with read-sharing locks on Windows. Dropping resources
         // here would cause the image viewer to flash blank and force a slow reload,
         // which would be a poor user experience.
-        std::thread::spawn(move || {
+        self.background_threads.spawn("siv-copy-file", move || {
             let result = (|| {
                 std::fs::create_dir_all(&target_dir)
                     .map_err(|e| crate::app::types::FileOpError::CreateDirFailed(e.to_string()))?;
@@ -310,7 +316,7 @@ impl ImageViewerApp {
         self.prev_transition_rect = None;
 
         let tx = self.file_op_tx.clone();
-        std::thread::spawn(move || {
+        self.background_threads.spawn("siv-cut-file", move || {
             // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
             std::thread::sleep(CUT_FLUSH_DELAY);
 
@@ -357,6 +363,9 @@ impl ImageViewerApp {
         self.image_files.remove(original_index);
         if original_index < self.file_byte_len_by_index.len() {
             self.file_byte_len_by_index.remove(original_index);
+        }
+        if original_index < self.file_modified_unix_by_index.len() {
+            self.file_modified_unix_by_index.remove(original_index);
         }
 
         // Deletion/cut shifts indices, so every index-keyed cache must be rebuilt.

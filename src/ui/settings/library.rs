@@ -15,12 +15,18 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
-use crate::settings::PairedRawJpegHandling;
-use crate::ui::utils::{path_display_box, settings_card, styled_button, themed_labeled_toggle};
+use crate::settings::{
+    BrowseMode, DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedRawJpegHandling,
+};
+use crate::ui::utils::{
+    path_display_box, settings_card, stable_selectable_value, styled_button, themed_labeled_toggle,
+};
 use eframe::egui::{self, RichText};
 use rust_i18n::t;
 
 const PAIRED_RAW_JPEG_COMBO_WIDTH: f32 = 180.0;
+const DIRECTORY_TREE_NAV_STYLE_COMBO_WIDTH: f32 = 180.0;
+const DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH: f32 = 120.0;
 
 pub(super) fn draw_library_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: &mut bool) {
     ui.vertical(|ui| {
@@ -32,11 +38,10 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
     let palette = app.cached_palette.clone();
     settings_card(ui, &palette, t!("section.directory"), |ui| {
         let dir_full = app
-            .settings
-            .last_image_dir
+            .current_browse_directory()
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
-        let dir_empty = app.settings.last_image_dir.is_none();
+        let dir_empty = app.current_browse_directory().is_none();
         let dir_label = if dir_empty {
             t!("label.no_dir").to_string()
         } else {
@@ -49,7 +54,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                 }
                 ui.add_space(4.0);
                 if styled_button(ui, t!("btn.refresh"), &palette).clicked() {
-                    if let Some(dir) = app.settings.last_image_dir.clone() {
+                    if let Some(dir) = app.current_browse_directory() {
                         app.load_directory(dir);
                     }
                 }
@@ -73,7 +78,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
 
         let scan_status = if app.scanning {
             app.status_message.clone()
-        } else if app.settings.last_image_dir.is_some() {
+        } else if app.current_browse_directory().is_some() {
             t!("library.scan_idle").to_string()
         } else {
             t!("library.scan_no_directory").to_string()
@@ -91,13 +96,130 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         });
 
         ui.add_space(4.0);
-        let old_recursive = app.settings.recursive;
-        themed_labeled_toggle(
+        let old_tree_nav = app.settings.show_directory_tree_nav;
+        if themed_labeled_toggle(
             ui,
-            &mut app.settings.recursive,
-            t!("label.recursive_scan"),
+            &mut app.settings.show_directory_tree_nav,
+            t!("label.show_directory_tree_nav"),
             &palette,
-        );
+        )
+        .changed()
+        {
+            if app.settings.show_directory_tree_nav {
+                app.settings.browse_mode = BrowseMode::Tree;
+                app.ensure_directory_tree_places_loaded();
+                if let Some(root) = app
+                    .settings
+                    .tree_nav_root_dir
+                    .clone()
+                    .or_else(|| app.settings.last_image_dir.clone())
+                {
+                    app.initialize_directory_tree_root(root);
+                }
+            } else {
+                app.settings.browse_mode = BrowseMode::Linear;
+                app.settings.tree_nav_root_dir = None;
+                app.settings.tree_nav_selected_dir = None;
+            }
+            if old_tree_nav != app.settings.show_directory_tree_nav {
+                app.queue_save();
+            }
+        }
+
+        let old_tree_nav_style = app.settings.directory_tree_nav_style;
+        ui.add_enabled_ui(app.settings.show_directory_tree_nav, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(t!("label.directory_tree_nav_style"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("directory_tree_nav_style_combo")
+                        .width(DIRECTORY_TREE_NAV_STYLE_COMBO_WIDTH)
+                        .selected_text(app.settings.directory_tree_nav_style.label())
+                        .show_ui(ui, |ui| {
+                            ui.set_min_width(DIRECTORY_TREE_NAV_STYLE_COMBO_WIDTH);
+                            stable_selectable_value(
+                                ui,
+                                &mut app.settings.directory_tree_nav_style,
+                                DirectoryTreeNavStyle::Embedded,
+                                DirectoryTreeNavStyle::Embedded.label(),
+                            );
+                            stable_selectable_value(
+                                ui,
+                                &mut app.settings.directory_tree_nav_style,
+                                DirectoryTreeNavStyle::Detached,
+                                DirectoryTreeNavStyle::Detached.label(),
+                            );
+                        });
+                });
+            });
+        });
+        if old_tree_nav_style != app.settings.directory_tree_nav_style {
+            app.on_directory_tree_nav_style_changed(
+                ui.ctx(),
+                old_tree_nav_style == DirectoryTreeNavStyle::Detached,
+            );
+            app.queue_save();
+        }
+
+        let old_list_previews = app.settings.directory_tree_show_list_previews;
+        let old_preview_size = app.settings.directory_tree_list_preview_size;
+        ui.add_enabled_ui(app.settings.show_directory_tree_nav, |ui| {
+            if themed_labeled_toggle(
+                ui,
+                &mut app.settings.directory_tree_show_list_previews,
+                t!("label.directory_tree_show_list_previews"),
+                &palette,
+            )
+            .changed()
+                && old_list_previews != app.settings.directory_tree_show_list_previews
+            {
+                app.on_directory_tree_list_preview_settings_changed(ui.ctx());
+            }
+
+            ui.add_enabled_ui(app.settings.directory_tree_show_list_previews, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t!("label.directory_tree_list_preview_size"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("directory_tree_list_preview_size_combo")
+                            .width(DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH)
+                            .selected_text(app.settings.directory_tree_list_preview_size.label())
+                            .show_ui(ui, |ui| {
+                                ui.set_min_width(DIRECTORY_TREE_PREVIEW_SIZE_COMBO_WIDTH);
+                                for size in [
+                                    DirectoryTreeListPreviewSize::Small,
+                                    DirectoryTreeListPreviewSize::Medium,
+                                    DirectoryTreeListPreviewSize::Large,
+                                ] {
+                                    stable_selectable_value(
+                                        ui,
+                                        &mut app.settings.directory_tree_list_preview_size,
+                                        size,
+                                        size.label(),
+                                    );
+                                }
+                            });
+                    });
+                });
+            });
+            if old_preview_size != app.settings.directory_tree_list_preview_size {
+                app.on_directory_tree_list_preview_settings_changed(ui.ctx());
+            }
+        });
+
+        let old_recursive = app.settings.recursive;
+        if app.settings.browse_mode == BrowseMode::Tree {
+            ui.add_enabled_ui(false, |ui| {
+                let mut recursive = false;
+                themed_labeled_toggle(ui, &mut recursive, t!("label.recursive_scan"), &palette);
+            });
+            ui.label(RichText::new(t!("directory_tree.recursive_disabled")).weak());
+        } else {
+            themed_labeled_toggle(
+                ui,
+                &mut app.settings.recursive,
+                t!("label.recursive_scan"),
+                &palette,
+            );
+        }
         if !old_recursive && app.settings.recursive {
             app.settings.recursive = false;
             app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
@@ -108,7 +230,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             ));
         }
         if old_recursive && !app.settings.recursive {
-            if let Some(dir) = app.settings.last_image_dir.clone() {
+            if let Some(dir) = app.current_browse_directory() {
                 app.load_directory(dir);
             }
             app.queue_save();
@@ -134,17 +256,20 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                     .selected_text(app.settings.paired_raw_jpeg_handling.label())
                     .show_ui(ui, |ui| {
                         ui.set_min_width(PAIRED_RAW_JPEG_COMBO_WIDTH);
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::ShowBoth,
                             PairedRawJpegHandling::ShowBoth.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::SkipRaw,
                             PairedRawJpegHandling::SkipRaw.label(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.paired_raw_jpeg_handling,
                             PairedRawJpegHandling::SkipJpeg,
                             PairedRawJpegHandling::SkipJpeg.label(),
@@ -153,7 +278,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             });
         });
         if old_pair_handling != app.settings.paired_raw_jpeg_handling {
-            if let Some(dir) = app.settings.last_image_dir.clone() {
+            if let Some(dir) = app.current_browse_directory() {
                 app.load_directory(dir);
             }
             app.queue_save();

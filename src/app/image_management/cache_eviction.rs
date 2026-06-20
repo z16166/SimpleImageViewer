@@ -16,20 +16,31 @@
 
 use super::*;
 
+use crate::app::index_cache_permute::{permute_usize_hashmap, permute_usize_set};
+
 impl ImageViewerApp {
     pub(crate) fn invalidate_random_slideshow_order(&mut self) {
         self.random_slideshow_order_ready = false;
     }
 
     pub(super) fn shuffle_current_image_list_preserving_pairs(&mut self) {
-        let mut combined = image_file_size_pairs_with_missing_sizes_as_zero(
+        let mut combined = image_file_entries_with_missing_tail(
             std::mem::take(&mut self.image_files),
             std::mem::take(&mut self.file_byte_len_by_index),
+            std::mem::take(&mut self.file_modified_unix_by_index),
         );
         combined.shuffle(&mut rand::thread_rng());
-        let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+        let mut paths = Vec::with_capacity(combined.len());
+        let mut sizes = Vec::with_capacity(combined.len());
+        let mut modified = Vec::with_capacity(combined.len());
+        for (path, len, mtime) in combined {
+            paths.push(path);
+            sizes.push(len);
+            modified.push(mtime);
+        }
         self.image_files = paths;
         self.file_byte_len_by_index = sizes;
+        self.file_modified_unix_by_index = modified;
     }
 
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {
@@ -60,6 +71,7 @@ impl ImageViewerApp {
         }
         // 1. Texture cache
         self.texture_cache.relocate(from, to);
+        self.directory_tree_strip_cache.relocate(from, to);
 
         // 2. HDR caches
         if let Some(hdr) = self.hdr_image_cache.remove(&from) {
@@ -399,5 +411,128 @@ impl ImageViewerApp {
             self.pending_anim_frames.remove(&idx);
             self.remove_hdr_image_index(idx);
         }
+    }
+
+    pub(crate) fn permute_image_file_arrays(&mut self, order: &[usize]) {
+        let mut paths = Vec::with_capacity(order.len());
+        let mut sizes = Vec::with_capacity(order.len());
+        let mut modified = Vec::with_capacity(order.len());
+        for &old_index in order {
+            paths.push(self.image_files[old_index].clone());
+            sizes.push(
+                self.file_byte_len_by_index
+                    .get(old_index)
+                    .copied()
+                    .unwrap_or(0),
+            );
+            modified.push(
+                self.file_modified_unix_by_index
+                    .get(old_index)
+                    .copied()
+                    .flatten(),
+            );
+        }
+        self.image_files = paths;
+        self.file_byte_len_by_index = sizes;
+        self.file_modified_unix_by_index = modified;
+    }
+
+    pub(crate) fn permute_index_keyed_caches(&mut self, old_to_new: &[usize]) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+
+        self.texture_cache.permute(old_to_new);
+        self.directory_tree_strip_cache.permute(old_to_new);
+        permute_usize_hashmap(&mut self.hdr_image_cache, old_to_new);
+        permute_usize_hashmap(&mut self.hdr_tiled_source_cache, old_to_new);
+        permute_usize_hashmap(&mut self.hdr_tiled_preview_cache, old_to_new);
+        permute_usize_set(&mut self.hdr_sdr_fallback_indices, old_to_new);
+        permute_usize_set(&mut self.hdr_placeholder_fallback_indices, old_to_new);
+        permute_usize_set(&mut self.hdr_raw_gpu_demosaic_pending_indices, old_to_new);
+        permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
+        permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
+        permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
+        permute_usize_set(&mut self.ultra_hdr_capacity_sensitive_indices, old_to_new);
+        permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
+
+        self.raw_metadata.permute_indices(old_to_new);
+
+        for value in self.hdr_raw_gpu_demosaic_pending_key_index.values_mut() {
+            if *value < old_to_new.len() {
+                *value = old_to_new[*value];
+            }
+        }
+
+        let prefetched = std::mem::take(&mut self.prefetched_tiles);
+        for (old_idx, mut tiles) in prefetched {
+            if old_idx < old_to_new.len() {
+                let new_idx = old_to_new[old_idx];
+                tiles.image_index = new_idx;
+                self.prefetched_tiles.insert(new_idx, tiles);
+            }
+        }
+
+        let animations = std::mem::take(&mut self.animation_cache);
+        for (old_idx, mut anim) in animations {
+            if old_idx < old_to_new.len() {
+                let new_idx = old_to_new[old_idx];
+                anim.image_index = new_idx;
+                self.animation_cache.insert(new_idx, anim);
+            }
+        }
+
+        let pending_frames = std::mem::take(&mut self.pending_anim_frames);
+        for (old_idx, mut pending) in pending_frames {
+            if old_idx < old_to_new.len() {
+                let new_idx = old_to_new[old_idx];
+                pending.image_index = new_idx;
+                self.pending_anim_frames.insert(new_idx, pending);
+            }
+        }
+
+        if let Some(ref mut anim) = self.animation {
+            if anim.image_index < old_to_new.len() {
+                anim.image_index = old_to_new[anim.image_index];
+            }
+        }
+
+        if let Some(ref mut curr) = self.current_hdr_image {
+            if curr.index < old_to_new.len() {
+                curr.index = old_to_new[curr.index];
+            }
+        }
+        if let Some(ref mut curr) = self.current_hdr_tiled_image {
+            if curr.index < old_to_new.len() {
+                curr.index = old_to_new[curr.index];
+            }
+        }
+        if let Some(ref mut curr) = self.current_hdr_tiled_preview {
+            if curr.index < old_to_new.len() {
+                curr.index = old_to_new[curr.index];
+            }
+        }
+        if let Some(ref mut manager) = self.tile_manager {
+            if manager.image_index < old_to_new.len() {
+                manager.image_index = old_to_new[manager.image_index];
+            }
+        }
+
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .permute_images(old_to_new);
+
+        if self.current_index < old_to_new.len() {
+            self.current_index = old_to_new[self.current_index];
+            self.image_status.set_current_index(self.current_index);
+            self.raw_metadata.set_current_index(self.current_index);
+        }
+
+        permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
+
+        self.prefetch_prev_generation = None;
+        self.invalidate_random_slideshow_order();
     }
 }

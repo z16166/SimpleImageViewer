@@ -5000,14 +5000,16 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "2.6.4"
+version = "2.7.0"
 dependencies = [
+ "arc-swap",
  "bytemuck",
  "cc",
  "clipboard-rs",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "crossbeam-channel",
+ "dirs 6.0.0",
  "eframe",
  "egui_extras",
  "encoding_rs",
@@ -5020,6 +5022,7 @@ dependencies = [
  "jwalk",
  "kamadak-exif",
  "libavif-sys",
+ "libc",
  "libheif-sys",
  "libjpeg-turbo",
  "libjxl-sys",

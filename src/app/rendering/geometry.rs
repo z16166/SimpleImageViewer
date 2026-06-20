@@ -16,7 +16,56 @@
 
 use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
-use eframe::egui::{Context, Pos2, Rect, Vec2};
+use crate::app::directory_tree::{
+    DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+};
+use eframe::egui::{self, Context, Pos2, Rect, Vec2};
+
+fn clamp_non_empty_canvas_rect(rect: Rect) -> Rect {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        Rect::NOTHING
+    } else {
+        rect
+    }
+}
+
+/// Last frame's [`egui::PanelState::rect`] for the embedded navigation side panel, if any.
+pub(crate) fn embedded_directory_tree_panel_rect(ctx: &Context) -> Option<Rect> {
+    for panel_id in [
+        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
+    ] {
+        if let Some(state) = egui::PanelState::load(ctx, egui::Id::new(panel_id)) {
+            return Some(state.rect);
+        }
+    }
+    None
+}
+
+/// Paint vs pointer rects for the main image canvas when an embedded nav panel is present.
+///
+/// ROOT `Ui` uses top-down layout, so `Panel::left().show_inside` advances the cursor but does
+/// not shrink `available_rect_before_wrap` horizontally. Without this inset the canvas
+/// `allocate_rect(click_and_drag)` covers the whole nav panel and blocks splitters/resizers.
+pub(crate) fn main_window_canvas_rects(
+    available: Rect,
+    resize_grab_radius_side: f32,
+    embedded_panel: Option<Rect>,
+) -> (Rect, Rect) {
+    let mut paint_rect = available;
+    let mut interact_rect = available;
+    if let Some(panel) = embedded_panel {
+        paint_rect.min.x = paint_rect.min.x.max(panel.max.x);
+        interact_rect.min.x = interact_rect
+            .min
+            .x
+            .max(panel.max.x + resize_grab_radius_side);
+    }
+    (
+        clamp_non_empty_canvas_rect(paint_rect),
+        clamp_non_empty_canvas_rect(interact_rect),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PlaneLayout {
@@ -114,6 +163,30 @@ impl ImageViewerApp {
         let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
         PlaneLayout::from_dest(img_size, rotation, dest)
+    }
+
+    /// Layout rect for the image canvas. Prefer the last painted canvas area so navigation
+    /// hold/transition geometry matches the embedded directory-tree side panel.
+    pub(crate) fn canvas_rect_for_layout(&self, ctx: &Context) -> Rect {
+        if let Some(rect) = self.last_canvas_rect {
+            return rect;
+        }
+        let content = ctx.input(|i| i.content_rect());
+        if self.directory_tree_settings_active() && self.directory_tree_nav_is_embedded() {
+            if let Some(panel) = embedded_directory_tree_panel_rect(ctx) {
+                let min_x = panel.max.x;
+                if min_x < content.max.x {
+                    return Rect::from_min_max(Pos2::new(min_x, content.min.y), content.max);
+                }
+            } else {
+                let panel_width = self.embedded_nav_panel_width_estimate();
+                let min_x = content.min.x + panel_width;
+                if min_x < content.max.x {
+                    return Rect::from_min_max(Pos2::new(min_x, content.min.y), content.max);
+                }
+            }
+        }
+        content
     }
 
     /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.

@@ -14,13 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Sender, TrySendError};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::settings::PairedRawJpegHandling;
 
@@ -31,10 +33,85 @@ pub fn is_supported_extension(ext: &OsStr) -> bool {
 
 /// Helper to check if a file is marked as "offline" (Windows specific).
 pub fn is_offline(path: &Path) -> bool {
-    if let Ok(meta) = std::fs::metadata(path) {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
         is_offline_meta(&meta)
     } else {
         false
+    }
+}
+
+/// Returns true when a directory must not be descended into during scans.
+///
+/// Uses [`std::fs::symlink_metadata`] fields only (no [`std::fs::read_link`]) for symlinks;
+/// on Windows, junction mount points are detected via a single `read_link` on reparse dirs.
+pub fn is_directory_traversal_boundary_metadata(path: &Path, metadata: &Metadata) -> bool {
+    let file_type = metadata.file_type();
+    if !file_type.is_dir() {
+        return false;
+    }
+    if file_type.is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            // Junctions are mount-point reparse tags; cloud/sync reparse dirs remain browsable.
+            return std::fs::read_link(path).is_ok();
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    false
+}
+
+/// Skip descending into a directory using [`DirEntry::file_type`] when possible.
+/// On Windows, pass directory [`Metadata`] from the same [`read_dir`] entry to detect junctions.
+pub fn skip_directory_traversal_entry(
+    path: &Path,
+    file_type: &std::fs::FileType,
+    metadata: Option<&Metadata>,
+) -> bool {
+    if !file_type.is_dir() {
+        return file_type.is_symlink();
+    }
+    if file_type.is_symlink() {
+        return true;
+    }
+    if is_non_browsable_system_directory(path) {
+        return true;
+    }
+    metadata.is_some_and(|meta| is_directory_traversal_boundary_metadata(path, meta))
+}
+
+/// Shell/system folders that should not appear in the directory tree or recursive scans.
+pub fn is_non_browsable_system_directory(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(is_non_browsable_system_directory_name)
+}
+
+fn is_non_browsable_system_directory_name(name: &OsStr) -> bool {
+    name.eq_ignore_ascii_case(OsStr::new("$RECYCLE.BIN"))
+        || name.eq_ignore_ascii_case(OsStr::new("SYSTEM VOLUME INFORMATION"))
+        || name.eq_ignore_ascii_case(OsStr::new("$WINDOWS.~BT"))
+        || name.eq_ignore_ascii_case(OsStr::new("$WINDOWS.~WS"))
+        || name.eq_ignore_ascii_case(OsStr::new("CONFIG.MSI"))
+}
+
+fn finish_scan_cancelled(
+    generation: u64,
+    tx: &Sender<ScanMessage>,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
+) {
+    log::info!("[Scanner] Scan cancelled (generation={generation})");
+    let _ = tx.send(ScanMessage::Done {
+        generation,
+        sorted_files: Vec::new(),
+    });
+    if let Some(wake) = wake_ui {
+        wake();
     }
 }
 
@@ -42,7 +119,8 @@ pub fn is_offline(path: &Path) -> bool {
 fn is_offline_meta(metadata: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    // Attributes indicating the file data is not fully present locally:
+    // OneDrive / cloud placeholder files: detect via attribute flags only (no read_link,
+    // no reparse-tag IO). See FILE_ATTRIBUTE_OFFLINE and recall-on-access bits.
     const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
     const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x40000;
     const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
@@ -60,70 +138,182 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
     false
 }
 
-/// Returns the file size when the path is a valid local regular file (>0 bytes, not offline).
-/// This performs an `metadata` syscall and should only run after cheap extension filtering.
-fn validated_byte_len_if_file(path: &Path) -> Option<u64> {
-    let meta = std::fs::metadata(path).ok()?;
-    let len = meta.len();
-    if len == 0 || !meta.is_file() || is_offline_meta(&meta) {
+/// `modified_unix` stores UTC seconds from [`Metadata::modified`].
+fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
+    let len = metadata.len();
+    if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
         return None;
     }
-    Some(len)
+    use std::time::UNIX_EPOCH;
+    let modified_unix = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64);
+    Some((len, modified_unix))
 }
 
 /// Messages sent from the scan thread to the UI thread.
 pub enum ScanMessage {
     /// An incremental batch of discovered files (already filtered, not yet globally sorted).
-    /// The `u64` is the byte length from the same [`std::fs::metadata`] probe used during scan,
-    /// so the UI thread can budget preloads without additional syscalls.
-    Batch(Vec<(PathBuf, u64)>),
+    /// Tuple is `(path, byte length, modified unix seconds)` from the same [`std::fs::metadata`]
+    /// probe used during scan, so the UI thread can budget preloads without additional syscalls.
+    Batch {
+        generation: u64,
+        files: Vec<(PathBuf, u64, Option<i64>)>,
+    },
     /// Scanning is complete. No more batches will follow.
-    Done,
+    /// `sorted_files` is legacy-only (always empty for streamed scans); the UI sorts batches in place.
+    Done {
+        generation: u64,
+        sorted_files: Vec<(PathBuf, u64, Option<i64>)>,
+    },
 }
 
 /// Number of files to accumulate before sending a batch to the UI.
 const BATCH_SIZE: usize = 200;
+const SCAN_SEND_RETRY_SLEEP: Duration = Duration::from_millis(2);
+const SCAN_SEND_MAX_WALL_CLOCK: Duration = Duration::from_secs(30);
+
+static SCAN_THREAD_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .thread_name(|index| format!("siv-scan-{index}"))
+        .build()
+        .unwrap_or_else(|err| {
+            log::error!(
+                "[Scanner] Failed to build scan thread pool: {err}; falling back to 1 thread"
+            );
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("single-thread scan pool")
+        })
+});
 
 pub fn scan_directory(
     dir: PathBuf,
     recursive: bool,
     paired_raw_jpeg_handling: PairedRawJpegHandling,
+    generation: u64,
     tx: Sender<ScanMessage>,
     cancel: Arc<AtomicBool>,
+    wake_ui: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
-    std::thread::spawn(move || {
+    SCAN_THREAD_POOL.spawn(move || {
+        #[cfg(feature = "preload-debug")]
+        let scan_started = std::time::Instant::now();
+        crate::preload_debug!(
+            "[PreloadDebug][Scan] thread start: dir={} recursive={} paired={:?} needs_pair_index={}",
+            dir.display(),
+            recursive,
+            paired_raw_jpeg_handling,
+            paired_raw_jpeg_handling.needs_pair_index()
+        );
+        let sorted_files_for_done = Vec::new();
         if recursive {
-            let mut files: Vec<(PathBuf, u64)> = Vec::new();
-            let mut batch: Vec<(PathBuf, u64)> = Vec::with_capacity(BATCH_SIZE);
+            let mut pair_index_files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
+            let mut pending_batch: Vec<(PathBuf, u64, Option<i64>)> =
+                Vec::with_capacity(BATCH_SIZE);
+            #[cfg(feature = "preload-debug")]
+            let mut walk_entries = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_files = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_ext_probes = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut walk_images = 0usize;
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
+                .process_read_dir(|_depth, path, _state, children| {
+                    if is_non_browsable_system_directory(path) {
+                        for child in children.iter_mut() {
+                            if let Ok(entry) = child {
+                                entry.read_children_path = None;
+                            }
+                        }
+                        return;
+                    }
+                    for child in children.iter_mut() {
+                        if let Ok(entry) = child {
+                            if !entry.file_type.is_dir() {
+                                continue;
+                            }
+                            let child_path = entry.path();
+                            if is_non_browsable_system_directory(&child_path) {
+                                entry.read_children_path = None;
+                                continue;
+                            }
+                            let skip = if entry.file_type.is_symlink() {
+                                true
+                            } else {
+                                entry.metadata().ok().is_some_and(|meta| {
+                                    is_directory_traversal_boundary_metadata(&child_path, &meta)
+                                })
+                            };
+                            if skip {
+                                entry.read_children_path = None;
+                            }
+                        }
+                    }
+                })
                 .into_iter()
                 .flatten()
             {
+                #[cfg(feature = "preload-debug")]
+                {
+                    walk_entries += 1;
+                }
                 if cancel.load(Ordering::Relaxed) {
-                    log::info!("[Scanner] Scan cancelled for {:?}", dir);
+                    finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
                     return;
                 }
 
                 // 1. [Cheapest] Check file_type from directory entry (no syscall on most OSs)
                 if entry.file_type().is_file() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        walk_files += 1;
+                    }
                     // 2. [Cheap] Check extension without constructing full PathBuf
                     let is_img = Path::new(entry.file_name())
                         .extension()
-                        .map(|ext| is_supported_extension(ext))
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                walk_ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
                         .unwrap_or(false);
 
                     if is_img {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            walk_images += 1;
+                        }
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
-                        if let Some(len) = validated_byte_len_if_file(&path) {
+                        let Ok(meta) = entry.metadata() else {
+                            continue;
+                        };
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            let entry = (path, len, modified_unix);
                             if paired_raw_jpeg_handling.needs_pair_index() {
-                                files.push((path, len));
+                                pair_index_files.push(entry);
                             } else {
-                                batch.push((path, len));
-                                if batch.len() >= BATCH_SIZE {
-                                    send_scan_batch(&mut batch, &tx);
+                                pending_batch.push(entry);
+                                if pending_batch.len() >= BATCH_SIZE {
+                                    if !send_scan_batch(
+                                        &mut pending_batch,
+                                        generation,
+                                        &tx,
+                                        &cancel,
+                                        wake_ui.as_ref(),
+                                    ) {
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -131,93 +321,326 @@ pub fn scan_directory(
                 }
             }
 
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] recursive walk done: entries={} files={} ext_probes={} images={} walk_ms={}",
+                walk_entries,
+                walk_files,
+                walk_ext_probes,
+                walk_images,
+                crate::preload_debug::elapsed_ms(scan_started)
+            );
+
             if paired_raw_jpeg_handling.needs_pair_index() {
                 // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
                 // batches before the scan finishes could expose a file that should be skipped
                 // because its pair appears later.
-                send_scanned_files(files, paired_raw_jpeg_handling, &tx);
-            } else {
-                send_scan_batch(&mut batch, &tx);
+                send_scanned_files(
+                    pair_index_files,
+                    paired_raw_jpeg_handling,
+                    generation,
+                    &tx,
+                    &cancel,
+                    wake_ui.as_ref(),
+                );
+            } else if !send_scan_batch(
+                &mut pending_batch,
+                generation,
+                &tx,
+                &cancel,
+                wake_ui.as_ref(),
+            ) {
+                return;
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut files: Vec<(PathBuf, u64)> = Vec::new();
-            for e in entries.flatten() {
-                if cancel.load(Ordering::Relaxed) {
-                    log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
-                    return;
-                }
+            #[cfg(feature = "preload-debug")]
+            let mut dir_entries = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut ext_probes = 0usize;
+            #[cfg(feature = "preload-debug")]
+            let mut image_candidates = 0usize;
+            if paired_raw_jpeg_handling.needs_pair_index() {
+                let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
+                for e in entries.flatten() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        dir_entries += 1;
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
+                        return;
+                    }
 
-                // Use the same tiered filtering pattern
-                let is_supported = Path::new(&e.file_name())
-                    .extension()
-                    .map(|ext| is_supported_extension(ext))
-                    .unwrap_or(false);
+                    let is_supported = Path::new(&e.file_name())
+                        .extension()
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
+                        .unwrap_or(false);
 
-                if is_supported {
-                    let p = e.path();
-                    if let Some(len) = validated_byte_len_if_file(&p) {
-                        files.push((p, len));
+                    if is_supported {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            image_candidates += 1;
+                        }
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            let p = e.path();
+                            files.push((p, len, modified_unix));
+                        }
                     }
                 }
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] read_dir done (pair index): entries={} ext_probes={} images={} read_ms={}",
+                    dir_entries,
+                    ext_probes,
+                    image_candidates,
+                    crate::preload_debug::elapsed_ms(scan_started)
+                );
+                send_scanned_files(
+                    files,
+                    paired_raw_jpeg_handling,
+                    generation,
+                    &tx,
+                    &cancel,
+                    wake_ui.as_ref(),
+                );
+            } else {
+                let mut pending_batch: Vec<(PathBuf, u64, Option<i64>)> =
+                    Vec::with_capacity(BATCH_SIZE);
+                for e in entries.flatten() {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        dir_entries += 1;
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        finish_scan_cancelled(generation, &tx, wake_ui.as_ref());
+                        return;
+                    }
+
+                    let is_supported = Path::new(&e.file_name())
+                        .extension()
+                        .map(|ext| {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                ext_probes += 1;
+                            }
+                            is_supported_extension(ext)
+                        })
+                        .unwrap_or(false);
+
+                    if is_supported {
+                        #[cfg(feature = "preload-debug")]
+                        {
+                            image_candidates += 1;
+                        }
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            let p = e.path();
+                            pending_batch.push((p, len, modified_unix));
+                            if pending_batch.len() >= BATCH_SIZE {
+                                if !send_scan_batch(
+                                    &mut pending_batch,
+                                    generation,
+                                    &tx,
+                                    &cancel,
+                                    wake_ui.as_ref(),
+                                ) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] read_dir done: entries={} ext_probes={} images={} read_ms={}",
+                    dir_entries,
+                    ext_probes,
+                    image_candidates,
+                    crate::preload_debug::elapsed_ms(scan_started)
+                );
+                if !send_scan_batch(
+                    &mut pending_batch,
+                    generation,
+                    &tx,
+                    &cancel,
+                    wake_ui.as_ref(),
+                ) {
+                    return;
+                }
             }
-            send_scanned_files(files, paired_raw_jpeg_handling, &tx);
+        } else {
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] read_dir failed: dir={}",
+                dir.display()
+            );
         }
 
-        let _ = tx.send(ScanMessage::Done);
+        if !send_scan_message(
+            &tx,
+            ScanMessage::Done {
+                generation,
+                sorted_files: sorted_files_for_done,
+            },
+            &cancel,
+            wake_ui.as_ref(),
+        ) {
+            return;
+        }
+        crate::preload_debug!(
+            "[PreloadDebug][Scan] thread done sent: dir={} total_ms={}",
+            dir.display(),
+            crate::preload_debug::elapsed_ms(scan_started)
+        );
     });
 }
 
-fn send_scan_batch(batch: &mut Vec<(PathBuf, u64)>, tx: &Sender<ScanMessage>) {
-    if batch.is_empty() {
-        return;
+fn send_scan_message(
+    tx: &Sender<ScanMessage>,
+    msg: ScanMessage,
+    cancel: &AtomicBool,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
+) -> bool {
+    let mut pending = msg;
+    let deadline = Instant::now() + SCAN_SEND_MAX_WALL_CLOCK;
+    loop {
+        if Instant::now() >= deadline {
+            log::warn!("[Scanner] Dropping scan message: UI channel full for too long");
+            return false;
+        }
+        match tx.try_send(pending) {
+            Ok(()) => {
+                if let Some(wake) = wake_ui {
+                    wake();
+                }
+                return true;
+            }
+            Err(TrySendError::Full(m)) => {
+                if cancel.load(Ordering::Relaxed) {
+                    return false;
+                }
+                pending = m;
+                std::thread::sleep(SCAN_SEND_RETRY_SLEEP);
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
     }
+}
+
+fn send_scan_batch(
+    batch: &mut Vec<(PathBuf, u64, Option<i64>)>,
+    generation: u64,
+    tx: &Sender<ScanMessage>,
+    cancel: &AtomicBool,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
+) -> bool {
+    if batch.is_empty() {
+        return true;
+    }
+    #[cfg(feature = "preload-debug")]
+    let send_started = std::time::Instant::now();
     batch.sort_by(|a, b| a.0.cmp(&b.0));
-    let _ = tx.send(ScanMessage::Batch(std::mem::take(batch)));
+    #[cfg(feature = "preload-debug")]
+    let batch_count = batch.len();
+    let files = std::mem::take(batch);
+    let ok = send_scan_message(
+        tx,
+        ScanMessage::Batch { generation, files },
+        cancel,
+        wake_ui,
+    );
     batch.reserve(BATCH_SIZE);
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][Scan] batch sent: count={} send_ms={}",
+        batch_count,
+        crate::preload_debug::elapsed_ms(send_started)
+    );
+    ok
 }
 
 fn send_scanned_files(
-    mut files: Vec<(PathBuf, u64)>,
+    mut files: Vec<(PathBuf, u64, Option<i64>)>,
     paired_raw_jpeg_handling: PairedRawJpegHandling,
+    generation: u64,
     tx: &Sender<ScanMessage>,
+    cancel: &AtomicBool,
+    wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) {
+    #[cfg(feature = "preload-debug")]
+    let send_started = std::time::Instant::now();
     if paired_raw_jpeg_handling.needs_pair_index() {
         filter_raw_jpeg_pairs(&mut files, paired_raw_jpeg_handling);
     }
 
-    // Keep global ordering stable across batches. This holds all paths until the scan finishes,
-    // which costs more memory than sorting per batch, but per-batch sorting is not globally sorted.
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut batch = Vec::with_capacity(BATCH_SIZE);
-    for file in files {
-        batch.push(file);
-        if batch.len() >= BATCH_SIZE {
-            let _ = tx.send(ScanMessage::Batch(std::mem::take(&mut batch)));
-            batch.reserve(BATCH_SIZE);
+    #[cfg(feature = "preload-debug")]
+    let total_files = files.len();
+    #[cfg(feature = "preload-debug")]
+    let mut batches_sent = 0usize;
+    while !files.is_empty() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let take = BATCH_SIZE.min(files.len());
+        let mut batch: Vec<_> = files.drain(..take).collect();
+        if !send_scan_batch(&mut batch, generation, tx, cancel, wake_ui) {
+            return;
+        }
+        #[cfg(feature = "preload-debug")]
+        {
+            batches_sent += 1;
         }
     }
-    if !batch.is_empty() {
-        let _ = tx.send(ScanMessage::Batch(batch));
-    }
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][Scan] send_scanned_files: files={} batches={} ms={}",
+        total_files,
+        batches_sent,
+        crate::preload_debug::elapsed_ms(send_started)
+    );
 }
 
-fn filter_raw_jpeg_pairs(files: &mut Vec<(PathBuf, u64)>, handling: PairedRawJpegHandling) {
+fn filter_raw_jpeg_pairs(
+    files: &mut Vec<(PathBuf, u64, Option<i64>)>,
+    handling: PairedRawJpegHandling,
+) {
     match handling {
         PairedRawJpegHandling::ShowBoth => {}
         PairedRawJpegHandling::SkipRaw => {
             let jpeg_stems = jpeg_stems_by_parent(files);
-            files.retain(|(path, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
+            files
+                .retain(|(path, _, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
         }
         PairedRawJpegHandling::SkipJpeg => {
             let raw_stems = raw_stems_by_parent(files);
-            files.retain(|(path, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
+            files
+                .retain(|(path, _, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
         }
     }
 }
 
-fn jpeg_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+fn jpeg_stems_by_parent(
+    files: &[(PathBuf, u64, Option<i64>)],
+) -> HashMap<PathBuf, HashSet<OsString>> {
     let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
-    for key in files.iter().filter_map(|(path, _)| jpeg_stem_key(path)) {
+    for key in files.iter().filter_map(|(path, _, _)| jpeg_stem_key(path)) {
         by_parent
             .entry(key.parent)
             .or_default()
@@ -233,9 +656,11 @@ fn jpeg_stem_key(path: &Path) -> Option<StemKey> {
     owned_stem_key(path)
 }
 
-fn raw_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+fn raw_stems_by_parent(
+    files: &[(PathBuf, u64, Option<i64>)],
+) -> HashMap<PathBuf, HashSet<OsString>> {
     let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
-    for key in files.iter().filter_map(|(path, _)| raw_stem_key(path)) {
+    for key in files.iter().filter_map(|(path, _, _)| raw_stem_key(path)) {
         by_parent
             .entry(key.parent)
             .or_default()
@@ -343,22 +768,24 @@ mod tests {
             dir.to_path_buf(),
             false,
             paired_raw_jpeg_handling,
+            1,
             tx,
             Arc::new(AtomicBool::new(false)),
+            None,
         );
 
         let mut files = Vec::new();
         loop {
             match rx.recv().expect("scan message") {
-                ScanMessage::Batch(batch) => {
-                    files.extend(batch.into_iter().map(|(path, _)| {
+                ScanMessage::Batch { files: batch, .. } => {
+                    files.extend(batch.into_iter().map(|(path, _, _)| {
                         path.file_name()
                             .expect("file name")
                             .to_string_lossy()
                             .into_owned()
                     }));
                 }
-                ScanMessage::Done => break,
+                ScanMessage::Done { .. } => break,
             }
         }
         files.sort();
@@ -429,5 +856,23 @@ mod tests {
             scan_names(dir.path(), PairedRawJpegHandling::ShowBoth),
             vec!["DSC08268.ARW", "DSC08268.JPG"]
         );
+    }
+
+    #[test]
+    fn directory_traversal_boundary_skips_symlink_directory() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let dir = TempScanDir::new();
+            let target = dir.path().join("target");
+            std::fs::create_dir(&target).expect("create target directory");
+            let link = dir.path().join("link");
+            symlink(&target, &link).expect("create directory symlink");
+            assert!(super::is_directory_traversal_boundary_metadata(
+                &link,
+                &std::fs::symlink_metadata(&link).expect("symlink metadata")
+            ));
+        }
     }
 }

@@ -23,6 +23,9 @@ pub(crate) mod tiled;
 pub(crate) mod transitions;
 
 use crate::app::ImageViewerApp;
+use crate::app::rendering::geometry::{
+    embedded_directory_tree_panel_rect, main_window_canvas_rects,
+};
 use crate::app::rendering::standard::{
     should_dispatch_standard_draw, should_draw_pending_navigation_hold_frame,
 };
@@ -49,17 +52,39 @@ impl ImageViewerApp {
         egui::Frame::NONE
             .fill(self.cached_palette.canvas_bg)
             .show(ui, |ui| {
-                let screen_rect = ui.max_rect();
+                let available = ui.available_rect_before_wrap();
+                let grab = ui.style().interaction.resize_grab_radius_side;
+                let embedded_panel = if self.directory_tree_settings_active()
+                    && self.directory_tree_nav_is_embedded()
+                {
+                    embedded_directory_tree_panel_rect(ui.ctx()).or_else(|| {
+                        let width = self.embedded_nav_panel_width_estimate();
+                        Some(egui::Rect::from_min_max(
+                            available.min,
+                            egui::Pos2::new(available.min.x + width, available.max.y),
+                        ))
+                    })
+                } else {
+                    None
+                };
+                let (screen_rect, interact_rect) =
+                    main_window_canvas_rects(available, grab, embedded_panel);
+                self.last_canvas_rect = Some(screen_rect);
 
-                // Allocate the whole viewport for drag interaction and clicks early.
+                // Allocate the canvas for drag interaction and clicks early.
                 // If a modal is open, we sense nothing to block background clicks/drags.
                 let sense = if any_modal_open {
                     Sense::hover()
                 } else {
                     Sense::click_and_drag()
                 };
-                let canvas_resp = ui.allocate_rect(screen_rect, sense);
-                self.flush_deferred_sdr_upload_for_index(self.current_index, ui.ctx());
+                let canvas_resp = ui.allocate_rect(interact_rect, sense);
+                if canvas_resp.clicked() {
+                    self.deactivate_directory_tree_list_keyboard(ui.ctx());
+                }
+                if !self.scanning {
+                    self.flush_deferred_sdr_upload_for_index(self.current_index, ui.ctx());
+                }
                 let pointer_hotkey_action = if !any_modal_open && canvas_resp.hovered() {
                     self.map_pointer_button_to_action(ui.ctx())
                 } else {
@@ -86,56 +111,14 @@ impl ImageViewerApp {
                 // an existing menu, making it impossible to re-open the menu
                 // with a single right-click.  Instead we detect raw right-clicks
                 // via `ctx.input()` and render the menu through `egui::Area`.
-                if !any_modal_open
-                    && pointer_hotkey_action.is_none()
-                    && !self.image_files.is_empty()
-                {
-                    let ctx = ui.ctx().clone();
-                    let raw_secondary = ctx.input(|i| i.pointer.secondary_clicked());
-                    let interact_pos = ctx.input(|i| i.pointer.interact_pos());
-
-                    if raw_secondary && canvas_resp.hovered() {
-                        if let Some(pos) = interact_pos {
-                            self.context_menu_pos = Some(pos);
-                        }
-                    }
-
-                    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        self.context_menu_pos = None;
-                    }
-
-                    if let Some(pos) = self.context_menu_pos {
-                        let menu_id = egui::Id::new(format!(
-                            "__custom_canvas_ctx_menu_{}",
-                            self.settings.language
-                        ));
-                        let area_resp = egui::Area::new(menu_id)
-                            .kind(egui::UiKind::Menu)
-                            .order(egui::Order::Foreground)
-                            .fixed_pos(pos)
-                            .sense(Sense::hover())
-                            .show(&ctx, |ui| {
-                                egui::Frame::menu(ui.style()).show(ui, |ui| {
-                                    ui.with_layout(
-                                        egui::Layout::top_down_justified(egui::Align::LEFT),
-                                        |ui| self.draw_context_menu_items(ui),
-                                    );
-                                });
-                            });
-
-                        let menu_rect = area_resp.response.rect;
-                        let primary_clicked = ctx.input(|i| i.pointer.primary_clicked());
-                        if primary_clicked {
-                            if let Some(pp) = interact_pos {
-                                if !menu_rect.contains(pp) {
-                                    self.context_menu_pos = None;
-                                }
-                            }
-                        }
-                        if area_resp.response.should_close() {
-                            self.context_menu_pos = None;
-                        }
-                    }
+                if !any_modal_open && pointer_hotkey_action.is_none() {
+                    let open_zone = canvas_resp.hovered().then_some(canvas_resp.rect);
+                    self.try_open_image_context_menu(
+                        ui.ctx(),
+                        open_zone,
+                        !self.image_files.is_empty(),
+                    );
+                    self.paint_image_context_menu_if_open(ui.ctx());
                 }
 
                 if pointer_hotkey_action.is_none()

@@ -61,13 +61,14 @@ impl ImageViewerApp {
             return;
         };
 
-        // CRITICAL: Drop stale preview results unless they match the active load generation.
+        // Drop stale previews using the same generation gate as background image installs so
+        // in-flight HQ results can update prefetched TileManagers after the user navigates away.
         let registered_inflight = self.loader.is_loading_any(update.index)
             && update.generation == self.loader.current_generation(update.index);
         let is_prefetch_survivor = update.index == self.current_index
             && (self.prefetch_prev_generation == Some(update.generation) || registered_inflight);
 
-        if update.generation != self.generation && !is_prefetch_survivor {
+        if !self.accepts_background_image_generation(update.index, update.generation) {
             let file_name = path_for_logs
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -117,6 +118,13 @@ impl ImageViewerApp {
         let preview = update.preview_bundle.sdr().cloned();
         match (preview, update.error) {
             (Some(preview), _) => {
+                self.cache_directory_tree_strip_thumbnail(
+                    update.index,
+                    &preview,
+                    crate::loader::PreviewStage::Refined,
+                    self.directory_tree_strip_logical_size(update.index),
+                    ctx,
+                );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
                 if let Some(cpu_ms) = update.cpu_demosaic_ms {
@@ -152,7 +160,10 @@ impl ImageViewerApp {
                 // 2. Update prefetched TileManagers
                 if !is_prefetch_survivor {
                     if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                        if update.generation == tm.generation {
+                        if preview_generation_matches_prefetched_tile(
+                            update.generation,
+                            tm.generation,
+                        ) {
                             log::debug!(
                                 "[App] HQ preview applied for prefetched index {} ({}x{})",
                                 update.index,

@@ -15,23 +15,47 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::imports::*;
-use windows::Win32::System::Com::*;
+use windows::Win32::Foundation::S_FALSE;
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::core::HRESULT;
 
-pub struct ComGuard;
+const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106_u32 as i32);
+
+pub struct ComGuard {
+    should_uninitialize: bool,
+}
 
 impl ComGuard {
+    /// Initialize COM as MTA on worker threads.
+    ///
+    /// On the egui/UI thread COM is usually already initialized as STA
+    /// (`RPC_E_CHANGED_MODE` / 0x80010106). In that case we reuse the existing apartment
+    /// and do not call [`CoUninitialize`] on drop. Callers that need WIC from the UI
+    /// thread should run work on [`crate::loader::preview_caps::REFINEMENT_POOL`] instead.
     pub fn new() -> windows::core::Result<Self> {
         unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            if hr.is_ok() {
+                return Ok(Self {
+                    should_uninitialize: hr != S_FALSE,
+                });
+            }
+            if hr == RPC_E_CHANGED_MODE {
+                return Ok(Self {
+                    should_uninitialize: false,
+                });
+            }
+            Err(hr.into())
         }
-        Ok(Self)
     }
 }
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
-        unsafe {
-            CoUninitialize();
+        if self.should_uninitialize {
+            unsafe {
+                CoUninitialize();
+            }
         }
     }
 }

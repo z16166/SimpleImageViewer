@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.6.4"
+version = "2.7.0"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = [
     "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
 ] }
 parking_lot = "0.12"
+arc-swap = "1"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 symphonia = { version = "0.5", features = ["all"] }
 lofty = "0.24"
@@ -35,6 +36,7 @@ walkdir = "2"
 jwalk = "0.8"
 # tiff = "0.11" // Removed in favor of libtiff via libloading on Linux and WIC/ImageIO elsewhere
 crossbeam-channel = "0.5"
+dirs = "6"
 rayon = "1.10"
 log = "0.4"
 flexi_logger = { version = "0.29", features = ["async"] }
@@ -119,7 +121,12 @@ windows = { version = "0.58", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemServices",
+    "Win32_System_Time",
+    "Win32_Globalization",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

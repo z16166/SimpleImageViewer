@@ -65,7 +65,12 @@ pub(crate) fn tiff_may_be_camera_raw(path: &Path) -> bool {
     let Ok(mmap) = crate::mmap_util::map_file(path) else {
         return false;
     };
-    sniff_tiff_may_be_camera_raw(&mmap[..])
+    tiff_may_be_camera_raw_bytes(mmap.as_ref())
+}
+
+/// Same as [`tiff_may_be_camera_raw`] but reuses an already-mapped file buffer.
+pub(crate) fn tiff_may_be_camera_raw_bytes(bytes: &[u8]) -> bool {
+    sniff_tiff_may_be_camera_raw(bytes)
 }
 
 fn sniff_tiff_may_be_camera_raw(bytes: &[u8]) -> bool {

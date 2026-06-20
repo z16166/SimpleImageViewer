@@ -86,7 +86,7 @@ pub unsafe fn load_binary_archive(
     device: &ProtocolObject<dyn MTLDevice>,
     data: &[u8],
 ) -> Result<Retained<ProtocolObject<dyn MTLBinaryArchive>>, Retained<NSError>> {
-    objc2::rc::autoreleasepool(|_| unsafe {
+    objc2::rc::autoreleasepool(|_| {
         let descriptor = MTLBinaryArchiveDescriptor::new();
 
         let temp_path = get_temp_file_path();
@@ -94,10 +94,10 @@ pub unsafe fn load_binary_archive(
 
         if let Err(e) = std::fs::write(&temp_path, data) {
             log::warn!("Failed to write temporary pipeline cache file: {:?}", e);
-            return Err(make_custom_error(2));
+            return Err(unsafe { make_custom_error(2) });
         }
 
-        let url = path_to_nsurl(&temp_path).ok_or_else(|| make_custom_error(3))?;
+        let url = path_to_nsurl(&temp_path).ok_or_else(|| unsafe { make_custom_error(3) })?;
         descriptor.setUrl(Some(&url));
 
         device.newBinaryArchiveWithDescriptor_error(&descriptor)
@@ -107,7 +107,7 @@ pub unsafe fn load_binary_archive(
 pub unsafe fn write_binary_archive(
     archive: &ProtocolObject<dyn MTLBinaryArchive>,
 ) -> Option<Vec<u8>> {
-    objc2::rc::autoreleasepool(|_| unsafe {
+    objc2::rc::autoreleasepool(|_| {
         let temp_path = get_temp_file_path();
         let _guard = TempFileGuard::new(temp_path.clone());
 
@@ -130,7 +130,7 @@ pub unsafe fn write_binary_archive(
 pub unsafe fn create_empty_binary_archive(
     device: &ProtocolObject<dyn MTLDevice>,
 ) -> Option<Retained<ProtocolObject<dyn MTLBinaryArchive>>> {
-    objc2::rc::autoreleasepool(|_| unsafe {
+    objc2::rc::autoreleasepool(|_| {
         let descriptor = MTLBinaryArchiveDescriptor::new();
         match device.newBinaryArchiveWithDescriptor_error(&descriptor) {
             Ok(archive) => Some(archive),

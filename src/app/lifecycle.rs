@@ -57,6 +57,8 @@ impl ImageViewerApp {
         }
         let mut theme_cache = SystemThemeCache::default();
         let cached_palette = settings.theme.resolve(&mut theme_cache);
+        let directory_tree_theme =
+            std::sync::Arc::new(parking_lot::Mutex::new(cached_palette.clone()));
 
         setup_visuals(&cc.egui_ctx, &settings, &cached_palette);
         if !setup_fonts(&cc.egui_ctx, &settings) {
@@ -413,6 +415,10 @@ impl ImageViewerApp {
             })
             .expect("spawn siv-context-file-ops worker");
 
+        let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
+            crossbeam_channel::bounded(16);
+        let (directory_tree_strip_inflight_release_tx, directory_tree_strip_inflight_release_rx) =
+            crossbeam_channel::bounded(64);
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
             .name("font-families".to_string())
@@ -465,9 +471,21 @@ impl ImageViewerApp {
             initial_image,
             image_files: Vec::new(),
             file_byte_len_by_index: Vec::new(),
+            file_modified_unix_by_index: Vec::new(),
             current_index: 0,
             scan_rx: None,
             scan_cancel: None,
+            root_redraw_wake: None,
+            directory_tree_theme,
+            pending_directory_tree_repaint: false,
+            pending_directory_tree_select_index: None,
+            pending_directory_tree_state_sync: false,
+            pending_directory_tree_sync_warning: None,
+            directory_tree_sync_defer_frames: 0,
+            scan_generation: 0,
+            scan_results_pending_since: None,
+            pending_preload_after_directory_scan: false,
+            directory_tree_strip_bootstrap_after_scan: false,
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
@@ -484,6 +502,8 @@ impl ImageViewerApp {
             ),
             cached_window_placement: None,
             cached_restore_placement: None,
+            cached_directory_tree_window_placement: None,
+            cached_directory_tree_restore_placement: None,
             requested_target_format,
             active_target_format,
             requested_rgb10a2_pq_encode,
@@ -535,6 +555,19 @@ impl ImageViewerApp {
             modal_generation: 0,
             pending_fullscreen: None,
             pending_open_directory: false,
+            folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
+            directory_tree: crate::app::DirectoryTreeRuntime::new(),
+            directory_tree_strip_cache:
+                crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+            directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
+            directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
+            directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+            directory_tree_strip_preview_tx,
+            directory_tree_strip_preview_rx,
+            directory_tree_strip_inflight_release_tx,
+            directory_tree_strip_inflight_release_rx,
+            directory_tree_strip_pending_gpu: Vec::new(),
+            directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,
@@ -565,6 +598,7 @@ impl ImageViewerApp {
             osd: crate::ui::osd::OsdRenderer::new(osd_event_rx),
             last_minimized: false,
             last_frame_time: Instant::now(),
+            last_logic_shared_at: None,
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
             tile_manager: None,
@@ -575,6 +609,7 @@ impl ImageViewerApp {
             print_status_rx: None,
             pending_anim_frames: HashMap::new(),
             last_mouse_wheel_nav: 0.0,
+            last_canvas_rect: None,
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
@@ -585,7 +620,9 @@ impl ImageViewerApp {
             file_op_rx,
             file_op_tx,
             lightweight_file_op_tx,
+            background_threads: crate::app::background_threads::BackgroundThreadJoiner::new(),
             context_menu_pos: None,
+            context_menu_viewport: None,
             current_rotation: 0,
             save_error_rx,
             last_save_error: None,
@@ -630,6 +667,7 @@ impl ImageViewerApp {
             context_menu_edit_target: None,
             context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry::default(
             ),
+            context_menu_exe_browse_requested: false,
             refresh_scan_in_progress: false,
             refresh_scan_slideshow_was_playing: false,
             refresh_anchor_path: None,
@@ -682,7 +720,17 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
 
         // Restore last session state
-        if let Some(dir) = app.settings.last_image_dir.clone() {
+        if app.settings.browse_mode == crate::settings::BrowseMode::Tree
+            && app.settings.show_directory_tree_nav
+        {
+            app.ensure_directory_tree_places_loaded();
+            app.restore_saved_directory_tree_panel_layout();
+            if let Some(dir) = app.saved_directory_tree_selection_dir() {
+                app.settings.tree_nav_selected_dir = Some(dir.clone());
+                app.directory_tree.tree.lock().set_selected_dir(dir.clone());
+                app.load_directory(dir);
+            }
+        } else if let Some(dir) = app.settings.last_image_dir.clone() {
             app.load_directory(dir);
         }
         if app.settings.play_music {

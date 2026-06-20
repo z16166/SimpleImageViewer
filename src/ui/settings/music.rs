@@ -16,8 +16,8 @@
 
 use crate::app::ImageViewerApp;
 use crate::ui::utils::{
-    middle_truncate, path_display_box, settings_card, styled_button, styled_button_widget,
-    themed_labeled_toggle,
+    middle_truncate, path_display_box, settings_card, stable_selectable_label, styled_button,
+    styled_button_widget, themed_labeled_toggle,
 };
 use eframe::egui::{self, Color32, RichText};
 use rust_i18n::t;
@@ -361,12 +361,12 @@ pub(super) fn draw_music_tab(
                                     .truncate()
                                     .show_ui(ui, |ui| {
                                         let default_label = t!("music.default_device").to_string();
-                                        if ui
-                                            .selectable_label(
-                                                app.settings.audio_device.is_none(),
-                                                &default_label,
-                                            )
-                                            .clicked()
+                                        if stable_selectable_label(
+                                            ui,
+                                            app.settings.audio_device.is_none(),
+                                            &default_label,
+                                        )
+                                        .clicked()
                                         {
                                             app.settings.audio_device = None;
                                             app.audio.set_device(None);
@@ -377,8 +377,7 @@ pub(super) fn draw_music_tab(
                                             let is_selected =
                                                 app.settings.audio_device.as_ref() == Some(dev);
                                             let short_name = middle_truncate(dev, 40);
-                                            if ui
-                                                .selectable_label(is_selected, short_name)
+                                            if stable_selectable_label(ui, is_selected, short_name)
                                                 .clicked()
                                             {
                                                 app.settings.audio_device = Some(dev.clone());

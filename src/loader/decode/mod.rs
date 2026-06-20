@@ -21,15 +21,19 @@
 
 mod assemble;
 mod detect;
+mod directory_tree_thumb;
 mod hdr_formats;
 mod jpeg;
 mod modern;
 mod raster;
 mod raw;
 pub(crate) use raw::open_raw_processor_with_preview;
+mod strip_downsample;
 mod tiff_raw_sniff;
 
+pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_from_path;
 pub(crate) use raster::is_maybe_animated;
+pub(crate) use strip_downsample::downsample_decoded_for_strip;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
@@ -262,28 +266,52 @@ pub(crate) fn load_image_file(
             let exif_thumb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 extract_exif_thumbnail(path)
             }));
+            let logical_w = source.width();
+            let logical_h = source.height();
+            let mut used_exif = false;
             match exif_thumb {
-                Ok(Some(thumb)) => {
+                Ok(Some(thumb))
+                    if super::preview_aspect_matches_logical(
+                        thumb.width,
+                        thumb.height,
+                        logical_w,
+                        logical_h,
+                    ) =>
+                {
                     log::info!(
                         "[{}] EXIF thumbnail extracted in {:?}",
                         file_name,
                         t0.elapsed()
                     );
                     preview = Some(thumb);
+                    used_exif = true;
                 }
-                Ok(None) => {
+                Ok(Some(_)) => {
                     log::info!(
-                        "[{}] No EXIF thumbnail found (took {:?}), generating {}px preview...",
+                        "[{}] Skipping EXIF thumbnail due to aspect mismatch ({}x{})",
                         file_name,
-                        t0.elapsed(),
-                        DEFAULT_PREVIEW_SIZE
+                        logical_w,
+                        logical_h
                     );
-                    let t1 = std::time::Instant::now();
-                    let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        source.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
-                    }));
-                    match gen_result {
-                        Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::error!("[{}] extract_exif_thumbnail PANICKED: {:?}", file_name, e);
+                }
+            }
+            if !used_exif {
+                log::info!(
+                    "[{}] Generating {}px preview...",
+                    file_name,
+                    DEFAULT_PREVIEW_SIZE
+                );
+                let t1 = std::time::Instant::now();
+                let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    source.generate_full_image_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                }));
+                match gen_result {
+                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                        if super::preview_aspect_matches_logical(pw, ph, logical_w, logical_h) {
                             log::info!(
                                 "[{}] {}px preview generated ({}x{}) in {:?}",
                                 file_name,
@@ -292,27 +320,49 @@ pub(crate) fn load_image_file(
                                 ph,
                                 t1.elapsed()
                             );
-                            preview = Some(DecodedImage::new(pw, ph, p_pixels));
-                        }
-                        Ok(_) => {
-                            log::warn!(
-                                "[{}] generate_preview returned empty/zero-size result in {:?}",
+                            crate::preload_debug!(
+                                "[PreloadDebug][Strip] tiled bootstrap preview file={} out={}x{} logical={}x{} aspect_ok=true",
                                 file_name,
-                                t1.elapsed()
+                                pw,
+                                ph,
+                                logical_w,
+                                logical_h
                             );
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "[{}] generate_preview PANICKED: {:?} in {:?}",
+                            preview = Some(DecodedImage::new(pw, ph, p_pixels));
+                        } else {
+                            log::warn!(
+                                "[{}] Rejecting {}x{} preview: aspect ratio does not match logical {}x{}",
                                 file_name,
-                                e,
-                                t1.elapsed()
+                                pw,
+                                ph,
+                                logical_w,
+                                logical_h
+                            );
+                            crate::preload_debug!(
+                                "[PreloadDebug][Strip] tiled bootstrap preview file={} out={}x{} logical={}x{} aspect_ok=false",
+                                file_name,
+                                pw,
+                                ph,
+                                logical_w,
+                                logical_h
                             );
                         }
                     }
-                }
-                Err(e) => {
-                    log::error!("[{}] extract_exif_thumbnail PANICKED: {:?}", file_name, e);
+                    Ok(_) => {
+                        log::warn!(
+                            "[{}] generate_full_image_preview returned empty/zero-size result in {:?}",
+                            file_name,
+                            t1.elapsed()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "[{}] generate_full_image_preview PANICKED: {:?} in {:?}",
+                            file_name,
+                            e,
+                            t1.elapsed()
+                        );
+                    }
                 }
             }
 

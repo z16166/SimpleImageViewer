@@ -486,19 +486,6 @@ fn hdr_fallback_texture_without_hdr_plane_is_not_loaded_asset() {
     assert!(!hdr_fallback_asset_is_loaded(true, false));
 }
 
-#[test]
-fn first_batch_preload_waits_when_scan_done_is_already_available() {
-    assert!(!should_schedule_first_batch_preload(true, 3, true, false));
-    assert!(should_schedule_first_batch_preload(true, 3, false, false));
-    assert!(!should_schedule_first_batch_preload(false, 3, false, false));
-    assert!(!should_schedule_first_batch_preload(true, 0, false, false));
-}
-
-#[test]
-fn first_batch_preload_waits_for_startup_target() {
-    assert!(!should_schedule_first_batch_preload(true, 3, false, true));
-}
-
 fn startup_preload_defer_can_release_now(
     runtime_probe_completed: bool,
     native_hdr_surface_requests_enabled: bool,
@@ -1470,6 +1457,7 @@ fn make_test_app() -> ImageViewerApp {
         settings: Settings::default(),
         image_files: Vec::new(),
         file_byte_len_by_index: Vec::new(),
+        file_modified_unix_by_index: Vec::new(),
         current_index: 0,
         initial_image: None,
         scanning: false,
@@ -1488,6 +1476,8 @@ fn make_test_app() -> ImageViewerApp {
         hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
         cached_window_placement: None,
         cached_restore_placement: None,
+        cached_directory_tree_window_placement: None,
+        cached_directory_tree_restore_placement: None,
         requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat::new(),
         active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat::new(),
         requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode::new(),
@@ -1543,6 +1533,25 @@ fn make_test_app() -> ImageViewerApp {
         modal_generation: 0,
         pending_fullscreen: None,
         pending_open_directory: false,
+        folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
+        directory_tree: crate::app::DirectoryTreeRuntime::new(),
+        directory_tree_strip_cache:
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+        directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
+        directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
+        directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+        directory_tree_strip_preview_tx: {
+            let (tx, _rx) = crossbeam_channel::unbounded();
+            tx
+        },
+        directory_tree_strip_preview_rx: crossbeam_channel::never(),
+        directory_tree_strip_inflight_release_tx: {
+            let (tx, _rx) = crossbeam_channel::unbounded();
+            tx
+        },
+        directory_tree_strip_inflight_release_rx: crossbeam_channel::never(),
+        directory_tree_strip_pending_gpu: Vec::new(),
+        directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,
@@ -1557,6 +1566,17 @@ fn make_test_app() -> ImageViewerApp {
         music_scan_path: None,
         scan_rx: None,
         scan_cancel: None,
+        root_redraw_wake: None,
+        directory_tree_theme: std::sync::Arc::new(parking_lot::Mutex::new(ThemePalette::dark())),
+        pending_directory_tree_repaint: false,
+        pending_directory_tree_select_index: None,
+        pending_directory_tree_state_sync: false,
+        pending_directory_tree_sync_warning: None,
+        directory_tree_sync_defer_frames: 0,
+        scan_generation: 0,
+        scan_results_pending_since: None,
+        pending_preload_after_directory_scan: false,
+        directory_tree_strip_bootstrap_after_scan: false,
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
@@ -1575,6 +1595,7 @@ fn make_test_app() -> ImageViewerApp {
         osd: crate::ui::osd::OsdRenderer::new(osd_event_rx),
         last_minimized: false,
         last_frame_time: Instant::now(),
+        last_logic_shared_at: None,
         ipc_rx,
         animation_cache: HashMap::new(),
         tile_manager: None,
@@ -1587,7 +1608,9 @@ fn make_test_app() -> ImageViewerApp {
         file_op_rx,
         file_op_tx,
         lightweight_file_op_tx,
+        background_threads: crate::app::background_threads::BackgroundThreadJoiner::new(),
         last_mouse_wheel_nav: 0.0,
+        last_canvas_rect: None,
         last_keyboard_nav: None,
         save_tx,
         save_error_rx,
@@ -1600,6 +1623,7 @@ fn make_test_app() -> ImageViewerApp {
                 .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
         ),
         context_menu_pos: None,
+        context_menu_viewport: None,
         current_rotation: 0,
         tile_upload_quota: 32,
         cached_audio_devices: Vec::new(),
@@ -1635,6 +1659,7 @@ fn make_test_app() -> ImageViewerApp {
         context_menu_edit_dialog_open: false,
         context_menu_edit_target: None,
         context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry::default(),
+        context_menu_exe_browse_requested: false,
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,
@@ -1666,6 +1691,50 @@ fn load_directory_clears_in_progress_refresh_scan_state() {
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn sort_image_file_rows_in_place_reorders_parallel_columns() {
+    let mut paths = vec![
+        PathBuf::from("c.jpg"),
+        PathBuf::from("a.jpg"),
+        PathBuf::from("b.jpg"),
+    ];
+    let mut sizes = vec![30_u64, 10, 20];
+    let mut modified = vec![Some(3_i64), Some(1), Some(2)];
+
+    let old_to_new = super::directory::sort_image_file_rows_in_place(
+        &mut paths,
+        &mut sizes,
+        &mut modified,
+    )
+    .expect("order should change");
+
+    assert_eq!(
+        paths,
+        vec![
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+            PathBuf::from("c.jpg"),
+        ]
+    );
+    assert_eq!(sizes, vec![10, 20, 30]);
+    assert_eq!(modified, vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(old_to_new, vec![2, 0, 1]);
+}
+
+#[test]
+fn sort_image_file_rows_in_place_noop_when_already_sorted() {
+    let mut paths = vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")];
+    let mut sizes = vec![1_u64, 2];
+    let mut modified = vec![Some(1_i64), Some(2)];
+
+    assert!(super::directory::sort_image_file_rows_in_place(
+        &mut paths,
+        &mut sizes,
+        &mut modified,
+    )
+    .is_none());
 }
 
 #[test]

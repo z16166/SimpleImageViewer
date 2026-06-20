@@ -34,6 +34,7 @@ pub struct State {
     pub is_cut: bool,
     pub overwrite_if_exists: bool,
     pub error: Option<ValidationError>,
+    pub browse_folder_requested: bool,
 }
 
 impl State {
@@ -46,6 +47,7 @@ impl State {
             is_cut,
             overwrite_if_exists,
             error: None,
+            browse_folder_requested: false,
         }
     }
 }
@@ -76,14 +78,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if styled_button(ui, t!("file_copy_cut.browse"), palette).clicked() {
-                        let mut dialog = rfd::FileDialog::new();
-                        if !state.input.trim().is_empty() {
-                            dialog = dialog.set_directory(std::path::Path::new(state.input.trim()));
-                        }
-                        if let Some(dir) = dialog.pick_folder() {
-                            state.input = dir.to_string_lossy().into_owned();
-                            state.error = None;
-                        }
+                        state.browse_folder_requested = true;
                     }
 
                     let text_edit = egui::TextEdit::singleline(&mut state.input)

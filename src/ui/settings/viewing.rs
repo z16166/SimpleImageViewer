@@ -16,7 +16,7 @@
 
 use super::slideshow;
 use crate::app::{ImageViewerApp, ScaleMode};
-use crate::ui::utils::{settings_card, themed_labeled_toggle};
+use crate::ui::utils::{settings_card, stable_selectable_value, themed_labeled_toggle};
 use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
@@ -53,12 +53,14 @@ pub(super) fn draw_viewing_tab(
                 egui::ComboBox::from_id_salt("scale_mode_combo")
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.scale_mode,
                             ScaleMode::FitToWindow,
                             t!("scale.fit").to_string(),
                         );
-                        ui.selectable_value(
+                        stable_selectable_value(
+                            ui,
                             &mut app.settings.scale_mode,
                             ScaleMode::OriginalSize,
                             t!("scale.original").to_string(),
@@ -129,12 +131,14 @@ pub(super) fn draw_viewing_tab(
                     egui::ComboBox::from_id_salt("raw_demosaic_mode_combo")
                         .selected_text(selected_text)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
+                            stable_selectable_value(
+                                ui,
                                 &mut app.settings.raw_demosaic_mode,
                                 RawDemosaicMode::Cpu,
                                 RawDemosaicMode::Cpu.label(),
                             );
-                            ui.selectable_value(
+                            stable_selectable_value(
+                                ui,
                                 &mut app.settings.raw_demosaic_mode,
                                 RawDemosaicMode::Gpu,
                                 RawDemosaicMode::Gpu.label(),

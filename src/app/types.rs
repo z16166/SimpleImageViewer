@@ -24,7 +24,12 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
 
+/// Calls [`winit::window::Window::request_redraw`] on the root viewport window.
+pub(crate) type RootRedrawWake = Arc<dyn Fn() + Send + Sync>;
+
+use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
+use crate::directory_tree_places::DirectoryTreePlaces;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::pixel_inspector::PixelHoverCache;
@@ -91,6 +96,10 @@ impl HdrOutputStateSnapshot {
             native_presentation_enabled,
             target_format,
         }
+    }
+
+    pub(crate) fn target_format(&self) -> Option<wgpu::TextureFormat> {
+        self.target_format
     }
 }
 
@@ -317,6 +326,8 @@ pub struct ImageViewerApp {
     pub(crate) image_files: Vec<PathBuf>,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
+    /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).
+    pub(crate) file_modified_unix_by_index: Vec<Option<i64>>,
     pub(crate) current_index: usize,
     pub(crate) initial_image: Option<PathBuf>,
     pub(crate) scanning: bool,
@@ -349,6 +360,8 @@ pub struct ImageViewerApp {
     /// Last non-maximized placement observed this session (valid outer top-left).
     /// Used when closing maximized so the next spawn targets the same monitor.
     pub(crate) cached_restore_placement: Option<CachedWindowPlacement>,
+    pub(crate) cached_directory_tree_window_placement: Option<CachedWindowPlacement>,
+    pub(crate) cached_directory_tree_restore_placement: Option<CachedWindowPlacement>,
     /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
     /// swap-chain target format whenever the active monitor's HDR capability
     /// changes. The same mailbox is registered with `WgpuConfiguration`, so
@@ -453,6 +466,27 @@ pub struct ImageViewerApp {
     /// Set to true by the PickDirectory hotkey; consumed in `logic()` to call
     /// `open_directory_dialog` which requires `&eframe::Frame`.
     pub(crate) pending_open_directory: bool,
+    pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
+    pub(crate) directory_tree: DirectoryTreeRuntime,
+    pub(crate) directory_tree_strip_cache:
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
+    /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
+    pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
+    >,
+    pub(crate) directory_tree_strip_preview_rx: crossbeam_channel::Receiver<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
+    >,
+    pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
+    pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
+    pub(crate) directory_tree_strip_pending_gpu:
+        Vec<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Background Places loader; polled from `logic()`.
+    pub(crate) directory_tree_places_load_rx:
+        Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
@@ -481,6 +515,26 @@ pub struct ImageViewerApp {
     pub(crate) music_scan_path: Option<PathBuf>,
     pub(crate) scan_rx: Option<Receiver<crate::scanner::ScanMessage>>,
     pub(crate) scan_cancel: Option<Arc<AtomicBool>>,
+    /// Wakes the root winit window so `App::logic()` runs while a child viewport is focused.
+    pub(crate) root_redraw_wake: Option<crate::app::RootRedrawWake>,
+    /// Latest palette for the directory-tree deferred viewport (read each paint).
+    pub(crate) directory_tree_theme: std::sync::Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
+    /// ROOT paint should synchronously repaint the directory-tree viewport (Windows).
+    pub(crate) pending_directory_tree_repaint: bool,
+    /// Deferred main-window navigation from directory-tree list clicks (see `process_pending_directory_tree_select`).
+    pub(crate) pending_directory_tree_select_index: Option<usize>,
+    /// Retry `sync_directory_tree_file_list_state` when the UI thread holds `directory_tree.state`.
+    pub(crate) pending_directory_tree_state_sync: bool,
+    /// Queued when defer-drop cannot acquire `directory_tree.state` (see `apply_directory_tree_pending_sync_warning`).
+    pub(crate) pending_directory_tree_sync_warning: Option<String>,
+    pub(crate) directory_tree_sync_defer_frames: u32,
+    /// Monotonic id for the active directory scan; stale channel messages are ignored.
+    pub(crate) scan_generation: u64,
+    /// Set when a directory scan is spawned; used by preload-debug queue-wait logs.
+    pub(crate) scan_results_pending_since: Option<std::time::Instant>,
+    /// Main-window preloads are deferred until the directory-tree file list viewport paints.
+    pub(crate) pending_preload_after_directory_scan: bool,
+    pub(crate) directory_tree_strip_bootstrap_after_scan: bool,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
@@ -512,6 +566,7 @@ pub struct ImageViewerApp {
     // Window lifecycle
     pub(crate) last_minimized: bool,
     pub(crate) last_frame_time: Instant,
+    pub(crate) last_logic_shared_at: Option<Instant>,
 
     // IPC receiver
     pub(crate) ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
@@ -540,9 +595,12 @@ pub struct ImageViewerApp {
     pub(crate) file_op_rx: Receiver<FileOpResult>,
     pub(crate) file_op_tx: Sender<FileOpResult>,
     pub(crate) lightweight_file_op_tx: Sender<LightweightFileOpJob>,
+    pub(crate) background_threads: crate::app::background_threads::BackgroundThreadJoiner,
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,
+    /// Canvas area from the latest ROOT `draw_image_canvas_ui` pass (excludes embedded tree panel).
+    pub(crate) last_canvas_rect: Option<egui::Rect>,
 
     /// Last egui time when keyboard Next/Prev was applied (throttles key repeat).
     pub(crate) last_keyboard_nav: Option<f64>,
@@ -563,6 +621,7 @@ pub struct ImageViewerApp {
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
     pub(crate) context_menu_pos: Option<Pos2>,
+    pub(crate) context_menu_viewport: Option<egui::ViewportId>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
     pub(crate) current_rotation: i32,
 
@@ -610,6 +669,7 @@ pub struct ImageViewerApp {
     pub(crate) context_menu_edit_dialog_open: bool,
     pub(crate) context_menu_edit_target: Option<usize>,
     pub(crate) context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry,
+    pub(crate) context_menu_exe_browse_requested: bool,
     /// True while a refresh-file-list scan (F5) is in progress.
     /// Prevents re-entry and blocks navigation actions that would
     /// dereference image_files during the incomplete rebuild.

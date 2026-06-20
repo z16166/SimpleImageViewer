@@ -35,6 +35,7 @@ mod app;
 mod audio;
 mod constants;
 mod context_menu;
+mod directory_tree_places;
 mod formats;
 mod hdr;
 mod hotkeys;

@@ -42,6 +42,19 @@ impl HdrMonitorSignature {
                 .map(|value| (value * 1000.0).round() as i32),
         }
     }
+
+    /// HDR output follows the main image window only. Deferred child viewports (e.g. directory
+    /// tree navigation) must not drive monitor probing or swap-chain decisions.
+    pub fn from_main_viewport(ctx: &egui::Context) -> Self {
+        ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+            Self::from_viewport(viewport.input.viewport())
+        })
+    }
+
+    pub(crate) fn native_pixels_per_point(&self) -> Option<f32> {
+        self.native_pixels_per_point_milli
+            .map(|milli| milli as f32 / 1000.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

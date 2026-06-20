@@ -50,6 +50,7 @@ impl ImageViewerApp {
     /// texture looks noticeably darker on HDR displays.
     pub(crate) fn draw_pending_navigation_hold_frame(&self, ui: &mut egui::Ui, screen_rect: Rect) {
         let tp = pending_navigation_hold_params();
+        let hold_dest = self.prev_navigation_hold_dest(screen_rect);
         self.draw_prev_image_underneath(
             ui,
             screen_rect,
@@ -57,8 +58,18 @@ impl ImageViewerApp {
             self.current_rotation,
             None,
             None,
-            None,
+            hold_dest,
         );
+    }
+
+    fn prev_navigation_hold_dest(&self, screen_rect: Rect) -> Option<Rect> {
+        if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
+            let size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+            return Some(self.compute_display_rect(size, screen_rect));
+        }
+        self.prev_texture
+            .as_ref()
+            .map(|prev| self.compute_display_rect(prev.size_vec2(), screen_rect))
     }
 
     /// HDR float-plane draw params for the outgoing frame during cross-format transitions.

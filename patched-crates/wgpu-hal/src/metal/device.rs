@@ -1730,7 +1730,7 @@ impl crate::Device for super::Device {
 
         Ok(super::PipelineCache {
             archive,
-            dirty: std::sync::atomic::AtomicBool::new(false),
+            dirty: atomic::AtomicBool::new(false),
         })
     }
 
@@ -1749,7 +1749,7 @@ impl crate::Device for super::Device {
         if !self.shared.private_caps.supports_binary_archives {
             return None;
         }
-        if !cache.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        if !cache.dirty.swap(false, atomic::Ordering::AcqRel) {
             return None;
         }
         let archive = cache.archive.as_ref()?;

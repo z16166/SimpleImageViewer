@@ -754,6 +754,54 @@ impl WgpuWinitRunning<'_> {
         }
 
         // ------------------------------------------------------------
+        //
+        // Simple Image Viewer fork (KEEP when merging upstream eframe)
+        // -----------------------------------------------------------------
+        // Upstream calls App::logic only from the ROOT path inside EpiIntegration::update.
+        // Deferred child viewports (show_viewport_deferred) run only their UI callback.
+        // On Windows the main window often gets no RedrawRequested while a child OS window
+        // is focused, so logic() never runs: scan channel drains, loaders, and timers stall
+        // until the user refocuses the main window (e.g. from the taskbar).
+        // request_repaint_of(ROOT) from the child is not reliable in that state.
+        //
+        // Fix: call App::logic here before integration.update for every viewport paint.
+        // ROOT no longer calls logic inside update (see epi_integration.rs below).
+        //
+        {
+            profiling::scope!("App::logic");
+            integration.frame.painting_viewport_id = viewport_id;
+            app.logic(
+                &integration.egui_ctx,
+                &mut integration.frame,
+                crate::epi::LogicPass {
+                    painting_viewport_id: viewport_id,
+                },
+            );
+        }
+
+        // logic() may drain loaders and install GPU textures, but only ROOT ui()/paint draws
+        // the main canvas. When only a deferred child repaints, wake ROOT's OS window.
+        let root_window_id_for_repaint = if viewport_id != ViewportId::ROOT {
+            {
+                let shared_lock = shared.borrow();
+                if let Some(root_vp) = shared_lock.viewports.get(&ViewportId::ROOT) {
+                    if let Some(root_window) = root_vp.window.as_ref() {
+                        root_window.request_redraw();
+                    }
+                }
+            }
+            integration
+                .egui_ctx
+                .request_repaint_of(ViewportId::ROOT);
+            shared
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id())
+        } else {
+            None
+        };
 
         // Runs the update, which could call immediate viewports,
         // so make sure we hold no locks here!
@@ -899,7 +947,23 @@ impl WgpuWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec() - vsync_secs); // don't count auto-save time as part of regular frame time
 
-        integration.maybe_autosave(app.as_mut(), window_opt.as_deref());
+        // Simple Image Viewer patch: wall-clock autosave uses Instant; run it when a deferred
+        // child viewport paints so settings persist while ROOT is unfocused (review ISSUE-20).
+        let root_window_for_autosave = if viewport_id == ViewportId::ROOT {
+            None
+        } else {
+            shared
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.clone())
+        };
+        let autosave_window = if viewport_id == ViewportId::ROOT {
+            window_opt.as_deref()
+        } else {
+            root_window_for_autosave.as_deref()
+        };
+        integration.maybe_autosave(app.as_mut(), autosave_window);
 
         if let Some(window) = &window_opt
             && is_invisible_or_minimized(window)
@@ -914,6 +978,26 @@ impl WgpuWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if viewport_id == ViewportId::ROOT
+            && let Some(aux_viewport_id) =
+                app.take_pending_auxiliary_viewport_repaint(&integration.egui_ctx)
+        {
+            let aux_window_id = shared
+                .borrow()
+                .viewports
+                .get(&aux_viewport_id)
+                .and_then(|vp| vp.window.as_ref())
+                .map(|window| window.id());
+            if let Some(aux_window_id) = aux_window_id {
+                Ok(EventResult::RepaintNow(aux_window_id))
+            } else {
+                Ok(EventResult::Wait)
+            }
+        } else if let Some(root_window_id) = root_window_id_for_repaint
+        {
+            // request_redraw alone is not enough on Windows when ROOT did not receive the
+            // RedrawRequested that triggered this child paint; paint ROOT synchronously.
+            Ok(EventResult::RepaintNow(root_window_id))
         } else {
             Ok(EventResult::Wait)
         }

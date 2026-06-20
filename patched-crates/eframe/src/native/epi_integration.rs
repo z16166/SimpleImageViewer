@@ -259,6 +259,7 @@ impl EpiIntegration {
             window: Some(Arc::clone(window)),
             raw_display_handle: window.display_handle().map(|h| h.as_raw()),
             raw_window_handle: window.window_handle().map(|h| h.as_raw()),
+            painting_viewport_id: egui::ViewportId::ROOT,
         };
 
         let icon = native_options
@@ -341,28 +342,25 @@ impl EpiIntegration {
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             if let Some(viewport_ui_cb) = viewport_ui_cb {
-                // Child viewport
+                // Child viewport: UI callback only. App::logic already ran in
+                // run_ui_and_paint (Simple Image Viewer fork; see wgpu/glow integration).
                 if is_visible {
                     profiling::scope!("viewport_callback");
                     viewport_ui_cb(ui);
                 }
-            } else {
+            } else if is_visible {
+                // ROOT: logic runs in run_ui_and_paint before this update(), not here, so a
+                // deferred child repaint does not leave ROOT-only logic stale (fork; see
+                // wgpu_integration.rs / glow_integration.rs).
                 {
-                    profiling::scope!("App::logic");
-                    app.logic(ui.ctx(), &mut self.frame);
+                    profiling::scope!("App::update");
+                    #[expect(deprecated)]
+                    app.update(ui.ctx(), &mut self.frame);
                 }
 
-                if is_visible {
-                    {
-                        profiling::scope!("App::update");
-                        #[expect(deprecated)]
-                        app.update(ui.ctx(), &mut self.frame);
-                    }
-
-                    {
-                        profiling::scope!("App::ui");
-                        app.ui(ui, &mut self.frame);
-                    }
+                {
+                    profiling::scope!("App::ui");
+                    app.ui(ui, &mut self.frame);
                 }
             }
         });

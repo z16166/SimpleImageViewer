@@ -15,10 +15,15 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
+mod background_threads;
+mod directory_tree;
+mod directory_tree_strip_cache;
+pub(crate) mod folder_picker;
 mod hdr_prewarm;
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;
+mod index_cache_permute;
 pub(crate) mod input;
 pub(crate) mod lifecycle;
 pub(crate) mod media;
@@ -29,6 +34,7 @@ pub(crate) mod view_status;
 mod app_methods;
 mod eframe_app;
 mod hotkeys_ui;
+mod logic_update;
 mod metadata_extract;
 mod pixel_inspector_ui;
 mod preload;
@@ -41,8 +47,10 @@ pub use types::{FileOpResult, HardwareTier, ImageViewerApp};
 
 pub(crate) use types::{
     AnimationPlayback, CurrentHdrImage, CurrentHdrTiledImage, LightweightFileOpJob,
-    PendingAnimUpload, SettingsTab,
+    PendingAnimUpload, RootRedrawWake, SettingsTab,
 };
+
+pub(crate) use directory_tree::DirectoryTreeRuntime;
 
 pub(crate) use preload::{
     CACHE_SIZE, MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD,

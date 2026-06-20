@@ -24,8 +24,25 @@ use std::time::Instant;
 
 const LOG_LEVEL_ENV: &str = "SIV_LOG_LEVEL";
 const LOG_FILE_ENV: &str = "SIV_LOG_FILE";
+/// Local wall-clock timestamp prefix for log lines (`2026-06-18 15:04:05`).
+const LOG_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 static LOGGER_HANDLE: Mutex<Option<flexi_logger::LoggerHandle>> = Mutex::new(None);
+
+fn log_format_with_timestamp(
+    w: &mut dyn std::io::Write,
+    now: &mut flexi_logger::DeferredNow,
+    record: &log::Record,
+) -> Result<(), std::io::Error> {
+    write!(
+        w,
+        "{} {} [{}] {}",
+        now.format(LOG_TIMESTAMP_FORMAT),
+        record.level(),
+        record.module_path().unwrap_or("<unnamed>"),
+        record.args()
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggingConfig {
@@ -74,7 +91,8 @@ pub fn init_logging() -> StartupPhases {
 
     let logging = logging_config();
     let logger = flexi_logger::Logger::try_with_env_or_str(&logging.level)
-        .expect("Failed to initialize logger");
+        .expect("Failed to initialize logger")
+        .format(log_format_with_timestamp);
     #[cfg(feature = "startup-timing")]
     startup_capture_phase(
         &mut phases,

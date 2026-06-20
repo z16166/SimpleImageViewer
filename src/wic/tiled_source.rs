@@ -109,7 +109,7 @@ impl WicTiledSource {
             let Some(res) = render_source_to_pixels(&f_final, factory) else {
                 continue;
             };
-            log::info!(
+            log::debug!(
                 "WIC: Using secondary frame {} as preview ({}x{})",
                 frame_index,
                 fw,
@@ -119,64 +119,13 @@ impl WicTiledSource {
         }
         None
     }
-}
 
-// `Send`/`Sync`: COM pointers are opaque to rustc. We expose `Arc<WicTiledSource>` to tile workers
-// that decode in parallel (`extract_tile`).
-//
-// Threading contract (see Microsoft Learn, "Multi-threaded apartment support in WIC"):
-// - Workers use [`ComGuard`] (`CoInitializeEx` + `COINIT_MULTITHREADED`, i.e. MTA), matching WIC's
-//   documented model for concurrent calls from multiple threads inside the MTA—not STA.
-// - In-box WIC codecs from Windows 7 onward are documented for MTA; third-party codecs may vary.
-//
-// This is still `unsafe`: Rust cannot prove COM/WIC or arbitrary decoder DLLs are free of data
-// races; correctness relies on the above coinit discipline and codec behavior.
-unsafe impl Send for WicTiledSource {}
-unsafe impl Sync for WicTiledSource {}
-
-impl crate::loader::TiledImageSource for WicTiledSource {
-    fn width(&self) -> u32 {
-        self.width
-    }
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-        let stride = w * 4;
-
-        // Ensure COM is initialized on the current worker thread
-        let _com = ComGuard::new();
-
-        unsafe {
-            if let Ok(converter) = self.factory.CreateFormatConverter() {
-                if converter
-                    .Initialize(
-                        &self.source,
-                        &GUID_WICPixelFormat32bppRGBA,
-                        WICBitmapDitherTypeNone,
-                        None,
-                        0.0,
-                        WICBitmapPaletteTypeCustom,
-                    )
-                    .is_ok()
-                {
-                    let rect = WICRect {
-                        X: x as i32,
-                        Y: y as i32,
-                        Width: w as i32,
-                        Height: h as i32,
-                    };
-                    let _ = converter.CopyPixels(&rect, stride, &mut pixels);
-                }
-            }
-        }
-
-        std::sync::Arc::new(pixels)
-    }
-
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+    fn generate_preview_internal(
+        &self,
+        max_w: u32,
+        max_h: u32,
+        allow_embedded: bool,
+    ) -> (u32, u32, Vec<u8>) {
         let scale = (max_w as f64 / self.width as f64)
             .min(max_h as f64 / self.height as f64)
             .min(1.0);
@@ -186,55 +135,81 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         unsafe {
             let factory = &self.factory;
 
-            // Path 1: Extract embedded thumbnail if large enough
-            if let Ok(thumbnail) = self.frame.GetThumbnail() {
-                let mut fw = 0;
-                let mut fh = 0;
-                if thumbnail.GetSize(&mut fw, &mut fh).is_ok() && fw >= out_w && fh >= out_h {
-                    log::info!(
-                        "WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})",
-                        self.path.display(),
-                        fw,
-                        fh
-                    );
-
-                    if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
-                        // Cache the thumbnail before rotation to prevent JPEG decoder
-                        // thrashing. Embedded thumbnails can be up to 4096px+ on modern
-                        // cameras, making this a real performance concern.
-                        let thumb_cached = Self::wrap_with_cache(factory, &thumb_src);
-                        let thumb_final = Self::apply_wic_transform(
-                            factory,
-                            thumb_cached,
-                            self.transform_options,
-                        );
-                        if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
-                            log::info!(
-                                "WIC [Idx={}]: Successfully rendered embedded thumbnail",
-                                self.path.display()
+            if allow_embedded {
+                // Path 1: Extract embedded thumbnail if large enough and aspect matches logical size.
+                if let Ok(thumbnail) = self.frame.GetThumbnail() {
+                    let mut fw = 0;
+                    let mut fh = 0;
+                    if thumbnail.GetSize(&mut fw, &mut fh).is_ok() && fw >= out_w && fh >= out_h {
+                        if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
+                            let thumb_cached = Self::wrap_with_cache(factory, &thumb_src);
+                            let thumb_final = Self::apply_wic_transform(
+                                factory,
+                                thumb_cached,
+                                self.transform_options,
                             );
-                            return res;
+                            if let Some((pw, ph, pixels)) =
+                                render_source_to_pixels(&thumb_final, factory)
+                            {
+                                if crate::loader::preview_aspect_matches_logical(
+                                    pw,
+                                    ph,
+                                    self.width,
+                                    self.height,
+                                ) {
+                                    log::debug!(
+                                        "WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})",
+                                        self.path.display(),
+                                        pw,
+                                        ph
+                                    );
+                                    return (pw, ph, pixels);
+                                }
+                                log::debug!(
+                                    "WIC [Idx={}]: Skipping embedded thumbnail due to aspect mismatch ({}x{} vs {}x{})",
+                                    self.path.display(),
+                                    pw,
+                                    ph,
+                                    self.width,
+                                    self.height
+                                );
+                            }
                         }
+                    } else {
+                        log::debug!(
+                            "WIC [Idx={}]: Embedded thumbnail is too small ({}x{}) for requested {}x{}",
+                            self.path.display(),
+                            fw,
+                            fh,
+                            out_w,
+                            out_h
+                        );
                     }
                 } else {
                     log::debug!(
-                        "WIC [Idx={}]: Embedded thumbnail is too small ({}x{}) for requested {}x{}",
-                        self.path.display(),
-                        fw,
-                        fh,
-                        out_w,
-                        out_h
+                        "WIC [Idx={}]: No embedded thumbnail found",
+                        self.path.display()
                     );
                 }
-            } else {
-                log::debug!(
-                    "WIC [Idx={}]: No embedded thumbnail found",
-                    self.path.display()
-                );
-            }
 
-            if let Some(res) = self.try_get_preview_from_secondary_frame(factory) {
-                return res;
+                if let Some((pw, ph, pixels)) = self.try_get_preview_from_secondary_frame(factory) {
+                    if crate::loader::preview_aspect_matches_logical(
+                        pw,
+                        ph,
+                        self.width,
+                        self.height,
+                    ) {
+                        return (pw, ph, pixels);
+                    }
+                    log::debug!(
+                        "WIC [Idx={}]: Skipping secondary frame preview due to aspect mismatch ({}x{} vs {}x{})",
+                        self.path.display(),
+                        pw,
+                        ph,
+                        self.width,
+                        self.height
+                    );
+                }
             }
 
             // Path 3: Try Native Decoder Source Transform (Fastest if supported)
@@ -252,7 +227,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                     {
                         let log_final_w = if swap { closest_phys_h } else { closest_phys_w };
                         let log_final_h = if swap { closest_phys_w } else { closest_phys_h };
-                        log::info!(
+                        log::debug!(
                             "WIC [Idx={}]: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})",
                             self.path.display(),
                             closest_phys_w,
@@ -281,7 +256,22 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             )
                             .is_ok()
                         {
-                            return (log_final_w, log_final_h, out);
+                            if crate::loader::preview_aspect_matches_logical(
+                                log_final_w,
+                                log_final_h,
+                                self.width,
+                                self.height,
+                            ) {
+                                return (log_final_w, log_final_h, out);
+                            }
+                            log::debug!(
+                                "WIC [Idx={}]: Skipping Native Source Transform due to aspect mismatch ({}x{} vs {}x{})",
+                                self.path.display(),
+                                log_final_w,
+                                log_final_h,
+                                self.width,
+                                self.height
+                            );
                         } else {
                             log::warn!(
                                 "WIC [Idx={}]: Native Source Transform CopyPixels FAILED",
@@ -293,7 +283,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
             }
 
             // Path 4: Sub-sampling scaler (High-speed fallback)
-            log::info!(
+            log::debug!(
                 "WIC [Idx={}]: No specialized preview source available, using standard Scaler (Target {}x{})",
                 self.path.display(),
                 out_w,
@@ -364,6 +354,78 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 (0, 0, Vec::new())
             }
         }
+    }
+}
+
+// `Send`/`Sync`: COM pointers are opaque to rustc. We expose `Arc<WicTiledSource>` to tile workers
+// that decode in parallel (`extract_tile`).
+//
+// Threading contract (see Microsoft Learn, "Multi-threaded apartment support in WIC"):
+// - Workers use [`ComGuard`] (`CoInitializeEx` + `COINIT_MULTITHREADED`, i.e. MTA), matching WIC's
+//   documented model for concurrent calls from multiple threads inside the MTA—not STA.
+// - In-box WIC codecs from Windows 7 onward are documented for MTA; third-party codecs may vary.
+//
+// This is still `unsafe`: Rust cannot prove COM/WIC or arbitrary decoder DLLs are free of data
+// races; correctness relies on the above coinit discipline and codec behavior.
+unsafe impl Send for WicTiledSource {}
+unsafe impl Sync for WicTiledSource {}
+
+impl crate::loader::TiledImageSource for WicTiledSource {
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let stride = w * 4;
+
+        // Ensure COM is initialized on the current worker thread
+        let _com = match ComGuard::new() {
+            Ok(guard) => guard,
+            Err(err) => {
+                log::error!("[WIC] COM init failed in extract_tile: {err:?}");
+                return std::sync::Arc::new(pixels);
+            }
+        };
+
+        unsafe {
+            if let Ok(converter) = self.factory.CreateFormatConverter() {
+                if converter
+                    .Initialize(
+                        &self.source,
+                        &GUID_WICPixelFormat32bppRGBA,
+                        WICBitmapDitherTypeNone,
+                        None,
+                        0.0,
+                        WICBitmapPaletteTypeCustom,
+                    )
+                    .is_ok()
+                {
+                    let rect = WICRect {
+                        X: x as i32,
+                        Y: y as i32,
+                        Width: w as i32,
+                        Height: h as i32,
+                    };
+                    if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
+                        log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
+                    }
+                }
+            }
+        }
+
+        std::sync::Arc::new(pixels)
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        self.generate_preview_internal(max_w, max_h, true)
+    }
+
+    fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        self.generate_preview_internal(max_w, max_h, false)
     }
 
     fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> {

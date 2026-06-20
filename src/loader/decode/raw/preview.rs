@@ -74,6 +74,19 @@ fn apply_orientation_to_embedded_preview(
     if final_orientation <= 1 {
         return preview;
     }
+    let expected_bytes = preview
+        .width
+        .saturating_mul(preview.height)
+        .saturating_mul(4) as usize;
+    if preview.rgba().len() != expected_bytes {
+        log::warn!(
+            "[Loader] Embedded preview dimensions mismatch: {}x{} vs {} bytes; skipping orientation",
+            preview.width,
+            preview.height,
+            preview.rgba().len()
+        );
+        return preview;
+    }
     let pixels = preview.take_rgba_owned();
     if let Some(rgba) = image::RgbaImage::from_raw(preview.width, preview.height, pixels) {
         let mut img = image::DynamicImage::ImageRgba8(rgba);
@@ -112,4 +125,33 @@ pub(crate) fn extract_embedded_preview(
         return None;
     }
     Some(preview)
+}
+
+/// Fast SDR preview for directory-tree strip when embedded thumbnail is missing.
+///
+/// Half-size LibRaw develop is used when platform WIC/ImageIO decode fails (e.g. CHDK CRW)
+/// and on Linux where no platform still decoder exists. The processor is mutated in place
+/// (`set_half_size`); callers must not reuse it afterward.
+pub(crate) fn develop_half_size_sdr_strip_preview(
+    processor: &mut RawProcessor,
+    path: &std::path::Path,
+) -> Option<DecodedImage> {
+    processor.set_half_size(true);
+    let dynamic = processor.develop().ok()?;
+    let rgba = dynamic.into_rgba8();
+    let decoded = DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
+    if decoded.width == 0 || decoded.height == 0 {
+        log::warn!(
+            "[DirectoryTree] LibRaw half-size develop returned zero dimensions for {:?}",
+            path.file_name().unwrap_or_default()
+        );
+        return None;
+    }
+    log::debug!(
+        "[DirectoryTree] LibRaw half-size develop for {:?} ({}x{})",
+        path.file_name().unwrap_or_default(),
+        decoded.width,
+        decoded.height
+    );
+    Some(decoded)
 }

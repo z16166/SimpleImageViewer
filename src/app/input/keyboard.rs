@@ -85,6 +85,12 @@ impl ImageViewerApp {
             return;
         }
 
+        if matches!(action, Some(AppAction::Next | AppAction::Prev))
+            && self.directory_tree_embedded_list_captures_main_navigation()
+        {
+            action = None;
+        }
+
         // If OSD was toggled via Tab, we also clear focus to prevent egui focus-trapping.
         if action == Some(AppAction::ToggleOSD) {
             ctx.memory_mut(|mem| mem.request_focus(egui::Id::NULL));

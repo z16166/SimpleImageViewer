@@ -127,7 +127,7 @@ impl ImageViewerApp {
                 p_dest.center() + tp.prev_offset,
                 p_dest.size() * tp.prev_scale,
             );
-            ui.painter().image(
+            ui.painter().with_clip_rect(screen_rect).image(
                 prev.id(),
                 p_final_dest,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),

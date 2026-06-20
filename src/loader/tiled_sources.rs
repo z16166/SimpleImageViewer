@@ -28,6 +28,43 @@ use crate::loader::types::{
     DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
 };
 
+/// Aspect-preserving downscale for in-memory RGBA8 tiles.
+///
+/// Do not use [`image::imageops::thumbnail`] here: in image 0.25 it always allocates
+/// `max_w x max_h` and stretches the source to fill that rectangle.
+fn memory_rgba_preview(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    max_w: u32,
+    max_h: u32,
+) -> (u32, u32, Vec<u8>) {
+    if width == 0 || height == 0 {
+        return (0, 0, Vec::new());
+    }
+    let scale = (max_w as f64 / width as f64)
+        .min(max_h as f64 / height as f64)
+        .min(1.0);
+    let out_w = (width as f64 * scale).round().max(1.0) as u32;
+    let out_h = (height as f64 * scale).round().max(1.0) as u32;
+    let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(width, height, pixels)
+    else {
+        return (0, 0, Vec::new());
+    };
+    let resized =
+        image::imageops::resize(&buf, out_w, out_h, image::imageops::FilterType::Triangle);
+    crate::preload_debug!(
+        "[PreloadDebug][Strip] memory preview logical={}x{} max={}x{} -> {}x{}",
+        width,
+        height,
+        max_w,
+        max_h,
+        out_w,
+        out_h
+    );
+    (out_w, out_h, resized.into_raw())
+}
+
 /// A TiledImageSource that serves tiles from an in-memory byte buffer.
 /// Primarily used for common formats (PNG, JPEG, etc.) that exceed the GPU's single texture limit.
 pub(crate) struct MemoryImageSource {
@@ -158,19 +195,11 @@ impl TiledImageSource for MemoryImageSource {
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        // Since we already have the full image in memory, we can use the image crate
-        // to generate a high-quality downscaled preview.
-        // OPTIMIZATION: Use ImageBuffer with reference (slice) to avoid cloning giant pixel buffer.
-        if let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
-            self.width,
-            self.height,
-            &self.pixels,
-        ) {
-            let img = image::imageops::thumbnail(&buf, max_w, max_h);
-            (img.width(), img.height(), img.into_raw())
-        } else {
-            (0, 0, Vec::new())
-        }
+        memory_rgba_preview(self.width, self.height, &self.pixels, max_w, max_h)
+    }
+
+    fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        memory_rgba_preview(self.width, self.height, &self.pixels, max_w, max_h)
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
@@ -482,5 +511,36 @@ impl TiledImageSource for RawImageSource {
 
     fn defers_loader_hq_preview(&self) -> bool {
         self.needs_refinement
+    }
+}
+
+#[cfg(test)]
+mod memory_preview_tests {
+    use super::memory_rgba_preview;
+    use crate::loader::preview_aspect_matches_logical;
+
+    #[test]
+    fn memory_rgba_preview_preserves_panorama_aspect() {
+        let logical_w = 10u32;
+        let logical_h = 100u32;
+        let pixels = vec![0u8; logical_w as usize * logical_h as usize * 4];
+        let (out_w, out_h, out_pixels) =
+            memory_rgba_preview(logical_w, logical_h, &pixels, 128, 128);
+        assert_eq!(out_pixels.len(), out_w as usize * out_h as usize * 4);
+        assert!(preview_aspect_matches_logical(
+            out_w, out_h, logical_w, logical_h
+        ));
+        assert!(out_h > out_w);
+        assert_ne!(out_w, out_h);
+    }
+
+    #[test]
+    fn memory_rgba_preview_keeps_square_images_square() {
+        let side = 256u32;
+        let pixels = vec![0u8; side as usize * side as usize * 4];
+        let (out_w, out_h, out_pixels) = memory_rgba_preview(side, side, &pixels, 128, 128);
+        assert_eq!(out_pixels.len(), out_w as usize * out_h as usize * 4);
+        assert_eq!(out_w, out_h);
+        assert!(preview_aspect_matches_logical(out_w, out_h, side, side));
     }
 }

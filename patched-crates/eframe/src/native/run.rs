@@ -81,6 +81,9 @@ struct WinitAppWrapper<T: WinitApp> {
     winit_app: T,
     return_result: Result<(), crate::Error>,
     run_and_return: bool,
+    /// Prevents nested synchronous `RepaintNow` → `run_ui_and_paint` re-entry (review C2).
+    #[cfg(not(target_arch = "wasm32"))]
+    sync_repaint_in_progress: bool,
 }
 
 impl<T: WinitApp> WinitAppWrapper<T> {
@@ -90,6 +93,8 @@ impl<T: WinitApp> WinitAppWrapper<T> {
             winit_app,
             return_result: Ok(()),
             run_and_return,
+            #[cfg(not(target_arch = "wasm32"))]
+            sync_repaint_in_progress: false,
         }
     }
 
@@ -105,15 +110,34 @@ impl<T: WinitApp> WinitAppWrapper<T> {
 
         let mut event_result = event_result;
 
-        if cfg!(target_os = "windows")
-            && let Ok(EventResult::RepaintNow(window_id)) = event_result
-        {
-            log::trace!("RepaintNow of {window_id:?}");
-            self.windows_next_repaint_times
-                .insert(window_id, Instant::now());
+        // --- SimpleImageViewer patch (eframe `native/run.rs`) ---
+        //
+        // Symptom: contributes to egui-wgpu staging panic when switching to Detached navigation
+        // (second viewport); see `queue_write_with_fallback` in patched egui-wgpu `renderer.rs`.
+        //
+        // Cause: upstream only chains RepaintNow -> run_ui_and_paint on Windows (flicker fix,
+        // https://github.com/emilk/egui/pull/2280). On Linux/macOS, main + detached viewports
+        // can paint back-to-back and interleave shared-renderer buffer uploads.
+        //
+        // Fix: run the same synchronous RepaintNow paint chain on all non-wasm desktop targets.
+        //
+        // Upgrade: after bumping eframe, diff `handle_event_result()`; drop this block if
+        // upstream already applies the chain on all desktop OSes.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(EventResult::RepaintNow(window_id)) = event_result {
+            if self.sync_repaint_in_progress {
+                log::trace!(
+                    "Skipping nested synchronous RepaintNow chain for {window_id:?}"
+                );
+            } else {
+                log::trace!("RepaintNow of {window_id:?}");
+                self.windows_next_repaint_times
+                    .insert(window_id, Instant::now());
 
-            // Fix flickering on Windows, see https://github.com/emilk/egui/pull/2280
-            event_result = self.winit_app.run_ui_and_paint(event_loop, window_id);
+                self.sync_repaint_in_progress = true;
+                event_result = self.winit_app.run_ui_and_paint(event_loop, window_id);
+                self.sync_repaint_in_progress = false;
+            }
         }
 
         let combined_result = event_result.map(|event_result| match event_result {

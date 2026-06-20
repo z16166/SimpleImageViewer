@@ -16,10 +16,39 @@
 
 use crate::settings::Settings;
 use crate::theme::ThemePalette;
-use eframe::egui::{self, Align2, Color32, Context, FontId, Rect, Response, RichText, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, Context, FontId, Rect, Response, RichText, Vec2, Widget,
+};
 use rust_i18n::t;
 
+/// egui subtracts `bg_stroke.width` from button padding and adds `2 * stroke.width` to
+/// frame size. Hover/active states must keep the same width or the whole panel relayouts.
+const WIDGET_STROKE_WIDTH: f32 = 1.0;
+
+fn normalize_widget_layout_strokes(widgets: &mut egui::style::Widgets) {
+    for visuals in [
+        &mut widgets.noninteractive,
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        visuals.bg_stroke.width = WIDGET_STROKE_WIDTH;
+        visuals.fg_stroke.width = WIDGET_STROKE_WIDTH;
+        visuals.expansion = 0.0;
+    }
+}
+
 pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
+    setup_visuals_with_font_size(ctx, settings, palette, settings.font_size);
+}
+
+pub fn setup_visuals_with_font_size(
+    ctx: &Context,
+    _settings: &Settings,
+    palette: &ThemePalette,
+    font_size: f32,
+) {
     let mut visuals = if palette.is_dark {
         egui::Visuals::dark()
     } else {
@@ -33,8 +62,10 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     // Non-interactive (scrollbar tracks, separator lines, etc.)
     visuals.widgets.noninteractive.bg_fill = palette.widget_bg;
     visuals.widgets.noninteractive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, palette.text_muted);
+    visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.widget_border);
+    visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.text_muted);
 
     // Inactive: bg_fill ??checkbox/scrollbar idle; weak_bg_fill ??button backgrounds
     visuals.widgets.inactive.bg_fill = if palette.is_dark {
@@ -43,8 +74,10 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         Color32::from_gray(210) // Slightly darker for better light-mode visibility (idle scrollbar)
     };
     visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, palette.text_normal);
+    visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.widget_border);
+    visuals.widgets.inactive.fg_stroke =
+        egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.text_normal);
 
     // Harden opaque backgrounds for other states to avoid "Performance Mode" transparency glitches
     visuals.widgets.hovered.bg_fill = if palette.is_dark {
@@ -75,7 +108,8 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         // The text turns indigo
     }
 
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border_hover);
+    visuals.widgets.hovered.bg_stroke =
+        egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.widget_border_hover);
 
     // Active: bg_fill ??scrollbar drag; weak_bg_fill ??button press
     visuals.widgets.active.bg_fill = palette.accent;
@@ -90,7 +124,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         )
     };
     visuals.widgets.active.bg_stroke = egui::Stroke::new(
-        1.0_f32,
+        WIDGET_STROKE_WIDTH,
         if palette.is_dark {
             Color32::WHITE
         } else {
@@ -98,7 +132,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         },
     );
     visuals.widgets.active.fg_stroke = egui::Stroke::new(
-        1.0_f32,
+        WIDGET_STROKE_WIDTH,
         if palette.is_dark {
             Color32::WHITE
         } else {
@@ -106,27 +140,34 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         },
     );
 
+    normalize_widget_layout_strokes(&mut visuals.widgets);
+
     // Selection (used in ComboBox current item and SelectableLabel)
     if palette.is_dark {
         // Dark Mode: keep selected states fully opaque and neutral to avoid
         // Windows "best performance" compositing glitches and unexpected blue highlights.
         visuals.selection.bg_fill = Color32::from_gray(78);
-        visuals.selection.stroke = egui::Stroke::new(1.0_f32, Color32::from_gray(210));
+        visuals.selection.stroke = egui::Stroke::new(WIDGET_STROKE_WIDTH, Color32::from_gray(210));
     } else {
-        // Light Mode: Use a delicate outline + soft fill instead of a solid block
-        // Increased thickness to 2.0 for better hierarchy as requested
+        // Light Mode: delicate outline + soft fill (stroke width must match widgets above).
         visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(
             palette.accent2.r(),
             palette.accent2.g(),
             palette.accent2.b(),
             30,
         );
-        visuals.selection.stroke = egui::Stroke::new(2.0_f32, palette.accent2);
+        visuals.selection.stroke = egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.accent2);
     }
 
     ctx.set_visuals(visuals);
     ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
 
+    apply_global_text_style(ctx, font_size);
+}
+
+/// Apply font metrics and spacing after [`setup_visuals`] colors. Shared by the main window
+/// and appearance settings (including live font-size preview).
+pub fn apply_global_text_style(ctx: &Context, font_size: f32) {
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(
         crate::constants::UI_ITEM_SPACING_X,
@@ -141,15 +182,14 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(3);
     style.spacing.scroll.foreground_color = false;
 
-    let size = settings.font_size;
     for id in style.text_styles.values_mut() {
-        id.size = size;
+        id.size = font_size;
     }
     if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
-        id.size = size * 1.25;
+        id.size = font_size * 1.25;
     }
     if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
-        id.size = size * 0.8;
+        id.size = font_size * 0.8;
     }
 
     ctx.set_global_style(style);
@@ -318,13 +358,15 @@ pub fn styled_button_widget<'a>(
             if palette.is_dark {
                 visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
                 visuals.widgets.inactive.bg_stroke =
-                    egui::Stroke::new(1.0_f32, Color32::from_gray(100));
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, Color32::from_gray(100));
+                visuals.widgets.inactive.fg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, Color32::WHITE);
 
                 visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
                 visuals.widgets.hovered.bg_stroke =
-                    egui::Stroke::new(1.5_f32, Color32::from_gray(180));
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, Color32::from_gray(180));
+                visuals.widgets.hovered.fg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, Color32::WHITE);
 
                 ui.add(
                     egui::Button::new(label.color(Color32::WHITE))
@@ -337,8 +379,10 @@ pub fn styled_button_widget<'a>(
                     palette.accent.b(),
                     10,
                 );
-                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5_f32, palette.accent);
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
+                visuals.widgets.inactive.bg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.accent);
+                visuals.widgets.inactive.fg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.accent);
 
                 visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
                     palette.accent.r(),
@@ -346,8 +390,10 @@ pub fn styled_button_widget<'a>(
                     palette.accent.b(),
                     40,
                 );
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
+                visuals.widgets.hovered.bg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.accent);
+                visuals.widgets.hovered.fg_stroke =
+                    egui::Stroke::new(WIDGET_STROKE_WIDTH, palette.accent);
 
                 ui.add(
                     egui::Button::new(label.color(palette.accent))
@@ -357,6 +403,33 @@ pub fn styled_button_widget<'a>(
         })
         .inner
     }
+}
+
+/// Like [`egui::Ui::selectable_label`] but keeps frame space in inactive state so hover
+/// does not shift sibling widgets (see [`WIDGET_STROKE_WIDTH`]).
+pub fn stable_selectable_label(
+    ui: &mut egui::Ui,
+    checked: bool,
+    text: impl Into<egui::WidgetText>,
+) -> Response {
+    egui::Button::selectable(checked, text)
+        .frame_when_inactive(true)
+        .ui(ui)
+}
+
+/// Like [`egui::Ui::selectable_value`] with stable hover layout.
+pub fn stable_selectable_value<Value: PartialEq>(
+    ui: &mut egui::Ui,
+    current_value: &mut Value,
+    selected_value: Value,
+    text: impl Into<egui::WidgetText>,
+) -> Response {
+    let mut response = stable_selectable_label(ui, *current_value == selected_value, text);
+    if response.clicked() && *current_value != selected_value {
+        *current_value = selected_value;
+        response.mark_changed();
+    }
+    response
 }
 
 pub fn themed_labeled_toggle(

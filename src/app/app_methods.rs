@@ -168,6 +168,11 @@ impl ImageViewerApp {
             return;
         };
 
+        self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+        self.settings.show_directory_tree_nav = false;
+        self.settings.tree_nav_root_dir = None;
+        self.settings.tree_nav_selected_dir = None;
+
         let same_dir = self
             .settings
             .last_image_dir
