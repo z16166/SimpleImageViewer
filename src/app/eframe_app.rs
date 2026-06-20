@@ -808,10 +808,9 @@ impl eframe::App for ImageViewerApp {
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
 
-        self.directory_tree.viewpaint_app.store(
-            std::ptr::null_mut(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.directory_tree
+            .viewpaint_app
+            .store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
     }
 
     fn take_pending_auxiliary_viewport_repaint(

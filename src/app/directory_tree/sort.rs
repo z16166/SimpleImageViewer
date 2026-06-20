@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use rust_i18n::t;
 
-use super::{DirectoryTreeState, ImageListSortColumn};
+use super::ImageListSortColumn;
 
 pub(super) fn image_list_sort_order(
     len: usize,
@@ -87,18 +87,6 @@ pub(super) fn file_name_sort_key(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default()
-}
-
-pub(super) fn image_list_sort_indicator(
-    column: ImageListSortColumn,
-    state: &DirectoryTreeState,
-) -> String {
-    image_list_sort_indicator_fields(
-        column,
-        state.image_list_sort_active,
-        state.image_list_sort_column,
-        state.image_list_sort_ascending,
-    )
 }
 
 pub(super) fn image_list_sort_indicator_fields(

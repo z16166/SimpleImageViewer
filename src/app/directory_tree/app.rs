@@ -1132,9 +1132,7 @@ impl ImageViewerApp {
             let scanning = {
                 let ptr = viewpaint_app.load(Ordering::Relaxed);
                 let allow_image_context_menu = !ptr.is_null()
-                    && unsafe {
-                        (*ptr).active_modal.is_none() && !(*ptr).image_files.is_empty()
-                    };
+                    && unsafe { (*ptr).active_modal.is_none() && !(*ptr).image_files.is_empty() };
                 let scanning = Self::paint_directory_tree_panel(
                     ui,
                     &view,

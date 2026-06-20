@@ -3,11 +3,11 @@ use super::sort::{
 };
 use super::ui::{
     DirectoryTreeNodeIcon, clamp_directory_tree_left_panel_width, directory_ancestor_chain,
-    directory_display_name, directory_tree_left_panel_width_limits, directory_tree_node_icon,
-    directory_tree_panel_layout, filesystem_ancestor_chain, image_list_column_layout,
-    image_list_modified_column, image_list_name_column, image_list_size_column,
-    image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
-    unc_share_root, wrapped_image_list_index,
+    directory_display_name, directory_tree_left_panel_width_limits,
+    directory_tree_node_icon_fields, directory_tree_panel_layout, filesystem_ancestor_chain,
+    image_list_column_layout, image_list_modified_column, image_list_name_column,
+    image_list_size_column, image_list_thumb_column, min_scroll_offset_to_show_row,
+    preview_texture_contain_rect, unc_share_root, wrapped_image_list_index,
 };
 use super::workers::read_child_directories;
 use super::*;
@@ -618,23 +618,31 @@ fn directory_tree_node_icon_distinguishes_places_roots() {
     state.ensure_network_visible();
 
     assert_eq!(
-        directory_tree_node_icon(&state, &this_pc_tree_path()),
+        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &this_pc_tree_path()),
         DirectoryTreeNodeIcon::ThisPc
     );
     assert_eq!(
-        directory_tree_node_icon(&state, &network_tree_path()),
+        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &network_tree_path()),
         DirectoryTreeNodeIcon::Network
     );
     assert_eq!(
-        directory_tree_node_icon(&state, &known_folder_tree_path(KnownFolderKind::Pictures)),
+        directory_tree_node_icon_fields(
+            &state.known_folders,
+            &state.nodes,
+            &known_folder_tree_path(KnownFolderKind::Pictures),
+        ),
         DirectoryTreeNodeIcon::KnownFolder(KnownFolderKind::Pictures)
     );
     assert_eq!(
-        directory_tree_node_icon(&state, &drive),
+        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &drive),
         DirectoryTreeNodeIcon::Drive
     );
     assert_eq!(
-        directory_tree_node_icon(&state, &PathBuf::from("/tmp/ordinary")),
+        directory_tree_node_icon_fields(
+            &state.known_folders,
+            &state.nodes,
+            &PathBuf::from("/tmp/ordinary"),
+        ),
         DirectoryTreeNodeIcon::Folder
     );
 }

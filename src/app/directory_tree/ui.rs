@@ -28,7 +28,7 @@ use crate::directory_tree_places::types::KnownFolderKind;
 use crate::loader::preview_aspect_matches_logical;
 use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
-use crate::ui::osd::{format_file_modified, format_file_size, FORMAT_FILE_SIZE_WIDTH_SAMPLES};
+use crate::ui::osd::{FORMAT_FILE_SIZE_WIDTH_SAMPLES, format_file_modified, format_file_size};
 
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
@@ -52,7 +52,7 @@ pub(super) enum DirectoryTreeNodeIcon {
     KnownFolder(KnownFolderKind),
 }
 
-fn directory_tree_node_icon_fields(
+pub(super) fn directory_tree_node_icon_fields(
     known_folders: &[KnownFolderEntry],
     nodes: &impl DirectoryTreeNodeLookup,
     path: &Path,
@@ -79,7 +79,7 @@ fn directory_tree_node_icon_fields(
     DirectoryTreeNodeIcon::Folder
 }
 
-trait DirectoryTreeNodeLookup {
+pub(super) trait DirectoryTreeNodeLookup {
     fn get_node(&self, path: &Path) -> Option<&DirectoryTreeNode>;
 }
 
@@ -89,17 +89,12 @@ impl DirectoryTreeNodeLookup for super::node_store::DirectoryTreeNodeArena {
     }
 }
 
-impl DirectoryTreeNodeLookup for std::collections::HashMap<PathBuf, std::sync::Arc<DirectoryTreeNode>> {
+impl DirectoryTreeNodeLookup
+    for std::collections::HashMap<PathBuf, std::sync::Arc<DirectoryTreeNode>>
+{
     fn get_node(&self, path: &Path) -> Option<&DirectoryTreeNode> {
         self.get(path).map(|node| node.as_ref())
     }
-}
-
-pub(super) fn directory_tree_node_icon(
-    state: &DirectoryTreeState,
-    path: &Path,
-) -> DirectoryTreeNodeIcon {
-    directory_tree_node_icon_fields(&state.known_folders, &state.nodes, path)
 }
 
 fn directory_tree_node_expandable(node: &DirectoryTreeNode, path: &Path) -> bool {

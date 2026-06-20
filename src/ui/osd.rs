@@ -905,10 +905,7 @@ mod tests {
         assert_eq!(format_file_size(1536), "1.5 KB");
         assert_eq!(format_file_size(2 * 1024 * 1024), "2.0 MB");
         assert_eq!(format_file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
-        assert_eq!(
-            format_file_size(1024_u64 * 1024 * 1024 * 1024),
-            "1.0 TB"
-        );
+        assert_eq!(format_file_size(1024_u64 * 1024 * 1024 * 1024), "1.0 TB");
     }
 
     #[test]

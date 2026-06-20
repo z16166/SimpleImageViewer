@@ -416,10 +416,9 @@ impl DirectoryTreeState {
         }
 
         for drive in places.drives {
-            self.nodes.or_insert_with(
-                drive.path.clone(),
-                || directory_tree_node(drive.display_name, drive.path),
-            );
+            self.nodes.or_insert_with(drive.path.clone(), || {
+                directory_tree_node(drive.display_name, drive.path)
+            });
         }
 
         if !places.network_locations.is_empty() {
@@ -442,10 +441,9 @@ impl DirectoryTreeState {
                 },
             );
             for entry in places.network_locations {
-                self.nodes.or_insert_with(
-                    entry.path.clone(),
-                    || directory_tree_node(entry.display_name, entry.path),
-                );
+                self.nodes.or_insert_with(entry.path.clone(), || {
+                    directory_tree_node(entry.display_name, entry.path)
+                });
             }
         }
     }
@@ -580,10 +578,9 @@ impl DirectoryTreeState {
             if is_places_sentinel_path(path) {
                 continue;
             }
-            self.nodes.or_insert_with(
-                path.clone(),
-                || directory_tree_node(directory_display_name(path), path.clone()),
-            );
+            self.nodes.or_insert_with(path.clone(), || {
+                directory_tree_node(directory_display_name(path), path.clone())
+            });
             let Some(node) = self.nodes.get_mut(path) else {
                 continue;
             };
@@ -600,10 +597,9 @@ impl DirectoryTreeState {
             .filter(|entry| entry.filesystem_path == selected)
             .map(|entry| entry.tree_path.clone())
             .unwrap_or_else(|| selected.clone());
-        self.nodes.or_insert_with(
-            selected_tree_key,
-            || directory_tree_node(directory_display_name(&selected), selected.clone()),
-        );
+        self.nodes.or_insert_with(selected_tree_key, || {
+            directory_tree_node(directory_display_name(&selected), selected.clone())
+        });
         requests
     }
 

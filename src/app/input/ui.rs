@@ -316,10 +316,9 @@ impl ImageViewerApp {
             .sense(egui::Sense::hover())
             .show(ctx, |ui| {
                 egui::Frame::menu(ui.style()).show(ui, |ui| {
-                    ui.with_layout(
-                        egui::Layout::top_down_justified(egui::Align::LEFT),
-                        |ui| self.draw_context_menu_items(ui),
-                    );
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        self.draw_context_menu_items(ui)
+                    });
                 });
             });
 
