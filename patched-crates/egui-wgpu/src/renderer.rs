@@ -6,6 +6,63 @@ use epaint::{PaintCallbackInfo, Primitive, Vertex, emath::NumExt as _};
 
 use wgpu::util::DeviceExt as _;
 
+// --- SimpleImageViewer patch (egui-wgpu `renderer.rs`) ---
+//
+// Symptom: panic in `Renderer::update_buffers` — "Failed to create staging buffer for
+// index/vertex data" even when the GPU buffer capacity exceeds the required size.
+//
+// Cause: Detached navigation uses egui multi-viewport; all viewports share one
+// `egui_wgpu::Renderer`. Two `update_buffers` calls in the same frame can exhaust the
+// queue staging ring so `queue.write_buffer_with()` returns `None` (not OOM). Reproduced on
+// Linux Detached mode (also seen over X11 forwarding / software wgpu backends).
+//
+// Fix: `queue_write_with_fallback` — try staging copy, `queue.submit([])` + retry, then
+// `queue.write_buffer`. Replaces upstream panic on `write_buffer_with == None` in the index
+// and vertex upload blocks below. Pair with the eframe `run.rs` RepaintNow patch.
+//
+// Upgrade: after bumping egui-wgpu, diff `update_buffers()` index/vertex upload; re-apply
+// this helper and call sites if upstream still panics. Related upstream: egui #7840, #7434.
+//
+/// Upload into a GPU buffer via staging memory when possible; flush/retry and fall back to
+/// [`Queue::write_buffer`] when staging is unavailable (shared renderer across viewports,
+/// software backends, X11 forwarding, etc.).
+fn queue_write_with_fallback(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    size: NonZeroU64,
+    label: &'static str,
+    mut write: impl FnMut(&mut [u8]),
+) {
+    let mut data = vec![0u8; size.get() as usize];
+    write(&mut data);
+
+    if try_queue_copy_from_slice(queue, buffer, size, &data) {
+        return;
+    }
+    queue.submit([]);
+    if try_queue_copy_from_slice(queue, buffer, size, &data) {
+        return;
+    }
+    log::warn!(
+        "write_buffer_with failed for {label} ({} bytes); falling back to write_buffer",
+        size.get()
+    );
+    queue.write_buffer(buffer, 0, &data);
+}
+
+fn try_queue_copy_from_slice(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    size: NonZeroU64,
+    data: &[u8],
+) -> bool {
+    let Some(mut staging) = queue.write_buffer_with(buffer, 0, size) else {
+        return false;
+    };
+    staging.slice(..).copy_from_slice(data);
+    true
+}
+
 pub fn egui_framebuffer_shader_entry_point(
     output_color_format: wgpu::TextureFormat,
     rgb10a2_pq_framebuffer: bool,
@@ -1104,36 +1161,29 @@ impl Renderer {
                 self.index_buffer.buffer = create_index_buffer(device, self.index_buffer.capacity);
             }
 
-            let index_buffer_staging = queue.write_buffer_with(
+            let index_size = NonZeroU64::new(required_index_buffer_size)
+                .expect("index_count > 0 implies non-zero byte size");
+            let mut index_slices: Vec<Range<usize>> = Vec::new();
+            // SimpleImageViewer patch: use queue_write_with_fallback (see block comment above).
+            queue_write_with_fallback(
+                queue,
                 &self.index_buffer.buffer,
-                0,
-                #[expect(clippy::unwrap_used)] // Checked above
-                NonZeroU64::new(required_index_buffer_size).unwrap(),
-            );
-
-            let Some(mut index_buffer_staging) = index_buffer_staging else {
-                panic!(
-                    "Failed to create staging buffer for index data. Index count: {index_count}. Required index buffer size: {required_index_buffer_size}. Actual size {} and capacity: {} (bytes)",
-                    self.index_buffer.buffer.size(),
-                    self.index_buffer.capacity
-                );
-            };
-
-            let mut index_offset = 0;
-            for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
-                match primitive {
-                    Primitive::Mesh(mesh) => {
-                        let size = mesh.indices.len() * std::mem::size_of::<u32>();
-                        let slice = index_offset..(size + index_offset);
-                        index_buffer_staging
-                            .slice(slice.clone())
-                            .copy_from_slice(bytemuck::cast_slice(&mesh.indices));
-                        self.index_buffer.slices.push(slice);
-                        index_offset += size;
+                index_size,
+                "index data",
+                |data| {
+                    let mut index_offset = 0usize;
+                    for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
+                        let Primitive::Mesh(mesh) = primitive else {
+                            continue;
+                        };
+                        let bytes = bytemuck::cast_slice(&mesh.indices);
+                        data[index_offset..index_offset + bytes.len()].copy_from_slice(bytes);
+                        index_slices.push(index_offset..index_offset + bytes.len());
+                        index_offset += bytes.len();
                     }
-                    Primitive::Callback(_) => {}
-                }
-            }
+                },
+            );
+            self.index_buffer.slices = index_slices;
         }
         if vertex_count > 0 {
             profiling::scope!("vertices", vertex_count.to_string().as_str());
@@ -1149,36 +1199,29 @@ impl Renderer {
                     create_vertex_buffer(device, self.vertex_buffer.capacity);
             }
 
-            let vertex_buffer_staging = queue.write_buffer_with(
+            let vertex_size = NonZeroU64::new(required_vertex_buffer_size)
+                .expect("vertex_count > 0 implies non-zero byte size");
+            let mut vertex_slices: Vec<Range<usize>> = Vec::new();
+            // SimpleImageViewer patch: use queue_write_with_fallback (see block comment above).
+            queue_write_with_fallback(
+                queue,
                 &self.vertex_buffer.buffer,
-                0,
-                #[expect(clippy::unwrap_used)] // Checked above
-                NonZeroU64::new(required_vertex_buffer_size).unwrap(),
-            );
-
-            let Some(mut vertex_buffer_staging) = vertex_buffer_staging else {
-                panic!(
-                    "Failed to create staging buffer for vertex data. Vertex count: {vertex_count}. Required vertex buffer size: {required_vertex_buffer_size}. Actual size {} and capacity: {} (bytes)",
-                    self.vertex_buffer.buffer.size(),
-                    self.vertex_buffer.capacity
-                );
-            };
-
-            let mut vertex_offset = 0;
-            for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
-                match primitive {
-                    Primitive::Mesh(mesh) => {
-                        let size = mesh.vertices.len() * std::mem::size_of::<Vertex>();
-                        let slice = vertex_offset..(size + vertex_offset);
-                        vertex_buffer_staging
-                            .slice(slice.clone())
-                            .copy_from_slice(bytemuck::cast_slice(&mesh.vertices));
-                        self.vertex_buffer.slices.push(slice);
-                        vertex_offset += size;
+                vertex_size,
+                "vertex data",
+                |data| {
+                    let mut vertex_offset = 0usize;
+                    for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
+                        let Primitive::Mesh(mesh) = primitive else {
+                            continue;
+                        };
+                        let bytes = bytemuck::cast_slice(&mesh.vertices);
+                        data[vertex_offset..vertex_offset + bytes.len()].copy_from_slice(bytes);
+                        vertex_slices.push(vertex_offset..vertex_offset + bytes.len());
+                        vertex_offset += bytes.len();
                     }
-                    Primitive::Callback(_) => {}
-                }
-            }
+                },
+            );
+            self.vertex_buffer.slices = vertex_slices;
         }
 
         let mut user_cmd_bufs = Vec::new();
