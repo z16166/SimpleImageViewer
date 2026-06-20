@@ -89,8 +89,6 @@ impl BackgroundThreadJoiner {
             }
             joined += 1;
         }
-        log::debug!(
-            "[BackgroundThreads] join_all: joined {joined} background thread(s)"
-        );
+        log::debug!("[BackgroundThreads] join_all: joined {joined} background thread(s)");
     }
 }

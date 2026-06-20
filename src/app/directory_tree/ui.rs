@@ -1519,10 +1519,7 @@ pub(super) fn filesystem_ancestor_chain(target: &Path) -> Vec<PathBuf> {
     filesystem_ancestor_chain_limited(target, usize::MAX)
 }
 
-pub(super) fn filesystem_ancestor_chain_limited(
-    target: &Path,
-    max_depth: usize,
-) -> Vec<PathBuf> {
+pub(super) fn filesystem_ancestor_chain_limited(target: &Path, max_depth: usize) -> Vec<PathBuf> {
     if let Some(root) = volume_root_for_path(target) {
         if target == root.as_path() {
             return vec![root];

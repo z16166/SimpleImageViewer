@@ -37,12 +37,11 @@ pub(super) fn image_list_sort_order(
         None
     };
     #[cfg(target_os = "windows")]
-    let windows_name_keys: Option<Vec<Vec<u16>>> =
-        name_keys.as_ref().map(|keys| {
-            keys.iter()
-                .map(|key| key.encode_utf16().collect())
-                .collect()
-        });
+    let windows_name_keys: Option<Vec<Vec<u16>>> = name_keys.as_ref().map(|keys| {
+        keys.iter()
+            .map(|key| key.encode_utf16().collect())
+            .collect()
+    });
     #[cfg(target_os = "macos")]
     let macos_name_keys: Option<Vec<core_foundation::string::CFString>> =
         name_keys.as_ref().map(|keys| {
@@ -90,8 +89,7 @@ fn compare_image_list_sort_keys_with_cache(
     modified: &[Option<i64>],
     name_keys: Option<&[String]>,
     #[cfg(target_os = "windows")] windows_name_keys: Option<&[Vec<u16>]>,
-    #[cfg(target_os = "macos")]
-    macos_name_keys: Option<&[core_foundation::string::CFString]>,
+    #[cfg(target_os = "macos")] macos_name_keys: Option<&[core_foundation::string::CFString]>,
 ) -> Ordering {
     debug_assert!(left < paths.len() && right < paths.len());
     match column {
@@ -212,7 +210,7 @@ fn macos_locale_compare_cf(
     right: &core_foundation::string::CFString,
 ) -> Ordering {
     use core_foundation::base::TCFType;
-    use core_foundation::string::{CFStringCompareFlags, CFComparisonResult};
+    use core_foundation::string::{CFComparisonResult, CFStringCompareFlags};
 
     let flags =
         CFStringCompareFlags::COMPARE_CASE_INSENSITIVE | CFStringCompareFlags::COMPARE_LOCALIZED;

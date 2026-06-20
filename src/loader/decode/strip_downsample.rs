@@ -18,8 +18,8 @@
 
 use std::borrow::Cow;
 
-use image::imageops::{FilterType, resize};
 use image::RgbaImage;
+use image::imageops::{FilterType, resize};
 
 use crate::loader::DecodedImage;
 
@@ -39,12 +39,13 @@ pub(crate) fn downsample_decoded_for_strip<'a>(
             decoded.width, decoded.height
         ));
     }
-    let src = RgbaImage::from_raw(decoded.width, decoded.height, rgba.to_vec()).ok_or_else(|| {
-        format!(
-            "DecodedImage dimensions {}x{} do not match RGBA buffer size",
-            decoded.width, decoded.height
-        )
-    })?;
+    let src =
+        RgbaImage::from_raw(decoded.width, decoded.height, rgba.to_vec()).ok_or_else(|| {
+            format!(
+                "DecodedImage dimensions {}x{} do not match RGBA buffer size",
+                decoded.width, decoded.height
+            )
+        })?;
     let scale = max_side as f32 / max_dim as f32;
     let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
     let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
