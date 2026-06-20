@@ -120,7 +120,7 @@ pub(crate) struct FileMetadataResult {
     modified_unix: Vec<Option<i64>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DirectoryTreeFileRow {
     path: PathBuf,
     name: String,
@@ -135,7 +135,7 @@ pub(crate) struct DirectoryChildrenResult {
     result: Result<Vec<PathBuf>, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectoryTreeNode {
     display_name: String,
     browse_path: PathBuf,
@@ -153,7 +153,7 @@ pub(crate) struct DirectoryTreeState {
     workers_available: bool,
     known_folders: Vec<KnownFolderEntry>,
     selected_dir: Option<PathBuf>,
-    nodes: HashMap<PathBuf, DirectoryTreeNode>,
+    nodes: node_store::DirectoryTreeNodeArena,
     generation: u64,
     image_list_generation: u64,
     file_metadata_generation: u64,
@@ -229,7 +229,7 @@ impl Default for DirectoryTreeState {
             workers_available: true,
             known_folders: Vec::new(),
             selected_dir: None,
-            nodes: HashMap::new(),
+            nodes: node_store::DirectoryTreeNodeArena::default(),
             generation: 0,
             image_list_generation: 0,
             file_metadata_generation: 0,
@@ -413,9 +413,10 @@ impl DirectoryTreeState {
         }
 
         for drive in places.drives {
-            self.nodes
-                .entry(drive.path.clone())
-                .or_insert_with(|| directory_tree_node(drive.display_name, drive.path));
+            self.nodes.or_insert_with(
+                drive.path.clone(),
+                || directory_tree_node(drive.display_name, drive.path),
+            );
         }
 
         if !places.network_locations.is_empty() {
@@ -438,9 +439,10 @@ impl DirectoryTreeState {
                 },
             );
             for entry in places.network_locations {
-                self.nodes
-                    .entry(entry.path.clone())
-                    .or_insert_with(|| directory_tree_node(entry.display_name, entry.path));
+                self.nodes.or_insert_with(
+                    entry.path.clone(),
+                    || directory_tree_node(entry.display_name, entry.path),
+                );
             }
         }
     }
@@ -540,8 +542,7 @@ impl DirectoryTreeState {
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
         self.nodes
-            .entry(tree_key)
-            .or_insert_with(|| directory_tree_node(display_name, dir));
+            .or_insert_with(tree_key, || directory_tree_node(display_name, dir));
         self.scroll_folder_to_selected = true;
     }
 
@@ -576,9 +577,10 @@ impl DirectoryTreeState {
             if is_places_sentinel_path(path) {
                 continue;
             }
-            self.nodes
-                .entry(path.clone())
-                .or_insert_with(|| directory_tree_node(directory_display_name(path), path.clone()));
+            self.nodes.or_insert_with(
+                path.clone(),
+                || directory_tree_node(directory_display_name(path), path.clone()),
+            );
             let Some(node) = self.nodes.get_mut(path) else {
                 continue;
             };
@@ -595,9 +597,10 @@ impl DirectoryTreeState {
             .filter(|entry| entry.filesystem_path == selected)
             .map(|entry| entry.tree_path.clone())
             .unwrap_or_else(|| selected.clone());
-        self.nodes.entry(selected_tree_key).or_insert_with(|| {
-            directory_tree_node(directory_display_name(&selected), selected.clone())
-        });
+        self.nodes.or_insert_with(
+            selected_tree_key,
+            || directory_tree_node(directory_display_name(&selected), selected.clone()),
+        );
         requests
     }
 
@@ -614,7 +617,7 @@ impl DirectoryTreeState {
                 network.children.sort();
             }
         }
-        self.nodes.entry(share_path.clone()).or_insert_with(|| {
+        self.nodes.or_insert_with(share_path.clone(), || {
             directory_tree_node(unc_share_display_name(&share_path), share_path.clone())
         });
     }
@@ -896,7 +899,7 @@ impl DirectoryTreeState {
                         cap_reached = true;
                         break;
                     }
-                    self.nodes.entry(child.clone()).or_insert_with(|| {
+                    self.nodes.or_insert_with(child.clone(), || {
                         directory_tree_node(directory_display_name(child), child.clone())
                     });
                     loaded_children.push(child.clone());
@@ -927,6 +930,7 @@ impl DirectoryTreeState {
 }
 
 mod app;
+mod node_store;
 mod sort;
 mod strip_previews;
 mod ui;

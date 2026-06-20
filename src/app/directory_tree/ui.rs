@@ -54,7 +54,7 @@ pub(super) enum DirectoryTreeNodeIcon {
 
 fn directory_tree_node_icon_fields(
     known_folders: &[KnownFolderEntry],
-    nodes: &std::collections::HashMap<PathBuf, DirectoryTreeNode>,
+    nodes: &impl DirectoryTreeNodeLookup,
     path: &Path,
 ) -> DirectoryTreeNodeIcon {
     if is_this_pc_tree_path(path) {
@@ -71,12 +71,28 @@ fn directory_tree_node_icon_fields(
         return DirectoryTreeNodeIcon::KnownFolder(kind);
     }
     if nodes
-        .get(&this_pc_tree_path())
+        .get_node(&this_pc_tree_path())
         .is_some_and(|node| node.children.iter().any(|child| child.as_path() == path))
     {
         return DirectoryTreeNodeIcon::Drive;
     }
     DirectoryTreeNodeIcon::Folder
+}
+
+trait DirectoryTreeNodeLookup {
+    fn get_node(&self, path: &Path) -> Option<&DirectoryTreeNode>;
+}
+
+impl DirectoryTreeNodeLookup for super::node_store::DirectoryTreeNodeArena {
+    fn get_node(&self, path: &Path) -> Option<&DirectoryTreeNode> {
+        self.get(path)
+    }
+}
+
+impl DirectoryTreeNodeLookup for std::collections::HashMap<PathBuf, std::sync::Arc<DirectoryTreeNode>> {
+    fn get_node(&self, path: &Path) -> Option<&DirectoryTreeNode> {
+        self.get(path).map(|node| node.as_ref())
+    }
 }
 
 pub(super) fn directory_tree_node_icon(
@@ -761,9 +777,10 @@ fn draw_directory_node(
     depth: usize,
     scroll_to_selected: bool,
 ) -> bool {
-    let Some(node) = view.nodes.get(path).cloned() else {
+    let Some(node) = view.nodes.get(path) else {
         return false;
     };
+    let node = node.as_ref();
 
     let icon = directory_tree_node_icon_fields(&view.known_folders, &view.nodes, path);
     let expandable = directory_tree_node_expandable(&node, path);
@@ -853,7 +870,7 @@ fn draw_directory_node(
     }
 
     if node.expanded {
-        for child in node.children {
+        for child in &node.children {
             scrolled |= draw_directory_node(
                 ui,
                 view,

@@ -35,12 +35,12 @@ pub(crate) struct DirectoryTreeView {
     pub(super) workers_available: bool,
     pub(super) known_folders: Vec<KnownFolderEntry>,
     pub(super) selected_dir: Option<PathBuf>,
-    pub(super) nodes: HashMap<PathBuf, DirectoryTreeNode>,
+    pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
     pub(super) image_list_generation: u64,
     pub(super) scanning: bool,
     pub(super) scan_status: String,
     pub(super) sync_warning: Option<String>,
-    pub(super) image_rows: Vec<DirectoryTreeFileRow>,
+    pub(super) image_rows: Arc<[DirectoryTreeFileRow]>,
     pub(super) current_index: usize,
     pub(super) scroll_folder_to_selected: bool,
     pub(super) scroll_image_list_to_current: bool,
@@ -61,6 +61,24 @@ pub(crate) struct DirectoryTreeView {
 
 impl DirectoryTreeView {
     pub(super) fn from_state(state: &DirectoryTreeState) -> Self {
+        Self::build_from_state(state, None)
+    }
+
+    fn build_from_state(state: &DirectoryTreeState, previous: Option<&Self>) -> Self {
+        let mut nodes = HashMap::with_capacity(state.nodes.len());
+        for (path, node) in state.nodes.iter() {
+            let arc = previous
+                .and_then(|prev| prev.nodes.get(path))
+                .filter(|existing| existing.as_ref() == node)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(node.clone()));
+            nodes.insert(path.clone(), arc);
+        }
+
+        let image_rows = previous
+            .map(|prev| share_image_rows(prev, &state.image_rows))
+            .unwrap_or_else(|| Arc::from(state.image_rows.clone().into_boxed_slice()));
+
         Self {
             places_loaded: state.places_loaded,
             places_loading: state.places_loading,
@@ -68,12 +86,12 @@ impl DirectoryTreeView {
             workers_available: state.workers_available,
             known_folders: state.known_folders.clone(),
             selected_dir: state.selected_dir.clone(),
-            nodes: state.nodes.clone(),
+            nodes,
             image_list_generation: state.image_list_generation,
             scanning: state.scanning,
             scan_status: state.scan_status.clone(),
             sync_warning: state.sync_warning.clone(),
-            image_rows: state.image_rows.clone(),
+            image_rows,
             current_index: state.current_index,
             scroll_folder_to_selected: state.scroll_folder_to_selected,
             scroll_image_list_to_current: state.scroll_image_list_to_current,
@@ -92,6 +110,17 @@ impl DirectoryTreeView {
             list_preview_thumb_px: state.list_preview_thumb_px,
         }
     }
+}
+
+fn share_image_rows(
+    previous: &DirectoryTreeView,
+    rows: &[DirectoryTreeFileRow],
+) -> Arc<[DirectoryTreeFileRow]> {
+    let prev = previous.image_rows.as_ref();
+    if prev == rows {
+        return Arc::clone(&previous.image_rows);
+    }
+    Arc::from(rows.to_vec().into_boxed_slice())
 }
 
 /// Per-frame UI chrome: mutated during paint, merged back into state after draw.
@@ -152,5 +181,9 @@ pub(super) fn publish_directory_tree_view(
     view: &ArcSwap<DirectoryTreeView>,
     state: &DirectoryTreeState,
 ) {
-    view.store(Arc::new(DirectoryTreeView::from_state(state)));
+    let previous = view.load();
+    view.store(Arc::new(DirectoryTreeView::build_from_state(
+        state,
+        Some(previous.as_ref()),
+    )));
 }
