@@ -641,12 +641,7 @@ fn draw_context_menu_edit_dialog(
                                 )
                                 .clicked()
                             {
-                                if let Some(selected) = rfd::FileDialog::new()
-                                    .add_filter("Executable", &["exe"])
-                                    .pick_file()
-                                {
-                                    *path = selected.to_string_lossy().to_string();
-                                }
+                                app.context_menu_exe_browse_requested = true;
                             }
                         });
                     }

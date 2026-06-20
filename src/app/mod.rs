@@ -25,6 +25,7 @@ pub(crate) mod input;
 pub(crate) mod lifecycle;
 pub(crate) mod media;
 pub(crate) mod rendering;
+pub(crate) mod folder_picker;
 pub(crate) mod rfd_parent;
 pub(crate) mod view_status;
 

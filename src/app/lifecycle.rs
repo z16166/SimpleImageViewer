@@ -551,6 +551,7 @@ impl ImageViewerApp {
             modal_generation: 0,
             pending_fullscreen: None,
             pending_open_directory: false,
+            folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
@@ -656,6 +657,7 @@ impl ImageViewerApp {
             context_menu_edit_target: None,
             context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry::default(
             ),
+            context_menu_exe_browse_requested: false,
             refresh_scan_in_progress: false,
             refresh_scan_slideshow_was_playing: false,
             refresh_anchor_path: None,

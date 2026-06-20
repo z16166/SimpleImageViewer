@@ -21,21 +21,23 @@ const SCAN_RESULT_CHANNEL_BOUND: usize = 64;
 
 impl ImageViewerApp {
     pub(crate) fn open_directory_dialog(&mut self, frame: &eframe::Frame) {
-        let mut dialog = crate::app::rfd_parent::file_dialog_for_main_window(frame);
-        if let Some(ref dir) = self.settings.last_image_dir.clone() {
-            dialog = dialog.set_directory(dir);
+        self.request_folder_picker(
+            frame,
+            crate::app::folder_picker::FolderPickerPurpose::ImageDirectory,
+            self.settings.last_image_dir.clone(),
+        );
+    }
+
+    pub(crate) fn apply_picked_image_directory(&mut self, dir: PathBuf) {
+        if self.settings.show_directory_tree_nav {
+            self.initialize_directory_tree_root(dir.clone());
+        } else {
+            self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+            self.settings.tree_nav_root_dir = None;
+            self.settings.tree_nav_selected_dir = None;
         }
-        if let Some(dir) = dialog.pick_folder() {
-            if self.settings.show_directory_tree_nav {
-                self.initialize_directory_tree_root(dir.clone());
-            } else {
-                self.settings.browse_mode = crate::settings::BrowseMode::Linear;
-                self.settings.tree_nav_root_dir = None;
-                self.settings.tree_nav_selected_dir = None;
-            }
-            self.load_directory(dir);
-            self.queue_save();
-        }
+        self.load_directory(dir);
+        self.queue_save();
     }
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {

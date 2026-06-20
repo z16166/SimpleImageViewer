@@ -29,7 +29,11 @@ impl ImageViewerApp {
 
     /// Dispatch rendering for the currently active modal dialog, and process
     /// any [`ModalResult`] it returns to mutate app state accordingly.
-    pub(crate) fn dispatch_active_modal(&mut self, ctx: &egui::Context) {
+    pub(crate) fn dispatch_active_modal(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
         // Store the current generation so MovableModal can build a unique Window Id.
         let modal_gen = self.modal_generation;
         ctx.data_mut(|d| {
@@ -91,6 +95,24 @@ impl ImageViewerApp {
                 // to trigger a new modal (e.g. success/info dialogs).
                 self.active_modal = None;
                 self.handle_modal_action(action, ctx);
+            }
+        }
+
+        if let Some(crate::ui::dialogs::modal_state::ActiveModal::FileCopyCut(state)) =
+            self.active_modal.as_mut()
+        {
+            if state.browse_folder_requested {
+                state.browse_folder_requested = false;
+                let starting = if state.input.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::PathBuf::from(state.input.trim()))
+                };
+                self.request_folder_picker(
+                    frame,
+                    crate::app::folder_picker::FolderPickerPurpose::FileCopyCutModal,
+                    starting,
+                );
             }
         }
     }

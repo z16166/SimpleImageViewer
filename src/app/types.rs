@@ -466,6 +466,7 @@ pub struct ImageViewerApp {
     /// Set to true by the PickDirectory hotkey; consumed in `logic()` to call
     /// `open_directory_dialog` which requires `&eframe::Frame`.
     pub(crate) pending_open_directory: bool,
+    pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
     pub(crate) directory_tree: DirectoryTreeRuntime,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
@@ -658,6 +659,7 @@ pub struct ImageViewerApp {
     pub(crate) context_menu_edit_dialog_open: bool,
     pub(crate) context_menu_edit_target: Option<usize>,
     pub(crate) context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry,
+    pub(crate) context_menu_exe_browse_requested: bool,
     /// True while a refresh-file-list scan (F5) is in progress.
     /// Prevents re-entry and blocks navigation actions that would
     /// dereference image_files during the incomplete rebuild.

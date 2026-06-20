@@ -109,6 +109,9 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     if open_music_dir {
         app.open_music_dir_dialog(frame);
     }
+    if std::mem::take(&mut app.context_menu_exe_browse_requested) {
+        app.request_context_menu_executable_picker(frame);
+    }
     if fullscreen_changed {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(app.settings.fullscreen));
     }

@@ -701,9 +701,15 @@ impl eframe::App for ImageViewerApp {
             self.open_directory_dialog(frame);
         }
 
-        // Keep repainting while loading, auto-switching, or playing music
+        self.poll_folder_picker_results(ctx);
+
+        // Keep repainting while loading, auto-switching, playing music, or folder picker open
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
-        if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() {
+        if self.settings.auto_switch
+            || self.scanning
+            || !self.loader.rx.is_empty()
+            || self.folder_picker.in_flight()
+        {
             ctx.request_repaint();
         } else if is_music_playing {
             // Music only needs low-frequency polling for track-name updates (~2 fps)
@@ -794,7 +800,7 @@ impl eframe::App for ImageViewerApp {
         }
 
         // Dispatch the single active modal dialog (MovableModal handles the overlay)
-        self.dispatch_active_modal(&ctx);
+        self.dispatch_active_modal(&ctx, frame);
 
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
