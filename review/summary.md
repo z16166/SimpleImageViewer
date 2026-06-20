@@ -96,23 +96,7 @@ _（ISSUE-17、19 已于 2026-06-20 修复，见 §3。）_
 
 
 
-#### ISSUE-21 · `DirectoryTreeState` 单一大锁 + 多处阻塞 `lock()`
-
-
-
-| 项 | 内容 |
-
-|----|------|
-
-| **来源** | deepseek R1 §1.3、R4 #4 |
-
-| **位置** | `app.rs` 多处 `state.lock()`（命令处理、places、sort 等） |
-
-| **现状** | 已广泛使用 `try_lock` + defer，但关键路径仍阻塞 lock。 |
-
-| **影响** | 与 snapshot 绘制（ISSUE-01 已修）叠加减轻；高负载下 defer 频率仍可能上升。 |
-
-| **建议修复** | 拆分为 tree / image_list / preview_textures 细粒度锁；或 snapshot 模式。 |
+_（ISSUE-21 已于 2026-06-20 修复，见 §3。）_
 
 
 
@@ -186,6 +170,8 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 | **ISSUE-19** 子 viewport paint 仍收 ROOT `Frame` | **已修复**：eframe fork 增加 `LogicPass { painting_viewport_id }` + `Frame::painting_viewport_id()`；应用拆分为 `logic_shared` / `logic_root_only`，ROOT-only 工作（HDR、placement、drag-drop、dialogs）仅在 `pass.is_root()` 时运行。 |
 
+| **ISSUE-21** 单一大锁 + 大列表 publish 拷贝 | **已重构**：`DirectoryTreeTreeState` / `DirectoryTreeListState` 独立 mutex；preview 独立 `ArcSwap` snapshot（不经 writer state）；list append 结构共享 + 扫描期 100ms publish coalesce；`DirectoryTreeView` 三 Arc 组装。 |
+
 | **ISSUE-22** Strip pool panic | **已修复**：`preview_caps.rs` 多级 rayon pool fallback。 |
 
 | **ISSUE-23** 关键逻辑缺单测 | **已修复**：coalesce/split/mark_failed/normalize、`sync_images` sort-active、`DirectoryTreeView.sync_warning`、strip inflight `try_send` 单测。 |
@@ -212,7 +198,7 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 |--------|----------|------|
 
-| P1 | ISSUE-21 | 目录树 state 锁粒度；需 profiling 或拆分设计后再动 |
+| — | — | 当前 backlog 已清空；后续按 profiling 再开优化项 |
 
 
 
@@ -230,9 +216,9 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 | 18 份审核文档合计提出（去重前） | ~120+ 条发现 |
 
-| 当前仍存在于代码 backlog | **1 条**（ISSUE-21） |
+| 当前仍存在于代码 backlog | **0 条** |
 
-| 架构 / Fork | 1 |
+| 架构 / Fork | 0 |
 
 
 

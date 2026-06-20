@@ -94,13 +94,11 @@ fn apply_children_result_ignores_stale_generation() {
     let root = PathBuf::from("/tmp/siv-dir-tree-test-root");
     let child = PathBuf::from("/tmp/siv-dir-tree-test-child");
 
-    let mut state = DirectoryTreeState {
-        places_loaded: true,
-        selected_dir: Some(root.clone()),
-        generation: 2,
-        ..DirectoryTreeState::default()
-    };
-    state.nodes.insert(
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loaded = true;
+    state.tree.selected_dir = Some(root.clone());
+    state.tree.generation = 2;
+    state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -119,11 +117,11 @@ fn apply_children_result_ignores_stale_generation() {
         result: Ok(vec![child.clone()]),
     });
 
-    let node = state.nodes.get(&root).expect("root node");
+    let node = state.tree.nodes.get(&root).expect("root node");
     assert!(node.loading);
     assert!(!node.children_loaded);
     assert!(node.children.is_empty());
-    assert!(!state.nodes.contains_key(&child));
+    assert!(!state.tree.nodes.contains_key(&child));
 }
 
 #[test]
@@ -131,13 +129,11 @@ fn apply_children_result_merges_children_and_clears_loading() {
     let root = PathBuf::from("/tmp/siv-dir-tree-test-root-2");
     let child = PathBuf::from("/tmp/siv-dir-tree-test-child-2");
 
-    let mut state = DirectoryTreeState {
-        places_loaded: true,
-        selected_dir: Some(root.clone()),
-        generation: 1,
-        ..DirectoryTreeState::default()
-    };
-    state.nodes.insert(
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loaded = true;
+    state.tree.selected_dir = Some(root.clone());
+    state.tree.generation = 1;
+    state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -156,24 +152,22 @@ fn apply_children_result_merges_children_and_clears_loading() {
         result: Ok(vec![child.clone()]),
     });
 
-    let node = state.nodes.get(&root).expect("root node");
+    let node = state.tree.nodes.get(&root).expect("root node");
     assert!(!node.loading);
     assert!(node.children_loaded);
     assert_eq!(node.children, vec![child.clone()]);
-    assert!(state.nodes.contains_key(&child));
+    assert!(state.tree.nodes.contains_key(&child));
 }
 
 #[test]
 fn apply_children_result_records_read_error() {
     let root = PathBuf::from("/tmp/siv-dir-tree-test-missing");
 
-    let mut state = DirectoryTreeState {
-        places_loaded: true,
-        selected_dir: Some(root.clone()),
-        generation: 1,
-        ..DirectoryTreeState::default()
-    };
-    state.nodes.insert(
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loaded = true;
+    state.tree.selected_dir = Some(root.clone());
+    state.tree.generation = 1;
+    state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -192,7 +186,7 @@ fn apply_children_result_records_read_error() {
         result: Err("permission denied".to_string()),
     });
 
-    let node = state.nodes.get(&root).expect("root node");
+    let node = state.tree.nodes.get(&root).expect("root node");
     assert!(!node.loading);
     assert!(node.children_loaded);
     assert!(node.children.is_empty());
@@ -202,8 +196,8 @@ fn apply_children_result_records_read_error() {
 #[test]
 fn apply_metadata_result_ignores_stale_generation() {
     let mut state = DirectoryTreeState::default();
-    state.file_metadata_generation = 2;
-    state.image_rows = vec![DirectoryTreeFileRow {
+    state.list.file_metadata_generation = 2;
+    state.list.image_rows = vec![DirectoryTreeFileRow {
         path: PathBuf::from("/tmp/a.jpg"),
         name: "a.jpg".to_string(),
         size_bytes: 10,
@@ -216,14 +210,14 @@ fn apply_metadata_result_ignores_stale_generation() {
         modified_unix: vec![Some(1_700_000_000)],
     });
 
-    assert!(state.image_rows[0].modified_unix.is_none());
+    assert!(state.list.image_rows[0].modified_unix.is_none());
 }
 
 #[test]
 fn apply_metadata_result_updates_modified_times() {
     let mut state = DirectoryTreeState::default();
-    state.file_metadata_generation = 1;
-    state.image_rows = vec![
+    state.list.file_metadata_generation = 1;
+    state.list.image_rows = vec![
         DirectoryTreeFileRow {
             path: PathBuf::from("/tmp/a.jpg"),
             name: "a.jpg".to_string(),
@@ -244,8 +238,8 @@ fn apply_metadata_result_updates_modified_times() {
         modified_unix: vec![Some(1_700_000_000), None],
     });
 
-    assert_eq!(state.image_rows[0].modified_unix, Some(1_700_000_000));
-    assert!(state.image_rows[1].modified_unix.is_none());
+    assert_eq!(state.list.image_rows[0].modified_unix, Some(1_700_000_000));
+    assert!(state.list.image_rows[1].modified_unix.is_none());
 }
 
 #[test]
@@ -283,10 +277,10 @@ fn directory_tree_panel_layout_shrinks_for_display_on_narrow_viewport() {
     assert!(list >= DIRECTORY_TREE_RIGHT_MIN_WIDTH);
     // Stored preferences are unchanged — only the layout tuple shrinks.
     let mut state = DirectoryTreeState::default();
-    state.left_panel_width = 340.0;
-    state.image_list_panel_width = 400.0;
-    assert_eq!(state.left_panel_width, 340.0);
-    assert_eq!(state.image_list_panel_width, 400.0);
+    state.tree.left_panel_width = 340.0;
+    state.list.image_list_panel_width = 400.0;
+    assert_eq!(state.tree.left_panel_width, 340.0);
+    assert_eq!(state.list.image_list_panel_width, 400.0);
 }
 
 #[test]
@@ -308,7 +302,7 @@ fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
 fn sync_images_marks_list_scroll_when_current_index_changes() {
     let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
     let mut state = DirectoryTreeState::default();
-    state.image_rows = paths
+    state.list.image_rows = paths
         .iter()
         .map(|path| DirectoryTreeFileRow {
             path: path.clone(),
@@ -317,13 +311,13 @@ fn sync_images_marks_list_scroll_when_current_index_changes() {
             modified_unix: None,
         })
         .collect();
-    state.current_index = 0;
-    state.scroll_image_list_to_current = false;
+    state.list.current_index = 0;
+    state.list.scroll_image_list_to_current = false;
 
     state.sync_images(&paths, &[0, 0], &[None, None], 1, false, String::new());
 
-    assert_eq!(state.current_index, 1);
-    assert!(state.scroll_image_list_to_current);
+    assert_eq!(state.list.current_index, 1);
+    assert!(state.list.scroll_image_list_to_current);
 }
 
 #[test]
@@ -464,14 +458,19 @@ fn reveal_selected_dir_mounts_unc_share_under_network() {
     state.initialize_places(places);
     state.set_selected_dir(PathBuf::from("//192.168.2.1/pictures/2024"));
 
-    assert!(state.network_visible);
-    let network = state.nodes.get(&network_tree_path()).expect("network node");
+    assert!(state.tree.network_visible);
+    let network = state
+        .tree
+        .nodes
+        .get(&network_tree_path())
+        .expect("network node");
     assert_eq!(
         network.children,
         vec![PathBuf::from("//192.168.2.1/pictures")]
     );
     assert!(
         state
+            .tree
             .nodes
             .contains_key(&PathBuf::from("//192.168.2.1/pictures"))
     );
@@ -500,23 +499,23 @@ fn initialize_places_resets_nodes_and_bumps_generation() {
 
     let mut state = DirectoryTreeState::default();
     state.initialize_places(places.clone());
-    assert_eq!(state.generation, 1);
-    assert!(state.places_loaded);
-    assert!(state.nodes.contains_key(&this_pc_tree_path()));
-    assert!(!state.network_visible);
-    assert!(!state.nodes.contains_key(&network_tree_path()));
+    assert_eq!(state.tree.generation, 1);
+    assert!(state.tree.places_loaded);
+    assert!(state.tree.nodes.contains_key(&this_pc_tree_path()));
+    assert!(!state.tree.network_visible);
+    assert!(!state.tree.nodes.contains_key(&network_tree_path()));
 
-    state.nodes.insert(
+    state.tree.nodes.insert(
         PathBuf::from("/tmp/siv-dir-tree-stale"),
         directory_tree_node("stale", PathBuf::from("/tmp/siv-dir-tree-stale")),
     );
 
     state.initialize_places(places);
-    assert_eq!(state.generation, 2);
-    assert_eq!(state.nodes.len(), 1);
-    assert!(state.nodes.contains_key(&this_pc_tree_path()));
-    assert!(!state.network_visible);
-    assert!(!state.nodes.contains_key(&network_tree_path()));
+    assert_eq!(state.tree.generation, 2);
+    assert_eq!(state.tree.nodes.len(), 1);
+    assert!(state.tree.nodes.contains_key(&this_pc_tree_path()));
+    assert!(!state.tree.network_visible);
+    assert!(!state.tree.nodes.contains_key(&network_tree_path()));
 }
 
 #[test]
@@ -615,32 +614,40 @@ fn directory_tree_node_icon_distinguishes_places_roots() {
 
     let mut state = DirectoryTreeState::default();
     state.initialize_places(places);
-    state.ensure_network_visible();
+    state.tree.ensure_network_visible();
 
     assert_eq!(
-        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &this_pc_tree_path()),
+        directory_tree_node_icon_fields(
+            &state.tree.known_folders,
+            &state.tree.nodes,
+            &this_pc_tree_path()
+        ),
         DirectoryTreeNodeIcon::ThisPc
     );
     assert_eq!(
-        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &network_tree_path()),
+        directory_tree_node_icon_fields(
+            &state.tree.known_folders,
+            &state.tree.nodes,
+            &network_tree_path()
+        ),
         DirectoryTreeNodeIcon::Network
     );
     assert_eq!(
         directory_tree_node_icon_fields(
-            &state.known_folders,
-            &state.nodes,
+            &state.tree.known_folders,
+            &state.tree.nodes,
             &known_folder_tree_path(KnownFolderKind::Pictures),
         ),
         DirectoryTreeNodeIcon::KnownFolder(KnownFolderKind::Pictures)
     );
     assert_eq!(
-        directory_tree_node_icon_fields(&state.known_folders, &state.nodes, &drive),
+        directory_tree_node_icon_fields(&state.tree.known_folders, &state.tree.nodes, &drive),
         DirectoryTreeNodeIcon::Drive
     );
     assert_eq!(
         directory_tree_node_icon_fields(
-            &state.known_folders,
-            &state.nodes,
+            &state.tree.known_folders,
+            &state.tree.nodes,
             &PathBuf::from("/tmp/ordinary"),
         ),
         DirectoryTreeNodeIcon::Folder
@@ -671,6 +678,7 @@ fn reveal_known_folder_does_not_expand_this_pc() {
     let _requests = state.reveal_selected_dir();
     assert!(
         !state
+            .tree
             .nodes
             .get(&this_pc_tree_path())
             .is_some_and(|node| node.expanded)
@@ -705,12 +713,14 @@ fn reveal_selected_dir_expands_nested_known_folder_path_after_places_init() {
     let docs_tree = known_folder_tree_path(KnownFolderKind::Documents);
     assert!(
         state
+            .tree
             .nodes
             .get(&docs_tree)
             .is_some_and(|node| node.expanded)
     );
     assert!(
         state
+            .tree
             .nodes
             .get(&docs_fs.join("2024"))
             .is_some_and(|node| node.expanded)
@@ -805,7 +815,7 @@ fn split_metadata_request_chunks_large_batches() {
 fn mark_children_request_failed_clears_loading_and_sets_error() {
     let tree_path = PathBuf::from("/tmp/siv-dir-tree-failed-node");
     let mut state = DirectoryTreeState::default();
-    state.nodes.insert(
+    state.tree.nodes.insert(
         tree_path.clone(),
         DirectoryTreeNode {
             display_name: "failed".to_string(),
@@ -820,7 +830,7 @@ fn mark_children_request_failed_clears_loading_and_sets_error() {
 
     state.mark_children_request_failed(&tree_path, "read busy".to_string());
 
-    let node = state.nodes.get(&tree_path).expect("node");
+    let node = state.tree.nodes.get(&tree_path).expect("node");
     assert!(!node.loading);
     assert_eq!(node.error.as_deref(), Some("read busy"));
 }
@@ -828,10 +838,10 @@ fn mark_children_request_failed_clears_loading_and_sets_error() {
 #[test]
 fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
     let mut state = DirectoryTreeState::default();
-    state.image_list_sort_active = true;
+    state.list.image_list_sort_active = true;
     let path_a = PathBuf::from("/dir/b.jpg");
     let path_b = PathBuf::from("/dir/a.jpg");
-    state.image_rows = vec![
+    state.list.image_rows = vec![
         DirectoryTreeFileRow {
             path: path_a.clone(),
             name: "b".to_string(),
@@ -855,10 +865,11 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
         true,
         String::new(),
     );
-    assert_eq!(state.image_rows.len(), 3);
-    assert!(state.image_rows.iter().any(|row| row.path == path_c));
+    assert_eq!(state.list.image_rows.len(), 3);
+    assert!(state.list.image_rows.iter().any(|row| row.path == path_c));
     assert_eq!(
         state
+            .list
             .image_rows
             .iter()
             .filter(|row| row.path == path_a)
@@ -869,10 +880,22 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
 
 #[test]
 fn directory_tree_view_carries_sync_warning_from_state() {
+    use std::sync::Arc;
+
+    use super::domains::{
+        DirectoryTreeListSnapshot, DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot,
+    };
     use super::view::DirectoryTreeView;
 
     let mut state = DirectoryTreeState::default();
-    state.sync_warning = Some("sync dropped".to_string());
-    let view = DirectoryTreeView::from_state(&state);
-    assert_eq!(view.sync_warning.as_deref(), Some("sync dropped"));
+    state.list.sync_warning = Some("sync dropped".to_string());
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot::default()),
+        Arc::new(DirectoryTreeListSnapshot {
+            sync_warning: state.list.sync_warning.clone(),
+            ..DirectoryTreeListSnapshot::default()
+        }),
+        Arc::new(DirectoryTreePreviewSnapshot::default()),
+    );
+    assert_eq!(view.sync_warning(), Some("sync dropped"));
 }

@@ -14,114 +14,155 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! RCU-style read model for directory-tree paint (`ArcSwap`) plus frame-local UI chrome.
+//! RCU domain snapshots assembled for paint plus frame-local UI chrome.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use eframe::egui;
 
-use crate::directory_tree_places::KnownFolderEntry;
+use super::{
+    DirectoryTreeFileRow, ImageListSortColumn,
+    domains::{
+        DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
+        DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
+    },
+};
 
-use super::{DirectoryTreeFileRow, DirectoryTreeNode, DirectoryTreeState, ImageListSortColumn};
-
-/// Immutable tree/list snapshot published from `logic()`; paint reads via `Arc::clone` only.
+/// Paint read model: three domain snapshots (tree / list / preview).
 pub(crate) struct DirectoryTreeView {
-    pub(super) places_loaded: bool,
-    pub(super) places_loading: bool,
-    pub(super) places_load_error: Option<String>,
-    pub(super) workers_available: bool,
-    pub(super) known_folders: Vec<KnownFolderEntry>,
-    pub(super) selected_dir: Option<PathBuf>,
-    pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
-    pub(super) scanning: bool,
-    pub(super) scan_status: String,
-    pub(super) sync_warning: Option<String>,
-    pub(super) image_rows: Arc<[DirectoryTreeFileRow]>,
-    pub(super) current_index: usize,
-    pub(super) scroll_folder_to_selected: bool,
-    pub(super) scroll_image_list_to_current: bool,
-    pub(super) preview_textures: HashMap<usize, egui::TextureHandle>,
-    pub(super) preview_logical_sizes: HashMap<usize, (u32, u32)>,
-    pub(super) image_list_col_size_w: f32,
-    pub(super) image_list_col_modified_w: f32,
-    pub(super) left_panel_width: f32,
-    pub(super) image_list_panel_width: f32,
-    pub(super) network_visible: bool,
-    pub(super) image_list_sort_column: ImageListSortColumn,
-    pub(super) image_list_sort_ascending: bool,
-    pub(super) image_list_sort_active: bool,
-    pub(super) image_list_reordering: bool,
-    pub(super) show_list_previews: bool,
-    pub(super) list_preview_thumb_px: f32,
+    pub(super) tree: Arc<DirectoryTreeTreeSnapshot>,
+    pub(super) list: Arc<DirectoryTreeListSnapshot>,
+    pub(super) preview: Arc<DirectoryTreePreviewSnapshot>,
 }
 
 impl DirectoryTreeView {
-    pub(super) fn from_state(state: &DirectoryTreeState) -> Self {
-        Self::build_from_state(state, None)
-    }
-
-    fn build_from_state(state: &DirectoryTreeState, previous: Option<&Self>) -> Self {
-        let mut nodes = HashMap::with_capacity(state.nodes.len());
-        for (path, node) in state.nodes.iter() {
-            let arc = previous
-                .and_then(|prev| prev.nodes.get(path))
-                .filter(|existing| existing.as_ref() == node)
-                .cloned()
-                .unwrap_or_else(|| Arc::new(node.clone()));
-            nodes.insert(path.clone(), arc);
-        }
-
-        let image_rows = previous
-            .map(|prev| share_image_rows(prev, &state.image_rows))
-            .unwrap_or_else(|| Arc::from(state.image_rows.clone().into_boxed_slice()));
-
+    pub(super) fn assemble(
+        tree: Arc<DirectoryTreeTreeSnapshot>,
+        list: Arc<DirectoryTreeListSnapshot>,
+        preview: Arc<DirectoryTreePreviewSnapshot>,
+    ) -> Self {
         Self {
-            places_loaded: state.places_loaded,
-            places_loading: state.places_loading,
-            places_load_error: state.places_load_error.clone(),
-            workers_available: state.workers_available,
-            known_folders: state.known_folders.clone(),
-            selected_dir: state.selected_dir.clone(),
-            nodes,
-            scanning: state.scanning,
-            scan_status: state.scan_status.clone(),
-            sync_warning: state.sync_warning.clone(),
-            image_rows,
-            current_index: state.current_index,
-            scroll_folder_to_selected: state.scroll_folder_to_selected,
-            scroll_image_list_to_current: state.scroll_image_list_to_current,
-            preview_textures: state.preview_textures.clone(),
-            preview_logical_sizes: state.preview_logical_sizes.clone(),
-            image_list_col_size_w: state.image_list_col_size_w,
-            image_list_col_modified_w: state.image_list_col_modified_w,
-            left_panel_width: state.left_panel_width,
-            image_list_panel_width: state.image_list_panel_width,
-            network_visible: state.network_visible,
-            image_list_sort_column: state.image_list_sort_column,
-            image_list_sort_ascending: state.image_list_sort_ascending,
-            image_list_sort_active: state.image_list_sort_active,
-            image_list_reordering: state.image_list_reordering,
-            show_list_previews: state.show_list_previews,
-            list_preview_thumb_px: state.list_preview_thumb_px,
+            tree,
+            list,
+            preview,
         }
     }
-}
 
-fn share_image_rows(
-    previous: &DirectoryTreeView,
-    rows: &[DirectoryTreeFileRow],
-) -> Arc<[DirectoryTreeFileRow]> {
-    let prev = previous.image_rows.as_ref();
-    if prev == rows {
-        return Arc::clone(&previous.image_rows);
+    pub(super) fn places_loaded(&self) -> bool {
+        self.tree.places_loaded
     }
-    Arc::from(rows.to_vec().into_boxed_slice())
+
+    pub(super) fn places_loading(&self) -> bool {
+        self.tree.places_loading
+    }
+
+    pub(super) fn places_load_error(&self) -> Option<&str> {
+        self.tree.places_load_error.as_deref()
+    }
+
+    pub(super) fn workers_available(&self) -> bool {
+        self.tree.workers_available
+    }
+
+    pub(super) fn known_folders(&self) -> &[crate::directory_tree_places::KnownFolderEntry] {
+        &self.tree.known_folders
+    }
+
+    pub(super) fn selected_dir(&self) -> Option<&std::path::PathBuf> {
+        self.tree.selected_dir.as_ref()
+    }
+
+    pub(super) fn nodes(
+        &self,
+    ) -> &std::collections::HashMap<std::path::PathBuf, Arc<super::DirectoryTreeNode>> {
+        &self.tree.nodes
+    }
+
+    pub(super) fn network_visible(&self) -> bool {
+        self.tree.network_visible
+    }
+
+    pub(super) fn scroll_folder_to_selected(&self) -> bool {
+        self.tree.scroll_folder_to_selected
+    }
+
+    pub(super) fn left_panel_width(&self) -> f32 {
+        self.tree.left_panel_width
+    }
+
+    pub(super) fn image_rows(&self) -> &Arc<[DirectoryTreeFileRow]> {
+        &self.list.image_rows
+    }
+
+    pub(super) fn current_index(&self) -> usize {
+        self.list.current_index
+    }
+
+    pub(super) fn scanning(&self) -> bool {
+        self.list.scanning
+    }
+
+    pub(super) fn scan_status(&self) -> &str {
+        &self.list.scan_status
+    }
+
+    pub(super) fn sync_warning(&self) -> Option<&str> {
+        self.list.sync_warning.as_deref()
+    }
+
+    pub(super) fn scroll_image_list_to_current(&self) -> bool {
+        self.list.scroll_image_list_to_current
+    }
+
+    pub(super) fn preview_textures(
+        &self,
+    ) -> &std::collections::HashMap<usize, egui::TextureHandle> {
+        &self.preview.textures
+    }
+
+    pub(super) fn preview_logical_sizes(&self) -> &std::collections::HashMap<usize, (u32, u32)> {
+        &self.preview.logical_sizes
+    }
+
+    pub(super) fn image_list_col_size_w(&self) -> f32 {
+        self.list.image_list_col_size_w
+    }
+
+    pub(super) fn image_list_col_modified_w(&self) -> f32 {
+        self.list.image_list_col_modified_w
+    }
+
+    pub(super) fn image_list_panel_width(&self) -> f32 {
+        self.list.image_list_panel_width
+    }
+
+    pub(super) fn image_list_sort_column(&self) -> ImageListSortColumn {
+        self.list.image_list_sort_column
+    }
+
+    pub(super) fn image_list_sort_ascending(&self) -> bool {
+        self.list.image_list_sort_ascending
+    }
+
+    pub(super) fn image_list_sort_active(&self) -> bool {
+        self.list.image_list_sort_active
+    }
+
+    pub(super) fn image_list_reordering(&self) -> bool {
+        self.list.image_list_reordering
+    }
+
+    pub(super) fn show_list_previews(&self) -> bool {
+        self.list.show_list_previews
+    }
+
+    pub(super) fn list_preview_thumb_px(&self) -> f32 {
+        self.list.list_preview_thumb_px
+    }
 }
 
-/// Per-frame UI chrome: mutated during paint, merged back into state after draw.
+/// Per-frame UI chrome: mutated during paint, merged back into writers after draw.
 pub(crate) struct DirectoryTreeUiChrome {
     pub(super) left_panel_width: f32,
     pub(super) panel_layout_dirty: bool,
@@ -137,17 +178,20 @@ pub(crate) struct DirectoryTreeUiChrome {
 }
 
 impl DirectoryTreeUiChrome {
-    pub(super) fn from_state(state: &DirectoryTreeState) -> Self {
+    pub(super) fn from_domains(
+        tree: &DirectoryTreeTreeState,
+        list: &DirectoryTreeListState,
+    ) -> Self {
         Self {
-            left_panel_width: state.left_panel_width,
+            left_panel_width: tree.left_panel_width,
             panel_layout_dirty: false,
             embedded_nav_panel_width: None,
-            scroll_folder_to_selected: state.scroll_folder_to_selected,
-            image_list_scroll_offset_y: state.image_list_scroll_offset_y,
-            image_list_visible_row_range: state.image_list_visible_row_range,
-            image_list_keyboard_active: state.image_list_keyboard_active,
-            current_index: state.current_index,
-            scroll_image_list_to_current: state.scroll_image_list_to_current,
+            scroll_folder_to_selected: tree.scroll_folder_to_selected,
+            image_list_scroll_offset_y: list.image_list_scroll_offset_y,
+            image_list_visible_row_range: list.image_list_visible_row_range,
+            image_list_keyboard_active: list.image_list_keyboard_active,
+            current_index: list.current_index,
+            scroll_image_list_to_current: list.scroll_image_list_to_current,
             image_list_selected_row_rect: None,
             pending_image_context_menu: None,
         }
@@ -158,38 +202,77 @@ impl DirectoryTreeUiChrome {
     }
 
     pub(super) fn begin_paint_frame(&mut self, view: &DirectoryTreeView) {
-        self.left_panel_width = view.left_panel_width;
-        self.scroll_folder_to_selected = view.scroll_folder_to_selected;
-        // Selection/scroll flags come from logic (`sync_images`, canvas navigation). Refresh
-        // every frame so chrome does not keep a stale index across same-generation updates.
-        self.current_index = view.current_index;
-        self.scroll_image_list_to_current = view.scroll_image_list_to_current;
+        self.left_panel_width = view.left_panel_width();
+        self.scroll_folder_to_selected = view.scroll_folder_to_selected();
+        self.current_index = view.current_index();
+        self.scroll_image_list_to_current = view.scroll_image_list_to_current();
     }
 
-    pub(super) fn apply_to_state(&self, state: &mut DirectoryTreeState) {
-        state.left_panel_width = self.left_panel_width;
+    pub(super) fn apply_to_domains(
+        &self,
+        tree: &mut DirectoryTreeTreeState,
+        list: &mut DirectoryTreeListState,
+    ) {
+        tree.left_panel_width = self.left_panel_width;
         if self.panel_layout_dirty {
-            state.panel_layout_dirty = true;
+            tree.panel_layout_dirty = true;
+            list.panel_layout_dirty = true;
         }
         if let Some(width) = self.embedded_nav_panel_width {
-            state.embedded_nav_panel_width = width;
+            tree.embedded_nav_panel_width = width;
         }
-        state.scroll_folder_to_selected = self.scroll_folder_to_selected;
-        state.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
-        state.image_list_visible_row_range = self.image_list_visible_row_range;
-        state.image_list_keyboard_active = self.image_list_keyboard_active;
-        state.current_index = self.current_index;
-        state.scroll_image_list_to_current = self.scroll_image_list_to_current;
+        tree.scroll_folder_to_selected = self.scroll_folder_to_selected;
+        list.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
+        list.image_list_visible_row_range = self.image_list_visible_row_range;
+        list.image_list_keyboard_active = self.image_list_keyboard_active;
+        list.current_index = self.current_index;
+        list.scroll_image_list_to_current = self.scroll_image_list_to_current;
     }
 }
 
-pub(super) fn publish_directory_tree_view(
+pub(super) fn assemble_directory_tree_view(
     view: &ArcSwap<DirectoryTreeView>,
-    state: &DirectoryTreeState,
+    tree_snapshot: &ArcSwap<DirectoryTreeTreeSnapshot>,
+    list_snapshot: &ArcSwap<DirectoryTreeListSnapshot>,
+    preview_snapshot: &ArcSwap<DirectoryTreePreviewSnapshot>,
 ) {
-    let previous = view.load();
-    view.store(Arc::new(DirectoryTreeView::build_from_state(
-        state,
-        Some(previous.as_ref()),
+    view.store(Arc::new(DirectoryTreeView::assemble(
+        tree_snapshot.load_full(),
+        list_snapshot.load_full(),
+        preview_snapshot.load_full(),
     )));
+}
+
+pub(super) fn publish_directory_tree_domains(
+    runtime: &super::DirectoryTreeRuntime,
+    tree: &mut DirectoryTreeTreeState,
+    list: &mut DirectoryTreeListState,
+    force_list: bool,
+    preview_cache_revision: Option<u64>,
+    preview_textures: Option<&std::collections::HashMap<usize, egui::TextureHandle>>,
+    preview_logical_sizes: Option<&std::collections::HashMap<usize, (u32, u32)>>,
+) -> bool {
+    let mut last_list_publish_at = runtime.last_list_publish_at.lock();
+    let mut ctx = super::domains::DirectoryTreePublishContext {
+        tree,
+        list,
+        tree_snapshot: &runtime.tree_snapshot,
+        list_snapshot: &runtime.list_snapshot,
+        preview_snapshot: &runtime.preview_snapshot,
+        last_list_publish_at: &mut *last_list_publish_at,
+        force_list,
+        preview_cache_revision,
+        preview_textures,
+        preview_logical_sizes,
+    };
+    let changed = super::domains::publish_domain_snapshots(&mut ctx);
+    if changed {
+        assemble_directory_tree_view(
+            &runtime.view,
+            &runtime.tree_snapshot,
+            &runtime.list_snapshot,
+            &runtime.preview_snapshot,
+        );
+    }
+    changed
 }

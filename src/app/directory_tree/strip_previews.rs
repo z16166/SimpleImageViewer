@@ -35,7 +35,7 @@ use super::workers::strip_worker_com_initialized;
 use super::{
     DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS, DirectoryTreeListPreviewLayout,
     MAX_COLD_STRIP_GENERATES_PER_FRAME, MAX_STRIP_GENERATE_INFLIGHT,
-    MAX_TILED_STRIP_GENERATES_PER_FRAME,
+    MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
 fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, index: usize) {
@@ -286,7 +286,7 @@ impl ImageViewerApp {
             return;
         }
         let path = self.image_files[index].clone();
-        let list_generation = self.directory_tree.state.lock().image_list_generation;
+        let list_generation = self.directory_tree.list.lock().image_list_generation;
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -442,13 +442,15 @@ impl ImageViewerApp {
                 .remove(&result.index);
             let active_list_generation = self
                 .directory_tree
-                .state
+                .list
                 .try_lock()
-                .map(|state| state.image_list_generation);
-            let Some(active_list_generation) = active_list_generation else {
-                self.clear_strip_preview_attempt_state(result.index);
-                continue;
-            };
+                .map(|list| list.image_list_generation)
+                .unwrap_or_else(|| {
+                    self.directory_tree
+                        .list_snapshot
+                        .load()
+                        .image_list_generation
+                });
             if result.image_list_generation != active_list_generation {
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
@@ -542,7 +544,7 @@ impl ImageViewerApp {
         }
 
         let path = self.image_files.get(index).cloned().unwrap_or_default();
-        let list_generation = self.directory_tree.state.lock().image_list_generation;
+        let list_generation = self.directory_tree.list.lock().image_list_generation;
         self.directory_tree_strip_tiled_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
@@ -711,10 +713,10 @@ impl ImageViewerApp {
         }
 
         let (visible_row_range, scroll_to_current_pending, defer_sync) = {
-            match self.directory_tree.state.try_lock() {
-                Some(state) => (
-                    state.image_list_visible_row_range,
-                    state.scroll_image_list_to_current,
+            match self.directory_tree.list.try_lock() {
+                Some(list) => (
+                    list.image_list_visible_row_range,
+                    list.scroll_image_list_to_current,
                     false,
                 ),
                 None => (None, false, true),
@@ -750,12 +752,7 @@ impl ImageViewerApp {
             || cold_scheduled > 0
             || !self.directory_tree_strip_generate_inflight.is_empty()
         {
-            let ui_preview_count = self
-                .directory_tree
-                .state
-                .try_lock()
-                .map(|s| s.preview_textures.len())
-                .unwrap_or(0);
+            let ui_preview_count = self.directory_tree.preview_snapshot.load().textures.len();
             crate::preload_debug!(
                 "[PreloadDebug][DirTree] ensure_strip current={} rows={} cache={} ui_preview={} rev={} inflight={} cold_sched={} visible={:?} scroll_pending={} bootstrap={}",
                 self.current_index,
@@ -786,10 +783,17 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
-        if let Some(mut state) = self.directory_tree.state.try_lock() {
-            state.image_list_generation = state.image_list_generation.wrapping_add(1);
-            state.clear_list_preview_textures();
+        if let Some(mut list) = self.directory_tree.list.try_lock() {
+            list.image_list_generation = list.image_list_generation.wrapping_add(1);
+            list.mark_snapshot_dirty();
         }
+        domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
+        view::assemble_directory_tree_view(
+            &self.directory_tree.view,
+            &self.directory_tree.tree_snapshot,
+            &self.directory_tree.list_snapshot,
+            &self.directory_tree.preview_snapshot,
+        );
     }
 
     pub(crate) fn invalidate_directory_tree_strip_gpu_textures(&mut self) {
@@ -804,11 +808,16 @@ impl ImageViewerApp {
 
     pub(crate) fn on_directory_tree_list_preview_settings_changed(&mut self, ctx: &egui::Context) {
         self.invalidate_directory_tree_strip_gpu_textures();
-        if let Some(mut state) = self.directory_tree.state.try_lock() {
-            state.clear_list_preview_textures();
-            DirectoryTreeListPreviewLayout::from_settings(&self.settings)
-                .apply_to_state(&mut state);
+        if let Some(mut list) = self.directory_tree.list.try_lock() {
+            DirectoryTreeListPreviewLayout::from_settings(&self.settings).apply_to_list(&mut list);
         }
+        domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
+        view::assemble_directory_tree_view(
+            &self.directory_tree.view,
+            &self.directory_tree.tree_snapshot,
+            &self.directory_tree.list_snapshot,
+            &self.directory_tree.preview_snapshot,
+        );
         ctx.request_repaint();
         self.queue_save();
     }

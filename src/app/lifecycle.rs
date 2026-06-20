@@ -725,10 +725,7 @@ impl ImageViewerApp {
             app.restore_saved_directory_tree_panel_layout();
             if let Some(dir) = app.saved_directory_tree_selection_dir() {
                 app.settings.tree_nav_selected_dir = Some(dir.clone());
-                app.directory_tree
-                    .state
-                    .lock()
-                    .set_selected_dir(dir.clone());
+                app.directory_tree.tree.lock().set_selected_dir(dir.clone());
                 app.load_directory(dir);
             }
         } else if let Some(dir) = app.settings.last_image_dir.clone() {

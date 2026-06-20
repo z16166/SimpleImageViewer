@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -124,7 +123,7 @@ pub(crate) struct FileMetadataResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DirectoryTreeFileRow {
+pub(crate) struct DirectoryTreeFileRow {
     path: PathBuf,
     name: String,
     size_bytes: u64,
@@ -149,49 +148,89 @@ pub(crate) struct DirectoryTreeNode {
     error: Option<String>,
 }
 
+mod domains;
+pub(crate) use domains::{
+    DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
+    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
+};
+
+/// Combined writer access for tests and legacy call sites (separate runtime mutexes in production).
+#[cfg(test)]
 pub(crate) struct DirectoryTreeState {
-    places_loaded: bool,
-    places_loading: bool,
-    places_load_error: Option<String>,
-    workers_available: bool,
-    known_folders: Vec<KnownFolderEntry>,
-    selected_dir: Option<PathBuf>,
-    nodes: node_store::DirectoryTreeNodeArena,
-    generation: u64,
-    image_list_generation: u64,
-    file_metadata_generation: u64,
-    image_rows: Vec<DirectoryTreeFileRow>,
-    current_index: usize,
-    scanning: bool,
-    scan_status: String,
-    /// Shown below the image list until the next successful file-list sync (e.g. defer drop).
-    sync_warning: Option<String>,
-    left_panel_width: f32,
-    image_list_panel_width: f32,
-    embedded_nav_panel_width: f32,
-    scroll_image_list_to_current: bool,
-    scroll_folder_to_selected: bool,
-    image_list_scroll_offset_y: f32,
-    image_list_keyboard_active: bool,
-    preview_textures: HashMap<usize, egui::TextureHandle>,
-    preview_logical_sizes: HashMap<usize, (u32, u32)>,
-    preview_textures_sync_revision: u64,
-    image_list_visible_row_range: Option<(usize, usize)>,
-    image_list_col_size_w: f32,
-    image_list_col_modified_w: f32,
-    image_list_col_widths_font_size: f32,
-    image_list_col_widths_dirty: bool,
-    network_label: String,
-    network_visible: bool,
-    image_list_sort_column: ImageListSortColumn,
-    image_list_sort_ascending: bool,
-    image_list_sort_active: bool,
-    image_list_reordering: bool,
-    show_list_previews: bool,
-    list_preview_thumb_px: f32,
-    list_preview_strip_max_side: u32,
-    panel_layout_dirty: bool,
-    detached_startup_maximize_applied: bool,
+    pub tree: DirectoryTreeTreeState,
+    pub list: DirectoryTreeListState,
+}
+
+#[cfg(test)]
+impl Default for DirectoryTreeState {
+    fn default() -> Self {
+        Self {
+            tree: DirectoryTreeTreeState::default(),
+            list: DirectoryTreeListState::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+impl DirectoryTreeState {
+    pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
+        self.tree.initialize_places(places);
+    }
+
+    pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
+        self.tree.set_selected_dir(dir);
+    }
+
+    pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {
+        self.tree.reveal_selected_dir()
+    }
+
+    pub(crate) fn expand_tree_for_filesystem_dir(
+        &mut self,
+        dir: &Path,
+    ) -> Option<DirectoryChildrenRequest> {
+        self.tree.expand_tree_for_filesystem_dir(dir)
+    }
+
+    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
+        self.tree.mark_children_request_failed(tree_path, error);
+    }
+
+    pub(crate) fn sync_images(
+        &mut self,
+        images: &[PathBuf],
+        sizes: &[u64],
+        modified: &[Option<i64>],
+        current_index: usize,
+        scanning: bool,
+        scan_status: String,
+    ) -> Option<FileMetadataRequest> {
+        self.list.sync_images(
+            images,
+            sizes,
+            modified,
+            current_index,
+            scanning,
+            scan_status,
+        )
+    }
+
+    pub(crate) fn update_image_list_column_widths(&mut self, ctx: &egui::Context) {
+        self.list.update_image_list_column_widths(ctx);
+    }
+
+    fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
+        self.tree.apply_children_result(result);
+    }
+
+    fn apply_metadata_result(&mut self, result: FileMetadataResult) {
+        self.list.apply_metadata_result(result);
+    }
+
+    fn toggle_expanded(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
+        self.tree.toggle_expanded(path)
+    }
 }
 
 /// Snapshot of list-preview layout passed from settings into draw/sync paths.
@@ -216,63 +255,15 @@ impl DirectoryTreeListPreviewLayout {
         }
     }
 
-    pub(super) fn apply_to_state(self, state: &mut DirectoryTreeState) {
-        state.show_list_previews = self.show_previews;
-        state.list_preview_thumb_px = self.thumb_px;
-        state.list_preview_strip_max_side = self.strip_max_side;
+    pub(super) fn apply_to_list(self, list: &mut DirectoryTreeListState) {
+        list.apply_preview_layout(self);
     }
 }
 
-impl Default for DirectoryTreeState {
-    fn default() -> Self {
-        Self {
-            places_loaded: false,
-            places_loading: false,
-            places_load_error: None,
-            workers_available: true,
-            known_folders: Vec::new(),
-            selected_dir: None,
-            nodes: node_store::DirectoryTreeNodeArena::default(),
-            generation: 0,
-            image_list_generation: 0,
-            file_metadata_generation: 0,
-            image_rows: Vec::new(),
-            current_index: 0,
-            scanning: false,
-            scan_status: String::new(),
-            sync_warning: None,
-            left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
-            image_list_panel_width: DIRECTORY_TREE_RIGHT_MIN_WIDTH,
-            embedded_nav_panel_width: 0.0,
-            scroll_image_list_to_current: false,
-            scroll_folder_to_selected: false,
-            image_list_scroll_offset_y: 0.0,
-            image_list_keyboard_active: false,
-            preview_textures: HashMap::new(),
-            preview_logical_sizes: HashMap::new(),
-            preview_textures_sync_revision: 0,
-            image_list_visible_row_range: None,
-            image_list_col_size_w: DIRECTORY_TREE_COL_SIZE_WIDTH,
-            image_list_col_modified_w: DIRECTORY_TREE_COL_MODIFIED_WIDTH,
-            image_list_col_widths_font_size: 0.0,
-            image_list_col_widths_dirty: true,
-            network_label: String::new(),
-            network_visible: false,
-            image_list_sort_column: ImageListSortColumn::default(),
-            image_list_sort_ascending: true,
-            image_list_sort_active: false,
-            image_list_reordering: false,
-            show_list_previews: true,
-            list_preview_thumb_px: crate::settings::DirectoryTreeListPreviewSize::Small.thumb_px(),
-            list_preview_strip_max_side: crate::settings::DirectoryTreeListPreviewSize::Small
-                .strip_max_side(),
-            panel_layout_dirty: false,
-            detached_startup_maximize_applied: false,
-        }
-    }
-}
-
-fn directory_tree_node(display_name: impl Into<String>, browse_path: PathBuf) -> DirectoryTreeNode {
+pub(super) fn directory_tree_node(
+    display_name: impl Into<String>,
+    browse_path: PathBuf,
+) -> DirectoryTreeNode {
     DirectoryTreeNode {
         display_name: display_name.into(),
         browse_path: browse_path.clone(),
@@ -284,7 +275,7 @@ fn directory_tree_node(display_name: impl Into<String>, browse_path: PathBuf) ->
     }
 }
 
-fn children_request(
+pub(super) fn children_request(
     tree_path: PathBuf,
     browse_path: PathBuf,
     generation: u64,
@@ -297,9 +288,14 @@ fn children_request(
 }
 
 pub(crate) struct DirectoryTreeRuntime {
-    pub(crate) state: Arc<Mutex<DirectoryTreeState>>,
+    pub(crate) tree: Arc<Mutex<DirectoryTreeTreeState>>,
+    pub(crate) list: Arc<Mutex<DirectoryTreeListState>>,
+    pub(crate) tree_snapshot: Arc<ArcSwap<DirectoryTreeTreeSnapshot>>,
+    pub(crate) list_snapshot: Arc<ArcSwap<DirectoryTreeListSnapshot>>,
+    pub(crate) preview_snapshot: Arc<ArcSwap<DirectoryTreePreviewSnapshot>>,
     pub(crate) view: Arc<ArcSwap<view::DirectoryTreeView>>,
     pub(crate) chrome: Arc<Mutex<view::DirectoryTreeUiChrome>>,
+    pub(crate) last_list_publish_at: Mutex<std::time::Instant>,
     pub(crate) command_tx: Sender<DirectoryTreeCommand>,
     pub(crate) command_rx: Receiver<DirectoryTreeCommand>,
     pub(crate) children_request_tx: Sender<DirectoryChildrenRequest>,
@@ -350,21 +346,37 @@ impl DirectoryTreeRuntime {
             );
         }
 
-        let initial_state = DirectoryTreeState {
+        let mut initial_tree = DirectoryTreeTreeState {
             workers_available,
-            ..DirectoryTreeState::default()
+            ..DirectoryTreeTreeState::default()
         };
-        let view = Arc::new(ArcSwap::from_pointee(view::DirectoryTreeView::from_state(
-            &initial_state,
+        initial_tree.snapshot_dirty = true;
+        let mut initial_list = DirectoryTreeListState::default();
+        initial_list.snapshot_dirty = true;
+        let tree_snapshot = Arc::new(ArcSwap::from_pointee(DirectoryTreeTreeSnapshot::default()));
+        let list_snapshot = Arc::new(ArcSwap::from_pointee(DirectoryTreeListSnapshot::default()));
+        let preview_snapshot = Arc::new(ArcSwap::from_pointee(
+            DirectoryTreePreviewSnapshot::default(),
+        ));
+        let view = Arc::new(ArcSwap::from_pointee(view::DirectoryTreeView::assemble(
+            tree_snapshot.load_full(),
+            list_snapshot.load_full(),
+            preview_snapshot.load_full(),
         )));
-        let chrome = Arc::new(Mutex::new(view::DirectoryTreeUiChrome::from_state(
-            &initial_state,
+        let chrome = Arc::new(Mutex::new(view::DirectoryTreeUiChrome::from_domains(
+            &initial_tree,
+            &initial_list,
         )));
 
         Self {
-            state: Arc::new(Mutex::new(initial_state)),
+            tree: Arc::new(Mutex::new(initial_tree)),
+            list: Arc::new(Mutex::new(initial_list)),
+            tree_snapshot,
+            list_snapshot,
+            preview_snapshot,
             view,
             chrome,
+            last_list_publish_at: Mutex::new(std::time::Instant::now()),
             command_tx,
             command_rx,
             children_request_tx,
@@ -376,9 +388,10 @@ impl DirectoryTreeRuntime {
     }
 }
 
-impl DirectoryTreeState {
+impl DirectoryTreeTreeState {
     pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
         self.generation = self.generation.wrapping_add(1);
+        self.mark_snapshot_dirty();
         self.places_loaded = true;
         self.known_folders = places.known_folders;
         self.network_label = places.network_label;
@@ -451,7 +464,7 @@ impl DirectoryTreeState {
         }
     }
 
-    fn ensure_network_visible(&mut self) {
+    pub(crate) fn ensure_network_visible(&mut self) {
         if self.network_visible {
             return;
         }
@@ -548,6 +561,7 @@ impl DirectoryTreeState {
         self.nodes
             .or_insert_with(tree_key, || directory_tree_node(display_name, dir));
         self.scroll_folder_to_selected = true;
+        self.mark_snapshot_dirty();
     }
 
     pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {
@@ -606,7 +620,7 @@ impl DirectoryTreeState {
         requests
     }
 
-    fn ensure_network_share_mounted(&mut self, share_root: &Path) {
+    pub(crate) fn ensure_network_share_mounted(&mut self, share_root: &Path) {
         self.ensure_network_visible();
         let share_path = share_root.to_path_buf();
         if let Some(network) = self.nodes.get_mut(&network_tree_path()) {
@@ -630,8 +644,11 @@ impl DirectoryTreeState {
         };
         node.loading = false;
         node.error = Some(error);
+        self.mark_snapshot_dirty();
     }
+}
 
+impl DirectoryTreeListState {
     pub(crate) fn sync_images(
         &mut self,
         images: &[PathBuf],
@@ -758,7 +775,7 @@ impl DirectoryTreeState {
         if scanning {
             self.image_list_keyboard_active = false;
         }
-        if paths_needing_meta.is_empty() {
+        let metadata_request = if paths_needing_meta.is_empty() {
             None
         } else {
             self.file_metadata_generation = self.file_metadata_generation.wrapping_add(1);
@@ -766,7 +783,9 @@ impl DirectoryTreeState {
                 generation: self.file_metadata_generation,
                 paths: paths_needing_meta,
             })
-        }
+        };
+        self.mark_snapshot_dirty();
+        metadata_request
     }
 
     pub(crate) fn update_image_list_column_widths(&mut self, ctx: &egui::Context) {
@@ -792,85 +811,33 @@ impl DirectoryTreeState {
         self.image_list_col_modified_w = modified_w;
         self.image_list_col_widths_font_size = font_size;
         self.image_list_col_widths_dirty = false;
+        self.mark_snapshot_dirty();
     }
 
-    pub(crate) fn clear_list_preview_textures(&mut self) {
-        self.preview_textures.clear();
-        self.preview_logical_sizes.clear();
-        self.preview_textures_sync_revision = 0;
-        self.image_list_col_widths_dirty = true;
-    }
-
-    pub(crate) fn sync_preview_textures(
-        &mut self,
-        textures: &HashMap<usize, egui::TextureHandle>,
-        logical_sizes: &HashMap<usize, (u32, u32)>,
-        cache_revision: u64,
-    ) -> bool {
-        if self.preview_textures_sync_revision == cache_revision
-            && self.preview_textures.len() == textures.len()
-        {
-            return false;
-        }
-        #[cfg(feature = "preload-debug")]
-        if self.preview_textures_sync_revision == cache_revision
-            && self.preview_textures.len() != textures.len()
-        {
-            crate::preload_debug!(
-                "[PreloadDebug][DirTree] sync_preview_textures forced: revision={} ui_count={} cache_count={}",
-                cache_revision,
-                self.preview_textures.len(),
-                textures.len()
-            );
-        }
-        #[cfg(feature = "preload-debug")]
-        let previous_revision = self.preview_textures_sync_revision;
-        #[cfg(feature = "preload-debug")]
-        let previous_count = self.preview_textures.len();
-        self.preview_textures_sync_revision = cache_revision;
-        self.preview_textures.clear();
-        self.preview_logical_sizes.clear();
-        for (&index, handle) in textures {
-            if index < self.image_rows.len() {
-                self.preview_textures.insert(index, handle.clone());
-            }
-        }
-        for (&index, &size) in logical_sizes {
-            if index < self.image_rows.len() {
-                self.preview_logical_sizes.insert(index, size);
-            }
-        }
-        #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][DirTree] sync_preview_textures revision {} -> {} ui {} -> {} rows={} cache={}",
-            previous_revision,
-            cache_revision,
-            previous_count,
-            self.preview_textures.len(),
-            self.image_rows.len(),
-            textures.len()
-        );
-        true
-    }
-
-    fn apply_metadata_result(&mut self, result: FileMetadataResult) {
+    pub(crate) fn apply_metadata_result(&mut self, result: FileMetadataResult) {
         if result.generation != self.file_metadata_generation {
             return;
         }
+        let mut changed = false;
         for (path, modified_unix) in result.paths.into_iter().zip(result.modified_unix) {
             if let Some(row) = self.image_rows.iter_mut().find(|row| row.path == path) {
                 row.modified_unix = modified_unix;
+                changed = true;
             }
         }
+        if changed {
+            self.mark_snapshot_dirty();
+        }
     }
+}
 
-    fn toggle_expanded(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
+impl DirectoryTreeTreeState {
+    pub(crate) fn toggle_expanded(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
         let node = self.nodes.get_mut(path)?;
         node.expanded = !node.expanded;
-        if is_places_sentinel_path(path) {
-            return None;
-        }
-        if node.expanded && !node.children_loaded && !node.loading {
+        let request = if is_places_sentinel_path(path) {
+            None
+        } else if node.expanded && !node.children_loaded && !node.loading {
             node.loading = true;
             node.error = None;
             let browse_path = node.browse_path.clone();
@@ -881,10 +848,12 @@ impl DirectoryTreeState {
             ))
         } else {
             None
-        }
+        };
+        self.mark_snapshot_dirty();
+        request
     }
 
-    fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
+    pub(crate) fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
         if result.generation != self.generation {
             return;
         }
@@ -928,6 +897,7 @@ impl DirectoryTreeState {
                 node.error = Some(err);
             }
         }
+        self.mark_snapshot_dirty();
     }
 }
 

@@ -39,9 +39,9 @@ use super::{
     DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO, DIRECTORY_TREE_LEFT_MIN_WIDTH,
     DIRECTORY_TREE_NODE_ICON_DRAW_RATIO, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT,
     DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand,
-    DirectoryTreeFileRow, DirectoryTreeListPreviewLayout, DirectoryTreeNode, DirectoryTreeState,
-    ImageListSortColumn, is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path,
-    network_tree_path, this_pc_tree_path,
+    DirectoryTreeFileRow, DirectoryTreeListPreviewLayout, DirectoryTreeListState,
+    DirectoryTreeNode, ImageListSortColumn, is_network_tree_path, is_places_sentinel_path,
+    is_this_pc_tree_path, network_tree_path, this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,34 +432,34 @@ fn paint_directory_tree_folder_name(
 }
 
 fn active_list_thumb_px(view: &DirectoryTreeView) -> f32 {
-    if view.show_list_previews {
-        view.list_preview_thumb_px
+    if view.show_list_previews() {
+        view.list_preview_thumb_px()
     } else {
         0.0
     }
 }
 
 pub(super) fn image_list_row_height(view: &DirectoryTreeView) -> f32 {
-    if view.show_list_previews {
-        view.list_preview_thumb_px
+    if view.show_list_previews() {
+        view.list_preview_thumb_px()
     } else {
         DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT
     }
 }
 
-pub(super) fn image_list_interaction_enabled(state: &DirectoryTreeState) -> bool {
-    !state.scanning && !state.image_list_reordering
+pub(super) fn image_list_interaction_enabled(list: &DirectoryTreeListState) -> bool {
+    !list.scanning && !list.image_list_reordering
 }
 
 pub(super) fn image_list_interaction_enabled_view(view: &DirectoryTreeView) -> bool {
-    !view.scanning && !view.image_list_reordering
+    !view.scanning() && !view.image_list_reordering()
 }
 
 pub(super) fn image_list_sorting_available_view(view: &DirectoryTreeView) -> bool {
-    image_list_interaction_enabled_view(view) && !view.image_rows.is_empty()
+    image_list_interaction_enabled_view(view) && !view.image_rows().is_empty()
 }
-pub(super) fn image_list_sorting_available(state: &DirectoryTreeState) -> bool {
-    image_list_interaction_enabled(state) && !state.image_rows.is_empty()
+pub(super) fn image_list_sorting_available(list: &DirectoryTreeListState) -> bool {
+    image_list_interaction_enabled(list) && !list.image_rows.is_empty()
 }
 
 pub(super) fn draw_directory_tree_window(
@@ -572,7 +572,7 @@ fn draw_directory_tree_top_panels(
     let viewport_width = panel_size.x;
     let (left_w, list_w) = directory_tree_panel_layout(
         chrome.left_panel_width,
-        view.image_list_panel_width,
+        view.image_list_panel_width(),
         viewport_width,
     );
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
@@ -706,21 +706,21 @@ fn draw_folder_panel(
 ) {
     let scroll_to_selected = chrome.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
-        if !view.places_loaded {
-            if view.places_loading {
+        if !view.places_loaded() {
+            if view.places_loading() {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(t!("directory_tree.places_loading"));
                 });
-            } else if let Some(err) = &view.places_load_error {
-                ui.label(egui::RichText::new(err.as_str()).color(ui.visuals().error_fg_color));
-            } else if !view.workers_available {
+            } else if let Some(err) = view.places_load_error() {
+                ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
+            } else if !view.workers_available() {
                 ui.label(t!("directory_tree.workers_unavailable"));
             }
             return;
         }
         let mut scrolled = false;
-        for entry in &view.known_folders {
+        for entry in view.known_folders() {
             scrolled |= draw_directory_node(
                 ui,
                 view,
@@ -742,7 +742,7 @@ fn draw_folder_panel(
             0,
             scroll_to_selected,
         );
-        if view.network_visible {
+        if view.network_visible() {
             scrolled |= draw_directory_node(
                 ui,
                 view,
@@ -783,12 +783,12 @@ fn draw_directory_node(
     depth: usize,
     scroll_to_selected: bool,
 ) -> bool {
-    let Some(node) = view.nodes.get(path) else {
+    let Some(node) = view.nodes().get(path) else {
         return false;
     };
     let node = node.as_ref();
 
-    let icon = directory_tree_node_icon_fields(&view.known_folders, &view.nodes, path);
+    let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
     let expandable = directory_tree_node_expandable(&node, path);
 
     let mut scrolled = false;
@@ -827,8 +827,7 @@ fn draw_directory_node(
             paint_tree_folder_icon(ui, folder_rect.0, icon, palette);
 
             let selected = view
-                .selected_dir
-                .as_deref()
+                .selected_dir()
                 .is_some_and(|selected| selected == node.browse_path.as_path());
             let name_width = ui.available_width().max(1.0);
             let (name_rect, name_response) = ui.allocate_exact_size(
@@ -904,18 +903,18 @@ fn draw_image_file_list(
     allow_image_context_menu: bool,
 ) {
     chrome.begin_image_list_paint();
-    let list_enabled = !view.scanning || !view.image_rows.is_empty();
+    let list_enabled = !view.scanning() || !view.image_rows().is_empty();
 
-    if view.image_rows.is_empty() && !view.scanning {
+    if view.image_rows().is_empty() && !view.scanning() {
         ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
-        if let Some(warning) = view.sync_warning.as_deref() {
+        if let Some(warning) = view.sync_warning() {
             ui.label(egui::RichText::new(warning).weak());
         }
         return;
     }
 
-    let show_scan_status = view.scanning && view.image_rows.is_empty();
-    let show_sync_warning = view.sync_warning.is_some();
+    let show_scan_status = view.scanning() && view.image_rows().is_empty();
+    let show_sync_warning = view.sync_warning().is_some();
     let status_height = if show_scan_status || show_sync_warning {
         DIRECTORY_TREE_ROW_HEIGHT
     } else {
@@ -929,8 +928,8 @@ fn draw_image_file_list(
     let column_layout = image_list_column_layout(
         ui.available_width(),
         ui.spacing().item_spacing.x,
-        view.image_list_col_size_w,
-        view.image_list_col_modified_w,
+        view.image_list_col_size_w(),
+        view.image_list_col_modified_w(),
         thumb_px,
     );
 
@@ -944,7 +943,7 @@ fn draw_image_file_list(
     }
 
     let mut pending_scroll_offset = None;
-    if list_enabled && chrome.scroll_image_list_to_current && !view.image_rows.is_empty() {
+    if list_enabled && chrome.scroll_image_list_to_current && !view.image_rows().is_empty() {
         pending_scroll_offset = min_scroll_offset_to_show_row(
             chrome.current_index,
             row_height_with_spacing,
@@ -966,12 +965,12 @@ fn draw_image_file_list(
             scroll = scroll.vertical_scroll_offset(offset);
         }
 
-        let total_rows = view.image_rows.len();
+        let total_rows = view.image_rows().len();
         let current_index = chrome.current_index;
         let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
             chrome.image_list_visible_row_range = Some((row_range.start, row_range.end));
             for row_index in row_range {
-                let Some(row) = view.image_rows.get(row_index) else {
+                let Some(row) = view.image_rows().get(row_index) else {
                     continue;
                 };
                 let clicked = draw_image_details_row(
@@ -983,8 +982,8 @@ fn draw_image_file_list(
                     &body_font,
                     thumb_px,
                     row_height,
-                    view.preview_textures.get(&row_index),
-                    view.preview_logical_sizes.get(&row_index).copied(),
+                    view.preview_textures().get(&row_index),
+                    view.preview_logical_sizes().get(&row_index).copied(),
                     command_tx,
                     chrome,
                     list_enabled && interaction_enabled,
@@ -1006,8 +1005,8 @@ fn draw_image_file_list(
             |ui| {
                 if show_scan_status {
                     ui.spinner();
-                    ui.label(egui::RichText::new(view.scan_status.as_str()).weak());
-                } else if let Some(warning) = view.sync_warning.as_deref() {
+                    ui.label(egui::RichText::new(view.scan_status()).weak());
+                } else if let Some(warning) = view.sync_warning() {
                     ui.label(egui::RichText::new(warning).weak());
                 }
             },
@@ -1231,9 +1230,9 @@ fn draw_image_details_header(
                 label,
                 super::sort::image_list_sort_indicator_fields(
                     column,
-                    view.image_list_sort_active,
-                    view.image_list_sort_column,
-                    view.image_list_sort_ascending
+                    view.image_list_sort_active(),
+                    view.image_list_sort_column(),
+                    view.image_list_sort_ascending()
                 )
             );
             let galley = ui.painter().layout_no_wrap(text, header_font.clone(), weak);
@@ -1325,14 +1324,14 @@ fn try_handle_image_list_arrow_keys(
     }
 
     if !chrome.image_list_keyboard_active
-        || view.image_rows.is_empty()
+        || view.image_rows().is_empty()
         || !image_list_interaction_enabled_view(view)
     {
         return;
     }
 
     let current = chrome.current_index;
-    let len = view.image_rows.len();
+    let len = view.image_rows().len();
     let mut next = None;
     ui.input(|input| {
         if input.key_pressed(egui::Key::ArrowDown) {
