@@ -257,6 +257,19 @@ fn left_panel_width_limits_stay_ordered_on_narrow_viewport() {
 }
 
 #[test]
+fn main_window_canvas_rects_insets_embedded_nav_panel() {
+    use crate::app::rendering::geometry::main_window_canvas_rects;
+    use eframe::egui::{Pos2, Rect};
+
+    let available = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 800.0));
+    let panel = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(380.0, 800.0));
+    let grab = 8.0;
+    let (paint, interact) = main_window_canvas_rects(available, grab, Some(panel));
+    assert_eq!(paint.min.x, 380.0);
+    assert_eq!(interact.min.x, 388.0);
+}
+
+#[test]
 fn directory_tree_panel_layout_honors_saved_split() {
     let (left, list) = directory_tree_panel_layout(280.0, 320.0, 640.0);
     assert_eq!(left, 280.0);

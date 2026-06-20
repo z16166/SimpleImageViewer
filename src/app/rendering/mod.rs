@@ -23,6 +23,9 @@ pub(crate) mod tiled;
 pub(crate) mod transitions;
 
 use crate::app::ImageViewerApp;
+use crate::app::rendering::geometry::{
+    embedded_directory_tree_panel_rect, main_window_canvas_rects,
+};
 use crate::app::rendering::standard::{
     should_dispatch_standard_draw, should_draw_pending_navigation_hold_frame,
 };
@@ -40,7 +43,6 @@ fn should_show_loading_hint(
 
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
-        self.last_canvas_rect = Some(ui.max_rect());
         // Block canvas mouse interaction when a modal dialog is open.
         // egui::Modal renders its own dimming overlay, so we do not need to
         // draw one manually here any more.
@@ -50,16 +52,33 @@ impl ImageViewerApp {
         egui::Frame::NONE
             .fill(self.cached_palette.canvas_bg)
             .show(ui, |ui| {
-                let screen_rect = ui.max_rect();
+                let available = ui.available_rect_before_wrap();
+                let grab = ui.style().interaction.resize_grab_radius_side;
+                let embedded_panel = if self.directory_tree_settings_active()
+                    && self.directory_tree_nav_is_embedded()
+                {
+                    embedded_directory_tree_panel_rect(ui.ctx()).or_else(|| {
+                        let width = self.embedded_nav_panel_width_estimate();
+                        Some(egui::Rect::from_min_max(
+                            available.min,
+                            egui::Pos2::new(available.min.x + width, available.max.y),
+                        ))
+                    })
+                } else {
+                    None
+                };
+                let (screen_rect, interact_rect) =
+                    main_window_canvas_rects(available, grab, embedded_panel);
+                self.last_canvas_rect = Some(screen_rect);
 
-                // Allocate the whole viewport for drag interaction and clicks early.
+                // Allocate the canvas for drag interaction and clicks early.
                 // If a modal is open, we sense nothing to block background clicks/drags.
                 let sense = if any_modal_open {
                     Sense::hover()
                 } else {
                     Sense::click_and_drag()
                 };
-                let canvas_resp = ui.allocate_rect(screen_rect, sense);
+                let canvas_resp = ui.allocate_rect(interact_rect, sense);
                 if canvas_resp.clicked() {
                     self.deactivate_directory_tree_list_keyboard(ui.ctx());
                 }
