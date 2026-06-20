@@ -417,10 +417,8 @@ impl ImageViewerApp {
 
         let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
             crossbeam_channel::bounded(16);
-        let (
-            directory_tree_strip_inflight_release_tx,
-            directory_tree_strip_inflight_release_rx,
-        ) = crossbeam_channel::unbounded();
+        let (directory_tree_strip_inflight_release_tx, directory_tree_strip_inflight_release_rx) =
+            crossbeam_channel::unbounded();
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
             .name("font-families".to_string())

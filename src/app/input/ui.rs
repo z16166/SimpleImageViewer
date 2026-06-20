@@ -29,11 +29,7 @@ impl ImageViewerApp {
 
     /// Dispatch rendering for the currently active modal dialog, and process
     /// any [`ModalResult`] it returns to mutate app state accordingly.
-    pub(crate) fn dispatch_active_modal(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-    ) {
+    pub(crate) fn dispatch_active_modal(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         // Store the current generation so MovableModal can build a unique Window Id.
         let modal_gen = self.modal_generation;
         ctx.data_mut(|d| {

@@ -168,7 +168,11 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
         .is_err()
     {
         READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
-        return Err(t!("directory_tree.read_failed", err = t!("directory_tree.thread_spawn_failed")).to_string());
+        return Err(t!(
+            "directory_tree.read_failed",
+            err = t!("directory_tree.thread_spawn_failed")
+        )
+        .to_string());
     }
     match rx.recv_timeout(DIRECTORY_TREE_READ_DIR_TIMEOUT) {
         Ok(result) => result,
@@ -187,13 +191,8 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
 
 pub(super) fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut children = Vec::new();
-    let entries = std::fs::read_dir(path).map_err(|err| {
-        t!(
-            "directory_tree.read_failed",
-            err = err.to_string()
-        )
-        .to_string()
-    })?;
+    let entries = std::fs::read_dir(path)
+        .map_err(|err| t!("directory_tree.read_failed", err = err.to_string()).to_string())?;
 
     for entry in entries.flatten() {
         let child_path = entry.path();

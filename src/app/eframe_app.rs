@@ -206,9 +206,9 @@ impl eframe::App for ImageViewerApp {
         // canceling it while we are in tray mode instead of only on the first frame.
         // Do not return early — fall through to `finish_hide_to_tray` below so hide
         // completes even when `close_requested` stays true, and scan/load logic still runs.
-        if ctx
-            .viewport_for(egui::ViewportId::ROOT, |vp| vp.input.viewport().close_requested())
-            && !self.explicit_quit
+        if ctx.viewport_for(egui::ViewportId::ROOT, |vp| {
+            vp.input.viewport().close_requested()
+        }) && !self.explicit_quit
         {
             let is_shutting_down = {
                 #[cfg(target_os = "windows")]

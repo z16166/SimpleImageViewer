@@ -80,12 +80,7 @@ impl ImageViewerApp {
         purpose: FolderPickerPurpose,
         starting_directory: Option<PathBuf>,
     ) {
-        self.begin_async_rfd_dialog(
-            frame,
-            purpose,
-            AsyncRfdMode::PickFolder,
-            starting_directory,
-        );
+        self.begin_async_rfd_dialog(frame, purpose, AsyncRfdMode::PickFolder, starting_directory);
     }
 
     pub(crate) fn request_music_file_picker(&mut self, frame: &eframe::Frame) {
@@ -239,9 +234,7 @@ impl ImageViewerApp {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_executable_file_filter(
-    dialog: rfd::AsyncFileDialog,
-) -> rfd::AsyncFileDialog {
+fn apply_executable_file_filter(dialog: rfd::AsyncFileDialog) -> rfd::AsyncFileDialog {
     #[cfg(target_os = "windows")]
     {
         dialog.add_filter(t!("folder_picker.filter_executable").to_string(), &["exe"])

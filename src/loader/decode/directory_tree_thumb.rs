@@ -54,8 +54,7 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     if let Some(exif) = exif.as_ref() {
         let exif_logical = (exif.width, exif.height);
         let logical = normalize_logical_size(
-            mmap
-                .as_ref()
+            mmap.as_ref()
                 .and_then(|data| probe_still_image_logical_size_from_mmap(data))
                 .or_else(|| probe_still_image_logical_size(path))
                 .unwrap_or(exif_logical),
@@ -405,12 +404,21 @@ mod tests {
     #[test]
     fn zero_logical_falls_back_to_exif() {
         assert_eq!(normalize_logical_size((0, 0), (1920, 1080)), (1920, 1080));
-        assert_eq!(normalize_logical_size((0, 1080), (1920, 1080)), (1920, 1080));
-        assert_eq!(normalize_logical_size((1920, 0), (1920, 1080)), (1920, 1080));
+        assert_eq!(
+            normalize_logical_size((0, 1080), (1920, 1080)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            normalize_logical_size((1920, 0), (1920, 1080)),
+            (1920, 1080)
+        );
     }
 
     #[test]
     fn non_zero_logical_is_preserved() {
-        assert_eq!(normalize_logical_size((4000, 3000), (1920, 1080)), (4000, 3000));
+        assert_eq!(
+            normalize_logical_size((4000, 3000), (1920, 1080)),
+            (4000, 3000)
+        );
     }
 }

@@ -443,7 +443,10 @@ impl ImageViewerApp {
                         "[Scan] ignoring stale batch: message_gen={generation} active_gen={active_generation}"
                     );
                 }
-                ScanMessage::Done { generation, sorted_files } if generation == active_generation => {
+                ScanMessage::Done {
+                    generation,
+                    sorted_files,
+                } if generation == active_generation => {
                     self.scan_results_pending_since = None;
                     #[cfg(feature = "preload-debug")]
                     let done_started = std::time::Instant::now();
@@ -467,7 +470,10 @@ impl ImageViewerApp {
                             self.file_byte_len_by_index = sizes;
                             self.file_modified_unix_by_index = modified;
                         } else {
-                            debug_assert_eq!(self.image_files.len(), self.file_byte_len_by_index.len());
+                            debug_assert_eq!(
+                                self.image_files.len(),
+                                self.file_byte_len_by_index.len()
+                            );
                             debug_assert_eq!(
                                 self.image_files.len(),
                                 self.file_modified_unix_by_index.len()
