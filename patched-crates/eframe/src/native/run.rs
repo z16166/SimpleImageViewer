@@ -81,6 +81,9 @@ struct WinitAppWrapper<T: WinitApp> {
     winit_app: T,
     return_result: Result<(), crate::Error>,
     run_and_return: bool,
+    /// Prevents nested synchronous `RepaintNow` → `run_ui_and_paint` re-entry (review C2).
+    #[cfg(not(target_arch = "wasm32"))]
+    sync_repaint_in_progress: bool,
 }
 
 impl<T: WinitApp> WinitAppWrapper<T> {
@@ -90,6 +93,8 @@ impl<T: WinitApp> WinitAppWrapper<T> {
             winit_app,
             return_result: Ok(()),
             run_and_return,
+            #[cfg(not(target_arch = "wasm32"))]
+            sync_repaint_in_progress: false,
         }
     }
 
@@ -120,11 +125,19 @@ impl<T: WinitApp> WinitAppWrapper<T> {
         // upstream already applies the chain on all desktop OSes.
         #[cfg(not(target_arch = "wasm32"))]
         if let Ok(EventResult::RepaintNow(window_id)) = event_result {
-            log::trace!("RepaintNow of {window_id:?}");
-            self.windows_next_repaint_times
-                .insert(window_id, Instant::now());
+            if self.sync_repaint_in_progress {
+                log::trace!(
+                    "Skipping nested synchronous RepaintNow chain for {window_id:?}"
+                );
+            } else {
+                log::trace!("RepaintNow of {window_id:?}");
+                self.windows_next_repaint_times
+                    .insert(window_id, Instant::now());
 
-            event_result = self.winit_app.run_ui_and_paint(event_loop, window_id);
+                self.sync_repaint_in_progress = true;
+                event_result = self.winit_app.run_ui_and_paint(event_loop, window_id);
+                self.sync_repaint_in_progress = false;
+            }
         }
 
         let combined_result = event_result.map(|event_result| match event_result {

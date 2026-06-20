@@ -98,7 +98,7 @@ fn apply_children_result_ignores_stale_generation() {
     state.tree.places_loaded = true;
     state.tree.selected_dir = Some(root.clone());
     state.tree.generation = 2;
-    state.tree.nodes.insert(
+    let _ = state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -109,6 +109,7 @@ fn apply_children_result_ignores_stale_generation() {
             children: Vec::new(),
             error: None,
         },
+        super::MAX_DIRECTORY_TREE_NODES,
     );
 
     state.apply_children_result(DirectoryChildrenResult {
@@ -133,7 +134,7 @@ fn apply_children_result_merges_children_and_clears_loading() {
     state.tree.places_loaded = true;
     state.tree.selected_dir = Some(root.clone());
     state.tree.generation = 1;
-    state.tree.nodes.insert(
+    let _ = state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -144,6 +145,7 @@ fn apply_children_result_merges_children_and_clears_loading() {
             children: Vec::new(),
             error: None,
         },
+        super::MAX_DIRECTORY_TREE_NODES,
     );
 
     state.apply_children_result(DirectoryChildrenResult {
@@ -167,7 +169,7 @@ fn apply_children_result_records_read_error() {
     state.tree.places_loaded = true;
     state.tree.selected_dir = Some(root.clone());
     state.tree.generation = 1;
-    state.tree.nodes.insert(
+    let _ = state.tree.nodes.insert(
         root.clone(),
         DirectoryTreeNode {
             display_name: "root".to_string(),
@@ -178,6 +180,7 @@ fn apply_children_result_records_read_error() {
             children: Vec::new(),
             error: None,
         },
+        super::MAX_DIRECTORY_TREE_NODES,
     );
 
     state.apply_children_result(DirectoryChildrenResult {
@@ -505,9 +508,10 @@ fn initialize_places_resets_nodes_and_bumps_generation() {
     assert!(!state.tree.network_visible);
     assert!(!state.tree.nodes.contains_key(&network_tree_path()));
 
-    state.tree.nodes.insert(
+    let _ = state.tree.nodes.insert(
         PathBuf::from("/tmp/siv-dir-tree-stale"),
         directory_tree_node("stale", PathBuf::from("/tmp/siv-dir-tree-stale")),
+        super::MAX_DIRECTORY_TREE_NODES,
     );
 
     state.initialize_places(places);
@@ -736,12 +740,16 @@ fn selected_tree_path_distinguishes_alias_nodes_with_same_browse_path() {
     let profile_tree = downloads_fs.clone();
 
     let mut state = DirectoryTreeState::default();
-    state.tree.nodes.or_insert_with(known_tree.clone(), || {
-        directory_tree_node("Downloads".to_string(), downloads_fs.clone())
-    });
-    state.tree.nodes.or_insert_with(profile_tree.clone(), || {
-        directory_tree_node("下载".to_string(), downloads_fs.clone())
-    });
+    let _ = state.tree.nodes.or_insert_with(
+        known_tree.clone(),
+        super::MAX_DIRECTORY_TREE_NODES,
+        || directory_tree_node("Downloads".to_string(), downloads_fs.clone()),
+    );
+    let _ = state.tree.nodes.or_insert_with(
+        profile_tree.clone(),
+        super::MAX_DIRECTORY_TREE_NODES,
+        || directory_tree_node("下载".to_string(), downloads_fs.clone()),
+    );
 
     state
         .tree
@@ -887,7 +895,7 @@ fn split_metadata_request_chunks_large_batches() {
 fn mark_children_request_failed_clears_loading_and_sets_error() {
     let tree_path = PathBuf::from("/tmp/siv-dir-tree-failed-node");
     let mut state = DirectoryTreeState::default();
-    state.tree.nodes.insert(
+    let _ = state.tree.nodes.insert(
         tree_path.clone(),
         DirectoryTreeNode {
             display_name: "failed".to_string(),
@@ -898,6 +906,7 @@ fn mark_children_request_failed_clears_loading_and_sets_error() {
             children: Vec::new(),
             error: None,
         },
+        super::MAX_DIRECTORY_TREE_NODES,
     );
 
     state.mark_children_request_failed(&tree_path, "read busy".to_string());

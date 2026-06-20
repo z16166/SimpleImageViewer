@@ -482,6 +482,8 @@ pub struct ImageViewerApp {
     >,
     pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
     pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
+    pub(crate) directory_tree_strip_pending_gpu:
+        Vec<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
     /// Background Places loader; polled from `logic()`.
     pub(crate) directory_tree_places_load_rx:
         Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,

@@ -40,6 +40,7 @@ const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106_u32 as i32);
 
 struct ComSession {
     should_uninitialize: bool,
+    shell_usable: bool,
 }
 
 impl ComSession {
@@ -49,11 +50,13 @@ impl ComSession {
             if hr.is_ok() {
                 return Self {
                     should_uninitialize: hr != S_FALSE,
+                    shell_usable: true,
                 };
             }
             if hr == RPC_E_CHANGED_MODE {
                 return Self {
                     should_uninitialize: false,
+                    shell_usable: true,
                 };
             }
             log::warn!(
@@ -62,6 +65,7 @@ impl ComSession {
         }
         Self {
             should_uninitialize: false,
+            shell_usable: false,
         }
     }
 }
@@ -77,7 +81,18 @@ impl Drop for ComSession {
 }
 
 pub(super) fn load() -> DirectoryTreePlaces {
-    let _com = ComSession::new();
+    let com = ComSession::new();
+    if !com.shell_usable {
+        log::error!("[DirectoryTreePlaces] COM unavailable; returning empty places");
+        return DirectoryTreePlaces {
+            known_folders: Vec::new(),
+            drives: Vec::new(),
+            network_locations: Vec::new(),
+            this_pc_label: rust_i18n::t!("directory_tree.this_pc").to_string(),
+            network_label: rust_i18n::t!("directory_tree.network").to_string(),
+        };
+    }
+    let _com = com;
     DirectoryTreePlaces {
         known_folders: load_known_folders(),
         drives: enumerate_filesystem_drives(),

@@ -868,6 +868,9 @@ impl ImageViewerApp {
         if self.transition_start.is_some() {
             return;
         }
+        if self.current_index >= self.image_files.len() {
+            return;
+        }
         if self
             .hdr_placeholder_fallback_indices
             .contains(&self.current_index)
@@ -1246,8 +1249,8 @@ fn prefetch_circular_distance(current_index: usize, image_count: usize, candidat
     if image_count == 0 {
         return usize::MAX;
     }
-    let dist_forward = (candidate + image_count - current_index % image_count) % image_count;
-    let dist_backward = (current_index + image_count - candidate % image_count) % image_count;
+    let dist_forward = (candidate + image_count - current_index) % image_count;
+    let dist_backward = (current_index + image_count - candidate) % image_count;
     dist_forward.min(dist_backward)
 }
 
@@ -1258,6 +1261,18 @@ fn prefetch_window_contains(
     max_distance: usize,
 ) -> bool {
     prefetch_circular_distance(current_index, image_count, candidate) <= max_distance
+}
+
+#[cfg(test)]
+mod prefetch_circular_distance_tests {
+    use super::prefetch_circular_distance;
+
+    #[test]
+    fn wraps_correctly() {
+        assert_eq!(prefetch_circular_distance(0, 10, 5), 5);
+        assert_eq!(prefetch_circular_distance(9, 10, 0), 1);
+        assert_eq!(prefetch_circular_distance(0, 10, 9), 1);
+    }
 }
 
 fn first_cached_hdr_still_for_index(

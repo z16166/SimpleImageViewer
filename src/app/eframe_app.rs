@@ -254,7 +254,7 @@ impl eframe::App for ImageViewerApp {
 
         self.directory_tree
             .viewpaint_app
-            .store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+            .store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
     }
 
     fn take_pending_auxiliary_viewport_repaint(

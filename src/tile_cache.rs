@@ -235,6 +235,11 @@ impl TilePixelCache {
                 continue;
             }
             if let Some(pixels) = self.entries.remove(&key) {
+                debug_assert!(
+                    !self.entries.contains_key(&(new_idx, key.1, key.2)),
+                    "permute_images: duplicate target index {new_idx} for tile key {:?}",
+                    key
+                );
                 self.entries.insert((new_idx, key.1, key.2), pixels);
             }
         }

@@ -566,6 +566,7 @@ impl ImageViewerApp {
             directory_tree_strip_preview_rx,
             directory_tree_strip_inflight_release_tx,
             directory_tree_strip_inflight_release_rx,
+            directory_tree_strip_pending_gpu: Vec::new(),
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,

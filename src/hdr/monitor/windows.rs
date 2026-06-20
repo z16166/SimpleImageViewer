@@ -258,7 +258,7 @@ pub(crate) fn finite_positive_luminance(value: f32) -> Option<f32> {
 ///
 /// Returns:
 /// - `Ok(true)` if any DXGI output reports active HDR signaling
-///   (BitsPerColor > 8 AND ColorSpace == G2084_NONE_P2020)
+///   (`ColorSpace == G2084_NONE_P2020`, matching [`dxgi_output_hdr_active`])
 /// - `Ok(false)` if no output advertises HDR — the window's swap chain should NOT
 ///   request `Rgba16Float` because the Windows compositor will route scRGB linear
 ///   values through HDR-style processing on physically SDR panels (visibly washing
@@ -272,7 +272,6 @@ pub(crate) fn finite_positive_luminance(value: f32) -> Option<f32> {
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
 pub fn any_active_output_supports_hdr() -> Result<bool, String> {
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
     };
@@ -296,8 +295,7 @@ pub fn any_active_output_supports_hdr() -> Result<bool, String> {
             };
             if let Ok(output6) = output.cast::<IDXGIOutput6>()
                 && let Ok(desc) = unsafe { output6.GetDesc1() }
-                && desc.BitsPerColor > 8
-                && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                && dxgi_output_hdr_active(desc.ColorSpace)
             {
                 return Ok(true);
             }

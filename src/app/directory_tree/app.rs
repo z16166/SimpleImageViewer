@@ -60,10 +60,10 @@ impl ImageViewerApp {
     fn send_directory_tree_metadata_request(
         metadata_tx: &crossbeam_channel::Sender<FileMetadataRequest>,
         request: FileMetadataRequest,
-    ) {
-        if let Err(err) = metadata_tx.send(request) {
+    ) -> bool {
+        metadata_tx.try_send(request).map_err(|err| {
             log::warn!("[DirectoryTree] file metadata request dropped: {err}");
-        }
+        }).is_ok()
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
@@ -1029,12 +1029,12 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn defer_directory_tree_file_list_sync(&mut self) {
-        const MAX_DEFER_FRAMES: u32 = 120;
         self.directory_tree_sync_defer_frames =
             self.directory_tree_sync_defer_frames.saturating_add(1);
-        if self.directory_tree_sync_defer_frames > MAX_DEFER_FRAMES {
+        if self.directory_tree_sync_defer_frames > super::DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES {
             log::warn!(
-                "[DirectoryTree] Dropping deferred file-list sync after {MAX_DEFER_FRAMES} contended frames"
+                "[DirectoryTree] Dropping deferred file-list sync after {} contended frames",
+                super::DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES
             );
             let warning = t!("directory_tree.sync_defer_dropped").to_string();
             if let Some(mut list) = self.directory_tree.list.try_lock() {
@@ -1158,10 +1158,14 @@ impl ImageViewerApp {
         }
 
         for request in metadata_requests {
-            Self::send_directory_tree_metadata_request(
+            if !Self::send_directory_tree_metadata_request(
                 &self.directory_tree.metadata_request_tx,
                 request,
-            );
+            ) && let Some(mut list) = self.directory_tree.list.try_lock()
+            {
+                list.sync_warning =
+                    Some(t!("directory_tree.metadata_request_busy").to_string());
+            }
         }
 
         if sync_warning_cleared {
@@ -1202,7 +1206,7 @@ impl ImageViewerApp {
         let theme = std::sync::Arc::clone(&self.directory_tree_theme);
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         let app_ptr = self as *mut ImageViewerApp;
-        viewpaint_app.store(app_ptr, Ordering::Relaxed);
+        viewpaint_app.store(app_ptr, Ordering::Release);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1237,7 +1241,13 @@ impl ImageViewerApp {
             }
 
             let scanning = {
-                let ptr = viewpaint_app.load(Ordering::Relaxed);
+                let ptr = viewpaint_app.load(Ordering::Acquire);
+                if !ptr.is_null() {
+                    // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
+                    unsafe {
+                        (*ptr).flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
+                    }
+                }
                 let allow_image_context_menu = !ptr.is_null()
                     && unsafe { (*ptr).active_modal.is_none() && !(*ptr).image_files.is_empty() };
                 let scanning = Self::paint_directory_tree_panel(
@@ -1257,7 +1267,7 @@ impl ImageViewerApp {
                     allow_image_context_menu,
                 );
                 if !ptr.is_null() {
-                    // SAFETY: The pointer is set only for the current UI frame on the UI thread.
+                    // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
                     unsafe {
                         (*ptr).finish_directory_tree_image_list_context_menu(
                             &chrome,
@@ -1268,6 +1278,7 @@ impl ImageViewerApp {
                 }
                 scanning
             };
+            viewpaint_app.store(std::ptr::null_mut(), Ordering::Release);
             if scanning {
                 if let Some(wake) = &root_wake {
                     wake();
@@ -1282,6 +1293,7 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
             return;
         }
+        self.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
 
         let tree = Arc::clone(&self.directory_tree.tree);
         let list = Arc::clone(&self.directory_tree.list);

@@ -1550,6 +1550,7 @@ fn make_test_app() -> ImageViewerApp {
             tx
         },
         directory_tree_strip_inflight_release_rx: crossbeam_channel::never(),
+        directory_tree_strip_pending_gpu: Vec::new(),
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,

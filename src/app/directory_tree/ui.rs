@@ -1490,7 +1490,7 @@ pub(super) fn should_expand_this_pc_for_path(
     let Some(root) = volume_root_for_path(selected) else {
         return false;
     };
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
         let _ = root;
         return true;
@@ -1533,7 +1533,7 @@ fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
         return Some(share_root);
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
         let text = path.to_string_lossy();
         let bytes = text.as_bytes();

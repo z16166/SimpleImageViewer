@@ -27,6 +27,10 @@ use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
 use crate::path_location::is_unc_path;
 
 pub(super) const MAX_DIRECTORY_TREE_NODES: usize = 8192;
+/// Maximum ancestor segments expanded in one reveal; avoids flooding workers on deep paths.
+pub(super) const MAX_DIRECTORY_TREE_REVEAL_DEPTH: usize = 512;
+/// Max frames to defer file-list sync while tree/list mutexes are contended.
+pub(super) const DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES: u32 = 120;
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
@@ -305,7 +309,14 @@ pub(crate) struct DirectoryTreeRuntime {
     pub(crate) metadata_request_tx: Sender<FileMetadataRequest>,
     pub(crate) result_rx: Receiver<DirectoryChildrenResult>,
     pub(crate) metadata_result_rx: Receiver<FileMetadataResult>,
-    /// Set each ROOT `ui()` frame while the detached tree viewport may paint; UI thread only.
+    /// Raw pointer to the live [`super::ImageViewerApp`], set during detached viewport paint.
+    ///
+    /// # Safety contract (UI thread only)
+    /// - Written with [`Ordering::Release`] at the start of each detached viewport paint callback.
+    /// - Read with [`Ordering::Acquire`] only inside that same callback before paint returns.
+    /// - Cleared to null with `Release` when the callback finishes (or on the next ROOT `ui()` frame).
+    /// - The app outlives all viewport callbacks because it is owned by eframe as `Box<dyn App>`.
+    /// - Never dereference from worker threads or from `logic()`; use locked state / snapshots instead.
     pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
 }
 
@@ -406,7 +417,7 @@ impl DirectoryTreeTreeState {
             .iter()
             .map(|drive| drive.path.clone())
             .collect();
-        self.nodes.insert(
+        let _ = self.nodes.insert(
             this_pc_tree_path(),
             DirectoryTreeNode {
                 display_name: places.this_pc_label,
@@ -417,10 +428,11 @@ impl DirectoryTreeTreeState {
                 children: drive_paths.clone(),
                 error: None,
             },
+            MAX_DIRECTORY_TREE_NODES,
         );
 
         for entry in &self.known_folders {
-            self.nodes.insert(
+            let _ = self.nodes.insert(
                 entry.tree_path.clone(),
                 DirectoryTreeNode {
                     display_name: entry.display_name.clone(),
@@ -431,13 +443,16 @@ impl DirectoryTreeTreeState {
                     children: Vec::new(),
                     error: None,
                 },
+                MAX_DIRECTORY_TREE_NODES,
             );
         }
 
         for drive in places.drives {
-            self.nodes.or_insert_with(drive.path.clone(), || {
-                directory_tree_node(drive.display_name, drive.path)
-            });
+            let _ = self.nodes.or_insert_with(
+                drive.path.clone(),
+                MAX_DIRECTORY_TREE_NODES,
+                || directory_tree_node(drive.display_name, drive.path),
+            );
         }
 
         if !places.network_locations.is_empty() {
@@ -447,7 +462,7 @@ impl DirectoryTreeTreeState {
                 .map(|entry| entry.path.clone())
                 .collect();
             self.network_visible = true;
-            self.nodes.insert(
+            let _ = self.nodes.insert(
                 network_tree_path(),
                 DirectoryTreeNode {
                     display_name: self.network_label.clone(),
@@ -458,11 +473,14 @@ impl DirectoryTreeTreeState {
                     children: network_children,
                     error: None,
                 },
+                MAX_DIRECTORY_TREE_NODES,
             );
             for entry in places.network_locations {
-                self.nodes.or_insert_with(entry.path.clone(), || {
-                    directory_tree_node(entry.display_name, entry.path)
-                });
+                let _ = self.nodes.or_insert_with(
+                    entry.path.clone(),
+                    MAX_DIRECTORY_TREE_NODES,
+                    || directory_tree_node(entry.display_name, entry.path),
+                );
             }
         }
     }
@@ -472,7 +490,7 @@ impl DirectoryTreeTreeState {
             return;
         }
         self.network_visible = true;
-        self.nodes.insert(
+        let _ = self.nodes.insert(
             network_tree_path(),
             DirectoryTreeNode {
                 display_name: self.network_label.clone(),
@@ -483,6 +501,7 @@ impl DirectoryTreeTreeState {
                 children: Vec::new(),
                 error: None,
             },
+            MAX_DIRECTORY_TREE_NODES,
         );
     }
 
@@ -562,8 +581,11 @@ impl DirectoryTreeTreeState {
             .filter(|entry| entry.filesystem_path == dir)
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
-        self.nodes
-            .or_insert_with(tree_path, || directory_tree_node(display_name, dir));
+        let _ = self.nodes.or_insert_with(
+            tree_path,
+            MAX_DIRECTORY_TREE_NODES,
+            || directory_tree_node(display_name, dir),
+        );
         self.scroll_folder_to_selected = true;
         self.mark_snapshot_dirty();
     }
@@ -583,7 +605,10 @@ impl DirectoryTreeTreeState {
             return Vec::new();
         }
 
-        let chain = self.reveal_ancestor_chain(&selected);
+        let mut chain = self.reveal_ancestor_chain(&selected);
+        if chain.len() > MAX_DIRECTORY_TREE_REVEAL_DEPTH {
+            chain.truncate(MAX_DIRECTORY_TREE_REVEAL_DEPTH);
+        }
         let mut requests = Vec::new();
 
         if should_expand_this_pc_for_path(&selected, &self.known_folders) {
@@ -606,9 +631,17 @@ impl DirectoryTreeTreeState {
             if is_places_sentinel_path(path) {
                 continue;
             }
-            self.nodes.or_insert_with(path.clone(), || {
-                directory_tree_node(directory_display_name(path), path.clone())
-            });
+            if self
+                .nodes
+                .or_insert_with(
+                    path.clone(),
+                    MAX_DIRECTORY_TREE_NODES,
+                    || directory_tree_node(directory_display_name(path), path.clone()),
+                )
+                .is_err()
+            {
+                continue;
+            }
             let Some(node) = self.nodes.get_mut(path) else {
                 continue;
             };
@@ -625,9 +658,11 @@ impl DirectoryTreeTreeState {
             .filter(|entry| entry.filesystem_path == selected)
             .map(|entry| entry.tree_path.clone())
             .unwrap_or_else(|| selected.clone());
-        self.nodes.or_insert_with(selected_tree_key, || {
-            directory_tree_node(directory_display_name(&selected), selected.clone())
-        });
+        let _ = self.nodes.or_insert_with(
+            selected_tree_key,
+            MAX_DIRECTORY_TREE_NODES,
+            || directory_tree_node(directory_display_name(&selected), selected.clone()),
+        );
         requests
     }
 
@@ -644,9 +679,11 @@ impl DirectoryTreeTreeState {
                 network.children.sort();
             }
         }
-        self.nodes.or_insert_with(share_path.clone(), || {
-            directory_tree_node(unc_share_display_name(&share_path), share_path.clone())
-        });
+        let _ = self.nodes.or_insert_with(
+            share_path.clone(),
+            MAX_DIRECTORY_TREE_NODES,
+            || directory_tree_node(unc_share_display_name(&share_path), share_path.clone()),
+        );
     }
 
     pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
@@ -875,16 +912,17 @@ impl DirectoryTreeTreeState {
                 let mut cap_reached = false;
                 let mut loaded_children = Vec::with_capacity(children.len());
                 for child in &children {
-                    if self.nodes.len() >= MAX_DIRECTORY_TREE_NODES
-                        && !self.nodes.contains_key(child)
-                    {
-                        cap_reached = true;
-                        break;
+                    match self.nodes.or_insert_with(
+                        child.clone(),
+                        MAX_DIRECTORY_TREE_NODES,
+                        || directory_tree_node(directory_display_name(child), child.clone()),
+                    ) {
+                        Ok(_) => loaded_children.push(child.clone()),
+                        Err(node_store::InsertNodeError::CapReached) => {
+                            cap_reached = true;
+                            break;
+                        }
                     }
-                    self.nodes.or_insert_with(child.clone(), || {
-                        directory_tree_node(directory_display_name(child), child.clone())
-                    });
-                    loaded_children.push(child.clone());
                 }
                 let Some(node) = self.nodes.get_mut(&tree_path) else {
                     return;

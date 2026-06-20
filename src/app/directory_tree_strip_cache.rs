@@ -43,6 +43,17 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub stage: PreviewStage,
 }
 
+/// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
+pub(crate) struct DirectoryTreeStripPendingGpuUpload {
+    pub index: usize,
+    pub decoded: DecodedImage,
+    pub stage: PreviewStage,
+    pub logical: Option<(u32, u32)>,
+}
+
+/// Limit GPU texture uploads per paint pass (checklist #3).
+pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 4;
+
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
     preview_max_side: HashMap<usize, u32>,

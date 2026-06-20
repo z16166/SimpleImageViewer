@@ -16,13 +16,15 @@
 
 // Worker threads and filesystem reads for the directory tree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 use super::{
@@ -32,6 +34,10 @@ use super::{
 pub(super) const METADATA_BATCH_SIZE: usize = 200;
 pub(super) const DIRECTORY_TREE_READ_DIR_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_READ_DIR_HELPERS_INFLIGHT: usize = 4;
+
+/// Paths with a helper thread still inside OS `read_dir` (including timed-out orphans).
+static READ_DIR_INFLIGHT_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub(super) fn coalesce_children_requests(
     request: DirectoryChildrenRequest,
@@ -148,17 +154,28 @@ struct InflightGuard {
     orphan_flag: Arc<AtomicBool>,
 }
 
+struct ReadDirPathGuard(PathBuf);
+
+impl Drop for ReadDirPathGuard {
+    fn drop(&mut self) {
+        READ_DIR_INFLIGHT_PATHS.lock().remove(&self.0);
+    }
+}
+
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        if !self.orphan_flag.load(AtomicOrdering::Relaxed) {
-            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
+        if !self.orphan_flag.load(AtomicOrdering::Acquire) {
+            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
         }
     }
 }
 
 fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, String> {
+    if READ_DIR_INFLIGHT_PATHS.lock().contains(path) {
+        return Err(t!("directory_tree.read_busy").to_string());
+    }
     loop {
-        let current = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
+        let current = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Acquire);
         if current >= MAX_READ_DIR_HELPERS_INFLIGHT {
             log::warn!(
                 "[DirectoryTree] read_dir helper cap ({MAX_READ_DIR_HELPERS_INFLIGHT}) reached; skipping {}",
@@ -170,8 +187,8 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
             .compare_exchange(
                 current,
                 current + 1,
-                AtomicOrdering::Relaxed,
-                AtomicOrdering::Relaxed,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
             )
             .is_ok()
         {
@@ -181,16 +198,16 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
 
     let (tx, rx) = crossbeam_channel::bounded(1);
     let path_buf = path.to_path_buf();
-    let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
+    let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Acquire);
     // Orphan threads cannot be cancelled on all platforms; the flag only recycles the
     // inflight cap so new reads can proceed while a timed-out helper keeps running.
-    // Design tradeoff: up to MAX_READ_DIR_HELPERS_INFLIGHT orphan threads may linger on
-    // slow/offline paths until the OS `read_dir` call returns.
+    // `READ_DIR_INFLIGHT_PATHS` blocks duplicate reads for the same path until the helper exits.
     let orphan_flag = Arc::new(AtomicBool::new(false));
     let orphan_for_thread = Arc::clone(&orphan_flag);
     if std::thread::Builder::new()
         .name(format!("siv-dir-tree-read-dir-{helper_index}"))
         .spawn(move || {
+            let _path_guard = ReadDirPathGuard(path_buf.clone());
             let _guard = InflightGuard {
                 orphan_flag: orphan_for_thread,
             };
@@ -198,7 +215,7 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
         })
         .is_err()
     {
-        READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
+        READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
         return Err(t!(
             "directory_tree.read_failed",
             err = t!("directory_tree.thread_spawn_failed")
@@ -208,8 +225,8 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     match rx.recv_timeout(DIRECTORY_TREE_READ_DIR_TIMEOUT) {
         Ok(result) => result,
         Err(_) => {
-            orphan_flag.store(true, AtomicOrdering::Relaxed);
-            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
+            orphan_flag.store(true, AtomicOrdering::Release);
+            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
             log::warn!(
                 "[DirectoryTree] read_dir timed out after {}s: {}",
                 DIRECTORY_TREE_READ_DIR_TIMEOUT.as_secs(),
@@ -257,7 +274,7 @@ fn read_file_modified_unix(path: &Path) -> Option<i64> {
 }
 
 #[cfg(target_os = "windows")]
-pub(super) fn strip_worker_com_initialized() -> bool {
+pub(super) fn ensure_strip_worker_com_initialized() -> bool {
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
     use windows::core::HRESULT;
 

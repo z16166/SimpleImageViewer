@@ -383,7 +383,13 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         let stride = w * 4;
 
         // Ensure COM is initialized on the current worker thread
-        let _com = ComGuard::new();
+        let _com = match ComGuard::new() {
+            Ok(guard) => guard,
+            Err(err) => {
+                log::error!("[WIC] COM init failed in extract_tile: {err:?}");
+                return std::sync::Arc::new(pixels);
+            }
+        };
 
         unsafe {
             if let Ok(converter) = self.factory.CreateFormatConverter() {
@@ -404,7 +410,11 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                         Width: w as i32,
                         Height: h as i32,
                     };
-                    let _ = converter.CopyPixels(&rect, stride, &mut pixels);
+                    if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
+                        log::warn!(
+                            "[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}"
+                        );
+                    }
                 }
             }
         }

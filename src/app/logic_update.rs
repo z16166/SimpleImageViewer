@@ -16,9 +16,9 @@ impl ImageViewerApp {
 
     pub(super) fn should_run_logic_shared(&mut self) -> bool {
         let now = Instant::now();
-        let run = self
-            .last_logic_shared_at
-            .is_none_or(|t| now.duration_since(t) >= Self::LOGIC_SHARED_COALESCE);
+        let run = self.last_logic_shared_at.is_none_or(|t| {
+            now.saturating_duration_since(t) >= Self::LOGIC_SHARED_COALESCE
+        });
         if run {
             self.last_logic_shared_at = Some(now);
         }
@@ -337,8 +337,13 @@ impl ImageViewerApp {
         // systems this is what determines which monitor the next session
         // spawns onto, and therefore whether `Rgba16Float` or `Bgra8Unorm` is
         // selected for the swap chain.
-        if let Some((placement, is_fullscreen)) =
-            ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+        let minimized_or_hidden = self.hidden_to_tray
+            || ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+                viewport.input.viewport().minimized.unwrap_or(false)
+            });
+        if !minimized_or_hidden
+            && let Some((placement, is_fullscreen)) =
+                ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
                 let viewport = viewport.input.viewport();
                 let outer_rect = viewport.outer_rect?;
                 let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();

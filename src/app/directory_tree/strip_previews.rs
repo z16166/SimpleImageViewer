@@ -22,7 +22,8 @@ use eframe::egui;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPreviewJobResult, decoded_rgba_size_valid,
+    DirectoryTreeStripPendingGpuUpload, DirectoryTreeStripPreviewJobResult,
+    MAX_STRIP_GPU_UPLOADS_PER_PAINT, decoded_rgba_size_valid,
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
@@ -31,7 +32,7 @@ use crate::loader::{
 };
 
 #[cfg(target_os = "windows")]
-use super::workers::strip_worker_com_initialized;
+use super::workers::ensure_strip_worker_com_initialized;
 use super::{
     DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS, DirectoryTreeListPreviewLayout,
     MAX_COLD_STRIP_GENERATES_PER_FRAME, MAX_STRIP_GENERATE_INFLIGHT,
@@ -45,6 +46,46 @@ fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, in
 }
 
 impl ImageViewerApp {
+    fn queue_directory_tree_strip_gpu_upload(
+        &mut self,
+        index: usize,
+        decoded: DecodedImage,
+        stage: PreviewStage,
+        logical: Option<(u32, u32)>,
+    ) {
+        if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+            return;
+        }
+        self.directory_tree_strip_pending_gpu
+            .push(DirectoryTreeStripPendingGpuUpload {
+                index,
+                decoded,
+                stage,
+                logical,
+            });
+    }
+
+    pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
+        if self.directory_tree_strip_pending_gpu.is_empty() {
+            return;
+        }
+        let take = MAX_STRIP_GPU_UPLOADS_PER_PAINT.min(self.directory_tree_strip_pending_gpu.len());
+        let batch: Vec<_> = self.directory_tree_strip_pending_gpu.drain(..take).collect();
+        for item in batch {
+            self.cache_directory_tree_strip_thumbnail(
+                item.index,
+                &item.decoded,
+                item.stage,
+                item.logical,
+                ctx,
+            );
+        }
+        if !self.directory_tree_strip_pending_gpu.is_empty() {
+            ctx.request_repaint();
+            ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+        }
+    }
+
     pub(crate) fn cache_directory_tree_strip_thumbnail(
         &mut self,
         index: usize,
@@ -302,7 +343,7 @@ impl ImageViewerApp {
                 path.display()
             );
             #[cfg(target_os = "windows")]
-            let com_ok = strip_worker_com_initialized();
+            let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
 
@@ -348,7 +389,7 @@ impl ImageViewerApp {
                 logical,
                 stage: PreviewStage::Initial,
             };
-            if let Err(err) = tx.send(job) {
+            if let Err(err) = tx.try_send(job) {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
@@ -414,12 +455,11 @@ impl ImageViewerApp {
             return false;
         }
 
-        self.cache_directory_tree_strip_thumbnail(
+        self.queue_directory_tree_strip_gpu_upload(
             new_index,
-            &result.decoded,
+            result.decoded,
             result.stage,
             Some(result.logical),
-            ctx,
         );
         if !self
             .directory_tree_strip_cache
@@ -506,12 +546,11 @@ impl ImageViewerApp {
                     .remove(&result.index);
                 continue;
             }
-            self.cache_directory_tree_strip_thumbnail(
+            self.queue_directory_tree_strip_gpu_upload(
                 result.index,
-                &result.decoded,
+                result.decoded,
                 result.stage,
                 Some(result.logical),
-                ctx,
             );
             if !self
                 .directory_tree_strip_cache
@@ -564,7 +603,7 @@ impl ImageViewerApp {
                 max_side
             );
             #[cfg(target_os = "windows")]
-            let com_ok = strip_worker_com_initialized();
+            let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
             if com_ok {
@@ -598,7 +637,7 @@ impl ImageViewerApp {
                 logical,
                 stage: PreviewStage::Refined,
             };
-            if let Err(err) = tx.send(job) {
+            if let Err(err) = tx.try_send(job) {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
                 send_strip_inflight_release(&release_tx, index);
             }
@@ -703,12 +742,11 @@ impl ImageViewerApp {
             let Some(decoded) = self.deferred_sdr_uploads.get(&index).cloned() else {
                 continue;
             };
-            self.cache_directory_tree_strip_thumbnail(
+            self.queue_directory_tree_strip_gpu_upload(
                 index,
-                &decoded,
+                decoded,
                 PreviewStage::Initial,
                 self.directory_tree_strip_logical_size(index),
-                ctx,
             );
         }
 
