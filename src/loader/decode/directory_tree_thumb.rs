@@ -17,9 +17,8 @@
 //! Lightweight directory-tree list thumbnails opened by path (independent of main preload).
 //!
 //! **Platform strip decode:** Windows and macOS use WIC / ImageIO fast paths for many
-//! registered extensions and RAW fallbacks. Linux relies on libheif/libavif/libraw and the
-//! generic `image` crate — list previews for some formats are slower or may skip embedded
-//! previews; main-window viewing uses the full loader stack unchanged.
+//! registered extensions and RAW fallbacks. Linux uses the same LibRaw embedded preview path,
+//! then half-size LibRaw develop when no embedded thumbnail exists.
 
 use std::path::{Path, PathBuf};
 
@@ -267,38 +266,61 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageD
                     height
                 );
             }
+            platform_still_image_fallback(path, Some(processor))
         }
         Err(err) => {
             log::debug!(
                 "[DirectoryTree] LibRaw open failed for {:?}: {err}; trying platform fallback",
                 path.file_name().unwrap_or_default()
             );
+            platform_still_image_fallback(path, None)
         }
     }
-
-    platform_still_image_fallback(path)
 }
 
-fn platform_still_image_fallback(path: &PathBuf) -> Result<ImageData, String> {
+fn platform_still_image_fallback(
+    path: &PathBuf,
+    opened_processor: Option<crate::raw_processor::RawProcessor>,
+) -> Result<ImageData, String> {
     #[cfg(target_os = "windows")]
     {
+        let _ = opened_processor;
         return crate::wic::load_via_wic(path, false, None)
             .map(|img| apply_exif_orientation_to_image_data(path.as_path(), img));
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = opened_processor;
         return crate::macos_image_io::load_via_image_io(path, false, None)
             .map(|img| apply_exif_orientation_to_image_data(path.as_path(), img));
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        if let Ok((mut processor, _, _, _)) = open_raw_processor_with_preview(path) {
-            if let Ok(thumb) = processor.unpack_thumb() {
-                return Ok(make_image_data(thumb));
-            }
-        }
-        Err("no platform still-image fallback for RAW thumbnail".to_string())
+        linux_raw_strip_fallback(path, opened_processor)
     }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn linux_raw_strip_fallback(
+    path: &PathBuf,
+    opened_processor: Option<crate::raw_processor::RawProcessor>,
+) -> Result<ImageData, String> {
+    use super::raw::preview::develop_half_size_sdr_strip_preview;
+
+    let mut processor = match opened_processor {
+        Some(processor) => processor,
+        None => {
+            let mut processor = crate::raw_processor::RawProcessor::new()
+                .ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+            processor
+                .open(path)
+                .map_err(|err| format!("LibRaw failed and no platform fallback available: {err}"))?;
+            processor
+        }
+    };
+    develop_half_size_sdr_strip_preview(&mut processor, path.as_path())
+        .map(make_image_data)
+        .ok_or_else(|| "no LibRaw strip preview available for RAW".to_string())
 }
 
 fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {

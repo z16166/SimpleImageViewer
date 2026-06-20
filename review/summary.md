@@ -158,7 +158,7 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 | **ISSUE-12** metadata 超大 coalesce 批 | **已修复**：coalesce 后 `split_metadata_request()` 按 `METADATA_BATCH_SIZE` 分片。 |
 
-| **ISSUE-15** Linux strip 无 WIC/ImageIO fast-path | **已文档化**：`directory_tree_thumb.rs` 模块注释 + README 中英文说明平台差异；主窗口加载路径不变。 |
+| **ISSUE-15** Linux strip 无 WIC/ImageIO fast-path | **已修复**：RAW 无 embedded preview 时 Linux 走 LibRaw half-size develop（`raw/preview.rs`）；主窗口加载路径不变。 |
 
 | **ISSUE-16** macOS/Linux Detached 未测 | **已关闭（手工验证）**：Linux/macOS Embedded + Detached 正常；另修 egui-wgpu multi-viewport staging panic、Embedded 导航 splitter 拖拽。 |
 

@@ -113,3 +113,32 @@ pub(crate) fn extract_embedded_preview(
     }
     Some(preview)
 }
+
+/// Fast SDR preview for directory-tree strip when embedded thumbnail is missing.
+///
+/// Linux has no WIC/ImageIO fallback; half-size LibRaw develop matches the spirit of the
+/// platform still-image path on Windows/macOS while staying bounded for strip scrolling.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub(crate) fn develop_half_size_sdr_strip_preview(
+    processor: &mut RawProcessor,
+    path: &std::path::Path,
+) -> Option<DecodedImage> {
+    processor.set_half_size(true);
+    let dynamic = processor.develop().ok()?;
+    let rgba = dynamic.into_rgba8();
+    let decoded = DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
+    if decoded.width == 0 || decoded.height == 0 {
+        log::warn!(
+            "[DirectoryTree] LibRaw half-size develop returned zero dimensions for {:?}",
+            path.file_name().unwrap_or_default()
+        );
+        return None;
+    }
+    log::debug!(
+        "[DirectoryTree] LibRaw half-size develop for {:?} ({}x{})",
+        path.file_name().unwrap_or_default(),
+        decoded.width,
+        decoded.height
+    );
+    Some(decoded)
+}

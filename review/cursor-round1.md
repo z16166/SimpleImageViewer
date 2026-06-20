@@ -264,7 +264,7 @@
 |----|------|
 | locale-aware 文件名排序 | 保持 Unicode 码点序（`sort.rs` 注释）；中文目录可能与资源管理器不一致 |
 | Network lazy UNC | 启动不枚举 `FOLDERID_NetworkFolder`；UNC 动态挂载 |
-| Linux strip RAW fast-path | 无 WIC/ImageIO；主窗口加载路径不受影响 |
+| Linux strip RAW fast-path | LibRaw half-size develop when no embedded preview |
 | read_dir orphan 线程 | 30s 超时后线程不可取消；inflight 回收已文档化 |
 
 ---
@@ -325,6 +325,6 @@
 | strip reorder 增量 invalidation | 已修复：`permute_directory_tree_strip_after_image_list_reorder()` |
 | eframe immediate viewport logic | **文档化**：应用仅用 `show_viewport_deferred`；见 `FORK-MERGE.md` |
 | Places/COM 部分失败降级 | 第一轮已修复（空 Places） |
-| Linux RAW strip fast-path | 未在本轮 scope（仍待单独迭代） |
+| Linux RAW strip fast-path | **已修复**：无 embedded preview 时用 LibRaw half-size develop（`develop_half_size_sdr_strip_preview`） |
 
 ---
