@@ -1196,6 +1196,21 @@ mod background_image_generation_tests {
             34, 100, 19, None, 34, 18
         ));
     }
+
+    #[test]
+    fn current_index_accepts_inflight_loader_preview_after_prefetch_promotion() {
+        // Background preload tagged HQ preview with load_gen=5; user navigated to the image
+        // (current_gen=7) before the preview arrived. prefetch_prev_generation must carry load_gen.
+        assert!(accepts_background_image_generation(5, 12, 7, Some(5), 5, 5));
+        assert!(!accepts_background_image_generation(
+            5,
+            12,
+            7,
+            Some(6),
+            5,
+            5
+        ));
+    }
 }
 
 fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {

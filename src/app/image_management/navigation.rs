@@ -404,20 +404,21 @@ impl ImageViewerApp {
         // Check if we have a prefetched TileManager ready to use!
         if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
             // We successfully hit the cache!
-            // Save the prefetch-phase generation before incrementing. Any in-flight HQ preview
-            // tasks (HDR or SDR) were spawned with this old generation. We record it so that
-            // handle_preview_update() can accept their results instead of discarding them as
-            // stale — avoiding a from-scratch re-render of huge EXR/JXL files.
+            // HQ preview tasks for disk-backed HDR tiles (EXR/JXL) are tagged with the load
+            // generation stamped on the prefetched TileManager at install time, not the app
+            // navigation generation. Record that load generation so handle_preview_update()
+            // accepts in-flight results instead of discarding them and re-decoding.
+            let load_gen = tm.generation;
             let prefetch_gen = self.generation;
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
-            self.prefetch_prev_generation = Some(prefetch_gen);
+            self.prefetch_prev_generation = Some(load_gen);
 
             tm.generation = self.generation;
             self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
             // Trigger deferred refinement for RAW sources (LibRaw demosaic).
-            // HDR tiled sources: in-flight prefetch tasks carry `prefetch_gen` and will be
+            // HDR tiled sources: in-flight loader HQ previews carry `load_gen` and will be
             // accepted by handle_preview_update via prefetch_prev_generation — no re-spawn needed.
             tm.get_source()
                 .request_refinement(self.current_index, self.generation);
@@ -437,8 +438,9 @@ impl ImageViewerApp {
                     .unwrap_or_default()
             );
             log::debug!(
-                "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
+                "[App] Cache Hit: Restored prefetched TileManager for index {} (load_gen={} nav_gen={} -> current_gen={})",
                 self.current_index,
+                load_gen,
                 prefetch_gen,
                 self.generation
             );
