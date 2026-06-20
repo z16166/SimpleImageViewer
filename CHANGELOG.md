@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.7.0] - 2026-06-19
+## [2.7.0] - 2026-06-20
 
 ### Added
 - **Directory tree navigation**: Browse folders in an embedded side panel or a separate window, with thumbnail previews in the image list beside the tree.

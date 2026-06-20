@@ -224,6 +224,7 @@ impl ImageViewerApp {
                 "[FolderPicker] Dialog exceeded {}s; resetting in-flight state",
                 FOLDER_PICKER_TIMEOUT.as_secs()
             );
+            // 0 is the sentinel (inactive) generation; stale worker results with gen > 0 are rejected.
             self.folder_picker.active_generation = 0;
             self.folder_picker.in_flight = false;
             self.folder_picker.started_at = None;

@@ -463,8 +463,16 @@ impl DirectoryTreeTreeState {
             "[DirectoryTree] Node cap ({MAX_DIRECTORY_TREE_NODES}) reached at {}",
             context_path.display()
         );
+        let cap_error = t!("directory_tree.nodes_cap_reached").to_string();
         if let Some(node) = self.nodes.get_mut(context_path) {
-            node.error = Some(t!("directory_tree.nodes_cap_reached").to_string());
+            node.error = Some(cap_error);
+            self.mark_snapshot_dirty();
+            return;
+        }
+        if let Some(parent) = context_path.parent()
+            && let Some(node) = self.nodes.get_mut(parent)
+        {
+            node.error = Some(cap_error);
             self.mark_snapshot_dirty();
         }
     }

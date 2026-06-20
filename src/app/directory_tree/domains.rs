@@ -251,8 +251,9 @@ fn share_image_rows(
 ) -> Arc<[DirectoryTreeFileRow]> {
     let prev_len = previous.len();
     if prev_len == rows.len() {
-        let ends_match = prev_len <= 2
-            || (previous.first() == rows.first() && previous.last() == rows.last());
+        // For 0..=2 elements, first/last check is equivalent to full equality.
+        let ends_match =
+            prev_len <= 2 || (previous.first() == rows.first() && previous.last() == rows.last());
         if ends_match && previous.as_ref() == rows {
             return Arc::clone(previous);
         }

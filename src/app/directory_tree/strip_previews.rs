@@ -375,7 +375,10 @@ impl ImageViewerApp {
             return;
         }
         let path = self.image_files[index].clone();
-        let list_generation = self.directory_tree.list.lock().image_list_generation;
+        let Some(list) = self.directory_tree.list.try_lock() else {
+            return;
+        };
+        let list_generation = list.image_list_generation;
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -530,18 +533,25 @@ impl ImageViewerApp {
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
             self.directory_tree_strip_generate_inflight
                 .remove(&result.index);
-            let active_list_generation = self
-                .directory_tree
-                .list
-                .try_lock()
-                .map(|list| list.image_list_generation)
-                .unwrap_or_else(|| {
-                    self.directory_tree
+            // Lock available: exact generation match rejects any reorder since the job started.
+            // Lock contended: snapshot may lag the live list; accept result.gen >= snapshot.gen
+            // so we do not discard valid work, and rely on path/index relocate for edge cases.
+            #[allow(unused_variables)]
+            let (stale, active_list_generation) = match self.directory_tree.list.try_lock() {
+                Some(list) => (
+                    result.image_list_generation != list.image_list_generation,
+                    list.image_list_generation,
+                ),
+                None => {
+                    let snapshot_gen = self
+                        .directory_tree
                         .list_snapshot
                         .load()
-                        .image_list_generation
-                });
-            if result.image_list_generation != active_list_generation {
+                        .image_list_generation;
+                    (result.image_list_generation < snapshot_gen, snapshot_gen)
+                }
+            };
+            if stale {
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
                     "[PreloadDebug][DirTree] strip result stale gen idx={} job_gen={} active_gen={}",
@@ -641,7 +651,10 @@ impl ImageViewerApp {
         }
 
         let path = self.image_files.get(index).cloned().unwrap_or_default();
-        let list_generation = self.directory_tree.list.lock().image_list_generation;
+        let Some(list) = self.directory_tree.list.try_lock() else {
+            return;
+        };
+        let list_generation = list.image_list_generation;
         self.directory_tree_strip_tiled_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
@@ -652,12 +665,6 @@ impl ImageViewerApp {
             .directory_tree_list_preview_size
             .strip_max_side();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
-            // SAFETY: panic in generate_full_image_preview is caught below; the rayon worker
-            // thread stays healthy without spawning a nested OS thread.
-            let preview_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                source.generate_full_image_preview(max_side, max_side)
-            }));
-            let mut decoded = DecodedImage::new(0, 0, Vec::new());
             crate::preload_debug!(
                 "[PreloadDebug][Strip] worker start idx={} logical={}x{} max_side={}",
                 index,
@@ -669,17 +676,26 @@ impl ImageViewerApp {
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
-            if com_ok {
+            // SAFETY: panic in generate_full_image_preview is caught below; the rayon worker
+            // thread stays healthy without spawning a nested OS thread.
+            let preview_result = if com_ok {
+                Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || source.generate_full_image_preview(max_side, max_side),
+                )))
+            } else {
+                log::warn!(
+                    "[DirectoryTree] COM init failed for strip preview worker index {index}"
+                );
+                None
+            };
+            let mut decoded = DecodedImage::new(0, 0, Vec::new());
+            if let Some(preview_result) = preview_result {
                 match preview_result {
                     Ok((pw, ph, pixels)) if pw > 0 && ph > 0 => {
                         decoded = DecodedImage::new(pw, ph, pixels);
                     }
                     Ok(_) | Err(_) => {}
                 }
-            } else {
-                log::warn!(
-                    "[DirectoryTree] COM init failed for strip preview worker index {index}"
-                );
             }
             crate::preload_debug!(
                 "[PreloadDebug][Strip] worker done idx={} out={}x{} logical={}x{} aspect_ok={}",
@@ -882,17 +898,26 @@ impl ImageViewerApp {
         set.clear();
         for index in previous {
             if index < old_to_new.len() {
-                set.insert(old_to_new[index]);
+                let new_idx = old_to_new[index];
+                if new_idx != usize::MAX {
+                    set.insert(new_idx);
+                }
             }
         }
     }
 
     fn permute_directory_tree_strip_pending_gpu(&mut self, old_to_new: &[usize]) {
-        for pending in &mut self.directory_tree_strip_pending_gpu {
-            if pending.index < old_to_new.len() {
-                pending.index = old_to_new[pending.index];
+        self.directory_tree_strip_pending_gpu.retain_mut(|pending| {
+            if pending.index >= old_to_new.len() {
+                return false;
             }
-        }
+            let new_idx = old_to_new[pending.index];
+            if new_idx == usize::MAX {
+                return false;
+            }
+            pending.index = new_idx;
+            true
+        });
     }
 
     pub(crate) fn permute_directory_tree_strip_after_image_list_reorder(
@@ -904,7 +929,8 @@ impl ImageViewerApp {
         Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
         self.permute_directory_tree_strip_pending_gpu(old_to_new);
-        if let Some(mut list) = self.directory_tree.list.try_lock() {
+        {
+            let mut list = self.directory_tree.list.lock();
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.mark_snapshot_dirty();
         }
@@ -987,9 +1013,16 @@ impl ImageViewerApp {
         }
 
         log::debug!("[DirectoryTree] Partial strip cache reorder retaining mapped entries");
-        self.directory_tree_strip_cache
-            .partial_remap(&old_to_new);
-        if let Some(mut list) = self.directory_tree.list.try_lock() {
+        self.directory_tree_strip_cache.partial_remap(&old_to_new);
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_generate_inflight,
+            &old_to_new,
+        );
+        Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
+        Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
+        self.permute_directory_tree_strip_pending_gpu(&old_to_new);
+        {
+            let mut list = self.directory_tree.list.lock();
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.mark_snapshot_dirty();
         }
@@ -1007,7 +1040,9 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
-        if let Some(mut list) = self.directory_tree.list.try_lock() {
+        self.directory_tree_strip_pending_gpu.clear();
+        {
+            let mut list = self.directory_tree.list.lock();
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.mark_snapshot_dirty();
         }
