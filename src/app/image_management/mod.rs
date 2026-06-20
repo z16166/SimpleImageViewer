@@ -981,6 +981,16 @@ pub(super) fn accepts_background_image_generation_with_loader(
     )
 }
 
+/// HQ loader previews are tagged with the load generation; a prefetched [`TileManager`] promoted
+/// via `prefetch_tile_hit` bumps `tm.generation` once while the in-flight preview still carries
+/// the install generation.
+pub(super) fn preview_generation_matches_prefetched_tile(
+    preview_generation: u64,
+    tile_generation: u64,
+) -> bool {
+    preview_generation == tile_generation || preview_generation.wrapping_add(1) == tile_generation
+}
+
 /// High-quality RAW navigation requires an HDR plane entry. Prefetch eviction may drop HDR while
 /// leaving a bootstrap SDR texture or deferred CPU pixels; those still satisfy `has_loaded_asset`
 /// but cannot run GPU demosaic or EV until the HDR cache is restored.
@@ -1210,6 +1220,25 @@ mod background_image_generation_tests {
             5,
             5
         ));
+    }
+
+    #[test]
+    fn neighbor_prefetch_preview_accepted_within_generation_tolerance() {
+        // idx=6 HQ preview (load_gen=10) arrives while viewing idx=5 (gen=12).
+        assert!(accepts_background_image_generation(5, 12, 12, None, 6, 10));
+    }
+}
+
+#[cfg(test)]
+mod prefetched_preview_generation_tests {
+    use super::preview_generation_matches_prefetched_tile;
+
+    #[test]
+    fn matches_load_generation_or_one_promotion_bump() {
+        assert!(preview_generation_matches_prefetched_tile(10, 10));
+        assert!(preview_generation_matches_prefetched_tile(10, 11));
+        assert!(!preview_generation_matches_prefetched_tile(10, 12));
+        assert!(!preview_generation_matches_prefetched_tile(10, 9));
     }
 }
 
