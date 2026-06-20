@@ -147,10 +147,14 @@ impl ImageViewerApp {
             }
         }
         let view = view.load();
+        let list_keyboard_active = list
+            .try_lock()
+            .map(|guard| guard.image_list_keyboard_active)
+            .unwrap_or(false);
         let Some(mut chrome_guard) = chrome.try_lock() else {
             return false;
         };
-        chrome_guard.begin_paint_frame(&view);
+        chrome_guard.begin_paint_frame(&view, list_keyboard_active);
         draw_directory_tree_window(
             ui,
             &view,
@@ -921,20 +925,47 @@ impl ImageViewerApp {
         &mut self,
         ctx: &egui::Context,
     ) {
-        if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_detached() {
+        if !self.directory_tree_viewport_active() {
             return;
         }
-        if Self::root_viewport_has_os_focus(ctx) && !Self::directory_tree_viewport_has_os_focus(ctx)
+        if self.directory_tree_nav_is_detached() {
+            if Self::root_viewport_has_os_focus(ctx)
+                && !Self::directory_tree_viewport_has_os_focus(ctx)
+            {
+                self.release_directory_tree_list_keyboard_capture();
+            }
+            return;
+        }
+        if self.directory_tree_nav_is_embedded()
+            && Self::root_viewport_has_os_focus(ctx)
+            && self.pointer_clicked_main_canvas(ctx)
         {
             self.release_directory_tree_list_keyboard_capture();
         }
     }
 
+    fn pointer_clicked_main_canvas(&self, ctx: &egui::Context) -> bool {
+        let Some(rect) = self.last_canvas_rect else {
+            return false;
+        };
+        ctx.input(|input| {
+            input.pointer.button_clicked(egui::PointerButton::Primary)
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| rect.contains(pos))
+        })
+    }
+
     pub(crate) fn release_directory_tree_list_keyboard_capture(&mut self) {
-        if self.directory_tree_settings_active() {
-            if let Some(mut list) = self.directory_tree.list.try_lock() {
-                list.image_list_keyboard_active = false;
-            }
+        if !self.directory_tree_settings_active() {
+            return;
+        }
+        if let Some(mut list) = self.directory_tree.list.try_lock() {
+            list.image_list_keyboard_active = false;
+        }
+        if let Some(mut chrome) = self.directory_tree.chrome.try_lock() {
+            chrome.image_list_keyboard_active = false;
         }
     }
 

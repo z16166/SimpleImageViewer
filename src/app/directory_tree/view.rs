@@ -201,11 +201,16 @@ impl DirectoryTreeUiChrome {
         self.image_list_selected_row_rect = None;
     }
 
-    pub(super) fn begin_paint_frame(&mut self, view: &DirectoryTreeView) {
+    pub(super) fn begin_paint_frame(
+        &mut self,
+        view: &DirectoryTreeView,
+        list_keyboard_active: bool,
+    ) {
         self.left_panel_width = view.left_panel_width();
         self.scroll_folder_to_selected = view.scroll_folder_to_selected();
         self.current_index = view.current_index();
         self.scroll_image_list_to_current = view.scroll_image_list_to_current();
+        self.image_list_keyboard_active = list_keyboard_active;
     }
 
     pub(super) fn apply_to_domains(
