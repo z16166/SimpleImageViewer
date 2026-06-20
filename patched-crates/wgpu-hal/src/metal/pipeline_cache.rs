@@ -94,10 +94,10 @@ pub unsafe fn load_binary_archive(
 
         if let Err(e) = std::fs::write(&temp_path, data) {
             log::warn!("Failed to write temporary pipeline cache file: {:?}", e);
-            return Err(make_custom_error(2));
+            return Err(unsafe { make_custom_error(2) });
         }
 
-        let url = path_to_nsurl(&temp_path).ok_or_else(|| make_custom_error(3))?;
+        let url = path_to_nsurl(&temp_path).ok_or_else(|| unsafe { make_custom_error(3) })?;
         descriptor.setUrl(Some(&url));
 
         device.newBinaryArchiveWithDescriptor_error(&descriptor)
