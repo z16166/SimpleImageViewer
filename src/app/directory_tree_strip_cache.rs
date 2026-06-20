@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
@@ -28,10 +28,7 @@ use crate::loader::{
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
 
-/// Maximum strip preview textures retained in memory (ring-distance eviction).
-///
-/// Eviction scans all cached indices when over cap (`evict_if_needed` is O(n) per insert).
-/// The cap stays at 128 by design so this scan is cheap; raise only with an LRU structure.
+/// Maximum strip preview textures retained in memory (LRU eviction).
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
@@ -59,6 +56,7 @@ pub(crate) struct DirectoryTreeStripCache {
     preview_max_side: HashMap<usize, u32>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
+    lru_order: VecDeque<usize>,
     gpu_revision: u64,
 }
 
@@ -69,6 +67,7 @@ impl Default for DirectoryTreeStripCache {
             preview_max_side: HashMap::new(),
             preview_stage: HashMap::new(),
             logical_sizes: HashMap::new(),
+            lru_order: VecDeque::new(),
             gpu_revision: 0,
         }
     }
@@ -77,6 +76,23 @@ impl Default for DirectoryTreeStripCache {
 impl DirectoryTreeStripCache {
     pub(crate) fn contains(&self, index: usize) -> bool {
         self.textures.contains_key(&index)
+    }
+
+    fn touch_lru(&mut self, index: usize) {
+        if let Some(pos) = self.lru_order.iter().position(|&cached| cached == index) {
+            self.lru_order.remove(pos);
+        }
+        self.lru_order.push_back(index);
+    }
+
+    fn remove_index(&mut self, index: usize) {
+        self.textures.remove(&index);
+        self.preview_max_side.remove(&index);
+        self.preview_stage.remove(&index);
+        self.logical_sizes.remove(&index);
+        if let Some(pos) = self.lru_order.iter().position(|&cached| cached == index) {
+            self.lru_order.remove(pos);
+        }
     }
 
     pub(crate) fn textures(&self) -> &HashMap<usize, egui::TextureHandle> {
@@ -110,10 +126,7 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn invalidate_if_invalid(&mut self, index: usize, logical: (u32, u32)) -> bool {
         if self.contains(index) && !self.is_valid_for_logical(index, logical) {
-            self.textures.remove(&index);
-            self.preview_max_side.remove(&index);
-            self.preview_stage.remove(&index);
-            self.logical_sizes.remove(&index);
+            self.remove_index(index);
             return true;
         }
         false
@@ -130,8 +143,8 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         preview_max_side: u32,
         logical: Option<(u32, u32)>,
-        current_index: usize,
-        total_count: usize,
+        _current_index: usize,
+        _total_count: usize,
     ) {
         if let Some((logical_w, logical_h)) = logical {
             let size = texture.size();
@@ -144,8 +157,9 @@ impl DirectoryTreeStripCache {
         self.textures.insert(index, texture);
         self.preview_max_side.insert(index, preview_max_side);
         self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
         self.bump_gpu_revision();
-        self.evict_if_needed(current_index, total_count);
+        self.evict_if_needed();
     }
 
     pub(crate) fn upsert_from_decoded(
@@ -155,14 +169,12 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         logical_size: Option<(u32, u32)>,
         ctx: &egui::Context,
-        current_index: usize,
-        total_count: usize,
+        _current_index: usize,
+        _total_count: usize,
         strip_max_side: u32,
     ) {
         if decoded_looks_like_black_placeholder(decoded) {
-            self.textures.remove(&index);
-            self.preview_max_side.remove(&index);
-            self.preview_stage.remove(&index);
+            self.remove_index(index);
             self.bump_gpu_revision();
             return;
         }
@@ -200,8 +212,9 @@ impl DirectoryTreeStripCache {
         self.textures.insert(index, handle);
         self.preview_max_side.insert(index, preview_max_side);
         self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
         self.bump_gpu_revision();
-        self.evict_if_needed(current_index, total_count);
+        self.evict_if_needed();
     }
 
     pub(crate) fn relocate(&mut self, from: usize, to: usize) {
@@ -220,6 +233,11 @@ impl DirectoryTreeStripCache {
         if let Some(logical) = self.logical_sizes.remove(&from) {
             self.logical_sizes.insert(to, logical);
         }
+        for entry in &mut self.lru_order {
+            if *entry == from {
+                *entry = to;
+            }
+        }
     }
 
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
@@ -227,6 +245,11 @@ impl DirectoryTreeStripCache {
         permute_usize_hashmap(&mut self.preview_max_side, old_to_new);
         permute_usize_hashmap(&mut self.preview_stage, old_to_new);
         permute_usize_hashmap(&mut self.logical_sizes, old_to_new);
+        for index in &mut self.lru_order {
+            if *index < old_to_new.len() {
+                *index = old_to_new[*index];
+            }
+        }
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
@@ -234,6 +257,7 @@ impl DirectoryTreeStripCache {
         self.preview_max_side.retain(|index, _| keep(*index));
         self.preview_stage.retain(|index, _| keep(*index));
         self.logical_sizes.retain(|index, _| keep(*index));
+        self.lru_order.retain(|index| keep(*index));
     }
 
     /// Drop GPU-backed egui textures after a wgpu surface format hot-swap. CPU-side
@@ -242,6 +266,7 @@ impl DirectoryTreeStripCache {
         self.textures.clear();
         self.preview_max_side.clear();
         self.preview_stage.clear();
+        self.lru_order.clear();
         self.bump_gpu_revision();
     }
 
@@ -250,34 +275,22 @@ impl DirectoryTreeStripCache {
         self.preview_max_side.clear();
         self.preview_stage.clear();
         self.logical_sizes.clear();
+        self.lru_order.clear();
         self.bump_gpu_revision();
     }
 
-    /// Drop the list-preview entry farthest from `current_index` on the circular file list.
-    ///
-    /// Intentionally O(n) over at most [`DIRECTORY_TREE_STRIP_CACHE_MAX`] entries; see const docs.
-    fn evict_if_needed(&mut self, current_index: usize, total_count: usize) {
-        if total_count == 0 {
-            return;
-        }
+    fn evict_if_needed(&mut self) {
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
-            let to_remove = self.textures.keys().copied().max_by_key(|&idx| {
-                if total_count == 0 {
-                    (idx as isize - current_index as isize).unsigned_abs()
-                } else {
-                    let forward = (idx + total_count - current_index) % total_count;
-                    let backward = (current_index + total_count - idx) % total_count;
-                    forward.min(backward)
-                }
-            });
-            let Some(idx) = to_remove else {
+            let Some(idx) = self.lru_order.pop_front() else {
                 break;
             };
-            self.textures.remove(&idx);
-            self.preview_max_side.remove(&idx);
-            self.preview_stage.remove(&idx);
-            self.logical_sizes.remove(&idx);
-            self.bump_gpu_revision();
+            if self.textures.contains_key(&idx) {
+                self.textures.remove(&idx);
+                self.preview_max_side.remove(&idx);
+                self.preview_stage.remove(&idx);
+                self.logical_sizes.remove(&idx);
+                self.bump_gpu_revision();
+            }
         }
     }
 }
@@ -355,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_cache_evicts_farthest_neighbor_first() {
+    fn strip_cache_evicts_oldest_lru_first() {
         let ctx = egui::Context::default();
         let mut cache = DirectoryTreeStripCache::default();
         let total = DIRECTORY_TREE_STRIP_CACHE_MAX + 5;
@@ -373,8 +386,8 @@ mod tests {
             );
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
-        assert!(cache.contains(0));
-        assert!(cache.contains(1));
+        assert!(!cache.contains(0));
+        assert!(cache.contains(total - 1));
     }
 
     #[test]

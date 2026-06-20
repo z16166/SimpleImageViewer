@@ -112,6 +112,10 @@ impl eframe::App for ImageViewerApp {
         self.background_threads.join_all(
             crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT,
         );
+        self.directory_tree.join_workers();
+        self.directory_tree
+            .viewpaint_app
+            .store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
 
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);

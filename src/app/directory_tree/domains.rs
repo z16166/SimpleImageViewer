@@ -24,6 +24,7 @@ pub(super) const LIST_PUBLISH_COALESCE: Duration = Duration::from_millis(100);
 pub(crate) struct DirectoryTreeTreeState {
     pub(crate) places_loaded: bool,
     pub(crate) places_loading: bool,
+    pub(crate) places_load_started_at: Option<std::time::Instant>,
     pub(crate) places_load_error: Option<String>,
     pub(crate) workers_available: bool,
     pub(crate) known_folders: Vec<KnownFolderEntry>,
@@ -47,6 +48,7 @@ impl Default for DirectoryTreeTreeState {
         Self {
             places_loaded: false,
             places_loading: false,
+            places_load_started_at: None,
             places_load_error: None,
             workers_available: true,
             known_folders: Vec::new(),

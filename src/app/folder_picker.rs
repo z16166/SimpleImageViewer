@@ -23,6 +23,7 @@
 //! the worker thread waits on the future while winit keeps pumping events.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui;
@@ -56,7 +57,10 @@ pub(crate) struct FolderPickerRuntime {
     result_tx: Sender<FolderPickerCompletion>,
     result_rx: Receiver<FolderPickerCompletion>,
     in_flight: bool,
+    started_at: Option<std::time::Instant>,
 }
+
+pub(crate) const FOLDER_PICKER_TIMEOUT: Duration = Duration::from_secs(600);
 
 impl FolderPickerRuntime {
     pub(crate) fn new() -> Self {
@@ -65,6 +69,7 @@ impl FolderPickerRuntime {
             result_tx,
             result_rx,
             in_flight: false,
+            started_at: None,
         }
     }
 
@@ -146,6 +151,7 @@ impl ImageViewerApp {
 
         let tx = self.folder_picker.result_tx.clone();
         self.folder_picker.in_flight = true;
+        self.folder_picker.started_at = Some(Instant::now());
 
         if !self
             .background_threads
@@ -171,6 +177,7 @@ impl ImageViewerApp {
         {
             log::error!("[FolderPicker] Failed to spawn picker worker thread");
             self.folder_picker.in_flight = false;
+            self.folder_picker.started_at = None;
             self.status_message = t!("folder_picker.failed_to_open").to_string();
         }
     }
@@ -180,9 +187,26 @@ impl ImageViewerApp {
             return;
         }
 
+        if self
+            .folder_picker
+            .started_at
+            .is_some_and(|started| started.elapsed() > FOLDER_PICKER_TIMEOUT)
+        {
+            log::warn!(
+                "[FolderPicker] Dialog exceeded {}s; resetting in-flight state",
+                FOLDER_PICKER_TIMEOUT.as_secs()
+            );
+            self.folder_picker.in_flight = false;
+            self.folder_picker.started_at = None;
+            self.status_message = t!("folder_picker.timed_out").to_string();
+            ctx.request_repaint();
+            return;
+        }
+
         match self.folder_picker.result_rx.try_recv() {
             Ok(completion) => {
                 self.folder_picker.in_flight = false;
+                self.folder_picker.started_at = None;
                 self.apply_folder_picker_completion(completion);
                 ctx.request_repaint();
             }
@@ -192,6 +216,7 @@ impl ImageViewerApp {
             Err(TryRecvError::Disconnected) => {
                 log::warn!("[FolderPicker] Worker disconnected without sending a result");
                 self.folder_picker.in_flight = false;
+                self.folder_picker.started_at = None;
             }
         }
     }

@@ -16,6 +16,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender};
@@ -66,6 +69,9 @@ pub(super) const DIRECTORY_TREE_INDENT: f32 = 14.0;
 pub(super) const DIRECTORY_TREE_UI_STROKE_WIDTH: f32 = 1.15;
 pub(super) const DIRECTORY_TREE_NODE_ICON_DRAW_RATIO: f32 = 0.78;
 pub(super) const DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO: f32 = 0.34;
+/// Share of narrow-panel width allocated to the modified-time column (remainder is size).
+pub(super) const DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT: f32 = 0.62;
+pub(super) const DIRECTORY_TREE_PLACES_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const THIS_PC_TREE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
 const NETWORK_TREE_PATH: &str = "\\\\?\\siv-tree\\Network";
 
@@ -318,6 +324,9 @@ pub(crate) struct DirectoryTreeRuntime {
     /// - The app outlives all viewport callbacks because it is owned by eframe as `Box<dyn App>`.
     /// - Never dereference from worker threads or from `logic()`; use locked state / snapshots instead.
     pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
+    workers_shutdown: Arc<AtomicBool>,
+    children_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
+    metadata_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl DirectoryTreeRuntime {
@@ -333,25 +342,49 @@ impl DirectoryTreeRuntime {
         let (metadata_result_tx, metadata_result_rx) =
             crossbeam_channel::bounded(DIRECTORY_TREE_WORKER_CHANNEL_BOUND);
 
+        let workers_shutdown = Arc::new(AtomicBool::new(false));
+        let children_shutdown = Arc::clone(&workers_shutdown);
+        let metadata_shutdown = Arc::clone(&workers_shutdown);
+
         let mut children_worker_alive = false;
-        match std::thread::Builder::new()
+        let children_worker = match std::thread::Builder::new()
             .name("siv-directory-tree-children".to_string())
             .spawn(move || {
-                directory_tree_children_worker_loop(children_request_rx, result_tx);
+                directory_tree_children_worker_loop(
+                    children_request_rx,
+                    result_tx,
+                    children_shutdown,
+                );
             }) {
-            Ok(_) => children_worker_alive = true,
-            Err(err) => log::error!("[DirectoryTree] Failed to spawn children worker: {err}"),
-        }
+            Ok(handle) => {
+                children_worker_alive = true;
+                Some(handle)
+            }
+            Err(err) => {
+                log::error!("[DirectoryTree] Failed to spawn children worker: {err}");
+                None
+            }
+        };
 
         let mut metadata_worker_alive = false;
-        match std::thread::Builder::new()
+        let metadata_worker = match std::thread::Builder::new()
             .name("siv-directory-tree-metadata".to_string())
             .spawn(move || {
-                directory_tree_metadata_worker_loop(metadata_request_rx, metadata_result_tx);
+                directory_tree_metadata_worker_loop(
+                    metadata_request_rx,
+                    metadata_result_tx,
+                    metadata_shutdown,
+                );
             }) {
-            Ok(_) => metadata_worker_alive = true,
-            Err(err) => log::error!("[DirectoryTree] Failed to spawn metadata worker: {err}"),
-        }
+            Ok(handle) => {
+                metadata_worker_alive = true;
+                Some(handle)
+            }
+            Err(err) => {
+                log::error!("[DirectoryTree] Failed to spawn metadata worker: {err}");
+                None
+            }
+        };
 
         let workers_available = children_worker_alive && metadata_worker_alive;
         if !workers_available {
@@ -398,6 +431,28 @@ impl DirectoryTreeRuntime {
             result_rx,
             metadata_result_rx,
             viewpaint_app: Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())),
+            workers_shutdown,
+            children_worker: parking_lot::Mutex::new(children_worker),
+            metadata_worker: parking_lot::Mutex::new(metadata_worker),
+        }
+    }
+
+    pub(crate) fn shutdown_workers(&self) {
+        self.workers_shutdown
+            .store(true, AtomicOrdering::Release);
+    }
+
+    pub(crate) fn join_workers(&mut self) {
+        self.shutdown_workers();
+        if let Some(handle) = self.children_worker.lock().take()
+            && handle.join().is_err()
+        {
+            log::warn!("[DirectoryTree] Children worker panicked on join");
+        }
+        if let Some(handle) = self.metadata_worker.lock().take()
+            && handle.join().is_err()
+        {
+            log::warn!("[DirectoryTree] Metadata worker panicked on join");
         }
     }
 }

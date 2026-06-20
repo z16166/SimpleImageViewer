@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use parking_lot::Mutex;
 use rust_i18n::t;
 
@@ -34,6 +34,32 @@ use super::{
 pub(super) const METADATA_BATCH_SIZE: usize = 200;
 pub(super) const DIRECTORY_TREE_READ_DIR_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_READ_DIR_HELPERS_INFLIGHT: usize = 4;
+pub(super) const DIRECTORY_TREE_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(200);
+pub(super) const DIRECTORY_TREE_RESULT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn send_worker_result<T>(
+    tx: &Sender<T>,
+    mut msg: T,
+    shutdown: &AtomicBool,
+) -> bool {
+    let deadline = std::time::Instant::now() + DIRECTORY_TREE_RESULT_SEND_TIMEOUT;
+    loop {
+        match tx.try_send(msg) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(pending)) => {
+                if shutdown.load(AtomicOrdering::Acquire)
+                    || std::time::Instant::now() >= deadline
+                {
+                    log::warn!("[DirectoryTree] Dropping worker result: result channel full");
+                    return false;
+                }
+                msg = pending;
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+}
 
 /// Paths with a helper thread still inside OS `read_dir` (including timed-out orphans).
 static READ_DIR_INFLIGHT_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> =
@@ -85,20 +111,31 @@ pub(super) fn split_metadata_request(request: FileMetadataRequest) -> Vec<FileMe
 pub(super) fn directory_tree_children_worker_loop(
     request_rx: Receiver<DirectoryChildrenRequest>,
     children_result_tx: Sender<DirectoryChildrenResult>,
+    shutdown: Arc<AtomicBool>,
 ) {
-    while let Ok(request) = request_rx.recv() {
-        for request in coalesce_children_requests(request, &request_rx) {
-            let result = read_child_directories_with_timeout(&request.browse_path);
-            if children_result_tx
-                .send(DirectoryChildrenResult {
-                    tree_path: request.tree_path,
-                    generation: request.generation,
-                    result,
-                })
-                .is_err()
-            {
-                log::warn!("[DirectoryTree] children result channel disconnected");
+    while !shutdown.load(AtomicOrdering::Acquire) {
+        match request_rx.recv_timeout(DIRECTORY_TREE_WORKER_POLL_INTERVAL) {
+            Ok(request) => {
+                for request in coalesce_children_requests(request, &request_rx) {
+                    if shutdown.load(AtomicOrdering::Acquire) {
+                        return;
+                    }
+                    let result = read_child_directories_with_timeout(&request.browse_path);
+                    if !send_worker_result(
+                        &children_result_tx,
+                        DirectoryChildrenResult {
+                            tree_path: request.tree_path,
+                            generation: request.generation,
+                            result,
+                        },
+                        &shutdown,
+                    ) {
+                        return;
+                    }
+                }
             }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -106,44 +143,56 @@ pub(super) fn directory_tree_children_worker_loop(
 pub(super) fn directory_tree_metadata_worker_loop(
     request_rx: Receiver<FileMetadataRequest>,
     metadata_result_tx: Sender<FileMetadataResult>,
+    shutdown: Arc<AtomicBool>,
 ) {
-    while let Ok(request) = request_rx.recv() {
-        for request in coalesce_metadata_requests(request, &request_rx) {
-            for request in split_metadata_request(request) {
-                let mut batch_paths = Vec::with_capacity(METADATA_BATCH_SIZE);
-                let mut batch_modified = Vec::with_capacity(METADATA_BATCH_SIZE);
+    while !shutdown.load(AtomicOrdering::Acquire) {
+        match request_rx.recv_timeout(DIRECTORY_TREE_WORKER_POLL_INTERVAL) {
+            Ok(request) => {
+                for request in coalesce_metadata_requests(request, &request_rx) {
+                    for request in split_metadata_request(request) {
+                        if shutdown.load(AtomicOrdering::Acquire) {
+                            return;
+                        }
+                        let mut batch_paths = Vec::with_capacity(METADATA_BATCH_SIZE);
+                        let mut batch_modified = Vec::with_capacity(METADATA_BATCH_SIZE);
 
-                for path in request.paths {
-                    batch_paths.push(path.clone());
-                    batch_modified.push(read_file_modified_unix(&path));
+                        for path in request.paths {
+                            batch_paths.push(path.clone());
+                            batch_modified.push(read_file_modified_unix(&path));
 
-                    if batch_paths.len() >= METADATA_BATCH_SIZE {
-                        if metadata_result_tx
-                            .send(FileMetadataResult {
-                                generation: request.generation,
-                                paths: batch_paths.split_off(0),
-                                modified_unix: batch_modified.split_off(0),
-                            })
-                            .is_err()
+                            if batch_paths.len() >= METADATA_BATCH_SIZE {
+                                if !send_worker_result(
+                                    &metadata_result_tx,
+                                    FileMetadataResult {
+                                        generation: request.generation,
+                                        paths: batch_paths.split_off(0),
+                                        modified_unix: batch_modified.split_off(0),
+                                    },
+                                    &shutdown,
+                                ) {
+                                    return;
+                                }
+                            }
+                        }
+
+                        if !batch_paths.is_empty()
+                            && !send_worker_result(
+                                &metadata_result_tx,
+                                FileMetadataResult {
+                                    generation: request.generation,
+                                    paths: batch_paths,
+                                    modified_unix: batch_modified,
+                                },
+                                &shutdown,
+                            )
                         {
-                            log::warn!("[DirectoryTree] metadata result channel disconnected");
                             return;
                         }
                     }
                 }
-
-                if !batch_paths.is_empty()
-                    && metadata_result_tx
-                        .send(FileMetadataResult {
-                            generation: request.generation,
-                            paths: batch_paths,
-                            modified_unix: batch_modified,
-                        })
-                        .is_err()
-                {
-                    log::warn!("[DirectoryTree] metadata result channel disconnected");
-                }
             }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -270,7 +319,7 @@ fn read_file_modified_unix(path: &Path) -> Option<i64> {
         .ok()
         .and_then(|meta| meta.modified().ok())
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs() as i64)
+        .map(|duration| duration.as_millis() as i64)
 }
 
 #[cfg(target_os = "windows")]

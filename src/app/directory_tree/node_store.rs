@@ -54,6 +54,7 @@ impl DirectoryTreeNodeArena {
         self.entries.len()
     }
 
+    #[allow(dead_code)] // used by directory_tree integration tests
     pub(crate) fn contains_key(&self, path: &Path) -> bool {
         self.path_index.contains_key(path)
     }

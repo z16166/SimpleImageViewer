@@ -20,5 +20,5 @@ use std::path::Path;
 
 /// Returns true when `path` is a directory we can enumerate with normal I/O.
 pub(crate) fn path_is_accessible_directory(path: &Path) -> bool {
-    path.is_dir() && std::fs::read_dir(path).is_ok()
+    std::fs::read_dir(path).is_ok()
 }

@@ -20,8 +20,9 @@ use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::settings::PairedRawJpegHandling;
 
@@ -137,10 +138,7 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
     false
 }
 
-/// Returns the file size and modified time for a regular local file metadata probe.
-///
-/// `modified_unix` is whole UTC seconds from `Metadata::modified()`. Cross-volume scans may
-/// mix FAT32 2-second precision with NTFS/exFAT timestamps; sort-by-modified is best-effort.
+/// `modified_unix` stores UTC milliseconds from [`Metadata::modified`] for finer cross-volume ordering.
 fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
     let len = metadata.len();
     if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
@@ -151,7 +149,7 @@ fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs() as i64);
+        .map(|duration| duration.as_millis() as i64);
     Some((len, modified_unix))
 }
 
@@ -174,6 +172,22 @@ pub enum ScanMessage {
 
 /// Number of files to accumulate before sending a batch to the UI.
 const BATCH_SIZE: usize = 200;
+const SCAN_SEND_RETRY_SLEEP: Duration = Duration::from_millis(2);
+const SCAN_SEND_MAX_WALL_CLOCK: Duration = Duration::from_secs(30);
+
+static SCAN_THREAD_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .thread_name(|index| format!("siv-scan-{index}"))
+        .build()
+        .unwrap_or_else(|err| {
+            log::error!("[Scanner] Failed to build scan thread pool: {err}; falling back to 1 thread");
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("single-thread scan pool")
+        })
+});
 
 pub fn scan_directory(
     dir: PathBuf,
@@ -184,7 +198,7 @@ pub fn scan_directory(
     cancel: Arc<AtomicBool>,
     wake_ui: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
-    std::thread::spawn(move || {
+    SCAN_THREAD_POOL.spawn(move || {
         #[cfg(feature = "preload-debug")]
         let scan_started = std::time::Instant::now();
         crate::preload_debug!(
@@ -506,7 +520,12 @@ fn send_scan_message(
     wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) -> bool {
     let mut pending = msg;
+    let deadline = Instant::now() + SCAN_SEND_MAX_WALL_CLOCK;
     loop {
+        if Instant::now() >= deadline {
+            log::warn!("[Scanner] Dropping scan message: UI channel full for too long");
+            return false;
+        }
         match tx.try_send(pending) {
             Ok(()) => {
                 if let Some(wake) = wake_ui {
@@ -519,7 +538,7 @@ fn send_scan_message(
                     return false;
                 }
                 pending = m;
-                std::thread::sleep(Duration::from_millis(2));
+                std::thread::sleep(SCAN_SEND_RETRY_SLEEP);
             }
             Err(TrySendError::Disconnected(_)) => return false,
         }

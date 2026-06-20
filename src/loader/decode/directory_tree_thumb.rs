@@ -109,27 +109,34 @@ fn probe_still_image_logical_size_from_mmap(mmap: &memmap2::Mmap) -> Option<(u32
         .ok()
 }
 
+fn path_has_extension(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(ext))
+}
+
+fn path_extension_ascii_lower(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
 fn open_image_data_for_directory_tree_thumb(
     path: &PathBuf,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
     let file_name = path
         .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+    let ext = path_extension_ascii_lower(path.as_path()).unwrap_or_default();
     let hdr_target_capacity = DIRECTORY_TREE_THUMB_HDR_CAPACITY;
     let hdr_tone_map = HdrToneMapSettings::default();
     let high_quality = false;
 
-    if ext == "exr" {
+    if path_has_extension(path, "exr") {
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
@@ -143,7 +150,7 @@ fn open_image_data_for_directory_tree_thumb(
         }
     }
 
-    if ext == "psd" || ext == "psb" {
+    if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
         return load_psd(path);
     }
 
@@ -151,10 +158,10 @@ fn open_image_data_for_directory_tree_thumb(
         return open_raw_image_data_for_directory_tree_thumb(path);
     }
 
-    if ext == "jpg" || ext == "jpeg" {
+    if path_has_extension(path, "jpg") || path_has_extension(path, "jpeg") {
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
@@ -173,7 +180,7 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if ext == "tif" || ext == "tiff" {
+    if path_has_extension(path, "tif") || path_has_extension(path, "tiff") {
         let tiff_is_raw = file_mmap
             .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
             .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
@@ -182,7 +189,7 @@ fn open_image_data_for_directory_tree_thumb(
         }
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
@@ -190,10 +197,10 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if ext == "avif" || ext == "avifs" {
+    if path_has_extension(path, "avif") || path_has_extension(path, "avifs") {
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
@@ -201,10 +208,10 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if ext == "jxl" {
+    if path_has_extension(path, "jxl") {
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
@@ -212,10 +219,13 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if ext == "heif" || ext == "heic" || ext == "hif" {
+    if path_has_extension(path, "heif")
+        || path_has_extension(path, "heic")
+        || path_has_extension(path, "hif")
+    {
         return load_primary_with_detection_fallback(
             path,
-            file_name,
+            file_name.as_str(),
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,

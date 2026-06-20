@@ -37,7 +37,7 @@ use super::ui::{
 use super::{
     DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH, DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
     DIRECTORY_TREE_EMBEDDED_MIN_WIDTH, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-    DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT, DIRECTORY_TREE_MIN_WIDTH,
+    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT, DIRECTORY_TREE_MIN_WIDTH,
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
     DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
     DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
@@ -325,6 +325,7 @@ impl ImageViewerApp {
             let mut tree = self.directory_tree.tree.lock();
             tree.places_loading = true;
             tree.places_load_error = None;
+            tree.places_load_started_at = Some(std::time::Instant::now());
         }
 
         if std::thread::Builder::new()
@@ -334,7 +335,7 @@ impl ImageViewerApp {
                     crate::directory_tree_places::load,
                 )) {
                     Ok(places) => Ok(places),
-                    Err(_) => Err("places load panicked".to_string()),
+                    Err(_) => Err(t!("directory_tree.places_load_panicked").to_string()),
                 };
                 let _ = tx.send(result);
             })
@@ -343,6 +344,7 @@ impl ImageViewerApp {
             log::error!("[DirectoryTree] Failed to spawn places loader");
             let mut tree = self.directory_tree.tree.lock();
             tree.places_loading = false;
+            tree.places_load_started_at = None;
             tree.places_load_error = Some(t!("directory_tree.places_load_failed").to_string());
             self.directory_tree_places_load_rx = None;
         }
@@ -357,6 +359,7 @@ impl ImageViewerApp {
         let mut tree = self.directory_tree.tree.lock();
         let mut list = self.directory_tree.list.lock();
         tree.places_loading = false;
+        tree.places_load_started_at = None;
         tree.places_load_error = None;
         tree.initialize_places(places);
         if saved_dir
@@ -382,18 +385,38 @@ impl ImageViewerApp {
         let Some(rx) = self.directory_tree_places_load_rx.as_ref() else {
             return;
         };
-        let Ok(result) = rx.try_recv() else {
-            return;
-        };
-        self.directory_tree_places_load_rx = None;
-        match result {
-            Ok(places) => self.apply_directory_tree_places(places),
-            Err(err) => {
-                log::error!("[DirectoryTree] Places load failed: {err}");
-                let mut tree = self.directory_tree.tree.lock();
-                tree.places_loading = false;
-                tree.places_load_error = Some(t!("directory_tree.places_load_failed").to_string());
+        if let Ok(result) = rx.try_recv() {
+            self.directory_tree_places_load_rx = None;
+            match result {
+                Ok(places) => self.apply_directory_tree_places(places),
+                Err(err) => {
+                    log::error!("[DirectoryTree] Places load failed: {err}");
+                    let mut tree = self.directory_tree.tree.lock();
+                    tree.places_loading = false;
+                    tree.places_load_started_at = None;
+                    tree.places_load_error = Some(t!("directory_tree.places_load_failed").to_string());
+                }
             }
+            return;
+        }
+
+        let timed_out = {
+            let tree = self.directory_tree.tree.lock();
+            tree.places_loading
+                && tree
+                    .places_load_started_at
+                    .is_some_and(|started| started.elapsed() > super::DIRECTORY_TREE_PLACES_LOAD_TIMEOUT)
+        };
+        if timed_out {
+            log::warn!(
+                "[DirectoryTree] Places load timed out after {}s",
+                super::DIRECTORY_TREE_PLACES_LOAD_TIMEOUT.as_secs()
+            );
+            self.directory_tree_places_load_rx = None;
+            let mut tree = self.directory_tree.tree.lock();
+            tree.places_loading = false;
+            tree.places_load_started_at = None;
+            tree.places_load_error = Some(t!("directory_tree.places_load_timeout").to_string());
         }
     }
 
@@ -674,10 +697,13 @@ impl ImageViewerApp {
         list: &mut DirectoryTreeListState,
     ) {
         if let Some(width) = self.settings.directory_tree_folder_panel_width {
-            tree.left_panel_width = width;
+            tree.left_panel_width = width.clamp(
+                DIRECTORY_TREE_LEFT_MIN_WIDTH,
+                f32::MAX,
+            );
         }
         if let Some(width) = self.settings.directory_tree_image_list_panel_width {
-            list.image_list_panel_width = width;
+            list.image_list_panel_width = width.max(DIRECTORY_TREE_RIGHT_MIN_WIDTH);
         }
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(

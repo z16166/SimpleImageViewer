@@ -301,7 +301,10 @@ fn paint_directory_tree_node_icon(
             KnownFolderKind::Videos => {
                 let frame = egui::Rect::from_center_size(
                     icon_rect.center(),
-                    egui::vec2(icon_rect.width() * 0.82, icon_rect.height() * 0.62),
+                    egui::vec2(
+                        icon_rect.width() * 0.82,
+                        icon_rect.height() * super::DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO,
+                    ),
                 );
                 painter.rect(frame, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
                 let play = [
@@ -1086,7 +1089,7 @@ pub(super) fn image_list_column_layout(
 
     let available_for_right_cols =
         (row_width - gutters - thumb_w - DIRECTORY_TREE_COL_NAME_MIN_WIDTH).max(0.0);
-    let mut modified_w = (available_for_right_cols * 0.62).clamp(
+    let mut modified_w = (available_for_right_cols * super::DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT).clamp(
         DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
         ideal_modified_w,
     );
