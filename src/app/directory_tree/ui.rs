@@ -28,7 +28,7 @@ use crate::directory_tree_places::types::KnownFolderKind;
 use crate::loader::preview_aspect_matches_logical;
 use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
-use crate::ui::osd::{format_file_modified, format_file_size};
+use crate::ui::osd::{format_file_modified, format_file_size, FORMAT_FILE_SIZE_WIDTH_SAMPLES};
 
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
@@ -1020,7 +1020,6 @@ pub(super) fn measure_image_list_content_column_widths(
     body_font: &egui::FontId,
     header_size: &str,
     header_modified: &str,
-    rows: &[DirectoryTreeFileRow],
 ) -> (f32, f32) {
     let measure = |text: &str| {
         ctx.fonts_mut(|fonts| {
@@ -1035,8 +1034,8 @@ pub(super) fn measure_image_list_content_column_widths(
         })
     };
     let mut size_w = measure(header_size);
-    for row in rows {
-        size_w = size_w.max(measure(&format_file_size(row.size_bytes)));
+    for sample in FORMAT_FILE_SIZE_WIDTH_SAMPLES {
+        size_w = size_w.max(measure(sample));
     }
     let modified_w = measure(header_modified)
         .max(measure(IMAGE_LIST_MODIFIED_CELL_SAMPLE))

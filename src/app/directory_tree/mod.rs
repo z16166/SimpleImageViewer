@@ -754,7 +754,6 @@ impl DirectoryTreeState {
         if scanning {
             self.image_list_keyboard_active = false;
         }
-        self.image_list_col_widths_dirty = true;
         if paths_needing_meta.is_empty() {
             None
         } else {
@@ -784,7 +783,6 @@ impl DirectoryTreeState {
             &body_font,
             &t!("directory_tree.col_size"),
             &t!("directory_tree.col_modified"),
-            &self.image_rows,
         );
         self.image_list_col_size_w = size_w;
         self.image_list_col_modified_w = modified_w;

@@ -777,18 +777,39 @@ impl OsdRenderer {
     }
 }
 
+/// Longest rendered size strings (`B`/`KB`/… units are not localized).
+pub const FORMAT_FILE_SIZE_WIDTH_SAMPLES: &[&str] = &[
+    "1023 B",
+    "1023.9 KB",
+    "1023.9 MB",
+    "1023.9 GB",
+    "1023.9 TB",
+    "1023.9 PB",
+    "1023.9 EB",
+];
+
 pub fn format_file_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * KB;
     const GB: f64 = 1024.0 * MB;
+    const TB: f64 = 1024.0 * GB;
+    const PB: f64 = 1024.0 * TB;
+    const EB: f64 = 1024.0 * PB;
+    let bytes_f = bytes as f64;
     if bytes < 1024 {
-        format!("{bytes} bytes")
-    } else if (bytes as f64) < MB {
-        format!("{:.1} KB", bytes as f64 / KB)
-    } else if (bytes as f64) < GB {
-        format!("{:.1} MB", bytes as f64 / MB)
+        format!("{bytes} B")
+    } else if bytes_f < MB {
+        format!("{:.1} KB", bytes_f / KB)
+    } else if bytes_f < GB {
+        format!("{:.1} MB", bytes_f / MB)
+    } else if bytes_f < TB {
+        format!("{:.1} GB", bytes_f / GB)
+    } else if bytes_f < PB {
+        format!("{:.1} TB", bytes_f / TB)
+    } else if bytes_f < EB {
+        format!("{:.1} PB", bytes_f / PB)
     } else {
-        format!("{:.1} GB", bytes as f64 / GB)
+        format!("{:.1} EB", bytes_f / EB)
     }
 }
 
@@ -878,10 +899,16 @@ mod tests {
 
     #[test]
     fn formats_file_sizes_with_binary_units() {
-        assert_eq!(format_file_size(42), "42 bytes");
+        assert_eq!(format_file_size(42), "42 B");
+        assert_eq!(format_file_size(1023), "1023 B");
+        assert_eq!(format_file_size(1024), "1.0 KB");
         assert_eq!(format_file_size(1536), "1.5 KB");
         assert_eq!(format_file_size(2 * 1024 * 1024), "2.0 MB");
         assert_eq!(format_file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+        assert_eq!(
+            format_file_size(1024_u64 * 1024 * 1024 * 1024),
+            "1.0 TB"
+        );
     }
 
     #[test]
