@@ -19,6 +19,55 @@ use super::*;
 const SCAN_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SCAN_RESULT_CHANNEL_BOUND: usize = 64;
 
+/// Sort parallel image-list rows by path in place. Returns `old_to_new` when order changed.
+pub(crate) fn sort_image_file_rows_in_place(
+    paths: &mut Vec<PathBuf>,
+    sizes: &mut Vec<u64>,
+    modified: &mut Vec<Option<i64>>,
+) -> Option<Vec<usize>> {
+    let n = paths.len();
+    debug_assert_eq!(n, sizes.len());
+    debug_assert_eq!(n, modified.len());
+    if n <= 1 {
+        return None;
+    }
+
+    let mut gather: Vec<usize> = (0..n).collect();
+    gather.sort_by(|&a, &b| paths[a].cmp(&paths[b]));
+    if gather.iter().enumerate().all(|(i, &src)| i == src) {
+        return None;
+    }
+
+    apply_gather_permutation(paths, &gather);
+    apply_gather_permutation(sizes, &gather);
+    apply_gather_permutation(modified, &gather);
+
+    let mut old_to_new = vec![0usize; n];
+    for (new_idx, &old_idx) in gather.iter().enumerate() {
+        old_to_new[old_idx] = new_idx;
+    }
+    Some(old_to_new)
+}
+
+/// Reorder `data` so `data[i]` becomes the former `data[gather[i]]`.
+fn apply_gather_permutation<T>(data: &mut [T], gather: &[usize]) {
+    let n = data.len();
+    let mut done = vec![false; n];
+    for i in 0..n {
+        if done[i] || gather[i] == i {
+            done[i] = true;
+            continue;
+        }
+        let mut j = i;
+        while gather[j] != i {
+            data.swap(j, gather[j]);
+            done[j] = true;
+            j = gather[j];
+        }
+        done[j] = true;
+    }
+}
+
 impl ImageViewerApp {
     pub(crate) fn open_directory_dialog(&mut self, frame: &eframe::Frame) {
         self.request_folder_picker(
@@ -457,24 +506,16 @@ impl ImageViewerApp {
                         self.status_message = t!("status.not_found").to_string();
                         self.finish_refresh_scan_state();
                     } else {
-                        let old_files =
-                            if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-                                self.image_files.clone()
-                            } else {
-                                Vec::new()
-                            };
-                        if !sorted_files.is_empty() {
-                            let mut paths = Vec::with_capacity(sorted_files.len());
-                            let mut sizes = Vec::with_capacity(sorted_files.len());
-                            let mut modified = Vec::with_capacity(sorted_files.len());
+                        if self.image_files.is_empty() && !sorted_files.is_empty() {
+                            self.image_files.reserve(sorted_files.len());
+                            self.file_byte_len_by_index.reserve(sorted_files.len());
+                            self.file_modified_unix_by_index
+                                .reserve(sorted_files.len());
                             for (path, len, mtime) in sorted_files {
-                                paths.push(path);
-                                sizes.push(len);
-                                modified.push(mtime);
+                                self.image_files.push(path);
+                                self.file_byte_len_by_index.push(len);
+                                self.file_modified_unix_by_index.push(mtime);
                             }
-                            self.image_files = paths;
-                            self.file_byte_len_by_index = sizes;
-                            self.file_modified_unix_by_index = modified;
                         } else {
                             debug_assert_eq!(
                                 self.image_files.len(),
@@ -484,26 +525,13 @@ impl ImageViewerApp {
                                 self.image_files.len(),
                                 self.file_modified_unix_by_index.len()
                             );
-                            let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
-                                std::mem::take(&mut self.image_files)
-                                    .into_iter()
-                                    .zip(std::mem::take(&mut self.file_byte_len_by_index))
-                                    .zip(std::mem::take(&mut self.file_modified_unix_by_index))
-                                    .map(|((path, len), modified)| (path, len, modified))
-                                    .collect();
-                            combined.sort_by(|a, b| a.0.cmp(&b.0));
-                            let mut paths = Vec::with_capacity(combined.len());
-                            let mut sizes = Vec::with_capacity(combined.len());
-                            let mut modified = Vec::with_capacity(combined.len());
-                            for (path, len, mtime) in combined {
-                                paths.push(path);
-                                sizes.push(len);
-                                modified.push(mtime);
-                            }
-                            self.image_files = paths;
-                            self.file_byte_len_by_index = sizes;
-                            self.file_modified_unix_by_index = modified;
                         }
+
+                        let sort_perm = sort_image_file_rows_in_place(
+                            &mut self.image_files,
+                            &mut self.file_byte_len_by_index,
+                            &mut self.file_modified_unix_by_index,
+                        );
                         #[cfg(feature = "preload-debug")]
                         crate::preload_debug!(
                             "[PreloadDebug][Scan] process done sort_ms={} files={}",
@@ -512,10 +540,13 @@ impl ImageViewerApp {
                         );
 
                         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-                            let new_files = self.image_files.clone();
-                            self.reorder_directory_tree_strip_after_image_list_change(
-                                &old_files, &new_files,
-                            );
+                            if self.refresh_scan_in_progress {
+                                if let Some(old_to_new) = sort_perm {
+                                    self.permute_directory_tree_strip_after_image_list_reorder(
+                                        &old_to_new,
+                                    );
+                                }
+                            }
                         }
 
                         if self.refresh_scan_in_progress {

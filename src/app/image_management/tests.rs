@@ -1694,6 +1694,50 @@ fn load_directory_clears_in_progress_refresh_scan_state() {
 }
 
 #[test]
+fn sort_image_file_rows_in_place_reorders_parallel_columns() {
+    let mut paths = vec![
+        PathBuf::from("c.jpg"),
+        PathBuf::from("a.jpg"),
+        PathBuf::from("b.jpg"),
+    ];
+    let mut sizes = vec![30_u64, 10, 20];
+    let mut modified = vec![Some(3_i64), Some(1), Some(2)];
+
+    let old_to_new = super::directory::sort_image_file_rows_in_place(
+        &mut paths,
+        &mut sizes,
+        &mut modified,
+    )
+    .expect("order should change");
+
+    assert_eq!(
+        paths,
+        vec![
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+            PathBuf::from("c.jpg"),
+        ]
+    );
+    assert_eq!(sizes, vec![10, 20, 30]);
+    assert_eq!(modified, vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(old_to_new, vec![2, 0, 1]);
+}
+
+#[test]
+fn sort_image_file_rows_in_place_noop_when_already_sorted() {
+    let mut paths = vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")];
+    let mut sizes = vec![1_u64, 2];
+    let mut modified = vec![Some(1_i64), Some(2)];
+
+    assert!(super::directory::sort_image_file_rows_in_place(
+        &mut paths,
+        &mut sizes,
+        &mut modified,
+    )
+    .is_none());
+}
+
+#[test]
 fn relocate_index_keyed_cache_moves_raw_osd_info() {
     let mut app = make_test_app();
     app.raw_metadata
