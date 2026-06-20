@@ -559,7 +559,11 @@ impl ImageViewerApp {
                     result.image_list_generation,
                     active_list_generation
                 );
-                self.clear_strip_preview_attempt_state(result.index);
+                if Self::strip_preview_failure_is_permanent(&result) {
+                    self.abandon_strip_preview_attempt_after_failure(result.index);
+                } else {
+                    self.clear_strip_preview_attempt_state(result.index);
+                }
                 continue;
             }
             if !self.strip_preview_result_matches_index(&result) {
@@ -714,10 +718,8 @@ impl ImageViewerApp {
 
         self.poll_directory_tree_strip_preview_results(ctx);
 
-        self.directory_tree_strip_cold_attempted.retain(|index| {
-            self.directory_tree_strip_cache.contains(*index)
-                || self.directory_tree_strip_generate_inflight.contains(index)
-        });
+        // Do not drop `cold_attempted` here when cache is empty: failed decodes (e.g. motion-video
+        // JPG) stay out of cache but must remain attempted so they do not monopolize cold slots.
         self.directory_tree_strip_tiled_attempted.retain(|index| {
             self.directory_tree_strip_cache.contains(*index)
                 || self.directory_tree_strip_generate_inflight.contains(index)
