@@ -808,6 +808,24 @@ fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
 }
 
 #[test]
+fn apply_to_domains_marks_tree_snapshot_dirty_when_left_panel_resized() {
+    use super::view::DirectoryTreeUiChrome;
+
+    let mut tree = DirectoryTreeTreeState::default();
+    tree.snapshot_dirty = false;
+    let mut list = DirectoryTreeListState::default();
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.left_panel_width = tree.left_panel_width + 24.0;
+    chrome.panel_layout_dirty = true;
+
+    chrome.apply_to_domains(&mut tree, &mut list);
+
+    assert_eq!(tree.left_panel_width, chrome.left_panel_width);
+    assert!(tree.snapshot_dirty);
+    assert!(tree.panel_layout_dirty);
+}
+
+#[test]
 fn pointer_in_directory_tree_nav_block_rect_respects_bounds() {
     use super::ui::pointer_in_directory_tree_nav_block_rect;
 

@@ -218,7 +218,10 @@ impl DirectoryTreeUiChrome {
         tree: &mut DirectoryTreeTreeState,
         list: &mut DirectoryTreeListState,
     ) {
-        tree.left_panel_width = self.left_panel_width;
+        if tree.left_panel_width != self.left_panel_width {
+            tree.left_panel_width = self.left_panel_width;
+            tree.mark_snapshot_dirty();
+        }
         if self.panel_layout_dirty {
             tree.panel_layout_dirty = true;
             list.panel_layout_dirty = true;

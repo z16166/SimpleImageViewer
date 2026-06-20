@@ -319,7 +319,7 @@ fn read_file_modified_unix(path: &Path) -> Option<i64> {
         .ok()
         .and_then(|meta| meta.modified().ok())
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as i64)
+        .map(|duration| duration.as_secs() as i64)
 }
 
 #[cfg(target_os = "windows")]

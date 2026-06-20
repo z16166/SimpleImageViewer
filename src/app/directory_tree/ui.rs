@@ -30,6 +30,15 @@ use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
 use crate::ui::osd::{FORMAT_FILE_SIZE_WIDTH_SAMPLES, format_file_modified, format_file_size};
 
+/// Scan/metadata paths historically stored milliseconds; normalize before display/format.
+fn modified_unix_for_display(stored: i64) -> i64 {
+    if stored > 1_000_000_000_000 {
+        stored / 1_000
+    } else {
+        stored
+    }
+}
+
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
     DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
@@ -1411,6 +1420,7 @@ fn draw_image_details_row(
         let size_text = format_file_size(row.size_bytes);
         let modified_text = row
             .modified_unix
+            .map(modified_unix_for_display)
             .map(format_file_modified)
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| t!("directory_tree.modified_unknown").to_string());

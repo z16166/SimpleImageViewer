@@ -138,7 +138,7 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
     false
 }
 
-/// `modified_unix` stores UTC milliseconds from [`Metadata::modified`] for finer cross-volume ordering.
+/// `modified_unix` stores UTC seconds from [`Metadata::modified`].
 fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
     let len = metadata.len();
     if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
@@ -149,7 +149,7 @@ fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as i64);
+        .map(|duration| duration.as_secs() as i64);
     Some((len, modified_unix))
 }
 
