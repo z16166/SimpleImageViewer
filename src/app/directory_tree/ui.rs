@@ -45,12 +45,12 @@ use super::{
     DIRECTORY_TREE_COL_SIZE_MIN_WIDTH, DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO,
     DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_FOLDER_ICON_WIDTH,
     DIRECTORY_TREE_HEADER_HEIGHT, DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT, DIRECTORY_TREE_INDENT,
-    DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO, DIRECTORY_TREE_LEFT_MIN_WIDTH,
-    DIRECTORY_TREE_NODE_ICON_DRAW_RATIO, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT,
-    DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand,
-    DirectoryTreeFileRow, DirectoryTreeListPreviewLayout, DirectoryTreeListState,
-    DirectoryTreeNode, ImageListSortColumn, is_network_tree_path, is_places_sentinel_path,
-    is_this_pc_tree_path, network_tree_path, this_pc_tree_path,
+    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_NODE_ICON_DRAW_RATIO,
+    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
+    DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand, DirectoryTreeFileRow,
+    DirectoryTreeListPreviewLayout, DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn,
+    is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path, network_tree_path,
+    this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,10 +518,8 @@ pub(super) fn pointer_in_directory_tree_nav_block_rect(
 
 pub(super) fn directory_tree_left_panel_width_limits(viewport_width: f32) -> (f32, f32) {
     let viewport_width = viewport_width.max(0.0);
-    let layout_cap =
-        (viewport_width - DIRECTORY_TREE_SPLITTER_GRAB_WIDTH - DIRECTORY_TREE_RIGHT_MIN_WIDTH)
-            .max(0.0);
-    let max_left = (viewport_width * DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO).min(layout_cap);
+    let available = (viewport_width - DIRECTORY_TREE_SPLITTER_GRAB_WIDTH).max(0.0);
+    let max_left = (available - DIRECTORY_TREE_RIGHT_MIN_WIDTH).max(0.0);
     let min_left = DIRECTORY_TREE_LEFT_MIN_WIDTH.min(max_left);
     (min_left, max_left.max(min_left))
 }
@@ -533,30 +531,28 @@ pub(super) fn clamp_directory_tree_left_panel_width(width: f32, viewport_width: 
 
 pub(super) fn directory_tree_panel_layout(
     left_panel_width: f32,
-    image_list_panel_width: f32,
+    _image_list_panel_width: f32,
     viewport_width: f32,
 ) -> (f32, f32) {
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
     let min_list = DIRECTORY_TREE_RIGHT_MIN_WIDTH;
-    let (min_left, max_left) = directory_tree_left_panel_width_limits(viewport_width);
+    let min_left = DIRECTORY_TREE_LEFT_MIN_WIDTH;
 
     if viewport_width <= splitter_w {
         return (0.0, 0.0);
     }
 
     let available = viewport_width - splitter_w;
+    // Keep the splitter position (left width) fixed; the file list absorbs viewport resize.
+    // Only shrink the folder tree when the list would drop below its minimum width.
+    let max_left = (available - min_list).max(0.0);
     let mut left_w = left_panel_width.clamp(min_left, max_left);
-    let mut list_w = image_list_panel_width.max(min_list);
+    let mut list_w = available - left_w;
 
-    if left_w + list_w > available {
-        list_w = (available - left_w).max(min_list);
-    } else if left_w + list_w < available {
-        list_w = available - left_w;
+    if list_w < min_list {
+        list_w = min_list;
+        left_w = (available - min_list).clamp(min_left, max_left);
     }
-
-    list_w = list_w.clamp(min_list, (available - min_left).max(0.0));
-    left_w = (available - list_w).clamp(min_left, max_left);
-    list_w = available - left_w;
 
     (left_w, list_w)
 }

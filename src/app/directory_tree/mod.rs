@@ -47,10 +47,10 @@ pub(super) const DIRECTORY_TREE_EMBEDDED_MIN_WIDTH: f32 = 320.0;
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 pub(super) const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 pub(super) const DIRECTORY_TREE_LEFT_WIDTH: f32 = 340.0;
-pub(super) const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 240.0;
+/// Minimum folder-tree width when dragging the center splitter (0 allows maximizing the file list).
+pub(super) const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 0.0;
 pub(super) const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
 pub(super) const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
-pub(super) const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
 pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT: f32 = 22.0;
 pub(super) const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
 pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;

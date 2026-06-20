@@ -249,8 +249,32 @@ fn apply_metadata_result_updates_modified_times() {
 fn left_panel_width_limits_stay_ordered_on_narrow_viewport() {
     let (min, max) = directory_tree_left_panel_width_limits(364.0);
     assert!(min <= max);
-    assert_eq!(min, 174.0);
+    assert_eq!(min, 0.0);
+    assert_eq!(max, 174.0);
     assert_eq!(clamp_directory_tree_left_panel_width(340.0, 364.0), 174.0);
+}
+
+#[test]
+fn directory_tree_panel_layout_keeps_splitter_when_viewport_shrinks_from_right() {
+    let (left, list) = directory_tree_panel_layout(340.0, 400.0, 640.0);
+    assert_eq!(left, 340.0);
+    assert_eq!(list, 290.0);
+
+    let (left, list) = directory_tree_panel_layout(340.0, 400.0, 560.0);
+    assert_eq!(left, 340.0);
+    assert_eq!(list, 210.0);
+
+    let (left, list) = directory_tree_panel_layout(340.0, 400.0, 530.0);
+    assert_eq!(left, 340.0);
+    assert_eq!(list, 180.0);
+}
+
+#[test]
+fn left_panel_width_limits_allow_wide_folder_tree() {
+    let (min, max) = directory_tree_left_panel_width_limits(640.0);
+    assert_eq!(min, 0.0);
+    assert_eq!(max, 450.0);
+    assert_eq!(clamp_directory_tree_left_panel_width(500.0, 640.0), 450.0);
 }
 
 #[test]
@@ -276,8 +300,8 @@ fn directory_tree_panel_layout_honors_saved_split() {
 #[test]
 fn directory_tree_panel_layout_shrinks_for_display_on_narrow_viewport() {
     let (left, list) = directory_tree_panel_layout(340.0, 400.0, 364.0);
-    assert!(left + list <= 354.0);
-    assert!(list >= DIRECTORY_TREE_RIGHT_MIN_WIDTH);
+    assert_eq!(left, 174.0);
+    assert_eq!(list, 180.0);
     // Stored preferences are unchanged — only the layout tuple shrinks.
     let mut state = DirectoryTreeState::default();
     state.tree.left_panel_width = 340.0;
