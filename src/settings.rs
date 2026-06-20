@@ -1063,6 +1063,53 @@ mod tests {
     }
 
     #[test]
+    fn directory_tree_window_settings_yaml_roundtrip() {
+        let yaml = r#"browse_mode: tree
+directory_tree_window_inner_size: [800, 600]
+directory_tree_window_outer_position: [100, 50]
+directory_tree_window_maximized: true
+directory_tree_window_restore_outer_position: [120, 80]
+directory_tree_window_restore_inner_size: [900, 700]
+directory_tree_window_maximized_inner_size: [1920, 1080]
+directory_tree_window_maximized_screen_center: [960, 540]
+"#;
+        let settings: Settings = serde_yaml::from_str(yaml).expect("deserialize window fields");
+        assert_eq!(settings.directory_tree_window_inner_size, Some([800, 600]));
+        assert_eq!(
+            settings.directory_tree_window_outer_position,
+            Some([100, 50])
+        );
+        assert!(settings.directory_tree_window_maximized);
+        assert_eq!(
+            settings.directory_tree_window_restore_outer_position,
+            Some([120, 80])
+        );
+        assert_eq!(
+            settings.directory_tree_window_restore_inner_size,
+            Some([900, 700])
+        );
+        assert_eq!(
+            settings.directory_tree_window_maximized_inner_size,
+            Some([1920, 1080])
+        );
+        assert_eq!(
+            settings.directory_tree_window_maximized_screen_center,
+            Some([960, 540])
+        );
+
+        let roundtrip = serde_yaml::to_string(&settings).expect("serialize settings");
+        let again: Settings = serde_yaml::from_str(&roundtrip).expect("re-deserialize settings");
+        assert_eq!(
+            settings.directory_tree_window_maximized,
+            again.directory_tree_window_maximized
+        );
+        assert_eq!(
+            settings.directory_tree_window_restore_inner_size,
+            again.directory_tree_window_restore_inner_size
+        );
+    }
+
+    #[test]
     fn directory_tree_maximized_startup_outer_position_prefers_saved_restore() {
         let settings = Settings {
             directory_tree_window_maximized: true,

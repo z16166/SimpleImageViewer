@@ -28,6 +28,10 @@ use crate::loader::{
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
 
+/// Maximum strip preview textures retained in memory (ring-distance eviction).
+///
+/// Eviction scans all cached indices when over cap (`evict_if_needed` is O(n) per insert).
+/// The cap stays at 128 by design so this scan is cheap; raise only with an LRU structure.
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
@@ -238,6 +242,9 @@ impl DirectoryTreeStripCache {
         self.bump_gpu_revision();
     }
 
+    /// Drop the list-preview entry farthest from `current_index` on the circular file list.
+    ///
+    /// Intentionally O(n) over at most [`DIRECTORY_TREE_STRIP_CACHE_MAX`] entries; see const docs.
     fn evict_if_needed(&mut self, current_index: usize, total_count: usize) {
         if total_count == 0 {
             return;

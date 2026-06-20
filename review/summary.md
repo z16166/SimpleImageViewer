@@ -21,7 +21,7 @@
 | **trae** | R4 | 全量 diff | 10 项；tr#1 read_dir inflight 等在 R5 已修 |
 | **trae** | R5–R6 | 修复补丁 | R5-H1/H2/M3 等在 R6 已修；R6 判定可合并 |
 
-**跨轮已关闭且当前代码可确认修复的代表项（不再列入下文）：** Places 异步化、EXIF-first 缩略图、mmap 单次映射、generation 体系、扫描/ read_dir 超时、channel 有界与 loading 卡死、Linux folder_picker 编译、键盘双派发、scan Done 排序与 strip invalidate、`sync_warning` 用户可见提示、inflight_release 侧信道、nodes cap 与 `loaded_children` 等。2026-06-20 后续补丁另关闭 ISSUE-04/05/07/09/11/12/16/25（见 §3）；Detached/Embedded 平台问题（egui-wgpu staging panic、Embedded 导航 splitter 拖拽）已修并手工验证 Linux/macOS。
+**跨轮已关闭且当前代码可确认修复的代表项（不再列入下文）：** Places 异步化、EXIF-first 缩略图、mmap 单次映射、generation 体系、扫描/ read_dir 超时、channel 有界与 loading 卡死、Linux folder_picker 编译、键盘双派发、scan Done 排序与 strip invalidate、`sync_warning` 用户可见提示、inflight_release 侧信道、nodes cap 与 `loaded_children` 等。2026-06-20 补丁关闭 ISSUE-04/05/07/09/11/12/16/25；同日后补丁关闭 ISSUE-08/10/22/23/24/26/27（见 §3）。Detached/Embedded 平台问题（egui-wgpu staging panic、Embedded 导航 splitter 拖拽）已修并手工验证 Linux/macOS。
 
 ---
 
@@ -37,35 +37,9 @@ _（ISSUE-01 已通过 ArcSwap RCU 重构，见 §3。ISSUE-02 已修复。）_
 
 ### 2.2 性能与 I/O（Medium）
 
-_（ISSUE-04、05、07、09、11、12 已于 2026-06-20 修复，见 §3。）_
+_（ISSUE-04、05、07、08、09、11、12 已于 2026-06-20 修复或文档化，见 §3。）_
 
-#### ISSUE-08 · Strip 缓存淘汰 `evict_if_needed` 为 O(n) 全表扫描
-
-| 项 | 内容 |
-|----|------|
-| **来源** | trae R1 #3、R2 #3；cursor R2 m-R2-6 |
-| **位置** | `src/app/directory_tree_strip_cache.rs:241+` |
-| **现状** | 每次插入超 cap 时 `max_by_key` 遍历全部 key 计算环形距离。 |
-| **影响** | cap=128 时可接受；若未来提高上限或频繁插入，CPU 上升。 |
-| **建议修复** | 维护 LRU 链表或 BTreeSet 按距离排序；或文档明确 128 上限假设。 |
-
----
-
-_（ISSUE-09 已于 2026-06-20 修复，见 §3。）_
-
-#### ISSUE-10 · read_dir 超时后 orphan helper 线程无法取消
-
-| 项 | 内容 |
-|----|------|
-| **来源** | cursor R3 m-R3-5、R5 R3；deepseek R2 §2；trae R2 #10 |
-| **位置** | `src/app/directory_tree/workers.rs:156–181` |
-| **现状** | `orphan_flag` 已回收 inflight **计数**（Round 5 修复）；线程仍运行至 NFS/`read_dir` 返回。最多约 4 个 orphan + 栈占用。 |
-| **影响** | 离线 UNC 快速连点仍可能短时积累后台线程；不再阻塞新请求。 |
-| **建议修复** | 文档已注释设计取舍；长期可考虑专用 read_dir executor 或平台相关取消（非必须）。 |
-
----
-
-_（ISSUE-11、12 已于 2026-06-20 修复，见 §3。）_
+_（ISSUE-10 已于 2026-06-20 标注为已知设计取舍，见 §3。）_
 
 ### 2.3 功能 / 体验（Medium）
 
@@ -155,66 +129,9 @@ _（ISSUE-16 已于 2026-06-20 手工验证关闭，见 §3。）_
 
 ---
 
-#### ISSUE-22 · Strip 线程池最终 fallback 仍 `expect` panic
-
-| 项 | 内容 |
-|----|------|
-| **来源** | trae R2 #8、R3 #5 |
-| **位置** | `src/loader/preview_caps.rs:197` |
-| **现状** | 2 线程 → 1 线程 → global pool 均失败后 panic。 |
-| **影响** | 系统无法创建任何 rayon pool 时进程退出；极罕见。 |
-| **建议修复** | 与 `REFINEMENT_POOL` 一致：最终 fallback 单线程 `std::thread` 执行 strip job。 |
-
----
-
 ### 2.5 测试与代码质量（Low）
 
-#### ISSUE-23 · 关键逻辑缺少回归单测
-
-| 项 | 内容 |
-|----|------|
-| **来源** | cursor R3 m-R3-3、R5 R10、R6 R6-L3/L4 |
-| **缺失覆盖** | `sync_warning` / defer drop；sort-active `sync_images` 增量路径；inflight_release 有界 channel 路径 |
-| **已补覆盖（2026-06-20）** | `coalesce_children_requests` / `coalesce_metadata_requests`；`split_metadata_request`；`mark_children_request_failed`；`normalize_logical_size` |
-| **影响** | 后续重构易回归；review 依赖人工 grep。 |
-| **建议修复** | 为剩余路径各加 1–2 个单元测试。 |
-
----
-
-_（ISSUE-25 已于 2026-06-20 修复，见 §3。）_
-
-#### ISSUE-24 · UI 绘制 magic number 未收敛为命名常量
-
-| 项 | 内容 |
-|----|------|
-| **来源** | cursor R1 N1、R3 N-R3-1 |
-| **位置** | `src/app/directory_tree/ui.rs` — 如 `0.78`、`1.15_f32`（~101, 150, 309 行） |
-| **影响** | 图标比例调整需多处搜索；纯可维护性问题。 |
-| **建议修复** | 提取到 `ui.rs` 或 `mod.rs` 顶部 `const` 组（与现有 `DIRECTORY_TREE_*` 一致）。 |
-
----
-
-#### ISSUE-26 · 跨文件系统修改时间排序可能不一致
-
-| 项 | 内容 |
-|----|------|
-| **来源** | deepseek R4 #11 |
-| **位置** | `src/scanner.rs` — `modified_unix` 秒级 UTC |
-| **现状** | FAT32 2 秒精度 / 本地时间 vs NTFS UTC 混排。 |
-| **影响** | 「修改时间」列跨盘排序偶发不符合直觉。 |
-| **建议修复** | 文档说明；或统一转换为 UTC 并标注精度。 |
-
----
-
-#### ISSUE-27 · settings 中 `directory_tree_window_*` YAML 反序列化测试覆盖不全
-
-| 项 | 内容 |
-|----|------|
-| **来源** | trae R1 #8 |
-| **位置** | `src/settings.rs` — 仅有 `directory_tree_window_settings_default_to_none` |
-| **现状** | 未覆盖 maximize/restore 等字段的 YAML 往返。 |
-| **影响** | 配置迁移时默认值错误不易发现。 |
-| **建议修复** | 增加 1–2 个 YAML fixture 测试。 |
+_（ISSUE-22、23、24、25、26、27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 ---
 
@@ -233,12 +150,18 @@ _（ISSUE-25 已于 2026-06-20 修复，见 §3。）_
 | **ISSUE-04** 冷路径 JPEG 重复 mmap | **已修复**：`load_jpeg_from_mapped()`；mmap 路径传入 `open_image_data_for_directory_tree_thumb` 的 JPEG fallback，避免二次 `map`。 |
 | **ISSUE-05** 扫描 Done 双倍内存 | **已修复**：移除 `all_files_for_done`；单 `files` 向量 batch 发送后就地排序供 Done。 |
 | **ISSUE-07** 扫描 batch 阻塞 send | **已修复**：`send_scan_message()` 使用 `try_send` + 2ms 重试 + cancel 检查。 |
+| **ISSUE-08** strip 缓存 O(n) 淘汰 | **已文档化**：`DIRECTORY_TREE_STRIP_CACHE_MAX` 与 `evict_if_needed` 注释明确 cap=128 下 O(n) 可接受；提高上限需 LRU。 |
 | **ISSUE-09** sort-active `existing_paths` clone | **已修复**：`HashSet<&PathBuf>` 引用现有行；新行先收集再 `extend`，避免 reallocate 期间借用冲突。 |
+| **ISSUE-10** read_dir orphan 线程 | **已知设计取舍**：`workers.rs` 注释说明 orphan 仅回收 inflight 计数、线程不可平台级取消。 |
 | **ISSUE-11** read_dir inflight TOCTOU | **已修复**：`READ_DIR_HELPERS_INFLIGHT` 使用 `compare_exchange` CAS 循环。 |
 | **ISSUE-12** metadata 超大 coalesce 批 | **已修复**：coalesce 后 `split_metadata_request()` 按 `METADATA_BATCH_SIZE` 分片。 |
 | **ISSUE-16** macOS/Linux Detached 未测 | **已关闭（手工验证）**：Linux/macOS Embedded + Detached 正常；另修 egui-wgpu multi-viewport staging panic、Embedded 导航 splitter 拖拽。 |
+| **ISSUE-22** Strip pool panic | **已修复**：`preview_caps.rs` 多级 rayon pool fallback。 |
+| **ISSUE-23** 关键逻辑缺单测 | **已修复**：coalesce/split/mark_failed/normalize、`sync_images` sort-active、`DirectoryTreeView.sync_warning`、strip inflight `try_send` 单测。 |
+| **ISSUE-24** UI magic number | **已修复**：`DIRECTORY_TREE_UI_STROKE_WIDTH` 等命名常量收敛 chevron/图标比例。 |
 | **ISSUE-25** strip inflight 无界 channel | **已修复**：`lifecycle.rs` `bounded(64)`；`strip_previews.rs` `try_send` + `warn!`。 |
-| **ISSUE-22** Strip pool panic（代码） | **代码已修**（`preview_caps.rs` 多级 fallback）；§2.4 条目暂保留，待架构类核实后是否移出该分类。 |
+| **ISSUE-26** 跨 FS mtime 排序 | **已文档化**：`scanner.rs` `validated_metadata` 注释说明 UTC 秒级与 FAT/NTFS 混排限制。 |
+| **ISSUE-27** directory_tree_window YAML 测试 | **已修复**：`directory_tree_window_settings_yaml_roundtrip` 覆盖 maximize/restore 等字段往返。 |
 
 ---
 
@@ -246,11 +169,9 @@ _（ISSUE-25 已于 2026-06-20 修复，见 §3。）_
 
 | 优先级 | Issue ID | 理由 |
 |--------|----------|------|
-| P1 | ISSUE-23 | 补全 defer/sync/inflight 单测 |
-| P2 | ISSUE-13, ISSUE-15 | 排序 locale / Linux strip 格式 |
-| P3 | ISSUE-08, ISSUE-21 | 性能 polish（strip 淘汰 / 锁粒度） |
-| P4 | ISSUE-17–22 | 架构 / fork 长期项（待核实方案） |
-| P5 | ISSUE-10, ISSUE-24, ISSUE-26, ISSUE-27 | 已知取舍或 Low 影响 |
+| P1 | ISSUE-13 | 中文目录排序体验 |
+| P2 | ISSUE-15 | Linux strip 格式 fast-path / 文档 |
+| P3 | ISSUE-17–21 | 架构 / fork 长期项（待核实方案） |
 
 ---
 
@@ -259,9 +180,9 @@ _（ISSUE-25 已于 2026-06-20 修复，见 §3。）_
 | 类别 | 数量 |
 |------|------|
 | 18 份审核文档合计提出（去重前） | ~120+ 条发现 |
-| Round 6 后仍存在于当前代码 | **14 条**（ISSUE-08、10、13、15、17–27；不含已关闭的 01–07、09、11–12、14、16、25） |
-| 其中 Medium | 5 |
-| Low / 架构取舍 | 9 |
+| 当前仍存在于代码 backlog | **7 条**（ISSUE-13、15、17–21） |
+| 其中 Medium（功能/体验） | 2 |
+| 架构 / Fork | 5 |
 
 ---
 

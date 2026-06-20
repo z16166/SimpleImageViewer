@@ -813,3 +813,21 @@ impl ImageViewerApp {
         self.queue_save();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::send_strip_inflight_release;
+
+    #[test]
+    fn strip_inflight_release_sends_index_on_bounded_channel() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        send_strip_inflight_release(&tx, 42);
+        assert_eq!(rx.try_recv().ok(), Some(42));
+    }
+
+    #[test]
+    fn strip_inflight_release_try_send_when_full_does_not_panic() {
+        let (tx, _rx) = crossbeam_channel::bounded(0);
+        send_strip_inflight_release(&tx, 1);
+    }
+}

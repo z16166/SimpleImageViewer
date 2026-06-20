@@ -824,3 +824,55 @@ fn mark_children_request_failed_clears_loading_and_sets_error() {
     assert!(!node.loading);
     assert_eq!(node.error.as_deref(), Some("read busy"));
 }
+
+#[test]
+fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
+    let mut state = DirectoryTreeState::default();
+    state.image_list_sort_active = true;
+    let path_a = PathBuf::from("/dir/b.jpg");
+    let path_b = PathBuf::from("/dir/a.jpg");
+    state.image_rows = vec![
+        DirectoryTreeFileRow {
+            path: path_a.clone(),
+            name: "b".to_string(),
+            size_bytes: 1,
+            modified_unix: None,
+        },
+        DirectoryTreeFileRow {
+            path: path_b.clone(),
+            name: "a".to_string(),
+            size_bytes: 2,
+            modified_unix: None,
+        },
+    ];
+    let path_c = PathBuf::from("/dir/c.jpg");
+    let images = vec![path_b.clone(), path_a.clone(), path_c.clone()];
+    state.sync_images(
+        &images,
+        &[2, 1, 3],
+        &[None, None, None],
+        0,
+        true,
+        String::new(),
+    );
+    assert_eq!(state.image_rows.len(), 3);
+    assert!(state.image_rows.iter().any(|row| row.path == path_c));
+    assert_eq!(
+        state
+            .image_rows
+            .iter()
+            .filter(|row| row.path == path_a)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn directory_tree_view_carries_sync_warning_from_state() {
+    use super::view::DirectoryTreeView;
+
+    let mut state = DirectoryTreeState::default();
+    state.sync_warning = Some("sync dropped".to_string());
+    let view = DirectoryTreeView::from_state(&state);
+    assert_eq!(view.sync_warning.as_deref(), Some("sync dropped"));
+}

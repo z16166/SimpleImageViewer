@@ -138,6 +138,9 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
 }
 
 /// Returns the file size and modified time for a regular local file metadata probe.
+///
+/// `modified_unix` is whole UTC seconds from `Metadata::modified()`. Cross-volume scans may
+/// mix FAT32 2-second precision with NTFS/exFAT timestamps; sort-by-modified is best-effort.
 fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
     let len = metadata.len();
     if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {

@@ -184,6 +184,8 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
     // Orphan threads cannot be cancelled on all platforms; the flag only recycles the
     // inflight cap so new reads can proceed while a timed-out helper keeps running.
+    // Design tradeoff: up to MAX_READ_DIR_HELPERS_INFLIGHT orphan threads may linger on
+    // slow/offline paths until the OS `read_dir` call returns.
     let orphan_flag = Arc::new(AtomicBool::new(false));
     let orphan_for_thread = Arc::clone(&orphan_flag);
     if std::thread::Builder::new()

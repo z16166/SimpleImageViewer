@@ -60,6 +60,9 @@ pub(super) const DIRECTORY_TREE_COL_SIZE_MIN_WIDTH: f32 = 56.0;
 pub(super) const DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH: f32 = 96.0;
 pub(super) const DIRECTORY_TREE_COL_NAME_MIN_WIDTH: f32 = 32.0;
 pub(super) const DIRECTORY_TREE_INDENT: f32 = 14.0;
+pub(super) const DIRECTORY_TREE_UI_STROKE_WIDTH: f32 = 1.15;
+pub(super) const DIRECTORY_TREE_NODE_ICON_DRAW_RATIO: f32 = 0.78;
+pub(super) const DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO: f32 = 0.34;
 const THIS_PC_TREE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
 const NETWORK_TREE_PATH: &str = "\\\\?\\siv-tree\\Network";
 

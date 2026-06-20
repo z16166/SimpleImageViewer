@@ -33,14 +33,15 @@ use crate::ui::osd::{FORMAT_FILE_SIZE_WIDTH_SAMPLES, format_file_modified, forma
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
     DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
-    DIRECTORY_TREE_COL_SIZE_MIN_WIDTH, DIRECTORY_TREE_EXPAND_ICON_WIDTH,
-    DIRECTORY_TREE_FOLDER_ICON_WIDTH, DIRECTORY_TREE_HEADER_HEIGHT,
-    DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT, DIRECTORY_TREE_INDENT,
+    DIRECTORY_TREE_COL_SIZE_MIN_WIDTH, DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO,
+    DIRECTORY_TREE_EXPAND_ICON_WIDTH, DIRECTORY_TREE_FOLDER_ICON_WIDTH,
+    DIRECTORY_TREE_HEADER_HEIGHT, DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT, DIRECTORY_TREE_INDENT,
     DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO, DIRECTORY_TREE_LEFT_MIN_WIDTH,
-    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
-    DirectoryTreeCommand, DirectoryTreeFileRow, DirectoryTreeListPreviewLayout, DirectoryTreeNode,
-    DirectoryTreeState, ImageListSortColumn, is_network_tree_path, is_places_sentinel_path,
-    is_this_pc_tree_path, network_tree_path, this_pc_tree_path,
+    DIRECTORY_TREE_NODE_ICON_DRAW_RATIO, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT,
+    DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand,
+    DirectoryTreeFileRow, DirectoryTreeListPreviewLayout, DirectoryTreeNode, DirectoryTreeState,
+    ImageListSortColumn, is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path,
+    network_tree_path, this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +107,7 @@ fn directory_tree_node_expandable(node: &DirectoryTreeNode, path: &Path) -> bool
 
 fn paint_tree_expand_chevron(ui: &mut egui::Ui, expanded: bool, response: &egui::Response) {
     let stroke = egui::Stroke::new(
-        1.15_f32,
+        DIRECTORY_TREE_UI_STROKE_WIDTH,
         ui.visuals()
             .widgets
             .noninteractive
@@ -155,10 +156,13 @@ fn paint_directory_tree_node_icon(
     icon: DirectoryTreeNodeIcon,
     palette: &ThemePalette,
 ) {
-    let size = rect.width().min(rect.height()) * 0.78;
+    let size = rect.width().min(rect.height()) * DIRECTORY_TREE_NODE_ICON_DRAW_RATIO;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let painter = ui.painter();
-    let stroke = egui::Stroke::new(1.15_f32, palette.text_normal.gamma_multiply(0.88));
+    let stroke = egui::Stroke::new(
+        DIRECTORY_TREE_UI_STROKE_WIDTH,
+        palette.text_normal.gamma_multiply(0.88),
+    );
     let accent = palette.accent2;
     let fill = accent.gamma_multiply(0.82);
     let soft_fill = accent.gamma_multiply(0.28);
@@ -314,7 +318,10 @@ fn paint_directory_tree_node_icon(
             KnownFolderKind::Downloads => {
                 let tray = egui::Rect::from_center_size(
                     icon_rect.center() + egui::vec2(0.0, icon_rect.height() * 0.16),
-                    egui::vec2(icon_rect.width() * 0.78, icon_rect.height() * 0.34),
+                    egui::vec2(
+                        icon_rect.width() * DIRECTORY_TREE_NODE_ICON_DRAW_RATIO,
+                        icon_rect.height() * DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO,
+                    ),
                 );
                 painter.rect(tray, 1.5, soft_fill, stroke, egui::StrokeKind::Inside);
                 painter.line_segment(
