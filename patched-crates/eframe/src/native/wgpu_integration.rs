@@ -940,9 +940,23 @@ impl WgpuWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec() - vsync_secs); // don't count auto-save time as part of regular frame time
 
-        if viewport_id == ViewportId::ROOT {
-            integration.maybe_autosave(app.as_mut(), window_opt.as_deref());
-        }
+        // Simple Image Viewer patch: wall-clock autosave uses Instant; run it when a deferred
+        // child viewport paints so settings persist while ROOT is unfocused (review ISSUE-20).
+        let root_window_for_autosave = if viewport_id == ViewportId::ROOT {
+            None
+        } else {
+            shared
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.clone())
+        };
+        let autosave_window = if viewport_id == ViewportId::ROOT {
+            window_opt.as_deref()
+        } else {
+            root_window_for_autosave.as_deref()
+        };
+        integration.maybe_autosave(app.as_mut(), autosave_window);
 
         if let Some(window) = &window_opt
             && is_invisible_or_minimized(window)

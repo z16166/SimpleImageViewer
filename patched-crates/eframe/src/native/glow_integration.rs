@@ -896,9 +896,22 @@ impl GlowWinitRunning<'_> {
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
-        if viewport_id == ViewportId::ROOT {
-            integration.maybe_autosave(app.as_mut(), Some(&window));
-        }
+        // Simple Image Viewer patch: same wall-clock autosave fix as wgpu_integration (ISSUE-20).
+        let root_window_for_autosave = if viewport_id == ViewportId::ROOT {
+            None
+        } else {
+            glutin
+                .borrow()
+                .viewports
+                .get(&ViewportId::ROOT)
+                .and_then(|vp| vp.window.clone())
+        };
+        let autosave_window = if viewport_id == ViewportId::ROOT {
+            Some(window.as_ref())
+        } else {
+            root_window_for_autosave.as_deref()
+        };
+        integration.maybe_autosave(app.as_mut(), autosave_window);
 
         if is_invisible_or_minimized(&window) {
             // On Mac, a minimized Window uses up all CPU:

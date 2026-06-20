@@ -15,6 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Image list sort order and comparison helpers.
+//!
+//! Name sorting uses Unicode code-point order (case-insensitive), not locale collation.
+//! Locale-aware sorting is a **product decision: not planned** (ISSUE-13).
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};

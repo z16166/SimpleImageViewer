@@ -15,6 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Lightweight directory-tree list thumbnails opened by path (independent of main preload).
+//!
+//! **Platform strip decode:** Windows and macOS use WIC / ImageIO fast paths for many
+//! registered extensions and RAW fallbacks. Linux relies on libheif/libavif/libraw and the
+//! generic `image` crate — list previews for some formats are slower or may skip embedded
+//! previews; main-window viewing uses the full loader stack unchanged.
 
 use std::path::{Path, PathBuf};
 
