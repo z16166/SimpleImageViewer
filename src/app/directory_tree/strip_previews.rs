@@ -30,6 +30,7 @@ use crate::loader::{
     preview_aspect_matches_logical,
 };
 
+#[cfg(target_os = "windows")]
 use super::workers::strip_worker_com_initialized;
 use super::{
     DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS, DirectoryTreeListPreviewLayout,

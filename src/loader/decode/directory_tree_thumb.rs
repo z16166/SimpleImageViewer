@@ -19,10 +19,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::hdr::types::HdrToneMapSettings;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use crate::loader::apply_exif_orientation_to_image_data;
 use crate::loader::{
-    DecodedImage, ImageData, TiledImageSource, apply_exif_orientation_to_image_data,
-    decoded_looks_like_black_placeholder, extract_exif_thumbnail, extract_exif_thumbnail_from_mmap,
-    hdr_to_sdr_with_user_tone, preview_aspect_matches_logical,
+    DecodedImage, ImageData, TiledImageSource, decoded_looks_like_black_placeholder,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_mmap, hdr_to_sdr_with_user_tone,
+    preview_aspect_matches_logical,
 };
 
 use super::assemble::make_image_data;

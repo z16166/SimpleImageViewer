@@ -236,8 +236,3 @@ pub(super) fn strip_worker_com_initialized() -> bool {
         hr.is_ok() || hr == RPC_E_CHANGED_MODE
     }
 }
-
-#[cfg(not(target_os = "windows"))]
-pub(super) fn strip_worker_com_initialized() -> bool {
-    true
-}
