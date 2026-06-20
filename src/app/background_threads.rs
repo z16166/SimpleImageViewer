@@ -52,13 +52,14 @@ impl BackgroundThreadJoiner {
 
     pub(crate) fn join_all(&mut self, timeout: Duration) {
         let handles = std::mem::take(&mut *self.handles.lock());
+        let total = handles.len();
         let deadline = Instant::now() + timeout;
-        for handle in handles {
+        for (index, handle) in handles.into_iter().enumerate() {
             if Instant::now() >= deadline {
                 log::warn!(
                     "[BackgroundThreads] Join timed out after {:?}; {} thread(s) left detached",
                     timeout,
-                    1
+                    total - index
                 );
                 return;
             }

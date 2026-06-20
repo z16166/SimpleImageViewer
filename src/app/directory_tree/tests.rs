@@ -287,16 +287,16 @@ fn directory_tree_panel_layout_shrinks_for_display_on_narrow_viewport() {
 }
 
 #[test]
-    fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
+fn visible_strip_row_indices_skips_stale_range_while_scroll_pending() {
     assert!(
-        ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), true, 200, false).is_empty()
+        ImageViewerApp::visible_strip_row_indices(Some((100, 110)), true, 200, false).is_empty()
     );
     assert_eq!(
-        ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), true, 200, true),
+        ImageViewerApp::visible_strip_row_indices(Some((100, 110)), true, 200, true),
         (100..110).collect::<Vec<_>>()
     );
     assert_eq!(
-        ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), false, 200, false),
+        ImageViewerApp::visible_strip_row_indices(Some((100, 110)), false, 200, false),
         (100..110).collect::<Vec<_>>()
     );
 }

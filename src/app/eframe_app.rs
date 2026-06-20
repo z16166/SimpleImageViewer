@@ -109,9 +109,8 @@ impl eframe::App for ImageViewerApp {
                 log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
             }
         }
-        self.background_threads.join_all(
-            crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT,
-        );
+        self.background_threads
+            .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);
         self.directory_tree.join_workers();
         self.directory_tree
             .viewpaint_app

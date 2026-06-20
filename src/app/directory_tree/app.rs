@@ -37,12 +37,12 @@ use super::ui::{
 use super::{
     DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH, DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
     DIRECTORY_TREE_EMBEDDED_MIN_WIDTH, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT, DIRECTORY_TREE_MIN_WIDTH,
-    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
-    DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
-    DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
-    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, FileMetadataRequest, ImageListSortColumn,
-    domains, is_places_sentinel_path, view,
+    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT,
+    DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
+    DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
+    DirectoryTreeListPreviewLayout, DirectoryTreeListSnapshot, DirectoryTreeListState,
+    DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
+    FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_path, view,
 };
 
 impl ImageViewerApp {
@@ -61,9 +61,12 @@ impl ImageViewerApp {
         metadata_tx: &crossbeam_channel::Sender<FileMetadataRequest>,
         request: FileMetadataRequest,
     ) -> bool {
-        metadata_tx.try_send(request).map_err(|err| {
-            log::warn!("[DirectoryTree] file metadata request dropped: {err}");
-        }).is_ok()
+        metadata_tx
+            .try_send(request)
+            .map_err(|err| {
+                log::warn!("[DirectoryTree] file metadata request dropped: {err}");
+            })
+            .is_ok()
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
@@ -394,7 +397,8 @@ impl ImageViewerApp {
                     let mut tree = self.directory_tree.tree.lock();
                     tree.places_loading = false;
                     tree.places_load_started_at = None;
-                    tree.places_load_error = Some(t!("directory_tree.places_load_failed").to_string());
+                    tree.places_load_error =
+                        Some(t!("directory_tree.places_load_failed").to_string());
                 }
             }
             return;
@@ -403,9 +407,9 @@ impl ImageViewerApp {
         let timed_out = {
             let tree = self.directory_tree.tree.lock();
             tree.places_loading
-                && tree
-                    .places_load_started_at
-                    .is_some_and(|started| started.elapsed() > super::DIRECTORY_TREE_PLACES_LOAD_TIMEOUT)
+                && tree.places_load_started_at.is_some_and(|started| {
+                    started.elapsed() > super::DIRECTORY_TREE_PLACES_LOAD_TIMEOUT
+                })
         };
         if timed_out {
             log::warn!(
@@ -697,10 +701,7 @@ impl ImageViewerApp {
         list: &mut DirectoryTreeListState,
     ) {
         if let Some(width) = self.settings.directory_tree_folder_panel_width {
-            tree.left_panel_width = width.clamp(
-                DIRECTORY_TREE_LEFT_MIN_WIDTH,
-                f32::MAX,
-            );
+            tree.left_panel_width = width.clamp(DIRECTORY_TREE_LEFT_MIN_WIDTH, f32::MAX);
         }
         if let Some(width) = self.settings.directory_tree_image_list_panel_width {
             list.image_list_panel_width = width.max(DIRECTORY_TREE_RIGHT_MIN_WIDTH);
@@ -1188,8 +1189,7 @@ impl ImageViewerApp {
                 request,
             ) && let Some(mut list) = self.directory_tree.list.try_lock()
             {
-                list.sync_warning =
-                    Some(t!("directory_tree.metadata_request_busy").to_string());
+                list.sync_warning = Some(t!("directory_tree.metadata_request_busy").to_string());
             }
         }
 

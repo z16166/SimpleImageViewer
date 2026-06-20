@@ -31,9 +31,37 @@ pub(super) fn image_list_sort_order(
     sizes: &[u64],
     modified: &[Option<i64>],
 ) -> Vec<usize> {
+    let name_keys: Option<Vec<String>> = if column == ImageListSortColumn::Name {
+        Some(paths.iter().map(|path| file_name_sort_key(path)).collect())
+    } else {
+        None
+    };
+    #[cfg(target_os = "windows")]
+    let windows_name_keys: Option<Vec<Vec<u16>>> = if column == ImageListSortColumn::Name {
+        Some(
+            name_keys
+                .as_ref()
+                .expect("name keys")
+                .iter()
+                .map(|key| key.encode_utf16().collect())
+                .collect(),
+        )
+    } else {
+        None
+    };
     let mut order: Vec<usize> = (0..len).collect();
     order.sort_by(|&left, &right| {
-        let ordering = compare_image_list_sort_keys(left, right, column, paths, sizes, modified);
+        let ordering = compare_image_list_sort_keys_with_cache(
+            left,
+            right,
+            column,
+            paths,
+            sizes,
+            modified,
+            name_keys.as_deref(),
+            #[cfg(target_os = "windows")]
+            windows_name_keys.as_deref(),
+        );
         let primary = if ascending {
             ordering
         } else {
@@ -50,6 +78,42 @@ pub(super) fn image_list_sort_order(
     order
 }
 
+fn compare_image_list_sort_keys_with_cache(
+    left: usize,
+    right: usize,
+    column: ImageListSortColumn,
+    paths: &[PathBuf],
+    sizes: &[u64],
+    modified: &[Option<i64>],
+    name_keys: Option<&[String]>,
+    #[cfg(target_os = "windows")] windows_name_keys: Option<&[Vec<u16>]>,
+) -> Ordering {
+    debug_assert!(left < paths.len() && right < paths.len());
+    match column {
+        ImageListSortColumn::Name => {
+            if let Some(keys) = name_keys {
+                #[cfg(target_os = "windows")]
+                if let Some(wide_keys) = windows_name_keys {
+                    return windows_locale_compare_wide(&wide_keys[left], &wide_keys[right]);
+                }
+                locale_compare_str(&keys[left], &keys[right])
+            } else {
+                compare_file_names(&paths[left], &paths[right])
+            }
+        }
+        ImageListSortColumn::Size => sizes
+            .get(left)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&sizes.get(right).copied().unwrap_or(0)),
+        ImageListSortColumn::Modified => compare_optional_unix_time(
+            modified.get(left).copied().flatten(),
+            modified.get(right).copied().flatten(),
+        ),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn compare_image_list_sort_keys(
     left: usize,
     right: usize,
@@ -58,6 +122,7 @@ pub(super) fn compare_image_list_sort_keys(
     sizes: &[u64],
     modified: &[Option<i64>],
 ) -> Ordering {
+    debug_assert!(left < paths.len() && right < paths.len());
     match column {
         ImageListSortColumn::Name => compare_file_names(&paths[left], &paths[right]),
         ImageListSortColumn::Size => sizes
@@ -86,7 +151,7 @@ fn compare_file_names(left: &Path, right: &Path) -> Ordering {
 }
 
 fn locale_compare_str(left: &str, right: &str) -> Ordering {
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
         return windows_locale_compare(left, right);
     }
@@ -94,25 +159,42 @@ fn locale_compare_str(left: &str, right: &str) -> Ordering {
     {
         return macos_locale_compare(left, right);
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         left.to_lowercase().cmp(&right.to_lowercase())
     }
 }
 
-#[cfg(windows)]
-fn windows_locale_compare(left: &str, right: &str) -> Ordering {
+#[cfg(target_os = "windows")]
+fn windows_locale_compare_wide(left: &[u16], right: &[u16]) -> Ordering {
     use windows::Win32::Globalization::CompareStringOrdinal;
 
-    let left_wide: Vec<u16> = left.encode_utf16().collect();
-    let right_wide: Vec<u16> = right.encode_utf16().collect();
-    let result = unsafe { CompareStringOrdinal(&left_wide, &right_wide, true) };
+    let result = unsafe { CompareStringOrdinal(left, right, true) };
     match result.0 {
         1 => Ordering::Less,
         2 => Ordering::Equal,
         3 => Ordering::Greater,
-        _ => left.to_lowercase().cmp(&right.to_lowercase()),
+        _ => left
+            .iter()
+            .map(|unit| char::from_u32(*unit as u32).unwrap_or('\0'))
+            .collect::<String>()
+            .to_lowercase()
+            .cmp(
+                &right
+                    .iter()
+                    .map(|unit| char::from_u32(*unit as u32).unwrap_or('\0'))
+                    .collect::<String>()
+                    .to_lowercase(),
+            ),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_locale_compare(left: &str, right: &str) -> Ordering {
+    windows_locale_compare_wide(
+        &left.encode_utf16().collect::<Vec<_>>(),
+        &right.encode_utf16().collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -122,10 +204,14 @@ fn macos_locale_compare(left: &str, right: &str) -> Ordering {
 
     let left_cf = CFString::new(left);
     let right_cf = CFString::new(right);
-    let flags = CFStringCompareFlags::COMPARE_CASE_INSENSITIVE
-        | CFStringCompareFlags::COMPARE_LOCALIZED;
+    let flags =
+        CFStringCompareFlags::COMPARE_CASE_INSENSITIVE | CFStringCompareFlags::COMPARE_LOCALIZED;
     let result = unsafe {
-        core_foundation::string::CFStringCompare(left_cf.as_concrete_TypeRef(), right_cf.as_concrete_TypeRef(), flags)
+        core_foundation::string::CFStringCompare(
+            left_cf.as_concrete_TypeRef(),
+            right_cf.as_concrete_TypeRef(),
+            flags,
+        )
     };
     match result {
         core_foundation::string::CFComparisonResult::LessThan => Ordering::Less,

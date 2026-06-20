@@ -14,13 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
-use image::imageops::FilterType;
 
+use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{
     DecodedImage, PreviewStage, decoded_looks_like_black_placeholder,
     preview_aspect_matches_logical,
@@ -50,6 +49,7 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
 
 /// Limit GPU texture uploads per paint pass (checklist #3).
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 4;
+pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
@@ -85,7 +85,7 @@ impl DirectoryTreeStripCache {
         self.lru_order.push_back(index);
     }
 
-    fn remove_index(&mut self, index: usize) {
+    pub(crate) fn remove_index(&mut self, index: usize) {
         self.textures.remove(&index);
         self.preview_max_side.remove(&index);
         self.preview_stage.remove(&index);
@@ -233,6 +233,7 @@ impl DirectoryTreeStripCache {
         if let Some(logical) = self.logical_sizes.remove(&from) {
             self.logical_sizes.insert(to, logical);
         }
+        self.lru_order.retain(|idx| *idx != to);
         for entry in &mut self.lru_order {
             if *entry == from {
                 *entry = to;
@@ -280,6 +281,7 @@ impl DirectoryTreeStripCache {
     }
 
     fn evict_if_needed(&mut self) {
+        let mut evicted = false;
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
             let Some(idx) = self.lru_order.pop_front() else {
                 break;
@@ -289,8 +291,11 @@ impl DirectoryTreeStripCache {
                 self.preview_max_side.remove(&idx);
                 self.preview_stage.remove(&idx);
                 self.logical_sizes.remove(&idx);
-                self.bump_gpu_revision();
+                evicted = true;
             }
+        }
+        if evicted {
+            self.bump_gpu_revision();
         }
     }
 }
@@ -329,25 +334,12 @@ pub(crate) fn should_replace_strip_thumbnail(
     }
 }
 
-pub(crate) fn downsample_decoded_for_strip<'a>(
-    decoded: &'a DecodedImage,
-    max_side: u32,
-) -> Result<Cow<'a, DecodedImage>, String> {
-    let max_dim = decoded.width.max(decoded.height);
-    if max_dim <= max_side {
-        return Ok(Cow::Borrowed(decoded));
-    }
-    let src = decoded.clone().into_rgba8_image()?;
-    let scale = max_side as f32 / max_dim as f32;
-    let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
-    let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
-    let resized = image::imageops::resize(&src, out_w, out_h, FilterType::Triangle);
-    Ok(Cow::Owned(DecodedImage::from(resized)))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
+    use crate::loader::downsample_decoded_for_strip;
 
     #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {

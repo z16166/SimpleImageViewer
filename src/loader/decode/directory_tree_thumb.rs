@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::hdr::types::HdrToneMapSettings;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
+use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{
     DecodedImage, ImageData, TiledImageSource, decoded_looks_like_black_placeholder,
     extract_exif_thumbnail, extract_exif_thumbnail_from_mmap, hdr_to_sdr_with_user_tone,
@@ -37,13 +38,13 @@ use super::detect::{
     primary_decode_failure_is_final,
 };
 use super::hdr_formats::load_hdr;
+use super::is_maybe_animated;
 use super::jpeg::load_jpeg_with_target_capacity;
 use super::modern::{
     load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
 };
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
-use super::{is_maybe_animated};
 
 /// Directory-tree list previews are always SDR thumbnails, independent of main-window HDR output.
 const DIRECTORY_TREE_THUMB_HDR_CAPACITY: f32 = 1.0;
@@ -116,8 +117,7 @@ fn path_has_extension(path: &Path, ext: &str) -> bool {
 
 fn path_extension_ascii_lower(path: &Path) -> Option<String> {
     path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
 }
 
 fn open_image_data_for_directory_tree_thumb(
@@ -322,9 +322,9 @@ fn linux_raw_strip_fallback(
         None => {
             let mut processor = crate::raw_processor::RawProcessor::new()
                 .ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-            processor
-                .open(path)
-                .map_err(|err| format!("LibRaw failed and no platform fallback available: {err}"))?;
+            processor.open(path).map_err(|err| {
+                format!("LibRaw failed and no platform fallback available: {err}")
+            })?;
             processor
         }
     };
@@ -409,9 +409,16 @@ fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        source.generate_full_image_preview(max_side, max_side)
-    }));
+    let gen_result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    source.generate_full_image_preview(max_side, max_side)
+                }))
+            })
+            .join()
+            .unwrap_or(Err(Box::new(()) as Box<dyn std::any::Any + Send>))
+    });
     match gen_result {
         Ok((width, height, pixels)) if width > 0 && height > 0 => {
             Ok(DecodedImage::new(width, height, pixels))
@@ -425,17 +432,7 @@ fn downsample_decoded_to_max_side(
     decoded: &DecodedImage,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    let max_dim = decoded.width.max(decoded.height);
-    if max_dim <= max_side {
-        return Ok(decoded.clone());
-    }
-    let src = decoded.clone().into_rgba8_image()?;
-    let scale = max_side as f32 / max_dim as f32;
-    let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
-    let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
-    let resized =
-        image::imageops::resize(&src, out_w, out_h, image::imageops::FilterType::Triangle);
-    Ok(DecodedImage::from(resized))
+    downsample_decoded_for_strip(decoded, max_side).map(|cow| cow.into_owned())
 }
 
 #[cfg(test)]

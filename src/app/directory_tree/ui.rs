@@ -385,24 +385,16 @@ fn paint_tree_folder_icon(
 }
 
 fn directory_tree_row_selected_fill(palette: &ThemePalette) -> egui::Color32 {
-    if palette.is_dark {
-        egui::Color32::from_gray(78)
-    } else {
-        egui::Color32::from_rgba_unmultiplied(
-            palette.accent2.r(),
-            palette.accent2.g(),
-            palette.accent2.b(),
-            30,
-        )
-    }
+    egui::Color32::from_rgba_unmultiplied(
+        palette.accent2.r(),
+        palette.accent2.g(),
+        palette.accent2.b(),
+        if palette.is_dark { 40 } else { 30 },
+    )
 }
 
 fn directory_tree_row_selected_text(palette: &ThemePalette) -> egui::Color32 {
-    if palette.is_dark {
-        egui::Color32::from_gray(210)
-    } else {
-        palette.accent2
-    }
+    palette.accent2
 }
 
 fn paint_directory_tree_folder_name(
@@ -853,7 +845,10 @@ fn draw_directory_node(
                 node.display_name.as_str(),
                 palette,
             );
-            let name_response = name_response.on_hover_text(node.browse_path.to_string_lossy());
+            let hover_path = node.browse_path.clone();
+            let name_response = name_response.on_hover_ui(move |ui| {
+                ui.label(hover_path.to_string_lossy());
+            });
             if scroll_to_selected && selected {
                 name_response.scroll_to_me(Some(egui::Align::Center));
                 scrolled = true;
@@ -1089,10 +1084,11 @@ pub(super) fn image_list_column_layout(
 
     let available_for_right_cols =
         (row_width - gutters - thumb_w - DIRECTORY_TREE_COL_NAME_MIN_WIDTH).max(0.0);
-    let mut modified_w = (available_for_right_cols * super::DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT).clamp(
-        DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
-        ideal_modified_w,
-    );
+    let mut modified_w =
+        (available_for_right_cols * super::DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT).clamp(
+            DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
+            ideal_modified_w,
+        );
     let mut size_w = (available_for_right_cols - modified_w).clamp(0.0, ideal_size_w);
     if size_w < DIRECTORY_TREE_COL_SIZE_MIN_WIDTH && available_for_right_cols > 0.0 {
         size_w = available_for_right_cols

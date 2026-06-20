@@ -37,19 +37,17 @@ pub(super) const MAX_READ_DIR_HELPERS_INFLIGHT: usize = 4;
 pub(super) const DIRECTORY_TREE_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub(super) const DIRECTORY_TREE_RESULT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn send_worker_result<T>(
-    tx: &Sender<T>,
-    mut msg: T,
-    shutdown: &AtomicBool,
-) -> bool {
+fn send_worker_result<T>(tx: &Sender<T>, mut msg: T, shutdown: &AtomicBool) -> bool {
     let deadline = std::time::Instant::now() + DIRECTORY_TREE_RESULT_SEND_TIMEOUT;
     loop {
         match tx.try_send(msg) {
             Ok(()) => return true,
             Err(TrySendError::Full(pending)) => {
-                if shutdown.load(AtomicOrdering::Acquire)
-                    || std::time::Instant::now() >= deadline
-                {
+                if shutdown.load(AtomicOrdering::Acquire) {
+                    log::debug!("[DirectoryTree] Dropping worker result: shutting down");
+                    return false;
+                }
+                if std::time::Instant::now() >= deadline {
                     log::warn!("[DirectoryTree] Dropping worker result: result channel full");
                     return false;
                 }
@@ -213,7 +211,7 @@ impl Drop for ReadDirPathGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        if !self.orphan_flag.load(AtomicOrdering::Acquire) {
+        if !self.orphan_flag.load(AtomicOrdering::SeqCst) {
             READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
         }
     }
@@ -260,7 +258,9 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
             let _guard = InflightGuard {
                 orphan_flag: orphan_for_thread,
             };
-            let _ = tx.send(read_child_directories(&path_buf));
+            if let Err(err) = tx.send(read_child_directories(&path_buf)) {
+                log::warn!("[DirectoryTree] read_dir orphan helper failed to send result: {err}");
+            }
         })
         .is_err()
     {
@@ -274,7 +274,7 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     match rx.recv_timeout(DIRECTORY_TREE_READ_DIR_TIMEOUT) {
         Ok(result) => result,
         Err(_) => {
-            orphan_flag.store(true, AtomicOrdering::Release);
+            orphan_flag.store(true, AtomicOrdering::SeqCst);
             READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
             log::warn!(
                 "[DirectoryTree] read_dir timed out after {}s: {}",

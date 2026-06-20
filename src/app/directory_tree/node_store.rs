@@ -24,6 +24,7 @@ use super::DirectoryTreeNode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InsertNodeError {
     CapReached,
+    IdOverflow,
 }
 
 pub(crate) struct DirectoryTreeNodeArena {
@@ -84,7 +85,7 @@ impl DirectoryTreeNodeArena {
         if self.entries.len() >= max_nodes {
             return Err(InsertNodeError::CapReached);
         }
-        let id = u32::try_from(self.entries.len()).map_err(|_| InsertNodeError::CapReached)?;
+        let id = u32::try_from(self.entries.len()).map_err(|_| InsertNodeError::IdOverflow)?;
         self.entries.push(node);
         self.path_index.insert(path, id);
         Ok(())
@@ -102,7 +103,7 @@ impl DirectoryTreeNodeArena {
         if self.entries.len() >= max_nodes {
             return Err(InsertNodeError::CapReached);
         }
-        let id = u32::try_from(self.entries.len()).map_err(|_| InsertNodeError::CapReached)?;
+        let id = u32::try_from(self.entries.len()).map_err(|_| InsertNodeError::IdOverflow)?;
         self.entries.push(f());
         self.path_index.insert(path, id);
         Ok(&mut self.entries[id as usize])

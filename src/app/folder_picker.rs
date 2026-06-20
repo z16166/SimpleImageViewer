@@ -49,6 +49,7 @@ enum AsyncRfdMode {
 
 #[derive(Debug, Clone)]
 struct FolderPickerCompletion {
+    generation: u64,
     purpose: FolderPickerPurpose,
     path: Option<PathBuf>,
 }
@@ -58,6 +59,9 @@ pub(crate) struct FolderPickerRuntime {
     result_rx: Receiver<FolderPickerCompletion>,
     in_flight: bool,
     started_at: Option<std::time::Instant>,
+    /// Monotonic id for the in-flight dialog; stale worker results are ignored.
+    active_generation: u64,
+    next_generation: u64,
 }
 
 pub(crate) const FOLDER_PICKER_TIMEOUT: Duration = Duration::from_secs(600);
@@ -70,6 +74,8 @@ impl FolderPickerRuntime {
             result_rx,
             in_flight: false,
             started_at: None,
+            active_generation: 0,
+            next_generation: 0,
         }
     }
 
@@ -135,6 +141,10 @@ impl ImageViewerApp {
             return;
         }
 
+        while self.folder_picker.result_rx.try_recv().is_ok() {
+            log::debug!("[FolderPicker] Drained stale completion before opening dialog");
+        }
+
         let mut dialog = crate::app::rfd_parent::async_folder_dialog_for_main_window(frame);
         if let Some(dir) = starting_directory {
             dialog = dialog.set_directory(dir);
@@ -150,6 +160,9 @@ impl ImageViewerApp {
         }
 
         let tx = self.folder_picker.result_tx.clone();
+        self.folder_picker.next_generation = self.folder_picker.next_generation.wrapping_add(1);
+        let generation = self.folder_picker.next_generation;
+        self.folder_picker.active_generation = generation;
         self.folder_picker.in_flight = true;
         self.folder_picker.started_at = Some(Instant::now());
 
@@ -172,7 +185,11 @@ impl ImageViewerApp {
                             .map(|handle| handle.path().to_path_buf()),
                     }
                 });
-                let _ = tx.send(FolderPickerCompletion { purpose, path });
+                let _ = tx.send(FolderPickerCompletion {
+                    generation,
+                    purpose,
+                    path,
+                });
             })
         {
             log::error!("[FolderPicker] Failed to spawn picker worker thread");
@@ -196,6 +213,7 @@ impl ImageViewerApp {
                 "[FolderPicker] Dialog exceeded {}s; resetting in-flight state",
                 FOLDER_PICKER_TIMEOUT.as_secs()
             );
+            self.folder_picker.active_generation = 0;
             self.folder_picker.in_flight = false;
             self.folder_picker.started_at = None;
             self.status_message = t!("folder_picker.timed_out").to_string();
@@ -205,8 +223,18 @@ impl ImageViewerApp {
 
         match self.folder_picker.result_rx.try_recv() {
             Ok(completion) => {
+                if completion.generation != self.folder_picker.active_generation {
+                    log::debug!(
+                        "[FolderPicker] Ignoring stale result (gen {} != active {})",
+                        completion.generation,
+                        self.folder_picker.active_generation
+                    );
+                    ctx.request_repaint();
+                    return;
+                }
                 self.folder_picker.in_flight = false;
                 self.folder_picker.started_at = None;
+                self.folder_picker.active_generation = 0;
                 self.apply_folder_picker_completion(completion);
                 ctx.request_repaint();
             }

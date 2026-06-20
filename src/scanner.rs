@@ -181,7 +181,9 @@ static SCAN_THREAD_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
         .thread_name(|index| format!("siv-scan-{index}"))
         .build()
         .unwrap_or_else(|err| {
-            log::error!("[Scanner] Failed to build scan thread pool: {err}; falling back to 1 thread");
+            log::error!(
+                "[Scanner] Failed to build scan thread pool: {err}; falling back to 1 thread"
+            );
             rayon::ThreadPoolBuilder::new()
                 .num_threads(1)
                 .build()

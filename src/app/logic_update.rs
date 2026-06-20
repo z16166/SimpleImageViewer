@@ -16,9 +16,9 @@ impl ImageViewerApp {
 
     pub(super) fn should_run_logic_shared(&mut self) -> bool {
         let now = Instant::now();
-        let run = self.last_logic_shared_at.is_none_or(|t| {
-            now.saturating_duration_since(t) >= Self::LOGIC_SHARED_COALESCE
-        });
+        let run = self
+            .last_logic_shared_at
+            .is_none_or(|t| now.saturating_duration_since(t) >= Self::LOGIC_SHARED_COALESCE);
         if run {
             self.last_logic_shared_at = Some(now);
         }
@@ -344,27 +344,27 @@ impl ImageViewerApp {
         if !minimized_or_hidden
             && let Some((placement, is_fullscreen)) =
                 ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
-                let viewport = viewport.input.viewport();
-                let outer_rect = viewport.outer_rect?;
-                let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
-                let center = outer_rect.center();
-                let is_fullscreen = viewport.fullscreen.unwrap_or(false);
-                Some((
-                    CachedWindowPlacement {
-                        outer_position: [
-                            outer_rect.min.x.round() as i32,
-                            outer_rect.min.y.round() as i32,
-                        ],
-                        outer_center: [center.x.round() as i32, center.y.round() as i32],
-                        inner_size: [
-                            inner_size.x.round().max(1.0) as u32,
-                            inner_size.y.round().max(1.0) as u32,
-                        ],
-                        maximized: viewport.maximized.unwrap_or(false),
-                    },
-                    is_fullscreen,
-                ))
-            })
+                    let viewport = viewport.input.viewport();
+                    let outer_rect = viewport.outer_rect?;
+                    let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+                    let center = outer_rect.center();
+                    let is_fullscreen = viewport.fullscreen.unwrap_or(false);
+                    Some((
+                        CachedWindowPlacement {
+                            outer_position: [
+                                outer_rect.min.x.round() as i32,
+                                outer_rect.min.y.round() as i32,
+                            ],
+                            outer_center: [center.x.round() as i32, center.y.round() as i32],
+                            inner_size: [
+                                inner_size.x.round().max(1.0) as u32,
+                                inner_size.y.round().max(1.0) as u32,
+                            ],
+                            maximized: viewport.maximized.unwrap_or(false),
+                        },
+                        is_fullscreen,
+                    ))
+                })
         {
             if !placement.maximized
                 && !is_fullscreen

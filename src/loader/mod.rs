@@ -46,6 +46,7 @@ pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels
 pub use texture_cache::TextureCache;
 pub use types::*;
 
+pub(crate) use decode::downsample_decoded_for_strip;
 pub(crate) use decode::generate_directory_tree_thumb_from_path;
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,

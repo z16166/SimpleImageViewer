@@ -257,6 +257,10 @@ fn share_image_rows(
         let mut shared = Vec::with_capacity(rows.len());
         shared.extend_from_slice(previous);
         shared.extend_from_slice(&rows[prev_len..]);
+        debug_assert!(
+            shared.as_slice() == rows,
+            "share_image_rows: prefix mismatch after sharing"
+        );
         return Arc::from(shared.into_boxed_slice());
     }
     Arc::from(rows.to_vec().into_boxed_slice())

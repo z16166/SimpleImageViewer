@@ -438,8 +438,7 @@ impl DirectoryTreeRuntime {
     }
 
     pub(crate) fn shutdown_workers(&self) {
-        self.workers_shutdown
-            .store(true, AtomicOrdering::Release);
+        self.workers_shutdown.store(true, AtomicOrdering::Release);
     }
 
     pub(crate) fn join_workers(&mut self) {
@@ -458,6 +457,62 @@ impl DirectoryTreeRuntime {
 }
 
 impl DirectoryTreeTreeState {
+    fn note_nodes_cap_reached(&mut self, context_path: &Path) {
+        log::warn!(
+            "[DirectoryTree] Node cap ({MAX_DIRECTORY_TREE_NODES}) reached at {}",
+            context_path.display()
+        );
+        let message = t!("directory_tree.nodes_cap_reached").to_string();
+        if let Some(node) = self.nodes.get_mut(context_path) {
+            node.error = Some(message);
+        } else if let Some(node) = self.nodes.get_mut(&this_pc_tree_path()) {
+            node.error = Some(message);
+        }
+        self.mark_snapshot_dirty();
+    }
+
+    fn insert_tree_node(&mut self, path: PathBuf, node: DirectoryTreeNode) {
+        match self
+            .nodes
+            .insert(path.clone(), node, MAX_DIRECTORY_TREE_NODES)
+        {
+            Ok(()) => {}
+            Err(node_store::InsertNodeError::CapReached) => {
+                self.note_nodes_cap_reached(&path);
+            }
+            Err(node_store::InsertNodeError::IdOverflow) => {
+                log::error!(
+                    "[DirectoryTree] Node arena id overflow at {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    fn or_insert_tree_node<F: FnOnce() -> DirectoryTreeNode>(
+        &mut self,
+        path: PathBuf,
+        f: F,
+    ) -> bool {
+        match self
+            .nodes
+            .or_insert_with(path.clone(), MAX_DIRECTORY_TREE_NODES, f)
+        {
+            Ok(_) => true,
+            Err(node_store::InsertNodeError::CapReached) => {
+                self.note_nodes_cap_reached(&path);
+                false
+            }
+            Err(node_store::InsertNodeError::IdOverflow) => {
+                log::error!(
+                    "[DirectoryTree] Node arena id overflow at {}",
+                    path.display()
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
         self.generation = self.generation.wrapping_add(1);
         self.mark_snapshot_dirty();
@@ -472,7 +527,7 @@ impl DirectoryTreeTreeState {
             .iter()
             .map(|drive| drive.path.clone())
             .collect();
-        let _ = self.nodes.insert(
+        self.insert_tree_node(
             this_pc_tree_path(),
             DirectoryTreeNode {
                 display_name: places.this_pc_label,
@@ -483,11 +538,10 @@ impl DirectoryTreeTreeState {
                 children: drive_paths.clone(),
                 error: None,
             },
-            MAX_DIRECTORY_TREE_NODES,
         );
 
-        for entry in &self.known_folders {
-            let _ = self.nodes.insert(
+        for entry in self.known_folders.clone() {
+            self.insert_tree_node(
                 entry.tree_path.clone(),
                 DirectoryTreeNode {
                     display_name: entry.display_name.clone(),
@@ -498,16 +552,13 @@ impl DirectoryTreeTreeState {
                     children: Vec::new(),
                     error: None,
                 },
-                MAX_DIRECTORY_TREE_NODES,
             );
         }
 
         for drive in places.drives {
-            let _ = self.nodes.or_insert_with(
-                drive.path.clone(),
-                MAX_DIRECTORY_TREE_NODES,
-                || directory_tree_node(drive.display_name, drive.path),
-            );
+            self.or_insert_tree_node(drive.path.clone(), || {
+                directory_tree_node(drive.display_name, drive.path)
+            });
         }
 
         if !places.network_locations.is_empty() {
@@ -517,7 +568,7 @@ impl DirectoryTreeTreeState {
                 .map(|entry| entry.path.clone())
                 .collect();
             self.network_visible = true;
-            let _ = self.nodes.insert(
+            self.insert_tree_node(
                 network_tree_path(),
                 DirectoryTreeNode {
                     display_name: self.network_label.clone(),
@@ -528,14 +579,11 @@ impl DirectoryTreeTreeState {
                     children: network_children,
                     error: None,
                 },
-                MAX_DIRECTORY_TREE_NODES,
             );
             for entry in places.network_locations {
-                let _ = self.nodes.or_insert_with(
-                    entry.path.clone(),
-                    MAX_DIRECTORY_TREE_NODES,
-                    || directory_tree_node(entry.display_name, entry.path),
-                );
+                self.or_insert_tree_node(entry.path.clone(), || {
+                    directory_tree_node(entry.display_name, entry.path)
+                });
             }
         }
     }
@@ -545,7 +593,7 @@ impl DirectoryTreeTreeState {
             return;
         }
         self.network_visible = true;
-        let _ = self.nodes.insert(
+        self.insert_tree_node(
             network_tree_path(),
             DirectoryTreeNode {
                 display_name: self.network_label.clone(),
@@ -556,7 +604,6 @@ impl DirectoryTreeTreeState {
                 children: Vec::new(),
                 error: None,
             },
-            MAX_DIRECTORY_TREE_NODES,
         );
     }
 
@@ -636,11 +683,7 @@ impl DirectoryTreeTreeState {
             .filter(|entry| entry.filesystem_path == dir)
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
-        let _ = self.nodes.or_insert_with(
-            tree_path,
-            MAX_DIRECTORY_TREE_NODES,
-            || directory_tree_node(display_name, dir),
-        );
+        self.or_insert_tree_node(tree_path, || directory_tree_node(display_name, dir));
         self.scroll_folder_to_selected = true;
         self.mark_snapshot_dirty();
     }
@@ -686,15 +729,9 @@ impl DirectoryTreeTreeState {
             if is_places_sentinel_path(path) {
                 continue;
             }
-            if self
-                .nodes
-                .or_insert_with(
-                    path.clone(),
-                    MAX_DIRECTORY_TREE_NODES,
-                    || directory_tree_node(directory_display_name(path), path.clone()),
-                )
-                .is_err()
-            {
+            if !self.or_insert_tree_node(path.clone(), || {
+                directory_tree_node(directory_display_name(path), path.clone())
+            }) {
                 continue;
             }
             let Some(node) = self.nodes.get_mut(path) else {
@@ -713,11 +750,9 @@ impl DirectoryTreeTreeState {
             .filter(|entry| entry.filesystem_path == selected)
             .map(|entry| entry.tree_path.clone())
             .unwrap_or_else(|| selected.clone());
-        let _ = self.nodes.or_insert_with(
-            selected_tree_key,
-            MAX_DIRECTORY_TREE_NODES,
-            || directory_tree_node(directory_display_name(&selected), selected.clone()),
-        );
+        self.or_insert_tree_node(selected_tree_key, || {
+            directory_tree_node(directory_display_name(&selected), selected.clone())
+        });
         requests
     }
 
@@ -734,11 +769,9 @@ impl DirectoryTreeTreeState {
                 network.children.sort();
             }
         }
-        let _ = self.nodes.or_insert_with(
-            share_path.clone(),
-            MAX_DIRECTORY_TREE_NODES,
-            || directory_tree_node(unc_share_display_name(&share_path), share_path.clone()),
-        );
+        self.or_insert_tree_node(share_path.clone(), || {
+            directory_tree_node(unc_share_display_name(&share_path), share_path.clone())
+        });
     }
 
     pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
@@ -967,13 +1000,18 @@ impl DirectoryTreeTreeState {
                 let mut cap_reached = false;
                 let mut loaded_children = Vec::with_capacity(children.len());
                 for child in &children {
-                    match self.nodes.or_insert_with(
-                        child.clone(),
-                        MAX_DIRECTORY_TREE_NODES,
-                        || directory_tree_node(directory_display_name(child), child.clone()),
-                    ) {
+                    match self
+                        .nodes
+                        .or_insert_with(child.clone(), MAX_DIRECTORY_TREE_NODES, || {
+                            directory_tree_node(directory_display_name(child), child.clone())
+                        }) {
                         Ok(_) => loaded_children.push(child.clone()),
                         Err(node_store::InsertNodeError::CapReached) => {
+                            cap_reached = true;
+                            break;
+                        }
+                        Err(node_store::InsertNodeError::IdOverflow) => {
+                            log::error!("[DirectoryTree] Node arena id overflow loading children");
                             cap_reached = true;
                             break;
                         }
@@ -983,7 +1021,7 @@ impl DirectoryTreeTreeState {
                     return;
                 };
                 node.loading = false;
-                node.children_loaded = true;
+                node.children_loaded = !cap_reached;
                 node.children = loaded_children;
                 node.error = if cap_reached {
                     Some(t!("directory_tree.nodes_cap_reached").to_string())

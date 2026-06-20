@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Platform-specific discovery of directory-tree Places (known folders and drives).
+//!
+//! Places loading runs on a dedicated thread. If the UI times out waiting for the result,
+//! the channel receiver is dropped but the loader thread may keep running until Shell/COM
+//! enumeration finishes (same orphan-thread pattern as timed-out `read_dir` helpers).
 
 pub mod types;
 

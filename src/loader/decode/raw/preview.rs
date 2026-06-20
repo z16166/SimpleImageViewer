@@ -74,6 +74,16 @@ fn apply_orientation_to_embedded_preview(
     if final_orientation <= 1 {
         return preview;
     }
+    let expected_bytes = preview.width as usize * preview.height as usize * 4;
+    if preview.rgba().len() != expected_bytes {
+        log::warn!(
+            "[Loader] Embedded preview dimensions mismatch: {}x{} vs {} bytes; skipping orientation",
+            preview.width,
+            preview.height,
+            preview.rgba().len()
+        );
+        return preview;
+    }
     let pixels = preview.take_rgba_owned();
     if let Some(rgba) = image::RgbaImage::from_raw(preview.width, preview.height, pixels) {
         let mut img = image::DynamicImage::ImageRgba8(rgba);
@@ -118,6 +128,7 @@ pub(crate) fn extract_embedded_preview(
 ///
 /// Linux has no WIC/ImageIO fallback; half-size LibRaw develop matches the spirit of the
 /// platform still-image path on Windows/macOS while staying bounded for strip scrolling.
+/// The processor is mutated in place (`set_half_size`); callers must not reuse it afterward.
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) fn develop_half_size_sdr_strip_preview(
     processor: &mut RawProcessor,
