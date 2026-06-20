@@ -37,7 +37,6 @@ pub(crate) use load::{load_raw, open_raw_processor_with_preview};
 pub(crate) use crate::loader::preview_caps::hq_preview_max_side;
 #[cfg(test)]
 pub(crate) use crate::raw_processor::RawProcessor;
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) use preview::develop_half_size_sdr_strip_preview;
 #[cfg(test)]
 pub(crate) use preview::{

@@ -45,6 +45,10 @@ fn preview_aspect_tolerance(
     if short_preview <= 32 {
         return 0.20;
     }
+    if short_preview <= 192 {
+        // Embedded RAW/JPEG thumbs (e.g. 160x120) vs full demosaic (3:2) can differ slightly.
+        return 0.15;
+    }
     PREVIEW_ASPECT_TOLERANCE
 }
 
@@ -57,6 +61,25 @@ pub fn preview_aspect_matches_logical(
     if logical_width == 0 || logical_height == 0 || preview_width == 0 || preview_height == 0 {
         return false;
     }
+    preview_aspect_matches_logical_orientation(
+        preview_width,
+        preview_height,
+        logical_width,
+        logical_height,
+    ) || preview_aspect_matches_logical_orientation(
+        preview_height,
+        preview_width,
+        logical_width,
+        logical_height,
+    )
+}
+
+fn preview_aspect_matches_logical_orientation(
+    preview_width: u32,
+    preview_height: u32,
+    logical_width: u32,
+    logical_height: u32,
+) -> bool {
     let logical_aspect = logical_width as f32 / logical_height as f32;
     let preview_aspect = preview_width as f32 / preview_height as f32;
     let tolerance =
@@ -67,6 +90,16 @@ pub fn preview_aspect_matches_logical(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_portrait_preview_for_landscape_logical_when_rotated() {
+        assert!(preview_aspect_matches_logical(128, 192, 3906, 2602));
+    }
+
+    #[test]
+    fn accepts_embedded_raw_thumb_aspect_near_demosaic_logical() {
+        assert!(preview_aspect_matches_logical(160, 120, 3906, 2602));
+    }
 
     #[test]
     fn rejects_square_preview_for_tall_logical_image() {

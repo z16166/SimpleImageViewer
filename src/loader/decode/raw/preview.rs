@@ -129,10 +129,9 @@ pub(crate) fn extract_embedded_preview(
 
 /// Fast SDR preview for directory-tree strip when embedded thumbnail is missing.
 ///
-/// Linux has no WIC/ImageIO fallback; half-size LibRaw develop matches the spirit of the
-/// platform still-image path on Windows/macOS while staying bounded for strip scrolling.
-/// The processor is mutated in place (`set_half_size`); callers must not reuse it afterward.
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+/// Half-size LibRaw develop is used when platform WIC/ImageIO decode fails (e.g. CHDK CRW)
+/// and on Linux where no platform still decoder exists. The processor is mutated in place
+/// (`set_half_size`); callers must not reuse it afterward.
 pub(crate) fn develop_half_size_sdr_strip_preview(
     processor: &mut RawProcessor,
     path: &std::path::Path,

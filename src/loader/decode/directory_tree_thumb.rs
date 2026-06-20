@@ -288,30 +288,7 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageD
     }
 }
 
-fn platform_still_image_fallback(
-    path: &PathBuf,
-    opened_processor: Option<crate::raw_processor::RawProcessor>,
-) -> Result<ImageData, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = opened_processor;
-        return crate::wic::load_via_wic(path, false, None)
-            .map(|img| apply_exif_orientation_to_image_data(path.as_path(), img));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = opened_processor;
-        return crate::macos_image_io::load_via_image_io(path, false, None)
-            .map(|img| apply_exif_orientation_to_image_data(path.as_path(), img));
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        linux_raw_strip_fallback(path, opened_processor)
-    }
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn linux_raw_strip_fallback(
+fn raw_strip_libraw_fallback(
     path: &PathBuf,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
 ) -> Result<ImageData, String> {
@@ -331,6 +308,46 @@ fn linux_raw_strip_fallback(
     develop_half_size_sdr_strip_preview(&mut processor, path.as_path())
         .map(make_image_data)
         .ok_or_else(|| "no LibRaw strip preview available for RAW".to_string())
+}
+
+fn platform_still_image_fallback(
+    path: &PathBuf,
+    opened_processor: Option<crate::raw_processor::RawProcessor>,
+) -> Result<ImageData, String> {
+    #[cfg(target_os = "windows")]
+    {
+        match crate::wic::load_via_wic(path, false, None) {
+            Ok(img) => {
+                return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+            }
+            Err(wic_err) => {
+                log::debug!(
+                    "[DirectoryTree] WIC strip fallback failed for {:?}: {wic_err}; trying LibRaw half-size develop",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
+        return raw_strip_libraw_fallback(path, opened_processor);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match crate::macos_image_io::load_via_image_io(path, false, None) {
+            Ok(img) => {
+                return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+            }
+            Err(io_err) => {
+                log::debug!(
+                    "[DirectoryTree] ImageIO strip fallback failed for {:?}: {io_err}; trying LibRaw half-size develop",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
+        return raw_strip_libraw_fallback(path, opened_processor);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        raw_strip_libraw_fallback(path, opened_processor)
+    }
 }
 
 fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
