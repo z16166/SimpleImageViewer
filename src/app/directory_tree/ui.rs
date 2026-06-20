@@ -864,10 +864,15 @@ fn draw_image_file_list(
 
     if state.image_rows.is_empty() && !state.scanning {
         ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
+        if let Some(warning) = state.sync_warning.as_deref() {
+            ui.label(egui::RichText::new(warning).weak());
+        }
         return;
     }
 
-    let status_height = if state.scanning && state.image_rows.is_empty() {
+    let show_scan_status = state.scanning && state.image_rows.is_empty();
+    let show_sync_warning = state.sync_warning.is_some();
+    let status_height = if show_scan_status || show_sync_warning {
         DIRECTORY_TREE_ROW_HEIGHT
     } else {
         0.0
@@ -955,13 +960,17 @@ fn draw_image_file_list(
         state.image_list_scroll_offset_y = scroll_output.state.offset.y;
     });
 
-    if state.scanning && state.image_rows.is_empty() {
+    if show_scan_status || show_sync_warning {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), status_height),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.spinner();
-                ui.label(egui::RichText::new(state.scan_status.as_str()).weak());
+                if show_scan_status {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(state.scan_status.as_str()).weak());
+                } else if let Some(warning) = state.sync_warning.as_deref() {
+                    ui.label(egui::RichText::new(warning).weak());
+                }
             },
         );
     }

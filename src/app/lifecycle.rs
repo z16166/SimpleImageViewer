@@ -417,6 +417,10 @@ impl ImageViewerApp {
 
         let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
             crossbeam_channel::bounded(16);
+        let (
+            directory_tree_strip_inflight_release_tx,
+            directory_tree_strip_inflight_release_rx,
+        ) = crossbeam_channel::unbounded();
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
             .name("font-families".to_string())
@@ -478,6 +482,7 @@ impl ImageViewerApp {
             pending_directory_tree_repaint: false,
             pending_directory_tree_select_index: None,
             pending_directory_tree_state_sync: false,
+            pending_directory_tree_sync_warning: None,
             directory_tree_sync_defer_frames: 0,
             scan_generation: 0,
             scan_results_pending_since: None,
@@ -561,6 +566,8 @@ impl ImageViewerApp {
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,
+            directory_tree_strip_inflight_release_tx,
+            directory_tree_strip_inflight_release_rx,
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,

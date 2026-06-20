@@ -142,8 +142,16 @@ impl ImageViewerApp {
                 "[DirectoryTree] children request dropped for {}: {err}",
                 tree_path.display()
             );
+            let error = match err {
+                crossbeam_channel::TrySendError::Full(_) => {
+                    t!("directory_tree.children_request_busy").to_string()
+                }
+                crossbeam_channel::TrySendError::Disconnected(_) => {
+                    t!("directory_tree.workers_unavailable").to_string()
+                }
+            };
             let mut state = self.directory_tree.state.lock();
-            state.mark_children_request_failed(&tree_path);
+            state.mark_children_request_failed(&tree_path, error);
         }
     }
 
@@ -835,8 +843,15 @@ impl ImageViewerApp {
             log::warn!(
                 "[DirectoryTree] Dropping deferred file-list sync after {MAX_DEFER_FRAMES} contended frames"
             );
+            let warning = t!("directory_tree.sync_defer_dropped").to_string();
+            if let Some(mut state) = self.directory_tree.state.try_lock() {
+                state.sync_warning = Some(warning);
+            } else {
+                self.pending_directory_tree_sync_warning = Some(warning);
+            }
             self.pending_directory_tree_state_sync = false;
             self.directory_tree_sync_defer_frames = 0;
+            self.mark_directory_tree_repaint_pending();
             return;
         }
         self.pending_directory_tree_state_sync = true;
@@ -850,11 +865,17 @@ impl ImageViewerApp {
         }
 
         let viewport_id = self.directory_tree_repaint_viewport_id();
+        let mut sync_warning_cleared = false;
         let request_viewport_repaint = {
+            let pending_warning = self.pending_directory_tree_sync_warning.take();
             let Some(mut state) = self.directory_tree.state.try_lock() else {
+                self.pending_directory_tree_sync_warning = pending_warning;
                 self.defer_directory_tree_file_list_sync();
                 return;
             };
+            if let Some(warning) = pending_warning {
+                state.sync_warning = Some(warning);
+            }
             DirectoryTreeListPreviewLayout::from_settings(&self.settings)
                 .apply_to_state(&mut state);
             let preview_updated = if self.directory_tree_list_previews_active() {
@@ -889,6 +910,8 @@ impl ImageViewerApp {
                     scan_status,
                     &self.directory_tree.metadata_request_tx,
                 );
+                state.sync_warning = None;
+                sync_warning_cleared = true;
                 let repaint = preview_updated
                     || state.scroll_image_list_to_current
                     || state.current_index != previous_index
@@ -929,11 +952,17 @@ impl ImageViewerApp {
                     Self::directory_tree_scan_status_message(self),
                     &self.directory_tree.metadata_request_tx,
                 );
+                state.sync_warning = None;
+                sync_warning_cleared = true;
                 state.image_list_generation = state.image_list_generation.wrapping_add(1);
                 state.current_index = self.current_index;
                 state.image_list_col_widths_dirty = true;
                 state.scroll_image_list_to_current = true;
             }
+        }
+
+        if sync_warning_cleared {
+            self.pending_directory_tree_sync_warning = None;
         }
 
         if request_viewport_repaint.0 {

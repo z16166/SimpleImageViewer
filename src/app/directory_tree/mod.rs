@@ -160,6 +160,8 @@ pub(crate) struct DirectoryTreeState {
     current_index: usize,
     scanning: bool,
     scan_status: String,
+    /// Shown below the image list until the next successful file-list sync (e.g. defer drop).
+    sync_warning: Option<String>,
     left_panel_width: f32,
     image_list_panel_width: f32,
     embedded_nav_panel_width: f32,
@@ -234,6 +236,7 @@ impl Default for DirectoryTreeState {
             current_index: 0,
             scanning: false,
             scan_status: String::new(),
+            sync_warning: None,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
             image_list_panel_width: DIRECTORY_TREE_RIGHT_MIN_WIDTH,
             embedded_nav_panel_width: 0.0,
@@ -603,12 +606,12 @@ impl DirectoryTreeState {
         });
     }
 
-    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path) {
+    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
         let Some(node) = self.nodes.get_mut(tree_path) else {
             return;
         };
         node.loading = false;
-        node.error = Some(t!("directory_tree.read_busy").to_string());
+        node.error = Some(error);
     }
 
     pub(crate) fn sync_images(
@@ -623,9 +626,14 @@ impl DirectoryTreeState {
     ) {
         if self.image_list_sort_active {
             let image_set: std::collections::HashSet<&PathBuf> = images.iter().collect();
+            let image_index: std::collections::HashMap<&PathBuf, usize> = images
+                .iter()
+                .enumerate()
+                .map(|(index, path)| (path, index))
+                .collect();
             self.image_rows.retain(|row| image_set.contains(&row.path));
             for row in &mut self.image_rows {
-                let Some(index) = images.iter().position(|path| path == &row.path) else {
+                let Some(&index) = image_index.get(&row.path) else {
                     continue;
                 };
                 if let Some(size) = sizes.get(index) {
@@ -635,9 +643,12 @@ impl DirectoryTreeState {
                     row.modified_unix = *mtime;
                 }
             }
+            // Owned paths: `image_rows.push` below may reallocate, invalidating borrows from rows.
+            let existing_paths: std::collections::HashSet<PathBuf> =
+                self.image_rows.iter().map(|row| row.path.clone()).collect();
             let mut paths_needing_meta = Vec::new();
             for (index, path) in images.iter().enumerate() {
-                if self.image_rows.iter().any(|row| row.path == *path) {
+                if existing_paths.contains(path) {
                     continue;
                 }
                 let mtime = modified.get(index).copied().flatten();
@@ -823,10 +834,12 @@ impl DirectoryTreeState {
             return;
         }
         self.file_metadata_generation = self.file_metadata_generation.wrapping_add(1);
-        let _ = metadata_tx.send(FileMetadataRequest {
+        if let Err(err) = metadata_tx.send(FileMetadataRequest {
             generation: self.file_metadata_generation,
             paths,
-        });
+        }) {
+            log::warn!("[DirectoryTree] file metadata request dropped: {err}");
+        }
     }
 
     fn apply_metadata_result(&mut self, result: FileMetadataResult) {
@@ -869,6 +882,7 @@ impl DirectoryTreeState {
         match result.result {
             Ok(children) => {
                 let mut cap_reached = false;
+                let mut loaded_children = Vec::with_capacity(children.len());
                 for child in &children {
                     if self.nodes.len() >= MAX_DIRECTORY_TREE_NODES
                         && !self.nodes.contains_key(child)
@@ -879,13 +893,14 @@ impl DirectoryTreeState {
                     self.nodes.entry(child.clone()).or_insert_with(|| {
                         directory_tree_node(directory_display_name(child), child.clone())
                     });
+                    loaded_children.push(child.clone());
                 }
                 let Some(node) = self.nodes.get_mut(&tree_path) else {
                     return;
                 };
                 node.loading = false;
                 node.children_loaded = true;
-                node.children = children;
+                node.children = loaded_children;
                 node.error = if cap_reached {
                     Some(t!("directory_tree.nodes_cap_reached").to_string())
                 } else {

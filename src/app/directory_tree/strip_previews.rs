@@ -283,6 +283,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -344,6 +345,11 @@ impl ImageViewerApp {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
+                if let Err(err) = release_tx.send(index) {
+                    log::warn!(
+                        "[DirectoryTree] Strip inflight release dropped for index {index}: {err}"
+                    );
+                }
             }
         });
     }
@@ -425,6 +431,9 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
+        while let Ok(index) = self.directory_tree_strip_inflight_release_rx.try_recv() {
+            self.clear_strip_preview_attempt_state(index);
+        }
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
             self.directory_tree_strip_generate_inflight
                 .remove(&result.index);
@@ -535,6 +544,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
         let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -585,6 +595,11 @@ impl ImageViewerApp {
             };
             if let Err(err) = tx.send(job) {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
+                if let Err(err) = release_tx.send(index) {
+                    log::warn!(
+                        "[DirectoryTree] Strip inflight release dropped for index {index}: {err}"
+                    );
+                }
             }
         });
     }

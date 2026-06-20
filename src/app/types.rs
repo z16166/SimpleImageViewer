@@ -480,6 +480,8 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_preview_rx: crossbeam_channel::Receiver<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,
+    pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
+    pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
     /// Background Places loader; polled from `logic()`.
     pub(crate) directory_tree_places_load_rx:
         Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,
@@ -521,6 +523,8 @@ pub struct ImageViewerApp {
     pub(crate) pending_directory_tree_select_index: Option<usize>,
     /// Retry `sync_directory_tree_file_list_state` when the UI thread holds `directory_tree.state`.
     pub(crate) pending_directory_tree_state_sync: bool,
+    /// Queued when defer-drop cannot acquire `directory_tree.state` (see `apply_directory_tree_pending_sync_warning`).
+    pub(crate) pending_directory_tree_sync_warning: Option<String>,
     pub(crate) directory_tree_sync_defer_frames: u32,
     /// Monotonic id for the active directory scan; stale channel messages are ignored.
     pub(crate) scan_generation: u64,

@@ -52,11 +52,15 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         .and_then(|data| extract_exif_thumbnail_from_mmap(data, path))
         .or_else(|| extract_exif_thumbnail(path));
     if let Some(exif) = exif.as_ref() {
-        let logical = mmap
-            .as_ref()
-            .and_then(|data| probe_still_image_logical_size_from_mmap(data))
-            .or_else(|| probe_still_image_logical_size(path))
-            .unwrap_or((exif.width, exif.height));
+        let exif_logical = (exif.width, exif.height);
+        let logical = normalize_logical_size(
+            mmap
+                .as_ref()
+                .and_then(|data| probe_still_image_logical_size_from_mmap(data))
+                .or_else(|| probe_still_image_logical_size(path))
+                .unwrap_or(exif_logical),
+            exif_logical,
+        );
         if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
             let decoded = downsample_decoded_to_max_side(exif, max_side)?;
             return Ok((decoded, logical));
@@ -82,6 +86,14 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         ));
     }
     Ok((decoded, logical))
+}
+
+fn normalize_logical_size(logical: (u32, u32), fallback: (u32, u32)) -> (u32, u32) {
+    if logical.0 == 0 || logical.1 == 0 {
+        fallback
+    } else {
+        logical
+    }
 }
 
 fn probe_still_image_logical_size_from_mmap(mmap: &memmap2::Mmap) -> Option<(u32, u32)> {
@@ -384,4 +396,21 @@ fn downsample_decoded_to_max_side(
     let resized =
         image::imageops::resize(&src, out_w, out_h, image::imageops::FilterType::Triangle);
     Ok(DecodedImage::from(resized))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_logical_size;
+
+    #[test]
+    fn zero_logical_falls_back_to_exif() {
+        assert_eq!(normalize_logical_size((0, 0), (1920, 1080)), (1920, 1080));
+        assert_eq!(normalize_logical_size((0, 1080), (1920, 1080)), (1920, 1080));
+        assert_eq!(normalize_logical_size((1920, 0), (1920, 1080)), (1920, 1080));
+    }
+
+    #[test]
+    fn non_zero_logical_is_preserved() {
+        assert_eq!(normalize_logical_size((4000, 3000), (1920, 1080)), (4000, 3000));
+    }
 }
