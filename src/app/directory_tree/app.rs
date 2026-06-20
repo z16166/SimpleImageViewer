@@ -1240,8 +1240,7 @@ impl ImageViewerApp {
         let root_wake = self.root_redraw_wake_handle();
         let theme = std::sync::Arc::clone(&self.directory_tree_theme);
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
-        let app_ptr = self as *mut ImageViewerApp;
-        viewpaint_app.store(app_ptr, Ordering::Release);
+        viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1259,7 +1258,10 @@ impl ImageViewerApp {
 
         ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
-                if command_tx.send(DirectoryTreeCommand::CloseWindow).is_err() {
+                if command_tx
+                    .try_send(DirectoryTreeCommand::CloseWindow)
+                    .is_err()
+                {
                     log::warn!("[DirectoryTree] CloseWindow command channel disconnected");
                 }
                 return;
@@ -1313,7 +1315,6 @@ impl ImageViewerApp {
                 }
                 scanning
             };
-            viewpaint_app.store(std::ptr::null_mut(), Ordering::Release);
             if scanning {
                 if let Some(wake) = &root_wake {
                     wake();

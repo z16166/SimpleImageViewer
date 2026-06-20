@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
@@ -62,6 +62,7 @@ fn send_worker_result<T>(tx: &Sender<T>, mut msg: T, shutdown: &AtomicBool) -> b
 /// Paths with a helper thread still inside OS `read_dir` (including timed-out orphans).
 static READ_DIR_INFLIGHT_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static READ_DIR_HELPER_THREAD_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn coalesce_children_requests(
     request: DirectoryChildrenRequest,
@@ -163,8 +164,8 @@ pub(super) fn directory_tree_metadata_worker_loop(
                                     &metadata_result_tx,
                                     FileMetadataResult {
                                         generation: request.generation,
-                                        paths: batch_paths.split_off(0),
-                                        modified_unix: batch_modified.split_off(0),
+                                        paths: std::mem::take(&mut batch_paths),
+                                        modified_unix: std::mem::take(&mut batch_modified),
                                     },
                                     &shutdown,
                                 ) {
@@ -245,14 +246,14 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
 
     let (tx, rx) = crossbeam_channel::bounded(1);
     let path_buf = path.to_path_buf();
-    let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Acquire);
+    let helper_id = READ_DIR_HELPER_THREAD_ID.fetch_add(1, AtomicOrdering::Relaxed);
     // Orphan threads cannot be cancelled on all platforms; the flag only recycles the
     // inflight cap so new reads can proceed while a timed-out helper keeps running.
     // `READ_DIR_INFLIGHT_PATHS` blocks duplicate reads for the same path until the helper exits.
     let orphan_flag = Arc::new(AtomicBool::new(false));
     let orphan_for_thread = Arc::clone(&orphan_flag);
     if std::thread::Builder::new()
-        .name(format!("siv-dir-tree-read-dir-{helper_index}"))
+        .name(format!("siv-dir-tree-read-dir-{helper_id}"))
         .spawn(move || {
             let _path_guard = ReadDirPathGuard(path_buf.clone());
             let _guard = InflightGuard {
@@ -273,7 +274,10 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     }
     match rx.recv_timeout(DIRECTORY_TREE_READ_DIR_TIMEOUT) {
         Ok(result) => result,
-        Err(_) => {
+        Err(RecvTimeoutError::Timeout) => {
+            if let Ok(result) = rx.try_recv() {
+                return result;
+            }
             orphan_flag.store(true, AtomicOrdering::SeqCst);
             READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
             log::warn!(
@@ -283,6 +287,11 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
             );
             Err(t!("directory_tree.read_timeout").to_string())
         }
+        Err(RecvTimeoutError::Disconnected) => Err(t!(
+            "directory_tree.read_failed",
+            err = t!("directory_tree.thread_spawn_failed")
+        )
+        .to_string()),
     }
 }
 
@@ -315,6 +324,7 @@ pub(super) fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String
 
 fn read_file_modified_unix(path: &Path) -> Option<i64> {
     use std::time::UNIX_EPOCH;
+    // UTC seconds, matching scanner.rs `validated_metadata` and DirectoryTreeFileRow.
     std::fs::metadata(path)
         .ok()
         .and_then(|meta| meta.modified().ok())

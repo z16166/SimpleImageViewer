@@ -228,6 +228,7 @@ impl ImageViewerApp {
             self.folder_picker.active_generation = 0;
             self.folder_picker.in_flight = false;
             self.folder_picker.started_at = None;
+            // rfd has no cancel API; the worker stays blocked until the user dismisses the dialog.
             self.status_message = t!("folder_picker.timed_out").to_string();
             ctx.request_repaint();
             return;

@@ -398,8 +398,7 @@ impl ImageViewerApp {
             }
         }
 
-        // Global mouse activity detection to wake up Music HUD
-        // ── Drag-and-Drop handling (cross-platform via egui/winit) ───────
+        // ── HDR / swap-chain target format (ROOT pass only) ───────────────
         // Pull the live swap-chain target format every frame so all downstream
         // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,
         // etc.) base their decisions on the actually-active format.

@@ -30,9 +30,12 @@ use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
 use crate::ui::osd::{FORMAT_FILE_SIZE_WIDTH_SAMPLES, format_file_modified, format_file_size};
 
-/// Scan/metadata paths historically stored milliseconds; normalize before display/format.
+/// Legacy scan paths stored milliseconds; values above this are treated as ms and converted to seconds.
+const MODIFIED_UNIX_MILLIS_THRESHOLD: i64 = 1_000_000_000_000;
+
+/// Scan/metadata paths store UTC seconds; normalize legacy millisecond values before display.
 fn modified_unix_for_display(stored: i64) -> i64 {
-    if stored > 1_000_000_000_000 {
+    if stored > MODIFIED_UNIX_MILLIS_THRESHOLD {
         stored / 1_000
     } else {
         stored
@@ -50,7 +53,7 @@ use super::{
     DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand, DirectoryTreeFileRow,
     DirectoryTreeListPreviewLayout, DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn,
     is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path, network_tree_path,
-    this_pc_tree_path,
+    send_directory_tree_command, this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -822,8 +825,10 @@ fn draw_directory_node(
                 );
                 paint_tree_expand_icon(ui, node.expanded, &expand_response);
                 if expand_response.clicked() {
-                    let _ =
-                        command_tx.send(DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()));
+                    send_directory_tree_command(
+                        command_tx,
+                        DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()),
+                    );
                 }
             } else {
                 ui.add_space(DIRECTORY_TREE_EXPAND_ICON_WIDTH);
@@ -864,14 +869,19 @@ fn draw_directory_node(
             }
             if name_response.clicked() {
                 if is_places_sentinel_path(path) {
-                    let _ =
-                        command_tx.send(DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()));
+                    send_directory_tree_command(
+                        command_tx,
+                        DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()),
+                    );
                 } else {
                     let browse_path = node.browse_path.clone();
-                    let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory {
-                        tree_path: path.to_path_buf(),
-                        browse_path,
-                    });
+                    send_directory_tree_command(
+                        command_tx,
+                        DirectoryTreeCommand::SelectDirectory {
+                            tree_path: path.to_path_buf(),
+                            browse_path,
+                        },
+                    );
                 }
                 if let Some(wake) = root_wake {
                     wake();
@@ -885,10 +895,7 @@ fn draw_directory_node(
     if let Some(error) = node.error.as_deref() {
         ui.horizontal(|ui| {
             ui.add_space((depth + 1) as f32 * DIRECTORY_TREE_INDENT);
-            ui.label(
-                egui::RichText::new(t!("directory_tree.read_failed", err = error).to_string())
-                    .color(ui.visuals().error_fg_color),
-            );
+            ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
         });
     }
 
@@ -1263,7 +1270,10 @@ fn draw_image_details_header(
                     egui::Sense::click(),
                 );
                 if response.clicked() {
-                    let _ = command_tx.send(DirectoryTreeCommand::SortImageList(column));
+                    send_directory_tree_command(
+                        command_tx,
+                        DirectoryTreeCommand::SortImageList(column),
+                    );
                 }
             }
         };
@@ -1370,7 +1380,7 @@ fn try_handle_image_list_arrow_keys(
     chrome.image_list_keyboard_active = true;
     chrome.current_index = index;
     chrome.scroll_image_list_to_current = true;
-    let _ = command_tx.send(DirectoryTreeCommand::SelectImage(index));
+    send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(index));
 }
 
 fn draw_image_details_row(
@@ -1462,7 +1472,7 @@ fn draw_image_details_row(
     }
 
     if list_enabled && response.clicked() {
-        let _ = command_tx.send(DirectoryTreeCommand::SelectImage(row_index));
+        send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(row_index));
         return true;
     }
     if selected {

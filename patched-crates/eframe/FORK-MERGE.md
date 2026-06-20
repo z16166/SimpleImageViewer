@@ -44,6 +44,7 @@ needed.
 - **`logic_root_only`**: window placement cache, HDR monitor/swap-chain, drag-drop, fullscreen, folder dialog — **`pass.is_root()` only**.
 - Do not use `frame.winit_window()` / HDR frame APIs from aux-triggered passes unless intentionally ROOT-scoped.
 - **Immediate viewports** (`show_viewport_immediate`) do not receive `App::logic` during `render_immediate_viewport`; Simple Image Viewer uses **`show_viewport_deferred` only** for the detached directory-tree window.
+- **`viewpaint_app` raw pointer** (`src/app/directory_tree/mod.rs`, `app.rs`): Detached strip GPU upload and image-list context menu read `ImageViewerApp` via `AtomicPtr` on the UI thread only. This assumes eframe keeps the app as a stable `Box<dyn App>` for the process lifetime (no re-box / move of the instance). Re-verify after any upstream change to `App` ownership or viewport paint scheduling; if upstream ever moves the app object, replace the pointer with an explicit cross-viewport snapshot or channel.
 
 ## Upstream follow-up (optional)
 

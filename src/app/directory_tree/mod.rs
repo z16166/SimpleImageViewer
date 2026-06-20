@@ -22,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 use eframe::egui;
 use parking_lot::Mutex;
 use rust_i18n::t;
@@ -114,6 +114,23 @@ pub(crate) enum DirectoryTreeCommand {
     SelectImage(usize),
     SortImageList(ImageListSortColumn),
     CloseWindow,
+}
+
+/// Non-blocking UI -> logic command; drops with a warning if the bounded channel is full.
+pub(super) fn send_directory_tree_command(
+    command_tx: &crossbeam_channel::Sender<DirectoryTreeCommand>,
+    command: DirectoryTreeCommand,
+) {
+    if let Err(err) = command_tx.try_send(command) {
+        match err {
+            TrySendError::Full(dropped) => {
+                log::warn!("[DirectoryTree] Command channel full; dropped {dropped:?}");
+            }
+            TrySendError::Disconnected(dropped) => {
+                log::debug!("[DirectoryTree] Command channel disconnected; dropped {dropped:?}");
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -316,12 +333,13 @@ pub(crate) struct DirectoryTreeRuntime {
     pub(crate) metadata_request_tx: Sender<FileMetadataRequest>,
     pub(crate) result_rx: Receiver<DirectoryChildrenResult>,
     pub(crate) metadata_result_rx: Receiver<FileMetadataResult>,
-    /// Raw pointer to the live [`super::ImageViewerApp`], set during detached viewport paint.
+    /// Raw pointer to the live [`super::ImageViewerApp`], set during ROOT `prepare_directory_tree_file_list_viewport`.
     ///
     /// # Safety contract (UI thread only)
-    /// - Written with [`Ordering::Release`] at the start of each detached viewport paint callback.
-    /// - Read with [`Ordering::Acquire`] only inside that same callback before paint returns.
-    /// - Cleared to null with `Release` when the callback finishes (or on the next ROOT `ui()` frame).
+    /// - Written with [`Ordering::Release`] each ROOT `ui()` pass that registers the detached viewport.
+    /// - Not cleared between frames so Detached-only repaints can still reach strip GPU upload and
+    ///   context-menu handlers without waiting for ROOT `ui()` to run first.
+    /// - Read with [`Ordering::Acquire`] only inside the detached viewport paint callback.
     /// - The app outlives all viewport callbacks because it is owned by eframe as `Box<dyn App>`.
     /// - Never dereference from worker threads or from `logic()`; use locked state / snapshots instead.
     pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
