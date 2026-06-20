@@ -664,8 +664,9 @@ impl DirectoryTreeState {
                 }
             }
             // Owned paths: `image_rows.push` below may reallocate, invalidating borrows from rows.
-            let existing_paths: std::collections::HashSet<PathBuf> =
-                self.image_rows.iter().map(|row| row.path.clone()).collect();
+            let existing_paths: std::collections::HashSet<&PathBuf> =
+                self.image_rows.iter().map(|row| &row.path).collect();
+            let mut new_rows = Vec::new();
             for (index, path) in images.iter().enumerate() {
                 if existing_paths.contains(path) {
                     continue;
@@ -674,13 +675,14 @@ impl DirectoryTreeState {
                 if mtime.is_none() && !scanning {
                     paths_needing_meta.push(path.clone());
                 }
-                self.image_rows.push(DirectoryTreeFileRow {
+                new_rows.push(DirectoryTreeFileRow {
                     path: path.clone(),
                     name: directory_display_name(path),
                     size_bytes: sizes.get(index).copied().unwrap_or(0),
                     modified_unix: mtime,
                 });
             }
+            self.image_rows.extend(new_rows);
         } else {
             let prefix_matches = images.len() >= self.image_rows.len()
                 && self

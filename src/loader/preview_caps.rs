@@ -174,27 +174,33 @@ pub(crate) static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|
 const DIRECTORY_TREE_STRIP_POOL_MAX_THREADS: usize = 2;
 
 pub(crate) static DIRECTORY_TREE_STRIP_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-    match rayon::ThreadPoolBuilder::new()
+    rayon::ThreadPoolBuilder::new()
         .num_threads(DIRECTORY_TREE_STRIP_POOL_MAX_THREADS)
         .thread_name(|i| format!("dir-tree-strip-{i}"))
         .build()
-    {
-        Ok(p) => p,
-        Err(e) => {
+        .or_else(|e| {
             log::error!(
-                "[Loader] Failed to create directory-tree strip pool: {}. Falling back to default pool.",
-                e
+                "[Loader] Failed to create directory-tree strip pool: {e}. Falling back to 1-thread pool."
             );
             rayon::ThreadPoolBuilder::new()
                 .num_threads(1)
+                .thread_name(|i| format!("dir-tree-strip-fallback-{i}"))
                 .build()
-                .or_else(|fallback_err| {
+        })
+        .unwrap_or_else(|e| {
+            log::error!(
+                "[Loader] Fallback directory-tree strip pool failed: {e}; using global rayon pool"
+            );
+            rayon::ThreadPoolBuilder::new()
+                .build()
+                .unwrap_or_else(|final_err| {
                     log::error!(
-                        "[Loader] Fallback directory-tree strip pool failed: {fallback_err}; using global rayon pool"
+                        "[Loader] Global rayon pool unavailable for strip previews: {final_err}"
                     );
-                    rayon::ThreadPoolBuilder::new().build()
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(1)
+                        .build()
+                        .unwrap()
                 })
-                .expect("rayon thread pool initialization failed")
-        }
-    }
+        })
 });

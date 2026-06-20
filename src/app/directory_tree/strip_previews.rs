@@ -38,6 +38,12 @@ use super::{
     MAX_TILED_STRIP_GENERATES_PER_FRAME,
 };
 
+fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, index: usize) {
+    if let Err(err) = release_tx.try_send(index) {
+        log::warn!("[DirectoryTree] Strip inflight release dropped for index {index}: {err}");
+    }
+}
+
 impl ImageViewerApp {
     pub(crate) fn cache_directory_tree_strip_thumbnail(
         &mut self,
@@ -346,11 +352,7 @@ impl ImageViewerApp {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
-                if let Err(err) = release_tx.send(index) {
-                    log::warn!(
-                        "[DirectoryTree] Strip inflight release dropped for index {index}: {err}"
-                    );
-                }
+                send_strip_inflight_release(&release_tx, index);
             }
         });
     }
@@ -596,11 +598,7 @@ impl ImageViewerApp {
             };
             if let Err(err) = tx.send(job) {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
-                if let Err(err) = release_tx.send(index) {
-                    log::warn!(
-                        "[DirectoryTree] Strip inflight release dropped for index {index}: {err}"
-                    );
-                }
+                send_strip_inflight_release(&release_tx, index);
             }
         });
     }

@@ -732,3 +732,95 @@ fn pointer_in_directory_tree_nav_block_rect_respects_bounds() {
     ));
     assert!(!pointer_in_directory_tree_nav_block_rect(None, Some(rect)));
 }
+
+#[test]
+fn coalesce_children_requests_keeps_latest_per_tree_path() {
+    use super::workers::coalesce_children_requests;
+
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let root = PathBuf::from("/tmp/coalesce-root");
+    let first = DirectoryChildrenRequest {
+        tree_path: root.clone(),
+        browse_path: PathBuf::from("/browse/old"),
+        generation: 1,
+    };
+    tx.send(DirectoryChildrenRequest {
+        tree_path: root.clone(),
+        browse_path: PathBuf::from("/browse/new"),
+        generation: 2,
+    })
+    .expect("queue coalesced request");
+    let out = coalesce_children_requests(first, &rx);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].browse_path, PathBuf::from("/browse/new"));
+    assert_eq!(out[0].generation, 2);
+}
+
+#[test]
+fn coalesce_metadata_requests_merges_same_generation() {
+    use super::workers::coalesce_metadata_requests;
+
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let first = FileMetadataRequest {
+        generation: 7,
+        paths: vec![PathBuf::from("/a.jpg")],
+    };
+    tx.send(FileMetadataRequest {
+        generation: 7,
+        paths: vec![PathBuf::from("/b.jpg"), PathBuf::from("/c.jpg")],
+    })
+    .expect("queue coalesced metadata request");
+    tx.send(FileMetadataRequest {
+        generation: 8,
+        paths: vec![PathBuf::from("/d.jpg")],
+    })
+    .expect("queue other generation");
+    let out = coalesce_metadata_requests(first, &rx);
+    assert_eq!(out.len(), 2);
+    let gen7 = out
+        .iter()
+        .find(|request| request.generation == 7)
+        .expect("generation 7 batch");
+    assert_eq!(gen7.paths.len(), 3);
+}
+
+#[test]
+fn split_metadata_request_chunks_large_batches() {
+    use super::workers::{METADATA_BATCH_SIZE, split_metadata_request};
+
+    let paths: Vec<PathBuf> = (0..METADATA_BATCH_SIZE + 50)
+        .map(|i| PathBuf::from(format!("/tmp/file_{i}.jpg")))
+        .collect();
+    let request = FileMetadataRequest {
+        generation: 1,
+        paths,
+    };
+    let chunks = split_metadata_request(request);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].paths.len(), METADATA_BATCH_SIZE);
+    assert_eq!(chunks[1].paths.len(), 50);
+}
+
+#[test]
+fn mark_children_request_failed_clears_loading_and_sets_error() {
+    let tree_path = PathBuf::from("/tmp/siv-dir-tree-failed-node");
+    let mut state = DirectoryTreeState::default();
+    state.nodes.insert(
+        tree_path.clone(),
+        DirectoryTreeNode {
+            display_name: "failed".to_string(),
+            browse_path: tree_path.clone(),
+            expanded: false,
+            loading: true,
+            children_loaded: false,
+            children: Vec::new(),
+            error: None,
+        },
+    );
+
+    state.mark_children_request_failed(&tree_path, "read busy".to_string());
+
+    let node = state.nodes.get(&tree_path).expect("node");
+    assert!(!node.loading);
+    assert_eq!(node.error.as_deref(), Some("read busy"));
+}

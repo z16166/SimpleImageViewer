@@ -33,7 +33,7 @@ pub(super) const METADATA_BATCH_SIZE: usize = 200;
 pub(super) const DIRECTORY_TREE_READ_DIR_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_READ_DIR_HELPERS_INFLIGHT: usize = 4;
 
-fn coalesce_children_requests(
+pub(super) fn coalesce_children_requests(
     request: DirectoryChildrenRequest,
     request_rx: &Receiver<DirectoryChildrenRequest>,
 ) -> Vec<DirectoryChildrenRequest> {
@@ -45,7 +45,7 @@ fn coalesce_children_requests(
     by_path.into_values().collect()
 }
 
-fn coalesce_metadata_requests(
+pub(super) fn coalesce_metadata_requests(
     request: FileMetadataRequest,
     request_rx: &Receiver<FileMetadataRequest>,
 ) -> Vec<FileMetadataRequest> {
@@ -60,6 +60,20 @@ fn coalesce_metadata_requests(
         }
     }
     by_generation.into_values().collect()
+}
+
+pub(super) fn split_metadata_request(request: FileMetadataRequest) -> Vec<FileMetadataRequest> {
+    if request.paths.len() <= METADATA_BATCH_SIZE {
+        return vec![request];
+    }
+    request
+        .paths
+        .chunks(METADATA_BATCH_SIZE)
+        .map(|chunk| FileMetadataRequest {
+            generation: request.generation,
+            paths: chunk.to_vec(),
+        })
+        .collect()
 }
 
 pub(super) fn directory_tree_children_worker_loop(
@@ -89,38 +103,40 @@ pub(super) fn directory_tree_metadata_worker_loop(
 ) {
     while let Ok(request) = request_rx.recv() {
         for request in coalesce_metadata_requests(request, &request_rx) {
-            let mut batch_paths = Vec::with_capacity(METADATA_BATCH_SIZE);
-            let mut batch_modified = Vec::with_capacity(METADATA_BATCH_SIZE);
+            for request in split_metadata_request(request) {
+                let mut batch_paths = Vec::with_capacity(METADATA_BATCH_SIZE);
+                let mut batch_modified = Vec::with_capacity(METADATA_BATCH_SIZE);
 
-            for path in request.paths {
-                batch_paths.push(path.clone());
-                batch_modified.push(read_file_modified_unix(&path));
+                for path in request.paths {
+                    batch_paths.push(path.clone());
+                    batch_modified.push(read_file_modified_unix(&path));
 
-                if batch_paths.len() >= METADATA_BATCH_SIZE {
-                    if metadata_result_tx
-                        .send(FileMetadataResult {
-                            generation: request.generation,
-                            paths: batch_paths.split_off(0),
-                            modified_unix: batch_modified.split_off(0),
-                        })
-                        .is_err()
-                    {
-                        log::warn!("[DirectoryTree] metadata result channel disconnected");
-                        return;
+                    if batch_paths.len() >= METADATA_BATCH_SIZE {
+                        if metadata_result_tx
+                            .send(FileMetadataResult {
+                                generation: request.generation,
+                                paths: batch_paths.split_off(0),
+                                modified_unix: batch_modified.split_off(0),
+                            })
+                            .is_err()
+                        {
+                            log::warn!("[DirectoryTree] metadata result channel disconnected");
+                            return;
+                        }
                     }
                 }
-            }
 
-            if !batch_paths.is_empty()
-                && metadata_result_tx
-                    .send(FileMetadataResult {
-                        generation: request.generation,
-                        paths: batch_paths,
-                        modified_unix: batch_modified,
-                    })
-                    .is_err()
-            {
-                log::warn!("[DirectoryTree] metadata result channel disconnected");
+                if !batch_paths.is_empty()
+                    && metadata_result_tx
+                        .send(FileMetadataResult {
+                            generation: request.generation,
+                            paths: batch_paths,
+                            modified_unix: batch_modified,
+                        })
+                        .is_err()
+                {
+                    log::warn!("[DirectoryTree] metadata result channel disconnected");
+                }
             }
         }
     }
@@ -141,17 +157,30 @@ impl Drop for InflightGuard {
 }
 
 fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, String> {
-    if READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed) >= MAX_READ_DIR_HELPERS_INFLIGHT {
-        log::warn!(
-            "[DirectoryTree] read_dir helper cap ({MAX_READ_DIR_HELPERS_INFLIGHT}) reached; skipping {}",
-            path.display()
-        );
-        return Err(t!("directory_tree.read_busy").to_string());
+    loop {
+        let current = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
+        if current >= MAX_READ_DIR_HELPERS_INFLIGHT {
+            log::warn!(
+                "[DirectoryTree] read_dir helper cap ({MAX_READ_DIR_HELPERS_INFLIGHT}) reached; skipping {}",
+                path.display()
+            );
+            return Err(t!("directory_tree.read_busy").to_string());
+        }
+        if READ_DIR_HELPERS_INFLIGHT
+            .compare_exchange(
+                current,
+                current + 1,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+            )
+            .is_ok()
+        {
+            break;
+        }
     }
 
     let (tx, rx) = crossbeam_channel::bounded(1);
     let path_buf = path.to_path_buf();
-    READ_DIR_HELPERS_INFLIGHT.fetch_add(1, AtomicOrdering::Relaxed);
     let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
     // Orphan threads cannot be cancelled on all platforms; the flag only recycles the
     // inflight cap so new reads can proceed while a timed-out helper keeps running.

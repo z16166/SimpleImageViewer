@@ -69,7 +69,7 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     }
 
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf)?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref() {
@@ -120,7 +120,10 @@ fn probe_still_image_logical_size(path: &Path) -> Option<(u32, u32)> {
         })
 }
 
-fn open_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageData, String> {
+fn open_image_data_for_directory_tree_thumb(
+    path: &PathBuf,
+    file_mmap: Option<&memmap2::Mmap>,
+) -> Result<ImageData, String> {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -166,7 +169,18 @@ fn open_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageData,
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+            || {
+                if let Some(mmap) = file_mmap {
+                    super::jpeg::load_jpeg_from_mapped(
+                        path,
+                        mmap,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    )
+                } else {
+                    load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+                }
+            },
         );
     }
 
