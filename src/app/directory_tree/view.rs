@@ -69,8 +69,8 @@ impl DirectoryTreeView {
         &self.tree.known_folders
     }
 
-    pub(super) fn selected_dir(&self) -> Option<&std::path::PathBuf> {
-        self.tree.selected_dir.as_ref()
+    pub(super) fn selected_tree_path(&self) -> Option<&std::path::PathBuf> {
+        self.tree.selected_tree_path.as_ref()
     }
 
     pub(super) fn nodes(
@@ -226,12 +226,18 @@ impl DirectoryTreeUiChrome {
         if let Some(width) = self.embedded_nav_panel_width {
             tree.embedded_nav_panel_width = width;
         }
-        tree.scroll_folder_to_selected = self.scroll_folder_to_selected;
+        if tree.scroll_folder_to_selected != self.scroll_folder_to_selected {
+            tree.scroll_folder_to_selected = self.scroll_folder_to_selected;
+            tree.mark_snapshot_dirty();
+        }
         list.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
         list.image_list_visible_row_range = self.image_list_visible_row_range;
         list.image_list_keyboard_active = self.image_list_keyboard_active;
         list.current_index = self.current_index;
-        list.scroll_image_list_to_current = self.scroll_image_list_to_current;
+        if list.scroll_image_list_to_current != self.scroll_image_list_to_current {
+            list.scroll_image_list_to_current = self.scroll_image_list_to_current;
+            list.mark_snapshot_dirty();
+        }
     }
 }
 

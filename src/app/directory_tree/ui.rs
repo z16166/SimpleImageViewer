@@ -827,8 +827,8 @@ fn draw_directory_node(
             paint_tree_folder_icon(ui, folder_rect.0, icon, palette);
 
             let selected = view
-                .selected_dir()
-                .is_some_and(|selected| selected == node.browse_path.as_path());
+                .selected_tree_path()
+                .is_some_and(|selected| selected.as_os_str() == path.as_os_str());
             let name_width = ui.available_width().max(1.0);
             let (name_rect, name_response) = ui.allocate_exact_size(
                 egui::vec2(name_width, DIRECTORY_TREE_ROW_HEIGHT),
@@ -853,7 +853,10 @@ fn draw_directory_node(
                         command_tx.send(DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()));
                 } else {
                     let browse_path = node.browse_path.clone();
-                    let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory(browse_path));
+                    let _ = command_tx.send(DirectoryTreeCommand::SelectDirectory {
+                        tree_path: path.to_path_buf(),
+                        browse_path,
+                    });
                 }
                 if let Some(wake) = root_wake {
                     wake();

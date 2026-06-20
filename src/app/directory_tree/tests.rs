@@ -728,6 +728,78 @@ fn reveal_selected_dir_expands_nested_known_folder_path_after_places_init() {
 }
 
 #[test]
+fn selected_tree_path_distinguishes_alias_nodes_with_same_browse_path() {
+    use crate::directory_tree_places::types::{KnownFolderKind, known_folder_tree_path};
+
+    let downloads_fs = PathBuf::from("/home/user/Downloads");
+    let known_tree = known_folder_tree_path(KnownFolderKind::Downloads);
+    let profile_tree = downloads_fs.clone();
+
+    let mut state = DirectoryTreeState::default();
+    state.tree.nodes.or_insert_with(known_tree.clone(), || {
+        directory_tree_node("Downloads".to_string(), downloads_fs.clone())
+    });
+    state.tree.nodes.or_insert_with(profile_tree.clone(), || {
+        directory_tree_node("下载".to_string(), downloads_fs.clone())
+    });
+
+    state
+        .tree
+        .set_selected_tree_node(profile_tree.clone(), downloads_fs.clone());
+    assert_eq!(
+        state.tree.selected_tree_path.as_deref(),
+        Some(profile_tree.as_path())
+    );
+    assert_eq!(
+        state.tree.selected_dir.as_deref(),
+        Some(downloads_fs.as_path())
+    );
+
+    state
+        .tree
+        .set_selected_tree_node(known_tree.clone(), downloads_fs);
+    assert_eq!(
+        state.tree.selected_tree_path.as_deref(),
+        Some(known_tree.as_path())
+    );
+}
+
+#[test]
+fn apply_to_domains_marks_tree_snapshot_dirty_when_folder_scroll_clears() {
+    use super::view::DirectoryTreeUiChrome;
+
+    let mut tree = DirectoryTreeTreeState::default();
+    tree.scroll_folder_to_selected = true;
+    tree.snapshot_dirty = false;
+    let mut list = DirectoryTreeListState::default();
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.scroll_folder_to_selected = false;
+
+    chrome.apply_to_domains(&mut tree, &mut list);
+
+    assert!(!tree.scroll_folder_to_selected);
+    assert!(tree.snapshot_dirty);
+}
+
+#[test]
+fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
+    use super::view::DirectoryTreeUiChrome;
+
+    let tree = DirectoryTreeTreeState::default();
+    let mut list = DirectoryTreeListState::default();
+    list.scroll_image_list_to_current = true;
+    list.snapshot_dirty = false;
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.scroll_image_list_to_current = false;
+
+    let mut tree = tree;
+    chrome.apply_to_domains(&mut tree, &mut list);
+
+    assert!(!list.scroll_image_list_to_current);
+    assert!(list.snapshot_dirty);
+}
+
+#[test]
 fn pointer_in_directory_tree_nav_block_rect_respects_bounds() {
     use super::ui::pointer_in_directory_tree_nav_block_rect;
 

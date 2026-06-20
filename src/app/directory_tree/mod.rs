@@ -95,7 +95,10 @@ pub(crate) enum ImageListSortColumn {
 
 #[derive(Debug)]
 pub(crate) enum DirectoryTreeCommand {
-    SelectDirectory(PathBuf),
+    SelectDirectory {
+        tree_path: PathBuf,
+        browse_path: PathBuf,
+    },
     ToggleExpanded(PathBuf),
     SelectImage(usize),
     SortImageList(ImageListSortColumn),
@@ -541,6 +544,11 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
+        let tree_path = self.tree_path_for_filesystem_dir(&dir);
+        self.set_selected_tree_node(tree_path, dir);
+    }
+
+    pub(crate) fn set_selected_tree_node(&mut self, tree_path: PathBuf, dir: PathBuf) {
         if is_unc_path(&dir) {
             self.ensure_network_visible();
             if let Some(share_root) = unc_share_root(&dir) {
@@ -548,20 +556,23 @@ impl DirectoryTreeTreeState {
             }
         }
         self.selected_dir = Some(dir.clone());
-        let tree_key = self
-            .known_folder_for_filesystem_path(&dir)
-            .filter(|entry| entry.filesystem_path == dir)
-            .map(|entry| entry.tree_path.clone())
-            .unwrap_or_else(|| dir.clone());
+        self.selected_tree_path = Some(tree_path.clone());
         let display_name = self
             .known_folder_for_filesystem_path(&dir)
             .filter(|entry| entry.filesystem_path == dir)
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
         self.nodes
-            .or_insert_with(tree_key, || directory_tree_node(display_name, dir));
+            .or_insert_with(tree_path, || directory_tree_node(display_name, dir));
         self.scroll_folder_to_selected = true;
         self.mark_snapshot_dirty();
+    }
+
+    fn tree_path_for_filesystem_dir(&self, dir: &Path) -> PathBuf {
+        self.known_folder_for_filesystem_path(dir)
+            .filter(|entry| entry.filesystem_path == dir)
+            .map(|entry| entry.tree_path.clone())
+            .unwrap_or_else(|| dir.to_path_buf())
     }
 
     pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {

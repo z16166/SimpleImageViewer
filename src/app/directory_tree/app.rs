@@ -146,7 +146,7 @@ impl ImageViewerApp {
                 }
             }
         }
-        let view = view.load();
+        let view_data = view.load();
         let list_keyboard_active = list
             .try_lock()
             .map(|guard| guard.image_list_keyboard_active)
@@ -154,10 +154,10 @@ impl ImageViewerApp {
         let Some(mut chrome_guard) = chrome.try_lock() else {
             return false;
         };
-        chrome_guard.begin_paint_frame(&view, list_keyboard_active);
+        chrome_guard.begin_paint_frame(&view_data, list_keyboard_active);
         draw_directory_tree_window(
             ui,
-            &view,
+            &view_data,
             &mut chrome_guard,
             list_preview,
             command_tx,
@@ -166,11 +166,21 @@ impl ImageViewerApp {
             embedded,
             allow_image_context_menu,
         );
-        let scanning = view.scanning();
+        let scanning = view_data.scanning();
         drop(chrome_guard);
         if let (Some(mut tree_guard), Some(mut list_guard)) = (tree.try_lock(), list.try_lock()) {
             if let Some(chrome_guard) = chrome.try_lock() {
                 chrome_guard.apply_to_domains(&mut tree_guard, &mut list_guard);
+                let tree_published = domains::publish_tree_snapshot(tree_snapshot, &mut tree_guard);
+                let list_published = domains::publish_list_snapshot(list_snapshot, &mut list_guard);
+                if tree_published || list_published {
+                    view::assemble_directory_tree_view(
+                        view,
+                        tree_snapshot,
+                        list_snapshot,
+                        preview_snapshot,
+                    );
+                }
             }
         }
         scanning
@@ -263,7 +273,6 @@ impl ImageViewerApp {
             if !tree.places_loaded {
                 return;
             }
-            tree.set_selected_dir(dir.clone());
             let mut requests = tree.reveal_selected_dir();
             if let Some(request) = tree.expand_tree_for_filesystem_dir(&dir) {
                 requests.push(request);
@@ -485,25 +494,28 @@ impl ImageViewerApp {
 
         while let Ok(command) = self.directory_tree.command_rx.try_recv() {
             match command {
-                DirectoryTreeCommand::SelectDirectory(path) => {
-                    if is_places_sentinel_path(&path) {
+                DirectoryTreeCommand::SelectDirectory {
+                    tree_path,
+                    browse_path,
+                } => {
+                    if is_places_sentinel_path(&tree_path) {
                         continue;
                     }
                     self.settings.browse_mode = BrowseMode::Tree;
                     self.settings.show_directory_tree_nav = true;
-                    self.settings.tree_nav_selected_dir = Some(path.clone());
+                    self.settings.tree_nav_selected_dir = Some(browse_path.clone());
                     {
                         let mut tree = self.directory_tree.tree.lock();
                         let mut list = self.directory_tree.list.lock();
-                        tree.set_selected_dir(path.clone());
+                        tree.set_selected_tree_node(tree_path.clone(), browse_path.clone());
                         list.image_list_keyboard_active = false;
-                        if let Some(request) = tree.expand_tree_for_filesystem_dir(&path) {
+                        if let Some(request) = tree.expand_tree_for_filesystem_dir(&browse_path) {
                             drop(tree);
                             drop(list);
                             self.send_directory_tree_children_request(request);
                         }
                     }
-                    self.load_directory(path);
+                    self.load_directory(browse_path);
                     self.queue_save();
                     self.wake_root_for_logic();
                     ctx.request_repaint();
