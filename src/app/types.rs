@@ -564,6 +564,7 @@ pub struct ImageViewerApp {
     // Window lifecycle
     pub(crate) last_minimized: bool,
     pub(crate) last_frame_time: Instant,
+    pub(crate) last_logic_shared_at: Option<Instant>,
 
     // IPC receiver
     pub(crate) ipc_rx: crossbeam_channel::Receiver<IpcMessage>,

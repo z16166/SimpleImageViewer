@@ -138,6 +138,7 @@ impl AppRunner {
 
             #[cfg(feature = "wgpu_no_default_features")]
             wgpu_render_state,
+            painting_viewport_id: egui::ViewportId::ROOT,
         };
 
         let needs_repaint: Arc<NeedRepaint> = Arc::new(NeedRepaint::new(web_options.max_fps));
@@ -281,7 +282,7 @@ impl AppRunner {
             .unwrap_or(true);
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-            self.app.logic(ui.ctx(), &mut self.frame);
+            self.app.logic(ui.ctx(), &mut self.frame, epi::LogicPass::root());
 
             if is_visible {
                 #[expect(deprecated)]

@@ -712,8 +712,14 @@ impl GlowWinitRunning<'_> {
         //
         {
             profiling::scope!("App::logic");
-            self.app
-                .logic(&self.integration.egui_ctx, &mut self.integration.frame);
+            self.integration.frame.painting_viewport_id = viewport_id;
+            self.app.logic(
+                &self.integration.egui_ctx,
+                &mut self.integration.frame,
+                crate::epi::LogicPass {
+                    painting_viewport_id: viewport_id,
+                },
+            );
         }
 
         let root_window_id_for_repaint = if viewport_id != ViewportId::ROOT {

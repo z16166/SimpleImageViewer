@@ -769,7 +769,14 @@ impl WgpuWinitRunning<'_> {
         //
         {
             profiling::scope!("App::logic");
-            app.logic(&integration.egui_ctx, &mut integration.frame);
+            integration.frame.painting_viewport_id = viewport_id;
+            app.logic(
+                &integration.egui_ctx,
+                &mut integration.frame,
+                crate::epi::LogicPass {
+                    painting_viewport_id: viewport_id,
+                },
+            );
         }
 
         // logic() may drain loaders and install GPU textures, but only ROOT ui()/paint draws

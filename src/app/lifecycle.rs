@@ -597,6 +597,7 @@ impl ImageViewerApp {
             osd: crate::ui::osd::OsdRenderer::new(osd_event_rx),
             last_minimized: false,
             last_frame_time: Instant::now(),
+            last_logic_shared_at: None,
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
             tile_manager: None,

@@ -92,51 +92,7 @@ _（ISSUE-13、15、16 见 §3。）_
 
 
 
-#### ISSUE-17 · eframe fork：同帧可能执行两次 `logic()`
-
-
-
-| 项 | 内容 |
-
-|----|------|
-
-| **来源** | cursor R4 M2、R5 R5；deepseek R4 #2 |
-
-| **位置** | `patched-crates/eframe` 子 viewport paint → ROOT `RepaintNow` |
-
-| **现状** | Round 5 条件 repaint 已降低频率；fork 架构下仍可能发生双 logic pass。 |
-
-| **影响** | 同帧重复 drain pipeline，CPU 浪费；现有逻辑基本幂等。 |
-
-| **建议修复** | per-pass generation 守卫；或 profiling 确认热点后再优化。 |
-
-
-
----
-
-
-
-#### ISSUE-19 · `App::logic()` 在子 viewport paint 时仍收到 ROOT `Frame`（无 runtime guard）
-
-
-
-| 项 | 内容 |
-
-|----|------|
-
-| **来源** | deepseek R4 #1 |
-
-| **位置** | `patched-crates/eframe/src/epi.rs` 文档说明 |
-
-| **现状** | 仅注释警告，无 `debug_assert` 或 viewport id 参数。 |
-
-| **影响** | 未来在 `logic()` 中误用 ROOT 窗口 API 可能导致 subtle bug。 |
-
-| **建议修复** | 为 `logic()` 增加 `LogicContext { viewport_id, is_root }`；或 debug 构建断言。 |
-
-
-
----
+_（ISSUE-17、19 已于 2026-06-20 修复，见 §3。）_
 
 
 
@@ -226,6 +182,10 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 | **ISSUE-20** Autosave 因子窗口聚焦延迟 | **已修复**：`wgpu_integration.rs` / `glow_integration.rs` 在 deferred 子 viewport paint 时仍对 ROOT 窗口执行 `maybe_autosave`（wall-clock 间隔不变）。 |
 
+| **ISSUE-17** 同帧双 `logic()` | **已修复**：`logic_shared` 4ms coalesce（`last_logic_shared_at`）；aux-only pass 跳过 `logic_root_only`。 |
+
+| **ISSUE-19** 子 viewport paint 仍收 ROOT `Frame` | **已修复**：eframe fork 增加 `LogicPass { painting_viewport_id }` + `Frame::painting_viewport_id()`；应用拆分为 `logic_shared` / `logic_root_only`，ROOT-only 工作（HDR、placement、drag-drop、dialogs）仅在 `pass.is_root()` 时运行。 |
+
 | **ISSUE-22** Strip pool panic | **已修复**：`preview_caps.rs` 多级 rayon pool fallback。 |
 
 | **ISSUE-23** 关键逻辑缺单测 | **已修复**：coalesce/split/mark_failed/normalize、`sync_images` sort-active、`DirectoryTreeView.sync_warning`、strip inflight `try_send` 单测。 |
@@ -252,7 +212,7 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 |--------|----------|------|
 
-| P1 | ISSUE-17–21 | 架构 / fork 长期项（待核实方案） |
+| P1 | ISSUE-21 | 目录树 state 锁粒度；需 profiling 或拆分设计后再动 |
 
 
 
@@ -270,9 +230,9 @@ _（ISSUE-22–27 已于 2026-06-20 修复或文档化，见 §3。）_
 
 | 18 份审核文档合计提出（去重前） | ~120+ 条发现 |
 
-| 当前仍存在于代码 backlog | **3 条**（ISSUE-17、19、21） |
+| 当前仍存在于代码 backlog | **1 条**（ISSUE-21） |
 
-| 架构 / Fork | 3 |
+| 架构 / Fork | 1 |
 
 
 

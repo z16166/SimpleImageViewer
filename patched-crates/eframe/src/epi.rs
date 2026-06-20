@@ -148,6 +148,32 @@ impl CreationContext<'_> {
 
 // ----------------------------------------------------------------------------
 
+/// Identifies which viewport triggered the current [`App::logic`] call (Simple Image Viewer fork).
+///
+/// [`Frame`] always refers to the ROOT integration (main native window, storage, wgpu). Use
+/// [`Self::painting_viewport_id`] to tell ROOT paint from deferred child viewport paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogicPass {
+    /// Viewport whose paint invoked this [`App::logic`] call.
+    pub painting_viewport_id: egui::ViewportId,
+}
+
+impl LogicPass {
+    /// Logic pass for the primary (ROOT) viewport paint.
+    pub fn root() -> Self {
+        Self {
+            painting_viewport_id: egui::ViewportId::ROOT,
+        }
+    }
+
+    /// True when the current logic pass was triggered by ROOT viewport paint.
+    pub fn is_root(&self) -> bool {
+        self.painting_viewport_id == egui::ViewportId::ROOT
+    }
+}
+
+// ----------------------------------------------------------------------------
+
 /// Implement this trait to write apps that can be compiled for both web/wasm and desktop/native using [`eframe`](https://github.com/emilk/egui/tree/main/crates/eframe).
 pub trait App {
     /// Called once before each call to [`Self::ui`] on web, and on native before each
@@ -161,17 +187,18 @@ pub trait App {
     /// (see `wgpu_integration.rs` / `glow_integration.rs` and `epi_integration.rs`).
     ///
     /// **Frame on deferred viewports:** the [`Frame`] passed to [`Self::logic`] (and to
-    /// deferred UI callbacks) still refers to the ROOT integration frame (native window id,
-    /// storage, etc.). Do not use it for child-window file dialogs; use viewport-scoped
-    /// helpers instead.
+    /// deferred UI callbacks) still refers to the ROOT integration frame (main native
+    /// window handle, storage, wgpu). [`LogicPass::painting_viewport_id`] names the viewport
+    /// whose paint triggered this call. Use [`LogicPass::is_root`] to gate ROOT-only work
+    /// (window placement, HDR swap-chain, native dialogs parented via [`Frame::winit_window`]).
     ///
     /// You may NOT show any ui or do any painting during the call to [`Self::logic`].
     ///
     /// The [`egui::Context`] can be cloned and saved if you like.
     ///
     /// To force another call to [`Self::logic`], call [`egui::Context::request_repaint`] at any time (e.g. from another thread).
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut Frame) {
-        _ = (ctx, frame);
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut Frame, pass: LogicPass) {
+        _ = (ctx, frame, pass);
     }
 
     /// Simple Image Viewer fork: after ROOT paints, synchronously repaint auxiliary viewports
@@ -743,9 +770,12 @@ pub struct Frame {
     #[doc(hidden)]
     pub wgpu_render_state: Option<egui_wgpu::RenderState>,
 
-    /// The current [`winit::window::Window`] (i.e. the one the active viewport is rendered to).
+    /// Main (ROOT) native window -- not the deferred child viewport being painted (fork).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) window: Option<std::sync::Arc<winit::window::Window>>,
+
+    /// Viewport whose paint invoked the current [`App::logic`] call (fork; set in integration).
+    pub(crate) painting_viewport_id: egui::ViewportId,
 
     /// Raw platform window handle
     #[cfg(not(target_arch = "wasm32"))]
@@ -797,7 +827,18 @@ impl Frame {
             storage: None,
             #[cfg(feature = "wgpu_no_default_features")]
             wgpu_render_state: None,
+            painting_viewport_id: egui::ViewportId::ROOT,
         }
+    }
+
+    /// Viewport whose paint triggered the current logic pass (fork).
+    pub fn painting_viewport_id(&self) -> egui::ViewportId {
+        self.painting_viewport_id
+    }
+
+    /// True when logic was invoked from a ROOT viewport paint (fork).
+    pub fn is_root_painting(&self) -> bool {
+        self.painting_viewport_id == egui::ViewportId::ROOT
     }
 
     /// True if you are in a web environment.
@@ -823,7 +864,7 @@ impl Frame {
         self.storage.as_deref_mut()
     }
 
-    /// Access to the current [`winit::window::Window`] (i.e. the one the active viewport is rendered to).
+    /// Access to the main (ROOT) [`winit::window::Window`] (fork: not the deferred child window).
     ///
     /// `None` for headless (tests etc).
     #[cfg(not(target_arch = "wasm32"))]
