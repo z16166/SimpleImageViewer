@@ -74,7 +74,10 @@ fn apply_orientation_to_embedded_preview(
     if final_orientation <= 1 {
         return preview;
     }
-    let expected_bytes = preview.width as usize * preview.height as usize * 4;
+    let expected_bytes = preview
+        .width
+        .saturating_mul(preview.height)
+        .saturating_mul(4) as usize;
     if preview.rgba().len() != expected_bytes {
         log::warn!(
             "[Loader] Embedded preview dimensions mismatch: {}x{} vs {} bytes; skipping orientation",

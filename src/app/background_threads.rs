@@ -51,21 +51,46 @@ impl BackgroundThreadJoiner {
     }
 
     pub(crate) fn join_all(&mut self, timeout: Duration) {
-        let handles = std::mem::take(&mut *self.handles.lock());
+        let mut handles = std::mem::take(&mut *self.handles.lock());
+        if handles.is_empty() {
+            log::debug!("[BackgroundThreads] join_all: no background threads");
+            return;
+        }
+        log::debug!(
+            "[BackgroundThreads] join_all: waiting up to {:?} for {} thread(s)",
+            timeout,
+            handles.len()
+        );
         let total = handles.len();
         let deadline = Instant::now() + timeout;
-        for (index, handle) in handles.into_iter().enumerate() {
+        let mut joined = 0usize;
+        while !handles.is_empty() {
             if Instant::now() >= deadline {
+                let remaining = handles.len();
                 log::warn!(
-                    "[BackgroundThreads] Join timed out after {:?}; {} thread(s) left detached",
-                    timeout,
-                    total - index
+                    "[BackgroundThreads] Join timed out after {:?}; detaching {remaining} of {total} thread(s)",
+                    timeout
                 );
+                for handle in handles.drain(..) {
+                    match handle.thread().name() {
+                        Some(name) => {
+                            log::warn!("[BackgroundThreads] Detaching unfinished thread {name}");
+                        }
+                        None => {
+                            log::warn!("[BackgroundThreads] Detaching unnamed background thread");
+                        }
+                    }
+                }
                 return;
             }
+            let handle = handles.remove(0);
             if handle.join().is_err() {
                 log::warn!("[BackgroundThreads] Background thread panicked on join");
             }
+            joined += 1;
         }
+        log::debug!(
+            "[BackgroundThreads] join_all: joined {joined} background thread(s)"
+        );
     }
 }

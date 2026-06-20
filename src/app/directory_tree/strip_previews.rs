@@ -46,6 +46,40 @@ fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, in
 }
 
 impl ImageViewerApp {
+    fn evict_strip_pending_gpu_uploads(&mut self, need: usize) -> usize {
+        if need == 0 {
+            return 0;
+        }
+        let mut dropped_indices = Vec::new();
+        let mut still_need = need;
+
+        if still_need > 0 {
+            let mut kept = Vec::with_capacity(self.directory_tree_strip_pending_gpu.len());
+            for item in self.directory_tree_strip_pending_gpu.drain(..) {
+                if still_need > 0 && item.stage == PreviewStage::Initial {
+                    dropped_indices.push(item.index);
+                    still_need -= 1;
+                } else {
+                    kept.push(item);
+                }
+            }
+            self.directory_tree_strip_pending_gpu = kept;
+        }
+
+        if still_need > 0 {
+            let drop_count = still_need.min(self.directory_tree_strip_pending_gpu.len());
+            for item in self.directory_tree_strip_pending_gpu.drain(..drop_count) {
+                dropped_indices.push(item.index);
+            }
+        }
+
+        let dropped = dropped_indices.len();
+        for index in dropped_indices {
+            self.clear_strip_preview_attempt_state(index);
+        }
+        dropped
+    }
+
     fn queue_directory_tree_strip_gpu_upload(
         &mut self,
         index: usize,
@@ -57,13 +91,13 @@ impl ImageViewerApp {
             return;
         }
         if self.directory_tree_strip_pending_gpu.len() >= MAX_STRIP_PENDING_GPU_UPLOADS {
-            let dropped = self
-                .directory_tree_strip_pending_gpu
-                .len()
-                .saturating_sub(MAX_STRIP_PENDING_GPU_UPLOADS - 1);
-            self.directory_tree_strip_pending_gpu.drain(..dropped);
+            let dropped = self.evict_strip_pending_gpu_uploads(
+                self.directory_tree_strip_pending_gpu
+                    .len()
+                    .saturating_sub(MAX_STRIP_PENDING_GPU_UPLOADS - 1),
+            );
             log::warn!(
-                "[DirectoryTree] Strip pending GPU upload queue full; dropped {dropped} oldest item(s)"
+                "[DirectoryTree] Strip pending GPU upload queue full; dropped {dropped} item(s)"
             );
         }
         self.directory_tree_strip_pending_gpu
@@ -438,7 +472,9 @@ impl ImageViewerApp {
         else {
             return false;
         };
-        self.clear_strip_preview_attempt_state(new_index);
+        if new_index != result.index {
+            self.clear_strip_preview_attempt_state(new_index);
+        }
 
         if result.decoded.width == 0 || result.decoded.height == 0 {
             return false;
@@ -616,16 +652,11 @@ impl ImageViewerApp {
             .directory_tree_list_preview_size
             .strip_max_side();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
-            let preview_result = std::thread::scope(|scope| {
-                scope
-                    .spawn(|| {
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            source.generate_full_image_preview(max_side, max_side)
-                        }))
-                    })
-                    .join()
-                    .unwrap_or(Err(Box::new(()) as Box<dyn std::any::Any + Send>))
-            });
+            // SAFETY: panic in generate_full_image_preview is caught below; the rayon worker
+            // thread stays healthy without spawning a nested OS thread.
+            let preview_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                source.generate_full_image_preview(max_side, max_side)
+            }));
             let mut decoded = DecodedImage::new(0, 0, Vec::new());
             crate::preload_debug!(
                 "[PreloadDebug][Strip] worker start idx={} logical={}x{} max_side={}",
@@ -937,6 +968,7 @@ impl ImageViewerApp {
 
         let mut target_used = vec![false; new_files.len()];
         let mut full_permutation = true;
+        // Entries with usize::MAX are unmapped paths; full_permutation stays false for those.
         for &new_idx in &old_to_new {
             if new_idx == usize::MAX {
                 full_permutation = false;
@@ -955,21 +987,8 @@ impl ImageViewerApp {
         }
 
         log::debug!("[DirectoryTree] Partial strip cache reorder retaining mapped entries");
-        let mut relocations: Vec<(usize, usize)> = old_to_new
-            .iter()
-            .enumerate()
-            .filter_map(|(old_idx, &new_idx)| {
-                if new_idx != usize::MAX && old_idx != new_idx {
-                    Some((old_idx, new_idx))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        relocations.sort_by_key(|(old_idx, _)| *old_idx);
-        for (from, to) in relocations {
-            self.directory_tree_strip_cache.relocate(from, to);
-        }
+        self.directory_tree_strip_cache
+            .partial_remap(&old_to_new);
         if let Some(mut list) = self.directory_tree.list.try_lock() {
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.mark_snapshot_dirty();

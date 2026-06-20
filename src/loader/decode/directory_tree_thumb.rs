@@ -409,16 +409,11 @@ fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    let gen_result = std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    source.generate_full_image_preview(max_side, max_side)
-                }))
-            })
-            .join()
-            .unwrap_or(Err(Box::new(()) as Box<dyn std::any::Any + Send>))
-    });
+    // SAFETY: panic in generate_full_image_preview is caught below; the caller thread
+    // stays healthy without spawning a nested OS thread.
+    let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        source.generate_full_image_preview(max_side, max_side)
+    }));
     match gen_result {
         Ok((width, height, pixels)) if width > 0 && height > 0 => {
             Ok(DecodedImage::new(width, height, pixels))

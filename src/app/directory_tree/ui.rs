@@ -394,7 +394,8 @@ fn directory_tree_row_selected_fill(palette: &ThemePalette) -> egui::Color32 {
 }
 
 fn directory_tree_row_selected_text(palette: &ThemePalette) -> egui::Color32 {
-    palette.accent2
+    // Fill already uses accent tint; keep body text readable on both themes.
+    palette.text_normal
 }
 
 fn paint_directory_tree_folder_name(
@@ -845,10 +846,13 @@ fn draw_directory_node(
                 node.display_name.as_str(),
                 palette,
             );
-            let hover_path = node.browse_path.clone();
-            let name_response = name_response.on_hover_ui(move |ui| {
-                ui.label(hover_path.to_string_lossy());
-            });
+            let mut name_response = name_response;
+            if name_response.hovered() {
+                let hover_text = node.browse_path.to_string_lossy().into_owned();
+                name_response = name_response.on_hover_ui(move |ui| {
+                    ui.label(hover_text);
+                });
+            }
             if scroll_to_selected && selected {
                 name_response.scroll_to_me(Some(egui::Align::Center));
                 scrolled = true;
@@ -1468,7 +1472,9 @@ fn draw_image_details_row(
             chrome.image_list_keyboard_active = true;
         }
     }
-    response.on_hover_text(row.path.to_string_lossy());
+    if response.hovered() {
+        response.on_hover_text(row.path.to_string_lossy());
+    }
     false
 }
 
@@ -1502,13 +1508,21 @@ pub(super) fn should_expand_this_pc_for_path(
         let _ = root;
         return true;
     }
-    #[cfg(not(windows))]
+    #[cfg(not(target_os = "windows"))]
     {
         root.components().count() > 1 || root.as_os_str() == "/"
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn filesystem_ancestor_chain(target: &Path) -> Vec<PathBuf> {
+    filesystem_ancestor_chain_limited(target, usize::MAX)
+}
+
+pub(super) fn filesystem_ancestor_chain_limited(
+    target: &Path,
+    max_depth: usize,
+) -> Vec<PathBuf> {
     if let Some(root) = volume_root_for_path(target) {
         if target == root.as_path() {
             return vec![root];
@@ -1517,6 +1531,9 @@ pub(super) fn filesystem_ancestor_chain(target: &Path) -> Vec<PathBuf> {
         if let Ok(relative) = target.strip_prefix(&root) {
             let mut current = root;
             for component in relative.components() {
+                if chain.len() >= max_depth {
+                    break;
+                }
                 current.push(component);
                 chain.push(current.clone());
             }
@@ -1529,6 +1546,9 @@ pub(super) fn filesystem_ancestor_chain(target: &Path) -> Vec<PathBuf> {
     let mut chain = vec![target.to_path_buf()];
     let mut current = target.to_path_buf();
     while current.pop() {
+        if chain.len() >= max_depth {
+            break;
+        }
         chain.push(current.clone());
     }
     chain.reverse();
@@ -1598,7 +1618,16 @@ pub(super) fn unc_share_display_name(share_root: &Path) -> String {
         .to_string()
 }
 
+#[allow(dead_code)]
 pub(super) fn directory_ancestor_chain(root: &Path, target: &Path) -> Vec<PathBuf> {
+    directory_ancestor_chain_limited(root, target, usize::MAX)
+}
+
+pub(super) fn directory_ancestor_chain_limited(
+    root: &Path,
+    target: &Path,
+    max_depth: usize,
+) -> Vec<PathBuf> {
     if target == root {
         return vec![root.to_path_buf()];
     }
@@ -1610,6 +1639,9 @@ pub(super) fn directory_ancestor_chain(root: &Path, target: &Path) -> Vec<PathBu
     if let Ok(relative) = target.strip_prefix(root) {
         let mut current = root.to_path_buf();
         for component in relative.components() {
+            if chain.len() >= max_depth {
+                break;
+            }
             current.push(component);
             chain.push(current.clone());
         }

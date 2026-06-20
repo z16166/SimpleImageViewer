@@ -111,6 +111,7 @@ impl eframe::App for ImageViewerApp {
         }
         self.background_threads
             .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);
+        log::debug!("[on_exit] Background thread join finished");
         self.directory_tree.join_workers();
         self.directory_tree
             .viewpaint_app

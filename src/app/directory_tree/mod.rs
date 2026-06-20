@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -84,11 +85,11 @@ pub(super) fn network_tree_path() -> PathBuf {
 }
 
 pub(super) fn is_this_pc_tree_path(path: &Path) -> bool {
-    path.as_os_str() == this_pc_tree_path().as_os_str()
+    path.as_os_str() == OsStr::new(THIS_PC_TREE_PATH)
 }
 
 pub(super) fn is_network_tree_path(path: &Path) -> bool {
-    path.as_os_str() == network_tree_path().as_os_str()
+    path.as_os_str() == OsStr::new(NETWORK_TREE_PATH)
 }
 
 pub(super) fn is_places_sentinel_path(path: &Path) -> bool {
@@ -462,13 +463,10 @@ impl DirectoryTreeTreeState {
             "[DirectoryTree] Node cap ({MAX_DIRECTORY_TREE_NODES}) reached at {}",
             context_path.display()
         );
-        let message = t!("directory_tree.nodes_cap_reached").to_string();
         if let Some(node) = self.nodes.get_mut(context_path) {
-            node.error = Some(message);
-        } else if let Some(node) = self.nodes.get_mut(&this_pc_tree_path()) {
-            node.error = Some(message);
+            node.error = Some(t!("directory_tree.nodes_cap_reached").to_string());
+            self.mark_snapshot_dirty();
         }
-        self.mark_snapshot_dirty();
     }
 
     fn insert_tree_node(&mut self, path: PathBuf, node: DirectoryTreeNode) {
@@ -617,12 +615,16 @@ impl DirectoryTreeTreeState {
     }
 
     fn reveal_ancestor_chain(&self, selected: &Path) -> Vec<PathBuf> {
+        let max_depth = MAX_DIRECTORY_TREE_REVEAL_DEPTH;
         if let Some(entry) = self.known_folder_for_filesystem_path(selected) {
             let mut chain = vec![entry.tree_path.clone()];
             if selected != entry.filesystem_path.as_path() {
                 if let Ok(relative) = selected.strip_prefix(&entry.filesystem_path) {
                     let mut current = entry.filesystem_path.clone();
                     for component in relative.components() {
+                        if chain.len() >= max_depth {
+                            break;
+                        }
                         current.push(component);
                         chain.push(current.clone());
                     }
@@ -633,11 +635,11 @@ impl DirectoryTreeTreeState {
 
         if is_unc_path(selected) {
             if let Some(share) = unc_share_root(selected) {
-                return directory_ancestor_chain(&share, selected);
+                return directory_ancestor_chain_limited(&share, selected, max_depth);
             }
         }
 
-        filesystem_ancestor_chain(selected)
+        filesystem_ancestor_chain_limited(selected, max_depth)
     }
 
     pub(crate) fn expand_tree_for_filesystem_dir(
@@ -1021,7 +1023,8 @@ impl DirectoryTreeTreeState {
                     return;
                 };
                 node.loading = false;
-                node.children_loaded = !cap_reached;
+                // Cap is a global arena limit; retry on re-expand would only re-hit the cap.
+                node.children_loaded = true;
                 node.children = loaded_children;
                 node.error = if cap_reached {
                     Some(t!("directory_tree.nodes_cap_reached").to_string())
@@ -1052,7 +1055,7 @@ mod view;
 mod workers;
 
 use ui::{
-    directory_ancestor_chain, directory_display_name, filesystem_ancestor_chain,
+    directory_ancestor_chain_limited, directory_display_name, filesystem_ancestor_chain_limited,
     should_expand_this_pc_for_path, unc_share_display_name, unc_share_root,
 };
 use workers::{directory_tree_children_worker_loop, directory_tree_metadata_worker_loop};

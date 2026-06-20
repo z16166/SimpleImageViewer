@@ -221,6 +221,10 @@ impl DirectoryTreeStripCache {
         if from == to {
             return;
         }
+        debug_assert!(
+            !self.textures.contains_key(&to),
+            "relocate: target {to} already in cache"
+        );
         if let Some(tex) = self.textures.remove(&from) {
             self.textures.insert(to, tex);
         }
@@ -234,11 +238,33 @@ impl DirectoryTreeStripCache {
             self.logical_sizes.insert(to, logical);
         }
         self.lru_order.retain(|idx| *idx != to);
+        let mut found = false;
         for entry in &mut self.lru_order {
             if *entry == from {
                 *entry = to;
+                found = true;
             }
         }
+        if !found && self.textures.contains_key(&to) {
+            self.touch_lru(to);
+        }
+    }
+
+    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
+        remap_partial_hashmap(&mut self.textures, old_to_new);
+        remap_partial_hashmap(&mut self.preview_max_side, old_to_new);
+        remap_partial_hashmap(&mut self.preview_stage, old_to_new);
+        remap_partial_hashmap(&mut self.logical_sizes, old_to_new);
+        self.lru_order.retain_mut(|index| {
+            if *index < old_to_new.len() {
+                let new_idx = old_to_new[*index];
+                if new_idx != usize::MAX {
+                    *index = new_idx;
+                    return true;
+                }
+            }
+            false
+        });
     }
 
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
@@ -296,6 +322,18 @@ impl DirectoryTreeStripCache {
         }
         if evicted {
             self.bump_gpu_revision();
+        }
+    }
+}
+
+fn remap_partial_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
+    let taken = std::mem::take(map);
+    for (old_idx, value) in taken {
+        if old_idx < old_to_new.len() {
+            let new_idx = old_to_new[old_idx];
+            if new_idx != usize::MAX {
+                map.insert(new_idx, value);
+            }
         }
     }
 }
@@ -473,5 +511,42 @@ mod tests {
         cache.insert_from_texture_handle(0, handle, PreviewStage::Refined, 8, Some((80, 80)), 0, 1);
         assert!(cache.contains(0));
         assert_eq!(cache.gpu_revision(), 1);
+    }
+
+    #[test]
+    fn partial_remap_handles_swap_without_losing_entries() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        for index in 0..3 {
+            let fill = ((index + 1) * 40) as u8;
+            let decoded = DecodedImage::new(16, 16, vec![fill; 16 * 16 * 4]);
+            cache.upsert_from_decoded(
+                index,
+                &decoded,
+                PreviewStage::Refined,
+                None,
+                &ctx,
+                0,
+                3,
+                128,
+            );
+        }
+        // Swap indices 1 and 2.
+        let old_to_new = vec![0, 2, 1];
+        cache.partial_remap(&old_to_new);
+        assert!(cache.contains(0));
+        assert!(cache.contains(1));
+        assert!(cache.contains(2));
+    }
+
+    #[test]
+    fn relocate_moves_cached_entry_to_new_index() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        let decoded = DecodedImage::new(16, 16, vec![1; 16 * 16 * 4]);
+        cache.upsert_from_decoded(0, &decoded, PreviewStage::Refined, None, &ctx, 0, 1, 128);
+        cache.relocate(0, 5);
+        assert!(cache.contains(5));
+        assert!(!cache.contains(0));
     }
 }

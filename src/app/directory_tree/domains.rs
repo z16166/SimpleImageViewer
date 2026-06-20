@@ -249,10 +249,14 @@ fn share_image_rows(
     previous: &Arc<[DirectoryTreeFileRow]>,
     rows: &[DirectoryTreeFileRow],
 ) -> Arc<[DirectoryTreeFileRow]> {
-    if previous.as_ref() == rows {
-        return Arc::clone(previous);
-    }
     let prev_len = previous.len();
+    if prev_len == rows.len() {
+        let ends_match = prev_len <= 2
+            || (previous.first() == rows.first() && previous.last() == rows.last());
+        if ends_match && previous.as_ref() == rows {
+            return Arc::clone(previous);
+        }
+    }
     if rows.len() >= prev_len && prev_len > 0 && rows.get(0..prev_len) == Some(previous.as_ref()) {
         let mut shared = Vec::with_capacity(rows.len());
         shared.extend_from_slice(previous);

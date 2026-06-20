@@ -66,6 +66,14 @@ pub(crate) struct FolderPickerRuntime {
 
 pub(crate) const FOLDER_PICKER_TIMEOUT: Duration = Duration::from_secs(600);
 
+fn next_folder_picker_generation(current: u64) -> u64 {
+    let mut next = current.wrapping_add(1);
+    if next == 0 {
+        next = 1;
+    }
+    next
+}
+
 impl FolderPickerRuntime {
     pub(crate) fn new() -> Self {
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
@@ -141,7 +149,7 @@ impl ImageViewerApp {
             return;
         }
 
-        while self.folder_picker.result_rx.try_recv().is_ok() {
+        if self.folder_picker.result_rx.try_recv().is_ok() {
             log::debug!("[FolderPicker] Drained stale completion before opening dialog");
         }
 
@@ -160,7 +168,8 @@ impl ImageViewerApp {
         }
 
         let tx = self.folder_picker.result_tx.clone();
-        self.folder_picker.next_generation = self.folder_picker.next_generation.wrapping_add(1);
+        self.folder_picker.next_generation =
+            next_folder_picker_generation(self.folder_picker.next_generation);
         let generation = self.folder_picker.next_generation;
         self.folder_picker.active_generation = generation;
         self.folder_picker.in_flight = true;
@@ -200,6 +209,8 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn poll_folder_picker_results(&mut self, ctx: &egui::Context) {
+        // When not in_flight (including after timeout), late worker completions sit in the
+        // bounded(1) channel until begin_async_rfd_dialog drains them before the next open.
         if !self.folder_picker.in_flight {
             return;
         }

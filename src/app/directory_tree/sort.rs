@@ -37,18 +37,19 @@ pub(super) fn image_list_sort_order(
         None
     };
     #[cfg(target_os = "windows")]
-    let windows_name_keys: Option<Vec<Vec<u16>>> = if column == ImageListSortColumn::Name {
-        Some(
-            name_keys
-                .as_ref()
-                .expect("name keys")
-                .iter()
+    let windows_name_keys: Option<Vec<Vec<u16>>> =
+        name_keys.as_ref().map(|keys| {
+            keys.iter()
                 .map(|key| key.encode_utf16().collect())
-                .collect(),
-        )
-    } else {
-        None
-    };
+                .collect()
+        });
+    #[cfg(target_os = "macos")]
+    let macos_name_keys: Option<Vec<core_foundation::string::CFString>> =
+        name_keys.as_ref().map(|keys| {
+            keys.iter()
+                .map(|key| core_foundation::string::CFString::new(key))
+                .collect()
+        });
     let mut order: Vec<usize> = (0..len).collect();
     order.sort_by(|&left, &right| {
         let ordering = compare_image_list_sort_keys_with_cache(
@@ -61,6 +62,8 @@ pub(super) fn image_list_sort_order(
             name_keys.as_deref(),
             #[cfg(target_os = "windows")]
             windows_name_keys.as_deref(),
+            #[cfg(target_os = "macos")]
+            macos_name_keys.as_deref(),
         );
         let primary = if ascending {
             ordering
@@ -87,6 +90,8 @@ fn compare_image_list_sort_keys_with_cache(
     modified: &[Option<i64>],
     name_keys: Option<&[String]>,
     #[cfg(target_os = "windows")] windows_name_keys: Option<&[Vec<u16>]>,
+    #[cfg(target_os = "macos")]
+    macos_name_keys: Option<&[core_foundation::string::CFString]>,
 ) -> Ordering {
     debug_assert!(left < paths.len() && right < paths.len());
     match column {
@@ -95,6 +100,10 @@ fn compare_image_list_sort_keys_with_cache(
                 #[cfg(target_os = "windows")]
                 if let Some(wide_keys) = windows_name_keys {
                     return windows_locale_compare_wide(&wide_keys[left], &wide_keys[right]);
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(cf_keys) = macos_name_keys {
+                    return macos_locale_compare_cf(&cf_keys[left], &cf_keys[right]);
                 }
                 locale_compare_str(&keys[left], &keys[right])
             } else {
@@ -174,19 +183,19 @@ fn windows_locale_compare_wide(left: &[u16], right: &[u16]) -> Ordering {
         1 => Ordering::Less,
         2 => Ordering::Equal,
         3 => Ordering::Greater,
-        _ => left
-            .iter()
-            .map(|unit| char::from_u32(*unit as u32).unwrap_or('\0'))
+        _ => windows_locale_compare_wide_fallback(left, right),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_locale_compare_wide_fallback(left: &[u16], right: &[u16]) -> Ordering {
+    fn utf16_sort_key(units: &[u16]) -> String {
+        char::decode_utf16(units.iter().copied())
+            .map(|unit| unit.unwrap_or('\u{FFFD}'))
             .collect::<String>()
             .to_lowercase()
-            .cmp(
-                &right
-                    .iter()
-                    .map(|unit| char::from_u32(*unit as u32).unwrap_or('\0'))
-                    .collect::<String>()
-                    .to_lowercase(),
-            ),
     }
+    utf16_sort_key(left).cmp(&utf16_sort_key(right))
 }
 
 #[cfg(target_os = "windows")]
@@ -198,26 +207,34 @@ fn windows_locale_compare(left: &str, right: &str) -> Ordering {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_locale_compare(left: &str, right: &str) -> Ordering {
+fn macos_locale_compare_cf(
+    left: &core_foundation::string::CFString,
+    right: &core_foundation::string::CFString,
+) -> Ordering {
     use core_foundation::base::TCFType;
-    use core_foundation::string::{CFString, CFStringCompareFlags};
+    use core_foundation::string::{CFStringCompareFlags, CFComparisonResult};
 
-    let left_cf = CFString::new(left);
-    let right_cf = CFString::new(right);
     let flags =
         CFStringCompareFlags::COMPARE_CASE_INSENSITIVE | CFStringCompareFlags::COMPARE_LOCALIZED;
     let result = unsafe {
         core_foundation::string::CFStringCompare(
-            left_cf.as_concrete_TypeRef(),
-            right_cf.as_concrete_TypeRef(),
+            left.as_concrete_TypeRef(),
+            right.as_concrete_TypeRef(),
             flags,
         )
     };
     match result {
-        core_foundation::string::CFComparisonResult::LessThan => Ordering::Less,
-        core_foundation::string::CFComparisonResult::EqualTo => Ordering::Equal,
-        core_foundation::string::CFComparisonResult::GreaterThan => Ordering::Greater,
+        CFComparisonResult::LessThan => Ordering::Less,
+        CFComparisonResult::EqualTo => Ordering::Equal,
+        CFComparisonResult::GreaterThan => Ordering::Greater,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_locale_compare(left: &str, right: &str) -> Ordering {
+    use core_foundation::string::CFString;
+
+    macos_locale_compare_cf(&CFString::new(left), &CFString::new(right))
 }
 
 pub(super) fn file_name_sort_key(path: &Path) -> String {
