@@ -93,10 +93,24 @@ pub(super) fn image_list_sort_indicator(
     column: ImageListSortColumn,
     state: &DirectoryTreeState,
 ) -> String {
-    if !state.image_list_sort_active || state.image_list_sort_column != column {
+    image_list_sort_indicator_fields(
+        column,
+        state.image_list_sort_active,
+        state.image_list_sort_column,
+        state.image_list_sort_ascending,
+    )
+}
+
+pub(super) fn image_list_sort_indicator_fields(
+    column: ImageListSortColumn,
+    sort_active: bool,
+    sort_column: ImageListSortColumn,
+    sort_ascending: bool,
+) -> String {
+    if !sort_active || sort_column != column {
         return String::new();
     }
-    if state.image_list_sort_ascending {
+    if sort_ascending {
         t!("directory_tree.sort_asc").to_string()
     } else {
         t!("directory_tree.sort_desc").to_string()

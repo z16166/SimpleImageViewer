@@ -293,7 +293,6 @@ fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
 
 #[test]
 fn sync_images_marks_list_scroll_when_current_index_changes() {
-    let (metadata_tx, _metadata_rx) = crossbeam_channel::unbounded();
     let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
     let mut state = DirectoryTreeState::default();
     state.image_rows = paths
@@ -308,15 +307,7 @@ fn sync_images_marks_list_scroll_when_current_index_changes() {
     state.current_index = 0;
     state.scroll_image_list_to_current = false;
 
-    state.sync_images(
-        &paths,
-        &[0, 0],
-        &[None, None],
-        1,
-        false,
-        String::new(),
-        &metadata_tx,
-    );
+    state.sync_images(&paths, &[0, 0], &[None, None], 1, false, String::new());
 
     assert_eq!(state.current_index, 1);
     assert!(state.scroll_image_list_to_current);

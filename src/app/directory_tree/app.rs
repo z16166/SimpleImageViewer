@@ -17,7 +17,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use eframe::egui;
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
@@ -32,13 +34,12 @@ use super::ui::{
     unc_share_root,
 };
 use super::{
-    DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH,
-    DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
-    DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT,
-    DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
-    DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
-    DirectoryTreeListPreviewLayout,
-    DirectoryTreeState, ImageListSortColumn, is_places_sentinel_path,
+    DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH, DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
+    DIRECTORY_TREE_EMBEDDED_MIN_WIDTH, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+    DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT, DIRECTORY_TREE_MIN_WIDTH,
+    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
+    DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
+    DirectoryTreeState, FileMetadataRequest, ImageListSortColumn, is_places_sentinel_path, view,
 };
 
 impl ImageViewerApp {
@@ -48,11 +49,77 @@ impl ImageViewerApp {
         }
         let pointer = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
         let block_rect = ctx.data(|d| {
-            d.get_temp::<egui::Rect>(egui::Id::new(
-                super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID,
-            ))
+            d.get_temp::<egui::Rect>(egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID))
         });
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
+    }
+
+    fn send_directory_tree_metadata_request(
+        metadata_tx: &crossbeam_channel::Sender<FileMetadataRequest>,
+        request: FileMetadataRequest,
+    ) {
+        if let Err(err) = metadata_tx.send(request) {
+            log::warn!("[DirectoryTree] file metadata request dropped: {err}");
+        }
+    }
+
+    /// Publish an immutable paint snapshot after `logic()` mutates `DirectoryTreeState`.
+    pub(crate) fn publish_directory_tree_view_from_state(&self) {
+        let state = self.directory_tree.state.lock();
+        view::publish_directory_tree_view(&self.directory_tree.view, &state);
+    }
+
+    /// Paint from RCU view + frame chrome; no clone and no structural state lock during draw.
+    fn paint_directory_tree_panel(
+        ui: &mut egui::Ui,
+        view: &Arc<ArcSwap<view::DirectoryTreeView>>,
+        chrome: &Arc<Mutex<view::DirectoryTreeUiChrome>>,
+        state: &Arc<Mutex<DirectoryTreeState>>,
+        list_preview: DirectoryTreeListPreviewLayout,
+        command_tx: &crossbeam_channel::Sender<DirectoryTreeCommand>,
+        root_wake: Option<&crate::app::RootRedrawWake>,
+        theme: &Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
+        embedded: bool,
+    ) -> bool {
+        let palette = theme.lock().clone();
+        if let Some(mut state_guard) = state.try_lock() {
+            let cols_before = (
+                state_guard.image_list_col_size_w,
+                state_guard.image_list_col_modified_w,
+            );
+            state_guard.update_image_list_column_widths(ui.ctx());
+            if cols_before
+                != (
+                    state_guard.image_list_col_size_w,
+                    state_guard.image_list_col_modified_w,
+                )
+            {
+                view::publish_directory_tree_view(view, &state_guard);
+            }
+        }
+        let view = view.load();
+        let Some(mut chrome_guard) = chrome.try_lock() else {
+            return false;
+        };
+        chrome_guard.begin_paint_frame(&view);
+        draw_directory_tree_window(
+            ui,
+            &view,
+            &mut chrome_guard,
+            list_preview,
+            command_tx,
+            root_wake,
+            &palette,
+            embedded,
+        );
+        let scanning = view.scanning;
+        drop(chrome_guard);
+        if let Some(mut state_guard) = state.try_lock() {
+            if let Some(chrome_guard) = chrome.try_lock() {
+                chrome_guard.apply_to_state(&mut state_guard);
+            }
+        }
+        scanning
     }
 
     /// Lazily capture a root-window redraw hook (Windows child viewports do not wake ROOT).
@@ -133,11 +200,7 @@ impl ImageViewerApp {
 
     fn send_directory_tree_children_request(&mut self, request: DirectoryChildrenRequest) {
         let tree_path = request.tree_path.clone();
-        if let Err(err) = self
-            .directory_tree
-            .children_request_tx
-            .try_send(request)
-        {
+        if let Err(err) = self.directory_tree.children_request_tx.try_send(request) {
             log::warn!(
                 "[DirectoryTree] children request dropped for {}: {err}",
                 tree_path.display()
@@ -223,6 +286,7 @@ impl ImageViewerApp {
         }
         self.apply_saved_directory_tree_panel_layout_to_state(&mut state);
         drop(state);
+        self.publish_directory_tree_view_from_state();
         self.reveal_directory_tree_for_saved_selection();
     }
 
@@ -433,6 +497,7 @@ impl ImageViewerApp {
                 }
             }
         }
+        self.publish_directory_tree_view_from_state();
     }
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
@@ -445,8 +510,7 @@ impl ImageViewerApp {
         }
         match self.directory_tree.state.try_lock() {
             Some(state) => state.places_loaded,
-            // Embedded panel may hold the lock during paint; still treat as active.
-            None => true,
+            None => self.directory_tree.view.load().places_loaded,
         }
     }
 
@@ -714,8 +778,7 @@ impl ImageViewerApp {
         {
             self.cached_directory_tree_restore_placement = Some(placement);
         }
-        if placement.maximized
-            || Settings::valid_outer_position(placement.outer_position).is_some()
+        if placement.maximized || Settings::valid_outer_position(placement.outer_position).is_some()
         {
             self.cached_directory_tree_window_placement = Some(placement);
         }
@@ -838,7 +901,8 @@ impl ImageViewerApp {
 
     pub(crate) fn defer_directory_tree_file_list_sync(&mut self) {
         const MAX_DEFER_FRAMES: u32 = 120;
-        self.directory_tree_sync_defer_frames = self.directory_tree_sync_defer_frames.saturating_add(1);
+        self.directory_tree_sync_defer_frames =
+            self.directory_tree_sync_defer_frames.saturating_add(1);
         if self.directory_tree_sync_defer_frames > MAX_DEFER_FRAMES {
             log::warn!(
                 "[DirectoryTree] Dropping deferred file-list sync after {MAX_DEFER_FRAMES} contended frames"
@@ -866,6 +930,7 @@ impl ImageViewerApp {
 
         let viewport_id = self.directory_tree_repaint_viewport_id();
         let mut sync_warning_cleared = false;
+        let mut metadata_requests = Vec::new();
         let request_viewport_repaint = {
             let pending_warning = self.pending_directory_tree_sync_warning.take();
             let Some(mut state) = self.directory_tree.state.try_lock() else {
@@ -901,15 +966,16 @@ impl ImageViewerApp {
                 let resort_column = state.image_list_sort_column;
                 let resort_ascending = state.image_list_sort_ascending;
                 let scan_status = Self::directory_tree_scan_status_message(self);
-                state.sync_images(
+                if let Some(request) = state.sync_images(
                     &self.image_files,
                     &self.file_byte_len_by_index,
                     &self.file_modified_unix_by_index,
                     self.current_index,
                     self.scanning,
                     scan_status,
-                    &self.directory_tree.metadata_request_tx,
-                );
+                ) {
+                    metadata_requests.push(request);
+                }
                 state.sync_warning = None;
                 sync_warning_cleared = true;
                 let repaint = preview_updated
@@ -943,15 +1009,16 @@ impl ImageViewerApp {
             )
         {
             if let Some(mut state) = self.directory_tree.state.try_lock() {
-                state.sync_images(
+                if let Some(request) = state.sync_images(
                     &self.image_files,
                     &self.file_byte_len_by_index,
                     &self.file_modified_unix_by_index,
                     self.current_index,
                     self.scanning,
                     Self::directory_tree_scan_status_message(self),
-                    &self.directory_tree.metadata_request_tx,
-                );
+                ) {
+                    metadata_requests.push(request);
+                }
                 state.sync_warning = None;
                 sync_warning_cleared = true;
                 state.image_list_generation = state.image_list_generation.wrapping_add(1);
@@ -959,6 +1026,13 @@ impl ImageViewerApp {
                 state.image_list_col_widths_dirty = true;
                 state.scroll_image_list_to_current = true;
             }
+        }
+
+        for request in metadata_requests {
+            Self::send_directory_tree_metadata_request(
+                &self.directory_tree.metadata_request_tx,
+                request,
+            );
         }
 
         if sync_warning_cleared {
@@ -969,6 +1043,7 @@ impl ImageViewerApp {
             ctx.request_repaint_of(viewport_id);
             self.mark_directory_tree_repaint_pending();
         }
+        self.publish_directory_tree_view_from_state();
         if self.directory_tree_viewport_active() {
             // Keep ROOT painting while the tree viewport is open. logic() may run on a child
             // repaint; egui repaint requests alone do not wake ROOT on Windows.
@@ -987,6 +1062,8 @@ impl ImageViewerApp {
 
         let viewport_id = Self::directory_tree_viewport_id();
         let state = Arc::clone(&self.directory_tree.state);
+        let view = Arc::clone(&self.directory_tree.view);
+        let chrome = Arc::clone(&self.directory_tree.chrome);
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = std::sync::Arc::clone(&self.directory_tree_theme);
@@ -1007,10 +1084,7 @@ impl ImageViewerApp {
 
         ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
-                if command_tx
-                    .send(DirectoryTreeCommand::CloseWindow)
-                    .is_err()
-                {
+                if command_tx.send(DirectoryTreeCommand::CloseWindow).is_err() {
                     log::warn!("[DirectoryTree] CloseWindow command channel disconnected");
                 }
                 return;
@@ -1026,22 +1100,17 @@ impl ImageViewerApp {
                 }
             }
 
-            let palette = theme.lock().clone();
-            let scanning = {
-                let Some(mut state) = state.try_lock() else {
-                    return;
-                };
-                draw_directory_tree_window(
-                    ui,
-                    &mut state,
-                    &command_tx,
-                    root_wake.as_ref(),
-                    &palette,
-                    false,
-                    list_preview,
-                );
-                state.scanning
-            };
+            let scanning = Self::paint_directory_tree_panel(
+                ui,
+                &view,
+                &chrome,
+                &state,
+                list_preview,
+                &command_tx,
+                root_wake.as_ref(),
+                &theme,
+                false,
+            );
             if scanning {
                 if let Some(wake) = &root_wake {
                     wake();
@@ -1058,12 +1127,14 @@ impl ImageViewerApp {
         }
 
         let state = Arc::clone(&self.directory_tree.state);
+        let view = Arc::clone(&self.directory_tree.view);
+        let chrome = Arc::clone(&self.directory_tree.chrome);
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = Arc::clone(&self.directory_tree_theme);
         let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
-        let has_places = state.try_lock().is_some_and(|guard| guard.places_loaded);
+        let has_places = view.load().places_loaded;
         if !has_places {
             egui::Panel::left(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID)
                 .resizable(false)
@@ -1093,20 +1164,18 @@ impl ImageViewerApp {
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
             .show_inside(ui, |ui| {
-                let palette = theme.lock().clone();
-                let Some(mut state) = state.try_lock() else {
-                    return;
-                };
-                draw_directory_tree_window(
+                if Self::paint_directory_tree_panel(
                     ui,
-                    &mut state,
+                    &view,
+                    &chrome,
+                    &state,
+                    list_preview,
                     &command_tx,
                     root_wake.as_ref(),
-                    &palette,
+                    &theme,
                     true,
-                    list_preview,
-                );
-                if state.scanning {
+                ) && view.load().scanning
+                {
                     ui.ctx().request_repaint();
                 }
             });
@@ -1199,6 +1268,6 @@ impl ImageViewerApp {
             self.wake_root_for_logic();
         }
         self.flush_directory_tree_panel_layout_persist();
+        self.publish_directory_tree_view_from_state();
     }
-
 }

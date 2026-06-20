@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use parking_lot::Mutex;
@@ -294,6 +295,8 @@ fn children_request(
 
 pub(crate) struct DirectoryTreeRuntime {
     pub(crate) state: Arc<Mutex<DirectoryTreeState>>,
+    pub(crate) view: Arc<ArcSwap<view::DirectoryTreeView>>,
+    pub(crate) chrome: Arc<Mutex<view::DirectoryTreeUiChrome>>,
     pub(crate) command_tx: Sender<DirectoryTreeCommand>,
     pub(crate) command_rx: Receiver<DirectoryTreeCommand>,
     pub(crate) children_request_tx: Sender<DirectoryChildrenRequest>,
@@ -342,11 +345,21 @@ impl DirectoryTreeRuntime {
             );
         }
 
+        let initial_state = DirectoryTreeState {
+            workers_available,
+            ..DirectoryTreeState::default()
+        };
+        let view = Arc::new(ArcSwap::from_pointee(view::DirectoryTreeView::from_state(
+            &initial_state,
+        )));
+        let chrome = Arc::new(Mutex::new(view::DirectoryTreeUiChrome::from_state(
+            &initial_state,
+        )));
+
         Self {
-            state: Arc::new(Mutex::new(DirectoryTreeState {
-                workers_available,
-                ..DirectoryTreeState::default()
-            })),
+            state: Arc::new(Mutex::new(initial_state)),
+            view,
+            chrome,
             command_tx,
             command_rx,
             children_request_tx,
@@ -622,8 +635,13 @@ impl DirectoryTreeState {
         current_index: usize,
         scanning: bool,
         scan_status: String,
-        metadata_tx: &Sender<FileMetadataRequest>,
-    ) {
+    ) -> Option<FileMetadataRequest> {
+        let mut paths_needing_meta = Vec::new();
+        let mut queue_metadata = |paths: Vec<PathBuf>| {
+            if !paths.is_empty() {
+                paths_needing_meta.extend(paths);
+            }
+        };
         if self.image_list_sort_active {
             let image_set: std::collections::HashSet<&PathBuf> = images.iter().collect();
             let image_index: std::collections::HashMap<&PathBuf, usize> = images
@@ -646,7 +664,6 @@ impl DirectoryTreeState {
             // Owned paths: `image_rows.push` below may reallocate, invalidating borrows from rows.
             let existing_paths: std::collections::HashSet<PathBuf> =
                 self.image_rows.iter().map(|row| row.path.clone()).collect();
-            let mut paths_needing_meta = Vec::new();
             for (index, path) in images.iter().enumerate() {
                 if existing_paths.contains(path) {
                     continue;
@@ -662,69 +679,66 @@ impl DirectoryTreeState {
                     modified_unix: mtime,
                 });
             }
-            if !scanning && !paths_needing_meta.is_empty() {
-                self.request_file_metadata(paths_needing_meta, metadata_tx);
-            }
         } else {
-        let prefix_matches = images.len() >= self.image_rows.len()
-            && self
-                .image_rows
-                .iter()
-                .zip(images)
-                .all(|(row, path)| row.path == *path);
+            let prefix_matches = images.len() >= self.image_rows.len()
+                && self
+                    .image_rows
+                    .iter()
+                    .zip(images)
+                    .all(|(row, path)| row.path == *path);
 
-        if prefix_matches {
-            for (index, row) in self.image_rows.iter_mut().enumerate() {
-                if let Some(size) = sizes.get(index) {
-                    row.size_bytes = *size;
-                }
-                if let Some(Some(mtime)) = modified.get(index) {
-                    row.modified_unix = Some(*mtime);
-                }
-            }
-
-            if images.len() > self.image_rows.len() {
-                let start = self.image_rows.len();
-                let mut paths_needing_meta = Vec::new();
-                for index in start..images.len() {
-                    let path = &images[index];
-                    let mtime = modified.get(index).copied().flatten();
-                    if mtime.is_none() {
-                        paths_needing_meta.push(path.clone());
+            if prefix_matches {
+                for (index, row) in self.image_rows.iter_mut().enumerate() {
+                    if let Some(size) = sizes.get(index) {
+                        row.size_bytes = *size;
                     }
-                    self.image_rows.push(DirectoryTreeFileRow {
+                    if let Some(Some(mtime)) = modified.get(index) {
+                        row.modified_unix = Some(*mtime);
+                    }
+                }
+
+                if images.len() > self.image_rows.len() {
+                    let start = self.image_rows.len();
+                    let mut paths_needing_meta = Vec::new();
+                    for index in start..images.len() {
+                        let path = &images[index];
+                        let mtime = modified.get(index).copied().flatten();
+                        if mtime.is_none() {
+                            paths_needing_meta.push(path.clone());
+                        }
+                        self.image_rows.push(DirectoryTreeFileRow {
+                            path: path.clone(),
+                            name: directory_display_name(path),
+                            size_bytes: sizes.get(index).copied().unwrap_or(0),
+                            modified_unix: mtime,
+                        });
+                    }
+                    if !scanning {
+                        queue_metadata(paths_needing_meta);
+                    }
+                }
+            } else {
+                self.image_rows = images
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| DirectoryTreeFileRow {
                         path: path.clone(),
                         name: directory_display_name(path),
                         size_bytes: sizes.get(index).copied().unwrap_or(0),
-                        modified_unix: mtime,
-                    });
-                }
-                if !scanning {
-                    self.request_file_metadata(paths_needing_meta, metadata_tx);
-                }
-            }
-        } else {
-            self.image_rows = images
-                .iter()
-                .enumerate()
-                .map(|(index, path)| DirectoryTreeFileRow {
-                    path: path.clone(),
-                    name: directory_display_name(path),
-                    size_bytes: sizes.get(index).copied().unwrap_or(0),
-                    modified_unix: modified.get(index).copied().flatten(),
-                })
-                .collect();
-            if !scanning {
-                let paths_needing_meta = self
-                    .image_rows
-                    .iter()
-                    .filter(|row| row.modified_unix.is_none())
-                    .map(|row| row.path.clone())
+                        modified_unix: modified.get(index).copied().flatten(),
+                    })
                     .collect();
-                self.request_file_metadata(paths_needing_meta, metadata_tx);
+                if !scanning {
+                    queue_metadata(
+                        self.image_rows
+                            .iter()
+                            .filter(|row| row.modified_unix.is_none())
+                            .map(|row| row.path.clone())
+                            .collect(),
+                    );
+                }
+                self.image_list_scroll_offset_y = 0.0;
             }
-            self.image_list_scroll_offset_y = 0.0;
-        }
         }
 
         let new_index = current_index.min(self.image_rows.len().saturating_sub(1));
@@ -738,6 +752,41 @@ impl DirectoryTreeState {
             self.image_list_keyboard_active = false;
         }
         self.image_list_col_widths_dirty = true;
+        if paths_needing_meta.is_empty() {
+            None
+        } else {
+            self.file_metadata_generation = self.file_metadata_generation.wrapping_add(1);
+            Some(FileMetadataRequest {
+                generation: self.file_metadata_generation,
+                paths: paths_needing_meta,
+            })
+        }
+    }
+
+    pub(crate) fn update_image_list_column_widths(&mut self, ctx: &egui::Context) {
+        // Fonts are created in `Context::begin_pass` (during `run`/`update`), so measuring
+        // from `logic()` before the first UI pass panics ("No fonts available until...").
+        if ctx.cumulative_frame_nr() == 0 {
+            return;
+        }
+        let font_size = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
+        if !self.image_list_col_widths_dirty
+            && (self.image_list_col_widths_font_size - font_size).abs() < f32::EPSILON
+        {
+            return;
+        }
+        let body_font = egui::FontId::proportional(font_size);
+        let (size_w, modified_w) = ui::measure_image_list_content_column_widths(
+            ctx,
+            &body_font,
+            &t!("directory_tree.col_size"),
+            &t!("directory_tree.col_modified"),
+            &self.image_rows,
+        );
+        self.image_list_col_size_w = size_w;
+        self.image_list_col_modified_w = modified_w;
+        self.image_list_col_widths_font_size = font_size;
+        self.image_list_col_widths_dirty = false;
     }
 
     pub(crate) fn clear_list_preview_textures(&mut self) {
@@ -797,49 +846,6 @@ impl DirectoryTreeState {
             textures.len()
         );
         true
-    }
-
-    fn ensure_image_list_column_widths(
-        &mut self,
-        painter: &egui::Painter,
-        body_font: &egui::FontId,
-        header_size: &str,
-        header_modified: &str,
-    ) {
-        let font_size = body_font.size;
-        if !self.image_list_col_widths_dirty
-            && (self.image_list_col_widths_font_size - font_size).abs() < f32::EPSILON
-        {
-            return;
-        }
-        let (size_w, modified_w) = measure_image_list_content_column_widths(
-            painter,
-            body_font,
-            header_size,
-            header_modified,
-            &self.image_rows,
-        );
-        self.image_list_col_size_w = size_w;
-        self.image_list_col_modified_w = modified_w;
-        self.image_list_col_widths_font_size = font_size;
-        self.image_list_col_widths_dirty = false;
-    }
-
-    fn request_file_metadata(
-        &mut self,
-        paths: Vec<PathBuf>,
-        metadata_tx: &Sender<FileMetadataRequest>,
-    ) {
-        if paths.is_empty() {
-            return;
-        }
-        self.file_metadata_generation = self.file_metadata_generation.wrapping_add(1);
-        if let Err(err) = metadata_tx.send(FileMetadataRequest {
-            generation: self.file_metadata_generation,
-            paths,
-        }) {
-            log::warn!("[DirectoryTree] file metadata request dropped: {err}");
-        }
     }
 
     fn apply_metadata_result(&mut self, result: FileMetadataResult) {
@@ -924,12 +930,12 @@ mod app;
 mod sort;
 mod strip_previews;
 mod ui;
+mod view;
 mod workers;
 
 use ui::{
     directory_ancestor_chain, directory_display_name, filesystem_ancestor_chain,
-    measure_image_list_content_column_widths, should_expand_this_pc_for_path,
-    unc_share_display_name, unc_share_root,
+    should_expand_this_pc_for_path, unc_share_display_name, unc_share_root,
 };
 use workers::{directory_tree_children_worker_loop, directory_tree_metadata_worker_loop};
 

@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = [
     "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
 ] }
 parking_lot = "0.12"
+arc-swap = "1"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 symphonia = { version = "0.5", features = ["all"] }
 lofty = "0.24"
