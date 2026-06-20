@@ -54,7 +54,7 @@ pub(crate) use hdr_fallback::{
     hdr_to_sdr_with_user_tone, raw_gpu_source_has_bootstrap_preview,
     static_hdr_background_plane_upload_eligible,
 };
-pub(crate) use metadata::extract_exif_thumbnail;
+pub(crate) use metadata::{extract_exif_thumbnail, extract_exif_thumbnail_from_mmap};
 pub(crate) use orientation::{
     apply_exif_orientation_to_hdr_pair, apply_exif_orientation_to_image_data,
     hdr_gain_map_decode_capacity,

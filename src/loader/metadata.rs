@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use super::types::DecodedImage;
@@ -22,14 +23,29 @@ use super::types::DecodedImage;
 const MAX_EXIF_THUMB_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
-    use exif::Reader;
-    use std::io::{Read, Seek, SeekFrom};
-
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
+    extract_exif_thumbnail_from_reader(&mut reader, path)
+}
+
+pub(crate) fn extract_exif_thumbnail_from_mmap(
+    mmap: &memmap2::Mmap,
+    path: &Path,
+) -> Option<DecodedImage> {
+    use std::io::Cursor;
+    let mut reader = Cursor::new(mmap.as_ref());
+    extract_exif_thumbnail_from_reader(&mut reader, path)
+}
+
+fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(
+    reader: &mut R,
+    path: &Path,
+) -> Option<DecodedImage> {
+    use exif::Reader;
+
     let exifreader = Reader::new();
 
-    if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
+    if let Ok(exif_data) = exifreader.read_from_container(reader) {
         // Find thumbnail offset and length in IFD1 (THUMBNAIL)
         let offset = exif_data
             .get_field(exif::Tag::JPEGInterchangeFormat, exif::In::THUMBNAIL)

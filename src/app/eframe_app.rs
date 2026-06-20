@@ -206,7 +206,10 @@ impl eframe::App for ImageViewerApp {
         // canceling it while we are in tray mode instead of only on the first frame.
         // Do not return early — fall through to `finish_hide_to_tray` below so hide
         // completes even when `close_requested` stays true, and scan/load logic still runs.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.explicit_quit {
+        if ctx
+            .viewport_for(egui::ViewportId::ROOT, |vp| vp.input.viewport().close_requested())
+            && !self.explicit_quit
+        {
             let is_shutting_down = {
                 #[cfg(target_os = "windows")]
                 {
@@ -379,8 +382,8 @@ impl eframe::App for ImageViewerApp {
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
 
-            // Process keyboard input (like Ctrl+Shift+T hotkey toggle) and file operation results even when minimized/in tray
-            self.handle_keyboard(ctx);
+            // Keyboard runs from ROOT ui() only; logic() also runs on deferred child repaints
+            // with the wrong pass input and would double-fire hotkeys if handled here too.
             self.process_file_op_results();
             // Pick-directory is main-window only; drop any flag queued before hide/minimize.
             self.pending_open_directory = false;

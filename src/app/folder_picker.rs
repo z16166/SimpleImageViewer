@@ -26,6 +26,7 @@ use std::path::PathBuf;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui;
+use rust_i18n::t;
 
 use super::ImageViewerApp;
 
@@ -140,7 +141,7 @@ impl ImageViewerApp {
         }
         if matches!(mode, AsyncRfdMode::PickMusicFile) {
             dialog = dialog.add_filter(
-                "Music files",
+                t!("folder_picker.filter_music").to_string(),
                 crate::constants::MUSIC_SUPPORTED_EXTENSIONS,
             );
         }
@@ -176,6 +177,7 @@ impl ImageViewerApp {
         {
             log::error!("[FolderPicker] Failed to spawn picker worker thread");
             self.folder_picker.in_flight = false;
+            self.status_message = t!("folder_picker.failed_to_open").to_string();
         }
     }
 
@@ -242,16 +244,18 @@ fn apply_executable_file_filter(
 ) -> rfd::AsyncFileDialog {
     #[cfg(target_os = "windows")]
     {
-        dialog.add_filter("Executable", &["exe"])
+        dialog.add_filter(t!("folder_picker.filter_executable").to_string(), &["exe"])
     }
     #[cfg(target_os = "macos")]
     {
-        dialog.add_filter("Application", &["app"])
+        dialog.add_filter(t!("folder_picker.filter_application").to_string(), &["app"])
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = dialog;
-        dialog
+        dialog.add_filter(
+            t!("folder_picker.filter_executable").to_string(),
+            &["", "bin", "AppImage"],
+        )
     }
 }
 

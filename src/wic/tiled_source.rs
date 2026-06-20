@@ -109,7 +109,7 @@ impl WicTiledSource {
             let Some(res) = render_source_to_pixels(&f_final, factory) else {
                 continue;
             };
-            log::info!(
+            log::debug!(
                 "WIC: Using secondary frame {} as preview ({}x{})",
                 frame_index,
                 fw,
@@ -157,7 +157,7 @@ impl WicTiledSource {
                                     self.width,
                                     self.height,
                                 ) {
-                                    log::info!(
+                                    log::debug!(
                                         "WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})",
                                         self.path.display(),
                                         pw,
@@ -227,7 +227,7 @@ impl WicTiledSource {
                     {
                         let log_final_w = if swap { closest_phys_h } else { closest_phys_w };
                         let log_final_h = if swap { closest_phys_w } else { closest_phys_h };
-                        log::info!(
+                        log::debug!(
                             "WIC [Idx={}]: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})",
                             self.path.display(),
                             closest_phys_w,
@@ -283,7 +283,7 @@ impl WicTiledSource {
             }
 
             // Path 4: Sub-sampling scaler (High-speed fallback)
-            log::info!(
+            log::debug!(
                 "WIC [Idx={}]: No specialized preview source available, using standard Scaler (Target {}x{})",
                 self.path.display(),
                 out_w,

@@ -92,8 +92,7 @@ impl ImageViewerApp {
         self.pending_preload_after_directory_scan = false;
         self.directory_tree_strip_bootstrap_after_scan = false;
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-            self.invalidate_directory_tree_strip_gpu_textures();
-            self.directory_tree_strip_generate_inflight.clear();
+            self.invalidate_directory_tree_strip_after_image_list_reorder();
         }
         #[cfg(feature = "preload-debug")]
         let after_cleanup_ms = crate::preload_debug::elapsed_ms(load_started);
@@ -374,7 +373,10 @@ impl ImageViewerApp {
         // Drain all available messages this frame (non-blocking). Keep `scan_rx` in place
         // until Done/disconnect so we never lose the receiver while `scanning` is true.
         loop {
-            let msg = match self.scan_rx.as_ref().unwrap().try_recv() {
+            let Some(rx) = self.scan_rx.as_ref() else {
+                break;
+            };
+            let msg = match rx.try_recv() {
                 Ok(msg) => msg,
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
@@ -441,47 +443,65 @@ impl ImageViewerApp {
                         "[Scan] ignoring stale batch: message_gen={generation} active_gen={active_generation}"
                     );
                 }
-                ScanMessage::Done { generation } if generation == active_generation => {
+                ScanMessage::Done { generation, sorted_files } if generation == active_generation => {
                     self.scan_results_pending_since = None;
                     #[cfg(feature = "preload-debug")]
                     let done_started = std::time::Instant::now();
                     done = true;
                     self.scanning = false;
 
-                    if self.image_files.is_empty() {
+                    if self.image_files.is_empty() && sorted_files.is_empty() {
                         self.status_message = t!("status.not_found").to_string();
                         self.finish_refresh_scan_state();
                     } else {
-                        debug_assert_eq!(self.image_files.len(), self.file_byte_len_by_index.len());
-                        debug_assert_eq!(
-                            self.image_files.len(),
-                            self.file_modified_unix_by_index.len()
-                        );
-                        let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
-                            std::mem::take(&mut self.image_files)
-                                .into_iter()
-                                .zip(std::mem::take(&mut self.file_byte_len_by_index))
-                                .zip(std::mem::take(&mut self.file_modified_unix_by_index))
-                                .map(|((path, len), modified)| (path, len, modified))
-                                .collect();
-                        combined.sort_by(|a, b| a.0.cmp(&b.0));
+                        if !sorted_files.is_empty() {
+                            let mut paths = Vec::with_capacity(sorted_files.len());
+                            let mut sizes = Vec::with_capacity(sorted_files.len());
+                            let mut modified = Vec::with_capacity(sorted_files.len());
+                            for (path, len, mtime) in sorted_files {
+                                paths.push(path);
+                                sizes.push(len);
+                                modified.push(mtime);
+                            }
+                            self.image_files = paths;
+                            self.file_byte_len_by_index = sizes;
+                            self.file_modified_unix_by_index = modified;
+                        } else {
+                            debug_assert_eq!(self.image_files.len(), self.file_byte_len_by_index.len());
+                            debug_assert_eq!(
+                                self.image_files.len(),
+                                self.file_modified_unix_by_index.len()
+                            );
+                            let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
+                                std::mem::take(&mut self.image_files)
+                                    .into_iter()
+                                    .zip(std::mem::take(&mut self.file_byte_len_by_index))
+                                    .zip(std::mem::take(&mut self.file_modified_unix_by_index))
+                                    .map(|((path, len), modified)| (path, len, modified))
+                                    .collect();
+                            combined.sort_by(|a, b| a.0.cmp(&b.0));
+                            let mut paths = Vec::with_capacity(combined.len());
+                            let mut sizes = Vec::with_capacity(combined.len());
+                            let mut modified = Vec::with_capacity(combined.len());
+                            for (path, len, mtime) in combined {
+                                paths.push(path);
+                                sizes.push(len);
+                                modified.push(mtime);
+                            }
+                            self.image_files = paths;
+                            self.file_byte_len_by_index = sizes;
+                            self.file_modified_unix_by_index = modified;
+                        }
                         #[cfg(feature = "preload-debug")]
                         crate::preload_debug!(
                             "[PreloadDebug][Scan] process done sort_ms={} files={}",
                             crate::preload_debug::elapsed_ms(done_started),
-                            combined.len()
+                            self.image_files.len()
                         );
-                        let mut paths = Vec::with_capacity(combined.len());
-                        let mut sizes = Vec::with_capacity(combined.len());
-                        let mut modified = Vec::with_capacity(combined.len());
-                        for (path, len, mtime) in combined {
-                            paths.push(path);
-                            sizes.push(len);
-                            modified.push(mtime);
+
+                        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
+                            self.invalidate_directory_tree_strip_after_image_list_reorder();
                         }
-                        self.image_files = paths;
-                        self.file_byte_len_by_index = sizes;
-                        self.file_modified_unix_by_index = modified;
 
                         if self.refresh_scan_in_progress {
                             if let Some(anchor) = self.refresh_anchor_path.take() {
@@ -552,7 +572,7 @@ impl ImageViewerApp {
                     );
                     break;
                 }
-                ScanMessage::Done { generation } => {
+                ScanMessage::Done { generation, .. } => {
                     log::debug!(
                         "[Scan] ignoring stale done: message_gen={generation} active_gen={active_generation}"
                     );

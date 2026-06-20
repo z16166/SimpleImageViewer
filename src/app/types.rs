@@ -514,13 +514,14 @@ pub struct ImageViewerApp {
     /// Wakes the root winit window so `App::logic()` runs while a child viewport is focused.
     pub(crate) root_redraw_wake: Option<crate::app::RootRedrawWake>,
     /// Latest palette for the directory-tree deferred viewport (read each paint).
-    pub(crate) directory_tree_theme: std::sync::Arc<std::sync::Mutex<crate::theme::ThemePalette>>,
+    pub(crate) directory_tree_theme: std::sync::Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
     /// ROOT paint should synchronously repaint the directory-tree viewport (Windows).
     pub(crate) pending_directory_tree_repaint: bool,
     /// Deferred main-window navigation from directory-tree list clicks (see `process_pending_directory_tree_select`).
     pub(crate) pending_directory_tree_select_index: Option<usize>,
     /// Retry `sync_directory_tree_file_list_state` when the UI thread holds `directory_tree.state`.
     pub(crate) pending_directory_tree_state_sync: bool,
+    pub(crate) directory_tree_sync_defer_frames: u32,
     /// Monotonic id for the active directory scan; stale channel messages are ignored.
     pub(crate) scan_generation: u64,
     /// Set when a directory scan is spawned; used by preload-debug queue-wait logs.

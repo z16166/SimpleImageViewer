@@ -21,9 +21,12 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use parking_lot::Mutex;
+use rust_i18n::t;
 
 use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
 use crate::path_location::is_unc_path;
+
+pub(super) const MAX_DIRECTORY_TREE_NODES: usize = 8192;
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
@@ -182,6 +185,7 @@ pub(crate) struct DirectoryTreeState {
     list_preview_thumb_px: f32,
     list_preview_strip_max_side: u32,
     panel_layout_dirty: bool,
+    detached_startup_maximize_applied: bool,
 }
 
 /// Snapshot of list-preview layout passed from settings into draw/sync paths.
@@ -256,6 +260,7 @@ impl Default for DirectoryTreeState {
             list_preview_strip_max_side: crate::settings::DirectoryTreeListPreviewSize::Small
                 .strip_max_side(),
             panel_layout_dirty: false,
+            detached_startup_maximize_applied: false,
         }
     }
 }
@@ -598,6 +603,14 @@ impl DirectoryTreeState {
         });
     }
 
+    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path) {
+        let Some(node) = self.nodes.get_mut(tree_path) else {
+            return;
+        };
+        node.loading = false;
+        node.error = Some(t!("directory_tree.read_busy").to_string());
+    }
+
     pub(crate) fn sync_images(
         &mut self,
         images: &[PathBuf],
@@ -608,6 +621,40 @@ impl DirectoryTreeState {
         scan_status: String,
         metadata_tx: &Sender<FileMetadataRequest>,
     ) {
+        if self.image_list_sort_active {
+            let image_set: std::collections::HashSet<&PathBuf> = images.iter().collect();
+            self.image_rows.retain(|row| image_set.contains(&row.path));
+            for row in &mut self.image_rows {
+                let Some(index) = images.iter().position(|path| path == &row.path) else {
+                    continue;
+                };
+                if let Some(size) = sizes.get(index) {
+                    row.size_bytes = *size;
+                }
+                if let Some(mtime) = modified.get(index) {
+                    row.modified_unix = *mtime;
+                }
+            }
+            let mut paths_needing_meta = Vec::new();
+            for (index, path) in images.iter().enumerate() {
+                if self.image_rows.iter().any(|row| row.path == *path) {
+                    continue;
+                }
+                let mtime = modified.get(index).copied().flatten();
+                if mtime.is_none() && !scanning {
+                    paths_needing_meta.push(path.clone());
+                }
+                self.image_rows.push(DirectoryTreeFileRow {
+                    path: path.clone(),
+                    name: directory_display_name(path),
+                    size_bytes: sizes.get(index).copied().unwrap_or(0),
+                    modified_unix: mtime,
+                });
+            }
+            if !scanning && !paths_needing_meta.is_empty() {
+                self.request_file_metadata(paths_needing_meta, metadata_tx);
+            }
+        } else {
         let prefix_matches = images.len() >= self.image_rows.len()
             && self
                 .image_rows
@@ -666,6 +713,7 @@ impl DirectoryTreeState {
                 self.request_file_metadata(paths_needing_meta, metadata_tx);
             }
             self.image_list_scroll_offset_y = 0.0;
+        }
         }
 
         let new_index = current_index.min(self.image_rows.len().saturating_sub(1));
@@ -817,23 +865,39 @@ impl DirectoryTreeState {
             return;
         }
 
-        let Some(node) = self.nodes.get_mut(&result.tree_path) else {
-            return;
-        };
-
-        node.loading = false;
-        node.children_loaded = true;
+        let tree_path = result.tree_path;
         match result.result {
             Ok(children) => {
-                node.children = children.clone();
-                node.error = None;
-                for child in children {
+                let mut cap_reached = false;
+                for child in &children {
+                    if self.nodes.len() >= MAX_DIRECTORY_TREE_NODES
+                        && !self.nodes.contains_key(child)
+                    {
+                        cap_reached = true;
+                        break;
+                    }
                     self.nodes.entry(child.clone()).or_insert_with(|| {
-                        directory_tree_node(directory_display_name(&child), child)
+                        directory_tree_node(directory_display_name(child), child.clone())
                     });
                 }
+                let Some(node) = self.nodes.get_mut(&tree_path) else {
+                    return;
+                };
+                node.loading = false;
+                node.children_loaded = true;
+                node.children = children;
+                node.error = if cap_reached {
+                    Some(t!("directory_tree.nodes_cap_reached").to_string())
+                } else {
+                    None
+                };
             }
             Err(err) => {
+                let Some(node) = self.nodes.get_mut(&tree_path) else {
+                    return;
+                };
+                node.loading = false;
+                node.children_loaded = true;
                 node.children.clear();
                 node.error = Some(err);
             }
@@ -843,6 +907,7 @@ impl DirectoryTreeState {
 
 mod app;
 mod sort;
+mod strip_previews;
 mod ui;
 mod workers;
 

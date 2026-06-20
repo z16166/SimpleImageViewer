@@ -55,7 +55,7 @@ pub fn preview_aspect_matches_logical(
     logical_height: u32,
 ) -> bool {
     if logical_width == 0 || logical_height == 0 || preview_width == 0 || preview_height == 0 {
-        return true;
+        return false;
     }
     let logical_aspect = logical_width as f32 / logical_height as f32;
     let preview_aspect = preview_width as f32 / preview_height as f32;

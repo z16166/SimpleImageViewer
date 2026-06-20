@@ -1,3 +1,19 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 // Directory tree navigation UI drawing.
 
 use std::path::{Path, PathBuf};
@@ -984,7 +1000,7 @@ pub(super) fn measure_image_list_content_column_widths(
     }
     let modified_w = measure(header_modified)
         .max(measure(IMAGE_LIST_MODIFIED_CELL_SAMPLE))
-        .max(measure("-"));
+        .max(measure(&t!("directory_tree.modified_unknown")));
     (
         size_w + IMAGE_LIST_COL_CELL_PADDING,
         modified_w + IMAGE_LIST_COL_CELL_PADDING,
@@ -1326,7 +1342,7 @@ fn draw_image_details_row(
             .modified_unix
             .map(format_file_modified)
             .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| String::from("-"));
+            .unwrap_or_else(|| t!("directory_tree.modified_unknown").to_string());
 
         let name_column = image_list_name_column(row_rect, columns, spacing_x, thumb_px);
         let size_column = image_list_size_column(row_rect, columns, spacing_x);

@@ -26,6 +26,8 @@ use crate::loader::{
     preview_aspect_matches_logical,
 };
 
+use crate::app::index_cache_permute::permute_usize_hashmap;
+
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
@@ -53,15 +55,6 @@ impl Default for DirectoryTreeStripCache {
             preview_stage: HashMap::new(),
             logical_sizes: HashMap::new(),
             gpu_revision: 0,
-        }
-    }
-}
-
-fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
-    let taken = std::mem::take(map);
-    for (old_idx, value) in taken {
-        if old_idx < old_to_new.len() {
-            map.insert(old_to_new[old_idx], value);
         }
     }
 }
@@ -237,7 +230,18 @@ impl DirectoryTreeStripCache {
         self.bump_gpu_revision();
     }
 
+    pub(crate) fn clear_all(&mut self) {
+        self.textures.clear();
+        self.preview_max_side.clear();
+        self.preview_stage.clear();
+        self.logical_sizes.clear();
+        self.bump_gpu_revision();
+    }
+
     fn evict_if_needed(&mut self, current_index: usize, total_count: usize) {
+        if total_count == 0 {
+            return;
+        }
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
             let to_remove = self.textures.keys().copied().max_by_key(|&idx| {
                 if total_count == 0 {

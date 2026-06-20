@@ -16,7 +16,7 @@
 
 use super::*;
 
-use std::collections::{HashMap, HashSet};
+use crate::app::index_cache_permute::{permute_usize_hashmap, permute_usize_set};
 
 impl ImageViewerApp {
     pub(crate) fn invalidate_random_slideshow_order(&mut self) {
@@ -438,24 +438,6 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn permute_index_keyed_caches(&mut self, old_to_new: &[usize]) {
-        fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
-            let taken = std::mem::take(map);
-            for (old_idx, value) in taken {
-                if old_idx < old_to_new.len() {
-                    map.insert(old_to_new[old_idx], value);
-                }
-            }
-        }
-
-        fn permute_usize_set(set: &mut HashSet<usize>, old_to_new: &[usize]) {
-            let taken = std::mem::take(set);
-            for old_idx in taken {
-                if old_idx < old_to_new.len() {
-                    set.insert(old_to_new[old_idx]);
-                }
-            }
-        }
-
         self.generation = self.generation.wrapping_add(1);
         self.loader.set_generation(self.generation);
         self.loader.cancel_all();

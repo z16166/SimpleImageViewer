@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
     DecodedImage, ImageData, TiledImageSource, apply_exif_orientation_to_image_data,
-    decoded_looks_like_black_placeholder, extract_exif_thumbnail, hdr_to_sdr_with_user_tone,
-    preview_aspect_matches_logical,
+    decoded_looks_like_black_placeholder, extract_exif_thumbnail, extract_exif_thumbnail_from_mmap,
+    hdr_to_sdr_with_user_tone, preview_aspect_matches_logical,
 };
 
 use super::assemble::make_image_data;
@@ -46,9 +46,17 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     path: &Path,
     max_side: u32,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
-    let first_exif = extract_exif_thumbnail(path);
-    if let Some(exif) = first_exif.as_ref() {
-        let logical = probe_still_image_logical_size(path).unwrap_or((exif.width, exif.height));
+    let mmap = crate::mmap_util::map_file(path).ok();
+    let exif = mmap
+        .as_ref()
+        .and_then(|data| extract_exif_thumbnail_from_mmap(data, path))
+        .or_else(|| extract_exif_thumbnail(path));
+    if let Some(exif) = exif.as_ref() {
+        let logical = mmap
+            .as_ref()
+            .and_then(|data| probe_still_image_logical_size_from_mmap(data))
+            .or_else(|| probe_still_image_logical_size(path))
+            .unwrap_or((exif.width, exif.height));
         if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
             let decoded = downsample_decoded_to_max_side(exif, max_side)?;
             return Ok((decoded, logical));
@@ -59,7 +67,7 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf)?;
     let logical = logical_size_from_image_data(&image_data);
 
-    if let Some(exif) = first_exif.as_ref() {
+    if let Some(exif) = exif.as_ref() {
         if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
             let decoded = downsample_decoded_to_max_side(exif, max_side)?;
             return Ok((decoded, logical));
@@ -76,13 +84,27 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     Ok((decoded, logical))
 }
 
-fn probe_still_image_logical_size(path: &Path) -> Option<(u32, u32)> {
-    image::ImageReader::open(path)
-        .ok()?
+fn probe_still_image_logical_size_from_mmap(mmap: &memmap2::Mmap) -> Option<(u32, u32)> {
+    use std::io::Cursor;
+    image::ImageReader::new(Cursor::new(mmap.as_ref()))
         .with_guessed_format()
         .ok()?
         .into_dimensions()
         .ok()
+}
+
+fn probe_still_image_logical_size(path: &Path) -> Option<(u32, u32)> {
+    crate::mmap_util::map_file(path)
+        .ok()
+        .and_then(|mmap| probe_still_image_logical_size_from_mmap(&mmap))
+        .or_else(|| {
+            image::ImageReader::open(path)
+                .ok()?
+                .with_guessed_format()
+                .ok()?
+                .into_dimensions()
+                .ok()
+        })
 }
 
 fn open_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageData, String> {
@@ -250,7 +272,11 @@ fn platform_still_image_fallback(path: &PathBuf) -> Result<ImageData, String> {
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = path;
+        if let Ok((mut processor, _, _, _)) = open_raw_processor_with_preview(path) {
+            if let Ok(thumb) = processor.unpack_thumb() {
+                return Ok(make_image_data(thumb));
+            }
+        }
         Err("no platform still-image fallback for RAW thumbnail".to_string())
     }
 }

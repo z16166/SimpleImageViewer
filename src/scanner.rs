@@ -104,7 +104,10 @@ fn finish_scan_cancelled(
     wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) {
     log::info!("[Scanner] Scan cancelled (generation={generation})");
-    let _ = tx.send(ScanMessage::Done { generation });
+    let _ = tx.send(ScanMessage::Done {
+        generation,
+        sorted_files: Vec::new(),
+    });
     if let Some(wake) = wake_ui {
         wake();
     }
@@ -158,7 +161,11 @@ pub enum ScanMessage {
         files: Vec<(PathBuf, u64, Option<i64>)>,
     },
     /// Scanning is complete. No more batches will follow.
-    Done { generation: u64 },
+    /// `sorted_files` is the globally sorted file list from the scan thread (empty when cancelled).
+    Done {
+        generation: u64,
+        sorted_files: Vec<(PathBuf, u64, Option<i64>)>,
+    },
 }
 
 /// Number of files to accumulate before sending a batch to the UI.
@@ -183,9 +190,11 @@ pub fn scan_directory(
             paired_raw_jpeg_handling,
             paired_raw_jpeg_handling.needs_pair_index()
         );
+        let mut sorted_files_for_done = Vec::new();
         if recursive {
             let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
             let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
+            let mut all_files_for_done: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
             #[cfg(feature = "preload-debug")]
             let mut walk_entries = 0usize;
             #[cfg(feature = "preload-debug")]
@@ -270,10 +279,12 @@ pub fn scan_directory(
                             continue;
                         };
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            let entry = (path, len, modified_unix);
                             if paired_raw_jpeg_handling.needs_pair_index() {
-                                files.push((path, len, modified_unix));
+                                files.push(entry);
                             } else {
-                                batch.push((path, len, modified_unix));
+                                all_files_for_done.push(entry.clone());
+                                batch.push(entry);
                                 if batch.len() >= BATCH_SIZE {
                                     send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
                                 }
@@ -297,7 +308,7 @@ pub fn scan_directory(
                 // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
                 // batches before the scan finishes could expose a file that should be skipped
                 // because its pair appears later.
-                send_scanned_files(
+                sorted_files_for_done = send_scanned_files(
                     files,
                     paired_raw_jpeg_handling,
                     generation,
@@ -306,6 +317,8 @@ pub fn scan_directory(
                 );
             } else {
                 send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
+                all_files_for_done.sort_by(|a, b| a.0.cmp(&b.0));
+                sorted_files_for_done = all_files_for_done;
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
             #[cfg(feature = "preload-debug")]
@@ -342,17 +355,14 @@ pub fn scan_directory(
                         {
                             image_candidates += 1;
                         }
-                        let Ok(file_type) = e.file_type() else {
-                            continue;
-                        };
-                        if file_type.is_symlink() {
-                            continue;
-                        }
-                        let p = e.path();
                         let Ok(meta) = e.metadata() else {
                             continue;
                         };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            let p = e.path();
                             files.push((p, len, modified_unix));
                         }
                     }
@@ -365,7 +375,7 @@ pub fn scan_directory(
                     image_candidates,
                     crate::preload_debug::elapsed_ms(scan_started)
                 );
-                send_scanned_files(
+                sorted_files_for_done = send_scanned_files(
                     files,
                     paired_raw_jpeg_handling,
                     generation,
@@ -374,6 +384,7 @@ pub fn scan_directory(
                 );
             } else {
                 let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
+                let mut all_files_for_done: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
                 for e in entries.flatten() {
                     #[cfg(feature = "preload-debug")]
                     {
@@ -400,18 +411,17 @@ pub fn scan_directory(
                         {
                             image_candidates += 1;
                         }
-                        let Ok(file_type) = e.file_type() else {
-                            continue;
-                        };
-                        if file_type.is_symlink() {
-                            continue;
-                        }
-                        let p = e.path();
                         let Ok(meta) = e.metadata() else {
                             continue;
                         };
+                        if meta.file_type().is_symlink() {
+                            continue;
+                        }
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
-                            batch.push((p, len, modified_unix));
+                            let p = e.path();
+                            let entry = (p, len, modified_unix);
+                            all_files_for_done.push(entry.clone());
+                            batch.push(entry);
                             if batch.len() >= BATCH_SIZE {
                                 send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
                             }
@@ -427,6 +437,8 @@ pub fn scan_directory(
                     crate::preload_debug::elapsed_ms(scan_started)
                 );
                 send_scan_batch(&mut batch, generation, &tx, wake_ui.as_ref());
+                all_files_for_done.sort_by(|a, b| a.0.cmp(&b.0));
+                sorted_files_for_done = all_files_for_done;
             }
         } else {
             crate::preload_debug!(
@@ -435,7 +447,10 @@ pub fn scan_directory(
             );
         }
 
-        let _ = tx.send(ScanMessage::Done { generation });
+        let _ = tx.send(ScanMessage::Done {
+            generation,
+            sorted_files: sorted_files_for_done,
+        });
         if let Some(wake) = wake_ui.as_ref() {
             wake();
         }
@@ -483,7 +498,7 @@ fn send_scanned_files(
     generation: u64,
     tx: &Sender<ScanMessage>,
     wake_ui: Option<&Arc<dyn Fn() + Send + Sync>>,
-) {
+) -> Vec<(PathBuf, u64, Option<i64>)> {
     #[cfg(feature = "preload-debug")]
     let send_started = std::time::Instant::now();
     if paired_raw_jpeg_handling.needs_pair_index() {
@@ -493,6 +508,7 @@ fn send_scanned_files(
     // Keep global ordering stable across batches. This holds all paths until the scan finishes,
     // which costs more memory than sorting per batch, but per-batch sorting is not globally sorted.
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    let sorted_for_done = files.clone();
     #[cfg(feature = "preload-debug")]
     let total_files = files.len();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
@@ -535,6 +551,7 @@ fn send_scanned_files(
         batches_sent,
         crate::preload_debug::elapsed_ms(send_started)
     );
+    sorted_for_done
 }
 
 fn filter_raw_jpeg_pairs(

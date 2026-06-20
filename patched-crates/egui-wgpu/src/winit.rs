@@ -589,9 +589,9 @@ impl Painter {
         // and causes `RenderPipeline targets are incompatible with render pass`.
         let viewport_ids: Vec<ViewportId> = self.surfaces.keys().copied().collect();
         for vid in viewport_ids {
-            let (width, height) = {
-                let s = self.surfaces.get(&vid).expect("surface exists");
-                (s.width, s.height)
+            let (width, height) = match self.surfaces.get(&vid) {
+                Some(s) => (s.width, s.height),
+                None => continue,
             };
             if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
                 self.resize_and_generate_depth_texture_view_and_msaa_view(vid, w, h);
@@ -750,6 +750,7 @@ impl Painter {
         // at the end of the function. Early-exits inside the block use
         // `break 'render` rather than `return` so that the deferred swap
         // chain hot-swap still gets a chance to run after the frame.
+        let mut reconfigure_all_surfaces = false;
         'render: {
         let Some(render_state) = self.render_state.as_mut() else {
             break 'render;
@@ -843,12 +844,11 @@ impl Painter {
         if output_frame.texture.format() != pipeline_format {
             log::warn!(
                 "egui-wgpu: viewport {viewport_id:?} swap-chain format {:?} \
-                 does not match egui pipeline {:?}; reconfiguring surface",
+                 does not match egui pipeline {:?}; reconfiguring all surfaces",
                 output_frame.texture.format(),
                 pipeline_format
             );
-            Self::configure_surface(surface_state, render_state, &self.configuration);
-            self.context.request_repaint_of(viewport_id);
+            reconfigure_all_surfaces = true;
             break 'render;
         }
 
@@ -1009,6 +1009,23 @@ impl Painter {
         } // 'render block — releases the mutable borrows of `self.render_state` /
           //                  `self.surfaces` so the deferred swap-chain switch
           //                  below can take a fresh `&mut self`.
+
+        if reconfigure_all_surfaces {
+            let viewport_ids: Vec<ViewportId> = self.surfaces.keys().copied().collect();
+            for vid in viewport_ids {
+                let (width, height) = {
+                    let s = self.surfaces.get(&vid).expect("surface exists");
+                    (s.width, s.height)
+                };
+                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                    self.resize_and_generate_depth_texture_view_and_msaa_view(vid, w, h);
+                } else if let Some(s) = self.surfaces.get_mut(&vid) {
+                    s.needs_reconfigure = true;
+                }
+            }
+            self.context.request_repaint();
+            return vsync_sec;
+        }
 
         // ----- runtime swap-chain target-format switch (deferred to end-of-frame) -----
         //

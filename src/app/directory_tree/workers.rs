@@ -1,8 +1,25 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 // Worker threads and filesystem reads for the directory tree.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -52,11 +69,16 @@ pub(super) fn directory_tree_children_worker_loop(
     while let Ok(request) = request_rx.recv() {
         for request in coalesce_children_requests(request, &request_rx) {
             let result = read_child_directories_with_timeout(&request.browse_path);
-            let _ = children_result_tx.send(DirectoryChildrenResult {
-                tree_path: request.tree_path,
-                generation: request.generation,
-                result,
-            });
+            if children_result_tx
+                .send(DirectoryChildrenResult {
+                    tree_path: request.tree_path,
+                    generation: request.generation,
+                    result,
+                })
+                .is_err()
+            {
+                log::warn!("[DirectoryTree] children result channel disconnected");
+            }
         }
     }
 }
@@ -75,20 +97,30 @@ pub(super) fn directory_tree_metadata_worker_loop(
                 batch_modified.push(read_file_modified_unix(&path));
 
                 if batch_paths.len() >= METADATA_BATCH_SIZE {
-                    let _ = metadata_result_tx.send(FileMetadataResult {
-                        generation: request.generation,
-                        paths: batch_paths.split_off(0),
-                        modified_unix: batch_modified.split_off(0),
-                    });
+                    if metadata_result_tx
+                        .send(FileMetadataResult {
+                            generation: request.generation,
+                            paths: batch_paths.split_off(0),
+                            modified_unix: batch_modified.split_off(0),
+                        })
+                        .is_err()
+                    {
+                        log::warn!("[DirectoryTree] metadata result channel disconnected");
+                        return;
+                    }
                 }
             }
 
-            if !batch_paths.is_empty() {
-                let _ = metadata_result_tx.send(FileMetadataResult {
-                    generation: request.generation,
-                    paths: batch_paths,
-                    modified_unix: batch_modified,
-                });
+            if !batch_paths.is_empty()
+                && metadata_result_tx
+                    .send(FileMetadataResult {
+                        generation: request.generation,
+                        paths: batch_paths,
+                        modified_unix: batch_modified,
+                    })
+                    .is_err()
+            {
+                log::warn!("[DirectoryTree] metadata result channel disconnected");
             }
         }
     }
@@ -96,39 +128,51 @@ pub(super) fn directory_tree_metadata_worker_loop(
 
 static READ_DIR_HELPERS_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
+struct InflightGuard {
+    orphan_flag: Arc<AtomicBool>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if !self.orphan_flag.load(AtomicOrdering::Relaxed) {
+            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
+}
+
 fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, String> {
     if READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed) >= MAX_READ_DIR_HELPERS_INFLIGHT {
         log::warn!(
             "[DirectoryTree] read_dir helper cap ({MAX_READ_DIR_HELPERS_INFLIGHT}) reached; skipping {}",
             path.display()
         );
-        return Err(t!("directory_tree.read_timeout").to_string());
+        return Err(t!("directory_tree.read_busy").to_string());
     }
 
     let (tx, rx) = crossbeam_channel::bounded(1);
     let path_buf = path.to_path_buf();
     READ_DIR_HELPERS_INFLIGHT.fetch_add(1, AtomicOrdering::Relaxed);
     let helper_index = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Relaxed);
+    let orphan_flag = Arc::new(AtomicBool::new(false));
+    let orphan_for_thread = Arc::clone(&orphan_flag);
     if std::thread::Builder::new()
         .name(format!("siv-dir-tree-read-dir-{helper_index}"))
         .spawn(move || {
-            struct InflightGuard;
-            impl Drop for InflightGuard {
-                fn drop(&mut self) {
-                    READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
-                }
-            }
-            let _guard = InflightGuard;
+            let _guard = InflightGuard {
+                orphan_flag: orphan_for_thread,
+            };
             let _ = tx.send(read_child_directories(&path_buf));
         })
         .is_err()
     {
         READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
-        return Err(t!("directory_tree.read_failed", err = "thread spawn failed").to_string());
+        return Err(t!("directory_tree.read_failed", err = t!("directory_tree.thread_spawn_failed")).to_string());
     }
     match rx.recv_timeout(DIRECTORY_TREE_READ_DIR_TIMEOUT) {
         Ok(result) => result,
         Err(_) => {
+            orphan_flag.store(true, AtomicOrdering::Relaxed);
+            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Relaxed);
             log::warn!(
                 "[DirectoryTree] read_dir timed out after {}s: {}",
                 DIRECTORY_TREE_READ_DIR_TIMEOUT.as_secs(),
@@ -139,45 +183,60 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     }
 }
 
-#[cfg(target_os = "windows")]
-pub(super) fn strip_worker_com_initialized() -> bool {
-    std::thread_local! {
-        static STRIP_COM_OK: bool = crate::wic::ComGuard::new().is_ok();
+pub(super) fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut children = Vec::new();
+    let entries = std::fs::read_dir(path).map_err(|err| {
+        t!(
+            "directory_tree.read_failed",
+            err = err.to_string()
+        )
+        .to_string()
+    })?;
+
+    for entry in entries.flatten() {
+        let child_path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            continue;
+        }
+        if crate::scanner::skip_directory_traversal_entry(
+            &child_path,
+            &meta.file_type(),
+            Some(&meta),
+        ) {
+            continue;
+        }
+        children.push(child_path);
     }
-    STRIP_COM_OK.with(|ok| *ok)
+
+    children.sort();
+    Ok(children)
 }
 
 fn read_file_modified_unix(path: &Path) -> Option<i64> {
     use std::time::UNIX_EPOCH;
-    let metadata = std::fs::metadata(path).ok()?;
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
+    std::fs::metadata(path)
         .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64)
 }
 
-pub(super) fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = std::fs::read_dir(path).map_err(|err| err.to_string())?;
-    let mut dirs = Vec::new();
-    for entry in entries.flatten() {
-        let child = entry.path();
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let file_type = metadata.file_type();
-        if !file_type.is_dir() {
-            continue;
-        }
-        if crate::scanner::skip_directory_traversal_entry(&child, &file_type, Some(&metadata)) {
-            continue;
-        }
-        if crate::scanner::is_non_browsable_system_directory(&child) {
-            continue;
-        }
-        dirs.push(child);
+#[cfg(target_os = "windows")]
+pub(super) fn strip_worker_com_initialized() -> bool {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+    use windows::core::HRESULT;
+
+    const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106_u32 as i32);
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        hr.is_ok() || hr == RPC_E_CHANGED_MODE
     }
-    dirs.sort();
-    Ok(dirs)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn strip_worker_com_initialized() -> bool {
+    true
 }

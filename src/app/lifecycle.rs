@@ -58,7 +58,7 @@ impl ImageViewerApp {
         let mut theme_cache = SystemThemeCache::default();
         let cached_palette = settings.theme.resolve(&mut theme_cache);
         let directory_tree_theme =
-            std::sync::Arc::new(std::sync::Mutex::new(cached_palette.clone()));
+            std::sync::Arc::new(parking_lot::Mutex::new(cached_palette.clone()));
 
         setup_visuals(&cc.egui_ctx, &settings, &cached_palette);
         if !setup_fonts(&cc.egui_ctx, &settings) {
@@ -478,6 +478,7 @@ impl ImageViewerApp {
             pending_directory_tree_repaint: false,
             pending_directory_tree_select_index: None,
             pending_directory_tree_state_sync: false,
+            directory_tree_sync_defer_frames: 0,
             scan_generation: 0,
             scan_results_pending_since: None,
             pending_preload_after_directory_scan: false,

@@ -98,9 +98,11 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
 
     #[cfg(target_os = "linux")]
     {
+        collect_mount_dirs(Path::new("/media"), &mut paths);
+        collect_mount_dirs(Path::new("/run/media"), &mut paths);
         if let Some(user) = std::env::var_os("USER") {
-            collect_mount_dirs(&PathBuf::from("/media").join(user), &mut paths);
-            collect_mount_dirs(&PathBuf::from("/run/media").join(user), &mut paths);
+            collect_mount_dirs(&PathBuf::from("/media").join(&user), &mut paths);
+            collect_mount_dirs(&PathBuf::from("/run/media").join(&user), &mut paths);
         }
         collect_mount_dirs(Path::new("/mnt"), &mut paths);
     }
