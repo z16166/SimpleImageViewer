@@ -209,13 +209,14 @@ fn macos_locale_compare_cf(
     left: &core_foundation::string::CFString,
     right: &core_foundation::string::CFString,
 ) -> Ordering {
-    use core_foundation::base::TCFType;
-    use core_foundation::string::{CFComparisonResult, CFStringCompareFlags};
+    use core_foundation::base::{CFComparisonResult, TCFType};
+    use core_foundation::string::{
+        kCFCompareCaseInsensitive, kCFCompareLocalized, CFStringCompare,
+    };
 
-    let flags =
-        CFStringCompareFlags::COMPARE_CASE_INSENSITIVE | CFStringCompareFlags::COMPARE_LOCALIZED;
+    let flags = kCFCompareCaseInsensitive | kCFCompareLocalized;
     let result = unsafe {
-        core_foundation::string::CFStringCompare(
+        CFStringCompare(
             left.as_concrete_TypeRef(),
             right.as_concrete_TypeRef(),
             flags,

@@ -440,7 +440,7 @@ pub fn map_acceleration_structure_descriptor<'a>(
                     // descriptor.setIntersectionFunctionTableOffset(offset);
                     descriptor.into_super()
                 })
-                .collect::<alloc::vec::Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
+                .collect::<Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
             let descriptor = MTLPrimitiveAccelerationStructureDescriptor::new();
             descriptor.setGeometryDescriptors(Some(&NSArray::from_retained_slice(
                 geometry_descriptors.as_slice(),
@@ -471,7 +471,7 @@ pub fn map_acceleration_structure_descriptor<'a>(
                     // descriptor.setIntersectionFunctionTableOffset(offset);
                     descriptor.into_super()
                 })
-                .collect::<alloc::vec::Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
+                .collect::<Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
             let descriptor = MTLPrimitiveAccelerationStructureDescriptor::new();
             descriptor.setGeometryDescriptors(Some(&NSArray::from_retained_slice(
                 geometry_descriptors.as_slice(),

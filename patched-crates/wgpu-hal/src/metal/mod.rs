@@ -1187,8 +1187,8 @@ unsafe impl Sync for CommandBuffer {}
 
 pub struct PipelineCache {
     pub(crate) archive:
-        Option<parking_lot::Mutex<Retained<ProtocolObject<dyn MTLBinaryArchive>>>>,
-    pub(crate) dirty: std::sync::atomic::AtomicBool,
+        Option<Mutex<Retained<ProtocolObject<dyn MTLBinaryArchive>>>>,
+    pub(crate) dirty: atomic::AtomicBool,
 }
 
 impl fmt::Debug for PipelineCache {
