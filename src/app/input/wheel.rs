@@ -32,6 +32,9 @@ impl ImageViewerApp {
         if self.active_modal.is_some() || self.show_settings {
             return;
         }
+        if self.directory_tree_nav_blocks_main_window_wheel(ctx) {
+            return;
+        }
 
         let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
         let Some(wheel_match) = self.map_wheel_to_action(ctx) else {

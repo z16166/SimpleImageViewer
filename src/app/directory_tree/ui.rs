@@ -447,6 +447,26 @@ pub(super) fn draw_directory_tree_window(
         egui::vec2(ui.available_width(), ui.available_height()),
         embedded,
     );
+    publish_directory_tree_nav_wheel_block_rect(ui);
+}
+
+pub(super) fn publish_directory_tree_nav_wheel_block_rect(ui: &egui::Ui) {
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID),
+            ui.max_rect(),
+        );
+    });
+}
+
+pub(super) fn pointer_in_directory_tree_nav_block_rect(
+    pointer: Option<egui::Pos2>,
+    block_rect: Option<egui::Rect>,
+) -> bool {
+    match (pointer, block_rect) {
+        (Some(pos), Some(rect)) => rect.contains(pos),
+        _ => false,
+    }
 }
 
 pub(super) fn directory_tree_left_panel_width_limits(viewport_width: f32) -> (f32, f32) {

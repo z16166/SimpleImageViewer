@@ -35,6 +35,19 @@ use super::{
 };
 
 impl ImageViewerApp {
+    pub(crate) fn directory_tree_nav_blocks_main_window_wheel(&self, ctx: &egui::Context) -> bool {
+        if !self.directory_tree_settings_active() {
+            return false;
+        }
+        let pointer = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+        let block_rect = ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(
+                super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID,
+            ))
+        });
+        super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
+    }
+
     /// Lazily capture a root-window redraw hook (Windows child viewports do not wake ROOT).
     pub(crate) fn ensure_root_redraw_wake(&mut self, frame: &eframe::Frame) {
         if self.root_redraw_wake.is_some() {
@@ -1003,6 +1016,7 @@ impl ImageViewerApp {
                             ui.label(t!("directory_tree.workers_unavailable"));
                         }
                     }
+                    crate::app::directory_tree::ui::publish_directory_tree_nav_wheel_block_rect(ui);
                 });
             return;
         }

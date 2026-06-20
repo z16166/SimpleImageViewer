@@ -29,6 +29,8 @@ pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
 pub(super) const DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID: &str =
     "siv_directory_tree_embedded_loading";
+pub(super) const DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID: &str =
+    "siv_directory_tree_nav_wheel_block_rect";
 pub(super) const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
 pub(super) const DIRECTORY_TREE_EMBEDDED_MIN_WIDTH: f32 = 320.0;
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;

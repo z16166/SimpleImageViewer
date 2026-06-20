@@ -704,3 +704,19 @@ fn reveal_selected_dir_expands_nested_known_folder_path_after_places_init() {
             .is_some_and(|node| node.expanded)
     );
 }
+
+#[test]
+fn pointer_in_directory_tree_nav_block_rect_respects_bounds() {
+    use super::ui::pointer_in_directory_tree_nav_block_rect;
+
+    let rect = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(110.0, 220.0));
+    assert!(pointer_in_directory_tree_nav_block_rect(
+        Some(egui::pos2(50.0, 100.0)),
+        Some(rect),
+    ));
+    assert!(!pointer_in_directory_tree_nav_block_rect(
+        Some(egui::pos2(200.0, 100.0)),
+        Some(rect),
+    ));
+    assert!(!pointer_in_directory_tree_nav_block_rect(None, Some(rect)));
+}
