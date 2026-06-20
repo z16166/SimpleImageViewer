@@ -811,6 +811,16 @@ impl ImageViewerApp {
         drop(list);
         self.publish_directory_tree_view_from_state(false);
         let updated = revision != previous_revision;
+        #[cfg(feature = "preload-debug")]
+        if updated {
+            let snap = self.directory_tree.preview_snapshot.load();
+            crate::preload_debug!(
+                "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {revision} \
+                 cache_count={cache_count} ui_preview={} snap_has_indices={:?}",
+                snap.textures.len(),
+                snap.textures.keys().copied().collect::<Vec<_>>()
+            );
+        }
         if updated {
             ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
             self.mark_directory_tree_repaint_pending();

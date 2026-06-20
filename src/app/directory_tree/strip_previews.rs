@@ -27,8 +27,8 @@ use crate::app::directory_tree_strip_cache::{
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
-    preview_aspect_matches_logical,
+    DecodedImage, PreviewStage, TiledImageSource, decoded_looks_like_black_placeholder,
+    generate_directory_tree_thumb_from_path, preview_aspect_matches_logical,
 };
 
 #[cfg(target_os = "windows")]
@@ -74,6 +74,13 @@ impl ImageViewerApp {
         }
 
         let dropped = dropped_indices.len();
+        #[cfg(feature = "preload-debug")]
+        if !dropped_indices.is_empty() {
+            crate::preload_debug!(
+                "[PreloadDebug][StripGpu] pending queue evicted {dropped} item(s): {:?}",
+                dropped_indices
+            );
+        }
         for index in dropped_indices {
             self.clear_strip_preview_attempt_state(index);
         }
@@ -100,6 +107,10 @@ impl ImageViewerApp {
                 "[DirectoryTree] Strip pending GPU upload queue full; dropped {dropped} item(s)"
             );
         }
+        #[cfg(feature = "preload-debug")]
+        let decoded_w = decoded.width;
+        #[cfg(feature = "preload-debug")]
+        let decoded_h = decoded.height;
         self.directory_tree_strip_pending_gpu
             .push(DirectoryTreeStripPendingGpuUpload {
                 index,
@@ -107,6 +118,21 @@ impl ImageViewerApp {
                 stage,
                 logical,
             });
+        #[cfg(feature = "preload-debug")]
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][StripGpu] queue idx={} stage={:?} decoded={}x{} logical={:?} \
+                 cache_contains={} cache_count={} pending_len={}",
+                index,
+                stage,
+                decoded_w,
+                decoded_h,
+                logical,
+                self.directory_tree_strip_cache.contains(index),
+                self.directory_tree_strip_cache.textures().len(),
+                self.directory_tree_strip_pending_gpu.len()
+            );
+        }
     }
 
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
@@ -118,7 +144,18 @@ impl ImageViewerApp {
             .directory_tree_strip_pending_gpu
             .drain(..take)
             .collect();
+        #[cfg(feature = "preload-debug")]
+        {
+            let indices: Vec<usize> = batch.iter().map(|item| item.index).collect();
+            crate::preload_debug!(
+                "[PreloadDebug][StripGpu] flush take={} pending_left={} indices={indices:?}",
+                batch.len(),
+                self.directory_tree_strip_pending_gpu.len()
+            );
+        }
         for item in batch {
+            #[cfg(feature = "preload-debug")]
+            let cache_before = self.directory_tree_strip_cache.contains(item.index);
             self.cache_directory_tree_strip_thumbnail(
                 item.index,
                 &item.decoded,
@@ -126,6 +163,20 @@ impl ImageViewerApp {
                 item.logical,
                 ctx,
             );
+            #[cfg(feature = "preload-debug")]
+            {
+                let cache_after = self.directory_tree_strip_cache.contains(item.index);
+                let cache_count = self.directory_tree_strip_cache.textures().len();
+                crate::preload_debug!(
+                    "[PreloadDebug][StripGpu] flush done idx={} cache_before={} \
+                     cache_after={} cache_count={} rev={}",
+                    item.index,
+                    cache_before,
+                    cache_after,
+                    cache_count,
+                    self.directory_tree_strip_cache.gpu_revision()
+                );
+            }
         }
         if !self.directory_tree_strip_pending_gpu.is_empty() {
             ctx.request_repaint();
@@ -419,7 +470,7 @@ impl ImageViewerApp {
                 );
             }
             crate::preload_debug!(
-                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={}",
+                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} black_ok={}",
                 index,
                 decoded.width,
                 decoded.height,
@@ -430,7 +481,8 @@ impl ImageViewerApp {
                     decoded.height,
                     logical.0,
                     logical.1,
-                )
+                ),
+                !decoded_looks_like_black_placeholder(&decoded)
             );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,
@@ -465,6 +517,7 @@ impl ImageViewerApp {
         result.decoded.width == 0
             || result.decoded.height == 0
             || !decoded_rgba_size_valid(&result.decoded)
+            || decoded_looks_like_black_placeholder(&result.decoded)
             || !preview_aspect_matches_logical(
                 result.decoded.width,
                 result.decoded.height,
@@ -603,22 +656,52 @@ impl ImageViewerApp {
                 self.abandon_strip_preview_attempt_after_failure(result.index);
                 continue;
             }
+            #[cfg(feature = "preload-debug")]
+            let decoded_w = result.decoded.width;
+            #[cfg(feature = "preload-debug")]
+            let decoded_h = result.decoded.height;
             self.queue_directory_tree_strip_gpu_upload(
                 result.index,
                 result.decoded,
                 result.stage,
                 Some(result.logical),
             );
-            if !self
+            let cache_valid = self
                 .directory_tree_strip_cache
-                .is_valid_for_logical(result.index, result.logical)
+                .is_valid_for_logical(result.index, result.logical);
+            #[cfg(feature = "preload-debug")]
             {
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] idx={} path={} stage={:?} decoded={}x{} logical={}x{} \
+                     cache_valid_before_flush={cache_valid} cold_attempted={} pending_len={}",
+                    result.index,
+                    result.path.display(),
+                    result.stage,
+                    decoded_w,
+                    decoded_h,
+                    result.logical.0,
+                    result.logical.1,
+                    self.directory_tree_strip_cold_attempted.contains(&result.index),
+                    self.directory_tree_strip_pending_gpu.len()
+                );
+            }
+            if !cache_valid {
                 self.directory_tree_strip_tiled_attempted
                     .remove(&result.index);
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] idx={} no repaint (cache not valid until GPU flush)",
+                    result.index
+                );
             } else {
                 self.finish_strip_preview_job(result.index);
                 ctx.request_repaint();
                 ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] idx={} repaint requested (cache already valid)",
+                    result.index
+                );
             }
         }
     }
@@ -752,6 +835,13 @@ impl ImageViewerApp {
                 .directory_tree_strip_cache
                 .invalidate_if_invalid(*index, logical)
             {
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Strip] invalidate idx={} logical={}x{} (aspect mismatch vs cached texture)",
+                    index,
+                    logical.0,
+                    logical.1
+                );
                 self.directory_tree_strip_tiled_attempted.remove(index);
             }
             self.try_sync_strip_from_tile_manager_preview(*index);
@@ -931,6 +1021,8 @@ impl ImageViewerApp {
         );
     }
 
+    // Kept for path-based list diffs; scan Done uses permute instead.
+    #[allow(dead_code)]
     pub(crate) fn reorder_directory_tree_strip_after_image_list_change(
         &mut self,
         old_files: &[std::path::PathBuf],
@@ -959,6 +1051,7 @@ impl ImageViewerApp {
         self.permute_directory_tree_strip_after_image_list_reorder(&old_to_new);
     }
 
+    #[allow(dead_code)]
     fn apply_partial_directory_tree_strip_reorder(
         &mut self,
         old_files: &[std::path::PathBuf],

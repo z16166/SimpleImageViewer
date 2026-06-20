@@ -126,6 +126,17 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn invalidate_if_invalid(&mut self, index: usize, logical: (u32, u32)) -> bool {
         if self.contains(index) && !self.is_valid_for_logical(index, logical) {
+            #[cfg(feature = "preload-debug")]
+            if let Some((preview_w, preview_h)) = self.preview_dimensions(index) {
+                crate::preload_debug!(
+                    "[PreloadDebug][StripCache] invalidate idx={} preview={}x{} logical={}x{}",
+                    index,
+                    preview_w,
+                    preview_h,
+                    logical.0,
+                    logical.1
+                );
+            }
             self.remove_index(index);
             return true;
         }
@@ -174,17 +185,33 @@ impl DirectoryTreeStripCache {
         strip_max_side: u32,
     ) {
         if decoded_looks_like_black_placeholder(decoded) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripCache] upsert skip idx={} reason=black_placeholder",
+                index
+            );
             self.remove_index(index);
             self.bump_gpu_revision();
             return;
         }
+        let cached_max_side = self.preview_max_side.get(&index).copied();
+        let cached_stage = self.preview_stage.get(&index).copied();
         if !should_replace_strip_thumbnail(
-            self.preview_max_side.get(&index).copied(),
-            self.preview_stage.get(&index).copied(),
+            cached_max_side,
+            cached_stage,
             decoded,
             stage,
             logical_size,
         ) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripCache] upsert skip idx={} reason=should_replace_false \
+                 cached_max_side={cached_max_side:?} cached_stage={cached_stage:?} \
+                 new={}x{} stage={stage:?} logical={logical_size:?}",
+                index,
+                decoded.width,
+                decoded.height
+            );
             return;
         }
         let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
@@ -192,6 +219,11 @@ impl DirectoryTreeStripCache {
             Err(err) => {
                 log::warn!(
                     "[DirectoryTree] Strip thumbnail downsample failed for index {index}: {err}"
+                );
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][StripCache] upsert skip idx={} reason=downsample_err err={err}",
+                    index
                 );
                 return;
             }
@@ -214,7 +246,20 @@ impl DirectoryTreeStripCache {
         self.preview_stage.insert(index, stage);
         self.touch_lru(index);
         self.bump_gpu_revision();
+        #[cfg(feature = "preload-debug")]
+        let count_before_evict = self.textures.len();
         self.evict_if_needed();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripCache] upsert ok idx={} tex={}x{} logical={logical_size:?} \
+             cache_count={} evicted={} rev={}",
+            index,
+            thumb.width,
+            thumb.height,
+            self.textures.len(),
+            count_before_evict.saturating_sub(self.textures.len()),
+            self.gpu_revision
+        );
     }
 
     pub(crate) fn relocate(&mut self, from: usize, to: usize) {
@@ -250,6 +295,7 @@ impl DirectoryTreeStripCache {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
         remap_partial_hashmap(&mut self.textures, old_to_new);
         remap_partial_hashmap(&mut self.preview_max_side, old_to_new);
@@ -313,6 +359,12 @@ impl DirectoryTreeStripCache {
                 break;
             };
             if self.textures.contains_key(&idx) {
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][StripCache] lru evict idx={} cache_count={}",
+                    idx,
+                    self.textures.len().saturating_sub(1)
+                );
                 self.textures.remove(&idx);
                 self.preview_max_side.remove(&idx);
                 self.preview_stage.remove(&idx);
@@ -326,6 +378,7 @@ impl DirectoryTreeStripCache {
     }
 }
 
+#[allow(dead_code)]
 fn remap_partial_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
     let taken = std::mem::take(map);
     for (old_idx, value) in taken {

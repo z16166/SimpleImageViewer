@@ -20,14 +20,34 @@ const PREVIEW_ASPECT_TOLERANCE: f32 = 0.08;
 
 pub(crate) fn decoded_looks_like_black_placeholder(decoded: &DecodedImage) -> bool {
     let rgba = decoded.rgba();
-    if rgba.len() < 4 {
+    let w = decoded.width as usize;
+    let h = decoded.height as usize;
+    if w == 0 || h == 0 || rgba.len() < w * h * 4 {
         return true;
     }
-    let pixel_count = rgba.len() / 4;
-    let stride = (pixel_count / 64).max(1);
-    rgba.chunks_exact(4)
-        .step_by(stride)
-        .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
+    const SAMPLE_COUNT: usize = 64;
+    let fixed = [
+        (0_usize, 0_usize),
+        (w - 1, 0),
+        (0, h - 1),
+        (w - 1, h - 1),
+        (w / 2, h / 2),
+    ];
+    for &(x, y) in &fixed {
+        let idx = (y * w + x) * 4;
+        if rgba[idx] != 0 || rgba[idx + 1] != 0 || rgba[idx + 2] != 0 {
+            return false;
+        }
+    }
+    for i in 0..SAMPLE_COUNT {
+        let x = (i * 7919) % w;
+        let y = (i * 6151) % h;
+        let idx = (y * w + x) * 4;
+        if rgba[idx] != 0 || rgba[idx + 1] != 0 || rgba[idx + 2] != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn preview_aspect_tolerance(
@@ -120,5 +140,13 @@ mod tests {
         rgba[0] = 10;
         let colored = DecodedImage::new(256, 256, rgba);
         assert!(!decoded_looks_like_black_placeholder(&colored));
+    }
+
+    #[test]
+    fn black_placeholder_detection_uses_spread_samples() {
+        let mut rgba = vec![0; 512 * 512 * 4];
+        rgba[0] = 5;
+        let sparse = DecodedImage::new(512, 512, rgba);
+        assert!(!decoded_looks_like_black_placeholder(&sparse));
     }
 }

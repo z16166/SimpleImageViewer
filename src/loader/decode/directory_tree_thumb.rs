@@ -49,6 +49,26 @@ use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
 /// Directory-tree list previews are always SDR thumbnails, independent of main-window HDR output.
 const DIRECTORY_TREE_THUMB_HDR_CAPACITY: f32 = 1.0;
 
+fn try_directory_tree_exif_thumb(
+    exif: &DecodedImage,
+    logical: (u32, u32),
+    max_side: u32,
+) -> Option<(DecodedImage, (u32, u32))> {
+    if !preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
+        return None;
+    }
+    let decoded = downsample_decoded_to_max_side(exif, max_side).ok()?;
+    if decoded_looks_like_black_placeholder(&decoded) {
+        log::debug!(
+            "[DirectoryTree] Skipping black EXIF thumbnail ({}x{}) for strip decode",
+            exif.width,
+            exif.height
+        );
+        return None;
+    }
+    Some((decoded, logical))
+}
+
 pub(crate) fn generate_directory_tree_thumb_from_path(
     path: &Path,
     max_side: u32,
@@ -66,9 +86,8 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
                 .unwrap_or(exif_logical),
             exif_logical,
         );
-        if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
-            let decoded = downsample_decoded_to_max_side(exif, max_side)?;
-            return Ok((decoded, logical));
+        if let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side) {
+            return Ok(result);
         }
     }
 
@@ -77,9 +96,8 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref() {
-        if preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
-            let decoded = downsample_decoded_to_max_side(exif, max_side)?;
-            return Ok((decoded, logical));
+        if let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side) {
+            return Ok(result);
         }
     }
 
@@ -88,6 +106,12 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         return Err(format!(
             "directory tree thumb aspect mismatch: {}x{} vs {}x{}",
             decoded.width, decoded.height, logical.0, logical.1
+        ));
+    }
+    if decoded_looks_like_black_placeholder(&decoded) {
+        return Err(format!(
+            "directory tree thumb decode is all black for {}",
+            path.display()
         ));
     }
     Ok((decoded, logical))
