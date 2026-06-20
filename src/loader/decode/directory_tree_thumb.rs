@@ -315,7 +315,7 @@ fn linux_raw_strip_fallback(
     path: &PathBuf,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
 ) -> Result<ImageData, String> {
-    use super::raw::preview::develop_half_size_sdr_strip_preview;
+    use super::raw::develop_half_size_sdr_strip_preview;
 
     let mut processor = match opened_processor {
         Some(processor) => processor,
