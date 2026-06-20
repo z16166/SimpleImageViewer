@@ -619,6 +619,7 @@ impl ImageViewerApp {
             file_op_tx,
             lightweight_file_op_tx,
             context_menu_pos: None,
+            context_menu_viewport: None,
             current_rotation: 0,
             save_error_rx,
             last_save_error: None,

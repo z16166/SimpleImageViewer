@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use arc_swap::ArcSwap;
 use eframe::egui;
@@ -80,6 +81,7 @@ impl ImageViewerApp {
         root_wake: Option<&crate::app::RootRedrawWake>,
         theme: &Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
         embedded: bool,
+        allow_image_context_menu: bool,
     ) -> bool {
         let palette = theme.lock().clone();
         if let Some(mut state_guard) = state.try_lock() {
@@ -111,6 +113,7 @@ impl ImageViewerApp {
             root_wake,
             &palette,
             embedded,
+            allow_image_context_menu,
         );
         let scanning = view.scanning;
         drop(chrome_guard);
@@ -120,6 +123,29 @@ impl ImageViewerApp {
             }
         }
         scanning
+    }
+
+    pub(crate) fn finish_directory_tree_image_list_context_menu(
+        &mut self,
+        chrome: &Arc<Mutex<view::DirectoryTreeUiChrome>>,
+        ctx: &egui::Context,
+        embedded: bool,
+    ) {
+        {
+            let mut chrome_guard = chrome.lock();
+            if self.active_modal.is_none() {
+                if let Some((pos, viewport)) = chrome_guard.pending_image_context_menu.take() {
+                    self.context_menu_pos = Some(pos);
+                    self.context_menu_viewport = Some(viewport);
+                }
+            } else {
+                chrome_guard.pending_image_context_menu = None;
+            }
+        }
+        if embedded || self.active_modal.is_some() || self.image_files.is_empty() {
+            return;
+        }
+        self.paint_image_context_menu_if_open(ctx);
     }
 
     /// Lazily capture a root-window redraw hook (Windows child viewports do not wake ROOT).
@@ -1067,6 +1093,9 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
         let theme = std::sync::Arc::clone(&self.directory_tree_theme);
+        let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
+        let app_ptr = self as *mut ImageViewerApp;
+        viewpaint_app.store(app_ptr, Ordering::Relaxed);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1100,17 +1129,36 @@ impl ImageViewerApp {
                 }
             }
 
-            let scanning = Self::paint_directory_tree_panel(
-                ui,
-                &view,
-                &chrome,
-                &state,
-                list_preview,
-                &command_tx,
-                root_wake.as_ref(),
-                &theme,
-                false,
-            );
+            let scanning = {
+                let ptr = viewpaint_app.load(Ordering::Relaxed);
+                let allow_image_context_menu = !ptr.is_null()
+                    && unsafe {
+                        (*ptr).active_modal.is_none() && !(*ptr).image_files.is_empty()
+                    };
+                let scanning = Self::paint_directory_tree_panel(
+                    ui,
+                    &view,
+                    &chrome,
+                    &state,
+                    list_preview,
+                    &command_tx,
+                    root_wake.as_ref(),
+                    &theme,
+                    false,
+                    allow_image_context_menu,
+                );
+                if !ptr.is_null() {
+                    // SAFETY: The pointer is set only for the current UI frame on the UI thread.
+                    unsafe {
+                        (*ptr).finish_directory_tree_image_list_context_menu(
+                            &chrome,
+                            ui.ctx(),
+                            false,
+                        );
+                    }
+                }
+                scanning
+            };
             if scanning {
                 if let Some(wake) = &root_wake {
                     wake();
@@ -1164,6 +1212,8 @@ impl ImageViewerApp {
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
             .show_inside(ui, |ui| {
+                let allow_image_context_menu =
+                    self.active_modal.is_none() && !self.image_files.is_empty();
                 if Self::paint_directory_tree_panel(
                     ui,
                     &view,
@@ -1174,10 +1224,12 @@ impl ImageViewerApp {
                     root_wake.as_ref(),
                     &theme,
                     true,
+                    allow_image_context_menu,
                 ) && view.load().scanning
                 {
                     ui.ctx().request_repaint();
                 }
+                self.finish_directory_tree_image_list_context_menu(&chrome, ui.ctx(), true);
             });
     }
 

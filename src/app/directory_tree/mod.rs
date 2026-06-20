@@ -303,6 +303,8 @@ pub(crate) struct DirectoryTreeRuntime {
     pub(crate) metadata_request_tx: Sender<FileMetadataRequest>,
     pub(crate) result_rx: Receiver<DirectoryChildrenResult>,
     pub(crate) metadata_result_rx: Receiver<FileMetadataResult>,
+    /// Set each ROOT `ui()` frame while the detached tree viewport may paint; UI thread only.
+    pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
 }
 
 impl DirectoryTreeRuntime {
@@ -366,6 +368,7 @@ impl DirectoryTreeRuntime {
             metadata_request_tx,
             result_rx,
             metadata_result_rx,
+            viewpaint_app: Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())),
         }
     }
 }

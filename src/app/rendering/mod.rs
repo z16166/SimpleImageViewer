@@ -92,56 +92,14 @@ impl ImageViewerApp {
                 // an existing menu, making it impossible to re-open the menu
                 // with a single right-click.  Instead we detect raw right-clicks
                 // via `ctx.input()` and render the menu through `egui::Area`.
-                if !any_modal_open
-                    && pointer_hotkey_action.is_none()
-                    && !self.image_files.is_empty()
-                {
-                    let ctx = ui.ctx().clone();
-                    let raw_secondary = ctx.input(|i| i.pointer.secondary_clicked());
-                    let interact_pos = ctx.input(|i| i.pointer.interact_pos());
-
-                    if raw_secondary && canvas_resp.hovered() {
-                        if let Some(pos) = interact_pos {
-                            self.context_menu_pos = Some(pos);
-                        }
-                    }
-
-                    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        self.context_menu_pos = None;
-                    }
-
-                    if let Some(pos) = self.context_menu_pos {
-                        let menu_id = egui::Id::new(format!(
-                            "__custom_canvas_ctx_menu_{}",
-                            self.settings.language
-                        ));
-                        let area_resp = egui::Area::new(menu_id)
-                            .kind(egui::UiKind::Menu)
-                            .order(egui::Order::Foreground)
-                            .fixed_pos(pos)
-                            .sense(Sense::hover())
-                            .show(&ctx, |ui| {
-                                egui::Frame::menu(ui.style()).show(ui, |ui| {
-                                    ui.with_layout(
-                                        egui::Layout::top_down_justified(egui::Align::LEFT),
-                                        |ui| self.draw_context_menu_items(ui),
-                                    );
-                                });
-                            });
-
-                        let menu_rect = area_resp.response.rect;
-                        let primary_clicked = ctx.input(|i| i.pointer.primary_clicked());
-                        if primary_clicked {
-                            if let Some(pp) = interact_pos {
-                                if !menu_rect.contains(pp) {
-                                    self.context_menu_pos = None;
-                                }
-                            }
-                        }
-                        if area_resp.response.should_close() {
-                            self.context_menu_pos = None;
-                        }
-                    }
+                if !any_modal_open && pointer_hotkey_action.is_none() {
+                    let open_zone = canvas_resp.hovered().then_some(canvas_resp.rect);
+                    self.try_open_image_context_menu(
+                        ui.ctx(),
+                        open_zone,
+                        !self.image_files.is_empty(),
+                    );
+                    self.paint_image_context_menu_if_open(ui.ctx());
                 }
 
                 if pointer_hotkey_action.is_none()

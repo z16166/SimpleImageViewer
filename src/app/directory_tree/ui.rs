@@ -469,6 +469,7 @@ pub(super) fn draw_directory_tree_window(
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
     embedded: bool,
+    allow_image_context_menu: bool,
 ) {
     ui.visuals_mut().button_frame = false;
     ui.visuals_mut().override_text_color = Some(palette.text_normal);
@@ -484,6 +485,7 @@ pub(super) fn draw_directory_tree_window(
         palette,
         egui::vec2(ui.available_width(), ui.available_height()),
         embedded,
+        allow_image_context_menu,
     );
     publish_directory_tree_nav_wheel_block_rect(ui);
 }
@@ -562,6 +564,7 @@ fn draw_directory_tree_top_panels(
     palette: &ThemePalette,
     panel_size: egui::Vec2,
     embedded: bool,
+    allow_image_context_menu: bool,
 ) {
     let viewport_height = panel_size.y;
     let viewport_width = panel_size.x;
@@ -609,6 +612,7 @@ fn draw_directory_tree_top_panels(
             command_tx,
             palette,
             embedded,
+            allow_image_context_menu,
         );
     });
 
@@ -895,7 +899,9 @@ fn draw_image_file_list(
     command_tx: &Sender<DirectoryTreeCommand>,
     palette: &ThemePalette,
     embedded: bool,
+    allow_image_context_menu: bool,
 ) {
+    chrome.begin_image_list_paint();
     let list_enabled = !view.scanning || !view.image_rows.is_empty();
 
     if view.image_rows.is_empty() && !view.scanning {
@@ -978,7 +984,9 @@ fn draw_image_file_list(
                     view.preview_textures.get(&row_index),
                     view.preview_logical_sizes.get(&row_index).copied(),
                     command_tx,
+                    chrome,
                     list_enabled && interaction_enabled,
+                    allow_image_context_menu,
                     palette,
                 );
                 if clicked {
@@ -1357,7 +1365,9 @@ fn draw_image_details_row(
     texture: Option<&egui::TextureHandle>,
     logical_size: Option<(u32, u32)>,
     command_tx: &Sender<DirectoryTreeCommand>,
+    chrome: &mut DirectoryTreeUiChrome,
     list_enabled: bool,
+    allow_image_context_menu: bool,
     palette: &ThemePalette,
 ) -> bool {
     let row_width = ui.available_width();
@@ -1433,6 +1443,19 @@ fn draw_image_details_row(
     if list_enabled && response.clicked() {
         let _ = command_tx.send(DirectoryTreeCommand::SelectImage(row_index));
         return true;
+    }
+    if selected {
+        chrome.image_list_selected_row_rect = Some(row_rect);
+        if allow_image_context_menu
+            && list_enabled
+            && response.secondary_clicked()
+            && let Some(pos) = response
+                .interact_pointer_pos()
+                .or_else(|| ui.input(|input| input.pointer.interact_pos()))
+        {
+            chrome.pending_image_context_menu = Some((pos, ui.ctx().viewport_id()));
+            chrome.image_list_keyboard_active = true;
+        }
     }
     response.on_hover_text(row.path.to_string_lossy());
     false

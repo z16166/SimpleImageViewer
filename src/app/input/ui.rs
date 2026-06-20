@@ -191,7 +191,7 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     /// Shared content for the right-click context menu (used by the custom
-    /// `egui::Area`-based popup in [`Self::draw_image_canvas_ui`]).
+    /// `egui::Area`-based popup in [`Self::paint_image_context_menu_if_open`]).
     pub(crate) fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
         let path = self.image_files[self.current_index].clone();
         let mut drew_action = false;
@@ -247,11 +247,93 @@ impl ImageViewerApp {
                         if let Some(command) = item.command.clone() {
                             self.run_custom_context_menu_action(&command, &path);
                         }
-                        self.context_menu_pos = None;
+                        self.clear_image_context_menu();
                     }
                     drew_action = true;
                 }
             }
+        }
+    }
+
+    /// Open the image context menu when the user secondary-clicks inside `open_zone`.
+    pub(crate) fn try_open_image_context_menu(
+        &mut self,
+        ctx: &egui::Context,
+        open_zone: Option<egui::Rect>,
+        allow_open: bool,
+    ) {
+        if !allow_open || self.image_files.is_empty() {
+            return;
+        }
+        if !ctx.input(|i| i.pointer.secondary_clicked()) {
+            return;
+        }
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+        let Some(zone) = open_zone else {
+            return;
+        };
+        if !zone.contains(pos) {
+            return;
+        }
+        self.context_menu_pos = Some(pos);
+        self.context_menu_viewport = Some(ctx.viewport_id());
+    }
+
+    fn clear_image_context_menu(&mut self) {
+        self.context_menu_pos = None;
+        self.context_menu_viewport = None;
+    }
+
+    /// Paint the custom image context menu when it belongs to this viewport.
+    pub(crate) fn paint_image_context_menu_if_open(&mut self, ctx: &egui::Context) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.clear_image_context_menu();
+        }
+        if self.context_menu_pos.is_none() {
+            return;
+        }
+        if self
+            .context_menu_viewport
+            .is_some_and(|viewport| viewport != ctx.viewport_id())
+        {
+            return;
+        }
+
+        let pos = self.context_menu_pos.unwrap_or_default();
+        let menu_id = egui::Id::new(format!(
+            "__custom_image_ctx_menu_{}",
+            self.settings.language
+        ));
+        let area_resp = egui::Area::new(menu_id)
+            .kind(egui::UiKind::Menu)
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .sense(egui::Sense::hover())
+            .show(ctx, |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.with_layout(
+                        egui::Layout::top_down_justified(egui::Align::LEFT),
+                        |ui| self.draw_context_menu_items(ui),
+                    );
+                });
+            });
+
+        let menu_rect = area_resp.response.rect;
+        let interact_pos = ctx.input(|i| i.pointer.interact_pos());
+        if ctx.input(|i| i.pointer.primary_clicked()) {
+            if let Some(pp) = interact_pos {
+                if !menu_rect.contains(pp) {
+                    self.clear_image_context_menu();
+                }
+            }
+        }
+        if area_resp.response.should_close() {
+            self.clear_image_context_menu();
         }
     }
 
@@ -317,7 +399,7 @@ impl ImageViewerApp {
             "cut_to" => self.dispatch_action(AppAction::CutTo, ui.ctx()),
             _ => log::warn!("Unknown context menu builtin action: {}", id),
         }
-        self.context_menu_pos = None;
+        self.clear_image_context_menu();
     }
 
     fn run_custom_context_menu_action(

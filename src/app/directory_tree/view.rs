@@ -134,6 +134,8 @@ pub(crate) struct DirectoryTreeUiChrome {
     pub(super) image_list_keyboard_active: bool,
     pub(super) current_index: usize,
     pub(super) scroll_image_list_to_current: bool,
+    pub(super) image_list_selected_row_rect: Option<egui::Rect>,
+    pub(super) pending_image_context_menu: Option<(egui::Pos2, egui::ViewportId)>,
 }
 
 impl DirectoryTreeUiChrome {
@@ -148,7 +150,13 @@ impl DirectoryTreeUiChrome {
             image_list_keyboard_active: state.image_list_keyboard_active,
             current_index: state.current_index,
             scroll_image_list_to_current: state.scroll_image_list_to_current,
+            image_list_selected_row_rect: None,
+            pending_image_context_menu: None,
         }
+    }
+
+    pub(super) fn begin_image_list_paint(&mut self) {
+        self.image_list_selected_row_rect = None;
     }
 
     pub(super) fn begin_paint_frame(&mut self, view: &DirectoryTreeView) {

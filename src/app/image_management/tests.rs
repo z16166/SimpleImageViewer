@@ -1620,6 +1620,7 @@ fn make_test_app() -> ImageViewerApp {
                 .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
         ),
         context_menu_pos: None,
+        context_menu_viewport: None,
         current_rotation: 0,
         tile_upload_quota: 32,
         cached_audio_devices: Vec::new(),

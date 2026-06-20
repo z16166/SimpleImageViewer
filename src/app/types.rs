@@ -617,6 +617,7 @@ pub struct ImageViewerApp {
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
     pub(crate) context_menu_pos: Option<Pos2>,
+    pub(crate) context_menu_viewport: Option<egui::ViewportId>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
     pub(crate) current_rotation: i32,
 
