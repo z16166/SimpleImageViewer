@@ -455,6 +455,30 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_attempted.remove(&index);
     }
 
+    /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
+    fn finish_strip_preview_job(&mut self, index: usize) {
+        self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_tiled_attempted.remove(&index);
+    }
+
+    fn strip_preview_failure_is_permanent(result: &DirectoryTreeStripPreviewJobResult) -> bool {
+        result.decoded.width == 0
+            || result.decoded.height == 0
+            || !decoded_rgba_size_valid(&result.decoded)
+            || !preview_aspect_matches_logical(
+                result.decoded.width,
+                result.decoded.height,
+                result.logical.0,
+                result.logical.1,
+            )
+    }
+
+    fn abandon_strip_preview_attempt_after_failure(&mut self, index: usize) {
+        self.finish_strip_preview_job(index);
+        // Keep `cold_attempted` so undecodable files (e.g. motion-video JPG) do not monopolize
+        // the limited cold-generate budget and block thumbnails for neighboring rows.
+    }
+
     fn strip_preview_result_matches_index(
         &self,
         result: &DirectoryTreeStripPreviewJobResult,
@@ -479,32 +503,8 @@ impl ImageViewerApp {
             self.clear_strip_preview_attempt_state(new_index);
         }
 
-        if result.decoded.width == 0 || result.decoded.height == 0 {
-            return false;
-        }
-        if !decoded_rgba_size_valid(&result.decoded) {
-            log::warn!(
-                "[DirectoryTree] Relocated strip preview size mismatch for {}: {}x{}",
-                result.path.display(),
-                result.decoded.width,
-                result.decoded.height
-            );
-            return false;
-        }
-        if !preview_aspect_matches_logical(
-            result.decoded.width,
-            result.decoded.height,
-            result.logical.0,
-            result.logical.1,
-        ) {
-            log::warn!(
-                "[DirectoryTree] Relocated strip preview aspect mismatch for {}: {}x{} vs {}x{}",
-                result.path.display(),
-                result.decoded.width,
-                result.decoded.height,
-                result.logical.0,
-                result.logical.1
-            );
+        if Self::strip_preview_failure_is_permanent(&result) {
+            self.abandon_strip_preview_attempt_after_failure(new_index);
             return false;
         }
 
@@ -572,44 +572,31 @@ impl ImageViewerApp {
                 }
                 continue;
             }
-            if result.decoded.width == 0 || result.decoded.height == 0 {
-                self.directory_tree_strip_tiled_attempted
-                    .remove(&result.index);
-                self.directory_tree_strip_cold_attempted
-                    .remove(&result.index);
-                continue;
-            }
-            if !decoded_rgba_size_valid(&result.decoded) {
-                log::warn!(
-                    "[DirectoryTree] Strip preview job size mismatch for index {}: {}x{}",
-                    result.index,
-                    result.decoded.width,
-                    result.decoded.height
-                );
-                self.directory_tree_strip_tiled_attempted
-                    .remove(&result.index);
-                self.directory_tree_strip_cold_attempted
-                    .remove(&result.index);
-                continue;
-            }
-            if !preview_aspect_matches_logical(
-                result.decoded.width,
-                result.decoded.height,
-                result.logical.0,
-                result.logical.1,
-            ) {
-                log::warn!(
-                    "[DirectoryTree] Strip preview job aspect mismatch for index {}: {}x{} vs {}x{}",
-                    result.index,
-                    result.decoded.width,
-                    result.decoded.height,
-                    result.logical.0,
-                    result.logical.1
-                );
-                self.directory_tree_strip_tiled_attempted
-                    .remove(&result.index);
-                self.directory_tree_strip_cold_attempted
-                    .remove(&result.index);
+            if Self::strip_preview_failure_is_permanent(&result) {
+                if result.decoded.width == 0 || result.decoded.height == 0 {
+                    log::debug!(
+                        "[DirectoryTree] Strip preview unavailable for index {} ({})",
+                        result.index,
+                        result.path.display()
+                    );
+                } else if !decoded_rgba_size_valid(&result.decoded) {
+                    log::warn!(
+                        "[DirectoryTree] Strip preview job size mismatch for index {}: {}x{}",
+                        result.index,
+                        result.decoded.width,
+                        result.decoded.height
+                    );
+                } else {
+                    log::warn!(
+                        "[DirectoryTree] Strip preview job aspect mismatch for index {}: {}x{} vs {}x{}",
+                        result.index,
+                        result.decoded.width,
+                        result.decoded.height,
+                        result.logical.0,
+                        result.logical.1
+                    );
+                }
+                self.abandon_strip_preview_attempt_after_failure(result.index);
                 continue;
             }
             self.queue_directory_tree_strip_gpu_upload(
@@ -624,9 +611,8 @@ impl ImageViewerApp {
             {
                 self.directory_tree_strip_tiled_attempted
                     .remove(&result.index);
-                self.directory_tree_strip_cold_attempted
-                    .remove(&result.index);
             } else {
+                self.finish_strip_preview_job(result.index);
                 ctx.request_repaint();
                 ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
             }
