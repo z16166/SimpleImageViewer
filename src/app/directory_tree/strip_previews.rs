@@ -816,6 +816,83 @@ impl ImageViewerApp {
             .retain(|index| *index < self.image_files.len());
     }
 
+    fn permute_strip_index_set(set: &mut std::collections::HashSet<usize>, old_to_new: &[usize]) {
+        let previous: Vec<usize> = set.iter().copied().collect();
+        set.clear();
+        for index in previous {
+            if index < old_to_new.len() {
+                set.insert(old_to_new[index]);
+            }
+        }
+    }
+
+    fn permute_directory_tree_strip_pending_gpu(&mut self, old_to_new: &[usize]) {
+        for pending in &mut self.directory_tree_strip_pending_gpu {
+            if pending.index < old_to_new.len() {
+                pending.index = old_to_new[pending.index];
+            }
+        }
+    }
+
+    pub(crate) fn permute_directory_tree_strip_after_image_list_reorder(
+        &mut self,
+        old_to_new: &[usize],
+    ) {
+        self.directory_tree_strip_cache.permute(old_to_new);
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_generate_inflight,
+            old_to_new,
+        );
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_tiled_attempted,
+            old_to_new,
+        );
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_cold_attempted,
+            old_to_new,
+        );
+        self.permute_directory_tree_strip_pending_gpu(old_to_new);
+        if let Some(mut list) = self.directory_tree.list.try_lock() {
+            list.image_list_generation = list.image_list_generation.wrapping_add(1);
+            list.mark_snapshot_dirty();
+        }
+        domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
+        view::assemble_directory_tree_view(
+            &self.directory_tree.view,
+            &self.directory_tree.tree_snapshot,
+            &self.directory_tree.list_snapshot,
+            &self.directory_tree.preview_snapshot,
+        );
+    }
+
+    pub(crate) fn reorder_directory_tree_strip_after_image_list_change(
+        &mut self,
+        old_files: &[std::path::PathBuf],
+        new_files: &[std::path::PathBuf],
+    ) {
+        if old_files.is_empty() || old_files.len() != new_files.len() {
+            self.invalidate_directory_tree_strip_after_image_list_reorder();
+            return;
+        }
+        let mut old_to_new = vec![usize::MAX; old_files.len()];
+        for (new_idx, path) in new_files.iter().enumerate() {
+            let Some(old_idx) = old_files.iter().position(|existing| existing == path) else {
+                self.invalidate_directory_tree_strip_after_image_list_reorder();
+                return;
+            };
+            if old_to_new[old_idx] != usize::MAX {
+                self.invalidate_directory_tree_strip_after_image_list_reorder();
+                return;
+            }
+            old_to_new[old_idx] = new_idx;
+        }
+        if old_to_new.iter().any(|&idx| idx == usize::MAX) {
+            self.invalidate_directory_tree_strip_after_image_list_reorder();
+            return;
+        }
+        self.permute_directory_tree_strip_after_image_list_reorder(&old_to_new);
+    }
+
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
         self.directory_tree_strip_generate_inflight.clear();

@@ -595,6 +595,7 @@ pub struct ImageViewerApp {
     pub(crate) file_op_rx: Receiver<FileOpResult>,
     pub(crate) file_op_tx: Sender<FileOpResult>,
     pub(crate) lightweight_file_op_tx: Sender<LightweightFileOpJob>,
+    pub(crate) background_threads: crate::app::background_threads::BackgroundThreadJoiner,
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,

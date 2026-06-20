@@ -287,7 +287,7 @@ fn directory_tree_panel_layout_shrinks_for_display_on_narrow_viewport() {
 }
 
 #[test]
-fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
+    fn visible_cold_strip_indices_skips_stale_range_while_scroll_pending() {
     assert!(
         ImageViewerApp::visible_cold_strip_indices(Some((100, 110)), true, 200, false).is_empty()
     );

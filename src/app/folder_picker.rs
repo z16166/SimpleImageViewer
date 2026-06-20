@@ -147,9 +147,9 @@ impl ImageViewerApp {
         let tx = self.folder_picker.result_tx.clone();
         self.folder_picker.in_flight = true;
 
-        if std::thread::Builder::new()
-            .name("siv-folder-picker".to_string())
-            .spawn(move || {
+        if !self
+            .background_threads
+            .spawn("siv-folder-picker".to_string(), move || {
                 let path = pollster::block_on(async move {
                     match mode {
                         AsyncRfdMode::PickFolder => dialog
@@ -168,7 +168,6 @@ impl ImageViewerApp {
                 });
                 let _ = tx.send(FolderPickerCompletion { purpose, path });
             })
-            .is_err()
         {
             log::error!("[FolderPicker] Failed to spawn picker worker thread");
             self.folder_picker.in_flight = false;

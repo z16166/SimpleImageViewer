@@ -620,6 +620,7 @@ impl ImageViewerApp {
             file_op_rx,
             file_op_tx,
             lightweight_file_op_tx,
+            background_threads: crate::app::background_threads::BackgroundThreadJoiner::new(),
             context_menu_pos: None,
             context_menu_viewport: None,
             current_rotation: 0,

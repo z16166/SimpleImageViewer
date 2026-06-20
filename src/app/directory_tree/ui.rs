@@ -695,6 +695,23 @@ fn paint_image_list_thumbnail(
     }
 }
 
+/// Places-loading / worker-unavailable status shared by embedded and detached panels.
+pub(super) fn draw_directory_tree_places_status(ui: &mut egui::Ui, view: &DirectoryTreeView) {
+    if view.places_loaded() {
+        return;
+    }
+    if view.places_loading() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(t!("directory_tree.places_loading"));
+        });
+    } else if let Some(err) = view.places_load_error() {
+        ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
+    } else if !view.workers_available() {
+        ui.label(t!("directory_tree.workers_unavailable"));
+    }
+}
+
 fn draw_folder_panel(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
@@ -707,16 +724,7 @@ fn draw_folder_panel(
     let scroll_to_selected = chrome.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
         if !view.places_loaded() {
-            if view.places_loading() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(t!("directory_tree.places_loading"));
-                });
-            } else if let Some(err) = view.places_load_error() {
-                ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
-            } else if !view.workers_available() {
-                ui.label(t!("directory_tree.workers_unavailable"));
-            }
+            draw_directory_tree_places_status(ui, view);
             return;
         }
         let mut scrolled = false;

@@ -44,7 +44,7 @@ use super::modern::{
 };
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
-use super::{is_maybe_animated, tiff_may_be_camera_raw};
+use super::{is_maybe_animated};
 
 /// Directory-tree list previews are always SDR thumbnails, independent of main-window HDR output.
 const DIRECTORY_TREE_THUMB_HDR_CAPACITY: f32 = 1.0;
@@ -54,16 +54,15 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     max_side: u32,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
     let mmap = crate::mmap_util::map_file(path).ok();
-    let exif = mmap
-        .as_ref()
-        .and_then(|data| extract_exif_thumbnail_from_mmap(data, path))
-        .or_else(|| extract_exif_thumbnail(path));
+    let exif = match mmap.as_ref() {
+        Some(data) => extract_exif_thumbnail_from_mmap(data, path),
+        None => extract_exif_thumbnail(path),
+    };
     if let Some(exif) = exif.as_ref() {
         let exif_logical = (exif.width, exif.height);
         let logical = normalize_logical_size(
             mmap.as_ref()
                 .and_then(|data| probe_still_image_logical_size_from_mmap(data))
-                .or_else(|| probe_still_image_logical_size(path))
                 .unwrap_or(exif_logical),
             exif_logical,
         );
@@ -109,20 +108,6 @@ fn probe_still_image_logical_size_from_mmap(mmap: &memmap2::Mmap) -> Option<(u32
         .ok()?
         .into_dimensions()
         .ok()
-}
-
-fn probe_still_image_logical_size(path: &Path) -> Option<(u32, u32)> {
-    crate::mmap_util::map_file(path)
-        .ok()
-        .and_then(|mmap| probe_still_image_logical_size_from_mmap(&mmap))
-        .or_else(|| {
-            image::ImageReader::open(path)
-                .ok()?
-                .with_guessed_format()
-                .ok()?
-                .into_dimensions()
-                .ok()
-        })
 }
 
 fn open_image_data_for_directory_tree_thumb(
@@ -190,7 +175,10 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if ext == "tif" || ext == "tiff" {
-        if tiff_may_be_camera_raw(path) && crate::raw_processor::probe_libraw_can_open(path) {
+        let tiff_is_raw = file_mmap
+            .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
+            .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
+        if tiff_is_raw && crate::raw_processor::probe_libraw_can_open(path) {
             return open_raw_image_data_for_directory_tree_thumb(path);
         }
         return load_primary_with_detection_fallback(

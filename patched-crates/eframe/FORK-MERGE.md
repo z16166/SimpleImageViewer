@@ -21,6 +21,7 @@ needed.
 | File | Topic | Re-apply if |
 |------|--------|-------------|
 | `src/native/run.rs` | Synchronous `RepaintNow` chain on all desktop OSes | Upstream still limits immediate repaint chaining to Windows only. |
+| `src/native/run.rs` | `sync_repaint_in_progress` reentrancy guard | Prevents nested `RepaintNow` → `run_ui_and_paint` during one event dispatch. |
 | `src/native/wgpu_integration.rs` | `App::logic` before every viewport paint | Upstream still calls `logic` only from ROOT `update`. |
 | `src/native/wgpu_integration.rs` | Autosave on child viewport paint (ROOT window) | Upstream still gates `maybe_autosave` on ROOT paint only. |
 | `src/native/glow_integration.rs` | Same `logic` + autosave patches as wgpu | Same as above for glow backend. |
@@ -42,6 +43,7 @@ needed.
 - **`logic_shared`** (`src/app/logic_update.rs`): tray, scan, loaders, dir-tree — runs at most once per 4ms wall clock even if ROOT + aux both paint.
 - **`logic_root_only`**: window placement cache, HDR monitor/swap-chain, drag-drop, fullscreen, folder dialog — **`pass.is_root()` only**.
 - Do not use `frame.winit_window()` / HDR frame APIs from aux-triggered passes unless intentionally ROOT-scoped.
+- **Immediate viewports** (`show_viewport_immediate`) do not receive `App::logic` during `render_immediate_viewport`; Simple Image Viewer uses **`show_viewport_deferred` only** for the detached directory-tree window.
 
 ## Upstream follow-up (optional)
 

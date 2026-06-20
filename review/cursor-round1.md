@@ -314,6 +314,17 @@
 | trae | **#8** | read_dir inflight 使用 AcqRel/Acquire |
 | deepseek | **H4** | `tile_cache::permute_images` 增加 `debug_assert!` |
 
-**暂未修复（低优先级 / 架构性）：** strip 解码 mmap 贯穿（M9）、`sync_images` 重复块 refactor、Places/COM 部分失败降级、eframe immediate viewport logic、删除线程 join、Linux RAW strip fast-path 等。
+**低优先级 backlog（第二轮已处理）：**
+
+| 项 | 状态 |
+|----|------|
+| strip 解码 mmap 贯穿（M9） | 已修复：`directory_tree_thumb` EXIF/TIFF sniff 复用 mmap |
+| `sync_images` 重复块 refactor | 已修复：`sync_directory_tree_list_images()` |
+| Places UI 重复 | 已修复：`draw_directory_tree_places_status()` |
+| 删除/复制/剪切/文件夹 picker 线程 join | 已修复：`BackgroundThreadJoiner` + `on_exit` |
+| strip reorder 增量 invalidation | 已修复：`permute_directory_tree_strip_after_image_list_reorder()` |
+| eframe immediate viewport logic | **文档化**：应用仅用 `show_viewport_deferred`；见 `FORK-MERGE.md` |
+| Places/COM 部分失败降级 | 第一轮已修复（空 Places） |
+| Linux RAW strip fast-path | 未在本轮 scope（仍待单独迭代） |
 
 ---

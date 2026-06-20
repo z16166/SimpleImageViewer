@@ -457,6 +457,13 @@ impl ImageViewerApp {
                         self.status_message = t!("status.not_found").to_string();
                         self.finish_refresh_scan_state();
                     } else {
+                        let old_files = if self.settings.browse_mode
+                            == crate::settings::BrowseMode::Tree
+                        {
+                            self.image_files.clone()
+                        } else {
+                            Vec::new()
+                        };
                         if !sorted_files.is_empty() {
                             let mut paths = Vec::with_capacity(sorted_files.len());
                             let mut sizes = Vec::with_capacity(sorted_files.len());
@@ -506,7 +513,11 @@ impl ImageViewerApp {
                         );
 
                         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-                            self.invalidate_directory_tree_strip_after_image_list_reorder();
+                            let new_files = self.image_files.clone();
+                            self.reorder_directory_tree_strip_after_image_list_change(
+                                &old_files,
+                                &new_files,
+                            );
                         }
 
                         if self.refresh_scan_in_progress {

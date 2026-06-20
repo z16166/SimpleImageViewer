@@ -1050,6 +1050,20 @@ impl ImageViewerApp {
         self.pending_directory_tree_state_sync = true;
     }
 
+    fn sync_directory_tree_list_images(
+        &self,
+        list: &mut super::domains::DirectoryTreeListState,
+    ) -> Option<super::FileMetadataRequest> {
+        list.sync_images(
+            &self.image_files,
+            &self.file_byte_len_by_index,
+            &self.file_modified_unix_by_index,
+            self.current_index,
+            self.scanning,
+            Self::directory_tree_scan_status_message(self),
+        )
+    }
+
     /// Sync scan results into the directory-tree file list without registering the viewport.
     /// Safe to call from `logic()` after `process_scan_results`.
     pub(crate) fn sync_directory_tree_file_list_state(&mut self, ctx: &egui::Context) {
@@ -1089,15 +1103,7 @@ impl ImageViewerApp {
                     previous_scanning && !self.scanning && list.image_list_sort_active;
                 let resort_column = list.image_list_sort_column;
                 let resort_ascending = list.image_list_sort_ascending;
-                let scan_status = Self::directory_tree_scan_status_message(self);
-                if let Some(request) = list.sync_images(
-                    &self.image_files,
-                    &self.file_byte_len_by_index,
-                    &self.file_modified_unix_by_index,
-                    self.current_index,
-                    self.scanning,
-                    scan_status,
-                ) {
+                if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
                     metadata_requests.push(request);
                 }
                 list.sync_warning = None;
@@ -1138,14 +1144,7 @@ impl ImageViewerApp {
                 self.directory_tree.tree.try_lock(),
                 self.directory_tree.list.try_lock(),
             ) {
-                if let Some(request) = list.sync_images(
-                    &self.image_files,
-                    &self.file_byte_len_by_index,
-                    &self.file_modified_unix_by_index,
-                    self.current_index,
-                    self.scanning,
-                    Self::directory_tree_scan_status_message(self),
-                ) {
+                if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
                     metadata_requests.push(request);
                 }
                 list.sync_warning = None;
@@ -1312,21 +1311,10 @@ impl ImageViewerApp {
             egui::Panel::left(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID)
                 .resizable(false)
                 .show_inside(ui, |ui| {
-                    if let Some(guard) = tree.try_lock() {
-                        if guard.places_loading {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(t!("directory_tree.places_loading"));
-                            });
-                        } else if let Some(err) = &guard.places_load_error {
-                            ui.label(
-                                egui::RichText::new(err.as_str())
-                                    .color(ui.visuals().error_fg_color),
-                            );
-                        } else if !guard.workers_available {
-                            ui.label(t!("directory_tree.workers_unavailable"));
-                        }
-                    }
+                    crate::app::directory_tree::ui::draw_directory_tree_places_status(
+                        ui,
+                        &view.load(),
+                    );
                     crate::app::directory_tree::ui::publish_directory_tree_nav_wheel_block_rect(ui);
                 });
             return;

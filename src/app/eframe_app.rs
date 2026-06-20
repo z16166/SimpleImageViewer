@@ -109,6 +109,9 @@ impl eframe::App for ImageViewerApp {
                 log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
             }
         }
+        self.background_threads.join_all(
+            crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT,
+        );
 
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
