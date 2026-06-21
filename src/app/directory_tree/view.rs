@@ -111,6 +111,14 @@ impl DirectoryTreeView {
         self.list.scroll_image_list_to_current
     }
 
+    pub(super) fn scroll_folder_tree_to_selected(&self) -> bool {
+        self.tree.scroll_folder_tree_to_selected
+    }
+
+    pub(super) fn folder_scroll_offset_y(&self) -> f32 {
+        self.tree.folder_scroll_offset_y
+    }
+
     pub(super) fn preview_textures(
         &self,
     ) -> &std::collections::HashMap<usize, egui::TextureHandle> {
@@ -168,6 +176,9 @@ pub(crate) struct DirectoryTreeUiChrome {
     pub(super) image_list_keyboard_active: bool,
     pub(super) current_index: usize,
     pub(super) scroll_image_list_to_current: bool,
+    pub(super) folder_scroll_offset_y: f32,
+    pub(super) scroll_folder_tree_to_selected: bool,
+    pub(super) folder_selected_row_rect: Option<egui::Rect>,
     pub(super) image_list_selected_row_rect: Option<egui::Rect>,
     pub(super) pending_image_context_menu: Option<(egui::Pos2, egui::ViewportId)>,
 }
@@ -186,6 +197,9 @@ impl DirectoryTreeUiChrome {
             image_list_keyboard_active: list.image_list_keyboard_active,
             current_index: list.current_index,
             scroll_image_list_to_current: list.scroll_image_list_to_current,
+            folder_scroll_offset_y: tree.folder_scroll_offset_y,
+            scroll_folder_tree_to_selected: tree.scroll_folder_tree_to_selected,
+            folder_selected_row_rect: None,
             image_list_selected_row_rect: None,
             pending_image_context_menu: None,
         }
@@ -203,6 +217,8 @@ impl DirectoryTreeUiChrome {
         self.left_panel_width = view.left_panel_width();
         self.current_index = view.current_index();
         self.scroll_image_list_to_current = view.scroll_image_list_to_current();
+        self.folder_scroll_offset_y = view.folder_scroll_offset_y();
+        self.scroll_folder_tree_to_selected = view.scroll_folder_tree_to_selected();
         self.image_list_keyboard_active = list_keyboard_active;
     }
 
@@ -229,6 +245,11 @@ impl DirectoryTreeUiChrome {
         if list.scroll_image_list_to_current != self.scroll_image_list_to_current {
             list.scroll_image_list_to_current = self.scroll_image_list_to_current;
             list.mark_snapshot_dirty();
+        }
+        tree.folder_scroll_offset_y = self.folder_scroll_offset_y;
+        if tree.scroll_folder_tree_to_selected != self.scroll_folder_tree_to_selected {
+            tree.scroll_folder_tree_to_selected = self.scroll_folder_tree_to_selected;
+            tree.mark_snapshot_dirty();
         }
     }
 }

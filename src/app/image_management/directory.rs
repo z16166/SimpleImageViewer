@@ -80,10 +80,16 @@ impl ImageViewerApp {
     pub(crate) fn apply_picked_image_directory(&mut self, dir: PathBuf) {
         if self.settings.show_directory_tree_nav {
             self.initialize_directory_tree_root(dir.clone());
+        } else if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
+            // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode and root.
+            if self.settings.tree_nav_root_dir.is_none() {
+                self.settings.tree_nav_root_dir = Some(dir.clone());
+            }
+            self.settings.tree_nav_selected_dir = Some(dir.clone());
         } else {
             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
             self.settings.tree_nav_root_dir = None;
-            self.settings.tree_nav_selected_dir = None;
+            self.settings.tree_nav_selected_dir = Some(dir.clone());
         }
         self.load_directory(dir);
         self.queue_save();
@@ -108,12 +114,11 @@ impl ImageViewerApp {
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             if self.settings.tree_nav_root_dir.is_none() {
                 self.settings.tree_nav_root_dir = Some(dir.clone());
-                self.settings.last_image_dir = Some(dir.clone());
             }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
-        } else {
-            self.settings.last_image_dir = Some(dir.clone());
         }
+        // Keep Settings folder path and folder-picker default in sync even in tree mode.
+        self.settings.last_image_dir = Some(dir.clone());
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
@@ -141,9 +146,7 @@ impl ImageViewerApp {
         self.pending_preload_after_directory_scan = false;
         self.directory_tree_strip_bootstrap_after_scan = false;
         self.directory_tree_strip_bootstrap_frames = 0;
-        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-            self.invalidate_directory_tree_strip_after_image_list_reorder();
-        }
+        self.reset_directory_tree_file_list_for_scan();
         #[cfg(feature = "preload-debug")]
         let after_cleanup_ms = crate::preload_debug::elapsed_ms(load_started);
         self.pan_offset = Vec2::ZERO;
@@ -226,6 +229,8 @@ impl ImageViewerApp {
         }
 
         log::info!("[RefreshFileList] Starting refresh scan of {:?}", dir);
+
+        self.refresh_strip_files_snapshot = Some(self.image_files.clone());
 
         // Save current file as anchor so it survives multi-batch scans,
         // and do not set initial_image so process_scan_results first-batch doesn't consume it.
@@ -317,7 +322,8 @@ impl ImageViewerApp {
         // remain valid until the new current_index is resolved and a fresh
         // TileManager is installed.
         // Relocate all kept state to index 0 so that it matches current_index during scan.
-        self.relocate_index_keyed_cache(keep, 0);
+        // Strip cache stays keyed by pre-refresh indices until path remap on scan Done.
+        self.relocate_index_keyed_cache(keep, 0, false);
 
         // ------------------------------------------------------------------
         // Reset list state and start the background scan.
@@ -365,6 +371,7 @@ impl ImageViewerApp {
         if self.refresh_scan_in_progress {
             self.refresh_scan_in_progress = false;
             self.refresh_anchor_path = None;
+            self.refresh_strip_files_snapshot = None;
             if self.refresh_scan_slideshow_was_playing {
                 self.slideshow_paused = false;
                 self.last_switch_time = Instant::now();
@@ -539,20 +546,25 @@ impl ImageViewerApp {
                             self.image_files.len()
                         );
 
-                        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-                            if self.refresh_scan_in_progress {
-                                if let Some(old_to_new) = sort_perm {
-                                    self.permute_directory_tree_strip_after_image_list_reorder(
-                                        &old_to_new,
-                                    );
-                                }
+                        if self.settings.browse_mode == crate::settings::BrowseMode::Tree
+                            && self.refresh_scan_in_progress
+                        {
+                            if let Some(old_files) = self.refresh_strip_files_snapshot.take() {
+                                let new_files = self.image_files.clone();
+                                self.reorder_directory_tree_strip_after_image_list_change(
+                                    &old_files, &new_files,
+                                );
+                            } else if let Some(old_to_new) = sort_perm {
+                                self.permute_directory_tree_strip_after_image_list_reorder(
+                                    &old_to_new,
+                                );
                             }
                         }
 
                         if self.refresh_scan_in_progress {
                             if let Some(anchor) = self.refresh_anchor_path.take() {
                                 if let Some(new_idx) = self.find_index_for_path(&anchor) {
-                                    self.relocate_index_keyed_cache(0, new_idx);
+                                    self.relocate_index_keyed_cache(0, new_idx, false);
                                     self.clear_index_keyed_state_after_list_reorder_except_index(
                                         new_idx,
                                     );

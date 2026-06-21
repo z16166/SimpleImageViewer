@@ -1672,6 +1672,7 @@ fn make_test_app() -> ImageViewerApp {
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,
+        refresh_strip_files_snapshot: None,
         explicit_quit: false,
         tray_state: None,
         hidden_to_tray: false,
@@ -1747,7 +1748,7 @@ fn relocate_index_keyed_cache_moves_raw_osd_info() {
     app.raw_metadata
         .insert_or_update(2, crate::loader::RawOsdInfo::empty());
 
-    app.relocate_index_keyed_cache(2, 0);
+    app.relocate_index_keyed_cache(2, 0, true);
 
     assert!(!app.raw_metadata.contains_key(2));
     assert!(app.raw_metadata.contains_key(0));
@@ -1758,7 +1759,7 @@ fn relocate_index_keyed_cache_moves_gpu_demosaic_failed_indices() {
     let mut app = make_test_app();
     app.gpu_demosaic_failed_indices.insert(2);
 
-    app.relocate_index_keyed_cache(2, 0);
+    app.relocate_index_keyed_cache(2, 0, true);
 
     assert!(!app.gpu_demosaic_failed_indices.contains(&2));
     assert!(app.gpu_demosaic_failed_indices.contains(&0));
@@ -2479,4 +2480,85 @@ fn raw_hdr_plane_ready_releases_embedded_bootstrap_not_fallback_slot() {
     assert!(!crate::loader::raw_gpu_source_has_bootstrap_preview(
         app.hdr_image_cache.get(&0).unwrap()
     ));
+}
+
+#[test]
+fn apply_picked_image_directory_keeps_tree_settings_when_nav_hidden() {
+    let mut app = make_test_app();
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = false;
+    app.settings.tree_nav_root_dir = Some(PathBuf::from("/tree/root"));
+    app.settings.tree_nav_selected_dir = Some(PathBuf::from("/tree/root/old"));
+
+    let picked = PathBuf::from("/tree/root/new");
+    app.apply_picked_image_directory(picked.clone());
+
+    assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
+    assert_eq!(
+        app.settings.tree_nav_root_dir,
+        Some(PathBuf::from("/tree/root"))
+    );
+    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked));
+}
+
+#[test]
+fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let paths: Vec<PathBuf> = (0..3)
+        .map(|i| PathBuf::from(format!(r"C:\photos\img{i}.jpg")))
+        .collect();
+    let old_files = paths.clone();
+    let new_files = vec![paths[2].clone(), paths[0].clone(), paths[1].clone()];
+
+    for index in 0..3 {
+        let fill = ((index + 1) * 40) as u8;
+        let decoded = crate::loader::DecodedImage::new(8, 8, vec![fill; 8 * 8 * 4]);
+        app.directory_tree_strip_cache.upsert_from_decoded(
+            index,
+            &decoded,
+            crate::loader::PreviewStage::Refined,
+            None,
+            &ctx,
+            0,
+            3,
+            128,
+        );
+    }
+
+    app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
+
+    assert!(app.directory_tree_strip_cache.contains(0));
+    assert!(app.directory_tree_strip_cache.contains(1));
+    assert!(app.directory_tree_strip_cache.contains(2));
+}
+
+#[test]
+fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_change() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let old_files: Vec<PathBuf> = (0..2)
+        .map(|i| PathBuf::from(format!(r"C:\photos\img{i}.jpg")))
+        .collect();
+    let new_files = vec![
+        old_files[0].clone(),
+        old_files[1].clone(),
+        PathBuf::from(r"C:\photos\img2.jpg"),
+    ];
+
+    let decoded = crate::loader::DecodedImage::new(8, 8, vec![128; 8 * 8 * 4]);
+    app.directory_tree_strip_cache.upsert_from_decoded(
+        0,
+        &decoded,
+        crate::loader::PreviewStage::Refined,
+        None,
+        &ctx,
+        0,
+        1,
+        128,
+    );
+
+    app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
+
+    assert!(!app.directory_tree_strip_cache.contains(0));
 }

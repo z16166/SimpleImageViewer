@@ -271,6 +271,8 @@ impl ImageViewerApp {
         let requests = {
             let mut tree = self.directory_tree.tree.lock();
             if !tree.places_loaded {
+                tree.scroll_folder_tree_to_selected = true;
+                tree.mark_snapshot_dirty();
                 return;
             }
             let mut requests = tree.reveal_selected_dir();
@@ -282,6 +284,32 @@ impl ImageViewerApp {
         for request in requests {
             self.send_directory_tree_children_request(request);
         }
+        self.request_directory_tree_folder_scroll_to_selected();
+    }
+
+    pub(crate) fn request_directory_tree_folder_scroll_to_selected(&mut self) {
+        let mut tree = self.directory_tree.tree.lock();
+        tree.scroll_folder_tree_to_selected = true;
+        tree.mark_snapshot_dirty();
+    }
+
+    /// Point the directory tree at the current browse folder and expand/reveal its path.
+    pub(crate) fn ensure_directory_tree_reveals_current_browse_dir(&mut self) {
+        if !self.directory_tree_settings_active() {
+            return;
+        }
+        let Some(dir) = self.current_browse_directory() else {
+            return;
+        };
+        if self.settings.tree_nav_root_dir.is_none() {
+            self.settings.tree_nav_root_dir = Some(dir.clone());
+        }
+        self.settings.tree_nav_selected_dir = Some(dir.clone());
+        {
+            let mut tree = self.directory_tree.tree.lock();
+            tree.set_selected_dir(dir);
+        }
+        self.reveal_directory_tree_for_saved_selection();
     }
 
     fn send_directory_tree_children_request(&mut self, request: DirectoryChildrenRequest) {
@@ -378,7 +406,7 @@ impl ImageViewerApp {
         drop(tree);
         drop(list);
         self.publish_directory_tree_view_from_state(false);
-        self.reveal_directory_tree_for_saved_selection();
+        self.ensure_directory_tree_reveals_current_browse_dir();
     }
 
     pub(crate) fn poll_directory_tree_places_load(&mut self) {
@@ -471,8 +499,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {
-        self.settings.browse_mode = BrowseMode::Tree;
-        self.settings.show_directory_tree_nav = true;
+        self.activate_directory_tree_nav();
         self.settings.tree_nav_root_dir = Some(root.clone());
         self.settings.tree_nav_selected_dir = Some(root.clone());
         self.settings.last_image_dir = Some(root.clone());
@@ -491,17 +518,25 @@ impl ImageViewerApp {
         for request in requests {
             self.send_directory_tree_children_request(request);
         }
+        self.request_directory_tree_folder_scroll_to_selected();
     }
 
     pub(crate) fn process_directory_tree_events(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.directory_tree.result_rx.try_recv() {
-            let requests = {
+            // Capture scroll intent before reveal_selected_dir(); only re-request scroll when
+            // a reveal/show/reveal-in-progress already set the flag (not for unrelated expands).
+            let (requests, pending_folder_scroll) = {
                 let mut tree = self.directory_tree.tree.lock();
                 tree.apply_children_result(result);
-                tree.reveal_selected_dir()
+                let pending_folder_scroll = tree.scroll_folder_tree_to_selected;
+                let requests = tree.reveal_selected_dir();
+                (requests, pending_folder_scroll)
             };
             for request in requests {
                 self.send_directory_tree_children_request(request);
+            }
+            if pending_folder_scroll {
+                self.request_directory_tree_folder_scroll_to_selected();
             }
             ctx.request_repaint();
             self.request_directory_tree_viewport_repaint(ctx);
@@ -525,8 +560,7 @@ impl ImageViewerApp {
                     if is_places_sentinel_path(&tree_path) {
                         continue;
                     }
-                    self.settings.browse_mode = BrowseMode::Tree;
-                    self.settings.show_directory_tree_nav = true;
+                    self.activate_directory_tree_nav();
                     self.settings.tree_nav_selected_dir = Some(browse_path.clone());
                     {
                         let mut tree = self.directory_tree.tree.lock();
@@ -590,10 +624,12 @@ impl ImageViewerApp {
                         if index != self.current_index {
                             self.pending_directory_tree_select_index = Some(index);
                         }
-                        let mut list = self.directory_tree.list.lock();
-                        list.current_index = index;
-                        list.scroll_image_list_to_current = true;
-                        self.settings.show_directory_tree_nav = false;
+                        {
+                            let mut list = self.directory_tree.list.lock();
+                            list.current_index = index;
+                            list.scroll_image_list_to_current = true;
+                        }
+                        self.hide_directory_tree_nav(ctx);
                         self.queue_save();
                         ctx.request_repaint();
                         self.request_directory_tree_viewport_repaint(ctx);
@@ -637,8 +673,7 @@ impl ImageViewerApp {
                     self.request_directory_tree_viewport_repaint(ctx);
                 }
                 DirectoryTreeCommand::CloseWindow => {
-                    self.settings.show_directory_tree_nav = false;
-                    self.directory_tree_viewport_title_sent = false;
+                    self.hide_directory_tree_nav(ctx);
                     self.queue_save();
                     ctx.request_repaint();
                 }
@@ -651,23 +686,36 @@ impl ImageViewerApp {
         self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
     }
 
-    pub(crate) fn toggle_directory_tree_nav_visibility(&mut self, ctx: &egui::Context) {
-        if self.directory_tree_settings_active() {
-            self.settings.show_directory_tree_nav = false;
-            self.directory_tree_viewport_title_sent = false;
-        } else {
-            self.settings.browse_mode = BrowseMode::Tree;
-            self.settings.show_directory_tree_nav = true;
-            self.ensure_directory_tree_places_loaded();
-            if self.settings.tree_nav_root_dir.is_none() {
-                if let Some(root) = self.settings.last_image_dir.clone() {
-                    self.initialize_directory_tree_root(root);
-                }
-            }
-        }
-        self.queue_save();
+    /// Temporarily hide directory-tree navigation (Settings toggle off, Ctrl+T, close nav window).
+    /// Keeps `browse_mode` and persisted tree root/selection so the panel can be restored in place.
+    pub(crate) fn hide_directory_tree_nav(&mut self, ctx: &egui::Context) {
+        self.hide_detached_directory_tree_nav_viewport(ctx);
+        self.settings.show_directory_tree_nav = false;
+    }
+
+    /// Show directory-tree navigation. Recursive scan stays stored but is ignored while visible.
+    pub(crate) fn activate_directory_tree_nav(&mut self) {
+        self.settings.browse_mode = BrowseMode::Tree;
+        self.settings.show_directory_tree_nav = true;
+    }
+
+    /// Re-enable directory-tree navigation and reveal/scroll to the current browse folder.
+    pub(crate) fn show_directory_tree_nav(&mut self, ctx: &egui::Context) {
+        self.activate_directory_tree_nav();
+        self.ensure_directory_tree_places_loaded();
+        self.ensure_directory_tree_reveals_current_browse_dir();
+        self.show_detached_directory_tree_viewport_if_active(ctx);
         ctx.request_repaint();
         self.request_directory_tree_viewport_repaint(ctx);
+    }
+
+    pub(crate) fn toggle_directory_tree_nav_visibility(&mut self, ctx: &egui::Context) {
+        if self.directory_tree_settings_active() {
+            self.hide_directory_tree_nav(ctx);
+        } else {
+            self.show_directory_tree_nav(ctx);
+        }
+        self.queue_save();
     }
 
     fn directory_tree_viewport_active(&self) -> bool {
@@ -934,11 +982,10 @@ impl ImageViewerApp {
         }
     }
 
-    pub(crate) fn cache_directory_tree_viewport_placement(&mut self, ctx: &egui::Context) {
-        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_detached() {
-            return;
-        }
-        let Some(placement) = ctx.viewport_for(Self::directory_tree_viewport_id(), |viewport| {
+    fn read_detached_directory_tree_viewport_placement(
+        ctx: &egui::Context,
+    ) -> Option<CachedWindowPlacement> {
+        ctx.viewport_for(Self::directory_tree_viewport_id(), |viewport| {
             let viewport = viewport.input.viewport();
             let outer_rect = viewport.outer_rect?;
             let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
@@ -955,9 +1002,35 @@ impl ImageViewerApp {
                 ],
                 maximized: viewport.maximized.unwrap_or(false),
             })
-        }) else {
+        })
+    }
+
+    fn detached_directory_tree_viewport_exists(ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            i.raw
+                .viewports
+                .contains_key(&Self::directory_tree_viewport_id())
+        })
+    }
+
+    pub(crate) fn snapshot_and_persist_detached_directory_tree_placement(
+        &mut self,
+        ctx: &egui::Context,
+    ) {
+        if !self.directory_tree_nav_is_detached() {
+            return;
+        }
+        let Some(placement) = Self::read_detached_directory_tree_viewport_placement(ctx) else {
             return;
         };
+        self.apply_cached_directory_tree_viewport_placement(placement, true);
+    }
+
+    fn apply_cached_directory_tree_viewport_placement(
+        &mut self,
+        placement: CachedWindowPlacement,
+        persist_to_settings: bool,
+    ) {
         if !placement.maximized
             && Settings::valid_outer_position(placement.outer_position).is_some()
         {
@@ -966,7 +1039,38 @@ impl ImageViewerApp {
         if placement.maximized || Settings::valid_outer_position(placement.outer_position).is_some()
         {
             self.cached_directory_tree_window_placement = Some(placement);
+            if persist_to_settings {
+                Self::persist_directory_tree_window_placement_to_settings(
+                    &mut self.settings,
+                    placement,
+                    self.cached_directory_tree_restore_placement,
+                );
+            }
         }
+    }
+
+    pub(crate) fn hide_detached_directory_tree_nav_viewport(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_nav_is_detached() {
+            return;
+        }
+        if !Self::detached_directory_tree_viewport_exists(ctx) {
+            return;
+        }
+        self.snapshot_and_persist_detached_directory_tree_placement(ctx);
+        ctx.send_viewport_cmd_to(
+            Self::directory_tree_viewport_id(),
+            egui::ViewportCommand::Visible(false),
+        );
+    }
+
+    pub(crate) fn cache_directory_tree_viewport_placement(&mut self, ctx: &egui::Context) {
+        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_detached() {
+            return;
+        }
+        let Some(placement) = Self::read_detached_directory_tree_viewport_placement(ctx) else {
+            return;
+        };
+        self.apply_cached_directory_tree_viewport_placement(placement, false);
     }
 
     fn directory_tree_embedded_panel_default_width(settings: &Settings) -> f32 {
@@ -1299,6 +1403,10 @@ impl ImageViewerApp {
         }
 
         let viewport_id = Self::directory_tree_viewport_id();
+        if Self::detached_directory_tree_viewport_exists(ctx) {
+            ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Visible(true));
+        }
+
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
         let command_tx = self.directory_tree.command_tx.clone();
@@ -1315,8 +1423,11 @@ impl ImageViewerApp {
             builder = builder.with_title(self.cached_directory_tree_viewport_title.clone());
             self.directory_tree_viewport_title_sent = true;
         }
-        if let Some(pos) = outer_position {
-            builder = builder.with_position(pos);
+        let apply_startup_position = !Self::detached_directory_tree_viewport_exists(ctx);
+        if apply_startup_position {
+            if let Some(pos) = outer_position {
+                builder = builder.with_position(pos);
+            }
         }
 
         ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {

@@ -18,7 +18,7 @@ use crate::app::{CACHE_SIZE, HardwareTier, ImageViewerApp, compute_preload_budge
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
-use crate::settings::Settings;
+use crate::settings::{BrowseMode, Settings};
 use crate::theme::SystemThemeCache;
 use crate::ui::utils::{
     get_system_font_families, setup_fonts, setup_visuals, startup_font_family_list,
@@ -680,6 +680,7 @@ impl ImageViewerApp {
             refresh_scan_in_progress: false,
             refresh_scan_slideshow_was_playing: false,
             refresh_anchor_path: None,
+            refresh_strip_files_snapshot: None,
             pixel_data_source: None,
             pixel_hover_cache: None,
             pixel_region_first_point: None,
@@ -729,17 +730,14 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
 
         // Restore last session state
-        if app.settings.browse_mode == crate::settings::BrowseMode::Tree
-            && app.settings.show_directory_tree_nav
-        {
+        if app.settings.show_directory_tree_nav {
+            app.settings.browse_mode = BrowseMode::Tree;
             app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();
-            if let Some(dir) = app.saved_directory_tree_selection_dir() {
-                app.settings.tree_nav_selected_dir = Some(dir.clone());
-                app.directory_tree.tree.lock().set_selected_dir(dir.clone());
-                app.load_directory(dir);
-            }
-        } else if let Some(dir) = app.settings.last_image_dir.clone() {
+            app.ensure_directory_tree_reveals_current_browse_dir();
+        }
+
+        if let Some(dir) = app.current_browse_directory() {
             app.load_directory(dir);
         }
         if app.settings.play_music {

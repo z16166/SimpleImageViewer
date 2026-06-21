@@ -1138,8 +1138,7 @@ impl ImageViewerApp {
         );
     }
 
-    // Kept for path-based list diffs; scan Done uses permute instead.
-    #[allow(dead_code)]
+    // Path-based list diff for F5 refresh strip cache realignment.
     pub(crate) fn reorder_directory_tree_strip_after_image_list_change(
         &mut self,
         old_files: &[std::path::PathBuf],
@@ -1168,7 +1167,6 @@ impl ImageViewerApp {
         self.permute_directory_tree_strip_after_image_list_reorder(&old_to_new);
     }
 
-    #[allow(dead_code)]
     fn apply_partial_directory_tree_strip_reorder(
         &mut self,
         old_files: &[std::path::PathBuf],
@@ -1251,6 +1249,21 @@ impl ImageViewerApp {
             &self.directory_tree.list_snapshot,
             &self.directory_tree.preview_snapshot,
         );
+    }
+
+    /// Drop stale navigation list rows and strip previews before a new directory scan.
+    pub(crate) fn reset_directory_tree_file_list_for_scan(&mut self) {
+        if self.settings.browse_mode != crate::settings::BrowseMode::Tree {
+            return;
+        }
+        self.invalidate_directory_tree_strip_after_image_list_reorder();
+        let mut list = self.directory_tree.list.lock();
+        list.image_rows.clear();
+        list.current_index = 0;
+        list.scanning = true;
+        list.image_list_scroll_offset_y = 0.0;
+        list.scroll_image_list_to_current = true;
+        list.mark_snapshot_dirty();
     }
 
     pub(crate) fn invalidate_directory_tree_strip_gpu_textures(&mut self) {

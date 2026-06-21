@@ -518,10 +518,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(crate) fn directory_tree_nav_active(&self) -> bool {
+        self.browse_mode == BrowseMode::Tree && self.show_directory_tree_nav
+    }
+
     pub(crate) fn effective_scan_recursive(&self) -> bool {
-        match self.browse_mode {
-            BrowseMode::Linear => self.recursive,
-            BrowseMode::Tree => false,
+        if self.directory_tree_nav_active() {
+            false
+        } else {
+            self.recursive
         }
     }
 
@@ -934,6 +939,44 @@ mod tests {
         assert!(settings.effective_scan_recursive());
 
         settings.browse_mode = BrowseMode::Tree;
+        settings.show_directory_tree_nav = true;
+        assert!(!settings.effective_scan_recursive());
+    }
+
+    #[test]
+    fn hidden_tree_nav_allows_recursive_scan() {
+        let mut settings = Settings::default();
+        settings.browse_mode = BrowseMode::Tree;
+        settings.show_directory_tree_nav = true;
+        settings.recursive = true;
+        assert!(!settings.effective_scan_recursive());
+
+        settings.show_directory_tree_nav = false;
+        assert!(settings.effective_scan_recursive());
+    }
+
+    #[test]
+    fn linear_browse_mode_allows_recursive_scan() {
+        let mut settings = Settings::default();
+        settings.browse_mode = BrowseMode::Tree;
+        settings.show_directory_tree_nav = true;
+        settings.recursive = true;
+        assert!(!settings.effective_scan_recursive());
+
+        settings.show_directory_tree_nav = false;
+        settings.browse_mode = BrowseMode::Linear;
+        assert!(settings.effective_scan_recursive());
+    }
+
+    #[test]
+    fn directory_tree_nav_active_ignores_stored_recursive_flag() {
+        let mut settings = Settings::default();
+        settings.recursive = true;
+        settings.browse_mode = BrowseMode::Tree;
+        settings.show_directory_tree_nav = true;
+
+        assert!(settings.directory_tree_nav_active());
+        assert!(settings.recursive);
         assert!(!settings.effective_scan_recursive());
     }
 
