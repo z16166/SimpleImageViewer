@@ -681,7 +681,8 @@ impl ImageViewerApp {
                     decoded_h,
                     result.logical.0,
                     result.logical.1,
-                    self.directory_tree_strip_cold_attempted.contains(&result.index),
+                    self.directory_tree_strip_cold_attempted
+                        .contains(&result.index),
                     self.directory_tree_strip_pending_gpu.len()
                 );
             }

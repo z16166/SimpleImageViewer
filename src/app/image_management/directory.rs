@@ -509,8 +509,7 @@ impl ImageViewerApp {
                         if self.image_files.is_empty() && !sorted_files.is_empty() {
                             self.image_files.reserve(sorted_files.len());
                             self.file_byte_len_by_index.reserve(sorted_files.len());
-                            self.file_modified_unix_by_index
-                                .reserve(sorted_files.len());
+                            self.file_modified_unix_by_index.reserve(sorted_files.len());
                             for (path, len, mtime) in sorted_files {
                                 self.image_files.push(path);
                                 self.file_byte_len_by_index.push(len);

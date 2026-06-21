@@ -1703,12 +1703,9 @@ fn sort_image_file_rows_in_place_reorders_parallel_columns() {
     let mut sizes = vec![30_u64, 10, 20];
     let mut modified = vec![Some(3_i64), Some(1), Some(2)];
 
-    let old_to_new = super::directory::sort_image_file_rows_in_place(
-        &mut paths,
-        &mut sizes,
-        &mut modified,
-    )
-    .expect("order should change");
+    let old_to_new =
+        super::directory::sort_image_file_rows_in_place(&mut paths, &mut sizes, &mut modified)
+            .expect("order should change");
 
     assert_eq!(
         paths,
@@ -1729,12 +1726,10 @@ fn sort_image_file_rows_in_place_noop_when_already_sorted() {
     let mut sizes = vec![1_u64, 2];
     let mut modified = vec![Some(1_i64), Some(2)];
 
-    assert!(super::directory::sort_image_file_rows_in_place(
-        &mut paths,
-        &mut sizes,
-        &mut modified,
-    )
-    .is_none());
+    assert!(
+        super::directory::sort_image_file_rows_in_place(&mut paths, &mut sizes, &mut modified,)
+            .is_none()
+    );
 }
 
 #[test]

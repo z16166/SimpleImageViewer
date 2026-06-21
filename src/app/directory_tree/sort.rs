@@ -211,7 +211,7 @@ fn macos_locale_compare_cf(
 ) -> Ordering {
     use core_foundation::base::{CFComparisonResult, TCFType};
     use core_foundation::string::{
-        kCFCompareCaseInsensitive, kCFCompareLocalized, CFStringCompare,
+        CFStringCompare, kCFCompareCaseInsensitive, kCFCompareLocalized,
     };
 
     let flags = kCFCompareCaseInsensitive | kCFCompareLocalized;
