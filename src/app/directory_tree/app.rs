@@ -1307,8 +1307,7 @@ impl ImageViewerApp {
             .with_close_button(true)
             .with_maximized(false);
         if !self.directory_tree_viewport_title_sent {
-            builder =
-                builder.with_title(self.cached_directory_tree_viewport_title.clone());
+            builder = builder.with_title(self.cached_directory_tree_viewport_title.clone());
             self.directory_tree_viewport_title_sent = true;
         }
         if let Some(pos) = outer_position {

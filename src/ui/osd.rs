@@ -37,18 +37,11 @@ pub fn quantize_osd_zoom_pct(zoom_pct: u32) -> u32 {
         .max(OSD_ZOOM_BUCKET_PCT)
 }
 
-fn layout_width(ui: &egui::Ui, buf: &mut String) -> f32 {
-    let text = std::mem::take(buf);
+fn layout_width(ui: &egui::Ui, text: &str) -> f32 {
     ui.painter()
-        .layout_no_wrap(text, OSD_FONT, Color32::PLACEHOLDER)
+        .layout_no_wrap(text.to_owned(), OSD_FONT, Color32::PLACEHOLDER)
         .size()
         .x
-}
-
-fn layout_width_str(ui: &egui::Ui, text: &str, scratch: &mut String) -> f32 {
-    scratch.clear();
-    scratch.push_str(text);
-    layout_width(ui, scratch)
 }
 
 fn format_mm_ss_into(dst: &mut String, total_secs: u32) {
@@ -77,7 +70,7 @@ fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scr
         dst.push('…');
         return;
     }
-    if layout_width_str(ui, src, scratch) <= max_width {
+    if layout_width(ui, src) <= max_width {
         dst.push_str(src);
         return;
     }
@@ -92,7 +85,7 @@ fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scr
             scratch.push(ch);
         }
         scratch.push(ELLIPSIS);
-        if layout_width(ui, scratch) <= max_width {
+        if layout_width(ui, scratch.as_str()) <= max_width {
             lo = mid;
         } else {
             hi = mid - 1;

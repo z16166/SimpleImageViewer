@@ -92,14 +92,11 @@ impl ImageViewerApp {
             has_sdr_fallback,
         );
         let has_hdr_content = hdr_source_for_frame.is_some()
-            || self.hdr_tiled_source_cache.contains_key(&self.current_index)
+            || self
+                .hdr_tiled_source_cache
+                .contains_key(&self.current_index)
             || has_sdr_fallback;
-        self.record_frame_render_plan(
-            render_plan,
-            RenderShape::Tiled,
-            false,
-            has_hdr_content,
-        );
+        self.record_frame_render_plan(render_plan, RenderShape::Tiled, false, has_hdr_content);
         let plane_backend = render_plan.backend;
 
         let tp = self.compute_transition_params();

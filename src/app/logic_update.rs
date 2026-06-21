@@ -393,6 +393,7 @@ impl ImageViewerApp {
         self.sync_loader_hdr_callback_upload_snapshot();
 
         let now = Instant::now();
+        self.clear_frame_render_plan_cache();
         self.frame_effective_hdr_monitor_selection = self.effective_hdr_monitor_selection();
         let effective_selection = self.frame_effective_hdr_monitor_selection.clone();
         let hdr_content_visible = self.current_hdr_render_path().is_some();
