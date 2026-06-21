@@ -191,12 +191,11 @@ impl ImageViewerApp {
 
     pub(crate) fn finish_directory_tree_image_list_context_menu(
         &mut self,
-        chrome: &Arc<Mutex<view::DirectoryTreeUiChrome>>,
         ctx: &egui::Context,
         embedded: bool,
     ) {
         {
-            let mut chrome_guard = chrome.lock();
+            let mut chrome_guard = self.directory_tree.chrome.lock();
             if self.active_modal.is_none() {
                 if let Some((pos, viewport)) = chrome_guard.pending_image_context_menu.take() {
                     self.context_menu_pos = Some(pos);
@@ -633,6 +632,7 @@ impl ImageViewerApp {
                 }
                 DirectoryTreeCommand::CloseWindow => {
                     self.settings.show_directory_tree_nav = false;
+                    self.directory_tree_viewport_title_sent = false;
                     self.queue_save();
                     ctx.request_repaint();
                 }
@@ -648,6 +648,7 @@ impl ImageViewerApp {
     pub(crate) fn toggle_directory_tree_nav_visibility(&mut self, ctx: &egui::Context) {
         if self.directory_tree_settings_active() {
             self.settings.show_directory_tree_nav = false;
+            self.directory_tree_viewport_title_sent = false;
         } else {
             self.settings.browse_mode = BrowseMode::Tree;
             self.settings.show_directory_tree_nav = true;
@@ -722,6 +723,7 @@ impl ImageViewerApp {
         was_detached: bool,
     ) {
         if was_detached && self.directory_tree_nav_is_embedded() {
+            self.directory_tree_viewport_title_sent = false;
             ctx.send_viewport_cmd_to(
                 Self::directory_tree_viewport_id(),
                 egui::ViewportCommand::Close,
@@ -1291,29 +1293,24 @@ impl ImageViewerApp {
         }
 
         let viewport_id = Self::directory_tree_viewport_id();
-        let tree = Arc::clone(&self.directory_tree.tree);
-        let list = Arc::clone(&self.directory_tree.list);
-        let tree_snapshot = Arc::clone(&self.directory_tree.tree_snapshot);
-        let list_snapshot = Arc::clone(&self.directory_tree.list_snapshot);
-        let preview_snapshot = Arc::clone(&self.directory_tree.preview_snapshot);
-        let view = Arc::clone(&self.directory_tree.view);
-        let chrome = Arc::clone(&self.directory_tree.chrome);
-        let command_tx = self.directory_tree.command_tx.clone();
-        let root_wake = self.root_redraw_wake_handle();
-        let theme = std::sync::Arc::clone(&self.directory_tree_theme);
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
+        let command_tx = self.directory_tree.command_tx.clone();
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
         let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let mut builder = egui::ViewportBuilder::default()
-            .with_title(t!("directory_tree.title").to_string())
             .with_inner_size(inner_size)
             .with_min_inner_size([DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_MIN_HEIGHT])
             .with_resizable(true)
             .with_close_button(true)
             .with_maximized(false);
+        if !self.directory_tree_viewport_title_sent {
+            builder =
+                builder.with_title(self.cached_directory_tree_viewport_title.clone());
+            self.directory_tree_viewport_title_sent = true;
+        }
         if let Some(pos) = outer_position {
             builder = builder.with_position(pos);
         }
@@ -1330,15 +1327,16 @@ impl ImageViewerApp {
             }
 
             let ptr = viewpaint_app.load(Ordering::Acquire);
-            if !ptr.is_null() {
-                // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
-                unsafe {
-                    (*ptr).handle_cross_viewport_hotkeys(ui.ctx());
-                }
+            if ptr.is_null() {
+                return;
             }
 
+            // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
+            let app = unsafe { &mut *ptr };
+            app.handle_cross_viewport_hotkeys(ui.ctx());
+
             if startup_maximized {
-                if let Some(mut guard) = tree.try_lock()
+                if let Some(mut guard) = app.directory_tree.tree.try_lock()
                     && !guard.detached_startup_maximize_applied
                 {
                     ui.ctx()
@@ -1347,46 +1345,28 @@ impl ImageViewerApp {
                 }
             }
 
-            let scanning = {
-                let ptr = viewpaint_app.load(Ordering::Acquire);
-                if !ptr.is_null() {
-                    // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
-                    unsafe {
-                        (*ptr).flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
-                    }
-                }
-                let allow_image_context_menu = !ptr.is_null()
-                    && unsafe { (*ptr).active_modal.is_none() && !(*ptr).image_files.is_empty() };
-                let scanning = Self::paint_directory_tree_panel(
-                    ui,
-                    &view,
-                    &chrome,
-                    &tree,
-                    &list,
-                    &tree_snapshot,
-                    &list_snapshot,
-                    &preview_snapshot,
-                    list_preview,
-                    &command_tx,
-                    root_wake.as_ref(),
-                    &theme,
-                    false,
-                    allow_image_context_menu,
-                );
-                if !ptr.is_null() {
-                    // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
-                    unsafe {
-                        (*ptr).finish_directory_tree_image_list_context_menu(
-                            &chrome,
-                            ui.ctx(),
-                            false,
-                        );
-                    }
-                }
-                scanning
-            };
+            app.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
+            let allow_image_context_menu =
+                app.active_modal.is_none() && !app.image_files.is_empty();
+            let scanning = Self::paint_directory_tree_panel(
+                ui,
+                &app.directory_tree.view,
+                &app.directory_tree.chrome,
+                &app.directory_tree.tree,
+                &app.directory_tree.list,
+                &app.directory_tree.tree_snapshot,
+                &app.directory_tree.list_snapshot,
+                &app.directory_tree.preview_snapshot,
+                list_preview,
+                &app.directory_tree.command_tx,
+                app.root_redraw_wake_handle().as_ref(),
+                &app.directory_tree_theme,
+                false,
+                allow_image_context_menu,
+            );
+            app.finish_directory_tree_image_list_context_menu(ui.ctx(), false);
             if scanning {
-                if let Some(wake) = &root_wake {
+                if let Some(wake) = app.root_redraw_wake_handle() {
                     wake();
                 }
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
@@ -1401,26 +1381,16 @@ impl ImageViewerApp {
         }
         self.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
 
-        let tree = Arc::clone(&self.directory_tree.tree);
-        let list = Arc::clone(&self.directory_tree.list);
-        let tree_snapshot = Arc::clone(&self.directory_tree.tree_snapshot);
-        let list_snapshot = Arc::clone(&self.directory_tree.list_snapshot);
-        let preview_snapshot = Arc::clone(&self.directory_tree.preview_snapshot);
-        let view = Arc::clone(&self.directory_tree.view);
-        let chrome = Arc::clone(&self.directory_tree.chrome);
-        let command_tx = self.directory_tree.command_tx.clone();
-        let root_wake = self.root_redraw_wake_handle();
-        let theme = Arc::clone(&self.directory_tree_theme);
         let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
-        let has_places = view.load().places_loaded();
+        let has_places = self.directory_tree.view.load().places_loaded();
         if !has_places {
             egui::Panel::left(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID)
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     crate::app::directory_tree::ui::draw_directory_tree_places_status(
                         ui,
-                        &view.load(),
+                        &self.directory_tree.view.load(),
                     );
                     crate::app::directory_tree::ui::publish_directory_tree_nav_wheel_block_rect(ui);
                 });
@@ -1436,24 +1406,24 @@ impl ImageViewerApp {
                     self.active_modal.is_none() && !self.image_files.is_empty();
                 if Self::paint_directory_tree_panel(
                     ui,
-                    &view,
-                    &chrome,
-                    &tree,
-                    &list,
-                    &tree_snapshot,
-                    &list_snapshot,
-                    &preview_snapshot,
+                    &self.directory_tree.view,
+                    &self.directory_tree.chrome,
+                    &self.directory_tree.tree,
+                    &self.directory_tree.list,
+                    &self.directory_tree.tree_snapshot,
+                    &self.directory_tree.list_snapshot,
+                    &self.directory_tree.preview_snapshot,
                     list_preview,
-                    &command_tx,
-                    root_wake.as_ref(),
-                    &theme,
+                    &self.directory_tree.command_tx,
+                    self.root_redraw_wake_handle().as_ref(),
+                    &self.directory_tree_theme,
                     true,
                     allow_image_context_menu,
-                ) && view.load().scanning()
+                ) && self.directory_tree.view.load().scanning()
                 {
                     ui.ctx().request_repaint();
                 }
-                self.finish_directory_tree_image_list_context_menu(&chrome, ui.ctx(), true);
+                self.finish_directory_tree_image_list_context_menu(ui.ctx(), true);
             });
     }
 

@@ -37,11 +37,38 @@ pub fn quantize_osd_zoom_pct(zoom_pct: u32) -> u32 {
         .max(OSD_ZOOM_BUCKET_PCT)
 }
 
-fn layout_width(ui: &egui::Ui, text: &str) -> f32 {
+fn layout_width(ui: &egui::Ui, buf: &mut String) -> f32 {
+    let text = std::mem::take(buf);
     ui.painter()
-        .layout_no_wrap(text.to_owned(), OSD_FONT, Color32::PLACEHOLDER)
+        .layout_no_wrap(text, OSD_FONT, Color32::PLACEHOLDER)
         .size()
         .x
+}
+
+fn layout_width_str(ui: &egui::Ui, text: &str, scratch: &mut String) -> f32 {
+    scratch.clear();
+    scratch.push_str(text);
+    layout_width(ui, scratch)
+}
+
+fn format_mm_ss_into(dst: &mut String, total_secs: u32) {
+    dst.clear();
+    use std::fmt::Write as _;
+    let _ = write!(dst, "{:02}:{:02}", total_secs / 60, total_secs % 60);
+}
+
+fn rebuild_music_title_line(dst: &mut String, text: &str) {
+    dst.clear();
+    dst.push('♪');
+    dst.push(' ');
+    if text.chars().count() > crate::constants::MUSIC_HUD_MAX_CHARS {
+        for ch in text.chars().take(crate::constants::MUSIC_HUD_TRUNCATE_LEN) {
+            dst.push(ch);
+        }
+        dst.push_str("...");
+    } else {
+        dst.push_str(text);
+    }
 }
 
 fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scratch: &mut String) {
@@ -50,7 +77,7 @@ fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scr
         dst.push('…');
         return;
     }
-    if layout_width(ui, src) <= max_width {
+    if layout_width_str(ui, src, scratch) <= max_width {
         dst.push_str(src);
         return;
     }
@@ -358,6 +385,16 @@ impl SupplementalOsdInputs {
     }
 }
 
+/// Per-frame music HUD inputs (borrowed track/metadata avoid per-frame String clones).
+pub struct MusicHudFrame<'a> {
+    pub current_track: Option<&'a str>,
+    pub metadata: Option<&'a str>,
+    pub current_cue_track: Option<usize>,
+    pub current_pos_ms: u64,
+    pub total_duration_ms: u64,
+    pub cue_markers: &'a [u64],
+}
+
 /// Parameters that affect the music HUD.
 #[derive(PartialEq, Clone)]
 pub struct OsdState {
@@ -397,6 +434,12 @@ pub struct OsdRenderer {
     cached_save_error: String,
     last_save_error_message: String,
     last_music_state: Option<OsdState>,
+    cached_music_title_line: String,
+    cached_music_title_source: String,
+    cached_music_cur_time: String,
+    cached_music_tot_time: String,
+    last_music_cur_second: Option<u32>,
+    last_music_tot_second: Option<u32>,
     supplemental_state: SupplementalOsdInputs,
 }
 
@@ -417,7 +460,37 @@ impl OsdRenderer {
             cached_save_error: String::new(),
             last_save_error_message: String::new(),
             last_music_state: None,
+            cached_music_title_line: String::new(),
+            cached_music_title_source: String::new(),
+            cached_music_cur_time: String::new(),
+            cached_music_tot_time: String::new(),
+            last_music_cur_second: None,
+            last_music_tot_second: None,
             supplemental_state: SupplementalOsdInputs::default(),
+        }
+    }
+
+    fn sync_music_hud_display_cache(&mut self, frame: &MusicHudFrame<'_>) {
+        let display_text = frame
+            .metadata
+            .or(frame.current_track)
+            .unwrap_or("");
+        if display_text != self.cached_music_title_source.as_str() {
+            self.cached_music_title_source.clear();
+            self.cached_music_title_source.push_str(display_text);
+            rebuild_music_title_line(&mut self.cached_music_title_line, display_text);
+        }
+
+        let cur_second = (frame.current_pos_ms / 1000) as u32;
+        if self.last_music_cur_second != Some(cur_second) {
+            self.last_music_cur_second = Some(cur_second);
+            format_mm_ss_into(&mut self.cached_music_cur_time, cur_second);
+        }
+
+        let tot_second = (frame.total_duration_ms / 1000) as u32;
+        if self.last_music_tot_second != Some(tot_second) {
+            self.last_music_tot_second = Some(tot_second);
+            format_mm_ss_into(&mut self.cached_music_tot_time, tot_second);
         }
     }
 
@@ -453,6 +526,9 @@ impl OsdRenderer {
 
     pub fn invalidate(&mut self) {
         self.last_music_state = None;
+        self.cached_music_title_source.clear();
+        self.last_music_cur_second = None;
+        self.last_music_tot_second = None;
         self.bump_content();
     }
 
@@ -651,10 +727,10 @@ impl OsdRenderer {
         &mut self,
         ui: &mut egui::Ui,
         _screen_rect: egui::Rect,
-        state: &OsdState,
+        frame: &MusicHudFrame<'_>,
         palette: &ThemePalette,
     ) -> egui::Rect {
-        if state.total_duration_ms == 0 || state.current_track.is_none() {
+        if frame.total_duration_ms == 0 || frame.current_track.is_none() {
             return egui::Rect::NOTHING;
         }
 
@@ -672,25 +748,14 @@ impl OsdRenderer {
             StrokeKind::Outside,
         );
 
+        self.sync_music_hud_display_cache(frame);
+
         let inner_rect = hud_rect.shrink(10.0);
         ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect), |ui| {
             ui.vertical(|ui| {
-                let display_text = state.metadata.as_deref().or(state.current_track.as_deref());
-                if let Some(text) = display_text {
-                    let short_text = if text.chars().count() > crate::constants::MUSIC_HUD_MAX_CHARS
-                    {
-                        format!(
-                            "{}...",
-                            text.chars()
-                                .take(crate::constants::MUSIC_HUD_TRUNCATE_LEN)
-                                .collect::<String>()
-                        )
-                    } else {
-                        text.to_string()
-                    };
-
+                if !self.cached_music_title_line.is_empty() {
                     ui.label(
-                        RichText::new(format!("♪ {}", short_text))
+                        RichText::new(self.cached_music_title_line.as_str())
                             .color(
                                 palette
                                     .accent2
@@ -705,13 +770,14 @@ impl OsdRenderer {
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
-                    let mut pos = state.current_pos_ms as f32 / 1000.0;
-                    let total = state.total_duration_ms as f32 / 1000.0;
+                    let mut pos = frame.current_pos_ms as f32 / 1000.0;
+                    let total = frame.total_duration_ms as f32 / 1000.0;
 
-                    let cur_str = format!("{:02}:{:02}", (pos as u32) / 60, (pos as u32) % 60);
-                    let tot_str = format!("{:02}:{:02}", (total as u32) / 60, (total as u32) % 60);
-
-                    ui.label(RichText::new(cur_str).small().color(palette.text_muted));
+                    ui.label(
+                        RichText::new(self.cached_music_cur_time.as_str())
+                            .small()
+                            .color(palette.text_muted),
+                    );
 
                     ui.spacing_mut().slider_width =
                         ui.available_width() - crate::constants::SLIDER_WIDTH_LABEL_OFFSET;
@@ -721,20 +787,20 @@ impl OsdRenderer {
                             .trailing_fill(true),
                     );
 
-                    if state.total_duration_ms > 0 && !state.cue_markers.is_empty() {
+                    if frame.total_duration_ms > 0 && !frame.cue_markers.is_empty() {
                         let painter = ui.painter();
                         let slider_rect = resp.rect;
 
-                        for (idx, &marker_ms) in state.cue_markers.iter().enumerate() {
-                            if marker_ms >= state.total_duration_ms {
+                        for (idx, &marker_ms) in frame.cue_markers.iter().enumerate() {
+                            if marker_ms >= frame.total_duration_ms {
                                 continue;
                             }
                             let ratio =
-                                (marker_ms as f32 / state.total_duration_ms as f32).clamp(0.0, 1.0);
+                                (marker_ms as f32 / frame.total_duration_ms as f32).clamp(0.0, 1.0);
                             let x = slider_rect.left() + ratio * slider_rect.width();
                             let center = egui::pos2(x, slider_rect.center().y);
 
-                            let is_current = state.current_cue_track == Some(idx);
+                            let is_current = frame.current_cue_track == Some(idx);
                             let color = if is_current {
                                 palette.accent2
                             } else {
@@ -746,7 +812,11 @@ impl OsdRenderer {
                         }
                     }
 
-                    ui.label(RichText::new(tot_str).small().color(palette.text_muted));
+                    ui.label(
+                        RichText::new(self.cached_music_tot_time.as_str())
+                            .small()
+                            .color(palette.text_muted),
+                    );
 
                     if resp.drag_stopped() {
                         ui.memory_mut(|mem| {

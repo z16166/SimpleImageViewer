@@ -174,6 +174,23 @@ impl ImageViewerApp {
         let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
         let render_plan =
             self.build_render_plan(RenderShape::Static, hdr_image.is_some(), has_sdr_fallback);
+        let prefer_sdr_for_pending_gpu_demosaic =
+            crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+                self.current_index,
+                &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_image_cache,
+                has_sdr_fallback,
+                self.texture_cache.contains(self.current_index),
+            );
+        let has_hdr_content = hdr_image.is_some()
+            || self.hdr_image_cache.contains_key(&self.current_index)
+            || has_sdr_fallback;
+        self.record_frame_render_plan(
+            render_plan,
+            RenderShape::Static,
+            prefer_sdr_for_pending_gpu_demosaic,
+            has_hdr_content,
+        );
         let static_hdr_draw = should_draw_static_hdr_immediately(
             &render_plan,
             self.active_transition,

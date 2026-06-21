@@ -121,6 +121,40 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
+        if let Some(path) = self.cached_frame_hdr_render_path {
+            return Some(path);
+        }
+        self.compute_hdr_render_path()
+    }
+
+    pub(crate) fn clear_frame_render_plan_cache(&mut self) {
+        self.cached_frame_render_plan = None;
+        self.cached_frame_hdr_render_path = None;
+    }
+
+    pub(crate) fn record_frame_render_plan(
+        &mut self,
+        plan: RenderPlan,
+        shape: RenderShape,
+        prefer_sdr_for_pending_gpu_demosaic: bool,
+        has_hdr_content: bool,
+    ) {
+        let complex_transition_active = self.transition_start.is_some()
+            && matches!(
+                self.active_transition,
+                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+            );
+        self.cached_frame_hdr_render_path = hdr_render_path_for_render_plan(
+            &plan,
+            shape,
+            complex_transition_active,
+            prefer_sdr_for_pending_gpu_demosaic,
+            has_hdr_content,
+        );
+        self.cached_frame_render_plan = Some(plan);
+    }
+
+    fn compute_hdr_render_path(&self) -> Option<HdrRenderPath> {
         // Keep OSD [`HdrRenderPath`] aligned with [`Self::build_render_plan`] / draw path inputs.
         let idx = self.current_index;
         let tiled_canvas_active = self.tiled_canvas_matches_current_index();

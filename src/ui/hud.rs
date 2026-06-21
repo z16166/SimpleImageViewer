@@ -63,23 +63,29 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     }
 
     // Only render when active and audio is loaded
-    if !is_active || app.audio.get_duration_ms() == 0 || app.audio.get_current_track().is_none() {
+    if !is_active || app.audio.get_duration_ms() == 0 {
         return;
     }
 
-    let music_state = crate::ui::osd::OsdState {
-        index: app.current_index,
-        total: app.image_files.len(),
-        zoom_pct: 0,
-        res: (0, 0),
-        file_size_bytes: 0,
-        mode: String::new(),
-        current_track: app.audio.get_current_track(),
-        metadata: app.audio.get_metadata(),
+    let track_guard = app.audio.current_track.try_lock();
+    let meta_guard = app.audio.current_metadata.try_lock();
+    let cues_guard = app.audio.cue_markers.try_lock();
+    let (Some(track_slot), Some(meta_slot), Some(cues_slot)) =
+        (track_guard, meta_guard, cues_guard)
+    else {
+        return;
+    };
+    if track_slot.is_none() {
+        return;
+    }
+
+    let music_frame = crate::ui::osd::MusicHudFrame {
+        current_track: track_slot.as_deref(),
+        metadata: meta_slot.as_deref(),
         current_cue_track: app.audio.get_current_cue_track(),
         current_pos_ms: cur_ms,
         total_duration_ms: app.audio.get_duration_ms(),
-        cue_markers: app.audio.get_cue_markers(),
+        cue_markers: cues_slot.as_slice(),
     };
 
     // HUD position
@@ -117,7 +123,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
             app.osd.render_music_hud(
                 &mut child_ui,
                 screen_rect,
-                &music_state,
+                &music_frame,
                 &app.cached_palette,
             );
         });

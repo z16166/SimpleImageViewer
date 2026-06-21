@@ -393,6 +393,7 @@ impl ImageViewerApp {
         self.sync_loader_hdr_callback_upload_snapshot();
 
         let now = Instant::now();
+        let effective_selection = self.effective_hdr_monitor_selection();
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         let main_window_outer_top_left = self
             .cached_window_placement
@@ -417,13 +418,13 @@ impl ImageViewerApp {
         );
         let output_mode = crate::hdr::monitor::effective_capability_output_mode(
             self.hdr_target_format,
-            self.effective_hdr_monitor_selection().as_ref(),
+            effective_selection.as_ref(),
         );
         self.hdr_capabilities.output_mode = output_mode;
 
         let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
             self.hdr_target_format,
-            self.effective_hdr_monitor_selection().as_ref(),
+            effective_selection.as_ref(),
         );
         if matches!(
             self.hdr_target_format,
@@ -467,7 +468,6 @@ impl ImageViewerApp {
                 self.settings.hdr_native_surface_enabled_effective(),
                 self.hdr_capabilities.backend,
             );
-        let effective_selection = self.effective_hdr_monitor_selection();
         let desired_target_format = crate::hdr::surface::desired_target_format_for_active_monitor(
             native_surface_requests_enabled,
             effective_selection.as_ref(),

@@ -25,7 +25,7 @@ use crate::ui::utils::{
 };
 use eframe::egui::{self, Vec2};
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -586,6 +586,10 @@ impl ImageViewerApp {
             image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
             current_file_name: String::new(),
             cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
+            cached_directory_tree_viewport_title: rust_i18n::t!("directory_tree.title").to_string(),
+            directory_tree_viewport_title_sent: false,
+            cached_frame_render_plan: None,
+            cached_frame_hdr_render_path: None,
             prev_texture: None,
             prev_hdr_image: None,
             prev_transition_rect: None,
@@ -603,6 +607,8 @@ impl ImageViewerApp {
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
             tile_manager: None,
+            tiled_primary_visible_scratch: HashSet::new(),
+            tiled_visible_coords_scratch: Vec::new(),
             prefetched_tiles: std::collections::HashMap::new(),
             theme_cache,
             cached_palette,
@@ -624,6 +630,7 @@ impl ImageViewerApp {
             background_threads: crate::app::background_threads::BackgroundThreadJoiner::new(),
             context_menu_pos: None,
             context_menu_viewport: None,
+            context_menu_label_cache: None,
             current_rotation: 0,
             save_error_rx,
             last_save_error: None,

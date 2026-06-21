@@ -244,6 +244,7 @@ impl ImageViewerApp {
     /// preloaded PNG/JPG may sit in `deferred_sdr_uploads` for one extra frame and flash the
     /// canvas background between the hold frame and the new texture.
     pub(crate) fn prepare_display_frame(&mut self, ctx: &egui::Context) {
+        self.clear_frame_render_plan_cache();
         self.drain_raw_demosaic_baked_notifications(ctx);
         self.flush_deferred_sdr_upload_for_current(ctx);
         self.try_start_pending_transition_if_ready();

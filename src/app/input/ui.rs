@@ -193,6 +193,14 @@ impl ImageViewerApp {
     /// Shared content for the right-click context menu (used by the custom
     /// `egui::Area`-based popup in [`Self::paint_image_context_menu_if_open`]).
     pub(crate) fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
+        self.ensure_context_menu_label_cache();
+        let cached_labels = self
+            .context_menu_label_cache
+            .as_ref()
+            .expect("label cache must exist while menu is open")
+            .labels
+            .clone();
+
         let mut drew_action = false;
         let mut pending_separator = false;
         let item_count = self.context_menu_runtime.config.items.len();
@@ -218,16 +226,8 @@ impl ImageViewerApp {
                         ui.separator();
                         pending_separator = false;
                     }
-                    let label = if desc.id == "toggle_fullscreen" {
-                        if self.settings.fullscreen {
-                            t!("ctx.fullscreen_exit")
-                        } else {
-                            t!("ctx.fullscreen_enter")
-                        }
-                    } else if desc.id == "print_current" && cfg!(not(target_os = "windows")) {
-                        t!("ctx.print_pdf_full")
-                    } else {
-                        t!(desc.label_key)
+                    let Some(label) = cached_labels.get(idx).and_then(|label| label.as_deref()) else {
+                        continue;
                     };
                     if ui.button(label).clicked() {
                         let path = self.image_files[self.current_index].clone();
@@ -280,11 +280,60 @@ impl ImageViewerApp {
         }
         self.context_menu_pos = Some(pos);
         self.context_menu_viewport = Some(ctx.viewport_id());
+        self.rebuild_context_menu_label_cache();
     }
 
     fn clear_image_context_menu(&mut self) {
         self.context_menu_pos = None;
         self.context_menu_viewport = None;
+        self.context_menu_label_cache = None;
+    }
+
+    pub(crate) fn rebuild_context_menu_label_cache(&mut self) {
+        let mut labels = Vec::with_capacity(self.context_menu_runtime.config.items.len());
+        for item in &self.context_menu_runtime.config.items {
+            labels.push(match item.kind {
+                crate::context_menu::model::ContextMenuItemKind::Separator
+                | crate::context_menu::model::ContextMenuItemKind::Custom => None,
+                crate::context_menu::model::ContextMenuItemKind::Builtin => item
+                    .builtin_id
+                    .as_deref()
+                    .and_then(crate::context_menu::model::builtin_descriptor)
+                    .map(|desc| self.builtin_context_menu_label(desc.id, desc.label_key)),
+            });
+        }
+        self.context_menu_label_cache = Some(crate::app::types::ContextMenuLabelCache {
+            labels,
+            fullscreen: self.settings.fullscreen,
+            language: self.settings.language.clone(),
+        });
+    }
+
+    fn ensure_context_menu_label_cache(&mut self) {
+        let stale = self
+            .context_menu_label_cache
+            .as_ref()
+            .is_none_or(|cache| {
+                cache.fullscreen != self.settings.fullscreen
+                    || cache.language != self.settings.language
+            });
+        if stale {
+            self.rebuild_context_menu_label_cache();
+        }
+    }
+
+    fn builtin_context_menu_label(&self, id: &str, label_key: &str) -> String {
+        if id == "toggle_fullscreen" {
+            if self.settings.fullscreen {
+                t!("ctx.fullscreen_exit").to_string()
+            } else {
+                t!("ctx.fullscreen_enter").to_string()
+            }
+        } else if id == "print_current" && cfg!(not(target_os = "windows")) {
+            t!("ctx.print_pdf_full").to_string()
+        } else {
+            t!(label_key).to_string()
+        }
     }
 
     /// Paint the custom image context menu when it belongs to this viewport.

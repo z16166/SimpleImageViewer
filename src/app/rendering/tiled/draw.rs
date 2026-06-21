@@ -31,9 +31,8 @@ use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::tile_cache::{TileCoord, TileStatus};
+use crate::tile_cache::TileStatus;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 impl ImageViewerApp {
@@ -91,6 +90,15 @@ impl ImageViewerApp {
             RenderShape::Tiled,
             hdr_source_for_frame.is_some(),
             has_sdr_fallback,
+        );
+        let has_hdr_content = hdr_source_for_frame.is_some()
+            || self.hdr_tiled_source_cache.contains_key(&self.current_index)
+            || has_sdr_fallback;
+        self.record_frame_render_plan(
+            render_plan,
+            RenderShape::Tiled,
+            false,
+            has_hdr_content,
         );
         let plane_backend = render_plan.backend;
 
@@ -303,11 +311,14 @@ impl ImageViewerApp {
                     .unwrap()
                     .visible_tiles(unrotated_dest, tile_clip, 0.0);
             let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
-            let primary_visible_coords = primary_visible
-                .iter()
-                .map(|(coord, _, _)| *coord)
-                .collect::<HashSet<_>>();
-            let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            self.tiled_primary_visible_scratch.clear();
+            self.tiled_primary_visible_scratch
+                .extend(primary_visible.iter().map(|(coord, _, _)| *coord));
+            self.tiled_visible_coords_scratch.clear();
+            self.tiled_visible_coords_scratch
+                .extend(visible.iter().map(|(c, _, _)| *c));
+            let primary_visible_coords = &self.tiled_primary_visible_scratch;
+            let visible_coords = &self.tiled_visible_coords_scratch;
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
                 let protected_keys: Vec<_> = primary_visible
                     .iter()
@@ -316,7 +327,7 @@ impl ImageViewerApp {
                 hdr_source.protect_cached_tiles(&protected_keys);
             }
             if let Some(tm) = &mut self.tile_manager {
-                tm.retain_pending_tiles(&visible_coords);
+                tm.retain_pending_tiles(visible_coords);
             }
 
             // ANTI-THRASHING: We no longer truncate 'visible' here.
