@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.2] - 2026-06-21
+
+### Fixed
+- **Minimize to tray on close**: With **Close window minimizes to tray** enabled, closing the main window reliably hides the app to the system tray again after directory tree navigation was added.
+- **Detached navigation with tray**: When the navigation panel is in a separate window, closing the main window to the tray now hides that navigation window too; restoring from the tray brings both windows back.
+
 ## [2.7.1] - 2026-06-21
 
 ### Added

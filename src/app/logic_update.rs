@@ -66,38 +66,8 @@ impl ImageViewerApp {
             }
         }
 
-        // Intercept close request if minimize to tray is enabled and not an explicit quit.
-        // eframe may report the close request for more than one frame, so keep
-        // canceling it while we are in tray mode instead of only on the first frame.
-        // Do not return early — fall through to `finish_hide_to_tray` below so hide
-        // completes even when `close_requested` stays true, and scan/load logic still runs.
-        if ctx.viewport_for(egui::ViewportId::ROOT, |vp| {
-            vp.input.viewport().close_requested()
-        }) && !self.explicit_quit
-        {
-            let is_shutting_down = {
-                #[cfg(target_os = "windows")]
-                {
-                    use windows::Win32::UI::WindowsAndMessaging::{
-                        GetSystemMetrics, SM_SHUTTINGDOWN,
-                    };
-                    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
-                }
-                #[cfg(not(target_os = "windows"))]
-                false
-            };
-
-            if self.settings.minimize_to_tray_on_close && !is_shutting_down {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if !self.hidden_to_tray && !self.pending_hide_to_tray {
-                    self.prepare_hide_to_tray(ctx);
-                }
-            }
-        }
-
-        if self.pending_hide_to_tray {
-            self.finish_hide_to_tray(ctx);
-        }
+        // Minimize-to-tray on close is handled in `raw_input_hook` (see eframe_app.rs):
+        // the eframe fork runs `logic` before the frame's RawInput is applied to ctx.
 
         self.cache_directory_tree_viewport_placement(&ctx);
 

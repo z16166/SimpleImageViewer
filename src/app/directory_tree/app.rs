@@ -1069,6 +1069,25 @@ impl ImageViewerApp {
         }
     }
 
+    pub(crate) fn hide_detached_directory_tree_viewport_if_active(&self, ctx: &egui::Context) {
+        if self.directory_tree_viewport_active() && self.directory_tree_nav_is_detached() {
+            ctx.send_viewport_cmd_to(
+                Self::directory_tree_viewport_id(),
+                egui::ViewportCommand::Visible(false),
+            );
+        }
+    }
+
+    pub(crate) fn show_detached_directory_tree_viewport_if_active(&self, ctx: &egui::Context) {
+        if self.directory_tree_viewport_active() && self.directory_tree_nav_is_detached() {
+            ctx.send_viewport_cmd_to(
+                Self::directory_tree_viewport_id(),
+                egui::ViewportCommand::Visible(true),
+            );
+            self.request_directory_tree_viewport_repaint(ctx);
+        }
+    }
+
     pub(crate) fn sync_directory_tree_theme_snapshot(&mut self) {
         let mut theme = self.directory_tree_theme.lock();
         *theme = self.cached_palette.clone();
@@ -1264,6 +1283,9 @@ impl ImageViewerApp {
 
     /// Register the detached directory-tree viewport (draw only; state is synced from `logic()`).
     pub(crate) fn prepare_directory_tree_file_list_viewport(&mut self, ctx: &egui::Context) {
+        if self.hidden_to_tray {
+            return;
+        }
         if !self.directory_tree_viewport_active() || !self.directory_tree_nav_is_detached() {
             return;
         }

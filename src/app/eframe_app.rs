@@ -173,6 +173,23 @@ impl eframe::App for ImageViewerApp {
         }
     }
 
+    /// Tray close interception must run here, not in [`Self::logic`].
+    ///
+    /// The eframe fork calls `logic` before `integration.update` applies the frame's
+    /// `RawInput`, so `ctx.input().close_requested()` in `logic` is one frame stale.
+    /// `raw_input_hook` runs inside `update` with the current input, immediately before
+    /// `run_ui`, so `CancelClose` is visible to epi_integration's shutdown guard.
+    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
+        if raw_input.viewport_id != egui::ViewportId::ROOT {
+            return;
+        }
+        let root_close_requested = raw_input
+            .viewports
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|info| info.close_requested());
+        self.handle_tray_close_in_raw_input(ctx, root_close_requested);
+    }
+
     /// Draw the UI. In eframe 0.34 this is the required method; `ui` is called
     /// with the root `Ui` for the window's central area.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -405,6 +422,36 @@ impl ImageViewerApp {
         }
     }
 
+    fn is_system_shutting_down() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};
+            unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+        }
+        #[cfg(not(target_os = "windows"))]
+        false
+    }
+
+    /// Intercept ROOT close for minimize-to-tray. Called from [`eframe::App::raw_input_hook`].
+    pub(crate) fn handle_tray_close_in_raw_input(
+        &mut self,
+        ctx: &Context,
+        root_close_requested: bool,
+    ) {
+        if root_close_requested && !self.explicit_quit {
+            if self.settings.minimize_to_tray_on_close && !Self::is_system_shutting_down() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if !self.hidden_to_tray && !self.pending_hide_to_tray {
+                    self.prepare_hide_to_tray(ctx);
+                }
+            }
+        }
+
+        if self.pending_hide_to_tray {
+            self.finish_hide_to_tray(ctx);
+        }
+    }
+
     pub(crate) fn prepare_hide_to_tray(&mut self, ctx: &Context) {
         self.explicit_quit = false; // Reset explicit quit flag
         let was_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -417,6 +464,7 @@ impl ImageViewerApp {
     pub(crate) fn finish_hide_to_tray(&mut self, ctx: &Context) {
         self.pending_hide_to_tray = false;
         self.hidden_to_tray = true;
+        self.hide_detached_directory_tree_viewport_if_active(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         crate::ipc::hide_main_window();
     }
@@ -454,6 +502,7 @@ impl ImageViewerApp {
                 self.hidden_to_tray = false;
                 self.pending_hide_to_tray = false;
                 Self::show_main_window_from_tray_viewport(ctx, state.was_maximized);
+                self.show_detached_directory_tree_viewport_if_active(ctx);
             } else {
                 Self::focus_main_window(ctx);
             }
