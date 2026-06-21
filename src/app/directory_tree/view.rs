@@ -83,10 +83,6 @@ impl DirectoryTreeView {
         self.tree.network_visible
     }
 
-    pub(super) fn scroll_folder_to_selected(&self) -> bool {
-        self.tree.scroll_folder_to_selected
-    }
-
     pub(super) fn left_panel_width(&self) -> f32 {
         self.tree.left_panel_width
     }
@@ -167,7 +163,6 @@ pub(crate) struct DirectoryTreeUiChrome {
     pub(super) left_panel_width: f32,
     pub(super) panel_layout_dirty: bool,
     pub(super) embedded_nav_panel_width: Option<f32>,
-    pub(super) scroll_folder_to_selected: bool,
     pub(super) image_list_scroll_offset_y: f32,
     pub(super) image_list_visible_row_range: Option<(usize, usize)>,
     pub(super) image_list_keyboard_active: bool,
@@ -186,7 +181,6 @@ impl DirectoryTreeUiChrome {
             left_panel_width: tree.left_panel_width,
             panel_layout_dirty: false,
             embedded_nav_panel_width: None,
-            scroll_folder_to_selected: tree.scroll_folder_to_selected,
             image_list_scroll_offset_y: list.image_list_scroll_offset_y,
             image_list_visible_row_range: list.image_list_visible_row_range,
             image_list_keyboard_active: list.image_list_keyboard_active,
@@ -207,7 +201,6 @@ impl DirectoryTreeUiChrome {
         list_keyboard_active: bool,
     ) {
         self.left_panel_width = view.left_panel_width();
-        self.scroll_folder_to_selected = view.scroll_folder_to_selected();
         self.current_index = view.current_index();
         self.scroll_image_list_to_current = view.scroll_image_list_to_current();
         self.image_list_keyboard_active = list_keyboard_active;
@@ -228,10 +221,6 @@ impl DirectoryTreeUiChrome {
         }
         if let Some(width) = self.embedded_nav_panel_width {
             tree.embedded_nav_panel_width = width;
-        }
-        if tree.scroll_folder_to_selected != self.scroll_folder_to_selected {
-            tree.scroll_folder_to_selected = self.scroll_folder_to_selected;
-            tree.mark_snapshot_dirty();
         }
         list.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
         list.image_list_visible_row_range = self.image_list_visible_row_range;

@@ -4,10 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [2.7.3] - 2026-06-21
 
+### Fixed
+- **Navigation empty folders**: Opening a folder with no images in the navigation panel no longer briefly flashes the file list column headers before showing the empty-folder message.
+
 ### Improved
 - **Music playback overlay**: The bottom music HUD updates more smoothly while a track is playing, with less per-frame work when showing the title and elapsed time.
 - **Image viewing**: Lower overhead for the on-screen status display, HDR output indicators, and right-click context menu while browsing images.
 - **Navigation panel**: Smoother rendering when the directory tree is embedded in the main window or shown in a separate window.
+- **Navigation folder tree**: Clicking a folder in the tree no longer auto-scrolls the tree to center the selected node.
 - **Language switching**: The separate navigation window title now updates correctly when you change the app language.
 
 ## [2.7.2] - 2026-06-21
