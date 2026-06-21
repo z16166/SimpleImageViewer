@@ -72,6 +72,17 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
             app.mark_directory_tree_repaint_pending();
             app.request_directory_tree_viewport_repaint(egui_ctx);
             app.cached_keyboard_hint = rust_i18n::t!("hint.keyboard").to_string();
+            app.cached_directory_tree_viewport_title =
+                rust_i18n::t!("directory_tree.title").to_string();
+            if app.directory_tree_settings_active() && app.directory_tree_nav_is_detached() {
+                egui_ctx.send_viewport_cmd_to(
+                    crate::app::ImageViewerApp::directory_tree_viewport_id(),
+                    egui::ViewportCommand::Title(app.cached_directory_tree_viewport_title.clone()),
+                );
+            }
+            if app.context_menu_pos.is_some() {
+                app.rebuild_context_menu_label_cache();
+            }
             app.refresh_tray_after_language_change(egui_ctx);
             app.queue_save();
         }

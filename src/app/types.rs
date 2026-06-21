@@ -35,6 +35,7 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::pixel_inspector::PixelHoverCache;
 use crate::settings::{Settings, TransitionStyle};
 use crate::theme::{SystemThemeCache, ThemePalette};
+use crate::tile_cache::TileCoord;
 use crate::tile_cache::TileManager;
 use crate::ui::dialogs::modal_state::ActiveModal;
 
@@ -320,6 +321,14 @@ impl CurrentHdrTiledImage {
     }
 }
 
+/// Cached translated labels for the open image context menu (built once per open).
+pub(crate) struct ContextMenuLabelCache {
+    /// Parallel to [`RuntimeContextMenuState::config`]` items`; `Some` for builtins only.
+    pub labels: Vec<Option<String>>,
+    pub fullscreen: bool,
+    pub language: String,
+}
+
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -546,6 +555,16 @@ pub struct ImageViewerApp {
     /// File name shown in the image OSD for [`Self::current_index`].
     pub(crate) current_file_name: String,
     pub(crate) cached_keyboard_hint: String,
+    /// Cached detached directory-tree viewport title; refreshed on locale change.
+    pub(crate) cached_directory_tree_viewport_title: String,
+    /// True after the detached directory-tree viewport title was sent via `ViewportBuilder`.
+    pub(crate) directory_tree_viewport_title_sent: bool,
+    /// Render plan computed during the latest image draw pass; reused by OSD HDR status.
+    pub(crate) cached_frame_render_plan: Option<crate::app::rendering::plan::RenderPlan>,
+    pub(crate) cached_frame_hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
+    /// HDR monitor selection bound at the start of each root logic pass.
+    pub(crate) frame_effective_hdr_monitor_selection:
+        Option<crate::hdr::monitor::HdrMonitorSelection>,
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
@@ -578,6 +597,9 @@ pub struct ImageViewerApp {
 
     // Tiled rendering for large images
     pub(crate) tile_manager: Option<TileManager>,
+    /// Reused each tiled draw frame to avoid per-frame HashSet/Vec allocations.
+    pub(crate) tiled_primary_visible_scratch: HashSet<TileCoord>,
+    pub(crate) tiled_visible_coords_scratch: Vec<TileCoord>,
 
     // Tiled rendering instances decoded during prefetch
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
@@ -624,6 +646,7 @@ pub struct ImageViewerApp {
     // cannot re-open on consecutive right-clicks)
     pub(crate) context_menu_pos: Option<Pos2>,
     pub(crate) context_menu_viewport: Option<egui::ViewportId>,
+    pub(crate) context_menu_label_cache: Option<ContextMenuLabelCache>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
     pub(crate) current_rotation: i32,
 
