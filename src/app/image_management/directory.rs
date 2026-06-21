@@ -80,6 +80,12 @@ impl ImageViewerApp {
     pub(crate) fn apply_picked_image_directory(&mut self, dir: PathBuf) {
         if self.settings.show_directory_tree_nav {
             self.initialize_directory_tree_root(dir.clone());
+        } else if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
+            // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode and root.
+            if self.settings.tree_nav_root_dir.is_none() {
+                self.settings.tree_nav_root_dir = Some(dir.clone());
+            }
+            self.settings.tree_nav_selected_dir = Some(dir.clone());
         } else {
             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
             self.settings.tree_nav_root_dir = None;
@@ -111,6 +117,7 @@ impl ImageViewerApp {
             }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
         }
+        // Keep Settings folder path and folder-picker default in sync even in tree mode.
         self.settings.last_image_dir = Some(dir.clone());
         self.invalidate_random_slideshow_order();
         self.image_files.clear();

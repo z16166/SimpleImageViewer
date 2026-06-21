@@ -104,7 +104,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             if app.settings.show_directory_tree_nav {
                 app.show_directory_tree_nav(ui.ctx());
             } else {
-                app.deactivate_directory_tree_nav(ui.ctx());
+                app.hide_directory_tree_nav(ui.ctx());
             }
             if old_tree_nav != app.settings.show_directory_tree_nav {
                 app.queue_save();

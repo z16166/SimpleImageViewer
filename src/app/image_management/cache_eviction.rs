@@ -65,6 +65,11 @@ impl ImageViewerApp {
         crate::tile_cache::PIXEL_CACHE.lock().clear();
     }
 
+    /// Relocate index-keyed caches when the image list order changes.
+    ///
+    /// When `relocate_strip_cache` is `false`, strip thumbnails keep pre-refresh indices until
+    /// scan Done remaps by path (`reorder_directory_tree_strip_after_image_list_change`).
+    /// Pass `true` for ordinary index relocations outside F5 refresh.
     pub(super) fn relocate_index_keyed_cache(
         &mut self,
         from: usize,

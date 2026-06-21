@@ -708,11 +708,14 @@ fn draw_folder_panel(
     let scroll_height = ui.available_height();
     chrome.folder_selected_row_rect = None;
 
-    let scroll_output = egui::ScrollArea::vertical()
+    let mut scroll = egui::ScrollArea::vertical()
         .id_salt("directory_tree_folders")
         .auto_shrink([false, false])
-        .max_height(scroll_height)
-        .show(ui, |ui| {
+        .max_height(scroll_height);
+    if !chrome.scroll_folder_tree_to_selected {
+        scroll = scroll.vertical_scroll_offset(chrome.folder_scroll_offset_y);
+    }
+    let scroll_output = scroll.show(ui, |ui| {
             if !view.places_loaded() {
                 draw_directory_tree_places_status(ui, view);
                 return;
@@ -752,7 +755,10 @@ fn draw_folder_panel(
                 );
             }
             if chrome.scroll_folder_tree_to_selected {
+                let miss_id = egui::Id::new("directory_tree_folders")
+                    .with("scroll_to_selected_miss");
                 if let Some(rect) = chrome.folder_selected_row_rect {
+                    ui.ctx().data_mut(|d| d.remove_temp::<u32>(miss_id));
                     ui.scroll_to_rect(rect, None);
                     let clip = ui.clip_rect();
                     if rect.min.y >= clip.min.y && rect.max.y <= clip.max.y {
@@ -760,6 +766,25 @@ fn draw_folder_panel(
                     } else {
                         ui.ctx().request_repaint();
                     }
+                } else if view.places_loaded() {
+                    let misses = ui.ctx().data_mut(|d| {
+                        let entry = d.get_temp_mut_or_insert_with(miss_id, || 0u32);
+                        *entry = entry.saturating_add(1);
+                        *entry
+                    });
+                    if misses >= super::DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES {
+                        log::debug!(
+                            "[DirectoryTree] Abandoning scroll-to-selected after {} frames without row rect",
+                            misses
+                        );
+                        ui.ctx().data_mut(|d| d.remove_temp::<u32>(miss_id));
+                        chrome.scroll_folder_tree_to_selected = false;
+                    } else {
+                        ui.ctx().request_repaint();
+                    }
+                } else {
+                    // Places still loading; keep flag until apply_directory_tree_places re-reveals.
+                    ui.ctx().request_repaint();
                 }
             }
         });

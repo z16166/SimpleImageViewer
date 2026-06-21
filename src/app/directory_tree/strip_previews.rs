@@ -1167,7 +1167,6 @@ impl ImageViewerApp {
         self.permute_directory_tree_strip_after_image_list_reorder(&old_to_new);
     }
 
-    #[allow(dead_code)]
     fn apply_partial_directory_tree_strip_reorder(
         &mut self,
         old_files: &[std::path::PathBuf],
@@ -1254,6 +1253,9 @@ impl ImageViewerApp {
 
     /// Drop stale navigation list rows and strip previews before a new directory scan.
     pub(crate) fn reset_directory_tree_file_list_for_scan(&mut self) {
+        if self.settings.browse_mode != crate::settings::BrowseMode::Tree {
+            return;
+        }
         self.invalidate_directory_tree_strip_after_image_list_reorder();
         let mut list = self.directory_tree.list.lock();
         list.image_rows.clear();
