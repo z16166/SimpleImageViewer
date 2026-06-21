@@ -197,9 +197,12 @@ impl ImageViewerApp {
 
                 self.finish_display_frame(ui.ctx());
 
+                let current_img_size = self
+                    .current_image_res
+                    .map(|res| Vec2::new(res.0 as f32, res.1 as f32));
+
                 // ── Pixel Inspector hover tooltip & canvas feedback ──────────
-                if let Some(res) = self.current_image_res {
-                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                if let Some(img_size) = current_img_size {
                     let display_rect = self.compute_plane_layout(img_size, screen_rect).dest;
                     self.draw_pixel_inspector_canvas_feedback(ui, display_rect);
                     self.draw_pixel_hover_tooltip(ui, screen_rect, display_rect);
@@ -209,12 +212,7 @@ impl ImageViewerApp {
                 // Drawn outside the texture-success branch to ensure persistent display
                 // during refinement, transitions, or slow tile loading.
                 if self.settings.show_osd {
-                    let res = if let Some(r) = self.current_image_res {
-                        r
-                    } else {
-                        (0, 0)
-                    };
-                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                    let img_size = current_img_size.unwrap_or(Vec2::ZERO);
                     let rotation = self.current_rotation;
                     let needs_swap = rotation % 2 != 0;
                     let rotated_img_size = if needs_swap {

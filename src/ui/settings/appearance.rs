@@ -68,6 +68,9 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
             rust_i18n::set_locale(&app.settings.language);
             egui_ctx.send_viewport_cmd(egui::ViewportCommand::Title(t!("app.title").to_string()));
             app.osd.on_language_changed();
+            app.directory_tree.on_language_changed();
+            app.mark_directory_tree_repaint_pending();
+            app.request_directory_tree_viewport_repaint(egui_ctx);
             app.cached_keyboard_hint = rust_i18n::t!("hint.keyboard").to_string();
             app.refresh_tray_after_language_change(egui_ctx);
             app.queue_save();

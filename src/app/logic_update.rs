@@ -90,8 +90,7 @@ impl ImageViewerApp {
             }
         }
 
-        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
-        if let Some(dropped_file) = dropped.into_iter().next() {
+        if let Some(dropped_file) = ctx.input(|i| i.raw.dropped_files.first().cloned()) {
             if let Some(path) = dropped_file.path {
                 // Guard: don't re-trigger if we're already scanning from a previous drop
                 if !self.scanning {

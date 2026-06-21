@@ -29,6 +29,7 @@ use rust_i18n::t;
 
 use crate::directory_tree_places::{DirectoryTreePlaces, KnownFolderEntry};
 use crate::path_location::is_unc_path;
+use crate::ui::osd::{format_file_modified, format_file_size};
 
 pub(super) const MAX_DIRECTORY_TREE_NODES: usize = 8192;
 /// Maximum ancestor segments expanded in one reveal; avoids flooding workers on deep paths.
@@ -160,6 +161,50 @@ pub(crate) struct DirectoryTreeFileRow {
     name: String,
     size_bytes: u64,
     modified_unix: Option<i64>,
+    /// Cached for list paint; refreshed when size or modified metadata changes.
+    size_text: String,
+    modified_text: String,
+}
+
+/// Legacy scan paths stored milliseconds; values above this are treated as ms and converted to seconds.
+const MODIFIED_UNIX_MILLIS_THRESHOLD: i64 = 1_000_000_000_000;
+
+fn modified_unix_for_display(stored: i64) -> i64 {
+    if stored > MODIFIED_UNIX_MILLIS_THRESHOLD {
+        stored / 1_000
+    } else {
+        stored
+    }
+}
+
+impl DirectoryTreeFileRow {
+    pub(crate) fn new(
+        path: PathBuf,
+        name: String,
+        size_bytes: u64,
+        modified_unix: Option<i64>,
+    ) -> Self {
+        let mut row = Self {
+            path,
+            name,
+            size_bytes,
+            modified_unix,
+            size_text: String::new(),
+            modified_text: String::new(),
+        };
+        row.refresh_display_cache();
+        row
+    }
+
+    pub(crate) fn refresh_display_cache(&mut self) {
+        self.size_text = format_file_size(self.size_bytes);
+        self.modified_text = self
+            .modified_unix
+            .map(modified_unix_for_display)
+            .map(format_file_modified)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| t!("directory_tree.modified_unknown").to_string());
+    }
 }
 
 #[derive(Debug)]
@@ -473,6 +518,13 @@ impl DirectoryTreeRuntime {
         {
             log::warn!("[DirectoryTree] Metadata worker panicked on join");
         }
+    }
+
+    /// Re-translate cached list row strings after a locale change.
+    pub(crate) fn on_language_changed(&self) {
+        let mut list = self.list.lock();
+        list.refresh_all_display_caches();
+        list.mark_snapshot_dirty();
     }
 }
 
@@ -847,6 +899,7 @@ impl DirectoryTreeListState {
                 if let Some(mtime) = modified.get(index) {
                     row.modified_unix = *mtime;
                 }
+                row.refresh_display_cache();
             }
             // Owned paths: `image_rows.push` below may reallocate, invalidating borrows from rows.
             let existing_paths: std::collections::HashSet<&PathBuf> =
@@ -860,12 +913,12 @@ impl DirectoryTreeListState {
                 if mtime.is_none() && !scanning {
                     paths_needing_meta.push(path.clone());
                 }
-                new_rows.push(DirectoryTreeFileRow {
-                    path: path.clone(),
-                    name: directory_display_name(path),
-                    size_bytes: sizes.get(index).copied().unwrap_or(0),
-                    modified_unix: mtime,
-                });
+                new_rows.push(DirectoryTreeFileRow::new(
+                    path.clone(),
+                    directory_display_name(path),
+                    sizes.get(index).copied().unwrap_or(0),
+                    mtime,
+                ));
             }
             self.image_rows.extend(new_rows);
         } else {
@@ -884,6 +937,7 @@ impl DirectoryTreeListState {
                     if let Some(Some(mtime)) = modified.get(index) {
                         row.modified_unix = Some(*mtime);
                     }
+                    row.refresh_display_cache();
                 }
 
                 if images.len() > self.image_rows.len() {
@@ -895,12 +949,12 @@ impl DirectoryTreeListState {
                         if mtime.is_none() {
                             paths_needing_meta.push(path.clone());
                         }
-                        self.image_rows.push(DirectoryTreeFileRow {
-                            path: path.clone(),
-                            name: directory_display_name(path),
-                            size_bytes: sizes.get(index).copied().unwrap_or(0),
-                            modified_unix: mtime,
-                        });
+                        self.image_rows.push(DirectoryTreeFileRow::new(
+                            path.clone(),
+                            directory_display_name(path),
+                            sizes.get(index).copied().unwrap_or(0),
+                            mtime,
+                        ));
                     }
                     if !scanning {
                         queue_metadata(paths_needing_meta);
@@ -910,11 +964,13 @@ impl DirectoryTreeListState {
                 self.image_rows = images
                     .iter()
                     .enumerate()
-                    .map(|(index, path)| DirectoryTreeFileRow {
-                        path: path.clone(),
-                        name: directory_display_name(path),
-                        size_bytes: sizes.get(index).copied().unwrap_or(0),
-                        modified_unix: modified.get(index).copied().flatten(),
+                    .map(|(index, path)| {
+                        DirectoryTreeFileRow::new(
+                            path.clone(),
+                            directory_display_name(path),
+                            sizes.get(index).copied().unwrap_or(0),
+                            modified.get(index).copied().flatten(),
+                        )
                     })
                     .collect();
                 if !scanning {
@@ -987,11 +1043,18 @@ impl DirectoryTreeListState {
         for (path, modified_unix) in result.paths.into_iter().zip(result.modified_unix) {
             if let Some(row) = self.image_rows.iter_mut().find(|row| row.path == path) {
                 row.modified_unix = modified_unix;
+                row.refresh_display_cache();
                 changed = true;
             }
         }
         if changed {
             self.mark_snapshot_dirty();
+        }
+    }
+
+    pub(crate) fn refresh_all_display_caches(&mut self) {
+        for row in &mut self.image_rows {
+            row.refresh_display_cache();
         }
     }
 }

@@ -28,19 +28,7 @@ use crate::directory_tree_places::types::KnownFolderKind;
 use crate::loader::preview_aspect_matches_logical;
 use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
-use crate::ui::osd::{FORMAT_FILE_SIZE_WIDTH_SAMPLES, format_file_modified, format_file_size};
-
-/// Legacy scan paths stored milliseconds; values above this are treated as ms and converted to seconds.
-const MODIFIED_UNIX_MILLIS_THRESHOLD: i64 = 1_000_000_000_000;
-
-/// Scan/metadata paths store UTC seconds; normalize legacy millisecond values before display.
-fn modified_unix_for_display(stored: i64) -> i64 {
-    if stored > MODIFIED_UNIX_MILLIS_THRESHOLD {
-        stored / 1_000
-    } else {
-        stored
-    }
-}
+use crate::ui::osd::FORMAT_FILE_SIZE_WIDTH_SAMPLES;
 
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
@@ -1428,13 +1416,6 @@ fn draw_image_details_row(
         } else {
             palette.text_normal
         };
-        let size_text = format_file_size(row.size_bytes);
-        let modified_text = row
-            .modified_unix
-            .map(modified_unix_for_display)
-            .map(format_file_modified)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| t!("directory_tree.modified_unknown").to_string());
 
         let name_column = image_list_name_column(row_rect, columns, spacing_x, thumb_px);
         let size_column = image_list_size_column(row_rect, columns, spacing_x);
@@ -1453,9 +1434,9 @@ fn draw_image_details_row(
             egui::Align::LEFT,
         );
 
-        let size_galley = ui
-            .painter()
-            .layout_no_wrap(size_text, body_font.clone(), text_color);
+        let size_galley =
+            ui.painter()
+                .layout_no_wrap(row.size_text.clone(), body_font.clone(), text_color);
         paint_clipped_galley(
             ui.painter(),
             size_galley,
@@ -1466,7 +1447,7 @@ fn draw_image_details_row(
 
         let modified_galley =
             ui.painter()
-                .layout_no_wrap(modified_text, body_font.clone(), text_color);
+                .layout_no_wrap(row.modified_text.clone(), body_font.clone(), text_color);
         paint_clipped_galley(
             ui.painter(),
             modified_galley,
