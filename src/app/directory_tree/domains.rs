@@ -51,7 +51,6 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) generation: u64,
     pub(crate) network_label: String,
     pub(crate) network_visible: bool,
-    pub(crate) scroll_folder_to_selected: bool,
     pub(crate) left_panel_width: f32,
     pub(crate) embedded_nav_panel_width: f32,
     pub(crate) panel_layout_dirty: bool,
@@ -74,7 +73,6 @@ impl Default for DirectoryTreeTreeState {
             generation: 0,
             network_label: String::new(),
             network_visible: false,
-            scroll_folder_to_selected: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
             embedded_nav_panel_width: 0.0,
             panel_layout_dirty: false,
@@ -175,7 +173,6 @@ pub(crate) struct DirectoryTreeTreeSnapshot {
     pub(super) selected_tree_path: Option<PathBuf>,
     pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
     pub(super) network_visible: bool,
-    pub(super) scroll_folder_to_selected: bool,
     pub(super) left_panel_width: f32,
 }
 
@@ -218,7 +215,6 @@ impl Default for DirectoryTreeTreeSnapshot {
             selected_tree_path: None,
             nodes: HashMap::new(),
             network_visible: false,
-            scroll_folder_to_selected: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
         }
     }
@@ -317,7 +313,6 @@ pub(super) fn publish_tree_snapshot(
         selected_tree_path: tree.selected_tree_path.clone(),
         nodes,
         network_visible: tree.network_visible,
-        scroll_folder_to_selected: tree.scroll_folder_to_selected,
         left_panel_width: tree.left_panel_width,
     }));
     tree.snapshot_dirty = false;

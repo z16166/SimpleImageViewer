@@ -119,7 +119,6 @@ impl ImageViewerApp {
         tree_snapshot: &Arc<ArcSwap<DirectoryTreeTreeSnapshot>>,
         list_snapshot: &Arc<ArcSwap<DirectoryTreeListSnapshot>>,
         preview_snapshot: &Arc<ArcSwap<DirectoryTreePreviewSnapshot>>,
-        list_preview: DirectoryTreeListPreviewLayout,
         command_tx: &crossbeam_channel::Sender<DirectoryTreeCommand>,
         root_wake: Option<&crate::app::RootRedrawWake>,
         theme: &Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
@@ -162,7 +161,6 @@ impl ImageViewerApp {
             ui,
             &view_data,
             &mut chrome_guard,
-            list_preview,
             command_tx,
             root_wake,
             &palette,
@@ -535,6 +533,14 @@ impl ImageViewerApp {
                         let mut list = self.directory_tree.list.lock();
                         tree.set_selected_tree_node(tree_path.clone(), browse_path.clone());
                         list.image_list_keyboard_active = false;
+                        // Drop stale rows immediately so deferred list sync cannot flash the
+                        // previous folder's header before the empty-folder message appears.
+                        list.image_rows.clear();
+                        list.current_index = 0;
+                        list.image_list_scroll_offset_y = 0.0;
+                        list.scanning = true;
+                        list.scan_status = t!("directory_tree.scanning").to_string();
+                        list.mark_snapshot_dirty();
                         if let Some(request) = tree.expand_tree_for_filesystem_dir(&browse_path) {
                             drop(tree);
                             drop(list);
@@ -1299,7 +1305,6 @@ impl ImageViewerApp {
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
-        let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let mut builder = egui::ViewportBuilder::default()
             .with_inner_size(inner_size)
             .with_min_inner_size([DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_MIN_HEIGHT])
@@ -1356,7 +1361,6 @@ impl ImageViewerApp {
                 &app.directory_tree.tree_snapshot,
                 &app.directory_tree.list_snapshot,
                 &app.directory_tree.preview_snapshot,
-                list_preview,
                 &app.directory_tree.command_tx,
                 app.root_redraw_wake_handle().as_ref(),
                 &app.directory_tree_theme,
@@ -1380,7 +1384,6 @@ impl ImageViewerApp {
         }
         self.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
 
-        let list_preview = DirectoryTreeListPreviewLayout::from_settings(&self.settings);
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
         let has_places = self.directory_tree.view.load().places_loaded();
         if !has_places {
@@ -1412,7 +1415,6 @@ impl ImageViewerApp {
                     &self.directory_tree.tree_snapshot,
                     &self.directory_tree.list_snapshot,
                     &self.directory_tree.preview_snapshot,
-                    list_preview,
                     &self.directory_tree.command_tx,
                     self.root_redraw_wake_handle().as_ref(),
                     &self.directory_tree_theme,

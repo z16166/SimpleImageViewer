@@ -39,9 +39,9 @@ use super::{
     DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_NODE_ICON_DRAW_RATIO,
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
     DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand, DirectoryTreeFileRow,
-    DirectoryTreeListPreviewLayout, DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn,
-    is_network_tree_path, is_places_sentinel_path, is_this_pc_tree_path, network_tree_path,
-    send_directory_tree_command, this_pc_tree_path,
+    DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn, is_network_tree_path,
+    is_places_sentinel_path, is_this_pc_tree_path, network_tree_path, send_directory_tree_command,
+    this_pc_tree_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,7 +462,6 @@ pub(super) fn draw_directory_tree_window(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
     chrome: &mut DirectoryTreeUiChrome,
-    list_preview: DirectoryTreeListPreviewLayout,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
@@ -477,7 +476,6 @@ pub(super) fn draw_directory_tree_window(
         ui,
         view,
         chrome,
-        list_preview,
         command_tx,
         root_wake,
         palette,
@@ -557,7 +555,6 @@ fn draw_directory_tree_top_panels(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
     chrome: &mut DirectoryTreeUiChrome,
-    _list_preview: DirectoryTreeListPreviewLayout,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
@@ -589,15 +586,7 @@ fn draw_directory_tree_top_panels(
     ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
         ui.set_clip_rect(left_rect);
         ui.set_width(left_w);
-        draw_folder_panel(
-            ui,
-            view,
-            chrome,
-            _list_preview,
-            command_tx,
-            root_wake,
-            palette,
-        );
+        draw_folder_panel(ui, view, command_tx, root_wake, palette);
     });
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
@@ -607,7 +596,6 @@ fn draw_directory_tree_top_panels(
             ui,
             view,
             chrome,
-            _list_preview,
             command_tx,
             palette,
             embedded,
@@ -712,21 +700,17 @@ pub(super) fn draw_directory_tree_places_status(ui: &mut egui::Ui, view: &Direct
 fn draw_folder_panel(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
-    chrome: &mut DirectoryTreeUiChrome,
-    _list_preview: DirectoryTreeListPreviewLayout,
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
 ) {
-    let scroll_to_selected = chrome.scroll_folder_to_selected;
     directory_tree_scroll_area("directory_tree_folders", ui, |ui| {
         if !view.places_loaded() {
             draw_directory_tree_places_status(ui, view);
             return;
         }
-        let mut scrolled = false;
         for entry in view.known_folders() {
-            scrolled |= draw_directory_node(
+            draw_directory_node(
                 ui,
                 view,
                 command_tx,
@@ -734,10 +718,9 @@ fn draw_folder_panel(
                 palette,
                 &entry.tree_path,
                 0,
-                scroll_to_selected,
             );
         }
-        scrolled |= draw_directory_node(
+        draw_directory_node(
             ui,
             view,
             command_tx,
@@ -745,10 +728,9 @@ fn draw_folder_panel(
             palette,
             &this_pc_tree_path(),
             0,
-            scroll_to_selected,
         );
         if view.network_visible() {
-            scrolled |= draw_directory_node(
+            draw_directory_node(
                 ui,
                 view,
                 command_tx,
@@ -756,11 +738,7 @@ fn draw_folder_panel(
                 palette,
                 &network_tree_path(),
                 0,
-                scroll_to_selected,
             );
-        }
-        if scrolled {
-            chrome.scroll_folder_to_selected = false;
         }
     });
 }
@@ -786,17 +764,14 @@ fn draw_directory_node(
     palette: &ThemePalette,
     path: &Path,
     depth: usize,
-    scroll_to_selected: bool,
-) -> bool {
+) {
     let Some(node) = view.nodes().get(path) else {
-        return false;
+        return;
     };
     let node = node.as_ref();
 
     let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
     let expandable = directory_tree_node_expandable(&node, path);
-
-    let mut scrolled = false;
 
     let row_width = ui.available_width();
     ui.allocate_ui_with_layout(
@@ -856,10 +831,6 @@ fn draw_directory_node(
                     ui.label(hover_text);
                 });
             }
-            if scroll_to_selected && selected {
-                name_response.scroll_to_me(Some(egui::Align::Center));
-                scrolled = true;
-            }
             if name_response.clicked() {
                 if is_places_sentinel_path(path) {
                     send_directory_tree_command(
@@ -894,27 +865,15 @@ fn draw_directory_node(
 
     if node.expanded {
         for child in &node.children {
-            scrolled |= draw_directory_node(
-                ui,
-                view,
-                command_tx,
-                root_wake,
-                palette,
-                &child,
-                depth + 1,
-                scroll_to_selected,
-            );
+            draw_directory_node(ui, view, command_tx, root_wake, palette, &child, depth + 1);
         }
     }
-
-    scrolled
 }
 
 fn draw_image_file_list(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
     chrome: &mut DirectoryTreeUiChrome,
-    _list_preview: DirectoryTreeListPreviewLayout,
     command_tx: &Sender<DirectoryTreeCommand>,
     palette: &ThemePalette,
     embedded: bool,
@@ -923,17 +882,23 @@ fn draw_image_file_list(
     chrome.begin_image_list_paint();
     let list_enabled = !view.scanning() || !view.image_rows().is_empty();
 
-    if view.image_rows().is_empty() && !view.scanning() {
-        ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
-        if let Some(warning) = view.sync_warning() {
-            ui.label(egui::RichText::new(warning).weak());
+    if view.image_rows().is_empty() {
+        if view.scanning() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(view.scan_status()).weak());
+            });
+        } else {
+            ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
+            if let Some(warning) = view.sync_warning() {
+                ui.label(egui::RichText::new(warning).weak());
+            }
         }
         return;
     }
 
-    let show_scan_status = view.scanning() && view.image_rows().is_empty();
     let show_sync_warning = view.sync_warning().is_some();
-    let status_height = if show_scan_status || show_sync_warning {
+    let status_height = if show_sync_warning {
         DIRECTORY_TREE_ROW_HEIGHT
     } else {
         0.0
@@ -1016,15 +981,12 @@ fn draw_image_file_list(
         chrome.image_list_scroll_offset_y = scroll_output.state.offset.y;
     });
 
-    if show_scan_status || show_sync_warning {
+    if show_sync_warning {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), status_height),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                if show_scan_status {
-                    ui.spinner();
-                    ui.label(egui::RichText::new(view.scan_status()).weak());
-                } else if let Some(warning) = view.sync_warning() {
+                if let Some(warning) = view.sync_warning() {
                     ui.label(egui::RichText::new(warning).weak());
                 }
             },

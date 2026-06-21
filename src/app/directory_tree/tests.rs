@@ -808,23 +808,6 @@ fn selected_tree_path_distinguishes_alias_nodes_with_same_browse_path() {
 }
 
 #[test]
-fn apply_to_domains_marks_tree_snapshot_dirty_when_folder_scroll_clears() {
-    use super::view::DirectoryTreeUiChrome;
-
-    let mut tree = DirectoryTreeTreeState::default();
-    tree.scroll_folder_to_selected = true;
-    tree.snapshot_dirty = false;
-    let mut list = DirectoryTreeListState::default();
-    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
-    chrome.scroll_folder_to_selected = false;
-
-    chrome.apply_to_domains(&mut tree, &mut list);
-
-    assert!(!tree.scroll_folder_to_selected);
-    assert!(tree.snapshot_dirty);
-}
-
-#[test]
 fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
     use super::view::DirectoryTreeUiChrome;
 

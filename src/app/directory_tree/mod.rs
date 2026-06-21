@@ -772,7 +772,6 @@ impl DirectoryTreeTreeState {
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
         self.or_insert_tree_node(tree_path, || directory_tree_node(display_name, dir));
-        self.scroll_folder_to_selected = true;
         self.mark_snapshot_dirty();
     }
 

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Navigation empty folders**: Opening a folder with no images in the navigation panel no longer briefly flashes the file list column headers before showing the empty-folder message.
+
+### Improved
+- **Navigation folder tree**: Clicking a folder in the tree no longer auto-scrolls the tree to center the selected node.
+
 ## [2.7.3] - 2026-06-21
 
 ### Improved
