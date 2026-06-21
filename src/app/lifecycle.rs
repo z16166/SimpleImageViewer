@@ -680,6 +680,7 @@ impl ImageViewerApp {
             refresh_scan_in_progress: false,
             refresh_scan_slideshow_was_playing: false,
             refresh_anchor_path: None,
+            refresh_strip_files_snapshot: None,
             pixel_data_source: None,
             pixel_hover_cache: None,
             pixel_region_first_point: None,

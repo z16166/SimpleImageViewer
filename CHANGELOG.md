@@ -6,13 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Navigation empty folders**: Opening a folder with no images in the navigation panel no longer briefly flashes the file list column headers before showing the empty-folder message.
+- **Hide and restore navigation**: Hiding the navigation panel with `Ctrl + T` or **Settings** no longer discards your place in the folder tree; showing it again expands and scrolls to the folder you are viewing.
+- **Pick while navigation is hidden**: Choosing a new folder with **Pick** while the navigation panel is hidden, then turning navigation back on, now opens the correct folder in the tree and image list instead of the previous one.
+- **Detached navigation window position**: In separate-window mode, hiding navigation from **Settings** and showing it again reopens the panel on the monitor and position where you left it.
+- **Settings directory path**: After browsing folders in the navigation panel and then hiding navigation, the directory shown in **Settings** stays on the folder you last opened.
+- **Startup folder location**: With navigation enabled at launch, the tree now expands to the last folder you were viewing.
 
 ### Improved
 - **Music playback overlay**: The bottom music HUD updates more smoothly while a track is playing, with less per-frame work when showing the title and elapsed time.
 - **Image viewing**: Lower overhead for the on-screen status display, HDR output indicators, and right-click context menu while browsing images.
 - **Navigation panel**: Smoother rendering when the directory tree is embedded in the main window or shown in a separate window.
-- **Navigation folder tree**: Clicking a folder in the tree no longer auto-scrolls the tree to center the selected node.
+- **Navigation folder tree**: Clicking a folder in the tree no longer auto-scrolls the tree to center the selected node; re-opening navigation or switching folders scrolls the selected folder into view when it was off-screen.
 - **Language switching**: The separate navigation window title now updates correctly when you change the app language.
+- **Recursive scan with hidden navigation**: **Recursive scan** in **Settings** is available again while the navigation panel is hidden, so you can refresh a deep folder tree without keeping the panel open.
+- **Refresh in Settings**: The **Refresh** button in **Settings** now matches `F5` when reloading the current folder, keeping navigation strip previews stable when the file list has not changed.
 
 ## [2.7.2] - 2026-06-21
 

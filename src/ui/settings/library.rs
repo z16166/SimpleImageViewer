@@ -52,9 +52,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                 }
                 ui.add_space(4.0);
                 if styled_button(ui, t!("btn.refresh"), &palette).clicked() {
-                    if let Some(dir) = app.current_browse_directory() {
-                        app.load_directory(dir);
-                    }
+                    app.start_refresh_file_list();
                 }
 
                 let box_w = (ui.available_width() - 16.0).max(20.0);

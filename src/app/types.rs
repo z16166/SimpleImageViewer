@@ -706,6 +706,8 @@ pub struct ImageViewerApp {
     /// Survives across multiple scan batches so Done can always relocate the
     /// original file, even when it wasn't present in the first batch.
     pub(crate) refresh_anchor_path: Option<std::path::PathBuf>,
+    /// Pre-refresh image paths used to realign strip thumbnails after F5.
+    pub(crate) refresh_strip_files_snapshot: Option<Vec<std::path::PathBuf>>,
     pub(crate) pixel_data_source: Option<crate::pixel_inspector::PixelDataSource>,
     pub(crate) pixel_hover_cache: Option<PixelHoverCache>,
     pub(crate) pixel_region_first_point: Option<(u32, u32)>,

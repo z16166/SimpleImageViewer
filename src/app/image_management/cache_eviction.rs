@@ -65,13 +65,20 @@ impl ImageViewerApp {
         crate::tile_cache::PIXEL_CACHE.lock().clear();
     }
 
-    pub(super) fn relocate_index_keyed_cache(&mut self, from: usize, to: usize) {
+    pub(super) fn relocate_index_keyed_cache(
+        &mut self,
+        from: usize,
+        to: usize,
+        relocate_strip_cache: bool,
+    ) {
         if from == to {
             return;
         }
         // 1. Texture cache
         self.texture_cache.relocate(from, to);
-        self.directory_tree_strip_cache.relocate(from, to);
+        if relocate_strip_cache {
+            self.directory_tree_strip_cache.relocate(from, to);
+        }
 
         // 2. HDR caches
         if let Some(hdr) = self.hdr_image_cache.remove(&from) {

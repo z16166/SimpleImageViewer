@@ -1138,8 +1138,7 @@ impl ImageViewerApp {
         );
     }
 
-    // Kept for path-based list diffs; scan Done uses permute instead.
-    #[allow(dead_code)]
+    // Path-based list diff for F5 refresh strip cache realignment.
     pub(crate) fn reorder_directory_tree_strip_after_image_list_change(
         &mut self,
         old_files: &[std::path::PathBuf],

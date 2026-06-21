@@ -1672,6 +1672,7 @@ fn make_test_app() -> ImageViewerApp {
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,
+        refresh_strip_files_snapshot: None,
         explicit_quit: false,
         tray_state: None,
         hidden_to_tray: false,
@@ -1747,7 +1748,7 @@ fn relocate_index_keyed_cache_moves_raw_osd_info() {
     app.raw_metadata
         .insert_or_update(2, crate::loader::RawOsdInfo::empty());
 
-    app.relocate_index_keyed_cache(2, 0);
+    app.relocate_index_keyed_cache(2, 0, true);
 
     assert!(!app.raw_metadata.contains_key(2));
     assert!(app.raw_metadata.contains_key(0));
@@ -1758,7 +1759,7 @@ fn relocate_index_keyed_cache_moves_gpu_demosaic_failed_indices() {
     let mut app = make_test_app();
     app.gpu_demosaic_failed_indices.insert(2);
 
-    app.relocate_index_keyed_cache(2, 0);
+    app.relocate_index_keyed_cache(2, 0, true);
 
     assert!(!app.gpu_demosaic_failed_indices.contains(&2));
     assert!(app.gpu_demosaic_failed_indices.contains(&0));
