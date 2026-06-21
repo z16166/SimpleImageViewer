@@ -1476,6 +1476,13 @@ fn draw_image_details_row(
         );
     }
 
+    if list_enabled && response.double_clicked() {
+        send_directory_tree_command(
+            command_tx,
+            DirectoryTreeCommand::SelectImageAndHideNav(row_index),
+        );
+        return true;
+    }
     if list_enabled && response.clicked() {
         send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(row_index));
         return true;

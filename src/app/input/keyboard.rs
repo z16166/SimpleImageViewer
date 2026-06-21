@@ -34,6 +34,56 @@ impl ImageViewerApp {
         }
     }
 
+    /// App-global hotkeys that must work from deferred child viewports (e.g. detached nav).
+    /// ROOT [`Self::handle_keyboard`] does not receive keys while a child OS window is focused.
+    pub(crate) fn handle_cross_viewport_hotkeys(&mut self, ctx: &Context) {
+        if self.active_modal.is_some() || self.show_settings {
+            return;
+        }
+        let action = ctx.input(|i| self.map_key_to_action(i));
+        let Some(act) = action else {
+            return;
+        };
+        if !Self::is_cross_viewport_hotkey(act) {
+            return;
+        }
+        self.consume_hotkey_events_for_action(ctx, act);
+        self.dispatch_action(act, ctx);
+    }
+
+    fn is_cross_viewport_hotkey(action: AppAction) -> bool {
+        matches!(action, AppAction::ToggleDirectoryTreeNav)
+    }
+
+    fn consume_hotkey_events_for_action(&self, ctx: &Context, action: AppAction) {
+        ctx.input_mut(|input| {
+            let mut keys_to_consume = Vec::new();
+            for ev in &input.events {
+                let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = ev
+                else {
+                    continue;
+                };
+                let chord = KeyChord::from_input_event(*key, *modifiers);
+                if self
+                    .hotkeys_runtime
+                    .map
+                    .get(&chord)
+                    .is_some_and(|action_id| app_action_from_hotkey_action_id(*action_id) == action)
+                {
+                    keys_to_consume.push((*modifiers, *key));
+                }
+            }
+            for (modifiers, key) in keys_to_consume {
+                input.consume_key(modifiers, key);
+            }
+        });
+    }
+
     /// Layer 3: Input handling when a modal dialog is active.
     fn handle_modal_input(&mut self, ctx: &Context) {
         ctx.input(|i| {

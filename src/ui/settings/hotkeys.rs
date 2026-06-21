@@ -662,6 +662,7 @@ fn localized_hotkey_action_label(action_id: HotkeyActionId) -> String {
         HotkeyActionId::CutTo => "hotkeys.action.cut_to",
         HotkeyActionId::ToggleTray => "hotkeys.action.toggle_tray",
         HotkeyActionId::PickDirectory => "hotkeys.action.pick_directory",
+        HotkeyActionId::ToggleDirectoryTreeNav => "hotkeys.action.toggle_directory_tree_nav",
     };
     t!(key).to_string()
 }

@@ -56,6 +56,7 @@ pub enum HotkeyActionId {
     CutTo,
     ToggleTray,
     PickDirectory,
+    ToggleDirectoryTreeNav,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,6 +178,10 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
     ActionDescriptor {
         id: HotkeyActionId::PickDirectory,
         id_str: "pick_directory",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::ToggleDirectoryTreeNav,
+        id_str: "toggle_directory_tree_nav",
     },
 ];
 
@@ -570,6 +575,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::PickDirectory => &[KeyChord {
             modifiers: MOD_CTRL,
             key: HotkeyLogicalKey::Egui(egui::Key::O),
+        }],
+        HotkeyActionId::ToggleDirectoryTreeNav => &[KeyChord {
+            modifiers: MOD_CTRL,
+            key: HotkeyLogicalKey::Egui(egui::Key::T),
         }],
     }
 }

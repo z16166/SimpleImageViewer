@@ -572,6 +572,28 @@ impl ImageViewerApp {
                         self.request_directory_tree_viewport_repaint(ctx);
                     }
                 }
+                DirectoryTreeCommand::SelectImageAndHideNav(index) => {
+                    if self
+                        .directory_tree
+                        .list
+                        .try_lock()
+                        .is_some_and(|list| !image_list_interaction_enabled(&list))
+                    {
+                        continue;
+                    }
+                    if index < self.image_files.len() {
+                        if index != self.current_index {
+                            self.pending_directory_tree_select_index = Some(index);
+                        }
+                        let mut list = self.directory_tree.list.lock();
+                        list.current_index = index;
+                        list.scroll_image_list_to_current = true;
+                        self.settings.show_directory_tree_nav = false;
+                        self.queue_save();
+                        ctx.request_repaint();
+                        self.request_directory_tree_viewport_repaint(ctx);
+                    }
+                }
                 DirectoryTreeCommand::SortImageList(column) => {
                     let (sort_column, sort_ascending) = {
                         let mut list = self.directory_tree.list.lock();
@@ -621,6 +643,24 @@ impl ImageViewerApp {
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
         self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
+    }
+
+    pub(crate) fn toggle_directory_tree_nav_visibility(&mut self, ctx: &egui::Context) {
+        if self.directory_tree_settings_active() {
+            self.settings.show_directory_tree_nav = false;
+        } else {
+            self.settings.browse_mode = BrowseMode::Tree;
+            self.settings.show_directory_tree_nav = true;
+            self.ensure_directory_tree_places_loaded();
+            if self.settings.tree_nav_root_dir.is_none() {
+                if let Some(root) = self.settings.last_image_dir.clone() {
+                    self.initialize_directory_tree_root(root);
+                }
+            }
+        }
+        self.queue_save();
+        ctx.request_repaint();
+        self.request_directory_tree_viewport_repaint(ctx);
     }
 
     fn directory_tree_viewport_active(&self) -> bool {
@@ -1265,6 +1305,14 @@ impl ImageViewerApp {
                     log::warn!("[DirectoryTree] CloseWindow command channel disconnected");
                 }
                 return;
+            }
+
+            let ptr = viewpaint_app.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
+                unsafe {
+                    (*ptr).handle_cross_viewport_hotkeys(ui.ctx());
+                }
             }
 
             if startup_maximized {
