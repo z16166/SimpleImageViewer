@@ -28,7 +28,6 @@ use eframe::egui::{self, Pos2, Rect, Vec2};
 pub(crate) type RootRedrawWake = Arc<dyn Fn() + Send + Sync>;
 
 use crate::app::DirectoryTreeRuntime;
-use crate::tile_cache::TileCoord;
 use crate::audio::AudioPlayer;
 use crate::directory_tree_places::DirectoryTreePlaces;
 use crate::ipc::IpcMessage;
@@ -36,6 +35,7 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::pixel_inspector::PixelHoverCache;
 use crate::settings::{Settings, TransitionStyle};
 use crate::theme::{SystemThemeCache, ThemePalette};
+use crate::tile_cache::TileCoord;
 use crate::tile_cache::TileManager;
 use crate::ui::dialogs::modal_state::ActiveModal;
 
@@ -562,6 +562,9 @@ pub struct ImageViewerApp {
     /// Render plan computed during the latest image draw pass; reused by OSD HDR status.
     pub(crate) cached_frame_render_plan: Option<crate::app::rendering::plan::RenderPlan>,
     pub(crate) cached_frame_hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
+    /// HDR monitor selection bound at the start of each root logic pass.
+    pub(crate) frame_effective_hdr_monitor_selection:
+        Option<crate::hdr::monitor::HdrMonitorSelection>,
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,

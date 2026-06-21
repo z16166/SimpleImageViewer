@@ -1587,6 +1587,7 @@ fn make_test_app() -> ImageViewerApp {
         directory_tree_viewport_title_sent: false,
         cached_frame_render_plan: None,
         cached_frame_hdr_render_path: None,
+        frame_effective_hdr_monitor_selection: None,
         prev_texture: None,
         prev_hdr_image: None,
         prev_transition_rect: None,

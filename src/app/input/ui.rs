@@ -194,12 +194,6 @@ impl ImageViewerApp {
     /// `egui::Area`-based popup in [`Self::paint_image_context_menu_if_open`]).
     pub(crate) fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
         self.ensure_context_menu_label_cache();
-        let cached_labels = self
-            .context_menu_label_cache
-            .as_ref()
-            .expect("label cache must exist while menu is open")
-            .labels
-            .clone();
 
         let mut drew_action = false;
         let mut pending_separator = false;
@@ -226,10 +220,18 @@ impl ImageViewerApp {
                         ui.separator();
                         pending_separator = false;
                     }
-                    let Some(label) = cached_labels.get(idx).and_then(|label| label.as_deref()) else {
-                        continue;
+                    let clicked = {
+                        let cache = self
+                            .context_menu_label_cache
+                            .as_ref()
+                            .expect("label cache must exist while menu is open");
+                        let Some(label) = cache.labels.get(idx).and_then(|label| label.as_deref())
+                        else {
+                            continue;
+                        };
+                        ui.button(label).clicked()
                     };
-                    if ui.button(label).clicked() {
+                    if clicked {
                         let path = self.image_files[self.current_index].clone();
                         self.run_builtin_context_menu_action(desc.id, &path, ui);
                     }
@@ -310,13 +312,9 @@ impl ImageViewerApp {
     }
 
     fn ensure_context_menu_label_cache(&mut self) {
-        let stale = self
-            .context_menu_label_cache
-            .as_ref()
-            .is_none_or(|cache| {
-                cache.fullscreen != self.settings.fullscreen
-                    || cache.language != self.settings.language
-            });
+        let stale = self.context_menu_label_cache.as_ref().is_none_or(|cache| {
+            cache.fullscreen != self.settings.fullscreen || cache.language != self.settings.language
+        });
         if stale {
             self.rebuild_context_menu_label_cache();
         }

@@ -471,10 +471,7 @@ impl OsdRenderer {
     }
 
     fn sync_music_hud_display_cache(&mut self, frame: &MusicHudFrame<'_>) {
-        let display_text = frame
-            .metadata
-            .or(frame.current_track)
-            .unwrap_or("");
+        let display_text = frame.metadata.or(frame.current_track).unwrap_or("");
         if display_text != self.cached_music_title_source.as_str() {
             self.cached_music_title_source.clear();
             self.cached_music_title_source.push_str(display_text);
@@ -527,6 +524,9 @@ impl OsdRenderer {
     pub fn invalidate(&mut self) {
         self.last_music_state = None;
         self.cached_music_title_source.clear();
+        self.cached_music_title_line.clear();
+        self.cached_music_cur_time.clear();
+        self.cached_music_tot_time.clear();
         self.last_music_cur_second = None;
         self.last_music_tot_second = None;
         self.bump_content();

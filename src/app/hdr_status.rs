@@ -200,12 +200,17 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
 
+        let effective_selection = self
+            .frame_effective_hdr_monitor_selection
+            .clone()
+            .or_else(|| self.effective_hdr_monitor_selection());
+
         let plan = crate::app::rendering::plan::build_render_plan_for_state(
             shape,
             has_hdr_plane,
             has_sdr_fallback,
             self.hdr_target_format,
-            self.effective_hdr_monitor_selection().as_ref(),
+            effective_selection.as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
         );
         hdr_render_path_for_render_plan(
@@ -220,14 +225,17 @@ impl ImageViewerApp {
     pub(crate) fn update_view_status_for_paint(&mut self, image: &ImageOsdFrame) {
         let file_name = self.current_file_name.as_str();
         self.raw_metadata.set_current_index(self.current_index);
-        let monitor_selection = self.effective_hdr_monitor_selection();
+        let effective_selection = self
+            .frame_effective_hdr_monitor_selection
+            .clone()
+            .or_else(|| self.effective_hdr_monitor_selection());
         let hdr = HdrOsdFrame {
             render_path: self.current_hdr_render_path(),
             color_space: self.current_hdr_color_space(),
             output_mode: self.hdr_capabilities.output_mode,
             native_presentation_enabled: self.hdr_capabilities.native_presentation_enabled,
             ultra_hdr_decode_capacity: Some(self.ultra_hdr_decode_capacity),
-            monitor_label: monitor_selection
+            monitor_label: effective_selection
                 .as_ref()
                 .map(|selection| selection.label.as_str()),
             exposure_ev: self.effective_hdr_tone_map_settings().exposure_ev,
