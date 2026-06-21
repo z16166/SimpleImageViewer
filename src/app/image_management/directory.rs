@@ -140,6 +140,7 @@ impl ImageViewerApp {
         self.prefetch_prev_generation = None;
         self.pending_preload_after_directory_scan = false;
         self.directory_tree_strip_bootstrap_after_scan = false;
+        self.directory_tree_strip_bootstrap_frames = 0;
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             self.invalidate_directory_tree_strip_after_image_list_reorder();
         }
@@ -602,6 +603,7 @@ impl ImageViewerApp {
                         if self.defer_main_preload_for_directory_tree_list() {
                             self.pending_preload_after_directory_scan = true;
                             self.directory_tree_strip_bootstrap_after_scan = true;
+                            self.directory_tree_strip_bootstrap_frames = 0;
                         } else {
                             self.schedule_preloads(true);
                         }
@@ -629,6 +631,7 @@ impl ImageViewerApp {
             if self.defer_main_preload_for_directory_tree_list() {
                 self.pending_preload_after_directory_scan = true;
                 self.directory_tree_strip_bootstrap_after_scan = true;
+                self.directory_tree_strip_bootstrap_frames = 0;
             } else {
                 self.schedule_current_image_load_if_needed();
             }

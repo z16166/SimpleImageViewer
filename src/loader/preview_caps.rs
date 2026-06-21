@@ -171,7 +171,7 @@ pub(crate) static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|
 
 /// Dedicated pool for directory-tree strip thumbnails so scrolling the file list
 /// does not starve main-window HQ refinement work.
-const DIRECTORY_TREE_STRIP_POOL_MAX_THREADS: usize = 2;
+const DIRECTORY_TREE_STRIP_POOL_MAX_THREADS: usize = 4;
 
 pub(crate) static DIRECTORY_TREE_STRIP_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     rayon::ThreadPoolBuilder::new()

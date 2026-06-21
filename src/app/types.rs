@@ -535,6 +535,8 @@ pub struct ImageViewerApp {
     /// Main-window preloads are deferred until the directory-tree file list viewport paints.
     pub(crate) pending_preload_after_directory_scan: bool,
     pub(crate) directory_tree_strip_bootstrap_after_scan: bool,
+    /// Frames elapsed in strip bootstrap mode; used to exit high-throughput limits.
+    pub(crate) directory_tree_strip_bootstrap_frames: u32,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
