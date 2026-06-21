@@ -47,7 +47,7 @@ use super::{
 
 impl ImageViewerApp {
     pub(crate) fn directory_tree_nav_blocks_main_window_wheel(&self, ctx: &egui::Context) -> bool {
-        if !self.directory_tree_settings_active() {
+        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
             return false;
         }
         let pointer = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
