@@ -193,7 +193,6 @@ impl ImageViewerApp {
     /// Shared content for the right-click context menu (used by the custom
     /// `egui::Area`-based popup in [`Self::paint_image_context_menu_if_open`]).
     pub(crate) fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
-        let path = self.image_files[self.current_index].clone();
         let mut drew_action = false;
         let mut pending_separator = false;
         let item_count = self.context_menu_runtime.config.items.len();
@@ -221,16 +220,17 @@ impl ImageViewerApp {
                     }
                     let label = if desc.id == "toggle_fullscreen" {
                         if self.settings.fullscreen {
-                            t!("ctx.fullscreen_exit").to_string()
+                            t!("ctx.fullscreen_exit")
                         } else {
-                            t!("ctx.fullscreen_enter").to_string()
+                            t!("ctx.fullscreen_enter")
                         }
                     } else if desc.id == "print_current" && cfg!(not(target_os = "windows")) {
-                        t!("ctx.print_pdf_full").to_string()
+                        t!("ctx.print_pdf_full")
                     } else {
-                        t!(desc.label_key).to_string()
+                        t!(desc.label_key)
                     };
                     if ui.button(label).clicked() {
+                        let path = self.image_files[self.current_index].clone();
                         self.run_builtin_context_menu_action(desc.id, &path, ui);
                     }
                     drew_action = true;
@@ -245,6 +245,7 @@ impl ImageViewerApp {
                     }
                     if ui.button(item.label.as_str()).clicked() {
                         if let Some(command) = item.command.clone() {
+                            let path = self.image_files[self.current_index].clone();
                             self.run_custom_context_menu_action(&command, &path);
                         }
                         self.clear_image_context_menu();
@@ -305,10 +306,7 @@ impl ImageViewerApp {
         }
 
         let pos = self.context_menu_pos.unwrap_or_default();
-        let menu_id = egui::Id::new(format!(
-            "__custom_image_ctx_menu_{}",
-            self.settings.language
-        ));
+        let menu_id = egui::Id::new("custom_image_ctx_menu").with(&self.settings.language);
         let area_resp = egui::Area::new(menu_id)
             .kind(egui::UiKind::Menu)
             .order(egui::Order::Foreground)

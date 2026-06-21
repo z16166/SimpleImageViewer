@@ -216,12 +216,12 @@ fn apply_children_result_records_read_error() {
 fn apply_metadata_result_ignores_stale_generation() {
     let mut state = DirectoryTreeState::default();
     state.list.file_metadata_generation = 2;
-    state.list.image_rows = vec![DirectoryTreeFileRow {
-        path: PathBuf::from("/tmp/a.jpg"),
-        name: "a.jpg".to_string(),
-        size_bytes: 10,
-        modified_unix: None,
-    }];
+    state.list.image_rows = vec![DirectoryTreeFileRow::new(
+        PathBuf::from("/tmp/a.jpg"),
+        "a.jpg".to_string(),
+        10,
+        None,
+    )];
 
     state.apply_metadata_result(FileMetadataResult {
         generation: 1,
@@ -237,18 +237,8 @@ fn apply_metadata_result_updates_modified_times() {
     let mut state = DirectoryTreeState::default();
     state.list.file_metadata_generation = 1;
     state.list.image_rows = vec![
-        DirectoryTreeFileRow {
-            path: PathBuf::from("/tmp/a.jpg"),
-            name: "a.jpg".to_string(),
-            size_bytes: 10,
-            modified_unix: None,
-        },
-        DirectoryTreeFileRow {
-            path: PathBuf::from("/tmp/b.jpg"),
-            name: "b.jpg".to_string(),
-            size_bytes: 20,
-            modified_unix: None,
-        },
+        DirectoryTreeFileRow::new(PathBuf::from("/tmp/a.jpg"), "a.jpg".to_string(), 10, None),
+        DirectoryTreeFileRow::new(PathBuf::from("/tmp/b.jpg"), "b.jpg".to_string(), 20, None),
     ];
 
     state.apply_metadata_result(FileMetadataResult {
@@ -347,12 +337,7 @@ fn sync_images_marks_list_scroll_when_current_index_changes() {
     let mut state = DirectoryTreeState::default();
     state.list.image_rows = paths
         .iter()
-        .map(|path| DirectoryTreeFileRow {
-            path: path.clone(),
-            name: directory_display_name(path),
-            size_bytes: 0,
-            modified_unix: None,
-        })
+        .map(|path| DirectoryTreeFileRow::new(path.clone(), directory_display_name(path), 0, None))
         .collect();
     state.list.current_index = 0;
     state.list.scroll_image_list_to_current = false;
@@ -981,18 +966,8 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
     let path_a = PathBuf::from("/dir/b.jpg");
     let path_b = PathBuf::from("/dir/a.jpg");
     state.list.image_rows = vec![
-        DirectoryTreeFileRow {
-            path: path_a.clone(),
-            name: "b".to_string(),
-            size_bytes: 1,
-            modified_unix: None,
-        },
-        DirectoryTreeFileRow {
-            path: path_b.clone(),
-            name: "a".to_string(),
-            size_bytes: 2,
-            modified_unix: None,
-        },
+        DirectoryTreeFileRow::new(path_a.clone(), "b".to_string(), 1, None),
+        DirectoryTreeFileRow::new(path_b.clone(), "a".to_string(), 2, None),
     ];
     let path_c = PathBuf::from("/dir/c.jpg");
     let images = vec![path_b.clone(), path_a.clone(), path_c.clone()];
