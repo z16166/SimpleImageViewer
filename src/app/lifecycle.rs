@@ -486,6 +486,7 @@ impl ImageViewerApp {
             scan_results_pending_since: None,
             pending_preload_after_directory_scan: false,
             directory_tree_strip_bootstrap_after_scan: false,
+            directory_tree_strip_bootstrap_frames: 0,
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),

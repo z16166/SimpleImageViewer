@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 use super::sort::{
     compare_image_list_sort_keys, compare_optional_unix_time, image_list_sort_order,
 };
@@ -329,6 +330,15 @@ fn visible_strip_row_indices_skips_stale_range_while_scroll_pending() {
         ImageViewerApp::visible_strip_row_indices(Some((100, 110)), false, 200, false),
         (100..110).collect::<Vec<_>>()
     );
+    assert_eq!(
+        ImageViewerApp::visible_strip_row_indices(None, false, 7, true),
+        (0..7).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ImageViewerApp::visible_strip_row_indices(None, false, 200, true),
+        (0..200.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect::<Vec<_>>()
+    );
+    assert!(ImageViewerApp::visible_strip_row_indices(None, false, 7, false).is_empty());
 }
 
 #[test]

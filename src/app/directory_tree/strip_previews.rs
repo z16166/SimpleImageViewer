@@ -34,8 +34,10 @@ use crate::loader::{
 #[cfg(target_os = "windows")]
 use super::workers::ensure_strip_worker_com_initialized;
 use super::{
-    DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS, DirectoryTreeListPreviewLayout,
-    MAX_COLD_STRIP_GENERATES_PER_FRAME, MAX_STRIP_GENERATE_INFLIGHT,
+    BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
+    DirectoryTreeListPreviewLayout, MAX_COLD_STRIP_GENERATES_PER_FRAME,
+    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES,
+    MAX_STRIP_GENERATE_INFLIGHT, MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP,
     MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
@@ -135,10 +137,37 @@ impl ImageViewerApp {
         }
     }
 
+    /// Request repaints after a strip GPU flush batch. More uploads still queued uses the
+    /// existing per-batch repaint; a final install that bumps cache revision gets one coalesced
+    /// directory-tree viewport refresh (and a root logic wake when detached).
+    fn request_directory_tree_strip_flush_repaint(
+        &mut self,
+        ctx: &egui::Context,
+        cache_revision_changed: bool,
+        pending_uploads_remain: bool,
+    ) {
+        if pending_uploads_remain {
+            ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+            ctx.request_repaint();
+            return;
+        }
+        if !cache_revision_changed {
+            return;
+        }
+        self.mark_directory_tree_repaint_pending();
+        self.request_directory_tree_viewport_repaint(ctx);
+        if self.directory_tree_nav_is_detached() {
+            self.wake_root_for_logic();
+        } else {
+            ctx.request_repaint();
+        }
+    }
+
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
         if self.directory_tree_strip_pending_gpu.is_empty() {
             return;
         }
+        let revision_before = self.directory_tree_strip_cache.gpu_revision();
         let take = MAX_STRIP_GPU_UPLOADS_PER_PAINT.min(self.directory_tree_strip_pending_gpu.len());
         let batch: Vec<_> = self
             .directory_tree_strip_pending_gpu
@@ -178,10 +207,22 @@ impl ImageViewerApp {
                 );
             }
         }
-        if !self.directory_tree_strip_pending_gpu.is_empty() {
-            ctx.request_repaint();
-            ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+        let cache_revision_changed =
+            self.directory_tree_strip_cache.gpu_revision() != revision_before;
+        let pending_uploads_remain = !self.directory_tree_strip_pending_gpu.is_empty();
+        #[cfg(feature = "preload-debug")]
+        if cache_revision_changed && !pending_uploads_remain {
+            crate::preload_debug!(
+                "[PreloadDebug][StripGpu] flush installed rev {revision_before} -> {} \
+                 repaint coalesced",
+                self.directory_tree_strip_cache.gpu_revision()
+            );
         }
+        self.request_directory_tree_strip_flush_repaint(
+            ctx,
+            cache_revision_changed,
+            pending_uploads_remain,
+        );
     }
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
@@ -243,6 +284,11 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_sync_strip_from_tile_manager_preview(&mut self, index: usize) {
+        // Main-window tile previews live on the ROOT egui context; cloning their
+        // TextureHandle into the strip cache breaks painting on the detached nav viewport.
+        if self.directory_tree_nav_is_detached() {
+            return;
+        }
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return;
         };
@@ -290,6 +336,11 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize) {
+        // Main-window texture_cache handles are ROOT-context textures; the detached
+        // directory-tree viewport must upload strip thumbs via its own egui context.
+        if self.directory_tree_nav_is_detached() {
+            return;
+        }
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return;
         };
@@ -363,7 +414,8 @@ impl ImageViewerApp {
         true
     }
 
-    /// Visible image-list row indices used for strip prefetch scheduling.
+    /// Visible image-list row indices used for strip prefetch scheduling (unit tests).
+    #[cfg(test)]
     pub(super) fn visible_strip_row_indices(
         visible_row_range: Option<(usize, usize)>,
         scroll_to_current_pending: bool,
@@ -376,9 +428,13 @@ impl ImageViewerApp {
         if scroll_to_current_pending && !bootstrap_visible {
             return Vec::new();
         }
-        visible_row_range
-            .map(|(start, end)| (start..end.min(total)).collect())
-            .unwrap_or_default()
+        if let Some((start, end)) = visible_row_range {
+            return (start..end.min(total)).collect();
+        }
+        if bootstrap_visible {
+            return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
+        }
+        Vec::new()
     }
 
     fn collect_cold_strip_thumbnail_candidates(
@@ -386,35 +442,57 @@ impl ImageViewerApp {
         visible_row_range: Option<(usize, usize)>,
         scroll_to_current_pending: bool,
         bootstrap_visible: bool,
+        schedule_budget: usize,
     ) -> Vec<usize> {
         let total = self.image_files.len();
-        if total == 0 {
+        if total == 0 || schedule_budget == 0 {
+            return Vec::new();
+        }
+        if scroll_to_current_pending && !bootstrap_visible {
             return Vec::new();
         }
         let current = self.current_index.min(total.saturating_sub(1));
-        let mut ordered = Vec::new();
+        let mut ordered = Vec::with_capacity(schedule_budget.min(8));
         let mut seen = std::collections::HashSet::new();
-        let mut push = |index: usize| {
+        let mut try_push = |index: usize| -> bool {
             if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {
                 ordered.push(index);
             }
+            ordered.len() >= schedule_budget
         };
 
-        push(current);
+        if bootstrap_visible {
+            if try_push(current) {
+                return ordered;
+            }
+        }
 
-        for index in Self::visible_strip_row_indices(
-            visible_row_range,
-            scroll_to_current_pending,
-            total,
-            bootstrap_visible,
-        ) {
-            push(index);
+        if let Some((start, end)) = visible_row_range {
+            for index in start..end.min(total) {
+                if try_push(index) {
+                    return ordered;
+                }
+            }
+        } else if bootstrap_visible {
+            for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
+                if try_push(index) {
+                    return ordered;
+                }
+            }
+        }
+
+        if !bootstrap_visible {
+            if try_push(current) {
+                return ordered;
+            }
         }
 
         for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
-            push(current.saturating_sub(delta));
-            if current + delta < total {
-                push(current + delta);
+            if try_push(current.saturating_sub(delta)) {
+                return ordered;
+            }
+            if current + delta < total && try_push(current + delta) {
+                return ordered;
             }
         }
 
@@ -438,6 +516,12 @@ impl ImageViewerApp {
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] pool submit idx={} path={} kind=cold max_side={}",
+            index,
+            path.display(),
+            max_side
+        );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             crate::preload_debug!(
                 "[PreloadDebug][Strip] cold worker start idx={} path={}",
@@ -738,6 +822,14 @@ impl ImageViewerApp {
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] pool submit idx={} path={} kind=tiled logical={}x{} max_side={}",
+            index,
+            path.display(),
+            logical.0,
+            logical.1,
+            max_side
+        );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             crate::preload_debug!(
                 "[PreloadDebug][Strip] worker start idx={} logical={}x{} max_side={}",
@@ -920,20 +1012,44 @@ impl ImageViewerApp {
             self.defer_directory_tree_file_list_sync();
         }
         let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
+        let max_cold_per_frame = if bootstrap_visible {
+            MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP
+        } else {
+            MAX_COLD_STRIP_GENERATES_PER_FRAME
+        };
+        let max_inflight = if bootstrap_visible {
+            MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
+        } else {
+            MAX_STRIP_GENERATE_INFLIGHT
+        };
+        let inflight_room =
+            max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
+        let schedule_budget = max_cold_per_frame.min(inflight_room);
         let cold_candidates = self.collect_cold_strip_thumbnail_candidates(
             visible_row_range,
             scroll_to_current_pending,
             bootstrap_visible,
+            schedule_budget,
         );
-        if bootstrap_visible && visible_row_range.is_some() {
-            self.directory_tree_strip_bootstrap_after_scan = false;
+        if bootstrap_visible {
+            if visible_row_range.is_some() {
+                self.directory_tree_strip_bootstrap_after_scan = false;
+                self.directory_tree_strip_bootstrap_frames = 0;
+            } else {
+                self.directory_tree_strip_bootstrap_frames =
+                    self.directory_tree_strip_bootstrap_frames.saturating_add(1);
+                if self.directory_tree_strip_bootstrap_frames
+                    >= MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES
+                {
+                    self.directory_tree_strip_bootstrap_after_scan = false;
+                    self.directory_tree_strip_bootstrap_frames = 0;
+                }
+            }
         }
-        let inflight_room = MAX_STRIP_GENERATE_INFLIGHT
-            .saturating_sub(self.directory_tree_strip_generate_inflight.len());
         let mut cold_scheduled = 0usize;
         if !self.scanning {
             for index in cold_candidates {
-                if cold_scheduled >= MAX_COLD_STRIP_GENERATES_PER_FRAME.min(inflight_room) {
+                if cold_scheduled >= schedule_budget {
                     break;
                 }
                 self.try_generate_cold_directory_tree_strip_thumbnail(index);

@@ -7,10 +7,12 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Minimize to tray on close**: With **Close window minimizes to tray** enabled, closing the main window reliably hides the app to the system tray again after directory tree navigation was added.
 - **Detached navigation with tray**: When the navigation panel is in a separate window, closing the main window to the tray now hides that navigation window too; restoring from the tray brings both windows back.
+- **Navigation strip previews (detached)**: Thumbnail previews in the separate navigation window no longer reuse main-window GPU textures (which could leave a row stuck on the placeholder after a preview-size change). After the last thumbnail installs, the navigation panel now refreshes once so the final row appears without needing to hover the list.
 
 ### Improved
 - **Navigation file list**: Scrolling and browsing large folders in the navigation panel is smoother, with less work each frame when many files are visible.
 - **Image viewing**: Lower overhead while the on-screen display, pixel inspector, context menu, and drag-and-drop are active; switching language keeps navigation labels in sync.
+- **Navigation strip previews at startup**: Cold thumbnail generation uses higher parallel limits during the initial folder scan so visible rows (including the first and last) fill in sooner on large HEIC folders.
 
 ## [2.7.1] - 2026-06-21
 
