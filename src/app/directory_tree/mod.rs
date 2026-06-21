@@ -837,9 +837,31 @@ impl DirectoryTreeTreeState {
             .filter(|entry| entry.filesystem_path == selected)
             .map(|entry| entry.tree_path.clone())
             .unwrap_or_else(|| selected.clone());
-        self.or_insert_tree_node(selected_tree_key, || {
+        self.or_insert_tree_node(selected_tree_key.clone(), || {
             directory_tree_node(directory_display_name(&selected), selected.clone())
         });
+        if chain.len() >= 2 {
+            let parent_key = &chain[chain.len() - 2];
+            if let Some(parent_node) = self.nodes.get_mut(parent_key) {
+                if parent_node.expanded
+                    && !parent_node
+                        .children
+                        .iter()
+                        .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+                {
+                    parent_node.children.push(selected_tree_key.clone());
+                }
+            }
+        } else if let Some(this_pc_node) = self.nodes.get_mut(&this_pc_tree_path()) {
+            if this_pc_node.expanded
+                && !this_pc_node
+                    .children
+                    .iter()
+                    .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+            {
+                this_pc_node.children.push(selected_tree_key);
+            }
+        }
         requests
     }
 

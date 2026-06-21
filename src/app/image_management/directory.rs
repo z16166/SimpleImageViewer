@@ -83,7 +83,7 @@ impl ImageViewerApp {
         } else {
             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
             self.settings.tree_nav_root_dir = None;
-            self.settings.tree_nav_selected_dir = None;
+            self.settings.tree_nav_selected_dir = Some(dir.clone());
         }
         self.load_directory(dir);
         self.queue_save();
@@ -108,12 +108,10 @@ impl ImageViewerApp {
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             if self.settings.tree_nav_root_dir.is_none() {
                 self.settings.tree_nav_root_dir = Some(dir.clone());
-                self.settings.last_image_dir = Some(dir.clone());
             }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
-        } else {
-            self.settings.last_image_dir = Some(dir.clone());
         }
+        self.settings.last_image_dir = Some(dir.clone());
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
@@ -141,9 +139,7 @@ impl ImageViewerApp {
         self.pending_preload_after_directory_scan = false;
         self.directory_tree_strip_bootstrap_after_scan = false;
         self.directory_tree_strip_bootstrap_frames = 0;
-        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-            self.invalidate_directory_tree_strip_after_image_list_reorder();
-        }
+        self.reset_directory_tree_file_list_for_scan();
         #[cfg(feature = "preload-debug")]
         let after_cleanup_ms = crate::preload_debug::elapsed_ms(load_started);
         self.pan_offset = Vec2::ZERO;

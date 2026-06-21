@@ -15,9 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
-use crate::settings::{
-    BrowseMode, DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedRawJpegHandling,
-};
+use crate::settings::{DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedRawJpegHandling};
 use crate::ui::utils::{
     path_display_box, settings_card, stable_selectable_value, styled_button, themed_labeled_toggle,
 };
@@ -106,20 +104,9 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         .changed()
         {
             if app.settings.show_directory_tree_nav {
-                app.settings.browse_mode = BrowseMode::Tree;
-                app.ensure_directory_tree_places_loaded();
-                if let Some(root) = app
-                    .settings
-                    .tree_nav_root_dir
-                    .clone()
-                    .or_else(|| app.settings.last_image_dir.clone())
-                {
-                    app.initialize_directory_tree_root(root);
-                }
+                app.show_directory_tree_nav(ui.ctx());
             } else {
-                app.settings.browse_mode = BrowseMode::Linear;
-                app.settings.tree_nav_root_dir = None;
-                app.settings.tree_nav_selected_dir = None;
+                app.deactivate_directory_tree_nav(ui.ctx());
             }
             if old_tree_nav != app.settings.show_directory_tree_nav {
                 app.queue_save();
@@ -206,34 +193,34 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         });
 
         let old_recursive = app.settings.recursive;
-        if app.settings.browse_mode == BrowseMode::Tree {
+        if app.directory_tree_settings_active() {
             ui.add_enabled_ui(false, |ui| {
                 let mut recursive = false;
                 themed_labeled_toggle(ui, &mut recursive, t!("label.recursive_scan"), &palette);
             });
             ui.label(RichText::new(t!("directory_tree.recursive_disabled")).weak());
-        } else {
-            themed_labeled_toggle(
-                ui,
-                &mut app.settings.recursive,
-                t!("label.recursive_scan"),
-                &palette,
-            );
-        }
-        if !old_recursive && app.settings.recursive {
-            app.settings.recursive = false;
-            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
-                crate::ui::dialogs::confirm::State::recursive_scan(
-                    t!("win.confirm_recursive_title").to_string(),
-                    t!("win.confirm_recursive_msg").to_string(),
-                ),
-            ));
-        }
-        if old_recursive && !app.settings.recursive {
-            if let Some(dir) = app.current_browse_directory() {
-                app.load_directory(dir);
+        } else if themed_labeled_toggle(
+            ui,
+            &mut app.settings.recursive,
+            t!("label.recursive_scan"),
+            &palette,
+        )
+        .changed()
+        {
+            if !old_recursive && app.settings.recursive {
+                app.settings.recursive = false;
+                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                    crate::ui::dialogs::confirm::State::recursive_scan(
+                        t!("win.confirm_recursive_title").to_string(),
+                        t!("win.confirm_recursive_msg").to_string(),
+                    ),
+                ));
+            } else if old_recursive && !app.settings.recursive {
+                if let Some(dir) = app.current_browse_directory() {
+                    app.load_directory(dir);
+                }
+                app.queue_save();
             }
-            app.queue_save();
         }
 
         if themed_labeled_toggle(

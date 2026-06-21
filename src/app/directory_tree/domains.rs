@@ -49,6 +49,8 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) selected_tree_path: Option<PathBuf>,
     pub(crate) nodes: node_store::DirectoryTreeNodeArena,
     pub(crate) generation: u64,
+    pub(crate) folder_scroll_offset_y: f32,
+    pub(crate) scroll_folder_tree_to_selected: bool,
     pub(crate) network_label: String,
     pub(crate) network_visible: bool,
     pub(crate) left_panel_width: f32,
@@ -71,6 +73,8 @@ impl Default for DirectoryTreeTreeState {
             selected_tree_path: None,
             nodes: node_store::DirectoryTreeNodeArena::default(),
             generation: 0,
+            folder_scroll_offset_y: 0.0,
+            scroll_folder_tree_to_selected: false,
             network_label: String::new(),
             network_visible: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
@@ -174,6 +178,8 @@ pub(crate) struct DirectoryTreeTreeSnapshot {
     pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
     pub(super) network_visible: bool,
     pub(super) left_panel_width: f32,
+    pub(super) folder_scroll_offset_y: f32,
+    pub(super) scroll_folder_tree_to_selected: bool,
 }
 
 pub(crate) struct DirectoryTreeListSnapshot {
@@ -216,6 +222,8 @@ impl Default for DirectoryTreeTreeSnapshot {
             nodes: HashMap::new(),
             network_visible: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
+            folder_scroll_offset_y: 0.0,
+            scroll_folder_tree_to_selected: false,
         }
     }
 }
@@ -314,6 +322,8 @@ pub(super) fn publish_tree_snapshot(
         nodes,
         network_visible: tree.network_visible,
         left_panel_width: tree.left_panel_width,
+        folder_scroll_offset_y: tree.folder_scroll_offset_y,
+        scroll_folder_tree_to_selected: tree.scroll_folder_tree_to_selected,
     }));
     tree.snapshot_dirty = false;
     true

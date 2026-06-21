@@ -1253,6 +1253,18 @@ impl ImageViewerApp {
         );
     }
 
+    /// Drop stale navigation list rows and strip previews before a new directory scan.
+    pub(crate) fn reset_directory_tree_file_list_for_scan(&mut self) {
+        self.invalidate_directory_tree_strip_after_image_list_reorder();
+        let mut list = self.directory_tree.list.lock();
+        list.image_rows.clear();
+        list.current_index = 0;
+        list.scanning = true;
+        list.image_list_scroll_offset_y = 0.0;
+        list.scroll_image_list_to_current = true;
+        list.mark_snapshot_dirty();
+    }
+
     pub(crate) fn invalidate_directory_tree_strip_gpu_textures(&mut self) {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
