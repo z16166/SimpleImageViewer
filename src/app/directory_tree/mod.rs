@@ -112,6 +112,7 @@ pub(crate) enum DirectoryTreeCommand {
     },
     ToggleExpanded(PathBuf),
     SelectImage(usize),
+    SelectImageAndHideNav(usize),
     SortImageList(ImageListSortColumn),
     CloseWindow,
 }

@@ -53,6 +53,7 @@ pub(crate) enum AppAction {
     CutTo,
     ToggleTray,
     PickDirectory,
+    ToggleDirectoryTreeNav,
 }
 
 impl ImageViewerApp {
@@ -223,6 +224,9 @@ impl ImageViewerApp {
                 if self.pick_directory_hotkey_allowed(ctx) {
                     self.pending_open_directory = true;
                 }
+            }
+            AppAction::ToggleDirectoryTreeNav => {
+                self.toggle_directory_tree_nav_visibility(ctx);
             }
         }
     }

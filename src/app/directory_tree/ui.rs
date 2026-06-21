@@ -497,7 +497,12 @@ pub(super) fn draw_directory_tree_window(
         embedded,
         allow_image_context_menu,
     );
-    publish_directory_tree_nav_wheel_block_rect(ui);
+    if embedded {
+        // Detached nav lives in a separate viewport; its ui.max_rect() is viewport-local
+        // (0,0)-based and must not be stored in shared ctx temp data or it falsely blocks
+        // main-window wheel zoom/navigation for most pointer positions.
+        publish_directory_tree_nav_wheel_block_rect(ui);
+    }
 }
 
 pub(super) fn publish_directory_tree_nav_wheel_block_rect(ui: &egui::Ui) {
@@ -1471,6 +1476,13 @@ fn draw_image_details_row(
         );
     }
 
+    if list_enabled && response.double_clicked() {
+        send_directory_tree_command(
+            command_tx,
+            DirectoryTreeCommand::SelectImageAndHideNav(row_index),
+        );
+        return true;
+    }
     if list_enabled && response.clicked() {
         send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(row_index));
         return true;

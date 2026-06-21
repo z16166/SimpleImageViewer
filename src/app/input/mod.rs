@@ -232,6 +232,7 @@ pub(super) fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAct
         HotkeyActionId::CutTo => AppAction::CutTo,
         HotkeyActionId::ToggleTray => AppAction::ToggleTray,
         HotkeyActionId::PickDirectory => AppAction::PickDirectory,
+        HotkeyActionId::ToggleDirectoryTreeNav => AppAction::ToggleDirectoryTreeNav,
     }
 }
 

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.1] - 2026-06-21
+
+### Added
+- **Toggle navigation panel**: Press `Ctrl + T` (customizable in **Settings > Hotkeys**) to show or hide the directory tree navigation panel from the main window or the detached navigation window.
+- **Double-click to open and dismiss**: Double-click an image in the navigation file list to jump to that picture and hide the navigation panel.
+
+### Fixed
+- **Zoom in detached navigation mode**: `Ctrl + mouse wheel` on the main image canvas works again when the navigation panel is in a separate window.
+- **Navigation toggle from nav window**: `Ctrl + T` to hide the navigation panel now works even when the separate navigation window or its file list has keyboard focus.
+
 ## [2.7.0] - 2026-06-20
 
 ### Added
