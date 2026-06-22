@@ -80,6 +80,35 @@ impl Drop for ComSession {
     }
 }
 
+struct CoTaskMemPwstr(PWSTR);
+
+impl CoTaskMemPwstr {
+    fn new(pw: PWSTR) -> Self {
+        Self(pw)
+    }
+
+    fn into_string(self) -> Option<String> {
+        if self.0.0.is_null() {
+            return None;
+        }
+        unsafe { self.0.to_string().ok() }
+    }
+
+    fn into_path_buf(self) -> Option<PathBuf> {
+        self.into_string().map(PathBuf::from)
+    }
+}
+
+impl Drop for CoTaskMemPwstr {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.0.is_null() {
+                CoTaskMemFree(Some(self.0.0.cast()));
+            }
+        }
+    }
+}
+
 pub(super) fn load() -> DirectoryTreePlaces {
     let com = ComSession::new();
     if !com.shell_usable {
@@ -163,9 +192,7 @@ fn load_known_folders() -> Vec<KnownFolderEntry> {
 fn known_folder_path(folder_id: &GUID) -> Option<PathBuf> {
     unsafe {
         let pw = SHGetKnownFolderPath(folder_id, KF_FLAG_DEFAULT, None).ok()?;
-        let path = pw.to_string().ok().map(PathBuf::from);
-        CoTaskMemFree(Some(pw.0.cast()));
-        path
+        CoTaskMemPwstr::new(pw).into_path_buf()
     }
 }
 
@@ -232,12 +259,5 @@ fn has_shell_flag(attrs: SFGAO_FLAGS, flag: SFGAO_FLAGS) -> bool {
 }
 
 fn take_pwstr(pw: PWSTR) -> Option<String> {
-    unsafe {
-        if pw.0.is_null() {
-            return None;
-        }
-        let text = pw.to_string().ok()?;
-        CoTaskMemFree(Some(pw.0.cast()));
-        Some(text)
-    }
+    CoTaskMemPwstr::new(pw).into_string()
 }
