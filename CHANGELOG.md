@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.4] - 2026-06-22
+
+### Fixed
+- **Windows directory tree places**: Loading common folders and the **This PC** drive list in the navigation panel is more reliable on Windows, with fewer edge cases when a drive or folder name cannot be read.
+
 ## [2.7.3] - 2026-06-21
 
 ### Fixed
