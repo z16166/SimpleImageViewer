@@ -512,6 +512,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -576,7 +577,12 @@ impl ImageViewerApp {
                 logical,
                 stage: PreviewStage::Initial,
             };
-            if let Err(err) = tx.try_send(job) {
+            let send_result = tx.try_send(job);
+            if send_result.is_ok() {
+                if let Some(wake) = &root_wake {
+                    wake();
+                }
+            } else if let Err(err) = send_result {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
@@ -818,6 +824,7 @@ impl ImageViewerApp {
         let source = Arc::clone(&source);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -880,7 +887,12 @@ impl ImageViewerApp {
                 logical,
                 stage: PreviewStage::Refined,
             };
-            if let Err(err) = tx.try_send(job) {
+            let send_result = tx.try_send(job);
+            if send_result.is_ok() {
+                if let Some(wake) = &root_wake {
+                    wake();
+                }
+            } else if let Err(err) = send_result {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
                 send_strip_inflight_release(&release_tx, index);
             }
