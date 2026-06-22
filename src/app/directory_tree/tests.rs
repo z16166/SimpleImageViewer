@@ -808,6 +808,49 @@ fn selected_tree_path_distinguishes_alias_nodes_with_same_browse_path() {
 }
 
 #[test]
+fn begin_paint_frame_preserves_folder_scroll_offset_from_chrome() {
+    use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
+    use std::sync::Arc;
+
+    let tree = DirectoryTreeTreeState::default();
+    let list = DirectoryTreeListState::default();
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.folder_scroll_offset_y = 240.0;
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(super::domains::DirectoryTreeTreeSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    chrome.begin_paint_frame(&view, false);
+
+    assert_eq!(chrome.folder_scroll_offset_y, 240.0);
+}
+
+#[test]
+fn begin_paint_frame_promotes_folder_scroll_to_selected_without_clobbering_clear() {
+    use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
+    use std::sync::Arc;
+
+    let tree = DirectoryTreeTreeState::default();
+    let list = DirectoryTreeListState::default();
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.scroll_folder_tree_to_selected = false;
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(super::domains::DirectoryTreeTreeSnapshot {
+            scroll_folder_tree_to_selected: true,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    chrome.begin_paint_frame(&view, false);
+
+    assert!(chrome.scroll_folder_tree_to_selected);
+}
+
+#[test]
 fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
     use super::view::DirectoryTreeUiChrome;
 
