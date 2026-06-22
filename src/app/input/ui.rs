@@ -234,6 +234,7 @@ impl ImageViewerApp {
                     if clicked {
                         let path = self.image_files[self.current_index].clone();
                         self.run_builtin_context_menu_action(desc.id, &path, ui);
+                        return;
                     }
                     drew_action = true;
                 }
@@ -251,6 +252,7 @@ impl ImageViewerApp {
                             self.run_custom_context_menu_action(&command, &path);
                         }
                         self.clear_image_context_menu();
+                        return;
                     }
                     drew_action = true;
                 }

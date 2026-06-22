@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Windows directory tree places**: Loading common folders and the **This PC** drive list in the navigation panel is more reliable on Windows, with fewer edge cases when a drive or folder name cannot be read.
+- **Image context menu**: Right-click actions such as **Copy file path** no longer crash the app when the menu has more than one item.
 
 ## [2.7.3] - 2026-06-21
 
