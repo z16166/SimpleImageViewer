@@ -115,10 +115,6 @@ impl DirectoryTreeView {
         self.tree.scroll_folder_tree_to_selected
     }
 
-    pub(super) fn folder_scroll_offset_y(&self) -> f32 {
-        self.tree.folder_scroll_offset_y
-    }
-
     pub(super) fn preview_textures(
         &self,
     ) -> &std::collections::HashMap<usize, egui::TextureHandle> {
@@ -217,8 +213,12 @@ impl DirectoryTreeUiChrome {
         self.left_panel_width = view.left_panel_width();
         self.current_index = view.current_index();
         self.scroll_image_list_to_current = view.scroll_image_list_to_current();
-        self.folder_scroll_offset_y = view.folder_scroll_offset_y();
-        self.scroll_folder_tree_to_selected = view.scroll_folder_tree_to_selected();
+        // folder_scroll_offset_y is frame-local chrome (like image_list_scroll_offset_y):
+        // do not reload from the RCU snapshot each frame because scroll changes do not mark
+        // tree.snapshot_dirty, so the view would keep resetting the offset to a stale value.
+        if view.scroll_folder_tree_to_selected() {
+            self.scroll_folder_tree_to_selected = true;
+        }
         self.image_list_keyboard_active = list_keyboard_active;
     }
 

@@ -178,7 +178,6 @@ pub(crate) struct DirectoryTreeTreeSnapshot {
     pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
     pub(super) network_visible: bool,
     pub(super) left_panel_width: f32,
-    pub(super) folder_scroll_offset_y: f32,
     pub(super) scroll_folder_tree_to_selected: bool,
 }
 
@@ -222,7 +221,6 @@ impl Default for DirectoryTreeTreeSnapshot {
             nodes: HashMap::new(),
             network_visible: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
-            folder_scroll_offset_y: 0.0,
             scroll_folder_tree_to_selected: false,
         }
     }
@@ -322,7 +320,6 @@ pub(super) fn publish_tree_snapshot(
         nodes,
         network_visible: tree.network_visible,
         left_panel_width: tree.left_panel_width,
-        folder_scroll_offset_y: tree.folder_scroll_offset_y,
         scroll_folder_tree_to_selected: tree.scroll_folder_tree_to_selected,
     }));
     tree.snapshot_dirty = false;
