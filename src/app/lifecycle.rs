@@ -272,7 +272,7 @@ impl ImageViewerApp {
                 hdr_callback_resources_prewarm.ensure_started(
                     &state.device,
                     format,
-                    Some(&pipeline_cache),
+                    pipeline_cache.as_ref(),
                 );
             }
             state.renderer.write().callback_resources.insert(
@@ -281,7 +281,7 @@ impl ImageViewerApp {
                 ),
             );
             (
-                Some(std::sync::Arc::new(pipeline_cache)),
+                pipeline_cache.map(std::sync::Arc::new),
                 Some(adapter_info),
             )
         } else {
