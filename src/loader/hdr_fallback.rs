@@ -40,6 +40,13 @@ pub(crate) fn hdr_display_requests_sdr_preview(hdr_target_capacity: f32) -> bool
     hdr_target_capacity <= MAX_SDR + EPS
 }
 
+/// RGBA8 SDR fallback bytes plus whether they are a cheap deferred placeholder buffer.
+#[derive(Clone)]
+pub(crate) struct HdrSdrFallbackRgba8 {
+    pub pixels: Arc<Vec<u8>>,
+    pub is_deferred_placeholder: bool,
+}
+
 pub(crate) fn cheap_hdr_sdr_placeholder_rgba8(width: u32, height: u32) -> Result<Vec<u8>, String> {
     crate::hdr::decode::validate_hdr_fallback_budget(width, height)?;
     let pixels = u64::from(width)
@@ -154,35 +161,47 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
     tone: &HdrToneMapSettings,
-) -> Result<Arc<Vec<u8>>, String> {
+) -> Result<HdrSdrFallbackRgba8, String> {
     if let Some(source) = hdr.metadata.raw_gpu_source.as_ref() {
         if let Some(preview) = source.bootstrap_preview.as_ref() {
-            return Ok(preview.arc_pixels());
+            return Ok(HdrSdrFallbackRgba8 {
+                pixels: preview.arc_pixels(),
+                is_deferred_placeholder: false,
+            });
         }
-        return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
-            hdr.width, hdr.height,
-        )?));
+        return Ok(HdrSdrFallbackRgba8 {
+            pixels: Arc::new(cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?),
+            is_deferred_placeholder: true,
+        });
     }
     if let Some(gain_map) = hdr.metadata.gain_map.as_ref() {
         if let Some(iso) = gain_map.iso_deferred.as_ref() {
             // Share deferred baseline planes; avoid cloning multi‑MP RGBA on cold fallback paths.
-            return Ok(Arc::clone(&iso.sdr_rgba));
+            return Ok(HdrSdrFallbackRgba8 {
+                pixels: Arc::clone(&iso.sdr_rgba),
+                is_deferred_placeholder: false,
+            });
         }
         if gain_map.apple_heic_deferred.is_some() {
             // rgba_f32 holds encoded primary for GPU compose, not display-ready scene-linear HDR.
-            return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
-                hdr.width, hdr.height,
-            )?));
+            return Ok(HdrSdrFallbackRgba8 {
+                pixels: Arc::new(cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?),
+                is_deferred_placeholder: true,
+            });
         }
     }
     if hdr_display_requests_sdr_preview(hdr_target_capacity)
         || libraw_scene_linear_needs_eager_sdr_fallback(hdr)
     {
-        Ok(Arc::new(hdr_to_sdr_with_user_tone(hdr, tone)?))
+        Ok(HdrSdrFallbackRgba8 {
+            pixels: Arc::new(hdr_to_sdr_with_user_tone(hdr, tone)?),
+            is_deferred_placeholder: false,
+        })
     } else {
-        Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
-            hdr.width, hdr.height,
-        )?))
+        Ok(HdrSdrFallbackRgba8 {
+            pixels: Arc::new(cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?),
+            is_deferred_placeholder: true,
+        })
     }
 }
 
@@ -234,7 +253,8 @@ mod tests {
         let out =
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
                 .expect("fallback");
-        assert_eq!(out.as_slice(), iso_sdr);
+        assert_eq!(out.pixels.as_slice(), iso_sdr);
+        assert!(!out.is_deferred_placeholder);
     }
 
     #[test]
@@ -338,10 +358,12 @@ mod tests {
         let out =
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
                 .expect("fallback");
+        let px = out.pixels.as_slice();
         assert!(
-            out[0] > 0 || out[1] > 0 || out[2] > 0,
+            px[0] > 0 || px[1] > 0 || px[2] > 0,
             "LibRaw scene-linear HDR must not use a black SDR placeholder at HDR headroom > 1"
         );
+        assert!(!out.is_deferred_placeholder);
     }
 
     #[test]
@@ -372,7 +394,8 @@ mod tests {
         let out =
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 0.5, &HdrToneMapSettings::default())
                 .expect("fallback");
-        assert_eq!(out.as_slice(), [0, 0, 0, 255]);
+        assert!(out.is_deferred_placeholder);
+        assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }
 
     #[test]

@@ -27,8 +27,8 @@ use crate::app::directory_tree_strip_cache::{
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, decoded_looks_like_black_placeholder,
-    generate_directory_tree_thumb_from_path, preview_aspect_matches_logical,
+    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
+    preview_aspect_matches_logical,
 };
 
 #[cfg(target_os = "windows")]
@@ -225,6 +225,33 @@ impl ImageViewerApp {
         );
     }
 
+    fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
+        if self.hdr_placeholder_fallback_indices.contains(&index) {
+            return true;
+        }
+        if self
+            .deferred_sdr_uploads
+            .get(&index)
+            .is_some_and(DecodedImage::is_sdr_deferred_placeholder)
+        {
+            return true;
+        }
+        let Some(hdr) = self.hdr_image_cache.get(&index) else {
+            return false;
+        };
+        if hdr
+            .metadata
+            .gain_map
+            .as_ref()
+            .and_then(|g| g.iso_deferred.as_ref())
+            .is_some()
+        {
+            return false;
+        }
+        crate::loader::libraw_scene_linear_needs_eager_sdr_fallback(hdr.as_ref())
+            && !crate::loader::hdr_display_requests_sdr_preview(self.ultra_hdr_decode_capacity)
+    }
+
     pub(crate) fn cache_directory_tree_strip_thumbnail(
         &mut self,
         index: usize,
@@ -234,6 +261,14 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+            return;
+        }
+        if decoded.is_sdr_deferred_placeholder() {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] skip strip cache idx={} reason=black_placeholder",
+                index
+            );
             return;
         }
         self.directory_tree_strip_cache.upsert_from_decoded(
@@ -341,6 +376,14 @@ impl ImageViewerApp {
         if self.directory_tree_nav_is_detached() {
             return;
         }
+        if self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] skip texture_cache sync idx={} reason=deferred_black_sdr",
+                index
+            );
+            return;
+        }
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return;
         };
@@ -391,7 +434,7 @@ impl ImageViewerApp {
         if self
             .deferred_sdr_uploads
             .get(&index)
-            .is_some_and(|decoded| !crate::loader::decoded_looks_like_black_placeholder(decoded))
+            .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
         {
             return false;
         }
@@ -567,7 +610,7 @@ impl ImageViewerApp {
                     logical.0,
                     logical.1,
                 ),
-                !decoded_looks_like_black_placeholder(&decoded)
+                !decoded.is_sdr_deferred_placeholder()
             );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,
@@ -607,7 +650,7 @@ impl ImageViewerApp {
         result.decoded.width == 0
             || result.decoded.height == 0
             || !decoded_rgba_size_valid(&result.decoded)
-            || decoded_looks_like_black_placeholder(&result.decoded)
+            || result.decoded.is_sdr_deferred_placeholder()
             || !preview_aspect_matches_logical(
                 result.decoded.width,
                 result.decoded.height,
@@ -995,7 +1038,7 @@ impl ImageViewerApp {
             if self
                 .deferred_sdr_uploads
                 .get(&index)
-                .is_some_and(crate::loader::decoded_looks_like_black_placeholder)
+                .is_some_and(DecodedImage::is_sdr_deferred_placeholder)
             {
                 continue;
             }

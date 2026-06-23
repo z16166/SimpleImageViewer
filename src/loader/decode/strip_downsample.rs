@@ -50,5 +50,9 @@ pub(crate) fn downsample_decoded_for_strip<'a>(
     let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
     let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
     let resized = resize(&src, out_w, out_h, FilterType::Triangle);
-    Ok(Cow::Owned(DecodedImage::from(resized)))
+    Ok(Cow::Owned(decoded.with_resized_rgba(
+        out_w,
+        out_h,
+        resized.into_raw(),
+    )))
 }

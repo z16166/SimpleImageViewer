@@ -117,10 +117,11 @@ fn load_raw_hq_static_hdr(
                 hdr_target_capacity,
                 hdr_tone_map,
             ) {
-                Ok(pixels) => pixels,
+                Ok(fb) => fb,
                 Err(err) => return Some(Err(err)),
             };
-            let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+            let fallback =
+                DecodedImage::from_hdr_sdr_fallback(hdr.width, hdr.height, fallback_pixels);
             Some(Ok(RawLoadOutput {
                 image: make_hdr_image_data(hdr, fallback),
                 osd: osd_ctx
@@ -418,7 +419,11 @@ pub(crate) fn load_raw(
                 } else {
                     let fallback_pixels =
                         crate::loader::cheap_hdr_sdr_placeholder_rgba8(width, height)?;
-                    DecodedImage::from_arc(width, height, std::sync::Arc::new(fallback_pixels))
+                    DecodedImage::from_arc_sdr_deferred_placeholder(
+                        width,
+                        height,
+                        std::sync::Arc::new(fallback_pixels),
+                    )
                 };
 
                 let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW && preview_opt.is_some() {

@@ -93,12 +93,15 @@ pub(crate) fn develop_full_resolution(
                 } else {
                     let hw = hdr.width;
                     let hh = hdr.height;
-                    let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        hdr_target_capacity,
-                        &hdr_tone_map,
-                    )?;
-                    let fallback = DecodedImage::from_arc(hw, hh, fallback_pixels);
+                    let fallback = DecodedImage::from_hdr_sdr_fallback(
+                        hw,
+                        hh,
+                        hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &hdr,
+                            hdr_target_capacity,
+                            &hdr_tone_map,
+                        )?,
+                    );
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
                         osd: osd_ctx
@@ -193,9 +196,11 @@ pub(crate) fn develop_hq_preview(
     let (hdr, cpu_ms) = develop_scene_linear_hdr_timed(processor)?;
     let (logical_w, logical_h) = processor.developed_output_dimensions(None);
     let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
-    let fallback_pixels =
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+    );
     let osd = osd_ctx
         .full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host)
         .with_cpu_demosaic_ms(cpu_ms);

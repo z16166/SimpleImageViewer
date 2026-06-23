@@ -43,6 +43,9 @@ pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     pixels: Arc<Vec<u8>>,
+    /// Set at decode/load when this RGBA8 buffer is a cheap deferred SDR placeholder
+    /// (see [`crate::loader::cheap_hdr_sdr_placeholder_rgba8`]), not display-ready pixels.
+    sdr_deferred_placeholder: bool,
 }
 
 impl std::fmt::Debug for DecodedImage {
@@ -51,6 +54,7 @@ impl std::fmt::Debug for DecodedImage {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("rgba_bytes", &self.pixels.len())
+            .field("sdr_deferred_placeholder", &self.sdr_deferred_placeholder)
             .finish()
     }
 }
@@ -66,6 +70,16 @@ impl DecodedImage {
             width,
             height,
             pixels: Arc::new(pixels),
+            sdr_deferred_placeholder: false,
+        }
+    }
+
+    pub fn new_sdr_deferred_placeholder(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            sdr_deferred_placeholder: true,
         }
     }
 
@@ -75,6 +89,51 @@ impl DecodedImage {
             width,
             height,
             pixels,
+            sdr_deferred_placeholder: false,
+        }
+    }
+
+    pub fn from_arc_sdr_deferred_placeholder(
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<u8>>,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+            sdr_deferred_placeholder: true,
+        }
+    }
+
+    pub fn from_hdr_sdr_fallback(
+        width: u32,
+        height: u32,
+        fallback: super::hdr_fallback::HdrSdrFallbackRgba8,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixels: fallback.pixels,
+            sdr_deferred_placeholder: fallback.is_deferred_placeholder,
+        }
+    }
+
+    #[inline]
+    pub fn is_sdr_deferred_placeholder(&self) -> bool {
+        self.sdr_deferred_placeholder
+    }
+
+    pub fn mark_sdr_deferred_placeholder(&mut self) {
+        self.sdr_deferred_placeholder = true;
+    }
+
+    pub(crate) fn with_resized_rgba(&self, width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            sdr_deferred_placeholder: self.sdr_deferred_placeholder,
         }
     }
 
@@ -101,9 +160,21 @@ impl DecodedImage {
     }
 
     pub fn set_rgba_buffer(&mut self, width: u32, height: u32, pixels: Vec<u8>) {
+        self.set_rgba_buffer_preserving_placeholder(width, height, pixels, false);
+    }
+
+    pub(crate) fn set_rgba_buffer_preserving_placeholder(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        preserve_placeholder: bool,
+    ) {
+        let placeholder = preserve_placeholder && self.sdr_deferred_placeholder;
         self.width = width;
         self.height = height;
         self.pixels = Arc::new(pixels);
+        self.sdr_deferred_placeholder = placeholder;
     }
 
     /// Take ownership of the RGBA buffer for in-place transforms.

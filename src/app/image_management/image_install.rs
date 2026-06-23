@@ -263,7 +263,11 @@ impl ImageViewerApp {
             && (sdr_fallback_is_placeholder || bootstrap_already_uploaded);
         if !skip_current_sdr_upload {
             if defer_sdr_upload && idx != self.current_index {
-                self.deferred_sdr_uploads.insert(idx, fallback.clone());
+                let mut deferred = fallback.clone();
+                if sdr_fallback_is_placeholder {
+                    deferred.mark_sdr_deferred_placeholder();
+                }
+                self.deferred_sdr_uploads.insert(idx, deferred);
             } else {
                 self.queue_or_upload_hdr_sdr_fallback_texture(idx, fallback, ctx);
             }

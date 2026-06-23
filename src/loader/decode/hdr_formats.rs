@@ -50,9 +50,11 @@ pub(crate) fn load_hdr(
         }
         Err(err) => return Err(err),
     };
-    let pixels =
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+    );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
@@ -115,9 +117,11 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
         metadata: tile.metadata.clone(),
         rgba_f32: Arc::clone(&tile.rgba_f32),
     };
-    let pixels =
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+    );
     log::info!(
         "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
         hdr.width,
@@ -170,12 +174,15 @@ pub(crate) fn load_deep_exr(
 ) -> Result<ImageData, String> {
     match crate::hdr::exr_tiled::decode_deep_exr_image(path) {
         Ok(hdr) => {
-            let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                &hdr,
-                hdr_target_capacity,
-                &hdr_tone_map,
-            )?;
-            let fallback = DecodedImage::from_arc(hdr.width, hdr.height, pixels);
+            let fallback = DecodedImage::from_hdr_sdr_fallback(
+                hdr.width,
+                hdr.height,
+                hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                )?,
+            );
             let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             Ok(make_hdr_image_data(hdr, fallback))
         }
@@ -240,9 +247,11 @@ pub(crate) fn load_detected_exr(
         }
         Err(err) => return Err(err),
     };
-    let pixels =
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+    );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }

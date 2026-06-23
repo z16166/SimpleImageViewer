@@ -148,6 +148,6 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     let mut fallback = fallback;
     let px = fallback.take_rgba_owned();
     let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
-    fallback.set_rgba_buffer(ow, oh, opx);
+    fallback.set_rgba_buffer_preserving_placeholder(ow, oh, opx, true);
     (hdr, fallback)
 }

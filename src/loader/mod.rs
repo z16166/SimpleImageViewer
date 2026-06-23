@@ -30,7 +30,6 @@ mod types;
 
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
-pub(crate) use preview_aspect::decoded_looks_like_black_placeholder;
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
 pub use preview_aspect::preview_aspect_matches_logical;
@@ -52,8 +51,8 @@ pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
     hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hdr_to_sdr_with_user_tone, raw_gpu_source_has_bootstrap_preview,
-    static_hdr_background_plane_upload_eligible,
+    hdr_to_sdr_with_user_tone, libraw_scene_linear_needs_eager_sdr_fallback,
+    raw_gpu_source_has_bootstrap_preview, static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{extract_exif_thumbnail, extract_exif_thumbnail_from_mmap};
 pub(crate) use orientation::{
