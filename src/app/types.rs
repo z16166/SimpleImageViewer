@@ -640,7 +640,7 @@ pub struct ImageViewerApp {
     pub(crate) preload_budget_backward: u64,
     /// Reused for preload memory guard checks so navigation does not rebuild
     /// sysinfo's system snapshot state on every preload scheduling pass.
-    pub(crate) preload_memory_sys: sysinfo::System,
+    pub(crate) preload_memory: crate::app::preload_memory::PreloadMemorySnapshot,
 
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)

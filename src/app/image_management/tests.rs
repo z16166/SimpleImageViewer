@@ -1626,10 +1626,7 @@ fn make_test_app() -> ImageViewerApp {
         saver_handle: None,
         preload_budget_forward: 100 * 1024 * 1024,
         preload_budget_backward: 100 * 1024 * 1024,
-        preload_memory_sys: sysinfo::System::new_with_specifics(
-            sysinfo::RefreshKind::nothing()
-                .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
-        ),
+        preload_memory: crate::app::preload_memory::PreloadMemorySnapshot::new(),
         context_menu_pos: None,
         context_menu_viewport: None,
         context_menu_label_cache: None,

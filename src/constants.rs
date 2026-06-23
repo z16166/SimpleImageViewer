@@ -72,6 +72,11 @@ pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
 /// ~5 navigations per second is already extreme for manual input; matches wheel debounce.
 pub const KEYBOARD_NAV_MIN_INTERVAL_SECS: f64 = 0.2;
 
+/// Minimum interval between background YAML writes from the async saver threads.
+/// Authoritative persistence happens in `ImageViewerApp::on_exit`; runtime saves are best-effort.
+pub const BACKGROUND_YAML_SAVE_MIN_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 /// Color brightness multiplier for HUD text to ensure contrast in light themes.
 pub const MUSIC_HUD_CONTRAST_BOOST: f32 = 2.5;
 

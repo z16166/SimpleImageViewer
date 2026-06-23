@@ -16,9 +16,9 @@
 use super::loop_state::{AudioLoopState, AudioSlots};
 use super::player::{AudioCommand, AudioError};
 use super::slots::{set_current_track, set_metadata};
+use super::wasapi::WasapiMonitorGuard;
 #[cfg(windows)]
 use super::wasapi::wasapi_poll_device_lost;
-use super::wasapi::{wasapi_monitor_init, wasapi_monitor_uninit};
 
 use crossbeam_channel;
 use parking_lot::Mutex;
@@ -42,9 +42,7 @@ pub(crate) fn run_audio_loop(
     dur_ms: Arc<std::sync::atomic::AtomicU64>,
     device_slot: Arc<Mutex<Option<String>>>,
 ) {
-    unsafe {
-        wasapi_monitor_init();
-    }
+    let _wasapi_guard = WasapiMonitorGuard::new();
 
     let slots = AudioSlots {
         err_slot,
@@ -73,9 +71,6 @@ pub(crate) fn run_audio_loop(
                 st.backend_sink.take();
                 set_current_track(&slots.track_slot, None);
                 set_metadata(&slots.meta_slot, None);
-                unsafe {
-                    wasapi_monitor_uninit();
-                }
                 return;
             }
             Ok(AudioCommand::Stop) => st.handle_stop(&slots),

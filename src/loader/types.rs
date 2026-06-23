@@ -294,6 +294,20 @@ impl AnimationFrame {
         }
     }
 
+    pub fn from_arc(
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<u8>>,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+            delay,
+        }
+    }
+
     #[inline]
     pub fn arc_pixels(&self) -> Arc<Vec<u8>> {
         Arc::clone(&self.pixels)

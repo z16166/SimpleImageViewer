@@ -36,3 +36,23 @@ pub(crate) unsafe fn wasapi_monitor_uninit() {}
 pub(crate) unsafe fn wasapi_is_device_available() -> bool {
     true
 }
+
+/// RAII guard pairing `wasapi_monitor_init` / `wasapi_monitor_uninit` for the audio thread.
+pub(crate) struct WasapiMonitorGuard;
+
+impl WasapiMonitorGuard {
+    pub(crate) fn new() -> Self {
+        unsafe {
+            wasapi_monitor_init();
+        }
+        Self
+    }
+}
+
+impl Drop for WasapiMonitorGuard {
+    fn drop(&mut self) {
+        unsafe {
+            wasapi_monitor_uninit();
+        }
+    }
+}
