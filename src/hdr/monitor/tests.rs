@@ -130,6 +130,7 @@ fn non_hdr_selected_monitor_forces_sdr_tone_mapping_on_float_surface() {
         max_hdr_capacity: None,
         hdr_capacity_source: None,
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     };
     let hdr = HdrMonitorSelection {
         hdr_supported: true,
@@ -139,6 +140,7 @@ fn non_hdr_selected_monitor_forces_sdr_tone_mapping_on_float_surface() {
         max_hdr_capacity: None,
         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
         native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
+        ..HdrMonitorSelection::new("", false)
     };
 
     assert_eq!(

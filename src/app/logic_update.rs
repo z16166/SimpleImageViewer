@@ -548,15 +548,37 @@ impl ImageViewerApp {
                 self.invalidate_directory_tree_strip_gpu_textures();
             }
             if let Some(selection) = self.effective_hdr_monitor_selection() {
+                #[cfg(target_os = "linux")]
+                if let Some(wp) = self.hdr_monitor_state.selection() {
+                    let wsi = self.vulkan_wsi_hdr_gates.get();
+                    log::info!(
+                        "[HDR] display: wp_hdr={} transfer={:?} primaries={:?} \
+                         max_luminance_nits={:?} reference_luminance_nits={:?}",
+                        wp.hdr_supported,
+                        wp.linux_wp_transfer,
+                        wp.linux_wp_primaries,
+                        wp.max_luminance_nits,
+                        wp.reference_luminance_nits,
+                    );
+                    log::info!(
+                        "[HDR] compositor_wsi: probed={} hdr10_st2084_rgb10a2={} \
+                         srgb_nonlinear_rgb10a2={} extended_srgb_linear_rgba16f={}",
+                        wsi.probed,
+                        wsi.hdr10_st2084_rgb10a2,
+                        wsi.srgb_nonlinear_rgb10a2,
+                        wsi.extended_srgb_linear_rgba16f,
+                    );
+                }
                 log::info!(
-                    "[HDR] presentation active: output_mode={:?} native_presentation={} \
+                    "[HDR] app_active: output_mode={:?} native_presentation={} \
                      target_format={:?} monitor={} hdr_supported_effective={} \
-                     hdr_capacity_source={:?} max_luminance_nits={:?}",
+                     admission={:?} hdr_capacity_source={:?} max_luminance_nits={:?}",
                     self.hdr_capabilities.output_mode,
                     self.hdr_capabilities.native_presentation_enabled,
                     self.hdr_target_format,
                     selection.label,
                     selection.hdr_supported,
+                    selection.native_surface_encoding,
                     selection.hdr_capacity_source,
                     selection.max_luminance_nits,
                 );

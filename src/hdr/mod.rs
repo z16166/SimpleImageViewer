@@ -35,6 +35,7 @@ pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod jxl_gain_map_deferred;
+pub(crate) mod linux_admission;
 pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod mpf;

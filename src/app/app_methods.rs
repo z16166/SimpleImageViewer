@@ -135,6 +135,7 @@ impl ImageViewerApp {
             crate::hdr::wsi_probe::WsiHdrSurfaceGates {
                 hdr10_st2084_rgb10a2: wsi.hdr10_st2084_rgb10a2,
                 extended_srgb_linear_rgba16f: wsi.extended_srgb_linear_rgba16f,
+                srgb_nonlinear_rgb10a2: wsi.srgb_nonlinear_rgb10a2,
                 probed: wsi.probed,
             },
         )

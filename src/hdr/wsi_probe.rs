@@ -25,55 +25,45 @@ use super::monitor::HdrNativeSurfaceEncoding;
 pub struct WsiHdrSurfaceGates {
     pub hdr10_st2084_rgb10a2: bool,
     pub extended_srgb_linear_rgba16f: bool,
+    /// `A2B10G10R10` + `SRGB_NONLINEAR` — KWin gamma-2.2 electrical offload path.
+    pub srgb_nonlinear_rgb10a2: bool,
     /// Set after the first successful `vkGetPhysicalDeviceSurfaceFormatsKHR` probe.
     pub probed: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl WsiHdrSurfaceGates {
-    pub fn hdr_native_presentation_available(self) -> bool {
-        self.probed && (self.hdr10_st2084_rgb10a2 || self.extended_srgb_linear_rgba16f)
+    pub fn wsi_advertises_any_hdr_pair(self) -> bool {
+        self.probed
+            && (self.hdr10_st2084_rgb10a2
+                || self.extended_srgb_linear_rgba16f
+                || self.srgb_nonlinear_rgb10a2)
     }
 }
 
 /// Combine Wayland `wp_color_management` metadata with Vulkan WSI surface gates.
 ///
-/// On Linux, **WSI is authoritative** once probed: HDR10 requires
-/// `A2B10G10R10 + HDR10_ST2084_EXT`. Wayland peak luminance / primaries remain
-/// metadata-only (tone-map + ST2086), not HDR on/off signals.
+/// WSI availability is **necessary** but not sufficient: compositors may list HDR
+/// `(format, color_space)` pairs on SDR outputs. See [`crate::hdr::linux_admission`].
 #[cfg(target_os = "linux")]
 pub fn linux_effective_monitor_selection(
     wp: Option<&HdrMonitorSelection>,
     wsi: WsiHdrSurfaceGates,
 ) -> Option<HdrMonitorSelection> {
     let wp = wp.cloned()?;
-
-    if !wsi.probed {
-        // Surface not configured yet — only trust explicit ST2084 from wp (no peak-nit heuristics).
-        return Some(wp);
-    }
-
-    let hdr_supported = wsi.hdr_native_presentation_available();
-    let native_surface_encoding = if wsi.hdr10_st2084_rgb10a2 {
-        Some(HdrNativeSurfaceEncoding::PqHdr10)
-    } else if wsi.extended_srgb_linear_rgba16f {
-        Some(HdrNativeSurfaceEncoding::LinearScRgb)
-    } else {
-        None
-    };
-
+    let admission = crate::hdr::linux_admission::classify_linux_hdr_admission(&wp, wsi);
+    let hdr_supported = admission.hdr_supported();
     Some(HdrMonitorSelection {
         hdr_supported,
-        native_surface_encoding: hdr_supported.then(|| native_surface_encoding).flatten(),
-        hdr_capacity_source: if hdr_supported {
-            Some("Vulkan WSI surface formats")
-        } else {
-            wp.hdr_capacity_source
-        },
+        native_surface_encoding: admission.native_surface_encoding(),
+        hdr_capacity_source: admission.capacity_source().or(wp.hdr_capacity_source),
         label: wp.label,
         max_luminance_nits: wp.max_luminance_nits,
         max_full_frame_luminance_nits: wp.max_full_frame_luminance_nits,
         max_hdr_capacity: wp.max_hdr_capacity,
+        reference_luminance_nits: wp.reference_luminance_nits,
+        linux_wp_transfer: wp.linux_wp_transfer,
+        linux_wp_primaries: wp.linux_wp_primaries,
     })
 }
 
@@ -88,27 +78,51 @@ pub fn linux_effective_monitor_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::hdr::monitor::HdrNativeSurfaceEncoding;
+    use crate::hdr::monitor::{
+        HdrMonitorSelection, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction,
+    };
 
-    fn wp_gamma22_laptop() -> HdrMonitorSelection {
+    fn wp_gamma22_tv() -> HdrMonitorSelection {
         HdrMonitorSelection {
             hdr_supported: false,
-            label: "eDP-1".to_string(),
-            max_luminance_nits: Some(450.0),
+            label: "HDMI-A-1".to_string(),
+            max_luminance_nits: Some(1780.0),
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Wayland wp_color_management"),
             native_surface_encoding: None,
+            reference_luminance_nits: Some(203.0),
+            linux_wp_transfer: Some(LinuxWaylandTransferFunction::Gamma22),
+            linux_wp_primaries: Some(LinuxWaylandColorPrimaries::Wide),
+        }
+    }
+
+    fn wp_sdr_monitor() -> HdrMonitorSelection {
+        HdrMonitorSelection {
+            hdr_supported: false,
+            label: "HDMI-A-3".to_string(),
+            max_luminance_nits: Some(200.0),
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("Wayland wp_color_management"),
+            native_surface_encoding: None,
+            reference_luminance_nits: Some(200.0),
+            linux_wp_transfer: Some(LinuxWaylandTransferFunction::Gamma22),
+            linux_wp_primaries: Some(LinuxWaylandColorPrimaries::Narrow),
         }
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn wsi_hdr10_overrides_wp_gamma22_without_peak_nit_heuristic() {
+    fn merge_admits_kwin_gamma22_when_wp_and_wsi_agree() {
         let merged = linux_effective_monitor_selection(
-            Some(&wp_gamma22_laptop()),
+            Some(&wp_gamma22_tv()),
             WsiHdrSurfaceGates {
                 hdr10_st2084_rgb10a2: true,
                 extended_srgb_linear_rgba16f: false,
+                srgb_nonlinear_rgb10a2: true,
                 probed: true,
             },
         )
@@ -117,22 +131,41 @@ mod tests {
         assert!(merged.hdr_supported);
         assert_eq!(
             merged.native_surface_encoding,
-            Some(HdrNativeSurfaceEncoding::PqHdr10)
+            Some(HdrNativeSurfaceEncoding::Gamma22Electrical)
         );
         assert_eq!(
             merged.hdr_capacity_source,
-            Some("Vulkan WSI surface formats")
+            Some("Wayland wp + Vulkan WSI gamma22")
         );
-        assert_eq!(merged.max_luminance_nits, Some(450.0));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn merge_vetoes_sdr_wp_despite_wsi_hdr10_pair() {
+        let merged = linux_effective_monitor_selection(
+            Some(&wp_sdr_monitor()),
+            WsiHdrSurfaceGates {
+                hdr10_st2084_rgb10a2: true,
+                extended_srgb_linear_rgba16f: true,
+                srgb_nonlinear_rgb10a2: true,
+                probed: true,
+            },
+        )
+        .expect("merged selection");
+
+        assert!(!merged.hdr_supported);
+        assert_eq!(merged.native_surface_encoding, None);
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn wsi_fail_closed_when_no_hdr_pairs() {
         let merged = linux_effective_monitor_selection(
-            Some(&wp_gamma22_laptop()),
+            Some(&wp_gamma22_tv()),
             WsiHdrSurfaceGates {
                 hdr10_st2084_rgb10a2: false,
                 extended_srgb_linear_rgba16f: false,
+                srgb_nonlinear_rgb10a2: false,
                 probed: true,
             },
         )

@@ -32,7 +32,10 @@ pub use effective::{
 };
 pub use probe::spawn_monitor_hdr_status;
 pub use state::HdrMonitorState;
-pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
+pub use types::{
+    HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
+    LinuxWaylandTransferFunction,
+};
 
 #[cfg(test)]
 pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;

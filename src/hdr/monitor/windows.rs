@@ -105,6 +105,9 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
                         native_surface_encoding: hdr_supported
                             .then_some(HdrNativeSurfaceEncoding::LinearScRgb),
+                        reference_luminance_nits: None,
+                        linux_wp_transfer: None,
+                        linux_wp_primaries: None,
                     });
                 }
             }

@@ -421,6 +421,7 @@ mod tests {
             native_surface_encoding: Some(
                 crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
             ),
+            ..HdrMonitorSelection::new("", false)
         }
     }
 

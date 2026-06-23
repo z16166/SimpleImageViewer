@@ -1206,6 +1206,7 @@ directory_tree_window_maximized_screen_center: [960, 540]
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Wayland wp_color_management"),
             native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10),
+            ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
         };
 
         let tone_map = settings.hdr_tone_map_settings_for_monitor(

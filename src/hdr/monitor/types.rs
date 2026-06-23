@@ -66,6 +66,30 @@ pub enum HdrNativeSurfaceEncoding {
     Gamma22Electrical,
 }
 
+/// Transfer function reported by Wayland `wp_color_management` (Linux only).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxWaylandTransferFunction {
+    Srgb,
+    Gamma22,
+    Bt1886,
+    CompoundPower24,
+    St2084,
+    Hlg,
+    Unknown,
+}
+
+/// Color gamut bucket from Wayland primaries (Linux only).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxWaylandColorPrimaries {
+    /// sRGB / BT.709 and other conventional SDR gamuts.
+    Narrow,
+    /// BT.2020, Display P3, and other wide gamuts used for HDR offload.
+    Wide,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdrMonitorSelection {
     pub hdr_supported: bool,
@@ -75,6 +99,29 @@ pub struct HdrMonitorSelection {
     pub max_hdr_capacity: Option<f32>,
     pub hdr_capacity_source: Option<&'static str>,
     pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
+    /// Reference / mastering white from `wp_color_management` (Linux tone-map metadata).
+    pub reference_luminance_nits: Option<f32>,
+    /// Raw Wayland transfer function; populated by the Linux Wayland probe.
+    pub linux_wp_transfer: Option<LinuxWaylandTransferFunction>,
+    /// Raw Wayland primaries bucket; populated by the Linux Wayland probe.
+    pub linux_wp_primaries: Option<LinuxWaylandColorPrimaries>,
+}
+
+impl HdrMonitorSelection {
+    pub fn new(label: impl Into<String>, hdr_supported: bool) -> Self {
+        Self {
+            label: label.into(),
+            hdr_supported,
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: None,
+            native_surface_encoding: None,
+            reference_luminance_nits: None,
+            linux_wp_transfer: None,
+            linux_wp_primaries: None,
+        }
+    }
 }
 
 pub(crate) const HDR_MONITOR_PROBE_INTERVAL: std::time::Duration =

@@ -697,7 +697,7 @@ impl ImageViewerApp {
                 log::info!(
                     "[HDR] startup diagnostics are pre-hot-swap; native HDR may activate once \
                      Vulkan WSI probing and the runtime monitor gate complete (see \
-                     \"[HDR] presentation active\" log)"
+                     \"[HDR] app_active\" log)"
                 );
             }
         }
