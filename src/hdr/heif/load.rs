@@ -33,16 +33,23 @@ pub(crate) fn load_heif_hdr(
     tone_map: HdrToneMapSettings,
 ) -> Result<crate::loader::ImageData, String> {
     let hdr = decode_heif_hdr(path, hdr_target_capacity)?;
-    let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-            &hdr,
-            tone_map.exposure_ev,
-            &tone_map,
-        )?
+    let fallback = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
+        crate::loader::DecodedImage::new(
+            hdr.width,
+            hdr.height,
+            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+                &hdr,
+                tone_map.exposure_ev,
+                &tone_map,
+            )?,
+        )
     } else {
-        crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+        crate::loader::DecodedImage::new_sdr_deferred_placeholder(
+            hdr.width,
+            hdr.height,
+            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?,
+        )
     };
-    let fallback = crate::loader::DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
 
     Ok(crate::loader::ImageData::Hdr { hdr, fallback })
 }

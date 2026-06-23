@@ -112,12 +112,15 @@ pub(crate) fn load_jpeg_from_mapped(
             }
 
             let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
-            let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                &hdr,
-                hdr_target_capacity,
-                &hdr_tone_map,
-            )?;
-            let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+            let fallback = DecodedImage::from_hdr_sdr_fallback(
+                hdr.width,
+                hdr.height,
+                hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                )?,
+            );
             return Ok(make_hdr_image_data(hdr, fallback));
         }
         Err(err) => {

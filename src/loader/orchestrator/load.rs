@@ -478,12 +478,12 @@ impl ImageLoader {
                                 *slot.write() = Some(hdr.clone());
                             }
 
-                            let fallback_pixels = match hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            let fb = match hdr_sdr_fallback_rgba8_eager_or_placeholder(
                                 &hdr,
                                 req.hdr_target_capacity,
                                 &req.hdr_tone_map,
                             ) {
-                                Ok(pixels) => pixels,
+                                Ok(fb) => fb,
                                 Err(e) => {
                                     log::error!(
                                         "[Refinement] HQ HDR SDR fallback failed for {:?}: {}",
@@ -493,11 +493,10 @@ impl ImageLoader {
                                     continue;
                                 }
                             };
-                            let fallback_arc = Arc::new(fallback_pixels);
-                            let preview = DecodedImage::from_arc(
+                            let preview = DecodedImage::from_hdr_sdr_fallback(
                                 hdr.width,
                                 hdr.height,
-                                Arc::clone(&fallback_arc),
+                                fb,
                             );
                             let tile_pixels = preview.rgba().to_vec();
                             let dynamic = match image::ImageBuffer::from_raw(

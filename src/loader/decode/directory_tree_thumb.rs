@@ -27,9 +27,8 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::apply_exif_orientation_to_image_data;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{
-    DecodedImage, ImageData, TiledImageSource, decoded_looks_like_black_placeholder,
-    extract_exif_thumbnail, extract_exif_thumbnail_from_mmap, hdr_to_sdr_with_user_tone,
-    preview_aspect_matches_logical,
+    DecodedImage, ImageData, TiledImageSource, extract_exif_thumbnail,
+    extract_exif_thumbnail_from_mmap, hdr_to_sdr_with_user_tone, preview_aspect_matches_logical,
 };
 
 use super::assemble::make_image_data;
@@ -58,14 +57,6 @@ fn try_directory_tree_exif_thumb(
         return None;
     }
     let decoded = downsample_decoded_to_max_side(exif, max_side).ok()?;
-    if decoded_looks_like_black_placeholder(&decoded) {
-        log::debug!(
-            "[DirectoryTree] Skipping black EXIF thumbnail ({}x{}) for strip decode",
-            exif.width,
-            exif.height
-        );
-        return None;
-    }
     Some((decoded, logical))
 }
 
@@ -108,9 +99,9 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
             decoded.width, decoded.height, logical.0, logical.1
         ));
     }
-    if decoded_looks_like_black_placeholder(&decoded) {
+    if decoded.is_sdr_deferred_placeholder() {
         return Err(format!(
-            "directory tree thumb decode is all black for {}",
+            "directory tree thumb decode is deferred SDR placeholder for {}",
             path.display()
         ));
     }
@@ -412,7 +403,7 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
         ImageData::Tiled(source) => tiled_source_preview(source.as_ref(), max_side),
         ImageData::HdrTiled { hdr, fallback } => {
             let preview = tiled_source_preview(fallback.as_ref(), max_side)?;
-            if decoded_looks_like_black_placeholder(&preview) {
+            if preview.is_sdr_deferred_placeholder() {
                 let (width, height, rgba) = hdr.generate_sdr_preview(max_side, max_side)?;
                 downsample_decoded_to_max_side(&DecodedImage::new(width, height, rgba), max_side)
             } else {
@@ -435,7 +426,7 @@ fn sdr_preview_for_hdr_fallback(
     fallback: &DecodedImage,
     tone: &HdrToneMapSettings,
 ) -> Result<DecodedImage, String> {
-    if decoded_looks_like_black_placeholder(fallback) {
+    if fallback.is_sdr_deferred_placeholder() {
         Ok(DecodedImage::new(
             hdr.width,
             hdr.height,

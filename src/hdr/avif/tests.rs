@@ -290,9 +290,11 @@ fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
     let tone = HdrToneMapSettings::default();
     let capacity = tone.target_hdr_capacity();
     let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
-    let fallback_pixels =
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback");
-    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback"),
+    );
     eprintln!(
         "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",
         hdr.width,

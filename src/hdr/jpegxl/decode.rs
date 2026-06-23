@@ -315,28 +315,31 @@ fn jxl_build_hdr_fallback(
     display_hdr_target_capacity: f32,
     tone_map: &HdrToneMapSettings,
 ) -> Result<DecodedImage, String> {
-    let fallback_pixels = if hdr.rgba_f32.is_empty() {
-        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            hdr,
-            display_hdr_target_capacity,
-            tone_map,
-        )?
-        .as_ref()
-        .clone()
-    } else if let Some(px) =
+    if hdr.rgba_f32.is_empty() {
+        return Ok(DecodedImage::from_hdr_sdr_fallback(
+            hdr.width,
+            hdr.height,
+            crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                hdr,
+                display_hdr_target_capacity,
+                tone_map,
+            )?,
+        ));
+    }
+    if let Some(px) =
         jxl_sdr_grade_fallback_rgba8(hdr.rgba_f32.as_ref(), hdr.color_space, &hdr.metadata)
     {
-        px
-    } else {
+        return Ok(DecodedImage::new(hdr.width, hdr.height, px));
+    }
+    Ok(DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
         crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
             hdr,
             display_hdr_target_capacity,
             tone_map,
-        )?
-        .as_ref()
-        .clone()
-    };
-    Ok(DecodedImage::new(hdr.width, hdr.height, fallback_pixels))
+        )?,
+    ))
 }
 
 #[cfg(feature = "jpegxl")]

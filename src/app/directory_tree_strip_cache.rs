@@ -20,10 +20,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, ColorImage, TextureOptions};
 
 use crate::loader::downsample_decoded_for_strip;
-use crate::loader::{
-    DecodedImage, PreviewStage, decoded_looks_like_black_placeholder,
-    preview_aspect_matches_logical,
-};
+use crate::loader::{DecodedImage, PreviewStage, preview_aspect_matches_logical};
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
 
@@ -184,14 +181,12 @@ impl DirectoryTreeStripCache {
         _total_count: usize,
         strip_max_side: u32,
     ) {
-        if decoded_looks_like_black_placeholder(decoded) {
+        if decoded.is_sdr_deferred_placeholder() {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][StripCache] upsert skip idx={} reason=black_placeholder",
                 index
             );
-            self.remove_index(index);
-            self.bump_gpu_revision();
             return;
         }
         let cached_max_side = self.preview_max_side.get(&index).copied();
@@ -402,7 +397,7 @@ pub(crate) fn should_replace_strip_thumbnail(
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
 ) -> bool {
-    if decoded_looks_like_black_placeholder(decoded) {
+    if decoded.is_sdr_deferred_placeholder() {
         return false;
     }
     if !decoded_rgba_size_valid(decoded) {
@@ -505,9 +500,41 @@ mod tests {
     }
 
     #[test]
+    fn strip_cache_black_upsert_preserves_existing_thumbnail() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        let good = DecodedImage::new(128, 64, vec![200; 128 * 64 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &good,
+            PreviewStage::Initial,
+            Some((512, 256)),
+            &ctx,
+            0,
+            1,
+            128,
+        );
+        assert!(cache.contains(0));
+        let black = DecodedImage::new_sdr_deferred_placeholder(512, 256, vec![0; 512 * 256 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &black,
+            PreviewStage::Refined,
+            Some((512, 256)),
+            &ctx,
+            0,
+            1,
+            128,
+        );
+        assert!(cache.contains(0));
+        assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
+    }
+
+    #[test]
     fn strip_cache_rejects_black_refined_over_initial_preview() {
         let good = DecodedImage::new(128, 64, vec![200; 128 * 64 * 4]);
-        let black = DecodedImage::new(4096, 2048, vec![0; 4096 * 2048 * 4]);
+        let black =
+            DecodedImage::new_sdr_deferred_placeholder(4096, 2048, vec![0; 4096 * 2048 * 4]);
         assert!(!should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Initial),

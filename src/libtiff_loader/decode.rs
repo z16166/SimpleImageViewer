@@ -528,12 +528,15 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
         return Ok(None);
     }
     let hdr = rgba8_to_scene_linear_hdr_buffer(width, height, pixels)?;
-    let fallback_pixels = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-        &hdr,
-        hdr_target_capacity,
-        tone_map,
-    )?;
-    let fallback = DecodedImage::from_arc(width, height, fallback_pixels);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        width,
+        height,
+        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            &hdr,
+            hdr_target_capacity,
+            tone_map,
+        )?,
+    );
     Ok(Some(ImageData::Hdr { hdr, fallback }))
 }
 

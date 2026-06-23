@@ -78,13 +78,15 @@ pub(crate) fn load_avif_with_target_capacity(
                 let frames: Vec<HdrAnimationFrame> = raw
                     .into_iter()
                     .map(|(delay, hdr)| {
-                        let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                            &hdr,
-                            hdr_target_capacity,
-                            &hdr_tone_map,
-                        )?;
-                        let fallback =
-                            DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                        let fallback = DecodedImage::from_hdr_sdr_fallback(
+                            hdr.width,
+                            hdr.height,
+                            hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                                &hdr,
+                                hdr_target_capacity,
+                                &hdr_tone_map,
+                            )?,
+                        );
                         Ok(HdrAnimationFrame::new(hdr, fallback, delay))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -112,12 +114,15 @@ pub(crate) fn load_avif_with_target_capacity(
             decode_capacity,
         ) {
             Ok(hdr) => {
-                let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                    &hdr,
-                    hdr_target_capacity,
-                    &hdr_tone_map,
-                )?;
-                let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                let fallback = DecodedImage::from_hdr_sdr_fallback(
+                    hdr.width,
+                    hdr.height,
+                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                        &hdr,
+                        hdr_target_capacity,
+                        &hdr_tone_map,
+                    )?,
+                );
                 let (hdr, fallback) =
                     apply_exif_orientation_to_hdr_pair(path.as_path(), hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))

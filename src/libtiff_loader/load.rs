@@ -196,17 +196,26 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback_pixels =
+                    let fallback =
                         if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-                            hdr_to_sdr_rgba8_with_tone_settings(
-                                &hdr,
-                                tone_map.exposure_ev,
-                                &tone_map,
-                            )?
+                            DecodedImage::new(
+                                hdr.width,
+                                hdr.height,
+                                hdr_to_sdr_rgba8_with_tone_settings(
+                                    &hdr,
+                                    tone_map.exposure_ev,
+                                    &tone_map,
+                                )?,
+                            )
                         } else {
-                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+                            DecodedImage::new_sdr_deferred_placeholder(
+                                hdr.width,
+                                hdr.height,
+                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
+                                    hdr.width, hdr.height,
+                                )?,
+                            )
                         };
-                    let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
                     return Ok(ImageData::Hdr { hdr, fallback });
                 }
                 Err(err) => {
@@ -251,13 +260,15 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback_pixels =
+                    let fallback = DecodedImage::from_hdr_sdr_fallback(
+                        hdr.width,
+                        hdr.height,
                         crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
                             &hdr,
                             hdr_target_capacity,
                             &tone_map,
-                        )?;
-                    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                        )?,
+                    );
                     return Ok(ImageData::Hdr { hdr, fallback });
                 }
                 Err(err) => {
@@ -305,17 +316,26 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback_pixels =
+                    let fallback =
                         if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-                            hdr_to_sdr_rgba8_with_tone_settings(
-                                &hdr,
-                                tone_map.exposure_ev,
-                                &tone_map,
-                            )?
+                            DecodedImage::new(
+                                hdr.width,
+                                hdr.height,
+                                hdr_to_sdr_rgba8_with_tone_settings(
+                                    &hdr,
+                                    tone_map.exposure_ev,
+                                    &tone_map,
+                                )?,
+                            )
                         } else {
-                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+                            DecodedImage::new_sdr_deferred_placeholder(
+                                hdr.width,
+                                hdr.height,
+                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
+                                    hdr.width, hdr.height,
+                                )?,
+                            )
                         };
-                    let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
                     return Ok(ImageData::Hdr { hdr, fallback });
                 }
                 Err(err) => {
