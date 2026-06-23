@@ -154,7 +154,7 @@ pub(crate) fn log_runtime_if_changed(
     );
 
     log::info!(
-        "[HDR] admission: decision={} hdr_supported_effective={} encoding={:?} \
+        "[HDR] admission: decision={} hdr_supported_effective={:?} encoding={:?} \
          capacity_source={:?} max_luminance_nits={:?}",
         snapshot.admission.as_diagnostic_label(),
         snapshot.effective_hdr_supported,
