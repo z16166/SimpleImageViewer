@@ -28,6 +28,41 @@ pub(super) fn hdr_sdr_fallback_texture_name(idx: usize) -> String {
 }
 
 impl ImageViewerApp {
+    pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
+        index == self.current_index
+            && self.effective_hdr_display_output().is_some()
+            && self
+                .current_hdr_image
+                .as_ref()
+                .is_some_and(|current| current.image_for_index(index).is_some())
+    }
+
+    pub(super) fn insert_deferred_sdr_upload(
+        &mut self,
+        idx: usize,
+        decoded: crate::loader::DecodedImage,
+    ) {
+        use std::collections::hash_map::Entry;
+
+        if let Entry::Occupied(mut slot) = self.deferred_sdr_uploads.entry(idx) {
+            *slot.get_mut() = decoded;
+            return;
+        }
+        if self.deferred_sdr_uploads.len() >= crate::app::MAX_DEFERRED_SDR_UPLOADS {
+            let current = self.current_index;
+            let total = self.image_files.len();
+            if let Some(evict_idx) = self
+                .deferred_sdr_uploads
+                .keys()
+                .copied()
+                .max_by_key(|&i| super::prefetch_circular_distance(current, total, i))
+            {
+                self.deferred_sdr_uploads.remove(&evict_idx);
+            }
+        }
+        self.deferred_sdr_uploads.insert(idx, decoded);
+    }
+
     pub(super) fn upload_static_sdr_texture(
         &mut self,
         idx: usize,
@@ -39,7 +74,7 @@ impl ImageViewerApp {
             [decoded.width as usize, decoded.height as usize],
             decoded.rgba(),
         );
-        let handle = ctx.load_texture(texture_name.clone(), color_image, TextureOptions::LINEAR);
+        let handle = ctx.load_texture(texture_name, color_image, TextureOptions::LINEAR);
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
@@ -84,7 +119,7 @@ impl ImageViewerApp {
         if idx == self.current_index {
             self.upload_raw_gpu_bootstrap_texture(idx, decoded, ctx);
         } else {
-            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+            self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
     }
 
@@ -97,7 +132,7 @@ impl ImageViewerApp {
         if idx == self.current_index {
             self.upload_hdr_sdr_fallback_texture(idx, decoded, ctx);
         } else {
-            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+            self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
     }
 
@@ -111,7 +146,7 @@ impl ImageViewerApp {
         if idx == self.current_index {
             self.upload_static_sdr_texture(idx, decoded, texture_name, ctx);
         } else {
-            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+            self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
     }
 
@@ -124,13 +159,7 @@ impl ImageViewerApp {
             return;
         }
         let hdr_fallback_upload = self.hdr_sdr_fallback_indices.contains(&index);
-        let active_hdr_plane_displays_current = index == self.current_index
-            && self.effective_hdr_display_output().is_some()
-            && self
-                .current_hdr_image
-                .as_ref()
-                .is_some_and(|current| current.image_for_index(index).is_some());
-        if active_hdr_plane_displays_current {
+        if self.active_hdr_plane_displays_index(index) {
             return;
         }
         if self.texture_cache.contains(index) && !hdr_fallback_upload {
@@ -267,7 +296,7 @@ impl ImageViewerApp {
                 if sdr_fallback_is_placeholder {
                     deferred.mark_sdr_deferred_placeholder();
                 }
-                self.deferred_sdr_uploads.insert(idx, deferred);
+                self.insert_deferred_sdr_upload(idx, deferred);
             } else {
                 self.queue_or_upload_hdr_sdr_fallback_texture(idx, fallback, ctx);
             }
@@ -332,12 +361,7 @@ impl ImageViewerApp {
                 pixels: fallback_image.arc_pixels(),
             });
         }
-        let active_hdr_plane_displays_current = idx == self.current_index
-            && self.effective_hdr_display_output().is_some()
-            && self
-                .current_hdr_image
-                .as_ref()
-                .is_some_and(|current| current.image_for_index(idx).is_some());
+        let active_hdr_plane_displays_current = self.active_hdr_plane_displays_index(idx);
         self.hdr_sdr_fallback_indices.insert(idx);
         self.hdr_placeholder_fallback_indices.remove(&idx);
         let logical_size = self.texture_cache.get_original_res(idx).or_else(|| {
@@ -348,8 +372,7 @@ impl ImageViewerApp {
         if active_hdr_plane_displays_current {
             // The float HDR plane is the displayed source; applying the refined SDR fallback here
             // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
-            self.deferred_sdr_uploads
-                .insert(idx, fallback_image.clone());
+            self.insert_deferred_sdr_upload(idx, fallback_image.clone());
             self.cache_directory_tree_strip_thumbnail(
                 idx,
                 &fallback_image,
@@ -532,10 +555,10 @@ impl ImageViewerApp {
         let sdr_frames: Vec<crate::loader::AnimationFrame> = frames
             .iter()
             .map(|frame| {
-                crate::loader::AnimationFrame::new(
+                crate::loader::AnimationFrame::from_arc(
                     frame.width(),
                     frame.height(),
-                    frame.fallback.rgba().to_vec(),
+                    frame.fallback.arc_pixels(),
                     frame.delay,
                 )
             })

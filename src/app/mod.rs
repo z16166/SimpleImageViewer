@@ -16,6 +16,7 @@
 
 // ── Submodules ──────────────────────────────────────────────────────────────
 mod background_threads;
+mod background_yaml_saver;
 mod directory_tree;
 mod directory_tree_strip_cache;
 pub(crate) mod folder_picker;
@@ -40,6 +41,7 @@ mod pixel_inspector_ui;
 mod preload;
 #[cfg(feature = "preload-debug")]
 mod preload_hdr_gate;
+mod preload_memory;
 mod tray_handlers;
 mod types;
 
@@ -53,7 +55,8 @@ pub(crate) use types::{
 pub(crate) use directory_tree::DirectoryTreeRuntime;
 
 pub(crate) use preload::{
-    CACHE_SIZE, MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD,
+    CACHE_SIZE, MAX_CONCURRENT_DECODER_LOADS, MAX_DEFERRED_SDR_UPLOADS, MAX_PRELOAD_BACKWARD,
+    MAX_PRELOAD_FORWARD, PRELOAD_MEMORY_REFRESH_MIN_INTERVAL,
     capacity_refresh_should_reschedule_preloads, compute_preload_budgets,
     memory_aware_tile_cache_budgets_mb, plan_ultra_hdr_capacity_refresh,
     ultra_hdr_decode_capacity_for_output_mode,

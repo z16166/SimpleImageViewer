@@ -1245,7 +1245,11 @@ mod prefetched_preview_generation_tests {
     }
 }
 
-fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {
+pub(super) fn prefetch_circular_distance(
+    current_index: usize,
+    image_count: usize,
+    candidate: usize,
+) -> usize {
     if image_count == 0 {
         return usize::MAX;
     }

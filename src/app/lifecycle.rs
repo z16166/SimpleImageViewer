@@ -78,21 +78,14 @@ impl ImageViewerApp {
         let saver_res = std::thread::Builder::new()
             .name("settings-saver".to_string())
             .spawn(move || {
-                while let Ok(mut settings) = save_rx.recv() {
-                    // Coalesce rapid updates: if multiple save requests are queued (e.g., during rapid slider dragging),
-                    // drain the channel and only persist the absolute latest state to avoid I/O flooding.
-                    while let Ok(newer) = save_rx.try_recv() {
-                        settings = newer;
-                    }
-
-                    if let Err(e) = settings.save() {
+                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
+                    save_rx,
+                    crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
+                    |settings| settings.save(),
+                    |e| {
                         let _ = save_error_tx.send(e);
-                    }
-
-                    // Throttling: give the OS and filesystem time to settle between writes.
-                    // This prevents file locking conflicts on certain Windows/AV configurations.
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                    },
+                );
             });
 
         let saver_handle = match saver_res {
@@ -137,15 +130,14 @@ impl ImageViewerApp {
         let hotkeys_saver_res = std::thread::Builder::new()
             .name("hotkeys-saver".to_string())
             .spawn(move || {
-                while let Ok(mut cfg) = hotkeys_save_rx.recv() {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    while let Ok(newer) = hotkeys_save_rx.try_recv() {
-                        cfg = newer;
-                    }
-                    if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&cfg) {
+                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
+                    hotkeys_save_rx,
+                    crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
+                    |cfg| crate::hotkeys::io::save_hotkeys_file(cfg),
+                    |e| {
                         let _ = hotkeys_save_error_tx.send(e);
-                    }
-                }
+                    },
+                );
             });
         let hotkeys_saver_handle = match hotkeys_saver_res {
             Ok(handle) => Some(handle),
@@ -172,15 +164,14 @@ impl ImageViewerApp {
         let context_menu_saver_res = std::thread::Builder::new()
             .name("context-menu-saver".to_string())
             .spawn(move || {
-                while let Ok(mut cfg) = context_menu_save_rx.recv() {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    while let Ok(newer) = context_menu_save_rx.try_recv() {
-                        cfg = newer;
-                    }
-                    if let Err(e) = crate::context_menu::io::save_context_menu_file(&cfg) {
+                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
+                    context_menu_save_rx,
+                    crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
+                    |cfg| crate::context_menu::io::save_context_menu_file(cfg),
+                    |e| {
                         let _ = context_menu_save_error_tx.send(e);
-                    }
-                }
+                    },
+                );
             });
         let context_menu_saver_handle = match context_menu_saver_res {
             Ok(handle) => Some(handle),
@@ -621,10 +612,7 @@ impl ImageViewerApp {
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
-            preload_memory_sys: sysinfo::System::new_with_specifics(
-                sysinfo::RefreshKind::nothing()
-                    .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
-            ),
+            preload_memory: crate::app::preload_memory::PreloadMemorySnapshot::new(),
             file_op_rx,
             file_op_tx,
             lightweight_file_op_tx,
@@ -752,6 +740,8 @@ impl ImageViewerApp {
     // Persistent Storage
     // ------------------------------------------------------------------
 
+    /// Enqueues a best-effort background YAML write (trailing debounce, ~5s quiet period).
+    /// `last_viewed_image` and other session state are persisted authoritatively in `on_exit`.
     pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
     }

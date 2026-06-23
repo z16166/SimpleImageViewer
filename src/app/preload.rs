@@ -26,6 +26,12 @@ pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
 pub(crate) const MAX_CONCURRENT_DECODER_LOADS: usize = 3;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
+/// Max CPU-side SDR previews queued for deferred GPU upload (neighbors + HDR fallbacks).
+/// Independent of preload direction limits so tuning one does not silently change the other.
+pub(crate) const MAX_DEFERRED_SDR_UPLOADS: usize = 12;
+/// Avoid refreshing sysinfo RAM stats on every preload schedule during rapid navigation.
+pub(crate) const PRELOAD_MEMORY_REFRESH_MIN_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(1);
 pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
     settings: crate::hdr::types::HdrToneMapSettings,
     output_mode: crate::hdr::types::HdrOutputMode,
