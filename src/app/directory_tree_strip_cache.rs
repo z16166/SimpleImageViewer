@@ -180,6 +180,7 @@ impl DirectoryTreeStripCache {
         _current_index: usize,
         _total_count: usize,
         strip_max_side: u32,
+        allow_initial_over_refined: bool,
     ) {
         if decoded.is_sdr_deferred_placeholder() {
             #[cfg(feature = "preload-debug")]
@@ -197,6 +198,7 @@ impl DirectoryTreeStripCache {
             decoded,
             stage,
             logical_size,
+            allow_initial_over_refined,
         ) {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
@@ -396,6 +398,7 @@ pub(crate) fn should_replace_strip_thumbnail(
     decoded: &DecodedImage,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
+    allow_initial_over_refined: bool,
 ) -> bool {
     if decoded.is_sdr_deferred_placeholder() {
         return false;
@@ -413,6 +416,12 @@ pub(crate) fn should_replace_strip_thumbnail(
         None => true,
         Some(cached_max_side) => {
             if stage == PreviewStage::Refined && cached_stage == Some(PreviewStage::Initial) {
+                return true;
+            }
+            if stage == PreviewStage::Initial
+                && cached_stage == Some(PreviewStage::Refined)
+                && allow_initial_over_refined
+            {
                 return true;
             }
             new_max_side > cached_max_side
@@ -461,6 +470,7 @@ mod tests {
                 0,
                 total,
                 128,
+                false,
             );
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
@@ -477,6 +487,7 @@ mod tests {
             &bootstrap,
             PreviewStage::Initial,
             Some((8000, 2000)),
+            false,
         ));
         assert!(!should_replace_strip_thumbnail(
             None,
@@ -484,6 +495,7 @@ mod tests {
             &bootstrap,
             PreviewStage::Refined,
             Some((800, 8000)),
+            false,
         ));
     }
 
@@ -496,6 +508,7 @@ mod tests {
             &refined,
             PreviewStage::Refined,
             Some((8000, 2000)),
+            false,
         ));
     }
 
@@ -513,6 +526,7 @@ mod tests {
             0,
             1,
             128,
+            false,
         );
         assert!(cache.contains(0));
         let black = DecodedImage::new_sdr_deferred_placeholder(512, 256, vec![0; 512 * 256 * 4]);
@@ -525,6 +539,7 @@ mod tests {
             0,
             1,
             128,
+            false,
         );
         assert!(cache.contains(0));
         assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
@@ -541,6 +556,7 @@ mod tests {
             &black,
             PreviewStage::Refined,
             Some((4096, 2048)),
+            false,
         ));
         assert!(should_replace_strip_thumbnail(
             Some(128),
@@ -548,6 +564,38 @@ mod tests {
             &good,
             PreviewStage::Refined,
             Some((4096, 2048)),
+            false,
+        ));
+    }
+
+    #[test]
+    fn strip_cache_cold_initial_may_replace_refined_sync() {
+        let cold = DecodedImage::new(128, 128, vec![200; 128 * 128 * 4]);
+        assert!(!should_replace_strip_thumbnail(
+            Some(150),
+            Some(PreviewStage::Refined),
+            &cold,
+            PreviewStage::Initial,
+            Some((512, 512)),
+            false,
+        ));
+        assert!(should_replace_strip_thumbnail(
+            Some(150),
+            Some(PreviewStage::Refined),
+            &cold,
+            PreviewStage::Initial,
+            Some((512, 512)),
+            true,
+        ));
+        let black_placeholder =
+            DecodedImage::new_sdr_deferred_placeholder(150, 150, vec![0; 150 * 150 * 4]);
+        assert!(!should_replace_strip_thumbnail(
+            Some(150),
+            Some(PreviewStage::Refined),
+            &black_placeholder,
+            PreviewStage::Initial,
+            Some((512, 512)),
+            true,
         ));
     }
 
@@ -570,6 +618,7 @@ mod tests {
             0,
             1,
             128,
+            false,
         );
         assert!(cache.contains(0));
         cache.clear_gpu_textures();
@@ -609,6 +658,7 @@ mod tests {
                 0,
                 3,
                 128,
+                false,
             );
         }
         // Swap indices 1 and 2.
@@ -624,7 +674,17 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = DirectoryTreeStripCache::default();
         let decoded = DecodedImage::new(16, 16, vec![1; 16 * 16 * 4]);
-        cache.upsert_from_decoded(0, &decoded, PreviewStage::Refined, None, &ctx, 0, 1, 128);
+        cache.upsert_from_decoded(
+            0,
+            &decoded,
+            PreviewStage::Refined,
+            None,
+            &ctx,
+            0,
+            1,
+            128,
+            false,
+        );
         cache.relocate(0, 5);
         assert!(cache.contains(5));
         assert!(!cache.contains(0));

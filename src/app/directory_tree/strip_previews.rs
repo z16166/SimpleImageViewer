@@ -225,8 +225,32 @@ impl ImageViewerApp {
         );
     }
 
-    fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
+    fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
+        self.pending_anim_frames
+            .get(&index)
+            .is_some_and(|pending| pending.hdr_frames.is_some())
+    }
+
+    fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {
         if self.hdr_placeholder_fallback_indices.contains(&index) {
+            return true;
+        }
+        if self.strip_hdr_animated_awaiting_real_strip_preview(index) {
+            return true;
+        }
+        self.ultra_hdr_capacity_sensitive_indices.contains(&index)
+            && self.hdr_sdr_fallback_indices.contains(&index)
+    }
+
+    pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
+        self.directory_tree_strip_cache.remove_index(index);
+        self.directory_tree_strip_cold_attempted.remove(&index);
+        self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_tiled_attempted.remove(&index);
+    }
+
+    fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
+        if self.strip_main_loader_sdr_unreliable_for_strip(index) {
             return true;
         }
         if self
@@ -271,6 +295,7 @@ impl ImageViewerApp {
             );
             return;
         }
+        let allow_initial_over_refined = self.strip_main_loader_sdr_unreliable_for_strip(index);
         self.directory_tree_strip_cache.upsert_from_decoded(
             index,
             decoded,
@@ -282,6 +307,7 @@ impl ImageViewerApp {
             self.settings
                 .directory_tree_list_preview_size
                 .strip_max_side(),
+            allow_initial_over_refined,
         );
     }
 
@@ -431,10 +457,11 @@ impl ImageViewerApp {
         if self.tiled_sdr_source_for_index(index).is_some() {
             return false;
         }
-        if self
-            .deferred_sdr_uploads
-            .get(&index)
-            .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
+        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && self
+                .deferred_sdr_uploads
+                .get(&index)
+                .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
         {
             return false;
         }
@@ -444,14 +471,16 @@ impl ImageViewerApp {
         if self.directory_tree_strip_cold_attempted.contains(&index) {
             return false;
         }
+        let cached_preview_authoritative = !self.strip_main_loader_sdr_unreliable_for_strip(index);
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-            if self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(index, logical)
+            if cached_preview_authoritative
+                && self
+                    .directory_tree_strip_cache
+                    .is_valid_for_logical(index, logical)
             {
                 return false;
             }
-        } else if self.directory_tree_strip_cache.contains(index) {
+        } else if cached_preview_authoritative && self.directory_tree_strip_cache.contains(index) {
             return false;
         }
         true
@@ -598,7 +627,7 @@ impl ImageViewerApp {
                 );
             }
             crate::preload_debug!(
-                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} black_ok={}",
+                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} placeholder={}",
                 index,
                 decoded.width,
                 decoded.height,
@@ -610,7 +639,7 @@ impl ImageViewerApp {
                     logical.0,
                     logical.1,
                 ),
-                !decoded.is_sdr_deferred_placeholder()
+                decoded.is_sdr_deferred_placeholder()
             );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,
@@ -1030,6 +1059,9 @@ impl ImageViewerApp {
         let deferred_indices: Vec<usize> = self.deferred_sdr_uploads.keys().copied().collect();
         for index in deferred_indices {
             if self.tiled_sdr_source_for_index(index).is_some() {
+                continue;
+            }
+            if self.strip_main_loader_sdr_unreliable_for_strip(index) {
                 continue;
             }
             if self.directory_tree_strip_cache.contains(index) {

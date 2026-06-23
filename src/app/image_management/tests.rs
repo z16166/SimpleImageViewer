@@ -2520,6 +2520,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
             0,
             3,
             128,
+            false,
         );
     }
 
@@ -2553,6 +2554,7 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
         0,
         1,
         128,
+        false,
     );
 
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
