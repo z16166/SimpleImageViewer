@@ -529,12 +529,14 @@ impl ImageViewerApp {
         }
 
         if let Some(first) = frames.first() {
-            self.queue_or_upload_static_sdr_texture(
-                idx,
-                &first.fallback,
-                format!("img_hdr_anim_fallback_{idx}"),
-                ctx,
-            );
+            let fallback_is_placeholder = first.fallback.is_sdr_deferred_placeholder();
+            if fallback_is_placeholder {
+                self.hdr_placeholder_fallback_indices.insert(idx);
+                self.invalidate_directory_tree_strip_preview_for_index(idx);
+            } else {
+                self.hdr_placeholder_fallback_indices.remove(&idx);
+            }
+            self.queue_or_upload_hdr_sdr_fallback_texture(idx, &first.fallback, ctx);
             if idx == self.current_index {
                 self.set_current_image_resolution(Some((first.width(), first.height())));
                 self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
@@ -550,6 +552,8 @@ impl ImageViewerApp {
                     pixels: first.fallback.arc_pixels(),
                 });
             }
+        } else {
+            self.hdr_placeholder_fallback_indices.remove(&idx);
         }
 
         let sdr_frames: Vec<crate::loader::AnimationFrame> = frames
