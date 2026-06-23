@@ -1498,6 +1498,8 @@ fn make_test_app() -> ImageViewerApp {
         #[cfg(target_os = "linux")]
         last_vulkan_hdr_metadata,
         last_logged_swap_chain_format_request: None,
+        #[cfg(target_os = "linux")]
+        last_logged_linux_hdr_runtime_diag: None,
         #[cfg(feature = "preload-debug")]
         hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState::default(),
         rgb10a2_pq_encode_requested: false,

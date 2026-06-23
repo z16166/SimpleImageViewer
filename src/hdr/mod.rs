@@ -36,6 +36,8 @@ pub mod jpegxl;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod jxl_gain_map_deferred;
 pub(crate) mod linux_admission;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_diag;
 pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod mpf;
