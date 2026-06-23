@@ -17,8 +17,6 @@
 //! Linux Vulkan WSI `(format, color_space)` gates for native HDR presentation.
 
 use super::monitor::HdrMonitorSelection;
-#[cfg(target_os = "linux")]
-use super::monitor::HdrNativeSurfaceEncoding;
 
 /// Subset of [`wgpu_hal::linux_surface_probe::VulkanHdrSurfaceProbe`] published by egui-wgpu.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

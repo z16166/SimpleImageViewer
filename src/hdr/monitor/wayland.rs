@@ -15,10 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::probe::SpawnMonitorHdrProbe;
-use super::types::{
-    HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
-    LinuxWaylandTransferFunction,
-};
+use super::types::{HdrMonitorSelection, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
@@ -79,9 +76,17 @@ pub(crate) fn map_wayland_transfer_function(
 #[cfg(target_os = "linux")]
 pub(crate) fn map_wayland_primaries(primaries: Option<Primaries>) -> LinuxWaylandColorPrimaries {
     match primaries {
-        Some(Primaries::Srgb) | Some(Primaries::Bt709) => LinuxWaylandColorPrimaries::Narrow,
-        Some(Primaries::Bt2020) | Some(Primaries::DisplayP3) => LinuxWaylandColorPrimaries::Wide,
-        Some(_) => LinuxWaylandColorPrimaries::Unknown,
+        // `Primaries::Srgb` is BT.709 / IEC sRGB (H.273 cp 1); no separate Bt709 variant in wp v1.
+        Some(Primaries::Srgb)
+        | Some(Primaries::PalM)
+        | Some(Primaries::Pal)
+        | Some(Primaries::Ntsc) => LinuxWaylandColorPrimaries::Narrow,
+        Some(Primaries::Bt2020)
+        | Some(Primaries::DciP3)
+        | Some(Primaries::DisplayP3)
+        | Some(Primaries::AdobeRgb)
+        | Some(Primaries::Cie1931Xyz) => LinuxWaylandColorPrimaries::Wide,
+        Some(Primaries::GenericFilm) | Some(_) => LinuxWaylandColorPrimaries::Unknown,
         None => LinuxWaylandColorPrimaries::Unknown,
     }
 }
@@ -867,6 +872,19 @@ mod tests {
         let (point, origin) = resolve_spawn_probe_point(Some([100, 200]), Some([0, 0]));
         assert_eq!(point, [120, 220]);
         assert_eq!(origin, "saved_window_position");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn map_wayland_primaries_classifies_protocol_variants() {
+        assert_eq!(
+            map_wayland_primaries(Some(Primaries::Srgb)),
+            LinuxWaylandColorPrimaries::Narrow
+        );
+        assert_eq!(
+            map_wayland_primaries(Some(Primaries::Bt2020)),
+            LinuxWaylandColorPrimaries::Wide
+        );
     }
 
     #[test]
