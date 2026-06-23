@@ -295,7 +295,7 @@ impl ImageViewerApp {
             );
             return;
         }
-        let replace_refined_placeholder = self.strip_main_loader_sdr_unreliable_for_strip(index);
+        let allow_initial_over_refined = self.strip_main_loader_sdr_unreliable_for_strip(index);
         self.directory_tree_strip_cache.upsert_from_decoded(
             index,
             decoded,
@@ -307,7 +307,7 @@ impl ImageViewerApp {
             self.settings
                 .directory_tree_list_preview_size
                 .strip_max_side(),
-            replace_refined_placeholder,
+            allow_initial_over_refined,
         );
     }
 

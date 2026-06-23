@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.5] - 2026-06-23
+
+### Fixed
+- **Navigation strip previews for animated HDR images**: AVIF and other animated HDR sequences in the file list now show the first frame in the strip preview instead of a black or placeholder thumbnail while the image is still loading.
+
 ## [2.7.4] - 2026-06-22
 
 ### Fixed

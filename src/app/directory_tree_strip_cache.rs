@@ -180,7 +180,7 @@ impl DirectoryTreeStripCache {
         _current_index: usize,
         _total_count: usize,
         strip_max_side: u32,
-        replace_refined_placeholder: bool,
+        allow_initial_over_refined: bool,
     ) {
         if decoded.is_sdr_deferred_placeholder() {
             #[cfg(feature = "preload-debug")]
@@ -198,7 +198,7 @@ impl DirectoryTreeStripCache {
             decoded,
             stage,
             logical_size,
-            replace_refined_placeholder,
+            allow_initial_over_refined,
         ) {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
@@ -398,7 +398,7 @@ pub(crate) fn should_replace_strip_thumbnail(
     decoded: &DecodedImage,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
-    replace_refined_placeholder: bool,
+    allow_initial_over_refined: bool,
 ) -> bool {
     if decoded.is_sdr_deferred_placeholder() {
         return false;
@@ -420,7 +420,7 @@ pub(crate) fn should_replace_strip_thumbnail(
             }
             if stage == PreviewStage::Initial
                 && cached_stage == Some(PreviewStage::Refined)
-                && replace_refined_placeholder
+                && allow_initial_over_refined
             {
                 return true;
             }
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_cache_cold_initial_replaces_refined_placeholder_sync() {
+    fn strip_cache_cold_initial_may_replace_refined_sync() {
         let cold = DecodedImage::new(128, 128, vec![200; 128 * 128 * 4]);
         assert!(!should_replace_strip_thumbnail(
             Some(150),
