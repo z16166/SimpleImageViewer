@@ -700,6 +700,12 @@ impl DirectoryTreeTreeState {
             .max_by_key(|entry| entry.filesystem_path.components().count())
     }
 
+    fn is_known_folder_tree_path(&self, path: &Path) -> bool {
+        self.known_folders
+            .iter()
+            .any(|entry| entry.tree_path.as_os_str() == path.as_os_str())
+    }
+
     fn reveal_ancestor_chain(&self, selected: &Path) -> Vec<PathBuf> {
         let max_depth = MAX_DIRECTORY_TREE_REVEAL_DEPTH;
         if let Some(entry) = self.known_folder_for_filesystem_path(selected) {
@@ -840,6 +846,7 @@ impl DirectoryTreeTreeState {
         self.or_insert_tree_node(selected_tree_key.clone(), || {
             directory_tree_node(directory_display_name(&selected), selected.clone())
         });
+        let selected_is_known_folder = self.is_known_folder_tree_path(&selected_tree_key);
         if chain.len() >= 2 {
             let parent_key = &chain[chain.len() - 2];
             if let Some(parent_node) = self.nodes.get_mut(parent_key) {
@@ -848,6 +855,7 @@ impl DirectoryTreeTreeState {
                         .children
                         .iter()
                         .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+                    && !(is_this_pc_tree_path(parent_key) && selected_is_known_folder)
                 {
                     parent_node.children.push(selected_tree_key.clone());
                 }
@@ -858,6 +866,7 @@ impl DirectoryTreeTreeState {
                     .children
                     .iter()
                     .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+                && !selected_is_known_folder
             {
                 this_pc_node.children.push(selected_tree_key);
             }

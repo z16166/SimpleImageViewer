@@ -694,6 +694,52 @@ fn directory_tree_node_icon_distinguishes_places_roots() {
 }
 
 #[test]
+fn reveal_known_folder_does_not_add_known_folder_to_this_pc_children() {
+    use crate::directory_tree_places::types::{
+        DriveEntry, KnownFolderKind, known_folder_tree_path,
+    };
+
+    let pictures_fs = PathBuf::from("/tmp/siv-known-pictures");
+    let pictures_tree = known_folder_tree_path(KnownFolderKind::Pictures);
+    let places = DirectoryTreePlaces {
+        known_folders: vec![KnownFolderEntry {
+            kind: KnownFolderKind::Pictures,
+            display_name: "Pictures".to_string(),
+            tree_path: pictures_tree.clone(),
+            filesystem_path: pictures_fs.clone(),
+        }],
+        drives: vec![DriveEntry {
+            display_name: "Data".to_string(),
+            path: PathBuf::from("/tmp/siv-drive"),
+        }],
+        network_locations: Vec::new(),
+        this_pc_label: "This PC".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    state
+        .tree
+        .nodes
+        .get_mut(&this_pc_tree_path())
+        .expect("This PC")
+        .expanded = true;
+
+    state.set_selected_dir(pictures_fs);
+    let _requests = state.reveal_selected_dir();
+
+    let this_pc = state.tree.nodes.get(&this_pc_tree_path()).expect("This PC");
+    assert!(
+        !this_pc
+            .children
+            .iter()
+            .any(|child| child.as_os_str() == pictures_tree.as_os_str()),
+        "known folders must not appear under This PC"
+    );
+}
+
+#[test]
 fn reveal_known_folder_does_not_expand_this_pc() {
     use crate::directory_tree_places::types::{KnownFolderKind, known_folder_tree_path};
 
