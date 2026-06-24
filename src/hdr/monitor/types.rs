@@ -108,6 +108,7 @@ pub struct HdrMonitorSelection {
 }
 
 impl HdrMonitorSelection {
+    #[cfg(test)]
     pub fn new(label: impl Into<String>, hdr_supported: bool) -> Self {
         Self {
             label: label.into(),

@@ -35,6 +35,7 @@ pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod jxl_gain_map_deferred;
+#[cfg(any(target_os = "linux", test))]
 pub(crate) mod linux_admission;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_diag;

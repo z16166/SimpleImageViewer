@@ -29,16 +29,6 @@ pub struct WsiHdrSurfaceGates {
     pub probed: bool,
 }
 
-#[cfg(target_os = "linux")]
-impl WsiHdrSurfaceGates {
-    pub fn wsi_advertises_any_hdr_pair(self) -> bool {
-        self.probed
-            && (self.hdr10_st2084_rgb10a2
-                || self.extended_srgb_linear_rgba16f
-                || self.srgb_nonlinear_rgb10a2)
-    }
-}
-
 /// Combine Wayland `wp_color_management` metadata with Vulkan WSI surface gates.
 ///
 /// WSI availability is **necessary** but not sufficient: compositors may list HDR
@@ -73,13 +63,12 @@ pub fn linux_effective_monitor_selection(
     wp.cloned()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::*;
-    #[cfg(target_os = "linux")]
-    use crate::hdr::monitor::HdrNativeSurfaceEncoding;
+    use super::{linux_effective_monitor_selection, WsiHdrSurfaceGates};
     use crate::hdr::monitor::{
-        HdrMonitorSelection, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction,
+        HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
+        LinuxWaylandTransferFunction,
     };
 
     fn wp_gamma22_tv() -> HdrMonitorSelection {
@@ -112,7 +101,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn merge_admits_kwin_gamma22_when_wp_and_wsi_agree() {
         let merged = linux_effective_monitor_selection(
@@ -137,7 +125,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn merge_vetoes_sdr_wp_despite_wsi_hdr10_pair() {
         let merged = linux_effective_monitor_selection(
@@ -155,7 +142,6 @@ mod tests {
         assert_eq!(merged.native_surface_encoding, None);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn wsi_fail_closed_when_no_hdr_pairs() {
         let merged = linux_effective_monitor_selection(

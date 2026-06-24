@@ -34,6 +34,7 @@ pub enum LinuxHdrAdmission {
     NativeExtendedScRgb,
 }
 
+#[cfg(target_os = "linux")]
 impl LinuxHdrAdmission {
     pub fn hdr_supported(self) -> bool {
         !matches!(self, Self::Sdr)
