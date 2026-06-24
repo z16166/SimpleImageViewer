@@ -15,12 +15,18 @@ const EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT: i32 = 0x30BF;
 const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 const EGL_PLATFORM_ANGLE_ANGLE: u32 = 0x3202;
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_TYPE_ANGLE: u32 = 0x3203;
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE: u32 = 0x3208;
 // ANGLE extension EGL_ANGLE_platform_angle_opengl (not 0x3205).
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE: u32 = 0x320D;
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE: u32 = 0x320E;
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: u32 = 0x3209;
+#[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE: u32 = 0x320B;
 const EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE: u32 = 0x348F;
 const EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED: u32 = 0x3451;
@@ -109,20 +115,12 @@ pub(crate) enum AngleTier {
     Warp,
 }
 
-#[cfg(not(feature = "windows-angle"))]
-#[derive(Clone, Copy, Debug)]
-enum AngleTier {
-    D3d11,
-    OpenGl,
-    Warp,
-}
-
 /// Choose GLES framebuffer configuration.
 fn choose_config(
     egl: &EglInstance,
     display: khronos_egl::Display,
     srgb_kind: SrgbFrameBufferKind,
-    angle_tier: Option<AngleTier>,
+    #[cfg(feature = "windows-angle")] angle_tier: Option<AngleTier>,
 ) -> Result<(khronos_egl::Config, bool), crate::InstanceError> {
     //TODO: EGL_SLOW_CONFIG
     let default_tiers: &[(&str, &[i32])] = &[
@@ -707,7 +705,7 @@ impl Inner {
         egl: Arc<EglInstance>,
         display: khronos_egl::Display,
         force_gles_minor_version: wgt::Gles3MinorVersion,
-        angle_tier: Option<AngleTier>,
+        #[cfg(feature = "windows-angle")] angle_tier: Option<AngleTier>,
     ) -> Result<Self, crate::InstanceError> {
         let version = initialize_display(&egl, display)
             .map_err(instance_err("failed to initialize EGL display connection"))?;
@@ -759,6 +757,7 @@ impl Inner {
             &egl,
             display,
             srgb_kind,
+            #[cfg(feature = "windows-angle")]
             angle_tier,
         ) {
             Ok(pair) => pair,
@@ -781,6 +780,7 @@ impl Inner {
             ));
         }
 
+        #[cfg(feature = "windows-angle")]
         let config_prefers_desktop_gl = !config.as_ptr().is_null()
             && egl
                 .get_config_attrib(display, config, khronos_egl::RENDERABLE_TYPE)
@@ -928,40 +928,76 @@ impl Inner {
                 }
             };
 
-            let result = match angle_tier {
-                Some(AngleTier::OpenGl) if config_prefers_desktop_gl && supports_opengl => {
-                    create_context(khronos_egl::OPENGL_API, &gl_context_attributes).or_else(
-                        |gl_error| {
-                            log::debug!(
-                                "ANGLE OpenGL desktop context failed ({gl_error}), trying GLES"
-                            );
-                            create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)
-                        },
-                    )
+            let result = {
+                #[cfg(feature = "windows-angle")]
+                {
+                    match angle_tier {
+                        Some(AngleTier::OpenGl)
+                            if config_prefers_desktop_gl && supports_opengl =>
+                        {
+                            create_context(khronos_egl::OPENGL_API, &gl_context_attributes)
+                                .or_else(|gl_error| {
+                                    log::debug!(
+                                        "ANGLE OpenGL desktop context failed ({gl_error}), trying GLES"
+                                    );
+                                    create_context(
+                                        khronos_egl::OPENGL_ES_API,
+                                        &gles_context_attributes,
+                                    )
+                                })
+                        }
+                        Some(AngleTier::OpenGl) => {
+                            create_context(
+                                khronos_egl::OPENGL_ES_API,
+                                &gles_context_attributes,
+                            )
+                            .or_else(|gles_error| {
+                                if supports_opengl {
+                                    log::debug!(
+                                        "ANGLE OpenGL GLES context failed ({gles_error}), trying desktop GL"
+                                    );
+                                    create_context(
+                                        khronos_egl::OPENGL_API,
+                                        &gl_context_attributes,
+                                    )
+                                } else {
+                                    Err(gles_error)
+                                }
+                            })
+                        }
+                        _ if supports_opengl => create_context(
+                            khronos_egl::OPENGL_API,
+                            &gl_context_attributes,
+                        )
+                        .or_else(|gl_error| {
+                            log::debug!("Failed to create desktop OpenGL context: {gl_error}, falling back to OpenGL ES");
+                            create_context(
+                                khronos_egl::OPENGL_ES_API,
+                                &gles_context_attributes,
+                            )
+                        }),
+                        _ => create_context(
+                            khronos_egl::OPENGL_ES_API,
+                            &gles_context_attributes,
+                        ),
+                    }
                 }
-                Some(AngleTier::OpenGl) => {
-                    create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes).or_else(
-                        |gles_error| {
-                            if supports_opengl {
-                                log::debug!(
-                                    "ANGLE OpenGL GLES context failed ({gles_error}), trying desktop GL"
-                                );
+                #[cfg(not(feature = "windows-angle"))]
+                {
+                    if supports_opengl {
+                        create_context(khronos_egl::OPENGL_API, &gl_context_attributes).or_else(
+                            |gl_error| {
+                                log::debug!("Failed to create desktop OpenGL context: {gl_error}, falling back to OpenGL ES");
                                 create_context(
-                                    khronos_egl::OPENGL_API,
-                                    &gl_context_attributes,
+                                    khronos_egl::OPENGL_ES_API,
+                                    &gles_context_attributes,
                                 )
-                            } else {
-                                Err(gles_error)
-                            }
-                        },
-                    )
-                }
-                _ if supports_opengl => create_context(khronos_egl::OPENGL_API, &gl_context_attributes)
-                    .or_else(|gl_error| {
-                        log::debug!("Failed to create desktop OpenGL context: {gl_error}, falling back to OpenGL ES");
+                            },
+                        )
+                    } else {
                         create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)
-                    }),
-                _ => create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes),
+                    }
+                }
             };
 
             result.map_err(|e| {
@@ -1255,6 +1291,7 @@ impl crate::Instance for Instance {
             egl,
             display,
             desc.backend_options.gl.gles_minor_version,
+            #[cfg(feature = "windows-angle")]
             None,
         )?;
 
@@ -1441,7 +1478,7 @@ impl super::Adapter {
     }
 
     #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
-    pub fn adapter_context(&self) -> &super::AdapterContext {
+    pub fn adapter_context(&self) -> &AdapterContext {
         &self.shared.context
     }
 }
@@ -1449,7 +1486,7 @@ impl super::Adapter {
 #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl super::Device {
     /// Returns the underlying EGL context.
-    pub fn context(&self) -> &super::AdapterContext {
+    pub fn context(&self) -> &AdapterContext {
         &self.shared.context
     }
 }
