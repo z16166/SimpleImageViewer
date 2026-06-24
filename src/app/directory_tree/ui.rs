@@ -71,6 +71,12 @@ pub(super) fn directory_tree_node_icon_fields(
     {
         return DirectoryTreeNodeIcon::KnownFolder(kind);
     }
+    if super::namespace::is_mount_tree_path(path) {
+        return DirectoryTreeNodeIcon::Drive;
+    }
+    if super::namespace::is_network_share_tree_path(path) {
+        return DirectoryTreeNodeIcon::Network;
+    }
     if nodes
         .get_node(&this_pc_tree_path())
         .is_some_and(|node| node.children.iter().any(|child| child.as_path() == path))
@@ -1598,6 +1604,11 @@ fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
 
     #[cfg(target_os = "linux")]
     {
+        if let Ok(rest) = path.strip_prefix("/run/media") {
+            if let Some(first) = rest.components().next() {
+                return Some(PathBuf::from("/run/media").join(first.as_os_str()));
+            }
+        }
         for prefix in ["/media", "/mnt"] {
             if let Ok(rest) = path.strip_prefix(prefix) {
                 if let Some(name) = rest.components().next() {

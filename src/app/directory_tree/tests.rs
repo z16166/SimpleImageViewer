@@ -139,7 +139,8 @@ fn apply_children_result_ignores_stale_generation() {
     assert!(node.loading);
     assert!(!node.children_loaded);
     assert!(node.children.is_empty());
-    assert!(!state.tree.nodes.contains_key(&child));
+    let child_tree = super::namespace::tree_child_path(&root, &child);
+    assert!(!state.tree.nodes.contains_key(&child_tree));
 }
 
 #[test]
@@ -174,8 +175,9 @@ fn apply_children_result_merges_children_and_clears_loading() {
     let node = state.tree.nodes.get(&root).expect("root node");
     assert!(!node.loading);
     assert!(node.children_loaded);
-    assert_eq!(node.children, vec![child.clone()]);
-    assert!(state.tree.nodes.contains_key(&child));
+    let child_tree = super::namespace::tree_child_path(&root, &child);
+    assert_eq!(node.children, vec![child_tree.clone()]);
+    assert!(state.tree.nodes.contains_key(&child_tree));
 }
 
 #[test]
@@ -497,21 +499,16 @@ fn reveal_selected_dir_mounts_unc_share_under_network() {
     state.set_selected_dir(PathBuf::from("//192.168.2.1/pictures/2024"));
 
     assert!(state.tree.network_visible);
+    let share_browse =
+        unc_share_root(&PathBuf::from("//192.168.2.1/pictures/2024")).expect("share");
+    let share_tree = super::namespace::network_share_tree_path(&share_browse);
     let network = state
         .tree
         .nodes
         .get(&network_tree_path())
         .expect("network node");
-    assert_eq!(
-        network.children,
-        vec![PathBuf::from("//192.168.2.1/pictures")]
-    );
-    assert!(
-        state
-            .tree
-            .nodes
-            .contains_key(&PathBuf::from("//192.168.2.1/pictures"))
-    );
+    assert_eq!(network.children, vec![share_tree.clone()]);
+    assert!(state.tree.nodes.contains_key(&share_tree));
 }
 
 #[test]
@@ -680,7 +677,11 @@ fn directory_tree_node_icon_distinguishes_places_roots() {
         DirectoryTreeNodeIcon::KnownFolder(KnownFolderKind::Pictures)
     );
     assert_eq!(
-        directory_tree_node_icon_fields(&state.tree.known_folders, &state.tree.nodes, &drive),
+        directory_tree_node_icon_fields(
+            &state.tree.known_folders,
+            &state.tree.nodes,
+            &super::namespace::drive_mount_tree_path(&drive),
+        ),
         DirectoryTreeNodeIcon::Drive
     );
     assert_eq!(
@@ -803,11 +804,12 @@ fn reveal_selected_dir_expands_nested_known_folder_path_after_places_init() {
             .get(&docs_tree)
             .is_some_and(|node| node.expanded)
     );
+    let year_tree = docs_tree.join("2024");
     assert!(
         state
             .tree
             .nodes
-            .get(&docs_fs.join("2024"))
+            .get(&year_tree)
             .is_some_and(|node| node.expanded)
     );
 }
@@ -850,6 +852,301 @@ fn selected_tree_path_distinguishes_alias_nodes_with_same_browse_path() {
     assert_eq!(
         state.tree.selected_tree_path.as_deref(),
         Some(known_tree.as_path())
+    );
+}
+
+#[test]
+fn apply_children_omits_places_mount_roots_from_media_parent() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let happy = PathBuf::from("/run/media/happy");
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![
+            DriveEntry {
+                display_name: "/".to_string(),
+                path: PathBuf::from("/"),
+            },
+            DriveEntry {
+                display_name: "happy".to_string(),
+                path: happy.clone(),
+            },
+        ],
+        network_locations: Vec::new(),
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    let root_mount = super::namespace::drive_mount_tree_path(Path::new("/"));
+    let run_media_tree = super::namespace::tree_child_path(
+        &super::namespace::tree_child_path(&root_mount, &PathBuf::from("/run")),
+        &PathBuf::from("/run/media"),
+    );
+    state
+        .tree
+        .nodes
+        .or_insert_with(
+            run_media_tree.clone(),
+            super::MAX_DIRECTORY_TREE_NODES,
+            || super::directory_tree_node("media".to_string(), PathBuf::from("/run/media")),
+        )
+        .expect("run/media node");
+
+    let other_browse = PathBuf::from("/run/media/other");
+    state.apply_children_result(super::DirectoryChildrenResult {
+        tree_path: run_media_tree.clone(),
+        generation: state.tree.generation,
+        result: Ok(vec![happy.clone(), other_browse.clone()]),
+    });
+
+    let node = state
+        .tree
+        .nodes
+        .get(&run_media_tree)
+        .expect("run/media node after load");
+    let happy_tree = super::namespace::drive_mount_tree_path(&happy);
+    assert!(
+        !node
+            .children
+            .iter()
+            .any(|path| path.as_os_str() == happy_tree.as_os_str())
+    );
+    let other_tree = super::namespace::tree_child_path(&run_media_tree, &other_browse);
+    assert!(
+        node.children
+            .iter()
+            .any(|path| path.as_os_str() == other_tree.as_os_str())
+    );
+}
+
+#[test]
+fn reveal_mount_path_skips_root_slash_ancestor_chain() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let happy = PathBuf::from("/run/media/happy");
+    let happy_tree = super::namespace::drive_mount_tree_path(&happy);
+    let custom = happy.join("CDROM").join("custom");
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![
+            DriveEntry {
+                display_name: "/".to_string(),
+                path: PathBuf::from("/"),
+            },
+            DriveEntry {
+                display_name: "happy".to_string(),
+                path: happy.clone(),
+            },
+        ],
+        network_locations: Vec::new(),
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    state.set_selected_dir(custom);
+
+    let requests = state.reveal_selected_dir();
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.tree_path == PathBuf::from("/run"))
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.tree_path == PathBuf::from("/run/media"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.tree_path == happy_tree)
+            || requests.iter().any(|request| {
+                request.tree_path
+                    == super::namespace::tree_child_path(&happy_tree, &happy.join("CDROM"))
+            })
+    );
+}
+
+#[test]
+fn selected_tree_path_distinguishes_mount_namespace_branches() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let happy = PathBuf::from("/run/media/happy");
+    let browse = happy.join("CDROM");
+    let root_mount = super::namespace::drive_mount_tree_path(Path::new("/"));
+    let happy_mount = super::namespace::drive_mount_tree_path(&happy);
+    let via_root = super::namespace::tree_child_path(
+        &super::namespace::tree_child_path(
+            &super::namespace::tree_child_path(
+                &super::namespace::tree_child_path(&root_mount, &PathBuf::from("/run")),
+                &PathBuf::from("/run/media"),
+            ),
+            &happy,
+        ),
+        &browse,
+    );
+    let via_happy = super::namespace::tree_child_path(&happy_mount, &browse);
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![
+            DriveEntry {
+                display_name: "/".to_string(),
+                path: PathBuf::from("/"),
+            },
+            DriveEntry {
+                display_name: "happy".to_string(),
+                path: happy.clone(),
+            },
+        ],
+        network_locations: Vec::new(),
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    state
+        .tree
+        .set_selected_tree_node(via_happy.clone(), browse.clone());
+    assert_eq!(
+        state.tree.selected_tree_path.as_deref(),
+        Some(via_happy.as_path())
+    );
+    state
+        .tree
+        .set_selected_tree_node(via_root.clone(), browse.clone());
+    assert_eq!(
+        state.tree.selected_tree_path.as_deref(),
+        Some(via_root.as_path())
+    );
+    assert_ne!(via_root, via_happy);
+}
+
+#[test]
+fn expand_tree_for_tree_node_uses_explicit_namespace_branch() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let happy = PathBuf::from("/run/media/happy");
+    let browse = happy.join("CDROM");
+    let root_mount = super::namespace::drive_mount_tree_path(Path::new("/"));
+    let happy_mount = super::namespace::drive_mount_tree_path(&happy);
+    let via_root = super::namespace::tree_child_path(
+        &super::namespace::tree_child_path(
+            &super::namespace::tree_child_path(
+                &super::namespace::tree_child_path(&root_mount, &PathBuf::from("/run")),
+                &PathBuf::from("/run/media"),
+            ),
+            &happy,
+        ),
+        &browse,
+    );
+    let via_happy = super::namespace::tree_child_path(&happy_mount, &browse);
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![
+            DriveEntry {
+                display_name: "/".to_string(),
+                path: PathBuf::from("/"),
+            },
+            DriveEntry {
+                display_name: "happy".to_string(),
+                path: happy.clone(),
+            },
+        ],
+        network_locations: Vec::new(),
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    state
+        .tree
+        .nodes
+        .or_insert_with(via_root.clone(), super::MAX_DIRECTORY_TREE_NODES, || {
+            super::directory_tree_node("CDROM".to_string(), browse.clone())
+        })
+        .expect("via_root node");
+    state
+        .tree
+        .nodes
+        .or_insert_with(via_happy.clone(), super::MAX_DIRECTORY_TREE_NODES, || {
+            super::directory_tree_node("CDROM".to_string(), browse.clone())
+        })
+        .expect("via_happy node");
+
+    let request = state
+        .expand_tree_for_tree_node(&via_root)
+        .expect("expand via_root");
+    assert_eq!(request.tree_path, via_root);
+    assert_eq!(request.browse_path, browse);
+
+    let request = state
+        .expand_tree_for_tree_node(&via_happy)
+        .expect("expand via_happy");
+    assert_eq!(request.tree_path, via_happy);
+    assert_eq!(request.browse_path, browse);
+    assert_ne!(request.tree_path, via_root);
+}
+
+#[test]
+fn reveal_selected_dir_uses_persisted_namespace_branch() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let happy = PathBuf::from("/run/media/happy");
+    let browse = happy.join("CDROM").join("custom");
+    let root_mount = super::namespace::drive_mount_tree_path(Path::new("/"));
+    let via_root = super::namespace::tree_child_path(
+        &super::namespace::tree_child_path(
+            &super::namespace::tree_child_path(
+                &super::namespace::tree_child_path(
+                    &super::namespace::tree_child_path(&root_mount, &PathBuf::from("/run")),
+                    &PathBuf::from("/run/media"),
+                ),
+                &happy,
+            ),
+            &happy.join("CDROM"),
+        ),
+        &browse,
+    );
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![
+            DriveEntry {
+                display_name: "/".to_string(),
+                path: PathBuf::from("/"),
+            },
+            DriveEntry {
+                display_name: "happy".to_string(),
+                path: happy.clone(),
+            },
+        ],
+        network_locations: Vec::new(),
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    state
+        .tree
+        .set_selected_tree_node(via_root.clone(), browse.clone());
+    let requests = state.reveal_selected_dir();
+    assert!(
+        requests.iter().any(|request| request.tree_path == via_root)
+            || state.tree.selected_tree_path.as_deref() == Some(via_root.as_path())
+    );
+    assert!(
+        !requests.iter().any(|request| {
+            request.tree_path == super::namespace::drive_mount_tree_path(&happy)
+        })
     );
 }
 

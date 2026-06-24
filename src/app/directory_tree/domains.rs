@@ -16,7 +16,7 @@
 
 // Simple Image Viewer - directory-tree domain writers, snapshots, and publish.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,6 +44,10 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) places_load_error: Option<String>,
     pub(crate) workers_available: bool,
     pub(crate) known_folders: Vec<KnownFolderEntry>,
+    /// Places drive mount roots; used to avoid duplicating mount subtrees under `/`.
+    pub(crate) places_drive_roots: HashSet<PathBuf>,
+    /// UNC share roots shown under Network (filesystem paths).
+    pub(crate) network_share_roots: HashSet<PathBuf>,
     pub(crate) selected_dir: Option<PathBuf>,
     /// Tree-node key last selected in the folder pane (distinct from [`selected_dir`] when aliases share a path).
     pub(crate) selected_tree_path: Option<PathBuf>,
@@ -69,6 +73,8 @@ impl Default for DirectoryTreeTreeState {
             places_load_error: None,
             workers_available: true,
             known_folders: Vec::new(),
+            places_drive_roots: HashSet::new(),
+            network_share_roots: HashSet::new(),
             selected_dir: None,
             selected_tree_path: None,
             nodes: node_store::DirectoryTreeNodeArena::default(),

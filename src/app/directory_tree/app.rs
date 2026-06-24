@@ -276,7 +276,11 @@ impl ImageViewerApp {
                 return;
             }
             let mut requests = tree.reveal_selected_dir();
-            if let Some(request) = tree.expand_tree_for_filesystem_dir(&dir) {
+            if let Some(tree_path) = tree.selected_tree_path.clone() {
+                if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
+                    requests.push(request);
+                }
+            } else if let Some(request) = tree.expand_tree_for_filesystem_dir(&dir) {
                 requests.push(request);
             }
             requests
@@ -510,7 +514,11 @@ impl ImageViewerApp {
             let mut tree = runtime.tree.lock();
             tree.set_selected_dir(root.clone());
             let mut requests = tree.reveal_selected_dir();
-            if let Some(request) = tree.expand_tree_for_filesystem_dir(&root) {
+            if let Some(tree_path) = tree.selected_tree_path.clone() {
+                if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
+                    requests.push(request);
+                }
+            } else if let Some(request) = tree.expand_tree_for_filesystem_dir(&root) {
                 requests.push(request);
             }
             requests
@@ -575,7 +583,7 @@ impl ImageViewerApp {
                         list.scanning = true;
                         list.scan_status = t!("directory_tree.scanning").to_string();
                         list.mark_snapshot_dirty();
-                        if let Some(request) = tree.expand_tree_for_filesystem_dir(&browse_path) {
+                        if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
                             drop(tree);
                             drop(list);
                             self.send_directory_tree_children_request(request);
