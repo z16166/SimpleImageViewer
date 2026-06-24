@@ -249,15 +249,12 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn saved_directory_tree_selection_dir(&self) -> Option<PathBuf> {
-        self.settings
-            .last_image_dir
-            .clone()
-            .or_else(|| {
-                self.settings
-                    .last_viewed_image
-                    .as_ref()
-                    .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-            })
+        self.settings.last_image_dir.clone().or_else(|| {
+            self.settings
+                .last_viewed_image
+                .as_ref()
+                .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        })
     }
 
     pub(crate) fn reveal_directory_tree_for_saved_selection(&mut self) {
