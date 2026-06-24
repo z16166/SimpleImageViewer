@@ -273,14 +273,16 @@ impl ImageViewerApp {
             if !tree.places_loaded {
                 tree.scroll_folder_tree_to_selected = true;
                 tree.mark_snapshot_dirty();
-                return;
+                Vec::new()
+            } else {
+                tree.expand_requests_for_selection(&dir)
             }
-            tree.expand_requests_for_selection(&dir)
         };
         for request in requests {
             self.send_directory_tree_children_request(request);
         }
         self.request_directory_tree_folder_scroll_to_selected();
+        self.wake_root_for_logic();
     }
 
     pub(crate) fn request_directory_tree_folder_scroll_to_selected(&mut self) {
@@ -294,7 +296,7 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() {
             return;
         }
-        let Some(dir) = self.current_browse_directory() else {
+        let Some(dir) = self.saved_directory_tree_selection_dir() else {
             return;
         };
         if self.settings.tree_nav_root_dir.is_none() {
@@ -539,6 +541,7 @@ impl ImageViewerApp {
             }
             ctx.request_repaint();
             self.request_directory_tree_viewport_repaint(ctx);
+            self.wake_root_for_logic();
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
@@ -1557,9 +1560,13 @@ impl ImageViewerApp {
     /// so a scan that finishes on a background thread is not left in `scan_rx` until the next
     /// frame's heavy upload path (see preload-debug `wait_ms` logs).
     pub(crate) fn process_directory_scan_pipeline(&mut self, ctx: &egui::Context) {
+        let was_scanning = self.scanning;
         self.process_scan_results();
         self.process_directory_tree_events(ctx);
         self.process_scan_results();
+        if was_scanning && !self.scanning {
+            self.ensure_directory_tree_reveals_current_browse_dir();
+        }
         #[cfg(feature = "preload-debug")]
         if let Some(since) = self.scan_results_pending_since {
             let wait_ms = crate::preload_debug::elapsed_ms(since);
@@ -1611,11 +1618,17 @@ impl ImageViewerApp {
         {
             self.defer_directory_tree_file_list_sync();
         }
+        let folder_reveal_pending = self
+            .directory_tree
+            .tree
+            .try_lock()
+            .is_some_and(|tree| tree.folder_reveal_work_pending());
         let strip_work_pending = self.scanning
             || self.pending_directory_tree_state_sync
             || self.directory_tree_strip_bootstrap_after_scan
             || !self.directory_tree_strip_generate_inflight.is_empty()
-            || !self.directory_tree_strip_pending_gpu.is_empty();
+            || !self.directory_tree_strip_pending_gpu.is_empty()
+            || folder_reveal_pending;
         if strip_work_pending {
             if self.directory_tree_strip_cache.gpu_revision() > 0 {
                 self.request_directory_tree_viewport_repaint(ctx);

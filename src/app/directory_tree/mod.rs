@@ -842,6 +842,7 @@ impl DirectoryTreeTreeState {
         dir: PathBuf,
         saved_namespace: Option<PathBuf>,
     ) {
+        let saved_namespace = saved_namespace.map(namespace::normalize_tree_namespace_path);
         let Some(namespace_path) = saved_namespace else {
             self.set_selected_fs_path(dir);
             return;
@@ -861,6 +862,11 @@ impl DirectoryTreeTreeState {
         self.set_selected_fs_path(dir);
     }
 
+    pub(crate) fn folder_reveal_work_pending(&self) -> bool {
+        self.scroll_folder_tree_to_selected
+            || self.nodes.iter().any(|(_, node)| node.loading)
+    }
+
     pub(crate) fn expand_requests_for_selection(
         &mut self,
         dir: &Path,
@@ -877,6 +883,7 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn set_selected_namespace_node(&mut self, namespace_path: PathBuf, dir: PathBuf) {
+        let namespace_path = namespace::normalize_tree_namespace_path(namespace_path);
         if is_unc_path(&dir) {
             self.ensure_network_visible();
             if let Some(share_root) = unc_share_root(&dir) {

@@ -46,7 +46,7 @@ impl KnownFolderKind {
 
 /// Stable tree-node key for a known shell folder (distinct from its filesystem path).
 pub fn known_folder_namespace_path(kind: KnownFolderKind) -> PathBuf {
-    PathBuf::from(format!(r"\\?\siv-tree\KnownFolder\{}", kind.slug()))
+    PathBuf::from(format!(r"\\?\siv-tree/KnownFolder/{}", kind.slug()))
 }
 
 /// A known folder entry (Desktop, Documents, etc.).

@@ -808,7 +808,11 @@ fn reveal_selected_namespace_expands_nested_known_folder_path_after_places_init(
             .get(&docs_tree)
             .is_some_and(|node| node.expanded)
     );
-    let year_tree = docs_tree.join("2024");
+    let year_tree = super::namespace::namespace_child_path(
+        &docs_tree,
+        &docs_fs,
+        &docs_fs.join("2024"),
+    );
     assert!(
         state
             .tree
@@ -1567,6 +1571,14 @@ fn begin_paint_frame_promotes_folder_scroll_to_selected_without_clobbering_clear
     chrome.begin_paint_frame(&view, false);
 
     assert!(chrome.scroll_folder_tree_to_selected);
+}
+
+#[test]
+fn folder_reveal_work_pending_tracks_scroll_flag() {
+    let mut tree = DirectoryTreeTreeState::default();
+    assert!(!tree.folder_reveal_work_pending());
+    tree.scroll_folder_tree_to_selected = true;
+    assert!(tree.folder_reveal_work_pending());
 }
 
 #[test]
