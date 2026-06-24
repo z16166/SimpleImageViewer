@@ -66,7 +66,7 @@ pub fn linux_effective_monitor_selection(
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{linux_effective_monitor_selection, WsiHdrSurfaceGates};
+    use super::{WsiHdrSurfaceGates, linux_effective_monitor_selection};
     use crate::hdr::monitor::{
         HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
         LinuxWaylandTransferFunction,

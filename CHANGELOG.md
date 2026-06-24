@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **Navigation strip previews**: Thumbnails in the file list appear as soon as background generation finishes, without needing to move the mouse over the list (including when the navigation panel is in a separate window).
 - **Navigation strip previews for HDR images**: HDR photos no longer stay on a black placeholder in the file list while the full image is still loading in the background.
 - **Navigation strip previews for animated HDR images**: Animated HDR sequences (such as AVIF) use the first frame for the strip preview instead of a black or temporary fallback copied from the main viewer.
+- **Linux Places folder tree**: Nested removable drives (for example a CD-ROM under a media mount) no longer show up twice in **Places**, and opening one folder no longer highlights two tree entries at once.
 
 ### Improved
 - **Linux in virtual machines**: The app starts reliably on Linux VMs and adapters that do not support GPU pipeline caching.

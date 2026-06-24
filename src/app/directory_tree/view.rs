@@ -69,8 +69,8 @@ impl DirectoryTreeView {
         &self.tree.known_folders
     }
 
-    pub(super) fn selected_tree_path(&self) -> Option<&std::path::PathBuf> {
-        self.tree.selected_tree_path.as_ref()
+    pub(super) fn selected_namespace_path(&self) -> Option<&std::path::PathBuf> {
+        self.tree.selected_namespace_path.as_ref()
     }
 
     pub(super) fn nodes(

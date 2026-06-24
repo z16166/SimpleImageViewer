@@ -16,7 +16,7 @@
 
 // Simple Image Viewer - directory-tree domain writers, snapshots, and publish.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,9 +44,13 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) places_load_error: Option<String>,
     pub(crate) workers_available: bool,
     pub(crate) known_folders: Vec<KnownFolderEntry>,
-    pub(crate) selected_dir: Option<PathBuf>,
-    /// Tree-node key last selected in the folder pane (distinct from [`selected_dir`] when aliases share a path).
-    pub(crate) selected_tree_path: Option<PathBuf>,
+    /// Places drive mount roots; used to avoid duplicating mount subtrees under `/`.
+    pub(crate) places_drive_roots: HashSet<PathBuf>,
+    /// UNC share roots shown under Network (filesystem paths).
+    pub(crate) network_share_roots: HashSet<PathBuf>,
+    pub(crate) selected_fs_path: Option<PathBuf>,
+    /// Tree-node key last selected in the folder pane (distinct from [`selected_fs_path`] when aliases share a path).
+    pub(crate) selected_namespace_path: Option<PathBuf>,
     pub(crate) nodes: node_store::DirectoryTreeNodeArena,
     pub(crate) generation: u64,
     pub(crate) folder_scroll_offset_y: f32,
@@ -69,8 +73,10 @@ impl Default for DirectoryTreeTreeState {
             places_load_error: None,
             workers_available: true,
             known_folders: Vec::new(),
-            selected_dir: None,
-            selected_tree_path: None,
+            places_drive_roots: HashSet::new(),
+            network_share_roots: HashSet::new(),
+            selected_fs_path: None,
+            selected_namespace_path: None,
             nodes: node_store::DirectoryTreeNodeArena::default(),
             generation: 0,
             folder_scroll_offset_y: 0.0,
@@ -174,7 +180,7 @@ pub(crate) struct DirectoryTreeTreeSnapshot {
     pub(super) places_load_error: Option<String>,
     pub(super) workers_available: bool,
     pub(super) known_folders: Vec<KnownFolderEntry>,
-    pub(super) selected_tree_path: Option<PathBuf>,
+    pub(super) selected_namespace_path: Option<PathBuf>,
     pub(super) nodes: HashMap<PathBuf, Arc<DirectoryTreeNode>>,
     pub(super) network_visible: bool,
     pub(super) left_panel_width: f32,
@@ -217,7 +223,7 @@ impl Default for DirectoryTreeTreeSnapshot {
             places_load_error: None,
             workers_available: true,
             known_folders: Vec::new(),
-            selected_tree_path: None,
+            selected_namespace_path: None,
             nodes: HashMap::new(),
             network_visible: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,
@@ -316,7 +322,7 @@ pub(super) fn publish_tree_snapshot(
         places_load_error: tree.places_load_error.clone(),
         workers_available: tree.workers_available,
         known_folders: tree.known_folders.clone(),
-        selected_tree_path: tree.selected_tree_path.clone(),
+        selected_namespace_path: tree.selected_namespace_path.clone(),
         nodes,
         network_visible: tree.network_visible,
         left_panel_width: tree.left_panel_width,

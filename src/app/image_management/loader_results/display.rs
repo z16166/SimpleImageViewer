@@ -205,10 +205,8 @@ impl ImageViewerApp {
             .get(&idx)
             .map(|hdr| (hdr.width, hdr.height));
         #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
-        let promoted = develop_dims.is_some_and(|(w, h)| {
-            self.raw_metadata
-                .promote_gpu_demosaic_complete(idx, w, h)
-        });
+        let promoted = develop_dims
+            .is_some_and(|(w, h)| self.raw_metadata.promote_gpu_demosaic_complete(idx, w, h));
         if is_current && develop_dims.is_none() {
             log::warn!(
                 "[RAW-GPU] demosaic complete for current index={idx} but hdr_image_cache \

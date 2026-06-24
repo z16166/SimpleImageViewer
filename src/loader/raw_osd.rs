@@ -241,7 +241,11 @@ impl RawOsdInfo {
         }
     }
 
-    pub(crate) fn promote_gpu_demosaic_complete(&mut self, develop_width: u32, develop_height: u32) {
+    pub(crate) fn promote_gpu_demosaic_complete(
+        &mut self,
+        develop_width: u32,
+        develop_height: u32,
+    ) {
         if self.demosaic_backend != Some(RawDemosaicBackend::Video) {
             return;
         }

@@ -71,9 +71,7 @@ pub(crate) struct LinuxHdrRuntimeDiagInput<'a> {
 
 /// Hash finite f32 values for snapshot equality; `f32` cannot implement `Eq`/`Hash` directly.
 fn finite_f32_key(value: Option<f32>) -> Option<u32> {
-    value
-        .filter(|v| v.is_finite())
-        .map(|v| v.to_bits())
+    value.filter(|v| v.is_finite()).map(|v| v.to_bits())
 }
 
 fn snapshot_from_input(input: LinuxHdrRuntimeDiagInput<'_>) -> LinuxHdrRuntimeDiagSnapshot {
@@ -100,9 +98,7 @@ fn snapshot_from_input(input: LinuxHdrRuntimeDiagInput<'_>) -> LinuxHdrRuntimeDi
         wsi_extended_srgb_linear_rgba16f: input.wsi.extended_srgb_linear_rgba16f,
         admission,
         effective_hdr_supported: effective.as_ref().map(|s| s.hdr_supported),
-        effective_encoding: effective
-            .as_ref()
-            .and_then(|s| s.native_surface_encoding),
+        effective_encoding: effective.as_ref().and_then(|s| s.native_surface_encoding),
         effective_capacity_source: effective
             .as_ref()
             .and_then(|s| s.hdr_capacity_source.map(str::to_string)),
@@ -177,8 +173,7 @@ pub(crate) fn log_runtime_if_changed(
         snapshot.native_swapchain_requests_enabled,
     );
 
-    if snapshot.effective_hdr_supported == Some(true)
-        && !snapshot.native_swapchain_requests_enabled
+    if snapshot.effective_hdr_supported == Some(true) && !snapshot.native_swapchain_requests_enabled
     {
         log::info!(
             "[HDR] native HDR admission passed but swap-chain requests are disabled \
@@ -237,11 +232,8 @@ mod tests {
             srgb_nonlinear_rgb10a2: true,
             probed: true,
         };
-        let effective = super::super::wsi_probe::linux_effective_monitor_selection(
-            Some(&wp),
-            wsi,
-        )
-        .expect("effective selection");
+        let effective = super::super::wsi_probe::linux_effective_monitor_selection(Some(&wp), wsi)
+            .expect("effective selection");
         let input = LinuxHdrRuntimeDiagInput {
             wp: Some(&wp),
             effective: Some(&effective),

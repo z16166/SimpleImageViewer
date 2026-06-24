@@ -52,7 +52,7 @@ pub fn load() -> DirectoryTreePlaces {
 
 #[cfg(not(any(windows, unix)))]
 fn stub_load() -> DirectoryTreePlaces {
-    use types::{KnownFolderEntry, KnownFolderKind, known_folder_tree_path};
+    use types::{KnownFolderEntry, KnownFolderKind, known_folder_namespace_path};
 
     let known_folders = dirs::home_dir()
         .into_iter()
@@ -60,8 +60,8 @@ fn stub_load() -> DirectoryTreePlaces {
         .map(|path| KnownFolderEntry {
             kind: KnownFolderKind::Profile,
             display_name: rust_i18n::t!("directory_tree.place_profile").to_string(),
-            tree_path: known_folder_tree_path(KnownFolderKind::Profile),
-            filesystem_path: path,
+            namespace_path: known_folder_namespace_path(KnownFolderKind::Profile),
+            fs_path: path,
         })
         .collect();
 

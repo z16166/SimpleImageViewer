@@ -1692,6 +1692,28 @@ fn make_test_app() -> ImageViewerApp {
 }
 
 #[test]
+fn load_directory_preserves_tree_nav_selected_namespace_path() {
+    let mut app = make_test_app();
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    let namespace = PathBuf::from(r"\\?\siv-tree\Mount/%2Fcustom");
+    app.settings.tree_nav_selected_namespace_path = Some(namespace.clone());
+
+    let dir = std::env::temp_dir().join("siv_load_directory_namespace_test");
+    let _ = std::fs::create_dir_all(&dir);
+    app.load_directory(dir.clone());
+
+    assert_eq!(
+        app.settings.tree_nav_selected_namespace_path,
+        Some(namespace)
+    );
+
+    if let Some(cancel) = app.scan_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn load_directory_clears_in_progress_refresh_scan_state() {
     let mut app = make_test_app();
     app.refresh_scan_in_progress = true;
@@ -2496,18 +2518,14 @@ fn apply_picked_image_directory_keeps_tree_settings_when_nav_hidden() {
     let mut app = make_test_app();
     app.settings.browse_mode = crate::settings::BrowseMode::Tree;
     app.settings.show_directory_tree_nav = false;
-    app.settings.tree_nav_root_dir = Some(PathBuf::from("/tree/root"));
     app.settings.tree_nav_selected_dir = Some(PathBuf::from("/tree/root/old"));
 
     let picked = PathBuf::from("/tree/root/new");
     app.apply_picked_image_directory(picked.clone());
 
     assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
-    assert_eq!(
-        app.settings.tree_nav_root_dir,
-        Some(PathBuf::from("/tree/root"))
-    );
-    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked));
+    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked.clone()));
+    assert_eq!(app.settings.last_image_dir, Some(picked));
 }
 
 #[test]
