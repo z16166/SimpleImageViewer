@@ -12,7 +12,9 @@ const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 6;
 const EGL_CONTEXT_FLAGS_KHR: i32 = 0x30FC;
 const EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR: i32 = 0x0001;
 const EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT: i32 = 0x30BF;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 const EGL_PLATFORM_ANGLE_ANGLE: u32 = 0x3202;
 #[cfg(feature = "windows-angle")]
@@ -28,8 +30,10 @@ const EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE: u32 = 0x320E;
 const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: u32 = 0x3209;
 #[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE: u32 = 0x320B;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 const EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE: u32 = 0x348F;
 const EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED: u32 = 0x3451;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
 const EGL_GL_COLORSPACE_KHR: u32 = 0x309D;
 const EGL_GL_COLORSPACE_SRGB_KHR: u32 = 0x3089;
@@ -676,7 +680,7 @@ pub(crate) fn init_angle_instance(
 }
 
 /// Win7 ANGLE fallback when `legacy-win7-gles` is disabled (tries D3D11, OpenGL, WARP).
-#[cfg(feature = "windows-angle")]
+#[cfg(all(feature = "windows-angle", not(all(windows, feature = "legacy-win7-gles"))))]
 fn init_windows_angle(
     desc: &crate::InstanceDescriptor<'_>,
     _egl: Arc<EglInstance>,
@@ -1071,7 +1075,9 @@ impl Drop for Inner {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum WindowKind {
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
     Wayland,
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
     X11,
     AngleX11,
     Unknown,
@@ -1687,12 +1693,24 @@ impl Surface {
                 let wl_window = None;
                 let (mut temp_xlib_handle, mut temp_xcb_handle);
                 let native_window_ptr = match (self.wsi.kind, self.raw_window_handle) {
+                    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
                     (WindowKind::Unknown | WindowKind::X11, Rwh::Xlib(handle)) => {
                         temp_xlib_handle = handle.window;
                         ptr::from_mut(&mut temp_xlib_handle).cast::<ffi::c_void>()
                     }
+                    #[cfg(all(windows, feature = "legacy-win7-gles"))]
+                    (WindowKind::Unknown, Rwh::Xlib(handle)) => {
+                        temp_xlib_handle = handle.window;
+                        ptr::from_mut(&mut temp_xlib_handle).cast::<ffi::c_void>()
+                    }
                     (WindowKind::AngleX11, Rwh::Xlib(handle)) => handle.window as *mut ffi::c_void,
+                    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
                     (WindowKind::Unknown | WindowKind::X11, Rwh::Xcb(handle)) => {
+                        temp_xcb_handle = handle.window;
+                        ptr::from_mut(&mut temp_xcb_handle).cast::<ffi::c_void>()
+                    }
+                    #[cfg(all(windows, feature = "legacy-win7-gles"))]
+                    (WindowKind::Unknown, Rwh::Xcb(handle)) => {
                         temp_xcb_handle = handle.window;
                         ptr::from_mut(&mut temp_xcb_handle).cast::<ffi::c_void>()
                     }
