@@ -1001,12 +1001,12 @@ impl ImageLoader {
                             final_gen
                         );
                     } else {
-                    let file_name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    REFINEMENT_POOL.spawn(move || {
+                        let file_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        REFINEMENT_POOL.spawn(move || {
                         if Self::hq_refinement_superseded(&loading_for_hq, index, final_gen) {
                             return;
                         }

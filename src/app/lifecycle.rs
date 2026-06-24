@@ -280,10 +280,7 @@ impl ImageViewerApp {
                     hdr_callback_resources_prewarm.clone(),
                 ),
             );
-            (
-                pipeline_cache.map(std::sync::Arc::new),
-                Some(adapter_info),
-            )
+            (pipeline_cache.map(std::sync::Arc::new), Some(adapter_info))
         } else {
             crate::loader::GPU_DEMOSAIC_SUPPORTED
                 .store(false, std::sync::atomic::Ordering::Relaxed);
