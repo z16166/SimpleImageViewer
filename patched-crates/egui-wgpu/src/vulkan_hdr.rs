@@ -114,6 +114,7 @@ mod linux {
                 gates.set(crate::VulkanWsiHdrGates {
                     hdr10_st2084_rgb10a2: probe.hdr10_st2084_rgb10a2,
                     extended_srgb_linear_rgba16f: probe.extended_srgb_linear_rgba16f,
+                    srgb_nonlinear_rgb10a2: probe.srgb_nonlinear_rgb10a2,
                     probed: true,
                 });
             }

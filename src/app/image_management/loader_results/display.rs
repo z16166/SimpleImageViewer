@@ -200,8 +200,21 @@ impl ImageViewerApp {
         if let Some(ms) = demosaic_ms {
             self.raw_metadata.set_gpu_demosaic_ms(idx, ms);
         }
+        let develop_dims = self
+            .hdr_image_cache
+            .get(&idx)
+            .map(|hdr| (hdr.width, hdr.height));
         #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
-        let promoted = self.raw_metadata.promote_gpu_demosaic_complete(idx);
+        let promoted = develop_dims.is_some_and(|(w, h)| {
+            self.raw_metadata
+                .promote_gpu_demosaic_complete(idx, w, h)
+        });
+        if is_current && develop_dims.is_none() {
+            log::warn!(
+                "[RAW-GPU] demosaic complete for current index={idx} but hdr_image_cache \
+                 missing; OSD may stay on bootstrap until refine metadata arrives"
+            );
+        }
         crate::preload_debug!(
             "[PreloadDebug][RAW-GPU] demosaic complete idx={idx} ms={} osd_promoted={promoted} cur={}",
             demosaic_ms.unwrap_or(0),

@@ -183,6 +183,9 @@ pub fn initial_monitor_selection_from_environment_probe(
             native_surface_encoding: Some(
                 crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
             ),
+            reference_luminance_nits: None,
+            linux_wp_transfer: None,
+            linux_wp_primaries: None,
         }),
         HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
             Some(crate::hdr::monitor::HdrMonitorSelection {
@@ -193,6 +196,9 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_hdr_capacity: None,
                 hdr_capacity_source: None,
                 native_surface_encoding: None,
+                reference_luminance_nits: None,
+                linux_wp_transfer: None,
+                linux_wp_primaries: None,
             })
         }
         HdrEnvironmentProbe::ProbeUnavailable => None,
@@ -356,6 +362,9 @@ mod tests {
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
             native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
+            reference_luminance_nits: None,
+            linux_wp_transfer: None,
+            linux_wp_primaries: None,
         }
     }
 
@@ -368,6 +377,9 @@ mod tests {
             max_hdr_capacity: None,
             hdr_capacity_source: None,
             native_surface_encoding: None,
+            reference_luminance_nits: None,
+            linux_wp_transfer: None,
+            linux_wp_primaries: None,
         }
     }
 

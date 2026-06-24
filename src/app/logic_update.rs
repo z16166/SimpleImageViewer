@@ -478,7 +478,7 @@ impl ImageViewerApp {
             && Some(desired_format) != self.hdr_target_format
         {
             if self.last_logged_swap_chain_format_request != Some(desired_format) {
-                log::debug!(
+                log::info!(
                     "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
                      monitor={:?} hdr_supported={:?} native_surface_enabled={}",
                     self.hdr_target_format,
@@ -507,6 +507,32 @@ impl ImageViewerApp {
                 self.hdr_capabilities.backend,
                 self.hdr_target_format,
             );
+        #[cfg(target_os = "linux")]
+        {
+            let wsi = self.vulkan_wsi_hdr_gates.get();
+            crate::hdr::linux_diag::log_runtime_if_changed(
+                &mut self.last_logged_linux_hdr_runtime_diag,
+                crate::hdr::linux_diag::LinuxHdrRuntimeDiagInput {
+                    wp: self.hdr_monitor_state.selection(),
+                    effective: effective_selection.as_ref(),
+                    wsi: crate::hdr::wsi_probe::WsiHdrSurfaceGates {
+                        hdr10_st2084_rgb10a2: wsi.hdr10_st2084_rgb10a2,
+                        extended_srgb_linear_rgba16f: wsi.extended_srgb_linear_rgba16f,
+                        srgb_nonlinear_rgb10a2: wsi.srgb_nonlinear_rgb10a2,
+                        probed: wsi.probed,
+                    },
+                    settings_native_surface_enabled: self.settings.hdr_native_surface_enabled,
+                    settings_native_surface_effective: self
+                        .settings
+                        .hdr_native_surface_enabled_effective(),
+                    native_swapchain_requests_enabled: native_surface_requests_enabled,
+                    target_format: self.hdr_target_format,
+                    desired_target_format,
+                    output_mode,
+                    native_presentation_enabled: self.hdr_capabilities.native_presentation_enabled,
+                },
+            );
+        }
         #[cfg(feature = "preload-debug")]
         {
             use crate::app::preload_hdr_gate::SwapRequestOutcome;
@@ -546,20 +572,6 @@ impl ImageViewerApp {
         if hdr_output_state_changed(previous_hdr_output_state, next_hdr_output_state) {
             if previous_hdr_output_state.target_format() != next_hdr_output_state.target_format() {
                 self.invalidate_directory_tree_strip_gpu_textures();
-            }
-            if let Some(selection) = self.effective_hdr_monitor_selection() {
-                log::info!(
-                    "[HDR] presentation active: output_mode={:?} native_presentation={} \
-                     target_format={:?} monitor={} hdr_supported_effective={} \
-                     hdr_capacity_source={:?} max_luminance_nits={:?}",
-                    self.hdr_capabilities.output_mode,
-                    self.hdr_capabilities.native_presentation_enabled,
-                    self.hdr_target_format,
-                    selection.label,
-                    selection.hdr_supported,
-                    selection.hdr_capacity_source,
-                    selection.max_luminance_nits,
-                );
             }
             self.refresh_hdr_view_status();
         }

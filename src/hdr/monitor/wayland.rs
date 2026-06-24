@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::probe::SpawnMonitorHdrProbe;
-use super::types::HdrMonitorSelection;
+use super::types::{HdrMonitorSelection, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
@@ -51,12 +51,44 @@ pub(crate) enum WaylandTransferFunction {
     Unknown,
 }
 
-/// Wayland `wp_color_management` alone does **not** gate native HDR on Linux.
-/// Only explicit ST 2084 (PQ) is treated as HDR-capable here; peak luminance
-/// from EDID is metadata for tone-mapping / ST2086, not an HDR on/off signal.
-/// The authoritative swap-chain gate is Vulkan WSI (`linux_effective_monitor_selection`).
+/// Wayland `wp_color_management` classifies explicit PQ output. The effective Linux
+/// native HDR gate merges this metadata with Vulkan WSI in [`crate::hdr::linux_admission`].
 pub(crate) fn hdr_supported_from_wayland_probe(tf: WaylandTransferFunction) -> bool {
     matches!(tf, WaylandTransferFunction::St2084)
+}
+
+pub(crate) fn map_wayland_transfer_function(
+    tf: WaylandTransferFunction,
+) -> LinuxWaylandTransferFunction {
+    match tf {
+        WaylandTransferFunction::Srgb => LinuxWaylandTransferFunction::Srgb,
+        WaylandTransferFunction::Gamma22 => LinuxWaylandTransferFunction::Gamma22,
+        WaylandTransferFunction::Bt1886 => LinuxWaylandTransferFunction::Bt1886,
+        WaylandTransferFunction::CompoundPower24 => LinuxWaylandTransferFunction::CompoundPower24,
+        WaylandTransferFunction::St2084 => LinuxWaylandTransferFunction::St2084,
+        WaylandTransferFunction::Hlg => LinuxWaylandTransferFunction::Hlg,
+        WaylandTransferFunction::GammaPower(_) | WaylandTransferFunction::Unknown => {
+            LinuxWaylandTransferFunction::Unknown
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn map_wayland_primaries(primaries: Option<Primaries>) -> LinuxWaylandColorPrimaries {
+    match primaries {
+        // `Primaries::Srgb` is BT.709 / IEC sRGB (H.273 cp 1); no separate Bt709 variant in wp v1.
+        Some(Primaries::Srgb)
+        | Some(Primaries::PalM)
+        | Some(Primaries::Pal)
+        | Some(Primaries::Ntsc) => LinuxWaylandColorPrimaries::Narrow,
+        Some(Primaries::Bt2020)
+        | Some(Primaries::DciP3)
+        | Some(Primaries::DisplayP3)
+        | Some(Primaries::AdobeRgb)
+        | Some(Primaries::Cie1931Xyz) => LinuxWaylandColorPrimaries::Wide,
+        Some(Primaries::GenericFilm) | Some(_) => LinuxWaylandColorPrimaries::Unknown,
+        None => LinuxWaylandColorPrimaries::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +121,8 @@ pub(crate) fn wayland_output_selection(
     label: String,
     tf: WaylandTransferFunction,
     max_luminance_nits: Option<f32>,
+    reference_luminance_nits: Option<f32>,
+    primaries: Option<Primaries>,
 ) -> HdrMonitorSelection {
     let hdr_supported = hdr_supported_from_wayland_probe(tf);
     HdrMonitorSelection {
@@ -101,6 +135,9 @@ pub(crate) fn wayland_output_selection(
         native_surface_encoding: hdr_supported
             .then(|| native_surface_encoding_from_transfer(tf))
             .flatten(),
+        reference_luminance_nits,
+        linux_wp_transfer: Some(map_wayland_transfer_function(tf)),
+        linux_wp_primaries: Some(map_wayland_primaries(primaries)),
     }
 }
 
@@ -387,6 +424,8 @@ impl ProbeState {
             self.selected_output_label.clone(),
             tf,
             self.image_state.max_luminance_nits,
+            self.image_state.reference_luminance_nits,
+            self.image_state.primaries,
         );
 
         log::debug!(
@@ -398,12 +437,14 @@ impl ProbeState {
         );
 
         log::debug!(
-            "[HDR] Wayland wp_color_management probe (metadata only; Vulkan WSI gates HDR on Linux): \
+            "[HDR] Wayland wp_color_management probe (metadata; merged with Vulkan WSI on Linux): \
              output={} wp_hdr_supported={} transfer_function={tf:?} \
-             max_luminance_nits={:?} origin={}",
+             max_luminance_nits={:?} reference_luminance_nits={:?} primaries={:?} origin={}",
             selection.label,
             selection.hdr_supported,
             selection.max_luminance_nits,
+            selection.reference_luminance_nits,
+            selection.linux_wp_primaries,
             self.probe_origin,
         );
 
@@ -807,14 +848,21 @@ mod tests {
             "HDR-1".to_string(),
             WaylandTransferFunction::St2084,
             Some(1000.0),
+            Some(203.0),
+            None,
         );
         assert!(hdr.hdr_supported);
         assert_eq!(hdr.label, "HDR-1");
         assert_eq!(hdr.max_luminance_nits, Some(1000.0));
         assert_eq!(hdr.hdr_capacity_source, Some("Wayland wp_color_management"));
 
-        let sdr =
-            wayland_output_selection("SDR-1".to_string(), WaylandTransferFunction::Srgb, None);
+        let sdr = wayland_output_selection(
+            "SDR-1".to_string(),
+            WaylandTransferFunction::Srgb,
+            None,
+            None,
+            None,
+        );
         assert!(!sdr.hdr_supported);
         assert_eq!(sdr.hdr_capacity_source, None);
     }
@@ -824,6 +872,19 @@ mod tests {
         let (point, origin) = resolve_spawn_probe_point(Some([100, 200]), Some([0, 0]));
         assert_eq!(point, [120, 220]);
         assert_eq!(origin, "saved_window_position");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn map_wayland_primaries_classifies_protocol_variants() {
+        assert_eq!(
+            map_wayland_primaries(Some(Primaries::Srgb)),
+            LinuxWaylandColorPrimaries::Narrow
+        );
+        assert_eq!(
+            map_wayland_primaries(Some(Primaries::Bt2020)),
+            LinuxWaylandColorPrimaries::Wide
+        );
     }
 
     #[test]

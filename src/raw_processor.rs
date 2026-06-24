@@ -308,26 +308,28 @@ impl RawProcessor {
         unsafe { ffi::siv_libraw_get_pixel_aspect(self.data) }
     }
 
-    /// Best-effort developed output dimensions for tiling and HQ size checks.
+    /// LibRaw `sizes.height` from identify (visible raw area height).
+    pub fn sizes_height(&self) -> u32 {
+        unsafe { ffi::siv_libraw_get_sizes_height(self.data) as u32 }
+    }
+
+    /// LibRaw `sizes.width` from identify (visible raw area width).
+    pub fn sizes_width(&self) -> u32 {
+        unsafe { ffi::siv_libraw_get_sizes_width(self.data) as u32 }
+    }
+
+    /// Developed output grid for tiling and HQ size checks.
     ///
-    /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
-    /// until demosaic; prefer CFA bounds when output size clearly matches the thumb only.
-    pub fn developed_output_dimensions(
-        &self,
-        embedded: Option<&crate::loader::DecodedImage>,
-    ) -> (u32, u32) {
-        let iw = self.width();
-        let ih = self.height();
-        let rw = self.raw_width();
-        let rh = self.raw_height();
-
-        if let Some(p) = embedded {
-            if p.width == iw && p.height == ih && ((rw > iw && rw > 0) || (rh > ih && rh > 0)) {
-                return (rw.max(iw), rh.max(ih));
-            }
-        }
-
-        if iw > 0 && ih > 0 { (iw, ih) } else { (rw, rh) }
+    /// After [`Self::unpack`], uses LibRaw `iwidth`/`iheight` (post-unpack output grid).
+    /// Before unpack, uses `sizes.width`/`sizes.height` from identify (not stale `iwidth`).
+    pub fn developed_output_dimensions(&self) -> (u32, u32) {
+        developed_output_dimensions_from_libraw(
+            self.is_unpacked,
+            self.width(),
+            self.height(),
+            self.sizes_width(),
+            self.sizes_height(),
+        )
     }
 
     pub fn margins(&self) -> (i32, i32) {
@@ -1640,6 +1642,60 @@ mod tests {
             "expected full sensor dimensions, got {}x{}",
             processor.width(),
             processor.height()
+        );
+    }
+}
+
+/// LibRaw develop output grid: post-unpack `iwidth`/`iheight`, pre-unpack `sizes.width`/`height`.
+pub(crate) fn developed_output_dimensions_from_libraw(
+    is_unpacked: bool,
+    iwidth: u32,
+    iheight: u32,
+    sizes_width: u32,
+    sizes_height: u32,
+) -> (u32, u32) {
+    if is_unpacked {
+        if iwidth > 0 && iheight > 0 {
+            (iwidth, iheight)
+        } else if sizes_width > 0 && sizes_height > 0 {
+            (sizes_width, sizes_height)
+        } else {
+            (0, 0)
+        }
+    } else if sizes_width > 0 && sizes_height > 0 {
+        (sizes_width, sizes_height)
+    } else if iwidth > 0 && iheight > 0 {
+        (iwidth, iheight)
+    } else {
+        (0, 0)
+    }
+}
+
+#[cfg(test)]
+mod developed_output_dimensions_tests {
+    use super::developed_output_dimensions_from_libraw;
+
+    #[test]
+    fn pre_unpack_uses_sizes_not_stale_iwidth() {
+        assert_eq!(
+            developed_output_dimensions_from_libraw(false, 640, 424, 3040, 2024),
+            (3040, 2024)
+        );
+    }
+
+    #[test]
+    fn post_unpack_uses_iwidth() {
+        assert_eq!(
+            developed_output_dimensions_from_libraw(true, 6240, 4680, 11662, 8746),
+            (6240, 4680)
+        );
+    }
+
+    #[test]
+    fn post_unpack_iwidth_wins_over_sizes() {
+        assert_eq!(
+            developed_output_dimensions_from_libraw(true, 4000, 3000, 11662, 8746),
+            (4000, 3000)
         );
     }
 }

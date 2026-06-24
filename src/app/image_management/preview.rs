@@ -126,7 +126,6 @@ impl ImageViewerApp {
                     ctx,
                 );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
-                self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
                 if let Some(cpu_ms) = update.cpu_demosaic_ms {
                     if self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
                         && update.index == self.current_index

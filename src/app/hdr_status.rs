@@ -103,23 +103,6 @@ impl ImageViewerApp {
         changed
     }
 
-    pub(crate) fn apply_raw_hq_refine_preview(
-        &mut self,
-        index: usize,
-        width: u32,
-        height: u32,
-        ctx: &egui::Context,
-    ) -> bool {
-        let changed = self
-            .raw_metadata
-            .apply_hq_refine_preview(index, width, height);
-        if changed && index == self.current_index {
-            self.osd.sync_events();
-            ctx.request_repaint();
-        }
-        changed
-    }
-
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
         if let Some(path) = self.cached_frame_hdr_render_path {
             return Some(path);
@@ -421,6 +404,7 @@ mod tests {
             native_surface_encoding: Some(
                 crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
             ),
+            ..HdrMonitorSelection::new("", false)
         }
     }
 

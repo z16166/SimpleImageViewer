@@ -272,7 +272,7 @@ impl ImageViewerApp {
                 hdr_callback_resources_prewarm.ensure_started(
                     &state.device,
                     format,
-                    Some(&pipeline_cache),
+                    pipeline_cache.as_ref(),
                 );
             }
             state.renderer.write().callback_resources.insert(
@@ -281,7 +281,7 @@ impl ImageViewerApp {
                 ),
             );
             (
-                Some(std::sync::Arc::new(pipeline_cache)),
+                pipeline_cache.map(std::sync::Arc::new),
                 Some(adapter_info),
             )
         } else {
@@ -506,6 +506,8 @@ impl ImageViewerApp {
             #[cfg(target_os = "linux")]
             last_vulkan_hdr_metadata: None,
             last_logged_swap_chain_format_request: None,
+            #[cfg(target_os = "linux")]
+            last_logged_linux_hdr_runtime_diag: None,
             #[cfg(feature = "preload-debug")]
             hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState::default(),
             rgb10a2_pq_encode_requested: false,
@@ -685,19 +687,17 @@ impl ImageViewerApp {
         }
         #[cfg(target_os = "linux")]
         {
-            log::info!(
-                "[HDR] linux presentation: wayland_session={} hdr_platform_eligible={} output_mode={:?}",
-                crate::hdr::platform::is_wayland_session(),
-                crate::hdr::platform::linux_native_hdr_platform_eligible(),
+            crate::hdr::linux_diag::log_session_startup(
+                app.settings.hdr_native_surface_enabled,
+                app.settings.hdr_native_surface_enabled_effective(),
                 app.hdr_capabilities.output_mode,
             );
             if !app.hdr_capabilities.native_presentation_enabled
                 && app.hdr_capabilities.candidate_platform_path.is_some()
             {
                 log::info!(
-                    "[HDR] startup diagnostics are pre-hot-swap; native HDR may activate once \
-                     Vulkan WSI probing and the runtime monitor gate complete (see \
-                     \"[HDR] presentation active\" log)"
+                    "[HDR] startup: native HDR swap-chain not active yet; watch for \
+                     \"[HDR] app_active\" once WSI probing and runtime admission complete"
                 );
             }
         }

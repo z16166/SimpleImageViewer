@@ -303,10 +303,17 @@ pub fn run() -> eframe::Result {
                 "GPU max_compute_invocations_per_workgroup: {}",
                 adapter_limits.max_compute_invocations_per_workgroup
             );
+            let required_features = crate::wgpu_pipeline_cache::required_device_features(adapter);
+            if !required_features.contains(eframe::wgpu::Features::PIPELINE_CACHE) {
+                crate::startup_info!(
+                    "[startup] wgpu PipelineCache not supported on this adapter; \
+                     device will start without on-disk pipeline cache"
+                );
+            }
 
             eframe::wgpu::DeviceDescriptor {
                 label: Some("egui wgpu device"),
-                required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                required_features,
                 required_limits: eframe::wgpu::Limits {
                     max_texture_dimension_2d: hw_max_texture,
                     max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
@@ -336,7 +343,7 @@ pub fn run() -> eframe::Result {
                 );
                 eframe::wgpu::DeviceDescriptor {
                     label: Some("egui wgpu device"),
-                    required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                    required_features: eframe::wgpu::Features::empty(),
                     required_limits: eframe::wgpu::Limits::default(),
                     ..Default::default()
                 }

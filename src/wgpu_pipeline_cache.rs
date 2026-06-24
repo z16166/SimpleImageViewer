@@ -18,6 +18,20 @@
 
 use std::path::{Path, PathBuf};
 
+pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
+    adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
+}
+
+/// Device features to request at creation time. Pipeline cache is optional so VMs and
+/// older drivers can still create a device (pipelines compile without on-disk cache).
+pub fn required_device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    if adapter_supports_pipeline_cache(adapter) {
+        wgpu::Features::PIPELINE_CACHE
+    } else {
+        wgpu::Features::empty()
+    }
+}
+
 pub fn cache_path_for_adapter_info(info: &wgpu::AdapterInfo) -> PathBuf {
     let stem = wgpu::util::pipeline_cache_key(info).unwrap_or_else(|| {
         format!(
@@ -80,6 +94,7 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     }
 }
 
+/// Writes on-disk pipeline cache bytes. Call only when a cache was created (`Some` at startup).
 pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     let Some(data) = cache.get_data() else {
         return;
@@ -113,18 +128,35 @@ fn save_to_path(path: &Path, data: &[u8]) -> std::io::Result<()> {
 pub fn create_pipeline_cache(
     device: &wgpu::Device,
     adapter: &wgpu::Adapter,
-) -> wgpu::PipelineCache {
+) -> Option<wgpu::PipelineCache> {
+    if !adapter_supports_pipeline_cache(adapter) {
+        log::info!(
+            "[startup] wgpu PipelineCache unsupported on adapter \"{}\" ({:?}); \
+             continuing without on-disk pipeline cache",
+            adapter.get_info().name,
+            adapter.get_info().backend,
+        );
+        return None;
+    }
+    if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        log::warn!(
+            "[startup] adapter advertised PipelineCache but device lacks the feature; \
+             continuing without on-disk pipeline cache"
+        );
+        return None;
+    }
     let cache_data = load_for_adapter(adapter);
     // SAFETY: `cache_data` comes from our own prior `PipelineCache::get_data` writes.
-    unsafe {
+    Some(unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("simple-image-viewer-pipeline-cache"),
             data: cache_data.as_deref(),
             fallback: true,
         })
-    }
+    })
 }
 
+/// Windows adapter convenience wrapper for [`persist`]. Requires a live cache instance.
 #[cfg(target_os = "windows")]
 #[allow(dead_code)] // reserved for non-DX12 adapters; DX12 uses PipelineCache auto-persist
 pub fn persist_adapter(adapter: &wgpu::Adapter, cache: &wgpu::PipelineCache) {

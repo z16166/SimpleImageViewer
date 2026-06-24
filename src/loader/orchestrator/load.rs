@@ -441,6 +441,14 @@ impl ImageLoader {
 
                     let user_flip = req.orientation_override.unwrap_or(0);
                     processor.set_user_flip(user_flip);
+                    if let Err(err) = processor.unpack() {
+                        log::error!(
+                            "[Refinement] Failed to unpack {:?}: {}",
+                            req.path.file_name().unwrap_or_default(),
+                            err
+                        );
+                        continue;
+                    }
 
                     let develop_result = {
                         let started = std::time::Instant::now();
@@ -521,6 +529,11 @@ impl ImageLoader {
                             let bundle = PreviewBundle::refined()
                                 .with_hdr(std::sync::Arc::new(hdr))
                                 .with_sdr(preview);
+                            let refine_osd = crate::loader::RawOsdInfo::refine_complete(
+                                preview_w,
+                                preview_h,
+                                cpu_demosaic_ms,
+                            );
                             let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
                                 index: req.index,
                                 generation: req.generation,
@@ -528,7 +541,7 @@ impl ImageLoader {
                                 preview_bundle: bundle,
                                 error: None,
                                 cpu_demosaic_ms: Some(cpu_demosaic_ms),
-                                raw_bootstrap_osd: None,
+                                raw_bootstrap_osd: Some(refine_osd),
                             }));
                             let _ =
                                 worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
@@ -981,6 +994,13 @@ impl ImageLoader {
             let loading_for_hq = Arc::clone(&loading_ref);
             match (hdr_source, sdr_source) {
                 (Some(source), _) => {
+                    if source.defers_loader_hq_preview() {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] skip_loader_hq_hdr_preview idx={} gen={} reason=async_raw_refinement",
+                            index,
+                            final_gen
+                        );
+                    } else {
                     let file_name = path
                         .file_name()
                         .and_then(|n| n.to_str())
@@ -1090,6 +1110,7 @@ impl ImageLoader {
                             }
                         }
                     });
+                    }
                 }
                 (None, Some(source)) => {
                     if source.defers_loader_hq_preview() {

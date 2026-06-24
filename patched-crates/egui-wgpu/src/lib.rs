@@ -420,6 +420,7 @@ impl Gamma22DisplayScale {
 pub struct VulkanWsiHdrGates {
     pub hdr10_st2084_rgb10a2: bool,
     pub extended_srgb_linear_rgba16f: bool,
+    pub srgb_nonlinear_rgb10a2: bool,
     pub probed: bool,
 }
 

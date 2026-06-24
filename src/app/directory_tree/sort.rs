@@ -209,6 +209,8 @@ fn macos_locale_compare_cf(
     left: &core_foundation::string::CFString,
     right: &core_foundation::string::CFString,
 ) -> Ordering {
+    // core-foundation 0.10: CFComparisonResult lives in `base`; compare flags are
+    // `kCFCompare*` constants (not `CFStringCompareFlags::COMPARE_*`).
     use core_foundation::base::{CFComparisonResult, TCFType};
     use core_foundation::string::{
         CFStringCompare, kCFCompareCaseInsensitive, kCFCompareLocalized,

@@ -121,6 +121,7 @@ fn native_output_uses_monitor_peak_luminance_for_ultra_hdr_capacity() {
         max_hdr_capacity: None,
         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
         native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb),
+        ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
     };
 
     assert_eq!(
@@ -165,6 +166,7 @@ fn native_output_uses_monitor_hdr_capacity_multiplier_before_peak_nits() {
         max_hdr_capacity: Some(2.5),
         hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
         native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb),
+        ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
     };
 
     assert_eq!(

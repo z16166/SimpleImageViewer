@@ -43,6 +43,9 @@ pub(crate) fn macos_edr_selection_from_values(
         max_hdr_capacity: capacity,
         hdr_capacity_source: source,
         native_surface_encoding: hdr_supported.then_some(HdrNativeSurfaceEncoding::LinearScRgb),
+        reference_luminance_nits: None,
+        linux_wp_transfer: None,
+        linux_wp_primaries: None,
     }
 }
 

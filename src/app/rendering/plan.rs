@@ -311,6 +311,7 @@ mod tests {
             max_hdr_capacity: None,
             hdr_capacity_source: None,
             native_surface_encoding: None,
+            ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
         };
         let hdr_monitor = crate::hdr::monitor::HdrMonitorSelection {
             hdr_supported: true,
@@ -322,6 +323,7 @@ mod tests {
             native_surface_encoding: Some(
                 crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
             ),
+            ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
         };
 
         let sdr_plan = super::build_render_plan_for_state(

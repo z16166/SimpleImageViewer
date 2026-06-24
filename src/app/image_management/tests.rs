@@ -516,6 +516,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         max_hdr_capacity: None,
         hdr_capacity_source: None,
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     });
     let selection_hdr_unknown = Some(&HdrMonitorSelection {
         hdr_supported: true,
@@ -525,6 +526,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         max_hdr_capacity: None,
         hdr_capacity_source: None,
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     });
     let selection_hdr_source_only = Some(&HdrMonitorSelection {
         hdr_supported: true,
@@ -534,6 +536,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         max_hdr_capacity: None,
         hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     });
     let selection_hdr_known = Some(&HdrMonitorSelection {
         hdr_supported: true,
@@ -543,6 +546,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         max_hdr_capacity: Some(2.89),
         hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     });
 
     assert!(!startup_preload_defer_can_release_now(
@@ -612,6 +616,7 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         max_hdr_capacity: None,
         hdr_capacity_source: Some("Vulkan WSI surface formats"),
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     };
 
     assert!(startup_preload_defer_can_release_now(
@@ -644,6 +649,7 @@ fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
         max_hdr_capacity: None,
         hdr_capacity_source: None,
         native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
     };
     let now = Instant::now();
     let probe_at = now - super::STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE - Duration::from_secs(1);
@@ -671,6 +677,7 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
             max_hdr_capacity: None,
             hdr_capacity_source: None,
             native_surface_encoding: None,
+            ..HdrMonitorSelection::new("", false)
         }
     )));
     assert!(!super::monitor_hdr_decode_capacity_is_known(Some(
@@ -682,6 +689,7 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
             max_hdr_capacity: None,
             hdr_capacity_source: None,
             native_surface_encoding: None,
+            ..HdrMonitorSelection::new("", false)
         }
     )));
     assert!(!super::monitor_hdr_decode_capacity_is_known(Some(
@@ -693,6 +701,7 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
             max_hdr_capacity: None,
             hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
             native_surface_encoding: None,
+            ..HdrMonitorSelection::new("", false)
         }
     )));
     assert!(super::monitor_hdr_decode_capacity_is_known(Some(
@@ -704,6 +713,7 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
             max_hdr_capacity: Some(2.89),
             hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
             native_surface_encoding: None,
+            ..HdrMonitorSelection::new("", false)
         }
     )));
 }
@@ -1488,6 +1498,8 @@ fn make_test_app() -> ImageViewerApp {
         #[cfg(target_os = "linux")]
         last_vulkan_hdr_metadata,
         last_logged_swap_chain_format_request: None,
+        #[cfg(target_os = "linux")]
+        last_logged_linux_hdr_runtime_diag: None,
         #[cfg(feature = "preload-debug")]
         hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState::default(),
         rgb10a2_pq_encode_requested: false,
