@@ -126,17 +126,6 @@ impl ImageViewerApp {
                     ctx,
                 );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
-                let develop_dims = update
-                    .preview_bundle
-                    .hdr()
-                    .map(|hdr| (hdr.width, hdr.height))
-                    .unwrap_or((preview.width, preview.height));
-                self.apply_raw_hq_refine_preview(
-                    update.index,
-                    develop_dims.0,
-                    develop_dims.1,
-                    ctx,
-                );
                 if let Some(cpu_ms) = update.cpu_demosaic_ms {
                     if self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
                         && update.index == self.current_index

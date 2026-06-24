@@ -282,7 +282,7 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageD
             if let Some(preview) = preview_opt {
                 return Ok(make_image_data(preview));
             }
-            let (width, height) = processor.developed_output_dimensions(None);
+            let (width, height) = processor.developed_output_dimensions();
             if width > 0 && height > 0 {
                 log::debug!(
                     "[DirectoryTree] RAW {:?} has no embedded preview ({}x{}); trying platform fallback",

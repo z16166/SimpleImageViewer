@@ -71,7 +71,7 @@ fn epson_rd1_erf_embedded_does_not_skip_hq_demosaic_when_file_present() {
         .expect("epson rd1 should ship an embedded thumb");
     let (iw, ih) = (processor.width(), processor.height());
     let (rw, rh) = (processor.raw_width(), processor.raw_height());
-    let (out_w, out_h) = processor.developed_output_dimensions(Some(&thumb));
+    let (out_w, out_h) = processor.developed_output_dimensions();
 
     eprintln!(
         "ERF thumb={}x{} iwidth/iheight={}x{} raw={}x{} developed_output={}x{} hq_side={}",
@@ -256,7 +256,7 @@ fn probe_epson_and_fuji_on_local_samples() {
         let mut processor = RawProcessor::new().expect("libraw init");
         processor.open(&path).expect("open");
         let thumb = processor.unpack_thumb().ok();
-        let (out_w, out_h) = processor.developed_output_dimensions(thumb.as_ref());
+        let (out_w, out_h) = processor.developed_output_dimensions();
 
         eprintln!("\n=== {name} ===");
         eprintln!(
@@ -467,7 +467,7 @@ fn canon_s90_cr2_develop_dimensions_when_file_present() {
     let mut processor = RawProcessor::new().expect("libraw init");
     processor.open(&path).expect("open");
     let thumb = processor.unpack_thumb().expect("thumb");
-    let (out_w, out_h) = processor.developed_output_dimensions(Some(&thumb));
+    let (out_w, out_h) = processor.developed_output_dimensions();
     let sdr = processor.develop().expect("develop");
     let finalized = crate::loader::preview_caps::finalize_raw_hq_developed_image(sdr, out_w, out_h);
     let finalized_rgba = finalized.to_rgba8();

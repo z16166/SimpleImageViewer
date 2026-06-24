@@ -308,23 +308,27 @@ impl RawProcessor {
         unsafe { ffi::siv_libraw_get_pixel_aspect(self.data) }
     }
 
-    /// Best-effort developed output dimensions for tiling and HQ size checks.
+    /// LibRaw `sizes.height` from identify (visible raw area height).
+    pub fn sizes_height(&self) -> u32 {
+        unsafe { ffi::siv_libraw_get_sizes_height(self.data) as u32 }
+    }
+
+    /// LibRaw `sizes.width` from identify (visible raw area width).
+    pub fn sizes_width(&self) -> u32 {
+        unsafe { ffi::siv_libraw_get_sizes_width(self.data) as u32 }
+    }
+
+    /// Developed output grid for tiling and HQ size checks.
     ///
-    /// Call after [`Self::unpack`] when possible: LibRaw `iwidth`/`iheight` can match the
-    /// embedded JPEG size until the RAW buffer is unpacked (common on Fuji RAF).
-    ///
-    /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
-    /// even after unpack; prefer CFA bounds when output size clearly matches the thumb only.
-    pub fn developed_output_dimensions(
-        &self,
-        embedded: Option<&crate::loader::DecodedImage>,
-    ) -> (u32, u32) {
-        developed_output_dimensions_from_parts(
+    /// After [`Self::unpack`], uses LibRaw `iwidth`/`iheight` (post-unpack output grid).
+    /// Before unpack, uses `sizes.width`/`sizes.height` from identify (not stale `iwidth`).
+    pub fn developed_output_dimensions(&self) -> (u32, u32) {
+        developed_output_dimensions_from_libraw(
+            self.is_unpacked,
             self.width(),
             self.height(),
-            self.raw_width(),
-            self.raw_height(),
-            embedded.map(|p| (p.width, p.height)),
+            self.sizes_width(),
+            self.sizes_height(),
         )
     }
 
@@ -1642,65 +1646,56 @@ mod tests {
     }
 }
 
-pub(crate) fn developed_output_dimensions_from_parts(
-    iw: u32,
-    ih: u32,
-    rw: u32,
-    rh: u32,
-    embedded: Option<(u32, u32)>,
+/// LibRaw develop output grid: post-unpack `iwidth`/`iheight`, pre-unpack `sizes.width`/`height`.
+pub(crate) fn developed_output_dimensions_from_libraw(
+    is_unpacked: bool,
+    iwidth: u32,
+    iheight: u32,
+    sizes_width: u32,
+    sizes_height: u32,
 ) -> (u32, u32) {
-    if let Some((pw, ph)) = embedded {
-        // ERF: iwidth matches tiny embedded thumb only; developed size follows CFA bounds.
-        let embedded_long = pw.max(ph);
-        if pw == iw && ph == ih && embedded_long <= 768 && (rw > iw || rh > ih) {
-            return (rw.max(iw), rh.max(ih));
+    if is_unpacked {
+        if iwidth > 0 && iheight > 0 {
+            (iwidth, iheight)
+        } else if sizes_width > 0 && sizes_height > 0 {
+            (sizes_width, sizes_height)
+        } else {
+            (0, 0)
         }
-        // Embedded full-size JPEG exceeds stale LibRaw iwidth/iheight (Fuji RAF before unpack).
-        if (pw > iw && ph > ih) && (rw > iw || rh > ih) {
-            return (pw.max(iw), ph.max(ih));
-        }
-    }
-
-    if iw > 0 && ih > 0 {
-        (iw, ih)
+    } else if sizes_width > 0 && sizes_height > 0 {
+        (sizes_width, sizes_height)
+    } else if iwidth > 0 && iheight > 0 {
+        (iwidth, iheight)
     } else {
-        (rw, rh)
+        (0, 0)
     }
 }
 
 #[cfg(test)]
 mod developed_output_dimensions_tests {
-    use super::developed_output_dimensions_from_parts;
+    use super::developed_output_dimensions_from_libraw;
 
     #[test]
-    fn erf_thumb_matches_iwidth_upgrades_to_cfa_bounds() {
+    fn pre_unpack_uses_sizes_not_stale_iwidth() {
         assert_eq!(
-            developed_output_dimensions_from_parts(640, 424, 3040, 2024, Some((640, 424))),
+            developed_output_dimensions_from_libraw(false, 640, 424, 3040, 2024),
             (3040, 2024)
         );
     }
 
     #[test]
-    fn fuji_stale_iwidth_uses_embedded_when_larger() {
+    fn post_unpack_uses_iwidth() {
         assert_eq!(
-            developed_output_dimensions_from_parts(1024, 768, 11662, 8746, Some((4000, 3000))),
-            (4000, 3000)
-        );
-    }
-
-    #[test]
-    fn fuji_embedded_matching_iwidth_keeps_develop_grid_not_cfa() {
-        assert_eq!(
-            developed_output_dimensions_from_parts(4000, 3000, 11662, 8746, Some((4000, 3000))),
-            (4000, 3000)
-        );
-    }
-
-    #[test]
-    fn unpacked_iwidth_wins_when_plausible() {
-        assert_eq!(
-            developed_output_dimensions_from_parts(6240, 4680, 11662, 8746, Some((4000, 3000))),
+            developed_output_dimensions_from_libraw(true, 6240, 4680, 11662, 8746),
             (6240, 4680)
+        );
+    }
+
+    #[test]
+    fn post_unpack_iwidth_wins_over_sizes() {
+        assert_eq!(
+            developed_output_dimensions_from_libraw(true, 4000, 3000, 11662, 8746),
+            (4000, 3000)
         );
     }
 }

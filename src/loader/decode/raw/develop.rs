@@ -194,7 +194,7 @@ pub(crate) fn develop_hq_preview(
     // High-quality RAW preview always uses the scene-linear HDR pipeline
     // to support exposure adjustments and tone mapping consistently.
     let (hdr, cpu_ms) = develop_scene_linear_hdr_timed(processor)?;
-    let (logical_w, logical_h) = processor.developed_output_dimensions(None);
+    let (logical_w, logical_h) = processor.developed_output_dimensions();
     let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,

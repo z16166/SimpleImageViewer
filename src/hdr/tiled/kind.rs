@@ -65,4 +65,8 @@ pub trait HdrTiledSource: Send + Sync {
         width: u32,
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String>;
+    /// When true, async LibRaw HQ refine owns preview generation; skip capped loader HQ preview.
+    fn defers_loader_hq_preview(&self) -> bool {
+        false
+    }
 }

@@ -158,6 +158,14 @@ pub(crate) fn elapsed_ms_u32(start: std::time::Instant) -> u32 {
     start.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
 }
 
+fn render_pixels_rank(pixels: &RawRenderPixels) -> u8 {
+    match pixels {
+        RawRenderPixels::Embedded { .. } => 0,
+        RawRenderPixels::HqBootstrap { .. } => 1,
+        RawRenderPixels::FullDevelop { .. } => 2,
+    }
+}
+
 impl RawOsdInfo {
     pub fn with_cpu_demosaic_ms(mut self, ms: u32) -> Self {
         self.cpu_demosaic_ms = Some(ms);
@@ -189,37 +197,41 @@ impl RawOsdInfo {
         if other.sensor_size != (0, 0) {
             self.sensor_size = other.sensor_size;
         }
-        // Upgrade only: FullDevelop > HqBootstrap > Embedded (never downgrade).
-        match (&self.render_pixels, &other.render_pixels) {
-            (_, RawRenderPixels::FullDevelop { .. }) => {
-                self.render_pixels = other.render_pixels;
-            }
-            (
-                RawRenderPixels::HqBootstrap { .. },
-                RawRenderPixels::HqBootstrap { width, height },
-            ) => {
-                self.render_pixels = RawRenderPixels::HqBootstrap {
-                    width: *width,
-                    height: *height,
-                };
-            }
-            (RawRenderPixels::Embedded { .. }, RawRenderPixels::HqBootstrap { width, height }) => {
-                self.render_pixels = RawRenderPixels::HqBootstrap {
-                    width: *width,
-                    height: *height,
-                };
-            }
-            _ => {}
+        // Tag precedence: FullDevelop > HqBootstrap > Embedded (never downgrade rank).
+        let cur_rank = render_pixels_rank(&self.render_pixels);
+        let other_rank = render_pixels_rank(&other.render_pixels);
+        if other_rank > cur_rank {
+            self.render_pixels = other.render_pixels;
         }
     }
 
-    /// Update after async/sync HQ refinement replaces the bootstrap buffer (CPU path).
+    /// GPU refine path: capped preview still maps embedded bootstrap tiles.
+    #[cfg(test)]
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
         if self.demosaic_backend == Some(RawDemosaicBackend::Video) {
             self.render_pixels = RawRenderPixels::HqBootstrap { width, height };
+        }
+    }
+
+    /// CPU async refine finished: promote to full develop (tagged, not inferred from preview size).
+    #[cfg(test)]
+    pub fn apply_refine_complete(&mut self, width: u32, height: u32) {
+        if self.demosaic_backend == Some(RawDemosaicBackend::Video) {
             return;
         }
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+    }
+
+    pub(crate) fn refine_complete(width: u32, height: u32, cpu_demosaic_ms: u32) -> Self {
+        Self {
+            sensor_size: (0, 0),
+            embedded_preview: None,
+            render_pixels: RawRenderPixels::FullDevelop { width, height },
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: Some(cpu_demosaic_ms),
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
+        }
     }
 
     pub(crate) fn promote_gpu_demosaic_complete(&mut self, develop_width: u32, develop_height: u32) {
@@ -416,7 +428,7 @@ mod tests {
             gpu_extract_ms: None,
             gpu_demosaic_ms: None,
         };
-        info.apply_hq_refine_preview(6000, 4000);
+        info.apply_refine_complete(6000, 4000);
         assert_eq!(
             info.render_pixels,
             RawRenderPixels::FullDevelop {
@@ -459,6 +471,42 @@ mod tests {
     }
 
     #[test]
+    fn capped_preview_does_not_change_full_develop_via_merge() {
+        let mut info = RawOsdInfo {
+            sensor_size: (11662, 8746),
+            embedded_preview: Some((4000, 3000)),
+            render_pixels: RawRenderPixels::FullDevelop {
+                width: 11662,
+                height: 8746,
+            },
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: Some(4000),
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
+        };
+        let capped = RawOsdInfo {
+            sensor_size: (0, 0),
+            embedded_preview: None,
+            render_pixels: RawRenderPixels::FullDevelop {
+                width: 2048,
+                height: 1536,
+            },
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
+        };
+        info.merge_loader_fields(&capped);
+        assert_eq!(
+            info.render_pixels,
+            RawRenderPixels::FullDevelop {
+                width: 11662,
+                height: 8746
+            }
+        );
+    }
+
+    #[test]
     fn hq_refine_at_sensor_size_is_full_develop() {
         let mut info = RawOsdInfo {
             sensor_size: (3684, 2760),
@@ -472,7 +520,7 @@ mod tests {
             gpu_extract_ms: None,
             gpu_demosaic_ms: None,
         };
-        info.apply_hq_refine_preview(3684, 2760);
+        info.apply_refine_complete(3684, 2760);
         assert_eq!(
             info.render_pixels,
             RawRenderPixels::FullDevelop {

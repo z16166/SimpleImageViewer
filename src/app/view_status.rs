@@ -176,26 +176,6 @@ impl RawMetadataStore {
         changed
     }
 
-    pub(crate) fn apply_hq_refine_preview(
-        &mut self,
-        index: usize,
-        width: u32,
-        height: u32,
-    ) -> bool {
-        let Some(info) = self.by_index.get_mut(&index) else {
-            return false;
-        };
-        let before = info.clone();
-        info.apply_hq_refine_preview(width, height);
-        if before == *info {
-            return false;
-        }
-        if index == self.current_index {
-            self.sync_tracked_params_for_current();
-        }
-        true
-    }
-
     pub(crate) fn promote_gpu_demosaic_complete(
         &mut self,
         index: usize,

@@ -314,6 +314,10 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
             ),
         ))
     }
+
+    fn defers_loader_hq_preview(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

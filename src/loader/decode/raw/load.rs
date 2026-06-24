@@ -299,9 +299,9 @@ pub(crate) fn load_raw(
 
     let (width, height) = if high_quality {
         processor.unpack()?;
-        processor.developed_output_dimensions(preview_opt.as_ref())
+        processor.developed_output_dimensions()
     } else {
-        processor.developed_output_dimensions(preview_opt.as_ref())
+        processor.developed_output_dimensions()
     };
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);

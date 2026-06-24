@@ -1058,6 +1058,16 @@ extern "C" {
         *top_margin = lr->sizes.top_margin;
     }
 
+    int siv_libraw_get_sizes_width(libraw_data_t *lr) {
+        if (!lr) return 0;
+        return lr->sizes.width;
+    }
+
+    int siv_libraw_get_sizes_height(libraw_data_t *lr) {
+        if (!lr) return 0;
+        return lr->sizes.height;
+    }
+
     unsigned int siv_libraw_get_filters(libraw_data_t *lr) {
         if (!lr) return 0;
         return lr->idata.filters;

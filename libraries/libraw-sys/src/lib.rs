@@ -100,6 +100,8 @@ unsafe extern "C" {
     pub fn libraw_get_raw_width(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iheight(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iwidth(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_get_sizes_width(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_get_sizes_height(data: *mut libraw_data_t) -> c_int;
 
     // GPU shims
     pub fn siv_libraw_get_raw_image(data: *mut libraw_data_t) -> *mut c_ushort;
