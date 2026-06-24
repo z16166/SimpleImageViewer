@@ -94,6 +94,7 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     }
 }
 
+/// Writes on-disk pipeline cache bytes. Call only when a cache was created (`Some` at startup).
 pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     let Some(data) = cache.get_data() else {
         return;
@@ -155,6 +156,7 @@ pub fn create_pipeline_cache(
     })
 }
 
+/// Windows adapter convenience wrapper for [`persist`]. Requires a live cache instance.
 #[cfg(target_os = "windows")]
 #[allow(dead_code)] // reserved for non-DX12 adapters; DX12 uses PipelineCache auto-persist
 pub fn persist_adapter(adapter: &wgpu::Adapter, cache: &wgpu::PipelineCache) {

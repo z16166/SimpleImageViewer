@@ -114,6 +114,9 @@ pub fn classify_linux_hdr_admission(
     wp: &HdrMonitorSelection,
     wsi: WsiHdrSurfaceGates,
 ) -> LinuxHdrAdmission {
+    // WSI gates are not ready yet: trust wp seed metadata only for explicit PQ (St2084) paths.
+    // Gamma22 / scRGB HDR TVs stay SDR until WSI confirms the matching swap-chain pair, avoiding
+    // false positives when compositors advertise HDR pairs on SDR outputs (walkthrough §6).
     if !wsi.probed {
         return if wp.hdr_supported {
             match wp.native_surface_encoding {
@@ -272,5 +275,45 @@ mod tests {
             },
         );
         assert_eq!(admission, LinuxHdrAdmission::NativePqHdr10);
+    }
+
+    #[test]
+    fn compound_power24_wide_peak_admits_extended_scrgb() {
+        let wp = wp_selection(
+            LinuxWaylandTransferFunction::CompoundPower24,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1000.0),
+            Some(203.0),
+        );
+        let admission = classify_linux_hdr_admission(
+            &wp,
+            WsiHdrSurfaceGates {
+                hdr10_st2084_rgb10a2: false,
+                extended_srgb_linear_rgba16f: true,
+                srgb_nonlinear_rgb10a2: false,
+                probed: true,
+            },
+        );
+        assert_eq!(admission, LinuxHdrAdmission::NativeExtendedScRgb);
+    }
+
+    #[test]
+    fn unknown_primaries_high_peak_admits_extended_scrgb() {
+        let wp = wp_selection(
+            LinuxWaylandTransferFunction::Gamma22,
+            LinuxWaylandColorPrimaries::Unknown,
+            Some(800.0),
+            Some(203.0),
+        );
+        let admission = classify_linux_hdr_admission(
+            &wp,
+            WsiHdrSurfaceGates {
+                hdr10_st2084_rgb10a2: false,
+                extended_srgb_linear_rgba16f: true,
+                srgb_nonlinear_rgb10a2: false,
+                probed: true,
+            },
+        );
+        assert_eq!(admission, LinuxHdrAdmission::NativeExtendedScRgb);
     }
 }

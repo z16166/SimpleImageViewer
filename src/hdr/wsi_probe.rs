@@ -44,7 +44,8 @@ pub fn linux_effective_monitor_selection(
     Some(HdrMonitorSelection {
         hdr_supported,
         native_surface_encoding: admission.native_surface_encoding(),
-        hdr_capacity_source: admission.capacity_source().or(wp.hdr_capacity_source),
+        // Use admission-derived source only; wp probe source can remain set while WSI vetoed SDR.
+        hdr_capacity_source: admission.capacity_source(),
         label: wp.label,
         max_luminance_nits: wp.max_luminance_nits,
         max_full_frame_luminance_nits: wp.max_full_frame_luminance_nits,
@@ -140,6 +141,7 @@ mod tests {
 
         assert!(!merged.hdr_supported);
         assert_eq!(merged.native_surface_encoding, None);
+        assert_eq!(merged.hdr_capacity_source, None);
     }
 
     #[test]
@@ -157,5 +159,6 @@ mod tests {
 
         assert!(!merged.hdr_supported);
         assert_eq!(merged.native_surface_encoding, None);
+        assert_eq!(merged.hdr_capacity_source, None);
     }
 }

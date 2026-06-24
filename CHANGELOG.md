@@ -5,11 +5,14 @@ All notable changes to this project will be documented in this file.
 ## [2.7.5] - 2026-06-23
 
 ### Fixed
+- **Linux HDR on SDR displays**: HDR mode no longer turns on incorrectly on standard SDR monitors when the compositor advertises HDR swap-chain support without matching display metadata.
+- **RAW photo dimensions (Fuji RAF and similar)**: On-screen develop size and status labels stay accurate while full-resolution RAW files load, instead of briefly showing embedded preview dimensions.
 - **Navigation strip previews**: Thumbnails in the file list appear as soon as background generation finishes, without needing to move the mouse over the list (including when the navigation panel is in a separate window).
 - **Navigation strip previews for HDR images**: HDR photos no longer stay on a black placeholder in the file list while the full image is still loading in the background.
 - **Navigation strip previews for animated HDR images**: Animated HDR sequences (such as AVIF) use the first frame for the strip preview instead of a black or temporary fallback copied from the main viewer.
 
 ### Improved
+- **Linux in virtual machines**: The app starts reliably on Linux VMs and adapters that do not support GPU pipeline caching.
 - **Folder browsing performance**: Preloading nearby images uses memory more efficiently during long sessions, keeping large folders responsive.
 - **Settings and preferences**: Settings are still saved immediately when you quit; routine saves while browsing are grouped to reduce disk activity.
 - **Windows audio playback**: Audio embedded in images handles audio output device changes more reliably on Windows.

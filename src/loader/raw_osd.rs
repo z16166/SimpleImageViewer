@@ -222,6 +222,13 @@ impl RawOsdInfo {
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
     }
 
+    /// CPU async refine finished: build a partial OSD update tagged `FullDevelop`.
+    ///
+    /// `width`/`height` must be the actual LibRaw develop output grid from refinement, not
+    /// capped preview or sensor dimensions. `sensor_size` and `embedded_preview` are left empty
+    /// on purpose: [`Self::merge_loader_fields`] keeps the bootstrap sensor/embedded fields when
+    /// those slots are `(0, 0)` / `None`. GPU demosaic completion uses
+    /// `promote_gpu_demosaic_complete` instead of this factory.
     pub(crate) fn refine_complete(width: u32, height: u32, cpu_demosaic_ms: u32) -> Self {
         Self {
             sensor_size: (0, 0),

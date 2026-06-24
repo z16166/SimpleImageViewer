@@ -69,6 +69,7 @@ pub(crate) struct LinuxHdrRuntimeDiagInput<'a> {
     pub native_presentation_enabled: bool,
 }
 
+/// Hash finite f32 values for snapshot equality; `f32` cannot implement `Eq`/`Hash` directly.
 fn finite_f32_key(value: Option<f32>) -> Option<u32> {
     value
         .filter(|v| v.is_finite())

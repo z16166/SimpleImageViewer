@@ -297,10 +297,10 @@ pub(crate) fn load_raw(
         path.file_name().unwrap_or_default()
     );
 
-    let (width, height) = if high_quality {
-        processor.unpack()?;
-        processor.developed_output_dimensions()
-    } else {
+    let (width, height) = {
+        if high_quality {
+            processor.unpack()?;
+        }
         processor.developed_output_dimensions()
     };
     let area = width as u64 * height as u64;
