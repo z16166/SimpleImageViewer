@@ -109,6 +109,8 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
 
     paths.insert(PathBuf::from("/"));
 
+    let paths = filter_nested_mount_paths(paths);
+
     let mut drives: Vec<DriveEntry> = paths
         .into_iter()
         .map(|path| DriveEntry {
@@ -120,6 +122,27 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
 
     drives.sort_by(|left, right| left.path.cmp(&right.path));
     drives
+}
+
+/// Drop mount paths that live inside another listed mount (e.g. `/run/media/happy/CDROM`
+/// when `/run/media/happy` is already a Places drive). Root `/` does not suppress siblings.
+fn filter_nested_mount_paths(paths: HashSet<PathBuf>) -> HashSet<PathBuf> {
+    let root = PathBuf::from("/");
+    let mut sorted: Vec<PathBuf> = paths.into_iter().collect();
+    sorted.sort_by_key(|path| path.components().count());
+
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for path in sorted {
+        let nested = kept.iter().any(|ancestor| {
+            *ancestor != root
+                && path.starts_with(ancestor)
+                && path.components().count() > ancestor.components().count()
+        });
+        if !nested {
+            kept.push(path);
+        }
+    }
+    kept.into_iter().collect()
 }
 
 fn collect_mount_dirs(root: &Path, out: &mut HashSet<PathBuf>) {
@@ -154,4 +177,53 @@ fn volume_display_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .map(str::to_owned)
         .unwrap_or_else(|| path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_nested_mount_paths;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn paths(values: &[&str]) -> HashSet<PathBuf> {
+        values.iter().map(|value| PathBuf::from(value)).collect()
+    }
+
+    fn sorted(values: HashSet<PathBuf>) -> Vec<PathBuf> {
+        let mut list: Vec<PathBuf> = values.into_iter().collect();
+        list.sort();
+        list
+    }
+
+    #[test]
+    fn filter_nested_mount_paths_drops_child_when_parent_listed() {
+        let filtered =
+            filter_nested_mount_paths(paths(&["/", "/run/media/happy", "/run/media/happy/CDROM"]));
+        assert_eq!(
+            sorted(filtered),
+            vec![PathBuf::from("/"), PathBuf::from("/run/media/happy"),]
+        );
+    }
+
+    #[test]
+    fn filter_nested_mount_paths_keeps_sibling_mounts() {
+        let filtered = filter_nested_mount_paths(paths(&["/", "/mnt/hgfs", "/run/media/happy"]));
+        assert_eq!(
+            sorted(filtered),
+            vec![
+                PathBuf::from("/"),
+                PathBuf::from("/mnt/hgfs"),
+                PathBuf::from("/run/media/happy"),
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_nested_mount_paths_root_does_not_remove_other_mounts() {
+        let filtered = filter_nested_mount_paths(paths(&["/", "/mnt/usb"]));
+        assert_eq!(
+            sorted(filtered),
+            vec![PathBuf::from("/"), PathBuf::from("/mnt/usb")]
+        );
+    }
 }
