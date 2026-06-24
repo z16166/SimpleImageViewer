@@ -275,15 +275,7 @@ impl ImageViewerApp {
                 tree.mark_snapshot_dirty();
                 return;
             }
-            let mut requests = tree.reveal_selected_namespace();
-            if let Some(namespace_path) = tree.selected_namespace_path.clone() {
-                if let Some(request) = tree.expand_namespace_node(&namespace_path) {
-                    requests.push(request);
-                }
-            } else if let Some(request) = tree.expand_namespace_node_for_fs_path(&dir) {
-                requests.push(request);
-            }
-            requests
+            tree.expand_requests_for_selection(&dir)
         };
         for request in requests {
             self.send_directory_tree_children_request(request);
@@ -311,7 +303,12 @@ impl ImageViewerApp {
         self.settings.tree_nav_selected_dir = Some(dir.clone());
         {
             let mut tree = self.directory_tree.tree.lock();
-            tree.set_selected_fs_path(dir);
+            let saved_namespace = self.settings.tree_nav_selected_namespace_path.clone();
+            let needs_restore = tree.selected_fs_path.as_ref() != Some(&dir)
+                || tree.selected_namespace_path.as_deref() != saved_namespace.as_deref();
+            if needs_restore {
+                tree.restore_tree_selection(dir.clone(), saved_namespace);
+            }
         }
         self.reveal_directory_tree_for_saved_selection();
     }
@@ -404,7 +401,8 @@ impl ImageViewerApp {
             }
         }
         if let Some(dir) = saved_dir {
-            tree.set_selected_fs_path(dir);
+            let saved_namespace = self.settings.tree_nav_selected_namespace_path.clone();
+            tree.restore_tree_selection(dir, saved_namespace);
         }
         self.apply_saved_directory_tree_panel_layout(&mut tree, &mut list);
         drop(tree);
@@ -506,6 +504,7 @@ impl ImageViewerApp {
         self.activate_directory_tree_nav();
         self.settings.tree_nav_root_dir = Some(root.clone());
         self.settings.tree_nav_selected_dir = Some(root.clone());
+        self.settings.tree_nav_selected_namespace_path = None;
         self.settings.last_image_dir = Some(root.clone());
 
         self.ensure_directory_tree_places_loaded();
@@ -513,15 +512,7 @@ impl ImageViewerApp {
         let requests = {
             let mut tree = runtime.tree.lock();
             tree.set_selected_fs_path(root.clone());
-            let mut requests = tree.reveal_selected_namespace();
-            if let Some(namespace_path) = tree.selected_namespace_path.clone() {
-                if let Some(request) = tree.expand_namespace_node(&namespace_path) {
-                    requests.push(request);
-                }
-            } else if let Some(request) = tree.expand_namespace_node_for_fs_path(&root) {
-                requests.push(request);
-            }
-            requests
+            tree.expand_requests_for_selection(&root)
         };
         for request in requests {
             self.send_directory_tree_children_request(request);
@@ -570,6 +561,7 @@ impl ImageViewerApp {
                     }
                     self.activate_directory_tree_nav();
                     self.settings.tree_nav_selected_dir = Some(fs_path.clone());
+                    self.settings.tree_nav_selected_namespace_path = Some(namespace_path.clone());
                     {
                         let mut tree = self.directory_tree.tree.lock();
                         let mut list = self.directory_tree.list.lock();

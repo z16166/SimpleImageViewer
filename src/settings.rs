@@ -241,6 +241,9 @@ pub struct Settings {
     pub tree_nav_root_dir: Option<PathBuf>,
     #[serde(default)]
     pub tree_nav_selected_dir: Option<PathBuf>,
+    /// Shell namespace tree key for [`tree_nav_selected_dir`]; disambiguates alias branches.
+    #[serde(default)]
+    pub tree_nav_selected_namespace_path: Option<PathBuf>,
     #[serde(default)]
     pub recursive: bool,
     /// Not persisted — app always starts windowed so the OS title bar is visible.
@@ -458,6 +461,7 @@ impl Default for Settings {
             directory_tree_nav_style: DirectoryTreeNavStyle::Embedded,
             tree_nav_root_dir: None,
             tree_nav_selected_dir: None,
+            tree_nav_selected_namespace_path: None,
             fullscreen: false,
             last_image_dir: None,
             auto_switch: false,
@@ -890,6 +894,8 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
 
     #[test]
@@ -930,6 +936,7 @@ mod tests {
         );
         assert!(settings.tree_nav_root_dir.is_none());
         assert!(settings.tree_nav_selected_dir.is_none());
+        assert!(settings.tree_nav_selected_namespace_path.is_none());
     }
 
     #[test]
@@ -1149,6 +1156,31 @@ directory_tree_window_maximized_screen_center: [960, 540]
         assert_eq!(
             settings.directory_tree_window_restore_inner_size,
             again.directory_tree_window_restore_inner_size
+        );
+    }
+
+    #[test]
+    fn tree_nav_selection_yaml_roundtrip_preserves_namespace_path() {
+        let yaml = r#"browse_mode: tree
+tree_nav_selected_dir: /run/media/happy/CDROM/custom
+tree_nav_selected_namespace_path: '\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom'
+"#;
+        let settings: Settings = serde_yaml::from_str(yaml).expect("deserialize tree selection");
+        assert_eq!(
+            settings.tree_nav_selected_dir,
+            Some(PathBuf::from("/run/media/happy/CDROM/custom"))
+        );
+        assert!(settings.tree_nav_selected_namespace_path.is_some());
+
+        let again: Settings =
+            serde_yaml::from_str(&serde_yaml::to_string(&settings).expect("serialize")).expect("roundtrip");
+        assert_eq!(
+            settings.tree_nav_selected_dir,
+            again.tree_nav_selected_dir
+        );
+        assert_eq!(
+            settings.tree_nav_selected_namespace_path,
+            again.tree_nav_selected_namespace_path
         );
     }
 

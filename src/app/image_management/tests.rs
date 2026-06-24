@@ -1692,6 +1692,28 @@ fn make_test_app() -> ImageViewerApp {
 }
 
 #[test]
+fn load_directory_preserves_tree_nav_selected_namespace_path() {
+    let mut app = make_test_app();
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    let namespace = PathBuf::from(r"\\?\siv-tree\Mount/%2Fcustom");
+    app.settings.tree_nav_selected_namespace_path = Some(namespace.clone());
+
+    let dir = std::env::temp_dir().join("siv_load_directory_namespace_test");
+    let _ = std::fs::create_dir_all(&dir);
+    app.load_directory(dir.clone());
+
+    assert_eq!(
+        app.settings.tree_nav_selected_namespace_path,
+        Some(namespace)
+    );
+
+    if let Some(cancel) = app.scan_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn load_directory_clears_in_progress_refresh_scan_state() {
     let mut app = make_test_app();
     app.refresh_scan_in_progress = true;

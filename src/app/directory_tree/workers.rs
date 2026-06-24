@@ -199,7 +199,7 @@ pub(super) fn directory_tree_metadata_worker_loop(
 static READ_DIR_HELPERS_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 struct InflightGuard {
-    orphan_flag: Arc<AtomicBool>,
+    slot_freed: Arc<AtomicBool>,
 }
 
 struct ReadDirPathGuard(PathBuf);
@@ -210,11 +210,15 @@ impl Drop for ReadDirPathGuard {
     }
 }
 
+fn release_read_dir_helper_slot(slot_freed: &AtomicBool) {
+    if !slot_freed.swap(true, AtomicOrdering::SeqCst) {
+        READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
+    }
+}
+
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        if !self.orphan_flag.load(AtomicOrdering::SeqCst) {
-            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
-        }
+        release_read_dir_helper_slot(&self.slot_freed);
     }
 }
 
@@ -247,17 +251,17 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     let (tx, rx) = crossbeam_channel::bounded(1);
     let path_buf = path.to_path_buf();
     let helper_id = READ_DIR_HELPER_THREAD_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    // Orphan threads cannot be cancelled on all platforms; the flag only recycles the
-    // inflight cap so new reads can proceed while a timed-out helper keeps running.
+    // Orphan threads cannot be cancelled on all platforms; `slot_freed` recycles the inflight
+    // cap exactly once whether the helper or the timeout path wins the race.
     // `READ_DIR_INFLIGHT_PATHS` blocks duplicate reads for the same path until the helper exits.
-    let orphan_flag = Arc::new(AtomicBool::new(false));
-    let orphan_for_thread = Arc::clone(&orphan_flag);
+    let slot_freed = Arc::new(AtomicBool::new(false));
+    let slot_freed_for_thread = Arc::clone(&slot_freed);
     if std::thread::Builder::new()
         .name(format!("siv-dir-tree-read-dir-{helper_id}"))
         .spawn(move || {
             let _path_guard = ReadDirPathGuard(path_buf.clone());
             let _guard = InflightGuard {
-                orphan_flag: orphan_for_thread,
+                slot_freed: slot_freed_for_thread,
             };
             if let Err(err) = tx.send(read_child_directories(&path_buf)) {
                 log::warn!("[DirectoryTree] read_dir orphan helper failed to send result: {err}");
@@ -265,7 +269,7 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
         })
         .is_err()
     {
-        READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
+        release_read_dir_helper_slot(&slot_freed);
         return Err(t!(
             "directory_tree.read_failed",
             err = t!("directory_tree.thread_spawn_failed")
@@ -278,8 +282,7 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
             if let Ok(result) = rx.try_recv() {
                 return result;
             }
-            orphan_flag.store(true, AtomicOrdering::SeqCst);
-            READ_DIR_HELPERS_INFLIGHT.fetch_sub(1, AtomicOrdering::Release);
+            release_read_dir_helper_slot(&slot_freed);
             log::warn!(
                 "[DirectoryTree] read_dir timed out after {}s: {}",
                 DIRECTORY_TREE_READ_DIR_TIMEOUT.as_secs(),

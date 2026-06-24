@@ -101,6 +101,7 @@ impl ImageViewerApp {
                         self.settings.show_directory_tree_nav = false;
                         self.settings.tree_nav_root_dir = None;
                         self.settings.tree_nav_selected_dir = None;
+                        self.settings.tree_nav_selected_namespace_path = None;
                         self.settings.recursive = false;
                         self.load_directory(path);
                         self.queue_save();
@@ -119,6 +120,7 @@ impl ImageViewerApp {
                                 self.settings.show_directory_tree_nav = false;
                                 self.settings.tree_nav_root_dir = None;
                                 self.settings.tree_nav_selected_dir = None;
+                                self.settings.tree_nav_selected_namespace_path = None;
                                 self.settings.auto_switch = false;
                                 self.load_directory(parent.to_path_buf());
                                 self.queue_save();

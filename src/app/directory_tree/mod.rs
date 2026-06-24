@@ -87,8 +87,9 @@ pub(super) const DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO: f32 = 0.34;
 /// Share of narrow-panel width allocated to the modified-time column (remainder is size).
 pub(super) const DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT: f32 = 0.62;
 pub(super) const DIRECTORY_TREE_PLACES_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
-const THIS_PC_NAMESPACE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
-const NETWORK_NAMESPACE_PATH: &str = "\\\\?\\siv-tree\\Network";
+pub(super) use namespace::{NETWORK_NAMESPACE_PATH, THIS_PC_NAMESPACE_PATH};
+/// Linux root path; used by `namespace_path_for_fs_path` fallback when `/` is a Places mount.
+const UNIX_FS_ROOT: &str = "/";
 
 pub(super) fn this_pc_namespace_path() -> PathBuf {
     PathBuf::from(THIS_PC_NAMESPACE_PATH)
@@ -107,7 +108,7 @@ pub(super) fn is_network_namespace_path(path: &Path) -> bool {
 }
 
 pub(super) fn is_places_sentinel_namespace_path(path: &Path) -> bool {
-    is_this_pc_namespace_path(path) || is_network_namespace_path(path)
+    namespace::is_places_sentinel_namespace_path(path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -272,6 +273,21 @@ impl DirectoryTreeState {
 
     pub(crate) fn set_selected_fs_path(&mut self, dir: PathBuf) {
         self.tree.set_selected_fs_path(dir);
+    }
+
+    pub(crate) fn restore_tree_selection(
+        &mut self,
+        dir: PathBuf,
+        saved_namespace: Option<PathBuf>,
+    ) {
+        self.tree.restore_tree_selection(dir, saved_namespace);
+    }
+
+    pub(crate) fn expand_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        self.tree.expand_requests_for_selection(dir)
     }
 
     pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
@@ -735,6 +751,7 @@ impl DirectoryTreeTreeState {
     }
 
     fn fs_path_for_namespace_node(&self, tree: &Path) -> Option<PathBuf> {
+        // This PC / Network are virtual sentinels; their namespace path doubles as a display anchor.
         if is_this_pc_namespace_path(tree) {
             return Some(this_pc_namespace_path());
         }
@@ -763,17 +780,13 @@ impl DirectoryTreeTreeState {
         None
     }
 
-    fn filter_children_for_places_mounts(
-        &self,
-        parent_browse: &Path,
-        children: Vec<PathBuf>,
-    ) -> Vec<PathBuf> {
+    fn filter_children_for_places_mounts(&self, children: Vec<PathBuf>) -> Vec<PathBuf> {
+        // Complements `filter_nested_mount_paths` in Places loading: when expanding a filesystem
+        // parent (e.g. `/run/media`), omit mount roots that already appear as Places shortcuts
+        // under This PC so the same drive is not listed twice in the tree.
         children
             .into_iter()
-            .filter(|child| {
-                !self.places_drive_roots.contains(child)
-                    || parent_browse.as_os_str() == child.as_os_str()
-            })
+            .filter(|child| !self.places_drive_roots.contains(child))
             .collect()
     }
 
@@ -819,6 +832,50 @@ impl DirectoryTreeTreeState {
         }
     }
 
+    /// Restore tree selection from persisted settings, keeping the saved namespace branch when valid.
+    ///
+    /// Before Places finishes loading, `fs_path_for_namespace_node` returns `None` and this falls
+    /// back to heuristic `set_selected_fs_path`. Startup and Places apply paths call again after
+    /// Places load via `reveal_selected_namespace` / `expand_requests_for_selection`.
+    pub(crate) fn restore_tree_selection(
+        &mut self,
+        dir: PathBuf,
+        saved_namespace: Option<PathBuf>,
+    ) {
+        let Some(namespace_path) = saved_namespace else {
+            self.set_selected_fs_path(dir);
+            return;
+        };
+        if !namespace::is_tree_namespace_path(&namespace_path) {
+            self.set_selected_fs_path(dir);
+            return;
+        }
+        let Some(resolved_fs) = self.fs_path_for_namespace_node(&namespace_path) else {
+            self.set_selected_fs_path(dir);
+            return;
+        };
+        if resolved_fs == dir {
+            self.set_selected_namespace_node(namespace_path, dir);
+            return;
+        }
+        self.set_selected_fs_path(dir);
+    }
+
+    pub(crate) fn expand_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        let mut requests = self.reveal_selected_namespace();
+        if let Some(namespace_path) = self.selected_namespace_path.clone() {
+            if let Some(request) = self.expand_namespace_node(&namespace_path) {
+                requests.push(request);
+            }
+        } else if let Some(request) = self.expand_namespace_node_for_fs_path(dir) {
+            requests.push(request);
+        }
+        requests
+    }
+
     pub(crate) fn set_selected_namespace_node(&mut self, namespace_path: PathBuf, dir: PathBuf) {
         if is_unc_path(&dir) {
             self.ensure_network_visible();
@@ -853,6 +910,11 @@ impl DirectoryTreeTreeState {
         namespace::namespace_path_ancestor_chain(&tree)
     }
 
+    /// Map a filesystem path to a namespace key when no persisted branch is available.
+    ///
+    /// Priority: known folder, UNC share, deepest Places mount root, then root `/` on Linux.
+    /// Preferring the deepest mount avoids flattening mount subtrees under a parent filesystem
+    /// expansion (see tests `reveal_mount_path_skips_root_slash_ancestor_chain`).
     fn namespace_path_for_fs_path(&self, dir: &Path) -> Option<PathBuf> {
         if let Some(entry) = self.known_folder_for_fs_path(dir) {
             let chain = namespace::namespace_ancestor_chain(
@@ -885,8 +947,12 @@ impl DirectoryTreeTreeState {
             );
             return chain.last().cloned().or(Some(mount_tree));
         }
-        if self.places_drive_roots.contains(&PathBuf::from("/")) {
-            let root = PathBuf::from("/");
+        if self
+            .places_drive_roots
+            .iter()
+            .any(|root| root.as_os_str() == OsStr::new(UNIX_FS_ROOT))
+        {
+            let root = PathBuf::from(UNIX_FS_ROOT);
             let root_tree = namespace::drive_mount_namespace_path(&root);
             let chain = namespace::namespace_ancestor_chain(
                 &root_tree,
@@ -966,7 +1032,51 @@ impl DirectoryTreeTreeState {
         self.or_insert_tree_node(selected_tree_key.clone(), || {
             directory_tree_node(directory_display_name(&browse), browse)
         });
+        self.link_revealed_selection_to_parents(&selected_tree_key, &chain);
         requests
+    }
+
+    fn is_known_folder_namespace_path(&self, path: &Path) -> bool {
+        self.known_folders
+            .iter()
+            .any(|entry| entry.namespace_path.as_os_str() == path.as_os_str())
+    }
+
+    /// Ensure an expanded, loaded parent lists the selected namespace node for UI rendering.
+    ///
+    /// Only repairs the selected node's direct parent. Deeper ancestors are refreshed by reveal
+    /// expand requests; extend to walk `chain` if intermediate links are missing in practice.
+    fn link_revealed_selection_to_parents(
+        &mut self,
+        selected_tree_key: &Path,
+        chain: &[PathBuf],
+    ) {
+        let selected_is_known_folder = self.is_known_folder_namespace_path(selected_tree_key);
+        if chain.len() >= 2 {
+            let parent_key = &chain[chain.len() - 2];
+            if is_places_sentinel_namespace_path(parent_key) {
+                return;
+            }
+            if is_this_pc_namespace_path(parent_key) && selected_is_known_folder {
+                return;
+            }
+            let Some(parent_node) = self.nodes.get_mut(parent_key) else {
+                return;
+            };
+            if parent_node.expanded
+                && parent_node.children_loaded
+                && !parent_node
+                    .children
+                    .iter()
+                    .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+            {
+                parent_node
+                    .children
+                    .push(selected_tree_key.to_path_buf());
+                Self::dedupe_tree_children(&mut parent_node.children);
+                self.mark_snapshot_dirty();
+            }
+        }
     }
 
     pub(crate) fn ensure_network_share_mounted(&mut self, share_root: &Path) {
@@ -1223,15 +1333,6 @@ impl DirectoryTreeTreeState {
         let namespace_path = result.namespace_path;
         match result.result {
             Ok(children) => {
-                let children = if let Some(parent_browse) = self
-                    .nodes
-                    .get(&namespace_path)
-                    .map(|node| node.fs_path.clone())
-                {
-                    self.filter_children_for_places_mounts(&parent_browse, children)
-                } else {
-                    children
-                };
                 let Some(parent_browse) = self
                     .nodes
                     .get(&namespace_path)
@@ -1239,6 +1340,9 @@ impl DirectoryTreeTreeState {
                 else {
                     return;
                 };
+                // Drop Places mount shortcuts from filesystem expansion children (see
+                // `filter_children_for_places_mounts`).
+                let children = self.filter_children_for_places_mounts(children);
                 let mut cap_reached = false;
                 let mut loaded_children = Vec::with_capacity(children.len());
                 for child_browse in &children {

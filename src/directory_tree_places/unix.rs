@@ -125,7 +125,11 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
 }
 
 /// Drop mount paths that live inside another listed mount (e.g. `/run/media/happy/CDROM`
-/// when `/run/media/happy` is already a Places drive). Root `/` does not suppress siblings.
+/// when `/run/media/happy` is already a Places drive). Root `/` does not suppress siblings
+/// because it is the filesystem root, not a removable mount.
+///
+/// `Path::starts_with` matches by component, so `/run/media` is not an ancestor of
+/// `/run/media-backup`.
 fn filter_nested_mount_paths(paths: HashSet<PathBuf>) -> HashSet<PathBuf> {
     let root = PathBuf::from("/");
     let mut sorted: Vec<PathBuf> = paths.into_iter().collect();

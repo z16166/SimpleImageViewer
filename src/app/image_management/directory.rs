@@ -86,10 +86,12 @@ impl ImageViewerApp {
                 self.settings.tree_nav_root_dir = Some(dir.clone());
             }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
+            self.settings.tree_nav_selected_namespace_path = None;
         } else {
             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
             self.settings.tree_nav_root_dir = None;
             self.settings.tree_nav_selected_dir = Some(dir.clone());
+            self.settings.tree_nav_selected_namespace_path = None;
         }
         self.load_directory(dir);
         self.queue_save();
@@ -116,6 +118,8 @@ impl ImageViewerApp {
                 self.settings.tree_nav_root_dir = Some(dir.clone());
             }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
+            // Namespace branch is cleared by non-tree entry points (file dialog, drag-drop, etc.).
+            // Tree selection and startup rescan must preserve it for YAML persistence.
         }
         // Keep Settings folder path and folder-picker default in sync even in tree mode.
         self.settings.last_image_dir = Some(dir.clone());

@@ -21,27 +21,44 @@
 //! namespace keys (e.g. Places mount shortcut vs root `/` expansion).
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub(crate) const TREE_NAMESPACE_PREFIX: &str = r"\\?\siv-tree\";
+pub(crate) const THIS_PC_NAMESPACE_PATH: &str = r"\\?\siv-tree\ThisPC";
+pub(crate) const NETWORK_NAMESPACE_PATH: &str = r"\\?\siv-tree\Network";
+
+static MOUNT_PREFIX_BACKSLASH: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}Mount\\"));
+static MOUNT_PREFIX_FORWARD: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}Mount/"));
+static NETWORK_SHARE_PREFIX_BACKSLASH: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}Network\\Share\\"));
+static NETWORK_SHARE_PREFIX_FORWARD: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}Network/Share/"));
+static KNOWN_FOLDER_PREFIX_BACKSLASH: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}KnownFolder\\"));
+static KNOWN_FOLDER_PREFIX_FORWARD: LazyLock<String> =
+    LazyLock::new(|| format!("{TREE_NAMESPACE_PREFIX}KnownFolder/"));
 
 pub(crate) fn is_tree_namespace_path(path: &Path) -> bool {
     path.starts_with(TREE_NAMESPACE_PREFIX)
 }
 
 pub(crate) fn is_mount_namespace_path(path: &Path) -> bool {
-    path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Mount\\"))
-        || path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Mount/"))
+    path.starts_with(MOUNT_PREFIX_BACKSLASH.as_str())
+        || path.starts_with(MOUNT_PREFIX_FORWARD.as_str())
 }
 
 pub(crate) fn is_network_share_namespace_path(path: &Path) -> bool {
-    path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Network\\Share\\"))
-        || path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Network/Share/"))
+    path.starts_with(NETWORK_SHARE_PREFIX_BACKSLASH.as_str())
+        || path.starts_with(NETWORK_SHARE_PREFIX_FORWARD.as_str())
 }
 
-fn is_places_sentinel_namespace(path: &Path) -> bool {
-    path.as_os_str() == OsStr::new(r"\\?\siv-tree\ThisPC")
-        || path.as_os_str() == OsStr::new(r"\\?\siv-tree\Network")
+pub(crate) fn is_places_sentinel_namespace_path(path: &Path) -> bool {
+    path.as_os_str() == OsStr::new(THIS_PC_NAMESPACE_PATH)
+        || path.as_os_str() == OsStr::new(NETWORK_NAMESPACE_PATH)
 }
 
 fn namespace_segment_count(path: &Path) -> usize {
@@ -55,12 +72,12 @@ pub(crate) fn is_namespace_tree_root(path: &Path) -> bool {
     if !is_tree_namespace_path(path) {
         return false;
     }
-    if is_places_sentinel_namespace(path) {
+    if is_places_sentinel_namespace_path(path) {
         return true;
     }
     let count = namespace_segment_count(path);
-    if path.starts_with(format!("{TREE_NAMESPACE_PREFIX}KnownFolder\\"))
-        || path.starts_with(format!("{TREE_NAMESPACE_PREFIX}KnownFolder/"))
+    if path.starts_with(KNOWN_FOLDER_PREFIX_BACKSLASH.as_str())
+        || path.starts_with(KNOWN_FOLDER_PREFIX_FORWARD.as_str())
     {
         return count == 2;
     }
@@ -73,20 +90,26 @@ pub(crate) fn is_namespace_tree_root(path: &Path) -> bool {
     false
 }
 
+/// Percent-encode a mount filesystem path into a single namespace segment.
+///
+/// Uses the OS byte representation of the path (not lossy UTF-8) so non-ASCII paths stay unique.
 fn encode_mount_id(mount_fs_path: &Path) -> String {
-    mount_fs_path
-        .to_string_lossy()
-        .bytes()
-        .map(|byte| match byte {
+    let mut result = String::with_capacity(mount_fs_path.as_os_str().len().saturating_mul(3));
+    for &byte in mount_fs_path.as_os_str().as_encoded_bytes() {
+        match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b' ' => {
-                char::from(byte).to_string()
+                result.push(byte as char);
             }
-            b'\\' => "%5C".to_string(),
-            b'/' => "%2F".to_string(),
-            b':' => "%3A".to_string(),
-            _ => format!("%{byte:02X}"),
-        })
-        .collect()
+            b'%' => result.push_str("%25"),
+            b'\\' => result.push_str("%5C"),
+            b'/' => result.push_str("%2F"),
+            b':' => result.push_str("%3A"),
+            _ => {
+                let _ = write!(result, "%{byte:02X}");
+            }
+        }
+    }
+    result
 }
 
 /// Namespace key for a Places drive / mount entry.
@@ -105,34 +128,45 @@ pub(crate) fn network_share_namespace_path(share_fs_path: &Path) -> PathBuf {
     ))
 }
 
-pub(crate) fn fs_path_for_network_share_namespace(
+fn fs_path_for_namespace_tree(
     tree: &Path,
-    share_roots: impl IntoIterator<Item = PathBuf>,
+    roots: impl IntoIterator<Item = (PathBuf, PathBuf)>,
 ) -> Option<PathBuf> {
     let mut best: Option<(usize, PathBuf)> = None;
-    for share in share_roots {
-        let share_tree = network_share_namespace_path(&share);
-        if tree == share_tree.as_path() {
-            let depth = share.components().count();
+    for (namespace_root, fs_root) in roots {
+        if tree == namespace_root.as_path() {
+            let depth = fs_root.components().count();
             if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                best = Some((depth, share));
+                best = Some((depth, fs_root));
             }
             continue;
         }
-        if tree.starts_with(&share_tree) {
-            let mut browse = share.clone();
-            if let Ok(rest) = tree.strip_prefix(&share_tree) {
+        if tree.starts_with(&namespace_root) {
+            let mut browse = fs_root.clone();
+            if let Ok(rest) = tree.strip_prefix(&namespace_root) {
                 for component in rest.components() {
                     browse.push(component.as_os_str());
                 }
             }
-            let depth = share.components().count();
+            let depth = fs_root.components().count();
             if best.as_ref().is_none_or(|(d, _)| depth > *d) {
                 best = Some((depth, browse));
             }
         }
     }
     best.map(|(_, browse)| browse)
+}
+
+pub(crate) fn fs_path_for_network_share_namespace(
+    tree: &Path,
+    share_roots: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    fs_path_for_namespace_tree(
+        tree,
+        share_roots
+            .into_iter()
+            .map(|share| (network_share_namespace_path(&share), share)),
+    )
 }
 
 /// Extend a namespace parent using browse-path segments from `parent_browse` to `child_browse`.
@@ -148,6 +182,8 @@ pub(crate) fn namespace_child_path(
         }
         return namespace;
     }
+    // Fallback: `read_dir` children are normally direct subdirectories of `parent_fs_path`.
+    // Junctions or unusual layouts may share a file_name; callers should prefer the prefix path.
     let segment = child_fs_path
         .file_name()
         .unwrap_or_else(|| child_fs_path.as_os_str());
@@ -184,59 +220,19 @@ pub(crate) fn fs_path_for_mount_namespace(
     tree: &Path,
     mount_roots: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
-    let mut best: Option<(usize, PathBuf)> = None;
-    for mount in mount_roots {
-        let mount_tree = drive_mount_namespace_path(&mount);
-        if tree == mount_tree.as_path() {
-            let depth = mount.components().count();
-            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                best = Some((depth, mount));
-            }
-            continue;
-        }
-        if tree.starts_with(&mount_tree) {
-            let mut browse = mount.clone();
-            if let Ok(rest) = tree.strip_prefix(&mount_tree) {
-                for component in rest.components() {
-                    browse.push(component.as_os_str());
-                }
-            }
-            let depth = mount.components().count();
-            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                best = Some((depth, browse));
-            }
-        }
-    }
-    best.map(|(_, browse)| browse)
+    fs_path_for_namespace_tree(
+        tree,
+        mount_roots
+            .into_iter()
+            .map(|mount| (drive_mount_namespace_path(&mount), mount)),
+    )
 }
 
 pub(crate) fn fs_path_for_known_folder_namespace(
     tree: &Path,
     known_roots: impl IntoIterator<Item = (PathBuf, PathBuf)>,
 ) -> Option<PathBuf> {
-    let mut best: Option<(usize, PathBuf)> = None;
-    for (tree_root, browse_root) in known_roots {
-        if tree == tree_root.as_path() {
-            let depth = browse_root.components().count();
-            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                best = Some((depth, browse_root));
-            }
-            continue;
-        }
-        if tree.starts_with(&tree_root) {
-            let mut browse = browse_root.clone();
-            if let Ok(rest) = tree.strip_prefix(&tree_root) {
-                for component in rest.components() {
-                    browse.push(component.as_os_str());
-                }
-            }
-            let depth = browse_root.components().count();
-            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
-                best = Some((depth, browse));
-            }
-        }
-    }
-    best.map(|(_, browse)| browse)
+    fs_path_for_namespace_tree(tree, known_roots)
 }
 
 /// Namespace ancestor chain from a mount/known-folder/share root down to `tree`.
@@ -271,6 +267,16 @@ mod tests {
         assert_ne!(root, happy);
         assert!(is_mount_namespace_path(&root));
         assert!(is_mount_namespace_path(&happy));
+    }
+
+    #[test]
+    fn encode_mount_id_escapes_percent() {
+        let encoded = encode_mount_id(Path::new("/mnt/a%2Fb"));
+        assert!(encoded.contains("%25"));
+        assert_ne!(
+            encode_mount_id(Path::new("/mnt/a%2Fb")),
+            encode_mount_id(Path::new("/mnt/a/b"))
+        );
     }
 
     #[test]
