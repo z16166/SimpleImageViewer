@@ -103,9 +103,10 @@ fn encode_mount_id(mount_fs_path: &Path) -> String {
     let mut result = String::with_capacity(mount_fs_path.as_os_str().len().saturating_mul(3));
     for &byte in mount_fs_path.as_os_str().as_encoded_bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b' ' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
                 result.push(byte as char);
             }
+            b' ' => result.push_str("%20"),
             b'%' => result.push_str("%25"),
             b'\\' => result.push_str("%5C"),
             b'/' => result.push_str("%2F"),
@@ -191,12 +192,19 @@ pub(crate) fn namespace_child_path(
     }
     // Fallback: `read_dir` children are normally direct subdirectories of `parent_fs_path`.
     // Junctions or unusual layouts may share a file_name; callers should prefer the prefix path.
-    namespace_join(
-        &parent_namespace,
-        child_fs_path
-            .file_name()
-            .unwrap_or_else(|| child_fs_path.as_os_str()),
-    )
+    if child_fs_path.as_os_str().is_empty() {
+        return parent_namespace;
+    }
+    if let Some(name) = child_fs_path.file_name() {
+        if !name.is_empty() {
+            return namespace_join(&parent_namespace, name);
+        }
+    }
+    let mut namespace = parent_namespace;
+    for component in child_fs_path.components() {
+        namespace = namespace_join(&namespace, component.as_os_str());
+    }
+    namespace
 }
 
 /// Build namespace ancestor chain from mount/known-folder/share root to `target_fs_path`.
@@ -272,10 +280,7 @@ pub(crate) fn namespace_path_ancestor_chain(tree: &Path) -> Vec<PathBuf> {
 }
 
 fn namespace_path_from_segment_strings(segments: &[String]) -> PathBuf {
-    PathBuf::from(format!(
-        "{CANONICAL_TREE_PREFIX}{}",
-        segments.join("/")
-    ))
+    PathBuf::from(format!("{CANONICAL_TREE_PREFIX}{}", segments.join("/")))
 }
 
 #[cfg(test)]
@@ -298,6 +303,22 @@ mod tests {
         assert_ne!(
             encode_mount_id(Path::new("/mnt/a%2Fb")),
             encode_mount_id(Path::new("/mnt/a/b"))
+        );
+    }
+
+    #[test]
+    fn encode_mount_id_escapes_space() {
+        let encoded = encode_mount_id(Path::new("/mnt/my photos"));
+        assert!(encoded.contains("%20"));
+        assert!(!encoded.contains(' '));
+    }
+
+    #[test]
+    fn namespace_child_path_fallback_skips_empty_segment() {
+        let parent = drive_mount_namespace_path(Path::new("/run/media/happy"));
+        assert_eq!(
+            namespace_child_path(&parent, Path::new("/run/media/happy"), Path::new("")),
+            parent,
         );
     }
 
@@ -364,9 +385,7 @@ mod tests {
 
     #[test]
     fn normalize_tree_namespace_path_splits_legacy_backslashes() {
-        let legacy = PathBuf::from(
-            r"\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom",
-        );
+        let legacy = PathBuf::from(r"\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom");
         let custom = namespace_child_path(
             &namespace_child_path(
                 &drive_mount_namespace_path(Path::new("/run/media/happy")),

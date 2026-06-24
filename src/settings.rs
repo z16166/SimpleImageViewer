@@ -453,7 +453,7 @@ impl Default for ScaleMode {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
+        let mut settings = Self {
             recursive: false,
             browse_mode: BrowseMode::Linear,
             show_directory_tree_nav: false,
@@ -515,7 +515,9 @@ impl Default for Settings {
             directory_tree_list_preview_size: DirectoryTreeListPreviewSize::Small,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
-        }
+        };
+        settings.normalize_browse_directory_fields();
+        settings
     }
 }
 
@@ -1173,8 +1175,9 @@ directory_tree_window_maximized_screen_center: [960, 540]
         settings.browse_mode = BrowseMode::Tree;
         settings.last_image_dir = Some(PathBuf::from("/run/media/happy/CDROM/custom"));
         settings.tree_nav_selected_dir = settings.last_image_dir.clone();
-        settings.tree_nav_selected_namespace_path =
-            Some(PathBuf::from(r"\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom"));
+        settings.tree_nav_selected_namespace_path = Some(PathBuf::from(
+            r"\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom",
+        ));
 
         let yaml = serde_yaml::to_string(&settings).expect("serialize tree selection");
         assert!(!yaml.contains("tree_nav_selected_dir:"));

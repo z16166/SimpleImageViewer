@@ -808,11 +808,8 @@ fn reveal_selected_namespace_expands_nested_known_folder_path_after_places_init(
             .get(&docs_tree)
             .is_some_and(|node| node.expanded)
     );
-    let year_tree = super::namespace::namespace_child_path(
-        &docs_tree,
-        &docs_fs,
-        &docs_fs.join("2024"),
-    );
+    let year_tree =
+        super::namespace::namespace_child_path(&docs_tree, &docs_fs, &docs_fs.join("2024"));
     assert!(
         state
             .tree
@@ -1194,6 +1191,101 @@ fn reveal_selected_namespace_uses_persisted_namespace_branch() {
 }
 
 #[test]
+fn restore_tree_selection_preserves_namespace_before_places_load() {
+    let happy = PathBuf::from("/run/media/happy");
+    let browse = happy.join("CDROM").join("custom");
+    let root_mount = super::namespace::drive_mount_namespace_path(Path::new("/"));
+    let via_root = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &super::namespace::namespace_child_path(
+                &super::namespace::namespace_child_path(
+                    &super::namespace::namespace_child_path(
+                        &root_mount,
+                        Path::new("/"),
+                        &PathBuf::from("/run"),
+                    ),
+                    &PathBuf::from("/run"),
+                    &PathBuf::from("/run/media"),
+                ),
+                &PathBuf::from("/run/media"),
+                &happy,
+            ),
+            &happy,
+            &happy.join("CDROM"),
+        ),
+        &happy.join("CDROM"),
+        &browse,
+    );
+
+    let mut state = DirectoryTreeState::default();
+    assert!(!state.tree.places_loaded);
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_root.clone()));
+    assert_eq!(state.tree.selected_fs_path.as_ref(), Some(&browse));
+    assert_eq!(state.tree.selected_namespace_path.as_ref(), Some(&via_root));
+}
+
+#[test]
+fn apply_children_omits_network_share_roots_from_filesystem_parent() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let share = PathBuf::from(r"\\server\photos");
+    let parent_browse = PathBuf::from(r"\\server");
+    let other_browse = PathBuf::from(r"\\server\other");
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        known_folders: Vec::new(),
+        drives: vec![DriveEntry {
+            display_name: "C:".to_string(),
+            fs_path: PathBuf::from("C:\\"),
+        }],
+        network_locations: vec![DriveEntry {
+            display_name: "photos".to_string(),
+            fs_path: share.clone(),
+        }],
+        this_pc_label: "Places".to_string(),
+        network_label: "Network".to_string(),
+    };
+
+    let mut state = DirectoryTreeState::default();
+    state.initialize_places(places);
+    let parent_tree = super::namespace::drive_mount_namespace_path(&parent_browse);
+    state
+        .tree
+        .nodes
+        .or_insert_with(parent_tree.clone(), super::MAX_DIRECTORY_TREE_NODES, || {
+            super::directory_tree_node("server".to_string(), parent_browse.clone())
+        })
+        .expect("parent node");
+
+    state.apply_children_result(super::DirectoryChildrenResult {
+        namespace_path: parent_tree.clone(),
+        generation: state.tree.generation,
+        result: Ok(vec![share.clone(), other_browse.clone()]),
+    });
+
+    let node = state
+        .tree
+        .nodes
+        .get(&parent_tree)
+        .expect("parent node after load");
+    let share_tree = super::namespace::network_share_namespace_path(&share);
+    assert!(
+        !node
+            .children
+            .iter()
+            .any(|path| path.as_os_str() == share_tree.as_os_str())
+    );
+    let other_tree =
+        super::namespace::namespace_child_path(&parent_tree, &parent_browse, &other_browse);
+    assert!(
+        node.children
+            .iter()
+            .any(|path| path.as_os_str() == other_tree.as_os_str())
+    );
+}
+
+#[test]
 fn restore_tree_selection_uses_persisted_namespace_from_settings() {
     use crate::directory_tree_places::types::DriveEntry;
 
@@ -1241,12 +1333,11 @@ fn restore_tree_selection_uses_persisted_namespace_from_settings() {
 
     let mut state = DirectoryTreeState::default();
     state.initialize_places(places);
-    state.tree.restore_tree_selection(browse.clone(), Some(via_root.clone()));
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_root.clone()));
     assert_eq!(state.tree.selected_fs_path.as_ref(), Some(&browse));
-    assert_eq!(
-        state.tree.selected_namespace_path.as_ref(),
-        Some(&via_root)
-    );
+    assert_eq!(state.tree.selected_namespace_path.as_ref(), Some(&via_root));
 }
 
 #[test]
@@ -1298,12 +1389,11 @@ fn restore_tree_selection_falls_back_when_saved_namespace_does_not_match_dir() {
 
     let mut state = DirectoryTreeState::default();
     state.initialize_places(places);
-    state.tree.restore_tree_selection(other.clone(), Some(via_root.clone()));
+    state
+        .tree
+        .restore_tree_selection(other.clone(), Some(via_root.clone()));
     assert_eq!(state.tree.selected_fs_path.as_ref(), Some(&other));
-    assert_ne!(
-        state.tree.selected_namespace_path.as_ref(),
-        Some(&via_root)
-    );
+    assert_ne!(state.tree.selected_namespace_path.as_ref(), Some(&via_root));
 }
 
 #[test]
@@ -1363,10 +1453,7 @@ fn restore_tree_selection_clears_stale_namespace_when_persisted_none() {
     state
         .tree
         .set_selected_namespace_node(via_root.clone(), browse.clone());
-    assert_eq!(
-        state.tree.selected_namespace_path.as_ref(),
-        Some(&via_root)
-    );
+    assert_eq!(state.tree.selected_namespace_path.as_ref(), Some(&via_root));
 
     state.tree.restore_tree_selection(browse.clone(), None);
     assert_eq!(state.tree.selected_fs_path.as_ref(), Some(&browse));

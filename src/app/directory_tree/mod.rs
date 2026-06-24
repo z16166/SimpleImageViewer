@@ -783,10 +783,13 @@ impl DirectoryTreeTreeState {
     fn filter_children_for_places_mounts(&self, children: Vec<PathBuf>) -> Vec<PathBuf> {
         // Complements `filter_nested_mount_paths` in Places loading: when expanding a filesystem
         // parent (e.g. `/run/media`), omit mount roots that already appear as Places shortcuts
-        // under This PC so the same drive is not listed twice in the tree.
+        // under This PC or Network so the same drive/share is not listed twice in the tree.
         children
             .into_iter()
-            .filter(|child| !self.places_drive_roots.contains(child))
+            .filter(|child| {
+                !self.places_drive_roots.contains(child)
+                    && !self.network_share_roots.contains(child)
+            })
             .collect()
     }
 
@@ -852,6 +855,12 @@ impl DirectoryTreeTreeState {
             return;
         }
         let Some(resolved_fs) = self.fs_path_for_namespace_node(&namespace_path) else {
+            if !self.places_loaded {
+                self.selected_fs_path = Some(dir);
+                self.selected_namespace_path = Some(namespace_path);
+                self.mark_snapshot_dirty();
+                return;
+            }
             self.set_selected_fs_path(dir);
             return;
         };
@@ -863,8 +872,7 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn folder_reveal_work_pending(&self) -> bool {
-        self.scroll_folder_tree_to_selected
-            || self.nodes.iter().any(|(_, node)| node.loading)
+        self.scroll_folder_tree_to_selected || self.nodes.iter().any(|(_, node)| node.loading)
     }
 
     pub(crate) fn expand_requests_for_selection(
@@ -1005,6 +1013,7 @@ impl DirectoryTreeTreeState {
             }
         }
 
+        let mut reveal_chain_ok = true;
         for path in chain.iter().take(chain.len().saturating_sub(1)) {
             if is_places_sentinel_namespace_path(path) {
                 continue;
@@ -1014,15 +1023,18 @@ impl DirectoryTreeTreeState {
                     "[DirectoryTree] Reveal skipped namespace node without browse path: {}",
                     path.display()
                 );
-                continue;
+                reveal_chain_ok = false;
+                break;
             };
             if !self.or_insert_tree_node(path.clone(), || {
                 directory_tree_node(directory_display_name(&browse), browse)
             }) {
-                continue;
+                reveal_chain_ok = false;
+                break;
             }
             let Some(node) = self.nodes.get_mut(path) else {
-                continue;
+                reveal_chain_ok = false;
+                break;
             };
             node.expanded = true;
             if !node.children_loaded && !node.loading {
@@ -1032,14 +1044,20 @@ impl DirectoryTreeTreeState {
                 requests.push(children_request(path.clone(), fs_path, self.generation));
             }
         }
-        let browse = self
-            .fs_path_for_namespace_node(&selected_tree_key)
-            .or_else(|| self.selected_fs_path.clone())
-            .unwrap_or_else(|| selected_tree_key.clone());
-        self.or_insert_tree_node(selected_tree_key.clone(), || {
-            directory_tree_node(directory_display_name(&browse), browse)
-        });
-        self.link_revealed_selection_to_parents(&selected_tree_key, &chain);
+        if reveal_chain_ok {
+            let browse = self
+                .fs_path_for_namespace_node(&selected_tree_key)
+                .or_else(|| self.selected_fs_path.clone())
+                .unwrap_or_else(|| selected_tree_key.clone());
+            if !self.or_insert_tree_node(selected_tree_key.clone(), || {
+                directory_tree_node(directory_display_name(&browse), browse)
+            }) {
+                reveal_chain_ok = false;
+            }
+        }
+        if reveal_chain_ok {
+            self.link_revealed_selection_to_parents(&selected_tree_key, &chain);
+        }
         requests
     }
 
@@ -1049,37 +1067,33 @@ impl DirectoryTreeTreeState {
             .any(|entry| entry.namespace_path.as_os_str() == path.as_os_str())
     }
 
-    /// Ensure an expanded, loaded parent lists the selected namespace node for UI rendering.
-    ///
-    /// Only repairs the selected node's direct parent. Deeper ancestors are refreshed by reveal
-    /// expand requests; extend to walk `chain` if intermediate links are missing in practice.
-    fn link_revealed_selection_to_parents(
-        &mut self,
-        selected_tree_key: &Path,
-        chain: &[PathBuf],
-    ) {
+    /// Ensure expanded, loaded ancestors list each child on the reveal chain for UI rendering.
+    fn link_revealed_selection_to_parents(&mut self, selected_tree_key: &Path, chain: &[PathBuf]) {
         let selected_is_known_folder = self.is_known_folder_namespace_path(selected_tree_key);
-        if chain.len() >= 2 {
-            let parent_key = &chain[chain.len() - 2];
+        for window in chain.windows(2) {
+            let parent_key = &window[0];
+            let child_key = &window[1];
             if is_places_sentinel_namespace_path(parent_key) {
-                return;
+                continue;
             }
-            if is_this_pc_namespace_path(parent_key) && selected_is_known_folder {
-                return;
+            if is_this_pc_namespace_path(parent_key)
+                && (selected_is_known_folder
+                    && child_key.as_os_str() == selected_tree_key.as_os_str()
+                    || self.is_known_folder_namespace_path(child_key))
+            {
+                continue;
             }
             let Some(parent_node) = self.nodes.get_mut(parent_key) else {
-                return;
+                continue;
             };
             if parent_node.expanded
                 && parent_node.children_loaded
                 && !parent_node
                     .children
                     .iter()
-                    .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
+                    .any(|child| child.as_os_str() == child_key.as_os_str())
             {
-                parent_node
-                    .children
-                    .push(selected_tree_key.to_path_buf());
+                parent_node.children.push(child_key.clone());
                 Self::dedupe_tree_children(&mut parent_node.children);
                 self.mark_snapshot_dirty();
             }
