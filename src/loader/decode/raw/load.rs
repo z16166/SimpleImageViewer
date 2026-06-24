@@ -297,10 +297,18 @@ pub(crate) fn load_raw(
         path.file_name().unwrap_or_default()
     );
 
-    let (width, height) = processor.developed_output_dimensions(preview_opt.as_ref());
+    let (width, height) = if high_quality {
+        processor.unpack()?;
+        processor.developed_output_dimensions(preview_opt.as_ref())
+    } else {
+        processor.developed_output_dimensions(preview_opt.as_ref())
+    };
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-    let osd_ctx = RawOsdContext::new((width, height), preview_opt.as_ref());
+    let osd_ctx = RawOsdContext::new(
+        (processor.raw_width(), processor.raw_height()),
+        preview_opt.as_ref(),
+    );
 
     if !high_quality {
         if let Some(p) = preview_opt {

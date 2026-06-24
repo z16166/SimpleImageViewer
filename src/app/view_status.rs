@@ -196,12 +196,17 @@ impl RawMetadataStore {
         true
     }
 
-    pub(crate) fn promote_gpu_demosaic_complete(&mut self, index: usize) -> bool {
+    pub(crate) fn promote_gpu_demosaic_complete(
+        &mut self,
+        index: usize,
+        develop_width: u32,
+        develop_height: u32,
+    ) -> bool {
         let Some(info) = self.by_index.get_mut(&index) else {
             return false;
         };
         let before = info.render_pixels;
-        info.promote_gpu_demosaic_complete();
+        info.promote_gpu_demosaic_complete(develop_width, develop_height);
         if before == info.render_pixels {
             return false;
         }

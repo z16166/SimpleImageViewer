@@ -310,24 +310,22 @@ impl RawProcessor {
 
     /// Best-effort developed output dimensions for tiling and HQ size checks.
     ///
+    /// Call after [`Self::unpack`] when possible: LibRaw `iwidth`/`iheight` can match the
+    /// embedded JPEG size until the RAW buffer is unpacked (common on Fuji RAF).
+    ///
     /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
-    /// until demosaic; prefer CFA bounds when output size clearly matches the thumb only.
+    /// even after unpack; prefer CFA bounds when output size clearly matches the thumb only.
     pub fn developed_output_dimensions(
         &self,
         embedded: Option<&crate::loader::DecodedImage>,
     ) -> (u32, u32) {
-        let iw = self.width();
-        let ih = self.height();
-        let rw = self.raw_width();
-        let rh = self.raw_height();
-
-        if let Some(p) = embedded {
-            if p.width == iw && p.height == ih && ((rw > iw && rw > 0) || (rh > ih && rh > 0)) {
-                return (rw.max(iw), rh.max(ih));
-            }
-        }
-
-        if iw > 0 && ih > 0 { (iw, ih) } else { (rw, rh) }
+        developed_output_dimensions_from_parts(
+            self.width(),
+            self.height(),
+            self.raw_width(),
+            self.raw_height(),
+            embedded.map(|p| (p.width, p.height)),
+        )
     }
 
     pub fn margins(&self) -> (i32, i32) {
@@ -1640,6 +1638,69 @@ mod tests {
             "expected full sensor dimensions, got {}x{}",
             processor.width(),
             processor.height()
+        );
+    }
+}
+
+pub(crate) fn developed_output_dimensions_from_parts(
+    iw: u32,
+    ih: u32,
+    rw: u32,
+    rh: u32,
+    embedded: Option<(u32, u32)>,
+) -> (u32, u32) {
+    if let Some((pw, ph)) = embedded {
+        // ERF: iwidth matches tiny embedded thumb only; developed size follows CFA bounds.
+        let embedded_long = pw.max(ph);
+        if pw == iw && ph == ih && embedded_long <= 768 && (rw > iw || rh > ih) {
+            return (rw.max(iw), rh.max(ih));
+        }
+        // Embedded full-size JPEG exceeds stale LibRaw iwidth/iheight (Fuji RAF before unpack).
+        if (pw > iw && ph > ih) && (rw > iw || rh > ih) {
+            return (pw.max(iw), ph.max(ih));
+        }
+    }
+
+    if iw > 0 && ih > 0 {
+        (iw, ih)
+    } else {
+        (rw, rh)
+    }
+}
+
+#[cfg(test)]
+mod developed_output_dimensions_tests {
+    use super::developed_output_dimensions_from_parts;
+
+    #[test]
+    fn erf_thumb_matches_iwidth_upgrades_to_cfa_bounds() {
+        assert_eq!(
+            developed_output_dimensions_from_parts(640, 424, 3040, 2024, Some((640, 424))),
+            (3040, 2024)
+        );
+    }
+
+    #[test]
+    fn fuji_stale_iwidth_uses_embedded_when_larger() {
+        assert_eq!(
+            developed_output_dimensions_from_parts(1024, 768, 11662, 8746, Some((4000, 3000))),
+            (4000, 3000)
+        );
+    }
+
+    #[test]
+    fn fuji_embedded_matching_iwidth_keeps_develop_grid_not_cfa() {
+        assert_eq!(
+            developed_output_dimensions_from_parts(4000, 3000, 11662, 8746, Some((4000, 3000))),
+            (4000, 3000)
+        );
+    }
+
+    #[test]
+    fn unpacked_iwidth_wins_when_plausible() {
+        assert_eq!(
+            developed_output_dimensions_from_parts(6240, 4680, 11662, 8746, Some((4000, 3000))),
+            (6240, 4680)
         );
     }
 }

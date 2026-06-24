@@ -222,12 +222,14 @@ impl RawOsdInfo {
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
     }
 
-    pub(crate) fn promote_gpu_demosaic_complete(&mut self) {
+    pub(crate) fn promote_gpu_demosaic_complete(&mut self, develop_width: u32, develop_height: u32) {
         if self.demosaic_backend != Some(RawDemosaicBackend::Video) {
             return;
         }
-        let (width, height) = self.sensor_size;
-        self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+        self.render_pixels = RawRenderPixels::FullDevelop {
+            width: develop_width,
+            height: develop_height,
+        };
     }
 
     pub(crate) fn note_gpu_demosaic_pending(&mut self, bootstrap: Option<(u32, u32)>) {
@@ -446,7 +448,7 @@ mod tests {
                 height: 1288
             }
         );
-        info.promote_gpu_demosaic_complete();
+        info.promote_gpu_demosaic_complete(3908, 2602);
         assert_eq!(
             info.render_pixels,
             RawRenderPixels::FullDevelop {

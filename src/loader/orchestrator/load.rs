@@ -441,6 +441,14 @@ impl ImageLoader {
 
                     let user_flip = req.orientation_override.unwrap_or(0);
                     processor.set_user_flip(user_flip);
+                    if let Err(err) = processor.unpack() {
+                        log::error!(
+                            "[Refinement] Failed to unpack {:?}: {}",
+                            req.path.file_name().unwrap_or_default(),
+                            err
+                        );
+                        continue;
+                    }
 
                     let develop_result = {
                         let started = std::time::Instant::now();
