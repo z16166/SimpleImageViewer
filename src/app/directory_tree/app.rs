@@ -1614,7 +1614,8 @@ impl ImageViewerApp {
         let strip_work_pending = self.scanning
             || self.pending_directory_tree_state_sync
             || self.directory_tree_strip_bootstrap_after_scan
-            || !self.directory_tree_strip_generate_inflight.is_empty();
+            || !self.directory_tree_strip_generate_inflight.is_empty()
+            || !self.directory_tree_strip_pending_gpu.is_empty();
         if strip_work_pending {
             if self.directory_tree_strip_cache.gpu_revision() > 0 {
                 self.request_directory_tree_viewport_repaint(ctx);

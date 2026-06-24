@@ -149,6 +149,8 @@ impl ImageViewerApp {
         if pending_uploads_remain {
             ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
             ctx.request_repaint();
+            // Linux/Wayland may not schedule another frame from egui repaint alone when idle.
+            self.wake_root_for_logic();
             return;
         }
         if !cache_revision_changed {
@@ -156,11 +158,11 @@ impl ImageViewerApp {
         }
         self.mark_directory_tree_repaint_pending();
         self.request_directory_tree_viewport_repaint(ctx);
-        if self.directory_tree_nav_is_detached() {
-            self.wake_root_for_logic();
-        } else {
-            ctx.request_repaint();
-        }
+        ctx.request_repaint();
+        // Final install often runs during paint after logic() already published an older rev;
+        // wake the winit loop so the next logic pass publishes the new textures (and so idle
+        // platforms repaint without waiting for pointer input).
+        self.wake_root_for_logic();
     }
 
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
@@ -223,6 +225,10 @@ impl ImageViewerApp {
             cache_revision_changed,
             pending_uploads_remain,
         );
+        // Flush runs during paint, after logic() may have published a stale preview rev.
+        if cache_revision_changed {
+            self.publish_directory_tree_view_from_state(false);
+        }
     }
 
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
