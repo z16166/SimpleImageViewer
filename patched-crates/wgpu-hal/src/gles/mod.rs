@@ -80,14 +80,19 @@ we don't bother with that combination.
 */
 
 ///cbindgen:ignore
-#[cfg(not(any(windows, webgl)))]
+#[cfg(all(not(webgl), any(not(windows), feature = "windows-angle")))]
 mod egl;
 #[cfg(Emscripten)]
 mod emscripten;
 #[cfg(webgl)]
 mod web;
-#[cfg(windows)]
+#[cfg(all(
+    windows,
+    any(not(feature = "windows-angle"), feature = "legacy-win7-gles")
+))]
 mod wgl;
+#[cfg(all(windows, feature = "legacy-win7-gles"))]
+mod win7_gles;
 
 mod adapter;
 mod command;
@@ -98,9 +103,20 @@ mod queue;
 
 pub use fence::Fence;
 
-#[cfg(not(any(windows, webgl)))]
+#[cfg(all(windows, feature = "legacy-win7-gles"))]
+pub use self::win7_gles::{AdapterContext, AdapterContextLock, Instance, Surface};
+
+#[cfg(all(
+    not(webgl),
+    any(not(windows), feature = "windows-angle"),
+    not(all(windows, feature = "legacy-win7-gles"))
+))]
 pub use self::egl::{AdapterContext, AdapterContextLock};
-#[cfg(not(any(windows, webgl)))]
+#[cfg(all(
+    not(webgl),
+    any(not(windows), feature = "windows-angle"),
+    not(all(windows, feature = "legacy-win7-gles"))
+))]
 pub use self::egl::{Instance, Surface};
 
 #[cfg(webgl)]
@@ -108,9 +124,17 @@ pub use self::web::AdapterContext;
 #[cfg(webgl)]
 pub use self::web::{Instance, Surface};
 
-#[cfg(windows)]
+#[cfg(all(
+    windows,
+    not(feature = "windows-angle"),
+    not(feature = "legacy-win7-gles")
+))]
 use self::wgl::AdapterContext;
-#[cfg(windows)]
+#[cfg(all(
+    windows,
+    not(feature = "windows-angle"),
+    not(feature = "legacy-win7-gles")
+))]
 pub use self::wgl::{Instance, Surface};
 
 use alloc::{boxed::Box, string::String, string::ToString as _, sync::Arc, vec::Vec};
@@ -298,6 +322,13 @@ pub struct Device {
     #[cfg(all(native, feature = "renderdoc"))]
     render_doc: crate::auxil::renderdoc::RenderDoc,
     counters: Arc<wgt::HalCounters>,
+}
+
+#[cfg(all(windows, feature = "legacy-win7-gles"))]
+impl Device {
+    pub fn context(&self) -> &AdapterContext {
+        &self.shared.context
+    }
 }
 
 impl Drop for Device {

@@ -681,7 +681,7 @@ jobs:
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
-          cp "$env:SystemRoot\System32\d3dcompiler_47.dll" staging/
+          cp redist/d3dcompiler_47.dll staging/
           & ./scripts/ci/copy-vcomp140.ps1 -StagingDir staging -Arch x64
           # 仅针对 Win7 额外增加 ANGLE 核心 DLL 探测 (从 Chrome 中提取)
           $angleDll = Get-ChildItem -Path "C:\Program Files\Google\Chrome\Application" -Filter "libEGL.dll" -Recurse | Select-Object -First 1

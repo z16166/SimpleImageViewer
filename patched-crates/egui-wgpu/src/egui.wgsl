@@ -18,6 +18,10 @@ struct Locals {
 
     /// SDR white / panel peak scale for KWin gamma 2.2 HDR swap chains.
     gamma22_display_scale: f32,
+
+    /// WGSL struct size rounds to 24 bytes; ANGLE/D3D UBOs require 16-byte multiples.
+    _pad0: u32,
+    _ubo_align_pad: vec2<u32>,
 };
 @group(0) @binding(0) var<uniform> r_locals: Locals;
 

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [2.7.5] - 2026-06-23
 
+### Added
+- **Windows 7 x64**: Restored support for the legacy Win7 x64 build using ANGLE/OpenGL ES with automatic GPU backend fallback.
+
 ### Fixed
 - **Linux HDR on SDR displays**: HDR mode no longer turns on incorrectly on standard SDR monitors when the compositor advertises HDR swap-chain support without matching display metadata.
 - **RAW photo dimensions (Fuji RAF and similar)**: On-screen develop size and status labels stay accurate while full-resolution RAW files load, instead of briefly showing embedded preview dimensions.

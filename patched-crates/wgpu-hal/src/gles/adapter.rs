@@ -1244,7 +1244,7 @@ impl crate::Adapter for super::Adapter {
             return None;
         }
 
-        if surface.presentable {
+        if surface.is_presentable() {
             let mut formats = vec![
                 wgt::TextureFormat::Rgba8Unorm,
                 #[cfg(native)]

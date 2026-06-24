@@ -355,11 +355,13 @@ struct UniformBuffer {
     dithering: u32,
     predictable_texture_filtering: u32,
     gamma22_display_scale: f32,
-    /// WGSL `Locals` rounds struct size to 24 bytes (vec2 alignment).
-    _wgsl_pad: u32,
+    /// Matches `_pad0` in `egui.wgsl`; keeps WGSL `Locals` at 24 bytes without ANGLE padding.
+    _pad0: u32,
+    /// Matches `_ubo_align_pad` in `egui.wgsl`; 32-byte UBO for ANGLE/D3D11 alignment rules.
+    _ubo_align_pad: [u32; 2],
 }
 
-const _: () = assert!(std::mem::size_of::<UniformBuffer>() == 24);
+const _: () = assert!(std::mem::size_of::<UniformBuffer>() == 32);
 
 struct SlicedBuffer {
     buffer: wgpu::Buffer,
@@ -501,7 +503,8 @@ impl Renderer {
                 dithering: u32::from(options.dithering),
                 predictable_texture_filtering: u32::from(options.predictable_texture_filtering),
                 gamma22_display_scale: 1.0,
-                _wgsl_pad: 0,
+                _pad0: 0,
+                _ubo_align_pad: [0, 0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1115,7 +1118,8 @@ impl Renderer {
             dithering: u32::from(self.options.dithering),
             predictable_texture_filtering: u32::from(self.options.predictable_texture_filtering),
             gamma22_display_scale: self.gamma22_display_scale,
-            _wgsl_pad: 0,
+            _pad0: 0,
+            _ubo_align_pad: [0, 0],
         };
         if uniform_buffer_content != self.previous_uniform_buffer_content {
             profiling::scope!("update uniforms");

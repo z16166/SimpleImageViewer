@@ -15,11 +15,23 @@ const EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT: i32 = 0x30BF;
 const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 const EGL_PLATFORM_ANGLE_ANGLE: u32 = 0x3202;
+const EGL_PLATFORM_ANGLE_TYPE_ANGLE: u32 = 0x3203;
+const EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE: u32 = 0x3208;
+// ANGLE extension EGL_ANGLE_platform_angle_opengl (not 0x3205).
+const EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE: u32 = 0x320D;
+const EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE: u32 = 0x320E;
+const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: u32 = 0x3209;
+const EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE: u32 = 0x320B;
 const EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE: u32 = 0x348F;
 const EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED: u32 = 0x3451;
 const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
 const EGL_GL_COLORSPACE_KHR: u32 = 0x309D;
 const EGL_GL_COLORSPACE_SRGB_KHR: u32 = 0x3089;
+
+#[cfg(unix)]
+type WlEglWindowPtr = *mut wayland_sys::egl::wl_egl_window;
+#[cfg(not(unix))]
+type WlEglWindowPtr = *mut ffi::c_void;
 
 #[cfg(not(Emscripten))]
 type EglInstance = khronos_egl::DynamicInstance<khronos_egl::EGL1_4>;
@@ -88,35 +100,105 @@ enum SrgbFrameBufferKind {
     Khr,
 }
 
+/// ANGLE backend tier for Win7 legacy GLES initialization.
+#[cfg(feature = "windows-angle")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AngleTier {
+    D3d11,
+    OpenGl,
+    Warp,
+}
+
+#[cfg(not(feature = "windows-angle"))]
+#[derive(Clone, Copy, Debug)]
+enum AngleTier {
+    D3d11,
+    OpenGl,
+    Warp,
+}
+
 /// Choose GLES framebuffer configuration.
 fn choose_config(
     egl: &EglInstance,
     display: khronos_egl::Display,
     srgb_kind: SrgbFrameBufferKind,
+    angle_tier: Option<AngleTier>,
 ) -> Result<(khronos_egl::Config, bool), crate::InstanceError> {
     //TODO: EGL_SLOW_CONFIG
-    let tiers = [
+    let default_tiers: &[(&str, &[i32])] = &[
         (
             "off-screen",
             &[
                 khronos_egl::SURFACE_TYPE,
                 khronos_egl::PBUFFER_BIT,
                 khronos_egl::RENDERABLE_TYPE,
-                khronos_egl::OPENGL_ES2_BIT,
-            ][..],
+                khronos_egl::OPENGL_ES3_BIT,
+            ],
         ),
         (
-            "presentation",
-            &[khronos_egl::SURFACE_TYPE, khronos_egl::WINDOW_BIT][..],
+            "window-es3",
+            &[
+                khronos_egl::SURFACE_TYPE,
+                khronos_egl::WINDOW_BIT,
+                khronos_egl::RENDERABLE_TYPE,
+                khronos_egl::OPENGL_ES3_BIT,
+            ],
         ),
         #[cfg(not(target_os = "android"))]
         (
             "native-render",
-            &[khronos_egl::NATIVE_RENDERABLE, khronos_egl::TRUE as _][..],
+            &[khronos_egl::NATIVE_RENDERABLE, khronos_egl::TRUE as _],
         ),
     ];
 
-    let mut attributes = Vec::with_capacity(9);
+    #[cfg(feature = "windows-angle")]
+    let opengl_tiers: &[(&str, &[i32])] = &[
+        (
+            "window-gl",
+            &[
+                khronos_egl::SURFACE_TYPE,
+                khronos_egl::WINDOW_BIT,
+                khronos_egl::RENDERABLE_TYPE,
+                khronos_egl::OPENGL_BIT,
+            ],
+        ),
+        (
+            "off-screen-gl",
+            &[
+                khronos_egl::SURFACE_TYPE,
+                khronos_egl::PBUFFER_BIT,
+                khronos_egl::RENDERABLE_TYPE,
+                khronos_egl::OPENGL_BIT,
+            ],
+        ),
+    ];
+
+    #[cfg(feature = "windows-angle")]
+    let tiers: &[(&str, &[i32])] = match angle_tier {
+        Some(AngleTier::OpenGl) => {
+            let combined: Vec<(&str, &[i32])> = opengl_tiers
+                .iter()
+                .chain(default_tiers.iter())
+                .copied()
+                .collect();
+            return choose_config_tiers(egl, display, srgb_kind, &combined);
+        }
+        _ => default_tiers,
+    };
+
+    #[cfg(not(feature = "windows-angle"))]
+    let tiers = default_tiers;
+
+    choose_config_tiers(egl, display, srgb_kind, tiers)
+}
+
+fn choose_config_tiers(
+    egl: &EglInstance,
+    display: khronos_egl::Display,
+    srgb_kind: SrgbFrameBufferKind,
+    tiers: &[(&str, &[i32])],
+) -> Result<(khronos_egl::Config, bool), crate::InstanceError> {
+    let mut attributes = Vec::with_capacity(12);
     for tier_max in (0..tiers.len()).rev() {
         let name = tiers[tier_max].0;
         log::debug!("\tTrying {name}");
@@ -137,19 +219,16 @@ fn choose_config(
 
         match egl.choose_first_config(display, &attributes) {
             Ok(Some(config)) => {
-                if tier_max == 1 {
-                    //Note: this has been confirmed to malfunction on Intel+NV laptops,
-                    // but also on Angle.
-                    log::info!("EGL says it can present to the window but not natively",);
+                let supports_native_window = egl
+                    .get_config_attrib(display, config, khronos_egl::SURFACE_TYPE)
+                    .map(|surface_type| (surface_type & khronos_egl::WINDOW_BIT) != 0)
+                    .unwrap_or(false);
+                if supports_native_window {
+                    log::debug!("EGL window surface config selected ({name})");
+                } else {
+                    log::debug!("EGL config selected ({name}), no WINDOW_BIT");
                 }
-                // Android emulator can't natively present either.
-                let tier_threshold =
-                    if cfg!(target_os = "android") || cfg!(windows) || cfg!(target_env = "ohos") {
-                        1
-                    } else {
-                        2
-                    };
-                return Ok((config, tier_max >= tier_threshold));
+                return Ok((config, supports_native_window));
             }
             Ok(None) => {
                 log::debug!("No config found!");
@@ -388,12 +467,247 @@ fn instance_err<E: core::error::Error + Send + Sync + 'static>(
     move |e| crate::InstanceError::with_source(message.into(), e)
 }
 
+#[cfg(feature = "windows-angle")]
+fn enable_egl_khr_debug(
+    egl: &EglInstance,
+    client_ext_str: &str,
+    desc: &crate::InstanceDescriptor<'_>,
+) -> Result<(), crate::InstanceError> {
+    if !desc.flags.contains(wgt::InstanceFlags::VALIDATION)
+        || !client_ext_str.contains("EGL_KHR_debug")
+    {
+        return Ok(());
+    }
+
+    log::debug!("Enabling EGL debug output");
+    let function: EglDebugMessageControlFun = {
+        let addr = egl
+            .get_proc_address("eglDebugMessageControlKHR")
+            .ok_or_else(|| {
+                crate::InstanceError::new(
+                    "failed to get `eglDebugMessageControlKHR` proc address".into(),
+                )
+            })?;
+        unsafe { core::mem::transmute(addr) }
+    };
+    let attributes = [
+        EGL_DEBUG_MSG_CRITICAL_KHR as khronos_egl::Attrib,
+        1,
+        EGL_DEBUG_MSG_ERROR_KHR as khronos_egl::Attrib,
+        1,
+        EGL_DEBUG_MSG_WARN_KHR as khronos_egl::Attrib,
+        1,
+        EGL_DEBUG_MSG_INFO_KHR as khronos_egl::Attrib,
+        1,
+        khronos_egl::ATTRIB_NONE,
+    ];
+    unsafe { (function)(Some(egl_debug_proc), attributes.as_ptr()) };
+    Ok(())
+}
+
+#[cfg(feature = "windows-angle")]
+fn load_windows_egl() -> Result<(Arc<EglInstance>, String), crate::InstanceError> {
+    let egl = unsafe {
+        khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required_from_filename(
+            "libEGL.dll",
+        )
+    }
+    .map(Arc::new)
+    .map_err(instance_err("unable to open libEGL"))?;
+
+    let client_ext_str = match egl.query_string(None, khronos_egl::EXTENSIONS) {
+        Ok(ext) => ext.to_string_lossy().into_owned(),
+        Err(_) => String::new(),
+    };
+    log::debug!(
+        "Client extensions: {:#?}",
+        client_ext_str.split_whitespace().collect::<Vec<_>>()
+    );
+
+    Ok((egl, client_ext_str))
+}
+
+#[cfg(feature = "windows-angle")]
+fn try_angle_platform_display(
+    label: &str,
+    _egl: &EglInstance,
+    egl1_5: &khronos_egl::DynamicInstance<khronos_egl::EGL1_5>,
+    angle_type: u32,
+    device_type: Option<u32>,
+    validation_bit: usize,
+) -> Option<khronos_egl::Display> {
+    log::debug!("trying {label} via eglGetPlatformDisplay");
+    let mut display_attributes = vec![
+        EGL_PLATFORM_ANGLE_TYPE_ANGLE as khronos_egl::Attrib,
+        angle_type as khronos_egl::Attrib,
+    ];
+    if let Some(device_type) = device_type {
+        display_attributes.extend([
+            EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE as khronos_egl::Attrib,
+            device_type as khronos_egl::Attrib,
+        ]);
+    }
+    display_attributes.extend([
+        EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED as khronos_egl::Attrib,
+        validation_bit,
+        khronos_egl::ATTRIB_NONE,
+    ]);
+    match unsafe {
+        egl1_5.get_platform_display(
+            EGL_PLATFORM_ANGLE_ANGLE,
+            khronos_egl::DEFAULT_DISPLAY,
+            &display_attributes,
+        )
+    } {
+        Ok(display) => Some(display),
+        Err(e) => {
+            log::debug!("{label}: eglGetPlatformDisplay failed: {e:?}");
+            None
+        }
+    }
+}
+
+/// ANGLE OpenGL platform: prefer native GLES (0x320E), then desktop GL (0x320D).
+#[cfg(feature = "windows-angle")]
+fn try_angle_opengl_display(
+    egl: &EglInstance,
+    egl1_5: &khronos_egl::DynamicInstance<khronos_egl::EGL1_5>,
+    validation_bit: usize,
+) -> Option<(String, khronos_egl::Display)> {
+    const CANDIDATES: [(&str, u32); 2] = [
+        ("angle-opengl-es", EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE),
+        ("angle-opengl", EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE),
+    ];
+    for (label, angle_type) in CANDIDATES {
+        if let Some(display) = try_angle_platform_display(
+            label,
+            egl,
+            egl1_5,
+            angle_type,
+            None,
+            validation_bit,
+        ) {
+            return Some((String::from(label), display));
+        }
+    }
+    None
+}
+
+/// Initialize a single ANGLE/EGL instance for the given tier (Win7 legacy).
+#[cfg(feature = "windows-angle")]
+pub(crate) fn init_angle_instance(
+    desc: &crate::InstanceDescriptor<'_>,
+    tier: AngleTier,
+) -> Result<Instance, crate::InstanceError> {
+    let (egl, client_ext_str) = load_windows_egl()?;
+    enable_egl_khr_debug(&egl, &client_ext_str, desc)?;
+
+    let Some(egl1_5) = egl.upcast::<khronos_egl::EGL1_5>() else {
+        return Err(crate::InstanceError::new(
+            "ANGLE: EGL 1.5 entry points unavailable".into(),
+        ));
+    };
+
+    let validation_bit = usize::from(desc.flags.contains(wgt::InstanceFlags::VALIDATION));
+    let (label, display): (String, Option<khronos_egl::Display>) = match tier {
+        AngleTier::D3d11 => (
+            "angle-d3d11".into(),
+            try_angle_platform_display(
+                "angle-d3d11",
+                &egl,
+                &egl1_5,
+                EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+                None,
+                validation_bit,
+            ),
+        ),
+        AngleTier::OpenGl => {
+            if !client_ext_str.contains("EGL_ANGLE_platform_angle_opengl") {
+                log::debug!("angle-opengl: EGL_ANGLE_platform_angle_opengl not supported");
+                return Err(crate::InstanceError::new(
+                    "ANGLE OpenGL platform extension unavailable".into(),
+                ));
+            }
+            match try_angle_opengl_display(&egl, &egl1_5, validation_bit) {
+                Some((label, display)) => (label, Some(display)),
+                None => ("angle-opengl".into(), None),
+            }
+        }
+        AngleTier::Warp => (
+            "angle-warp".into(),
+            try_angle_platform_display(
+                "angle-warp",
+                &egl,
+                &egl1_5,
+                EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+                Some(EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE),
+                validation_bit,
+            ),
+        ),
+    };
+
+    let Some(display) = display else {
+        return Err(crate::InstanceError::new(format!(
+            "ANGLE {label}: eglGetPlatformDisplay returned no display"
+        )));
+    };
+
+    match Inner::create(
+        desc.flags,
+        Arc::clone(&egl),
+        display,
+        desc.backend_options.gl.gles_minor_version,
+        Some(tier),
+    ) {
+        Ok(inner) => {
+            Ok(Instance {
+                wsi: WindowSystemInterface {
+                    kind: WindowKind::Unknown,
+                },
+                flags: desc.flags,
+                options: desc.backend_options.gl.clone(),
+                inner: Mutex::new(inner),
+            })
+        }
+        Err(e) => {
+            log::debug!("{label}: eglInitialize/Inner::create failed: {e:?}");
+            let _ = terminate_display(&egl, display);
+            Err(e)
+        }
+    }
+}
+
+/// Win7 ANGLE fallback when `legacy-win7-gles` is disabled (tries D3D11, OpenGL, WARP).
+#[cfg(feature = "windows-angle")]
+fn init_windows_angle(
+    desc: &crate::InstanceDescriptor<'_>,
+    _egl: Arc<EglInstance>,
+    _client_ext_str: &str,
+    _egl1_5: Option<&khronos_egl::DynamicInstance<khronos_egl::EGL1_5>>,
+) -> Result<Instance, crate::InstanceError> {
+    let tiers = [AngleTier::D3d11, AngleTier::OpenGl, AngleTier::Warp];
+    let mut last_err: Option<crate::InstanceError> = None;
+    for tier in tiers {
+        match init_angle_instance(desc, tier) {
+            Ok(instance) => return Ok(instance),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        crate::InstanceError::new(
+            "ANGLE: no display backend could be initialized (tried angle-d3d11, angle-opengl, angle-warp)"
+                .into(),
+        )
+    }))
+}
+
 impl Inner {
     fn create(
         flags: wgt::InstanceFlags,
         egl: Arc<EglInstance>,
         display: khronos_egl::Display,
         force_gles_minor_version: wgt::Gles3MinorVersion,
+        angle_tier: Option<AngleTier>,
     ) -> Result<Self, crate::InstanceError> {
         let version = initialize_display(&egl, display)
             .map_err(instance_err("failed to initialize EGL display connection"))?;
@@ -440,7 +754,41 @@ impl Inner {
             }
         }
 
-        let (config, supports_native_window) = choose_config(&egl, display, srgb_kind)?;
+        let use_no_config = display_extensions.contains("EGL_KHR_no_config_context");
+        let (config, supports_native_window) = match choose_config(
+            &egl,
+            display,
+            srgb_kind,
+            angle_tier,
+        ) {
+            Ok(pair) => pair,
+            Err(e) if use_no_config => {
+                log::info!(
+                    "choose_config failed ({e:?}), using EGL_KHR_no_config_context"
+                );
+                (
+                    unsafe { khronos_egl::Config::from_ptr(ptr::null_mut()) },
+                    true,
+                )
+            }
+            Err(e) => return Err(e),
+        };
+
+        #[cfg(all(windows, feature = "windows-angle"))]
+        if !supports_native_window && !use_no_config {
+            return Err(crate::InstanceError::new(
+                "ANGLE EGL config does not support window surfaces (WINDOW_BIT)".into(),
+            ));
+        }
+
+        let config_prefers_desktop_gl = !config.as_ptr().is_null()
+            && egl
+                .get_config_attrib(display, config, khronos_egl::RENDERABLE_TYPE)
+                .map(|renderable| {
+                    (renderable & khronos_egl::OPENGL_BIT) != 0
+                        && (renderable & khronos_egl::OPENGL_ES3_BIT) == 0
+                })
+                .unwrap_or(false);
 
         let supports_opengl = if version >= (1, 4) {
             let client_apis = egl
@@ -580,15 +928,40 @@ impl Inner {
                 }
             };
 
-            let result = if supports_opengl {
-                create_context(khronos_egl::OPENGL_API, &gl_context_attributes).or_else(
-                    |gl_error| {
+            let result = match angle_tier {
+                Some(AngleTier::OpenGl) if config_prefers_desktop_gl && supports_opengl => {
+                    create_context(khronos_egl::OPENGL_API, &gl_context_attributes).or_else(
+                        |gl_error| {
+                            log::debug!(
+                                "ANGLE OpenGL desktop context failed ({gl_error}), trying GLES"
+                            );
+                            create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)
+                        },
+                    )
+                }
+                Some(AngleTier::OpenGl) => {
+                    create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes).or_else(
+                        |gles_error| {
+                            if supports_opengl {
+                                log::debug!(
+                                    "ANGLE OpenGL GLES context failed ({gles_error}), trying desktop GL"
+                                );
+                                create_context(
+                                    khronos_egl::OPENGL_API,
+                                    &gl_context_attributes,
+                                )
+                            } else {
+                                Err(gles_error)
+                            }
+                        },
+                    )
+                }
+                _ if supports_opengl => create_context(khronos_egl::OPENGL_API, &gl_context_attributes)
+                    .or_else(|gl_error| {
                         log::debug!("Failed to create desktop OpenGL context: {gl_error}, falling back to OpenGL ES");
                         create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)
-                    },
-                )
-            } else {
-                create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)
+                    }),
+                _ => create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes),
             };
 
             result.map_err(|e| {
@@ -708,6 +1081,7 @@ impl Instance {
 unsafe impl Send for Instance {}
 unsafe impl Sync for Instance {}
 
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl crate::Instance for Instance {
     type A = super::Api;
 
@@ -755,6 +1129,11 @@ impl crate::Instance for Instance {
 
         #[cfg(Emscripten)]
         let egl1_5: Option<&Arc<EglInstance>> = Some(&egl);
+
+        #[cfg(feature = "windows-angle")]
+        if cfg!(windows) && !cfg!(feature = "legacy-win7-gles") {
+            return init_windows_angle(desc, Arc::clone(&egl), &client_ext_str, egl1_5);
+        }
 
         let (display, wsi_kind) = match (desc.display.map(|d| d.as_raw()), egl1_5) {
             (Some(Rdh::Wayland(wayland_display_handle)), Some(egl))
@@ -876,6 +1255,7 @@ impl crate::Instance for Instance {
             egl,
             display,
             desc.backend_options.gl.gles_minor_version,
+            None,
         )?;
 
         Ok(Instance {
@@ -887,6 +1267,23 @@ impl crate::Instance for Instance {
     }
 
     unsafe fn create_surface(
+        &self,
+        display_handle: raw_window_handle::RawDisplayHandle,
+        window_handle: raw_window_handle::RawWindowHandle,
+    ) -> Result<Surface, crate::InstanceError> {
+        unsafe { self.create_surface_inner(display_handle, window_handle) }
+    }
+
+    unsafe fn enumerate_adapters(
+        &self,
+        surface_hint: Option<&Surface>,
+    ) -> Vec<crate::ExposedAdapter<super::Api>> {
+        unsafe { self.enumerate_adapters_inner(surface_hint) }
+    }
+}
+
+impl Instance {
+    pub(crate) unsafe fn create_surface_inner(
         &self,
         display_handle: raw_window_handle::RawDisplayHandle,
         window_handle: raw_window_handle::RawWindowHandle,
@@ -954,7 +1351,7 @@ impl crate::Instance for Instance {
         })
     }
 
-    unsafe fn enumerate_adapters(
+    pub(crate) unsafe fn enumerate_adapters_inner(
         &self,
         _surface_hint: Option<&Surface>,
     ) -> Vec<crate::ExposedAdapter<super::Api>> {
@@ -995,13 +1392,16 @@ impl crate::Instance for Instance {
         let gl = ManuallyDrop::new(gl);
         inner.egl.unmake_current();
 
+        let egl_ctx = AdapterContext {
+            glow: Mutex::new(gl),
+            // ERROR: Copying owned reference handles here, be careful to not drop them!
+            egl: Some(inner.egl.clone()),
+        };
+        #[cfg(all(windows, feature = "legacy-win7-gles"))]
+        let egl_ctx = super::AdapterContext::Egl(egl_ctx);
         unsafe {
             super::Adapter::expose(
-                AdapterContext {
-                    glow: Mutex::new(gl),
-                    // ERROR: Copying owned reference handles here, be careful to not drop them!
-                    egl: Some(inner.egl.clone()),
-                },
+                egl_ctx,
                 self.options.clone(),
             )
         }
@@ -1020,30 +1420,36 @@ impl super::Adapter {
     ///   wgpu-hal from this adapter.
     /// - The underlying OpenGL ES context must be current when dropping this adapter and when
     ///   dropping any objects returned from this adapter.
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
     pub unsafe fn new_external(
         fun: impl FnMut(&str) -> *const ffi::c_void,
         options: wgt::GlBackendOptions,
     ) -> Option<crate::ExposedAdapter<super::Api>> {
         let context = unsafe { glow::Context::from_loader_function(fun) };
+        let egl_ctx = AdapterContext {
+            glow: Mutex::new(ManuallyDrop::new(context)),
+            egl: None,
+        };
+        #[cfg(all(windows, feature = "legacy-win7-gles"))]
+        let egl_ctx = super::AdapterContext::Egl(egl_ctx);
         unsafe {
             Self::expose(
-                AdapterContext {
-                    glow: Mutex::new(ManuallyDrop::new(context)),
-                    egl: None,
-                },
+                egl_ctx,
                 options,
             )
         }
     }
 
-    pub fn adapter_context(&self) -> &AdapterContext {
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
+    pub fn adapter_context(&self) -> &super::AdapterContext {
         &self.shared.context
     }
 }
 
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl super::Device {
     /// Returns the underlying EGL context.
-    pub fn context(&self) -> &AdapterContext {
+    pub fn context(&self) -> &super::AdapterContext {
         &self.shared.context
     }
 }
@@ -1051,7 +1457,7 @@ impl super::Device {
 #[derive(Debug)]
 pub struct Swapchain {
     surface: khronos_egl::Surface,
-    wl_window: Option<*mut wayland_sys::egl::wl_egl_window>,
+    wl_window: Option<WlEglWindowPtr>,
     framebuffer: glow::Framebuffer,
     renderbuffer: glow::Renderbuffer,
     /// Extent because the window lies
@@ -1159,10 +1565,7 @@ impl Surface {
     unsafe fn unconfigure_impl(
         &self,
         device: &super::Device,
-    ) -> Option<(
-        khronos_egl::Surface,
-        Option<*mut wayland_sys::egl::wl_egl_window>,
-    )> {
+    ) -> Option<(khronos_egl::Surface, Option<WlEglWindowPtr>)> {
         let gl = &device.shared.context.lock();
         match self.swapchain.write().take() {
             Some(sc) => {
@@ -1180,8 +1583,13 @@ impl Surface {
             _ => true,
         }
     }
+
+    pub(super) fn is_presentable(&self) -> bool {
+        self.presentable
+    }
 }
 
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl crate::Surface for Surface {
     type A = super::Api;
 
@@ -1190,10 +1598,37 @@ impl crate::Surface for Surface {
         device: &super::Device,
         config: &crate::SurfaceConfiguration,
     ) -> Result<(), crate::SurfaceError> {
+        unsafe { self.hal_configure(device, config) }
+    }
+
+    unsafe fn unconfigure(&self, device: &super::Device) {
+        unsafe { self.hal_unconfigure(device) }
+    }
+
+    unsafe fn acquire_texture(
+        &self,
+        timeout: Option<Duration>,
+        fence: &super::Fence,
+    ) -> Result<crate::AcquiredSurfaceTexture<super::Api>, crate::SurfaceError> {
+        unsafe { self.hal_acquire_texture(timeout, fence) }
+    }
+
+    unsafe fn discard_texture(&self, texture: super::Texture) {
+        unsafe { self.hal_discard_texture(texture) }
+    }
+}
+
+impl Surface {
+    pub(crate) unsafe fn hal_configure(
+        &self,
+        device: &super::Device,
+        config: &crate::SurfaceConfiguration,
+    ) -> Result<(), crate::SurfaceError> {
         use raw_window_handle::RawWindowHandle as Rwh;
 
         let (surface, wl_window) = match unsafe { self.unconfigure_impl(device) } {
             Some((sc, wl_window)) => {
+                #[cfg(unix)]
                 if let Some(window) = wl_window {
                     wayland_sys::ffi_dispatch!(
                         wayland_sys::egl::wayland_egl_handle(),
@@ -1209,7 +1644,10 @@ impl crate::Surface for Surface {
                 (sc, wl_window)
             }
             None => {
+                #[cfg(unix)]
                 let mut wl_window = None;
+                #[cfg(not(unix))]
+                let wl_window = None;
                 let (mut temp_xlib_handle, mut temp_xcb_handle);
                 let native_window_ptr = match (self.wsi.kind, self.raw_window_handle) {
                     (WindowKind::Unknown | WindowKind::X11, Rwh::Xlib(handle)) => {
@@ -1389,23 +1827,25 @@ impl crate::Surface for Surface {
         Ok(())
     }
 
-    unsafe fn unconfigure(&self, device: &super::Device) {
+    pub(crate) unsafe fn hal_unconfigure(&self, device: &super::Device) {
         if let Some((surface, wl_window)) = unsafe { self.unconfigure_impl(device) } {
             self.egl
                 .instance
                 .destroy_surface(self.egl.display, surface)
                 .unwrap();
             if let Some(window) = wl_window {
+                #[cfg(unix)]
                 wayland_sys::ffi_dispatch!(
                     wayland_sys::egl::wayland_egl_handle(),
                     wl_egl_window_destroy,
                     window,
                 );
+                let _ = window;
             }
         }
     }
 
-    unsafe fn acquire_texture(
+    pub(crate) unsafe fn hal_acquire_texture(
         &self,
         _timeout_ms: Option<Duration>, //TODO
         _fence: &super::Fence,
@@ -1434,5 +1874,5 @@ impl crate::Surface for Surface {
             suboptimal: false,
         })
     }
-    unsafe fn discard_texture(&self, _texture: super::Texture) {}
+    pub(crate) unsafe fn hal_discard_texture(&self, _texture: super::Texture) {}
 }
