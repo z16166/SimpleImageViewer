@@ -107,6 +107,10 @@ gles = [
     "windows/Win32_System_LibraryLoader",
     "windows/Win32_UI_WindowsAndMessaging",
 ]
+# Win7 legacy: use bundled libEGL (ANGLE) over D3D11 instead of WGL/opengl32.
+windows-angle = []
+# Win7 legacy: runtime cascade ANGLE (D3D11, OpenGL, WARP) then WGL fallback.
+legacy-win7-gles = ["windows-angle"]
 internal_error_panic = []
 metal = [
     "naga/msl-out",

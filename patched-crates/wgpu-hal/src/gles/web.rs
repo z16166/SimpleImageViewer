@@ -305,6 +305,10 @@ impl Surface {
         // present.frag takes care of handling srgb conversion
         true
     }
+
+    pub(super) fn is_presentable(&self) -> bool {
+        self.presentable
+    }
 }
 
 impl crate::Surface for Surface {

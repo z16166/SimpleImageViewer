@@ -80,7 +80,7 @@ impl AdapterContext {
     /// Unlike [`lock`](Self::lock), this accepts a device to pass to `make_current` and exposes the error
     /// when `make_current` fails.
     #[track_caller]
-    fn lock_with_dc(&self, device: Gdi::HDC) -> windows::core::Result<AdapterContextLock<'_>> {
+    pub(crate) fn lock_with_dc(&self, device: Gdi::HDC) -> windows::core::Result<AdapterContextLock<'_>> {
         let inner = self
             .inner
             .try_lock_for(Duration::from_secs(CONTEXT_LOCK_TIMEOUT_SECS))
@@ -445,10 +445,10 @@ fn create_instance_device() -> Result<InstanceDevice, crate::InstanceError> {
     Ok(InstanceDevice { dc, _tx: drop_tx })
 }
 
-impl crate::Instance for Instance {
-    type A = super::Api;
-
-    unsafe fn init(desc: &crate::InstanceDescriptor<'_>) -> Result<Self, crate::InstanceError> {
+impl Instance {
+    pub(crate) unsafe fn init_wgl(
+        desc: &crate::InstanceDescriptor<'_>,
+    ) -> Result<Self, crate::InstanceError> {
         profiling::scope!("Init OpenGL (WGL) Backend");
         let opengl_module =
             unsafe { LibraryLoader::LoadLibraryA(PCSTR(c"opengl32.dll".as_ptr().cast())) }
@@ -563,7 +563,7 @@ impl crate::Instance for Instance {
         })
     }
 
-    unsafe fn create_surface(
+    pub(crate) unsafe fn create_surface_inner(
         &self,
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
@@ -585,20 +585,47 @@ impl crate::Instance for Instance {
         })
     }
 
-    unsafe fn enumerate_adapters(
+    pub(crate) unsafe fn enumerate_adapters_inner(
         &self,
         _surface_hint: Option<&Surface>,
     ) -> Vec<crate::ExposedAdapter<super::Api>> {
+        let wgl_ctx = AdapterContext {
+            inner: self.inner.clone(),
+        };
+        #[cfg(all(windows, feature = "legacy-win7-gles"))]
+        let wgl_ctx = super::AdapterContext::Wgl(wgl_ctx);
         unsafe {
             super::Adapter::expose(
-                AdapterContext {
-                    inner: self.inner.clone(),
-                },
+                wgl_ctx,
                 self.options.clone(),
             )
         }
         .into_iter()
         .collect()
+    }
+}
+
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
+impl crate::Instance for Instance {
+    type A = super::Api;
+
+    unsafe fn init(desc: &crate::InstanceDescriptor<'_>) -> Result<Self, crate::InstanceError> {
+        unsafe { Self::init_wgl(desc) }
+    }
+
+    unsafe fn create_surface(
+        &self,
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
+    ) -> Result<Surface, crate::InstanceError> {
+        unsafe { self.create_surface_inner(display_handle, window_handle) }
+    }
+
+    unsafe fn enumerate_adapters(
+        &self,
+        surface_hint: Option<&Surface>,
+    ) -> Vec<crate::ExposedAdapter<super::Api>> {
+        unsafe { self.enumerate_adapters_inner(surface_hint) }
     }
 }
 
@@ -612,33 +639,39 @@ impl super::Adapter {
     ///   wgpu-hal from this adapter.
     /// - The underlying OpenGL ES context must be current when dropping this adapter and when
     ///   dropping any objects returned from this adapter.
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
     pub unsafe fn new_external(
         fun: impl FnMut(&str) -> *const c_void,
         options: wgt::GlBackendOptions,
     ) -> Option<crate::ExposedAdapter<super::Api>> {
         let context = unsafe { glow::Context::from_loader_function(fun) };
+        let wgl_ctx = AdapterContext {
+            inner: Arc::new(Mutex::new(Inner {
+                gl: ManuallyDrop::new(context),
+                device: create_instance_device().ok()?,
+                context: None,
+            })),
+        };
+        #[cfg(all(windows, feature = "legacy-win7-gles"))]
+        let wgl_ctx = super::AdapterContext::Wgl(wgl_ctx);
         unsafe {
             Self::expose(
-                AdapterContext {
-                    inner: Arc::new(Mutex::new(Inner {
-                        gl: ManuallyDrop::new(context),
-                        device: create_instance_device().ok()?,
-                        context: None,
-                    })),
-                },
+                wgl_ctx,
                 options,
             )
         }
     }
 
-    pub fn adapter_context(&self) -> &AdapterContext {
+    #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
+    pub fn adapter_context(&self) -> &super::AdapterContext {
         &self.shared.context
     }
 }
 
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl super::Device {
     /// Returns the underlying WGL context.
-    pub fn context(&self) -> &AdapterContext {
+    pub fn context(&self) -> &super::AdapterContext {
         &self.shared.context
     }
 }
@@ -752,8 +785,13 @@ impl Surface {
     pub fn supports_srgb(&self) -> bool {
         self.srgb_capable
     }
+
+    pub(super) fn is_presentable(&self) -> bool {
+        self.presentable
+    }
 }
 
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl crate::Surface for Surface {
     type A = super::Api;
 
@@ -762,8 +800,34 @@ impl crate::Surface for Surface {
         device: &super::Device,
         config: &crate::SurfaceConfiguration,
     ) -> Result<(), crate::SurfaceError> {
+        unsafe { self.hal_configure(device, config) }
+    }
+
+    unsafe fn unconfigure(&self, device: &super::Device) {
+        unsafe { self.hal_unconfigure(device) }
+    }
+
+    unsafe fn acquire_texture(
+        &self,
+        timeout: Option<Duration>,
+        fence: &super::Fence,
+    ) -> Result<crate::AcquiredSurfaceTexture<super::Api>, crate::SurfaceError> {
+        unsafe { self.hal_acquire_texture(timeout, fence) }
+    }
+
+    unsafe fn discard_texture(&self, texture: super::Texture) {
+        unsafe { self.hal_discard_texture(texture) }
+    }
+}
+
+impl Surface {
+    pub(crate) unsafe fn hal_configure(
+        &self,
+        device: &super::Device,
+        config: &crate::SurfaceConfiguration,
+    ) -> Result<(), crate::SurfaceError> {
         // Remove the old configuration.
-        unsafe { self.unconfigure(device) };
+        unsafe { self.hal_unconfigure(device) };
 
         let dc = unsafe { Gdi::GetDC(Some(self.window)) };
         if dc.is_invalid() {
@@ -859,7 +923,7 @@ impl crate::Surface for Surface {
         Ok(())
     }
 
-    unsafe fn unconfigure(&self, device: &super::Device) {
+    pub(crate) unsafe fn hal_unconfigure(&self, device: &super::Device) {
         let gl = &device.shared.context.lock();
         if let Some(sc) = self.swapchain.write().take() {
             unsafe {
@@ -869,7 +933,7 @@ impl crate::Surface for Surface {
         }
     }
 
-    unsafe fn acquire_texture(
+    pub(crate) unsafe fn hal_acquire_texture(
         &self,
         _timeout_ms: Option<Duration>,
         _fence: &super::Fence,
@@ -896,5 +960,5 @@ impl crate::Surface for Surface {
             suboptimal: false,
         })
     }
-    unsafe fn discard_texture(&self, _texture: super::Texture) {}
+    pub(crate) unsafe fn hal_discard_texture(&self, _texture: super::Texture) {}
 }

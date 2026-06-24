@@ -50,8 +50,9 @@ fn is_windows_7_version(os_version: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-/// Kept separate so startup failure hints use the same Windows 7 version gate as
-/// the legacy ANGLE backend selection and can be tested without running eframe.
+/// Kernel-style version gate (`6.1.x`) for Win7 startup-failure hints.
+/// Do not use `sysinfo::System::os_version()` here: on Windows it returns marketing
+/// strings like `0 (7601)`, not `6.1.7601`.
 fn startup_failed_help_hint_for_windows_version(os_version: &str) -> String {
     if is_windows_7_version(os_version) {
         rust_i18n::t!("error.win7_graphics_hint").to_string()
@@ -63,11 +64,14 @@ fn startup_failed_help_hint_for_windows_version(os_version: &str) -> String {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     #[test]
-    fn legacy_win7_angle_gate_only_matches_windows_7() {
+    fn is_windows_7_version_matches_kernel_style_strings() {
         assert!(super::is_windows_7_version("6.1.7601"));
+        assert!(super::is_windows_7_version("6.1"));
         assert!(!super::is_windows_7_version("6.2.9200"));
         assert!(!super::is_windows_7_version("10.0.26200"));
         assert!(!super::is_windows_7_version("11"));
+        // sysinfo 0.35 on Windows returns marketing/build strings, not kernel NT version.
+        assert!(!super::is_windows_7_version("0 (7601)"));
     }
 
     #[test]
@@ -85,16 +89,8 @@ pub fn run() -> eframe::Result {
     {
         #[cfg(feature = "legacy_win7")]
         unsafe {
-            let os_version = sysinfo::System::os_version().unwrap_or_default();
-            if is_windows_7_version(&os_version) && std::env::var("WGPU_BACKEND").is_err() {
-                // Force choice of ANGLE (OpenGL ES over DX11) for Windows 7 compatibility
-                std::env::set_var("WGPU_BACKEND", "gl");
-                std::env::set_var("WGPU_GL_BACKEND", "angle");
-            } else if std::env::var("WGPU_BACKEND").is_err() {
-                // The legacy binary is also run on newer Windows during compatibility testing.
-                // Do not let the ANGLE/GLES feature make wgpu fall through to OpenGL there.
-                std::env::set_var("WGPU_BACKEND", "dx12");
-            }
+            // Win7 has no DX12/Vulkan. Always override stale user/system WGPU_BACKEND=dx12.
+            std::env::set_var("WGPU_BACKEND", "gl");
         }
         #[cfg(not(feature = "legacy_win7"))]
         {
@@ -259,6 +255,11 @@ pub fn run() -> eframe::Result {
     startup_log_phase(&mut prev, startup_t0, "viewport_builder + overrides");
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    #[cfg(feature = "legacy_win7")]
+    {
+        // Do not rely on env alone: egui-wgpu defaults include DX12/Vulkan when env is unset.
+        wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    }
     #[cfg(all(
         target_os = "windows",
         target_arch = "aarch64",
@@ -270,6 +271,7 @@ pub fn run() -> eframe::Result {
             let info = adapter.get_info();
             crate::startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
             if info.backend == eframe::wgpu::Backend::Gl {
+                #[cfg(not(feature = "legacy_win7"))]
                 log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
             }
 
