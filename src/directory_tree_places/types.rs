@@ -45,7 +45,7 @@ impl KnownFolderKind {
 }
 
 /// Stable tree-node key for a known shell folder (distinct from its filesystem path).
-pub fn known_folder_tree_path(kind: KnownFolderKind) -> PathBuf {
+pub fn known_folder_namespace_path(kind: KnownFolderKind) -> PathBuf {
     PathBuf::from(format!(r"\\?\siv-tree\KnownFolder\{}", kind.slug()))
 }
 
@@ -54,15 +54,15 @@ pub fn known_folder_tree_path(kind: KnownFolderKind) -> PathBuf {
 pub struct KnownFolderEntry {
     pub kind: KnownFolderKind,
     pub display_name: String,
-    pub tree_path: PathBuf,
-    pub filesystem_path: PathBuf,
+    pub namespace_path: PathBuf,
+    pub fs_path: PathBuf,
 }
 
 /// A filesystem drive or mount point shown under "This PC" / Places.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriveEntry {
     pub display_name: String,
-    pub path: PathBuf,
+    pub fs_path: PathBuf,
 }
 
 /// Places sidebar data: known folders, drives, and section labels.

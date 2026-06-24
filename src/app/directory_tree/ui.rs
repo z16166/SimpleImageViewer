@@ -39,9 +39,9 @@ use super::{
     DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_NODE_ICON_DRAW_RATIO,
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_ROW_HEIGHT, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
     DIRECTORY_TREE_UI_STROKE_WIDTH, DirectoryTreeCommand, DirectoryTreeFileRow,
-    DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn, is_network_tree_path,
-    is_places_sentinel_path, is_this_pc_tree_path, network_tree_path, send_directory_tree_command,
-    this_pc_tree_path,
+    DirectoryTreeListState, DirectoryTreeNode, ImageListSortColumn, is_network_namespace_path,
+    is_places_sentinel_namespace_path, is_this_pc_namespace_path, network_namespace_path,
+    send_directory_tree_command, this_pc_namespace_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,27 +58,27 @@ pub(super) fn directory_tree_node_icon_fields(
     nodes: &impl DirectoryTreeNodeLookup,
     path: &Path,
 ) -> DirectoryTreeNodeIcon {
-    if is_this_pc_tree_path(path) {
+    if is_this_pc_namespace_path(path) {
         return DirectoryTreeNodeIcon::ThisPc;
     }
-    if is_network_tree_path(path) {
+    if is_network_namespace_path(path) {
         return DirectoryTreeNodeIcon::Network;
     }
     if let Some(kind) = known_folders
         .iter()
-        .find(|entry| entry.tree_path == path)
+        .find(|entry| entry.namespace_path == path)
         .map(|entry| entry.kind)
     {
         return DirectoryTreeNodeIcon::KnownFolder(kind);
     }
-    if super::namespace::is_mount_tree_path(path) {
+    if super::namespace::is_mount_namespace_path(path) {
         return DirectoryTreeNodeIcon::Drive;
     }
-    if super::namespace::is_network_share_tree_path(path) {
+    if super::namespace::is_network_share_namespace_path(path) {
         return DirectoryTreeNodeIcon::Network;
     }
     if nodes
-        .get_node(&this_pc_tree_path())
+        .get_node(&this_pc_namespace_path())
         .is_some_and(|node| node.children.iter().any(|child| child.as_path() == path))
     {
         return DirectoryTreeNodeIcon::Drive;
@@ -105,7 +105,7 @@ impl DirectoryTreeNodeLookup
 }
 
 fn directory_tree_node_expandable(node: &DirectoryTreeNode, path: &Path) -> bool {
-    if is_places_sentinel_path(path) {
+    if is_places_sentinel_namespace_path(path) {
         return true;
     }
     node.loading || !node.children_loaded || !node.children.is_empty()
@@ -734,7 +734,7 @@ fn draw_folder_panel(
                     command_tx,
                     root_wake,
                     palette,
-                    &entry.tree_path,
+                    &entry.namespace_path,
                     0,
                 );
             }
@@ -745,7 +745,7 @@ fn draw_folder_panel(
                 command_tx,
                 root_wake,
                 palette,
-                &this_pc_tree_path(),
+                &this_pc_namespace_path(),
                 0,
             );
             if view.network_visible() {
@@ -756,7 +756,7 @@ fn draw_folder_panel(
                     command_tx,
                     root_wake,
                     palette,
-                    &network_tree_path(),
+                    &network_namespace_path(),
                     0,
                 );
             }
@@ -815,7 +815,7 @@ fn draw_directory_node(
     let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
     let expandable = directory_tree_node_expandable(&node, path);
     let selected = view
-        .selected_tree_path()
+        .selected_namespace_path()
         .is_some_and(|selected| selected.as_os_str() == path.as_os_str());
 
     let row_width = ui.available_width();
@@ -868,24 +868,24 @@ fn draw_directory_node(
             );
             let mut name_response = name_response;
             if name_response.hovered() {
-                let hover_text = node.browse_path.to_string_lossy().into_owned();
+                let hover_text = node.fs_path.to_string_lossy().into_owned();
                 name_response = name_response.on_hover_ui(move |ui| {
                     ui.label(hover_text);
                 });
             }
             if name_response.clicked() {
-                if is_places_sentinel_path(path) {
+                if is_places_sentinel_namespace_path(path) {
                     send_directory_tree_command(
                         command_tx,
                         DirectoryTreeCommand::ToggleExpanded(path.to_path_buf()),
                     );
                 } else {
-                    let browse_path = node.browse_path.clone();
+                    let fs_path = node.fs_path.clone();
                     send_directory_tree_command(
                         command_tx,
                         DirectoryTreeCommand::SelectDirectory {
-                            tree_path: path.to_path_buf(),
-                            browse_path,
+                            namespace_path: path.to_path_buf(),
+                            fs_path,
                         },
                     );
                 }
@@ -1504,7 +1504,7 @@ fn draw_image_details_row(
 }
 
 pub(super) fn directory_display_name(path: &Path) -> String {
-    if is_places_sentinel_path(path) {
+    if is_places_sentinel_namespace_path(path) {
         return String::new();
     }
     path.file_name()
@@ -1513,30 +1513,22 @@ pub(super) fn directory_display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-pub(super) fn should_expand_this_pc_for_path(
-    selected: &Path,
+/// Whether reveal should expand **Places** for a shell namespace selection (mount subtree).
+pub(super) fn should_expand_this_pc_for_namespace_path(
+    tree: &Path,
     known_folders: &[KnownFolderEntry],
 ) -> bool {
-    if is_unc_path(selected) {
+    if is_places_sentinel_namespace_path(tree)
+        || super::namespace::is_network_share_namespace_path(tree)
+    {
         return false;
     }
     if known_folders.iter().any(|entry| {
-        selected == entry.filesystem_path.as_path() || selected.starts_with(&entry.filesystem_path)
+        tree == entry.namespace_path.as_path() || tree.starts_with(&entry.namespace_path)
     }) {
         return false;
     }
-    let Some(root) = volume_root_for_path(selected) else {
-        return false;
-    };
-    #[cfg(target_os = "windows")]
-    {
-        let _ = root;
-        return true;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        root.components().count() > 1 || root.as_os_str() == "/"
-    }
+    super::namespace::is_mount_namespace_path(tree)
 }
 
 #[allow(dead_code)]

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use super::fs::path_is_accessible_directory;
 use super::types::{
-    DirectoryTreePlaces, DriveEntry, KnownFolderEntry, KnownFolderKind, known_folder_tree_path,
+    DirectoryTreePlaces, DriveEntry, KnownFolderEntry, KnownFolderKind, known_folder_namespace_path,
 };
 
 pub(super) fn load() -> DirectoryTreePlaces {
@@ -76,15 +76,15 @@ fn load_known_folders() -> Vec<KnownFolderEntry> {
     SPECS
         .into_iter()
         .filter_map(|(kind, resolve, i18n_key)| {
-            let filesystem_path = resolve()?;
-            if !path_is_accessible_directory(&filesystem_path) {
+            let fs_path = resolve()?;
+            if !path_is_accessible_directory(&fs_path) {
                 return None;
             }
             Some(KnownFolderEntry {
                 kind,
                 display_name: rust_i18n::t!(i18n_key).to_string(),
-                tree_path: known_folder_tree_path(kind),
-                filesystem_path,
+                namespace_path: known_folder_namespace_path(kind),
+                fs_path,
             })
         })
         .collect()
@@ -117,10 +117,10 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
             display_name: volume_display_name(&path),
             path,
         })
-        .filter(|drive| path_is_accessible_directory(&drive.path))
+        .filter(|drive| path_is_accessible_directory(&drive.fs_path))
         .collect();
 
-    drives.sort_by(|left, right| left.path.cmp(&right.path));
+    drives.sort_by(|left, right| left.fs_path.cmp(&right.fs_path));
     drives
 }
 

@@ -16,7 +16,7 @@
 
 //! Shell-style namespace paths for the directory tree (`\\?\siv-tree\...`).
 //!
-//! Tree node keys (`tree_path`) live in this namespace and are distinct from filesystem
+//! Tree node keys (`namespace_path`) live in this namespace and are distinct from filesystem
 //! browse paths. The same on-disk folder may appear under multiple parents with different
 //! namespace keys (e.g. Places mount shortcut vs root `/` expansion).
 
@@ -29,12 +29,12 @@ pub(crate) fn is_tree_namespace_path(path: &Path) -> bool {
     path.starts_with(TREE_NAMESPACE_PREFIX)
 }
 
-pub(crate) fn is_mount_tree_path(path: &Path) -> bool {
+pub(crate) fn is_mount_namespace_path(path: &Path) -> bool {
     path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Mount\\"))
         || path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Mount/"))
 }
 
-pub(crate) fn is_network_share_tree_path(path: &Path) -> bool {
+pub(crate) fn is_network_share_namespace_path(path: &Path) -> bool {
     path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Network\\Share\\"))
         || path.starts_with(format!("{TREE_NAMESPACE_PREFIX}Network/Share/"))
 }
@@ -64,17 +64,17 @@ pub(crate) fn is_namespace_tree_root(path: &Path) -> bool {
     {
         return count == 2;
     }
-    if is_mount_tree_path(path) {
+    if is_mount_namespace_path(path) {
         return count == 2;
     }
-    if is_network_share_tree_path(path) {
+    if is_network_share_namespace_path(path) {
         return count == 3;
     }
     false
 }
 
-fn encode_mount_id(mount_browse: &Path) -> String {
-    mount_browse
+fn encode_mount_id(mount_fs_path: &Path) -> String {
+    mount_fs_path
         .to_string_lossy()
         .bytes()
         .map(|byte| match byte {
@@ -90,28 +90,28 @@ fn encode_mount_id(mount_browse: &Path) -> String {
 }
 
 /// Namespace key for a Places drive / mount entry.
-pub(crate) fn drive_mount_tree_path(mount_browse: &Path) -> PathBuf {
+pub(crate) fn drive_mount_namespace_path(mount_fs_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         r"{TREE_NAMESPACE_PREFIX}Mount\{}",
-        encode_mount_id(mount_browse)
+        encode_mount_id(mount_fs_path)
     ))
 }
 
 /// Namespace key for a UNC share root under Network.
-pub(crate) fn network_share_tree_path(share_browse: &Path) -> PathBuf {
+pub(crate) fn network_share_namespace_path(share_fs_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         r"{TREE_NAMESPACE_PREFIX}Network\Share\{}",
-        encode_mount_id(share_browse)
+        encode_mount_id(share_fs_path)
     ))
 }
 
-pub(crate) fn network_share_browse_for_tree_path(
+pub(crate) fn fs_path_for_network_share_namespace(
     tree: &Path,
     share_roots: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
     let mut best: Option<(usize, PathBuf)> = None;
     for share in share_roots {
-        let share_tree = network_share_tree_path(&share);
+        let share_tree = network_share_namespace_path(&share);
         if tree == share_tree.as_path() {
             let depth = share.components().count();
             if best.as_ref().is_none_or(|(d, _)| depth > *d) {
@@ -135,47 +135,58 @@ pub(crate) fn network_share_browse_for_tree_path(
     best.map(|(_, browse)| browse)
 }
 
-/// Extend a namespace parent with the final path segment of `child_browse`.
-pub(crate) fn tree_child_path(parent_tree: &Path, child_browse: &Path) -> PathBuf {
-    let segment = child_browse
+/// Extend a namespace parent using browse-path segments from `parent_browse` to `child_browse`.
+pub(crate) fn namespace_child_path(
+    parent_namespace: &Path,
+    parent_fs_path: &Path,
+    child_fs_path: &Path,
+) -> PathBuf {
+    if let Ok(relative) = child_fs_path.strip_prefix(parent_fs_path) {
+        let mut namespace = parent_namespace.to_path_buf();
+        for component in relative.components() {
+            namespace = namespace.join(component.as_os_str());
+        }
+        return namespace;
+    }
+    let segment = child_fs_path
         .file_name()
-        .unwrap_or_else(|| child_browse.as_os_str());
-    parent_tree.join(segment)
+        .unwrap_or_else(|| child_fs_path.as_os_str());
+    parent_namespace.join(segment)
 }
 
-/// Build namespace ancestor chain from `root_tree` / `root_browse` to `target_browse`.
+/// Build namespace ancestor chain from mount/known-folder/share root to `target_fs_path`.
 pub(crate) fn namespace_ancestor_chain(
-    root_tree: &Path,
-    root_browse: &Path,
-    target_browse: &Path,
+    root_namespace: &Path,
+    root_fs_path: &Path,
+    target_fs_path: &Path,
     max_depth: usize,
 ) -> Vec<PathBuf> {
-    if target_browse == root_browse {
-        return vec![root_tree.to_path_buf()];
+    if target_fs_path == root_fs_path {
+        return vec![root_namespace.to_path_buf()];
     }
-    let Ok(relative) = target_browse.strip_prefix(root_browse) else {
-        return vec![root_tree.to_path_buf()];
+    let Ok(relative) = target_fs_path.strip_prefix(root_fs_path) else {
+        return vec![root_namespace.to_path_buf()];
     };
 
-    let mut chain = vec![root_tree.to_path_buf()];
-    let mut tree = root_tree.to_path_buf();
+    let mut chain = vec![root_namespace.to_path_buf()];
+    let mut namespace = root_namespace.to_path_buf();
     for component in relative.components() {
         if chain.len() >= max_depth {
             break;
         }
-        tree = tree.join(component.as_os_str());
-        chain.push(tree.clone());
+        namespace = namespace.join(component.as_os_str());
+        chain.push(namespace.clone());
     }
     chain
 }
 
-pub(crate) fn mount_browse_for_tree_path(
+pub(crate) fn fs_path_for_mount_namespace(
     tree: &Path,
     mount_roots: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
     let mut best: Option<(usize, PathBuf)> = None;
     for mount in mount_roots {
-        let mount_tree = drive_mount_tree_path(&mount);
+        let mount_tree = drive_mount_namespace_path(&mount);
         if tree == mount_tree.as_path() {
             let depth = mount.components().count();
             if best.as_ref().is_none_or(|(d, _)| depth > *d) {
@@ -199,7 +210,7 @@ pub(crate) fn mount_browse_for_tree_path(
     best.map(|(_, browse)| browse)
 }
 
-pub(crate) fn known_folder_browse_for_tree_path(
+pub(crate) fn fs_path_for_known_folder_namespace(
     tree: &Path,
     known_roots: impl IntoIterator<Item = (PathBuf, PathBuf)>,
 ) -> Option<PathBuf> {
@@ -229,7 +240,7 @@ pub(crate) fn known_folder_browse_for_tree_path(
 }
 
 /// Namespace ancestor chain from a mount/known-folder/share root down to `tree`.
-pub(crate) fn namespace_tree_ancestor_chain(tree: &Path) -> Vec<PathBuf> {
+pub(crate) fn namespace_path_ancestor_chain(tree: &Path) -> Vec<PathBuf> {
     if !is_tree_namespace_path(tree) {
         return Vec::new();
     }
@@ -255,55 +266,71 @@ mod tests {
 
     #[test]
     fn mount_and_root_mount_have_distinct_namespace_keys() {
-        let root = drive_mount_tree_path(Path::new("/"));
-        let happy = drive_mount_tree_path(Path::new("/run/media/happy"));
+        let root = drive_mount_namespace_path(Path::new("/"));
+        let happy = drive_mount_namespace_path(Path::new("/run/media/happy"));
         assert_ne!(root, happy);
-        assert!(is_mount_tree_path(&root));
-        assert!(is_mount_tree_path(&happy));
+        assert!(is_mount_namespace_path(&root));
+        assert!(is_mount_namespace_path(&happy));
     }
 
     #[test]
-    fn same_browse_path_differs_by_parent_namespace() {
-        let root_mount = drive_mount_tree_path(Path::new("/"));
-        let happy_mount = drive_mount_tree_path(Path::new("/run/media/happy"));
+    fn same_fs_path_differs_by_parent_namespace() {
+        let root_mount = drive_mount_namespace_path(Path::new("/"));
+        let happy_mount = drive_mount_namespace_path(Path::new("/run/media/happy"));
         let browse = PathBuf::from("/run/media/happy/CDROM");
 
-        let via_root = tree_child_path(
-            &tree_child_path(
-                &tree_child_path(
-                    &tree_child_path(&root_mount, &PathBuf::from("/run")),
+        let via_root = namespace_child_path(
+            &namespace_child_path(
+                &namespace_child_path(
+                    &namespace_child_path(&root_mount, Path::new("/"), &PathBuf::from("/run")),
+                    &PathBuf::from("/run"),
                     &PathBuf::from("/run/media"),
                 ),
+                &PathBuf::from("/run/media"),
                 &PathBuf::from("/run/media/happy"),
             ),
+            &PathBuf::from("/run/media/happy"),
             &browse,
         );
-        let via_mount = tree_child_path(&happy_mount, &browse);
+        let via_mount = namespace_child_path(&happy_mount, Path::new("/run/media/happy"), &browse);
         assert_ne!(via_root, via_mount);
     }
 
     #[test]
     fn namespace_ancestor_chain_extends_mount_tree() {
-        let mount = drive_mount_tree_path(Path::new("/run/media/happy"));
+        let mount = drive_mount_namespace_path(Path::new("/run/media/happy"));
         let target = PathBuf::from("/run/media/happy/CDROM/custom");
         let chain = namespace_ancestor_chain(&mount, Path::new("/run/media/happy"), &target, 16);
         assert_eq!(chain.len(), 3);
         assert_eq!(chain[0], mount);
         assert_eq!(
             chain[2],
-            tree_child_path(
-                &tree_child_path(&mount, &PathBuf::from("/run/media/happy/CDROM")),
-                &target
+            namespace_child_path(
+                &namespace_child_path(
+                    &mount,
+                    Path::new("/run/media/happy"),
+                    &PathBuf::from("/run/media/happy/CDROM"),
+                ),
+                &PathBuf::from("/run/media/happy/CDROM"),
+                &target,
             )
         );
     }
 
     #[test]
-    fn namespace_tree_ancestor_chain_walks_namespace_parents() {
-        let mount = drive_mount_tree_path(Path::new("/run/media/happy"));
-        let cdrom = tree_child_path(&mount, &PathBuf::from("/run/media/happy/CDROM"));
-        let custom = tree_child_path(&cdrom, &PathBuf::from("/run/media/happy/CDROM/custom"));
-        let chain = namespace_tree_ancestor_chain(&custom);
+    fn namespace_path_ancestor_chain_walks_namespace_parents() {
+        let mount = drive_mount_namespace_path(Path::new("/run/media/happy"));
+        let cdrom = namespace_child_path(
+            &mount,
+            Path::new("/run/media/happy"),
+            &PathBuf::from("/run/media/happy/CDROM"),
+        );
+        let custom = namespace_child_path(
+            &cdrom,
+            &PathBuf::from("/run/media/happy/CDROM"),
+            &PathBuf::from("/run/media/happy/CDROM/custom"),
+        );
+        let chain = namespace_path_ancestor_chain(&custom);
         assert_eq!(chain, vec![mount, cdrom, custom]);
     }
 }

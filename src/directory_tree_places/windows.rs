@@ -33,7 +33,7 @@ use windows::core::{GUID, HRESULT, PWSTR};
 
 use super::fs::path_is_accessible_directory;
 use super::types::{
-    DirectoryTreePlaces, DriveEntry, KnownFolderEntry, KnownFolderKind, known_folder_tree_path,
+    DirectoryTreePlaces, DriveEntry, KnownFolderEntry, KnownFolderKind, known_folder_namespace_path,
 };
 
 const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106_u32 as i32);
@@ -175,15 +175,15 @@ fn load_known_folders() -> Vec<KnownFolderEntry> {
     SPECS
         .into_iter()
         .filter_map(|(kind, folder_id, i18n_key)| {
-            let filesystem_path = known_folder_path(&folder_id)?;
-            if !path_is_accessible_directory(&filesystem_path) {
+            let fs_path = known_folder_path(&folder_id)?;
+            if !path_is_accessible_directory(&fs_path) {
                 return None;
             }
             Some(KnownFolderEntry {
                 kind,
                 display_name: rust_i18n::t!(i18n_key).to_string(),
-                tree_path: known_folder_tree_path(kind),
-                filesystem_path,
+                namespace_path: known_folder_namespace_path(kind),
+                fs_path,
             })
         })
         .collect()
@@ -247,7 +247,10 @@ fn enumerate_shell_filesystem_children(folder_id: &GUID) -> Vec<DriveEntry> {
                 continue;
             }
 
-            entries.push(DriveEntry { display_name, path });
+            entries.push(DriveEntry {
+                display_name,
+                fs_path: path,
+            });
         }
 
         entries

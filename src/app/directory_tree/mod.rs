@@ -14,6 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! Directory tree: shell namespace paths vs filesystem paths.
+//!
+//! - [`DirectoryTreeNode`] and node arena keys use `namespace_path` (`\\?\siv-tree\...`).
+//! - `fs_path` is the on-disk / UNC location passed to OS directory APIs.
+//! - `children` lists child node `namespace_path` values only.
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,27 +87,27 @@ pub(super) const DIRECTORY_TREE_DOWNLOADS_TRAY_HEIGHT_RATIO: f32 = 0.34;
 /// Share of narrow-panel width allocated to the modified-time column (remainder is size).
 pub(super) const DIRECTORY_TREE_IMAGE_LIST_MODIFIED_COL_WEIGHT: f32 = 0.62;
 pub(super) const DIRECTORY_TREE_PLACES_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
-const THIS_PC_TREE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
-const NETWORK_TREE_PATH: &str = "\\\\?\\siv-tree\\Network";
+const THIS_PC_NAMESPACE_PATH: &str = "\\\\?\\siv-tree\\ThisPC";
+const NETWORK_NAMESPACE_PATH: &str = "\\\\?\\siv-tree\\Network";
 
-pub(super) fn this_pc_tree_path() -> PathBuf {
-    PathBuf::from(THIS_PC_TREE_PATH)
+pub(super) fn this_pc_namespace_path() -> PathBuf {
+    PathBuf::from(THIS_PC_NAMESPACE_PATH)
 }
 
-pub(super) fn network_tree_path() -> PathBuf {
-    PathBuf::from(NETWORK_TREE_PATH)
+pub(super) fn network_namespace_path() -> PathBuf {
+    PathBuf::from(NETWORK_NAMESPACE_PATH)
 }
 
-pub(super) fn is_this_pc_tree_path(path: &Path) -> bool {
-    path.as_os_str() == OsStr::new(THIS_PC_TREE_PATH)
+pub(super) fn is_this_pc_namespace_path(path: &Path) -> bool {
+    path.as_os_str() == OsStr::new(THIS_PC_NAMESPACE_PATH)
 }
 
-pub(super) fn is_network_tree_path(path: &Path) -> bool {
-    path.as_os_str() == OsStr::new(NETWORK_TREE_PATH)
+pub(super) fn is_network_namespace_path(path: &Path) -> bool {
+    path.as_os_str() == OsStr::new(NETWORK_NAMESPACE_PATH)
 }
 
-pub(super) fn is_places_sentinel_path(path: &Path) -> bool {
-    is_this_pc_tree_path(path) || is_network_tree_path(path)
+pub(super) fn is_places_sentinel_namespace_path(path: &Path) -> bool {
+    is_this_pc_namespace_path(path) || is_network_namespace_path(path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -115,8 +121,8 @@ pub(crate) enum ImageListSortColumn {
 #[derive(Debug)]
 pub(crate) enum DirectoryTreeCommand {
     SelectDirectory {
-        tree_path: PathBuf,
-        browse_path: PathBuf,
+        namespace_path: PathBuf,
+        fs_path: PathBuf,
     },
     ToggleExpanded(PathBuf),
     SelectImage(usize),
@@ -144,8 +150,8 @@ pub(super) fn send_directory_tree_command(
 
 #[derive(Debug)]
 pub(crate) struct DirectoryChildrenRequest {
-    tree_path: PathBuf,
-    browse_path: PathBuf,
+    namespace_path: PathBuf,
+    fs_path: PathBuf,
     generation: u64,
 }
 
@@ -216,7 +222,7 @@ impl DirectoryTreeFileRow {
 
 #[derive(Debug)]
 pub(crate) struct DirectoryChildrenResult {
-    tree_path: PathBuf,
+    namespace_path: PathBuf,
     generation: u64,
     result: Result<Vec<PathBuf>, String>,
 }
@@ -224,10 +230,12 @@ pub(crate) struct DirectoryChildrenResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectoryTreeNode {
     display_name: String,
-    browse_path: PathBuf,
+    /// On-disk / UNC path for OS directory APIs.
+    fs_path: PathBuf,
     expanded: bool,
     loading: bool,
     children_loaded: bool,
+    /// Child node keys in the shell namespace (`\\?\siv-tree\...`).
     children: Vec<PathBuf>,
     error: Option<String>,
 }
@@ -262,30 +270,31 @@ impl DirectoryTreeState {
         self.tree.initialize_places(places);
     }
 
-    pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
-        self.tree.set_selected_dir(dir);
+    pub(crate) fn set_selected_fs_path(&mut self, dir: PathBuf) {
+        self.tree.set_selected_fs_path(dir);
     }
 
-    pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {
-        self.tree.reveal_selected_dir()
+    pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
+        self.tree.reveal_selected_namespace()
     }
 
-    pub(crate) fn expand_tree_for_tree_node(
+    pub(crate) fn expand_namespace_node(
         &mut self,
-        tree_path: &Path,
+        namespace_path: &Path,
     ) -> Option<DirectoryChildrenRequest> {
-        self.tree.expand_tree_for_tree_node(tree_path)
+        self.tree.expand_namespace_node(namespace_path)
     }
 
-    pub(crate) fn expand_tree_for_filesystem_dir(
+    pub(crate) fn expand_namespace_node_for_fs_path(
         &mut self,
         dir: &Path,
     ) -> Option<DirectoryChildrenRequest> {
-        self.tree.expand_tree_for_filesystem_dir(dir)
+        self.tree.expand_namespace_node_for_fs_path(dir)
     }
 
-    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
-        self.tree.mark_children_request_failed(tree_path, error);
+    pub(crate) fn mark_children_request_failed(&mut self, namespace_path: &Path, error: String) {
+        self.tree
+            .mark_children_request_failed(namespace_path, error);
     }
 
     pub(crate) fn sync_images(
@@ -353,11 +362,11 @@ impl DirectoryTreeListPreviewLayout {
 
 pub(super) fn directory_tree_node(
     display_name: impl Into<String>,
-    browse_path: PathBuf,
+    fs_path: PathBuf,
 ) -> DirectoryTreeNode {
     DirectoryTreeNode {
         display_name: display_name.into(),
-        browse_path: browse_path.clone(),
+        fs_path: fs_path.clone(),
         expanded: false,
         loading: false,
         children_loaded: false,
@@ -367,13 +376,13 @@ pub(super) fn directory_tree_node(
 }
 
 pub(super) fn children_request(
-    tree_path: PathBuf,
-    browse_path: PathBuf,
+    namespace_path: PathBuf,
+    fs_path: PathBuf,
     generation: u64,
 ) -> DirectoryChildrenRequest {
     DirectoryChildrenRequest {
-        tree_path,
-        browse_path,
+        namespace_path,
+        fs_path,
         generation,
     }
 }
@@ -615,38 +624,38 @@ impl DirectoryTreeTreeState {
         self.places_drive_roots = places
             .drives
             .iter()
-            .map(|drive| drive.path.clone())
+            .map(|drive| drive.fs_path.clone())
             .collect();
         self.network_share_roots = places
             .network_locations
             .iter()
-            .map(|entry| entry.path.clone())
+            .map(|entry| entry.fs_path.clone())
             .collect();
 
-        let drive_tree_paths: Vec<PathBuf> = places
+        let drive_namespace_paths: Vec<PathBuf> = places
             .drives
             .iter()
-            .map(|drive| namespace::drive_mount_tree_path(&drive.path))
+            .map(|drive| namespace::drive_mount_namespace_path(&drive.fs_path))
             .collect();
         self.insert_tree_node(
-            this_pc_tree_path(),
+            this_pc_namespace_path(),
             DirectoryTreeNode {
                 display_name: places.this_pc_label,
-                browse_path: this_pc_tree_path(),
+                fs_path: this_pc_namespace_path(),
                 expanded: false,
                 loading: false,
                 children_loaded: true,
-                children: drive_tree_paths.clone(),
+                children: drive_namespace_paths.clone(),
                 error: None,
             },
         );
 
         for entry in self.known_folders.clone() {
             self.insert_tree_node(
-                entry.tree_path.clone(),
+                entry.namespace_path.clone(),
                 DirectoryTreeNode {
                     display_name: entry.display_name.clone(),
-                    browse_path: entry.filesystem_path.clone(),
+                    fs_path: entry.fs_path.clone(),
                     expanded: false,
                     loading: false,
                     children_loaded: false,
@@ -657,9 +666,9 @@ impl DirectoryTreeTreeState {
         }
 
         for drive in places.drives {
-            let tree_path = namespace::drive_mount_tree_path(&drive.path);
-            self.or_insert_tree_node(tree_path, || {
-                directory_tree_node(drive.display_name, drive.path)
+            let namespace_path = namespace::drive_mount_namespace_path(&drive.fs_path);
+            self.or_insert_tree_node(namespace_path, || {
+                directory_tree_node(drive.display_name, drive.fs_path)
             });
         }
 
@@ -667,14 +676,14 @@ impl DirectoryTreeTreeState {
             let network_children: Vec<PathBuf> = places
                 .network_locations
                 .iter()
-                .map(|entry| namespace::network_share_tree_path(&entry.path))
+                .map(|entry| namespace::network_share_namespace_path(&entry.fs_path))
                 .collect();
             self.network_visible = true;
             self.insert_tree_node(
-                network_tree_path(),
+                network_namespace_path(),
                 DirectoryTreeNode {
                     display_name: self.network_label.clone(),
-                    browse_path: network_tree_path(),
+                    fs_path: network_namespace_path(),
                     expanded: false,
                     loading: false,
                     children_loaded: true,
@@ -683,9 +692,9 @@ impl DirectoryTreeTreeState {
                 },
             );
             for entry in places.network_locations {
-                let tree_path = namespace::network_share_tree_path(&entry.path);
-                self.or_insert_tree_node(tree_path, || {
-                    directory_tree_node(entry.display_name, entry.path)
+                let namespace_path = namespace::network_share_namespace_path(&entry.fs_path);
+                self.or_insert_tree_node(namespace_path, || {
+                    directory_tree_node(entry.display_name, entry.fs_path)
                 });
             }
         }
@@ -697,10 +706,10 @@ impl DirectoryTreeTreeState {
         }
         self.network_visible = true;
         self.insert_tree_node(
-            network_tree_path(),
+            network_namespace_path(),
             DirectoryTreeNode {
                 display_name: self.network_label.clone(),
-                browse_path: network_tree_path(),
+                fs_path: network_namespace_path(),
                 expanded: false,
                 loading: false,
                 children_loaded: true,
@@ -710,19 +719,11 @@ impl DirectoryTreeTreeState {
         );
     }
 
-    fn known_folder_for_filesystem_path(&self, path: &Path) -> Option<&KnownFolderEntry> {
+    fn known_folder_for_fs_path(&self, path: &Path) -> Option<&KnownFolderEntry> {
         self.known_folders
             .iter()
-            .filter(|entry| {
-                path == entry.filesystem_path.as_path() || path.starts_with(&entry.filesystem_path)
-            })
-            .max_by_key(|entry| entry.filesystem_path.components().count())
-    }
-
-    fn is_known_folder_tree_path(&self, path: &Path) -> bool {
-        self.known_folders
-            .iter()
-            .any(|entry| entry.tree_path.as_os_str() == path.as_os_str())
+            .filter(|entry| path == entry.fs_path.as_path() || path.starts_with(&entry.fs_path))
+            .max_by_key(|entry| entry.fs_path.components().count())
     }
 
     fn places_mount_root_for_path(&self, path: &Path) -> Option<PathBuf> {
@@ -733,27 +734,27 @@ impl DirectoryTreeTreeState {
             .cloned()
     }
 
-    fn browse_path_for_tree_node(&self, tree: &Path) -> Option<PathBuf> {
-        if is_this_pc_tree_path(tree) {
-            return Some(this_pc_tree_path());
+    fn fs_path_for_namespace_node(&self, tree: &Path) -> Option<PathBuf> {
+        if is_this_pc_namespace_path(tree) {
+            return Some(this_pc_namespace_path());
         }
-        if is_network_tree_path(tree) {
-            return Some(network_tree_path());
+        if is_network_namespace_path(tree) {
+            return Some(network_namespace_path());
         }
-        if let Some(browse) = namespace::known_folder_browse_for_tree_path(
+        if let Some(browse) = namespace::fs_path_for_known_folder_namespace(
             tree,
             self.known_folders
                 .iter()
-                .map(|entry| (entry.tree_path.clone(), entry.filesystem_path.clone())),
+                .map(|entry| (entry.namespace_path.clone(), entry.fs_path.clone())),
         ) {
             return Some(browse);
         }
         if let Some(browse) =
-            namespace::mount_browse_for_tree_path(tree, self.places_drive_roots.iter().cloned())
+            namespace::fs_path_for_mount_namespace(tree, self.places_drive_roots.iter().cloned())
         {
             return Some(browse);
         }
-        if let Some(browse) = namespace::network_share_browse_for_tree_path(
+        if let Some(browse) = namespace::fs_path_for_network_share_namespace(
             tree,
             self.network_share_roots.iter().cloned(),
         ) {
@@ -776,128 +777,95 @@ impl DirectoryTreeTreeState {
             .collect()
     }
 
-    fn reveal_ancestor_chain(&self, selected: &Path) -> Vec<PathBuf> {
-        let max_depth = MAX_DIRECTORY_TREE_REVEAL_DEPTH;
-        if let Some(entry) = self.known_folder_for_filesystem_path(selected) {
-            return namespace::namespace_ancestor_chain(
-                &entry.tree_path,
-                &entry.filesystem_path,
-                selected,
-                max_depth,
-            );
-        }
-
-        if is_unc_path(selected) {
-            if let Some(share) = unc_share_root(selected) {
-                let share_tree = namespace::network_share_tree_path(&share);
-                return namespace::namespace_ancestor_chain(
-                    &share_tree,
-                    &share,
-                    selected,
-                    max_depth,
-                );
-            }
-        }
-
-        if let Some(mount_root) = self.places_mount_root_for_path(selected) {
-            let mount_tree = namespace::drive_mount_tree_path(&mount_root);
-            return namespace::namespace_ancestor_chain(
-                &mount_tree,
-                &mount_root,
-                selected,
-                max_depth,
-            );
-        }
-
-        if self.places_drive_roots.contains(&PathBuf::from("/")) {
-            let root = PathBuf::from("/");
-            let root_tree = namespace::drive_mount_tree_path(&root);
-            return namespace::namespace_ancestor_chain(&root_tree, &root, selected, max_depth);
-        }
-
-        Vec::new()
+    fn dedupe_tree_children(children: &mut Vec<PathBuf>) {
+        let mut seen = std::collections::HashSet::new();
+        children.retain(|path| seen.insert(path.clone()));
     }
 
-    pub(crate) fn expand_tree_for_tree_node(
+    pub(crate) fn expand_namespace_node(
         &mut self,
-        tree_path: &Path,
+        namespace_path: &Path,
     ) -> Option<DirectoryChildrenRequest> {
-        let node = self.nodes.get_mut(tree_path)?;
+        let node = self.nodes.get_mut(namespace_path)?;
         node.expanded = true;
         if node.children_loaded || node.loading {
             return None;
         }
         node.loading = true;
         node.error = None;
-        let browse_path = node.browse_path.clone();
+        let fs_path = node.fs_path.clone();
         Some(children_request(
-            tree_path.to_path_buf(),
-            browse_path,
+            namespace_path.to_path_buf(),
+            fs_path,
             self.generation,
         ))
     }
 
-    pub(crate) fn expand_tree_for_filesystem_dir(
+    pub(crate) fn expand_namespace_node_for_fs_path(
         &mut self,
         dir: &Path,
     ) -> Option<DirectoryChildrenRequest> {
-        let tree_path = self.tree_path_for_filesystem_dir(dir)?;
-        self.expand_tree_for_tree_node(&tree_path)
+        let namespace_path = self.namespace_path_for_fs_path(dir)?;
+        self.expand_namespace_node(&namespace_path)
     }
 
-    pub(crate) fn set_selected_dir(&mut self, dir: PathBuf) {
-        if let Some(tree_path) = self.tree_path_for_filesystem_dir(&dir) {
-            self.set_selected_tree_node(tree_path, dir);
+    pub(crate) fn set_selected_fs_path(&mut self, dir: PathBuf) {
+        if let Some(namespace_path) = self.namespace_path_for_fs_path(&dir) {
+            self.set_selected_namespace_node(namespace_path, dir);
         } else {
-            self.selected_dir = Some(dir);
-            self.selected_tree_path = None;
+            self.selected_fs_path = Some(dir);
+            self.selected_namespace_path = None;
             self.mark_snapshot_dirty();
         }
     }
 
-    pub(crate) fn set_selected_tree_node(&mut self, tree_path: PathBuf, dir: PathBuf) {
+    pub(crate) fn set_selected_namespace_node(&mut self, namespace_path: PathBuf, dir: PathBuf) {
         if is_unc_path(&dir) {
             self.ensure_network_visible();
             if let Some(share_root) = unc_share_root(&dir) {
                 self.ensure_network_share_mounted(&share_root);
             }
         }
-        self.selected_dir = Some(dir.clone());
-        self.selected_tree_path = Some(tree_path.clone());
+        self.selected_fs_path = Some(dir.clone());
+        self.selected_namespace_path = Some(namespace_path.clone());
         let display_name = self
-            .known_folder_for_filesystem_path(&dir)
-            .filter(|entry| entry.filesystem_path == dir)
+            .known_folder_for_fs_path(&dir)
+            .filter(|entry| entry.fs_path == dir)
             .map(|entry| entry.display_name.clone())
             .unwrap_or_else(|| directory_display_name(&dir));
-        self.or_insert_tree_node(tree_path, || directory_tree_node(display_name, dir));
+        self.or_insert_tree_node(namespace_path, || directory_tree_node(display_name, dir));
         self.mark_snapshot_dirty();
     }
 
-    fn reveal_ancestor_chain_for_selection(&self) -> Vec<PathBuf> {
-        let Some(selected) = self.selected_dir.as_ref() else {
-            return Vec::new();
-        };
-        if let Some(tree) = self.selected_tree_path.as_ref() {
-            if self.browse_path_for_tree_node(tree).as_deref() == Some(selected.as_path()) {
-                return namespace::namespace_tree_ancestor_chain(tree);
-            }
+    fn resolve_selected_namespace_path(&self) -> Option<PathBuf> {
+        if let Some(tree) = self.selected_namespace_path.clone() {
+            return Some(tree);
         }
-        self.reveal_ancestor_chain(selected)
+        self.selected_fs_path
+            .as_ref()
+            .and_then(|dir| self.namespace_path_for_fs_path(dir))
     }
 
-    fn tree_path_for_filesystem_dir(&self, dir: &Path) -> Option<PathBuf> {
-        if let Some(entry) = self.known_folder_for_filesystem_path(dir) {
+    fn reveal_ancestor_chain_for_selection(&self) -> Vec<PathBuf> {
+        let Some(tree) = self.resolve_selected_namespace_path() else {
+            return Vec::new();
+        };
+        namespace::namespace_path_ancestor_chain(&tree)
+    }
+
+    fn namespace_path_for_fs_path(&self, dir: &Path) -> Option<PathBuf> {
+        if let Some(entry) = self.known_folder_for_fs_path(dir) {
             let chain = namespace::namespace_ancestor_chain(
-                &entry.tree_path,
-                &entry.filesystem_path,
+                &entry.namespace_path,
+                &entry.fs_path,
                 dir,
                 MAX_DIRECTORY_TREE_REVEAL_DEPTH,
             );
-            return chain.last().cloned().or(Some(entry.tree_path.clone()));
+            return chain.last().cloned().or(Some(entry.namespace_path.clone()));
         }
         if is_unc_path(dir) {
             if let Some(share) = unc_share_root(dir) {
-                let share_tree = namespace::network_share_tree_path(&share);
+                let share_tree = namespace::network_share_namespace_path(&share);
                 let chain = namespace::namespace_ancestor_chain(
                     &share_tree,
                     &share,
@@ -908,7 +876,7 @@ impl DirectoryTreeTreeState {
             }
         }
         if let Some(mount_root) = self.places_mount_root_for_path(dir) {
-            let mount_tree = namespace::drive_mount_tree_path(&mount_root);
+            let mount_tree = namespace::drive_mount_namespace_path(&mount_root);
             let chain = namespace::namespace_ancestor_chain(
                 &mount_tree,
                 &mount_root,
@@ -919,7 +887,7 @@ impl DirectoryTreeTreeState {
         }
         if self.places_drive_roots.contains(&PathBuf::from("/")) {
             let root = PathBuf::from("/");
-            let root_tree = namespace::drive_mount_tree_path(&root);
+            let root_tree = namespace::drive_mount_namespace_path(&root);
             let chain = namespace::namespace_ancestor_chain(
                 &root_tree,
                 &root,
@@ -931,8 +899,8 @@ impl DirectoryTreeTreeState {
         None
     }
 
-    pub(crate) fn reveal_selected_dir(&mut self) -> Vec<DirectoryChildrenRequest> {
-        let Some(selected) = self.selected_dir.clone() else {
+    pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
+        let Some(selected_tree_key) = self.resolve_selected_namespace_path() else {
             return Vec::new();
         };
         if !self.places_loaded {
@@ -945,27 +913,30 @@ impl DirectoryTreeTreeState {
         }
         let mut requests = Vec::new();
 
-        if should_expand_this_pc_for_path(&selected, &self.known_folders) {
-            if let Some(node) = self.nodes.get_mut(&this_pc_tree_path()) {
+        if should_expand_this_pc_for_namespace_path(&selected_tree_key, &self.known_folders) {
+            if let Some(node) = self.nodes.get_mut(&this_pc_namespace_path()) {
                 node.expanded = true;
             }
         }
 
-        if is_unc_path(&selected) {
-            self.ensure_network_visible();
-            if let Some(share_root) = unc_share_root(&selected) {
-                self.ensure_network_share_mounted(&share_root);
-            }
-            if let Some(node) = self.nodes.get_mut(&network_tree_path()) {
-                node.expanded = true;
+        let selected_browse = self.selected_fs_path.clone();
+        if let Some(selected) = selected_browse.as_ref() {
+            if is_unc_path(selected) {
+                self.ensure_network_visible();
+                if let Some(share_root) = unc_share_root(selected) {
+                    self.ensure_network_share_mounted(&share_root);
+                }
+                if let Some(node) = self.nodes.get_mut(&network_namespace_path()) {
+                    node.expanded = true;
+                }
             }
         }
 
         for path in chain.iter().take(chain.len().saturating_sub(1)) {
-            if is_places_sentinel_path(path) {
+            if is_places_sentinel_namespace_path(path) {
                 continue;
             }
-            let Some(browse) = self.browse_path_for_tree_node(path) else {
+            let Some(browse) = self.fs_path_for_namespace_node(path) else {
                 log::warn!(
                     "[DirectoryTree] Reveal skipped namespace node without browse path: {}",
                     path.display()
@@ -984,57 +955,26 @@ impl DirectoryTreeTreeState {
             if !node.children_loaded && !node.loading {
                 node.loading = true;
                 node.error = None;
-                let browse_path = node.browse_path.clone();
-                requests.push(children_request(path.clone(), browse_path, self.generation));
+                let fs_path = node.fs_path.clone();
+                requests.push(children_request(path.clone(), fs_path, self.generation));
             }
         }
-        let selected_tree_key = self
-            .selected_tree_path
-            .clone()
-            .or_else(|| self.tree_path_for_filesystem_dir(&selected))
-            .filter(|tree| {
-                self.browse_path_for_tree_node(tree).as_deref() == Some(selected.as_path())
-            });
-        let Some(selected_tree_key) = selected_tree_key else {
-            return requests;
-        };
+        let browse = self
+            .fs_path_for_namespace_node(&selected_tree_key)
+            .or_else(|| self.selected_fs_path.clone())
+            .unwrap_or_else(|| selected_tree_key.clone());
         self.or_insert_tree_node(selected_tree_key.clone(), || {
-            directory_tree_node(directory_display_name(&selected), selected.clone())
+            directory_tree_node(directory_display_name(&browse), browse)
         });
-        let selected_is_known_folder = self.is_known_folder_tree_path(&selected_tree_key);
-        if chain.len() >= 2 {
-            let parent_key = &chain[chain.len() - 2];
-            if let Some(parent_node) = self.nodes.get_mut(parent_key) {
-                if parent_node.expanded
-                    && !parent_node
-                        .children
-                        .iter()
-                        .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
-                    && !(is_this_pc_tree_path(parent_key) && selected_is_known_folder)
-                {
-                    parent_node.children.push(selected_tree_key.clone());
-                }
-            }
-        } else if let Some(this_pc_node) = self.nodes.get_mut(&this_pc_tree_path()) {
-            if this_pc_node.expanded
-                && !this_pc_node
-                    .children
-                    .iter()
-                    .any(|child| child.as_os_str() == selected_tree_key.as_os_str())
-                && !selected_is_known_folder
-            {
-                this_pc_node.children.push(selected_tree_key);
-            }
-        }
         requests
     }
 
     pub(crate) fn ensure_network_share_mounted(&mut self, share_root: &Path) {
         self.ensure_network_visible();
         let share_path = share_root.to_path_buf();
-        let share_tree = namespace::network_share_tree_path(&share_path);
+        let share_tree = namespace::network_share_namespace_path(&share_path);
         self.network_share_roots.insert(share_path.clone());
-        if let Some(network) = self.nodes.get_mut(&network_tree_path()) {
+        if let Some(network) = self.nodes.get_mut(&network_namespace_path()) {
             if !network
                 .children
                 .iter()
@@ -1049,8 +989,8 @@ impl DirectoryTreeTreeState {
         });
     }
 
-    pub(crate) fn mark_children_request_failed(&mut self, tree_path: &Path, error: String) {
-        let Some(node) = self.nodes.get_mut(tree_path) else {
+    pub(crate) fn mark_children_request_failed(&mut self, namespace_path: &Path, error: String) {
+        let Some(node) = self.nodes.get_mut(namespace_path) else {
             return;
         };
         node.loading = false;
@@ -1257,15 +1197,15 @@ impl DirectoryTreeTreeState {
     pub(crate) fn toggle_expanded(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
         let node = self.nodes.get_mut(path)?;
         node.expanded = !node.expanded;
-        let request = if is_places_sentinel_path(path) {
+        let request = if is_places_sentinel_namespace_path(path) {
             None
         } else if node.expanded && !node.children_loaded && !node.loading {
             node.loading = true;
             node.error = None;
-            let browse_path = node.browse_path.clone();
+            let fs_path = node.fs_path.clone();
             Some(children_request(
                 path.to_path_buf(),
-                browse_path,
+                fs_path,
                 self.generation,
             ))
         } else {
@@ -1280,22 +1220,33 @@ impl DirectoryTreeTreeState {
             return;
         }
 
-        let tree_path = result.tree_path;
+        let namespace_path = result.namespace_path;
         match result.result {
             Ok(children) => {
                 let children = if let Some(parent_browse) = self
                     .nodes
-                    .get(&tree_path)
-                    .map(|node| node.browse_path.clone())
+                    .get(&namespace_path)
+                    .map(|node| node.fs_path.clone())
                 {
                     self.filter_children_for_places_mounts(&parent_browse, children)
                 } else {
                     children
                 };
+                let Some(parent_browse) = self
+                    .nodes
+                    .get(&namespace_path)
+                    .map(|node| node.fs_path.clone())
+                else {
+                    return;
+                };
                 let mut cap_reached = false;
                 let mut loaded_children = Vec::with_capacity(children.len());
                 for child_browse in &children {
-                    let child_tree = namespace::tree_child_path(&tree_path, child_browse);
+                    let child_tree = namespace::namespace_child_path(
+                        &namespace_path,
+                        &parent_browse,
+                        child_browse,
+                    );
                     match self.nodes.or_insert_with(
                         child_tree.clone(),
                         MAX_DIRECTORY_TREE_NODES,
@@ -1318,13 +1269,14 @@ impl DirectoryTreeTreeState {
                         }
                     }
                 }
-                let Some(node) = self.nodes.get_mut(&tree_path) else {
+                let Some(node) = self.nodes.get_mut(&namespace_path) else {
                     return;
                 };
                 node.loading = false;
                 // Cap is a global arena limit; retry on re-expand would only re-hit the cap.
                 node.children_loaded = true;
                 node.children = loaded_children;
+                Self::dedupe_tree_children(&mut node.children);
                 node.error = if cap_reached {
                     Some(t!("directory_tree.nodes_cap_reached").to_string())
                 } else {
@@ -1332,7 +1284,7 @@ impl DirectoryTreeTreeState {
                 };
             }
             Err(err) => {
-                let Some(node) = self.nodes.get_mut(&tree_path) else {
+                let Some(node) = self.nodes.get_mut(&namespace_path) else {
                     return;
                 };
                 node.loading = false;
@@ -1355,7 +1307,8 @@ mod view;
 mod workers;
 
 use ui::{
-    directory_display_name, should_expand_this_pc_for_path, unc_share_display_name, unc_share_root,
+    directory_display_name, should_expand_this_pc_for_namespace_path, unc_share_display_name,
+    unc_share_root,
 };
 use workers::{directory_tree_children_worker_loop, directory_tree_metadata_worker_loop};
 

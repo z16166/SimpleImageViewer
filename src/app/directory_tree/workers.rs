@@ -69,9 +69,9 @@ pub(super) fn coalesce_children_requests(
     request_rx: &Receiver<DirectoryChildrenRequest>,
 ) -> Vec<DirectoryChildrenRequest> {
     let mut by_path = HashMap::new();
-    by_path.insert(request.tree_path.clone(), request);
+    by_path.insert(request.namespace_path.clone(), request);
     while let Ok(next) = request_rx.try_recv() {
-        by_path.insert(next.tree_path.clone(), next);
+        by_path.insert(next.namespace_path.clone(), next);
     }
     by_path.into_values().collect()
 }
@@ -119,11 +119,11 @@ pub(super) fn directory_tree_children_worker_loop(
                     if shutdown.load(AtomicOrdering::Acquire) {
                         return;
                     }
-                    let result = read_child_directories_with_timeout(&request.browse_path);
+                    let result = read_child_directories_with_timeout(&request.fs_path);
                     if !send_worker_result(
                         &children_result_tx,
                         DirectoryChildrenResult {
-                            tree_path: request.tree_path,
+                            namespace_path: request.namespace_path,
                             generation: request.generation,
                             result,
                         },

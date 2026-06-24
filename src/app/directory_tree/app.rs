@@ -42,7 +42,7 @@ use super::{
     DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
     DirectoryTreeListPreviewLayout, DirectoryTreeListSnapshot, DirectoryTreeListState,
     DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
-    FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_path, view,
+    FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_namespace_path, view,
 };
 
 impl ImageViewerApp {
@@ -275,12 +275,12 @@ impl ImageViewerApp {
                 tree.mark_snapshot_dirty();
                 return;
             }
-            let mut requests = tree.reveal_selected_dir();
-            if let Some(tree_path) = tree.selected_tree_path.clone() {
-                if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
+            let mut requests = tree.reveal_selected_namespace();
+            if let Some(namespace_path) = tree.selected_namespace_path.clone() {
+                if let Some(request) = tree.expand_namespace_node(&namespace_path) {
                     requests.push(request);
                 }
-            } else if let Some(request) = tree.expand_tree_for_filesystem_dir(&dir) {
+            } else if let Some(request) = tree.expand_namespace_node_for_fs_path(&dir) {
                 requests.push(request);
             }
             requests
@@ -311,17 +311,17 @@ impl ImageViewerApp {
         self.settings.tree_nav_selected_dir = Some(dir.clone());
         {
             let mut tree = self.directory_tree.tree.lock();
-            tree.set_selected_dir(dir);
+            tree.set_selected_fs_path(dir);
         }
         self.reveal_directory_tree_for_saved_selection();
     }
 
     fn send_directory_tree_children_request(&mut self, request: DirectoryChildrenRequest) {
-        let tree_path = request.tree_path.clone();
+        let namespace_path = request.namespace_path.clone();
         if let Err(err) = self.directory_tree.children_request_tx.try_send(request) {
             log::warn!(
                 "[DirectoryTree] children request dropped for {}: {err}",
-                tree_path.display()
+                namespace_path.display()
             );
             let error = match err {
                 crossbeam_channel::TrySendError::Full(_) => {
@@ -332,7 +332,7 @@ impl ImageViewerApp {
                 }
             };
             let mut tree = self.directory_tree.tree.lock();
-            tree.mark_children_request_failed(&tree_path, error);
+            tree.mark_children_request_failed(&namespace_path, error);
         }
     }
 
@@ -404,7 +404,7 @@ impl ImageViewerApp {
             }
         }
         if let Some(dir) = saved_dir {
-            tree.set_selected_dir(dir);
+            tree.set_selected_fs_path(dir);
         }
         self.apply_saved_directory_tree_panel_layout(&mut tree, &mut list);
         drop(tree);
@@ -512,13 +512,13 @@ impl ImageViewerApp {
         let runtime = &self.directory_tree;
         let requests = {
             let mut tree = runtime.tree.lock();
-            tree.set_selected_dir(root.clone());
-            let mut requests = tree.reveal_selected_dir();
-            if let Some(tree_path) = tree.selected_tree_path.clone() {
-                if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
+            tree.set_selected_fs_path(root.clone());
+            let mut requests = tree.reveal_selected_namespace();
+            if let Some(namespace_path) = tree.selected_namespace_path.clone() {
+                if let Some(request) = tree.expand_namespace_node(&namespace_path) {
                     requests.push(request);
                 }
-            } else if let Some(request) = tree.expand_tree_for_filesystem_dir(&root) {
+            } else if let Some(request) = tree.expand_namespace_node_for_fs_path(&root) {
                 requests.push(request);
             }
             requests
@@ -531,13 +531,13 @@ impl ImageViewerApp {
 
     pub(crate) fn process_directory_tree_events(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.directory_tree.result_rx.try_recv() {
-            // Capture scroll intent before reveal_selected_dir(); only re-request scroll when
+            // Capture scroll intent before reveal_selected_namespace(); only re-request scroll when
             // a reveal/show/reveal-in-progress already set the flag (not for unrelated expands).
             let (requests, pending_folder_scroll) = {
                 let mut tree = self.directory_tree.tree.lock();
                 tree.apply_children_result(result);
                 let pending_folder_scroll = tree.scroll_folder_tree_to_selected;
-                let requests = tree.reveal_selected_dir();
+                let requests = tree.reveal_selected_namespace();
                 (requests, pending_folder_scroll)
             };
             for request in requests {
@@ -562,18 +562,18 @@ impl ImageViewerApp {
         while let Ok(command) = self.directory_tree.command_rx.try_recv() {
             match command {
                 DirectoryTreeCommand::SelectDirectory {
-                    tree_path,
-                    browse_path,
+                    namespace_path,
+                    fs_path,
                 } => {
-                    if is_places_sentinel_path(&tree_path) {
+                    if is_places_sentinel_namespace_path(&namespace_path) {
                         continue;
                     }
                     self.activate_directory_tree_nav();
-                    self.settings.tree_nav_selected_dir = Some(browse_path.clone());
+                    self.settings.tree_nav_selected_dir = Some(fs_path.clone());
                     {
                         let mut tree = self.directory_tree.tree.lock();
                         let mut list = self.directory_tree.list.lock();
-                        tree.set_selected_tree_node(tree_path.clone(), browse_path.clone());
+                        tree.set_selected_namespace_node(namespace_path.clone(), fs_path.clone());
                         list.image_list_keyboard_active = false;
                         // Drop stale rows immediately so deferred list sync cannot flash the
                         // previous folder's header before the empty-folder message appears.
@@ -583,13 +583,13 @@ impl ImageViewerApp {
                         list.scanning = true;
                         list.scan_status = t!("directory_tree.scanning").to_string();
                         list.mark_snapshot_dirty();
-                        if let Some(request) = tree.expand_tree_for_tree_node(&tree_path) {
+                        if let Some(request) = tree.expand_namespace_node(&namespace_path) {
                             drop(tree);
                             drop(list);
                             self.send_directory_tree_children_request(request);
                         }
                     }
-                    self.load_directory(browse_path);
+                    self.load_directory(fs_path);
                     self.queue_save();
                     self.wake_root_for_logic();
                     ctx.request_repaint();
