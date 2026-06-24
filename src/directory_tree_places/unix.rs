@@ -115,7 +115,7 @@ fn enumerate_volumes() -> Vec<DriveEntry> {
         .into_iter()
         .map(|path| DriveEntry {
             display_name: volume_display_name(&path),
-            path,
+            fs_path: path,
         })
         .filter(|drive| path_is_accessible_directory(&drive.fs_path))
         .collect();
