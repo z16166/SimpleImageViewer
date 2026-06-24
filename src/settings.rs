@@ -237,11 +237,10 @@ pub struct Settings {
     pub show_directory_tree_nav: bool,
     #[serde(default)]
     pub directory_tree_nav_style: DirectoryTreeNavStyle,
-    #[serde(default)]
-    pub tree_nav_root_dir: Option<PathBuf>,
-    #[serde(default)]
+    /// Runtime mirror of the tree browse folder; persisted copy is [`last_image_dir`].
+    #[serde(default, skip_serializing)]
     pub tree_nav_selected_dir: Option<PathBuf>,
-    /// Shell namespace tree key for [`tree_nav_selected_dir`]; disambiguates alias branches.
+    /// Shell namespace tree key for the selected folder; disambiguates alias branches on Linux.
     #[serde(default)]
     pub tree_nav_selected_namespace_path: Option<PathBuf>,
     #[serde(default)]
@@ -459,7 +458,6 @@ impl Default for Settings {
             browse_mode: BrowseMode::Linear,
             show_directory_tree_nav: false,
             directory_tree_nav_style: DirectoryTreeNavStyle::Embedded,
-            tree_nav_root_dir: None,
             tree_nav_selected_dir: None,
             tree_nav_selected_namespace_path: None,
             fullscreen: false,
@@ -811,6 +809,16 @@ impl Settings {
         }
     }
 
+    /// Migrate legacy YAML and mirror persisted browse dir into runtime tree selection.
+    pub fn normalize_browse_directory_fields(&mut self) {
+        if self.last_image_dir.is_none() {
+            if let Some(dir) = self.tree_nav_selected_dir.clone() {
+                self.last_image_dir = Some(dir);
+            }
+        }
+        self.tree_nav_selected_dir = self.last_image_dir.clone();
+    }
+
     pub fn load() -> Self {
         let path = settings_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
@@ -821,7 +829,7 @@ impl Settings {
                         .hdr_max_display_nits
                         .clamp(100.0, 10_000.0)
                         .max(hdr_sdr_white_nits);
-                    let merged = Self {
+                    let mut merged = Self {
                         auto_switch_interval: s.auto_switch_interval.clamp(0.5, 300.0),
                         volume: s.volume.clamp(0.0, 1.0),
                         font_size: s.font_size.clamp(12.0, 72.0),
@@ -832,6 +840,7 @@ impl Settings {
                         hdr_max_display_nits,
                         ..s
                     };
+                    merged.normalize_browse_directory_fields();
                     #[cfg(feature = "preload-debug")]
                     log::info!(
                         "[PreloadDebug][Panel] settings loaded path={:?} folder={:?} list={:?} embedded={:?}",
@@ -934,7 +943,6 @@ mod tests {
             settings.directory_tree_nav_style,
             DirectoryTreeNavStyle::Embedded
         );
-        assert!(settings.tree_nav_root_dir.is_none());
         assert!(settings.tree_nav_selected_dir.is_none());
         assert!(settings.tree_nav_selected_namespace_path.is_none());
     }
@@ -1160,28 +1168,48 @@ directory_tree_window_maximized_screen_center: [960, 540]
     }
 
     #[test]
-    fn tree_nav_selection_yaml_roundtrip_preserves_namespace_path() {
+    fn tree_nav_selection_yaml_omits_selected_dir_and_preserves_namespace_path() {
+        let mut settings = Settings::default();
+        settings.browse_mode = BrowseMode::Tree;
+        settings.last_image_dir = Some(PathBuf::from("/run/media/happy/CDROM/custom"));
+        settings.tree_nav_selected_dir = settings.last_image_dir.clone();
+        settings.tree_nav_selected_namespace_path =
+            Some(PathBuf::from(r"\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom"));
+
+        let yaml = serde_yaml::to_string(&settings).expect("serialize tree selection");
+        assert!(!yaml.contains("tree_nav_selected_dir:"));
+        assert!(yaml.contains("last_image_dir:"));
+        assert!(yaml.contains("tree_nav_selected_namespace_path:"));
+
+        let again: Settings = serde_yaml::from_str(&yaml).expect("roundtrip");
+        assert_eq!(
+            again.last_image_dir,
+            Some(PathBuf::from("/run/media/happy/CDROM/custom"))
+        );
+        assert!(again.tree_nav_selected_namespace_path.is_some());
+        assert!(again.tree_nav_selected_dir.is_none());
+    }
+
+    #[test]
+    fn legacy_tree_nav_selected_dir_yaml_migrates_to_last_image_dir() {
         let yaml = r#"browse_mode: tree
 tree_nav_selected_dir: /run/media/happy/CDROM/custom
 tree_nav_selected_namespace_path: '\\?\siv-tree\Mount\%2Frun%2Fmedia%2Fhappy\CDROM\custom'
 "#;
-        let settings: Settings = serde_yaml::from_str(yaml).expect("deserialize tree selection");
+        let mut settings: Settings = serde_yaml::from_str(yaml).expect("deserialize legacy yaml");
+        settings.normalize_browse_directory_fields();
+        assert_eq!(
+            settings.last_image_dir,
+            Some(PathBuf::from("/run/media/happy/CDROM/custom"))
+        );
         assert_eq!(
             settings.tree_nav_selected_dir,
             Some(PathBuf::from("/run/media/happy/CDROM/custom"))
         );
         assert!(settings.tree_nav_selected_namespace_path.is_some());
 
-        let again: Settings =
-            serde_yaml::from_str(&serde_yaml::to_string(&settings).expect("serialize")).expect("roundtrip");
-        assert_eq!(
-            settings.tree_nav_selected_dir,
-            again.tree_nav_selected_dir
-        );
-        assert_eq!(
-            settings.tree_nav_selected_namespace_path,
-            again.tree_nav_selected_namespace_path
-        );
+        let saved = serde_yaml::to_string(&settings).expect("serialize");
+        assert!(!saved.contains("tree_nav_selected_dir:"));
     }
 
     #[test]

@@ -250,7 +250,7 @@ impl ImageViewerApp {
 
     pub(crate) fn saved_directory_tree_selection_dir(&self) -> Option<PathBuf> {
         self.settings
-            .tree_nav_selected_dir
+            .last_image_dir
             .clone()
             .or_else(|| {
                 self.settings
@@ -258,7 +258,6 @@ impl ImageViewerApp {
                     .as_ref()
                     .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
             })
-            .or_else(|| self.settings.last_image_dir.clone())
     }
 
     pub(crate) fn reveal_directory_tree_for_saved_selection(&mut self) {
@@ -299,9 +298,6 @@ impl ImageViewerApp {
         let Some(dir) = self.saved_directory_tree_selection_dir() else {
             return;
         };
-        if self.settings.tree_nav_root_dir.is_none() {
-            self.settings.tree_nav_root_dir = Some(dir.clone());
-        }
         self.settings.tree_nav_selected_dir = Some(dir.clone());
         {
             let mut tree = self.directory_tree.tree.lock();
@@ -504,7 +500,6 @@ impl ImageViewerApp {
 
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {
         self.activate_directory_tree_nav();
-        self.settings.tree_nav_root_dir = Some(root.clone());
         self.settings.tree_nav_selected_dir = Some(root.clone());
         self.settings.tree_nav_selected_namespace_path = None;
         self.settings.last_image_dir = Some(root.clone());

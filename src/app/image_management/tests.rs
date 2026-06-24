@@ -2518,18 +2518,14 @@ fn apply_picked_image_directory_keeps_tree_settings_when_nav_hidden() {
     let mut app = make_test_app();
     app.settings.browse_mode = crate::settings::BrowseMode::Tree;
     app.settings.show_directory_tree_nav = false;
-    app.settings.tree_nav_root_dir = Some(PathBuf::from("/tree/root"));
     app.settings.tree_nav_selected_dir = Some(PathBuf::from("/tree/root/old"));
 
     let picked = PathBuf::from("/tree/root/new");
     app.apply_picked_image_directory(picked.clone());
 
     assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
-    assert_eq!(
-        app.settings.tree_nav_root_dir,
-        Some(PathBuf::from("/tree/root"))
-    );
-    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked));
+    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked.clone()));
+    assert_eq!(app.settings.last_image_dir, Some(picked));
 }
 
 #[test]

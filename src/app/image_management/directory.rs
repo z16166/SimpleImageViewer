@@ -81,15 +81,11 @@ impl ImageViewerApp {
         if self.settings.show_directory_tree_nav {
             self.initialize_directory_tree_root(dir.clone());
         } else if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-            // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode and root.
-            if self.settings.tree_nav_root_dir.is_none() {
-                self.settings.tree_nav_root_dir = Some(dir.clone());
-            }
+            // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode.
             self.settings.tree_nav_selected_dir = Some(dir.clone());
             self.settings.tree_nav_selected_namespace_path = None;
         } else {
             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
-            self.settings.tree_nav_root_dir = None;
             self.settings.tree_nav_selected_dir = Some(dir.clone());
             self.settings.tree_nav_selected_namespace_path = None;
         }
@@ -114,12 +110,9 @@ impl ImageViewerApp {
         let after_cancel_ms = crate::preload_debug::elapsed_ms(load_started);
 
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
-            if self.settings.tree_nav_root_dir.is_none() {
-                self.settings.tree_nav_root_dir = Some(dir.clone());
-            }
             self.settings.tree_nav_selected_dir = Some(dir.clone());
             // Namespace branch is cleared by non-tree entry points (file dialog, drag-drop, etc.).
-            // Tree selection and startup rescan must preserve it for YAML persistence.
+            // Tree selection and startup rescan must preserve tree_nav_selected_namespace_path.
         }
         // Keep Settings folder path and folder-picker default in sync even in tree mode.
         self.settings.last_image_dir = Some(dir.clone());
