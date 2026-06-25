@@ -437,42 +437,38 @@ impl ImageViewerApp {
         placeholder
     }
 
-    fn strip_needs_hdr_cache_sync(&self, index: usize) -> bool {
+    fn strip_needs_hdr_cache_sync_for_hdr(
+        &self,
+        index: usize,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+    ) -> bool {
         if index >= self.image_files.len() {
             return false;
         }
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        let Some(hdr) = self.hdr_image_cache.get(&index) else {
-            return false;
-        };
-        if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()) && hdr.rgba_f32.is_empty() {
+        if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
             return false;
         }
         if self.directory_tree_strip_cache.contains(index) {
             let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
             let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
-            let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
-            let iso_deferred = crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                && hdr.rgba_f32.is_empty();
-            let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                !hdr.rgba_f32.is_empty(),
-                fallback.is_sdr_deferred_placeholder(),
-                false,
-                iso_deferred,
-            );
+            let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr);
+            // ISO-deferred empty-float entries use the baseline sync path (early return above).
+            let target_tag =
+                crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+                    !hdr.rgba_f32.is_empty(),
+                    fallback.is_sdr_deferred_placeholder(),
+                    false,
+                    false,
+                );
             if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
                 return false;
             }
-            let target_stage = if iso_deferred {
-                PreviewStage::Initial
-            } else {
-                PreviewStage::Refined
-            };
             let target_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
                 target_tag,
-                target_stage,
+                PreviewStage::Refined,
             );
             if cached_tag.is_some_and(|tag| {
                 crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
@@ -496,12 +492,12 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_schedule_strip_from_hdr_image_cache(&mut self, index: usize) -> bool {
-        if !self.strip_needs_hdr_cache_sync(index) {
-            return false;
-        }
         let Some(hdr) = self.hdr_image_cache.get(&index).cloned() else {
             return false;
         };
+        if !self.strip_needs_hdr_cache_sync_for_hdr(index, hdr.as_ref()) {
+            return false;
+        }
         let Some(list) = self.directory_tree.list.try_lock() else {
             return false;
         };
@@ -509,14 +505,12 @@ impl ImageViewerApp {
         drop(list);
 
         let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
-        let iso_deferred = crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-            && hdr.rgba_f32.is_empty();
         let fallback_is_deferred_placeholder = fallback.is_sdr_deferred_placeholder();
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
             fallback_is_deferred_placeholder,
             false,
-            iso_deferred,
+            false,
         );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
             #[cfg(feature = "preload-debug")]
@@ -526,11 +520,7 @@ impl ImageViewerApp {
             );
             return false;
         }
-        let stage = if iso_deferred {
-            PreviewStage::Initial
-        } else {
-            PreviewStage::Refined
-        };
+        let stage = PreviewStage::Refined;
 
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -582,7 +572,7 @@ impl ImageViewerApp {
                     hdr_has_float_pixels,
                     fallback_is_deferred_placeholder,
                     decoded.is_sdr_deferred_placeholder(),
-                    iso_deferred,
+                    false,
                 );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,
