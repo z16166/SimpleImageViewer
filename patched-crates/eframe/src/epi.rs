@@ -211,6 +211,18 @@ pub trait App {
         None
     }
 
+    /// Simple Image Viewer fork: called after egui-wgpu/glow paint completes (GPU callbacks
+    /// have run). Return `true` to schedule an immediate synchronous repaint of this viewport
+    /// (`EventResult::RepaintNow`), e.g. when async GPU work finished after `ui()` returned.
+    fn post_rendering(
+        &mut self,
+        _ctx: &egui::Context,
+        _frame: &mut Frame,
+        _pass: LogicPass,
+    ) -> bool {
+        false
+    }
+
     /// Called each time the UI needs repainting, which may be many times per second.
     ///
     /// The given [`egui::Ui`] has no margin or background color.

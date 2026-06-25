@@ -301,6 +301,43 @@ impl ImageViewerApp {
             );
             return;
         }
+        let strip_max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        if let Some(logical) = logical_size {
+            if self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index)
+                && self
+                    .directory_tree_strip_cache
+                    .is_valid_for_logical(index, logical)
+            {
+                let from_full_install = self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+                    logical.0 == hdr.width
+                        && logical.1 == hdr.height
+                        && decoded.width == hdr.width
+                        && decoded.height == hdr.height
+                });
+                if !from_full_install {
+                    #[cfg(feature = "preload-debug")]
+                    crate::preload_debug!(
+                        "[PreloadDebug][Strip] skip strip cache idx={} reason=keep_cold_strip \
+                         logical={logical:?} decoded={}x{} hdr_cached={}",
+                        index,
+                        decoded.width,
+                        decoded.height,
+                        self.hdr_image_cache
+                            .get(&index)
+                            .map(|hdr| format!("{}x{}", hdr.width, hdr.height))
+                            .unwrap_or_else(|| "none".to_string())
+                    );
+                    return;
+                }
+            }
+        }
+        if self.directory_tree_nav_is_detached() {
+            self.queue_directory_tree_strip_gpu_upload(index, decoded.clone(), stage, logical_size);
+            return;
+        }
         let allow_initial_over_refined = self.strip_main_loader_sdr_unreliable_for_strip(index);
         self.directory_tree_strip_cache.upsert_from_decoded(
             index,
@@ -310,9 +347,7 @@ impl ImageViewerApp {
             ctx,
             self.current_index,
             self.image_files.len(),
-            self.settings
-                .directory_tree_list_preview_size
-                .strip_max_side(),
+            strip_max_side,
             allow_initial_over_refined,
         );
     }

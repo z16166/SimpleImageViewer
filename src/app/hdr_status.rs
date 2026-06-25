@@ -166,6 +166,7 @@ impl ImageViewerApp {
             && crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
                 idx,
                 &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_raw_gpu_demosaic_baked_indices,
                 &self.hdr_image_cache,
                 has_sdr_fallback,
                 self.texture_cache.contains(idx),
@@ -192,9 +193,10 @@ impl ImageViewerApp {
             shape,
             has_hdr_plane,
             has_sdr_fallback,
-            self.hdr_target_format,
+            self.effective_hdr_target_format(),
             effective_selection.as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
+            self.raw_gpu_demosaic_await_hdr_present,
         );
         hdr_render_path_for_render_plan(
             &plan,
@@ -357,6 +359,7 @@ fn hdr_render_path_for_viewer_plan(
     complex_transition_active: bool,
     monitor_selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     prefer_sdr_for_pending_gpu_demosaic: bool,
+    force_hdr_plane_after_raw_demosaic: bool,
 ) -> Option<HdrRenderPath> {
     use crate::app::rendering::plan::build_render_plan_for_state;
 
@@ -377,6 +380,7 @@ fn hdr_render_path_for_viewer_plan(
         hdr_target_format,
         monitor_selection,
         prefer_sdr_for_pending_gpu_demosaic,
+        force_hdr_plane_after_raw_demosaic,
     );
     hdr_render_path_for_render_plan(
         &plan,
@@ -421,6 +425,7 @@ mod tests {
                 false,
                 Some(&monitor),
                 false,
+                false,
             ),
             Some(HdrRenderPath::FloatTilePlane)
         );
@@ -429,7 +434,9 @@ mod tests {
     #[test]
     fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
         assert_eq!(
-            hdr_render_path_for_viewer_plan(true, true, false, true, None, false, None, false),
+            hdr_render_path_for_viewer_plan(
+                true, true, false, true, None, false, None, false, false
+            ),
             Some(HdrRenderPath::SdrFallback)
         );
     }
@@ -446,6 +453,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 true,
                 Some(&monitor),
+                false,
                 false,
             ),
             Some(HdrRenderPath::SdrFallback)
@@ -465,6 +473,7 @@ mod tests {
                 false,
                 Some(&monitor),
                 true,
+                false,
             ),
             None
         );
@@ -481,6 +490,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
                 None,
+                false,
                 false,
             ),
             Some(HdrRenderPath::FloatImagePlane)
@@ -500,6 +510,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
                 None,
+                false,
                 false,
             ),
             Some(HdrRenderPath::FloatImagePlane)
@@ -577,6 +588,7 @@ mod tests {
                     hdr_target_format,
                     complex_transition_active,
                     monitor_selection,
+                    false,
                     false,
                 ),
                 expected,

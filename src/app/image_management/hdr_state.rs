@@ -42,6 +42,7 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_indices.clear();
+        self.hdr_raw_gpu_demosaic_baked_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_key_index.clear();
         self.raw_gpu_embedded_bootstrap_indices.clear();
         self.gpu_demosaic_failed_indices.clear();
@@ -81,6 +82,7 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.remove(&index);
         self.hdr_placeholder_fallback_indices.remove(&index);
         self.hdr_raw_gpu_demosaic_pending_indices.remove(&index);
+        self.hdr_raw_gpu_demosaic_baked_indices.remove(&index);
         self.raw_gpu_embedded_bootstrap_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
@@ -403,15 +405,15 @@ impl ImageViewerApp {
         &mut self,
         ctx: &egui::Context,
         frame: Option<&eframe::Frame>,
-    ) {
+    ) -> bool {
         let Some(frame) = frame else {
-            return;
+            return false;
         };
         let Some(wgpu_state) = frame.wgpu_render_state() else {
-            return;
+            return false;
         };
         let pending: Vec<usize> = if self.hdr_raw_gpu_demosaic_pending_indices.is_empty() {
-            return;
+            return false;
         } else {
             self.hdr_raw_gpu_demosaic_pending_indices
                 .iter()
@@ -424,7 +426,7 @@ impl ImageViewerApp {
                 .callback_resources
                 .get::<crate::hdr::renderer::HdrCallbackResources>()
             else {
-                return;
+                return false;
             };
             let mut baked = Vec::new();
             for idx in pending {
@@ -460,9 +462,15 @@ impl ImageViewerApp {
             }
             baked
         };
+        let mut applied_current = false;
         for idx in baked_indices {
+            self.hdr_raw_gpu_demosaic_baked_indices.insert(idx);
+            if idx == self.current_index {
+                applied_current = true;
+            }
             self.apply_raw_gpu_demosaic_success(idx, None, ctx);
         }
+        applied_current
     }
 
     /// Drop embedded RAW preview assets once the HDR float plane is ready. Keeps tone-mapped
@@ -473,7 +481,11 @@ impl ImageViewerApp {
 
     fn release_raw_gpu_embedded_bootstrap_preview(&mut self, idx: usize) {
         let had_bootstrap_texture = self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
-        if had_bootstrap_texture {
+        let raw_gpu = self
+            .hdr_image_cache
+            .get(&idx)
+            .is_some_and(|hdr| hdr.metadata.raw_gpu_source.is_some());
+        if had_bootstrap_texture || raw_gpu {
             self.texture_cache.remove(idx);
         }
         if let Some(hdr) = self.hdr_image_cache.get_mut(&idx) {

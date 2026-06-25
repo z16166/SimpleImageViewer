@@ -842,7 +842,7 @@ impl WgpuWinitRunning<'_> {
 
         let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, shared);
 
-        let (window_opt, vsync_secs) = {
+        let (window_opt, vsync_secs, post_render_repaint_now) = {
             let mut shared_mut = shared.borrow_mut();
 
             let SharedState {
@@ -878,6 +878,7 @@ impl WgpuWinitRunning<'_> {
 
             egui_winit.handle_platform_output(window, platform_output);
 
+            let mut post_render_repaint_now = false;
             let vsync_secs = if is_visible {
                 let clipped_primitives = match transition_paint {
                     TransitionPaint::Blank => vec![],
@@ -932,6 +933,15 @@ impl WgpuWinitRunning<'_> {
 
                 integration.post_rendering(window);
 
+                post_render_repaint_now = viewport_id == ViewportId::ROOT
+                    && app.post_rendering(
+                        &integration.egui_ctx,
+                        &mut integration.frame,
+                        crate::epi::LogicPass {
+                            painting_viewport_id: viewport_id,
+                        },
+                    );
+
                 vsync_secs
             } else {
                 0.0
@@ -942,7 +952,7 @@ impl WgpuWinitRunning<'_> {
                 .and_then(|id| viewports.get(id))
                 .and_then(|vp| vp.window.clone());
 
-            (window, vsync_secs)
+            (window, vsync_secs, post_render_repaint_now)
         };
 
         integration.report_frame_time(frame_timer.total_time_sec() - vsync_secs); // don't count auto-save time as part of regular frame time
@@ -978,6 +988,8 @@ impl WgpuWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if post_render_repaint_now {
+            Ok(EventResult::RepaintNow(window_id))
         } else if viewport_id == ViewportId::ROOT
             && let Some(aux_viewport_id) =
                 app.take_pending_auxiliary_viewport_repaint(&integration.egui_ctx)

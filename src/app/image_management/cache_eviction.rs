@@ -462,6 +462,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.hdr_sdr_fallback_indices, old_to_new);
         permute_usize_set(&mut self.hdr_placeholder_fallback_indices, old_to_new);
         permute_usize_set(&mut self.hdr_raw_gpu_demosaic_pending_indices, old_to_new);
+        permute_usize_set(&mut self.hdr_raw_gpu_demosaic_baked_indices, old_to_new);
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);

@@ -773,7 +773,7 @@ impl GlowWinitRunning<'_> {
 
         let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, glutin);
 
-        let window = {
+        let (window, post_render_repaint_now) = {
             let mut glutin = glutin.borrow_mut();
             let mut painter = painter.borrow_mut();
 
@@ -803,6 +803,7 @@ impl GlowWinitRunning<'_> {
 
             egui_winit.handle_platform_output(&window, platform_output);
 
+            let mut post_render_repaint_now = false;
             if is_visible {
                 let clipped_primitives = match transition_paint {
                     TransitionPaint::Blank => vec![],
@@ -874,6 +875,15 @@ impl GlowWinitRunning<'_> {
                     integration.post_rendering(&window);
                 }
 
+                post_render_repaint_now = viewport_id == ViewportId::ROOT
+                    && app.post_rendering(
+                        &integration.egui_ctx,
+                        &mut integration.frame,
+                        crate::epi::LogicPass {
+                            painting_viewport_id: viewport_id,
+                        },
+                    );
+
                 {
                     // vsync - don't count as frame-time:
                     frame_timer.pause();
@@ -897,7 +907,7 @@ impl GlowWinitRunning<'_> {
                 }
             }
 
-            window
+            (window, post_render_repaint_now)
         };
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
@@ -930,6 +940,8 @@ impl GlowWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if post_render_repaint_now {
+            Ok(EventResult::RepaintNow(window_id))
         } else if viewport_id == ViewportId::ROOT
             && let Some(aux_viewport_id) =
                 self.app

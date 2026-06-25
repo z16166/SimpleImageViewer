@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.6] - 2026-06-24
+
+### Fixed
+- **Navigation strip previews for RAW photos**: Some camera RAW files (including Sigma X3F) no longer stay stuck on a placeholder thumbnail in the file list while the full image loads.
+- **Navigation strip previews for HDR RAW photos**: HDR scene-linear RAW files keep their strip thumbnail when a temporary bootstrap preview arrives before full resolution is ready.
+- **Main canvas after RAW GPU processing**: The main viewer updates promptly when GPU demosaic finishes, without needing to move the mouse to trigger a redraw.
+- **RAW GPU demosaic display**: Fixed a case where the viewer could repaint repeatedly without drawing after RAW processing completed.
+
+### Improved
+- **Background image loading**: The canvas refreshes more reliably when decode workers finish while the window is idle.
+- **Detached navigation panel**: Thumbnail previews in a separate navigation window update more consistently after background generation completes.
+
 ## [2.7.5] - 2026-06-23
 
 ### Added

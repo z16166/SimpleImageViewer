@@ -123,20 +123,33 @@ impl<T: WinitApp> WinitAppWrapper<T> {
         //
         // Upgrade: after bumping eframe, diff `handle_event_result()`; drop this block if
         // upstream already applies the chain on all desktop OSes.
+        // Chain synchronous repaints (e.g. GPU RAW demosaic completes in wgpu prepare after
+        // `ui()` returns; the follow-up frame must paint the HDR plane in the same event).
         #[cfg(not(target_arch = "wasm32"))]
-        if let Ok(EventResult::RepaintNow(window_id)) = event_result {
-            if self.sync_repaint_in_progress {
-                log::trace!(
-                    "Skipping nested synchronous RepaintNow chain for {window_id:?}"
-                );
-            } else {
-                log::trace!("RepaintNow of {window_id:?}");
+        {
+            const MAX_SYNC_REPAINT_CHAIN: u32 = 4;
+            let mut sync_repaint_depth = 0u32;
+            while let Ok(EventResult::RepaintNow(window_id)) = event_result {
+                if self.sync_repaint_in_progress {
+                    log::trace!(
+                        "Skipping nested synchronous RepaintNow chain for {window_id:?}"
+                    );
+                    break;
+                }
+                if sync_repaint_depth >= MAX_SYNC_REPAINT_CHAIN {
+                    log::trace!(
+                        "RepaintNow sync chain capped at {MAX_SYNC_REPAINT_CHAIN} for {window_id:?}"
+                    );
+                    break;
+                }
+                log::trace!("RepaintNow sync chain {sync_repaint_depth} of {window_id:?}");
                 self.windows_next_repaint_times
                     .insert(window_id, Instant::now());
 
                 self.sync_repaint_in_progress = true;
                 event_result = self.winit_app.run_ui_and_paint(event_loop, window_id);
                 self.sync_repaint_in_progress = false;
+                sync_repaint_depth += 1;
             }
         }
 

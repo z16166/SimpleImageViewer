@@ -189,6 +189,7 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+        self.hdr_raw_gpu_demosaic_baked_indices.insert(idx);
         if let Some(hdr) = self.hdr_image_cache.get(&idx) {
             let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
             self.hdr_raw_gpu_demosaic_pending_key_index.remove(&key);
@@ -225,11 +226,17 @@ impl ImageViewerApp {
                 self.current_hdr_image =
                     Some(crate::app::CurrentHdrImage::new(self.current_index, hdr));
             }
+            // Draw may have recorded an SDR-bootstrap plan for this frame before the GPU bake
+            // notice was drained; recompute OSD from live state instead of the stale cache.
+            self.clear_frame_render_plan_cache();
             self.refresh_hdr_view_status();
             if self.settings.preload && !self.raw_gpu_demosaic_await_hdr_present {
                 self.schedule_preloads(true);
             }
             ctx.request_repaint();
+            // `request_repaint` from `post_rendering` / `logic` is not always enough to
+            // schedule the next frame while idle; wake the native window too.
+            self.wake_root_for_logic();
         }
     }
 
@@ -254,21 +261,45 @@ impl ImageViewerApp {
     /// `update()`, pointer hotkeys at the start of `draw_image_canvas_ui`). Without this,
     /// preloaded PNG/JPG may sit in `deferred_sdr_uploads` for one extra frame and flash the
     /// canvas background between the hold frame and the new texture.
-    pub(crate) fn prepare_display_frame(&mut self, ctx: &egui::Context) {
-        self.drain_raw_demosaic_baked_notifications(ctx);
+    pub(crate) fn prepare_display_frame(
+        &mut self,
+        ctx: &egui::Context,
+        frame: Option<&eframe::Frame>,
+    ) {
+        if let Some(frame) = frame {
+            if self.tick_raw_gpu_demosaic_completion(ctx, Some(frame)) {
+                ctx.request_repaint();
+                self.wake_root_for_logic();
+            }
+        }
         self.flush_deferred_sdr_upload_for_current(ctx);
         self.try_start_pending_transition_if_ready();
     }
 
-    /// Drain GPU demosaic bake notices after the paint pass (prepare may push notices during draw).
-    pub(crate) fn finish_display_frame(&mut self, ctx: &egui::Context) {
-        self.drain_raw_demosaic_baked_notifications(ctx);
+    /// Apply GPU RAW demosaic completion notices and stale pending flags.
+    ///
+    /// Notices are queued from wgpu `prepare()` which runs **after** `ui()` returns, so this
+    /// must run from `post_rendering` (with `RepaintNow`) as well as from `logic()`.
+    pub(crate) fn tick_raw_gpu_demosaic_completion(
+        &mut self,
+        ctx: &egui::Context,
+        frame: Option<&eframe::Frame>,
+    ) -> bool {
+        if self.scanning {
+            return false;
+        }
+        let from_drain = self.drain_raw_demosaic_baked_notifications(ctx);
+        let from_refresh = frame
+            .map(|frame| self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame)))
+            .unwrap_or(false);
+        from_drain || from_refresh
     }
 
-    fn drain_raw_demosaic_baked_notifications(&mut self, ctx: &egui::Context) {
+    /// Returns `true` when the current image should immediately repaint through the HDR plane.
+    fn drain_raw_demosaic_baked_notifications(&mut self, ctx: &egui::Context) -> bool {
         let baked = std::mem::take(&mut *self.raw_demosaic_baked_notify.lock());
         if baked.is_empty() {
-            return;
+            return false;
         }
         crate::preload_debug!(
             "[PreloadDebug][RAW-GPU] drain {} demosaic notice(s) cur={} pending={:?}",
@@ -277,11 +308,15 @@ impl ImageViewerApp {
             self.hdr_raw_gpu_demosaic_pending_indices
         );
         let mut cleared_any = false;
+        let mut applied_current = false;
         for notice in baked {
             let is_failure = notice.demosaic_ms == u32::MAX;
             let matching = self.indices_for_raw_demosaic_notice(&notice, is_failure);
             for idx in matching {
                 cleared_any = true;
+                if idx == self.current_index {
+                    applied_current = true;
+                }
                 if is_failure {
                     log::warn!(
                         "[HDR] GPU RAW demosaicing failed for index {}, falling back to CPU",
@@ -313,9 +348,11 @@ impl ImageViewerApp {
             }
         }
         // Success path repaints via `apply_raw_gpu_demosaic_success`; failure cleanup must too.
-        if cleared_any {
+        if cleared_any && !applied_current {
             ctx.request_repaint();
+            self.wake_root_for_logic();
         }
+        applied_current
     }
 
     fn indices_for_raw_demosaic_notice(

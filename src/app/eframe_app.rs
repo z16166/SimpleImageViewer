@@ -163,6 +163,16 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame, pass: eframe::LogicPass) {
+        if pass.is_root() && self.tick_raw_gpu_demosaic_completion(ctx, Some(frame)) {
+            ctx.request_repaint();
+            self.wake_root_for_logic();
+        }
+        if pass.is_root()
+            && !self.scanning
+            && (self.loader.has_pending_outputs() || self.loader.is_loading_any(self.current_index))
+        {
+            self.process_loaded_images(ctx, &mut Some(frame));
+        }
         if self.should_run_logic_shared() {
             self.logic_shared(ctx, frame);
         } else if !pass.is_root() {
@@ -171,6 +181,22 @@ impl eframe::App for ImageViewerApp {
         if pass.is_root() {
             self.logic_root_only(ctx, frame, &pass);
         }
+    }
+
+    fn post_rendering(
+        &mut self,
+        ctx: &Context,
+        frame: &mut eframe::Frame,
+        pass: eframe::LogicPass,
+    ) -> bool {
+        if pass.is_root() {
+            let _ = self.tick_raw_gpu_demosaic_completion(ctx, Some(frame));
+        }
+        let needs_sync = pass.is_root() && self.raw_gpu_demosaic_needs_sync_present();
+        if needs_sync {
+            self.wake_root_for_logic();
+        }
+        needs_sync
     }
 
     /// Tray close interception must run here, not in [`Self::logic`].
@@ -209,7 +235,7 @@ impl eframe::App for ImageViewerApp {
         self.prepare_directory_tree_file_list_viewport(&ctx);
 
         // Draw image canvas (fills the remaining central area)
-        self.draw_image_canvas_ui(ui);
+        self.draw_image_canvas_ui(ui, frame);
 
         if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
             egui::Window::new(if cfg!(not(target_os = "windows")) {

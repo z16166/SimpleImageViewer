@@ -663,7 +663,7 @@ impl super::Adapter {
     }
 
     #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
-    pub fn adapter_context(&self) -> &super::AdapterContext {
+    pub fn adapter_context(&self) -> &AdapterContext {
         &self.shared.context
     }
 }
@@ -671,7 +671,7 @@ impl super::Adapter {
 #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl super::Device {
     /// Returns the underlying WGL context.
-    pub fn context(&self) -> &super::AdapterContext {
+    pub fn context(&self) -> &AdapterContext {
         &self.shared.context
     }
 }

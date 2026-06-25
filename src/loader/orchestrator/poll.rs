@@ -17,6 +17,7 @@ use super::types::ImageLoader;
 
 use crate::loader::LoaderOutput;
 use crossbeam_channel::TryRecvError;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -85,6 +86,14 @@ impl ImageLoader {
                 }
             }
         }
+    }
+
+    pub fn has_pending_outputs(&self) -> bool {
+        !self.local_queue.is_empty() || !self.rx.is_empty()
+    }
+
+    pub(crate) fn set_root_redraw_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.tx.set_root_wake(wake);
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {
