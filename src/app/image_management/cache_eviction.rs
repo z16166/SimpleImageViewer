@@ -347,17 +347,13 @@ impl ImageViewerApp {
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
         let current_index = self.current_index;
-        self.preload_memory.refresh_if_stale();
-        let max_distance = prefetch_retention::effective_prefetch_window_distance(
-            self.preload_memory.available_memory_mb(),
-            self.preload_memory.total_memory_mb(),
-        );
+        let max_distance = self.prefetch_window_max_distance;
         preload_debug!(
             "[PreloadDebug] prefetch eviction scan: cur={} len={} max_distance={} available_mb={}",
             current_index,
             len,
             max_distance,
-            self.preload_memory.available_memory_mb()
+            self.cached_available_memory_mb
         );
 
         let retention_for = |idx: usize| {

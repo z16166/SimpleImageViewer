@@ -182,9 +182,8 @@ impl ImageViewerApp {
             return;
         }
 
-        self.preload_memory.refresh_if_stale();
-        let available_memory_mb = self.preload_memory.available_memory_mb();
-        let total_memory_mb = self.preload_memory.total_memory_mb();
+        let available_memory_mb = self.cached_available_memory_mb;
+        let total_memory_mb = self.cached_total_memory_mb;
         let memory_guard_threshold_mb =
             background_preload_memory_guard_threshold_mb(total_memory_mb);
         if should_skip_background_preloads_for_memory(available_memory_mb, total_memory_mb) {

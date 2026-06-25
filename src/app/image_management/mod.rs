@@ -891,15 +891,21 @@ impl<'a> ImageInstallPlan<'a> {
     }
 }
 impl ImageViewerApp {
-    pub(super) fn result_gate_context(&mut self) -> result_gate::ResultGateContext {
+    pub(crate) fn refresh_preload_memory_plan(&mut self) {
         self.preload_memory.refresh_if_stale();
+        self.cached_available_memory_mb = self.preload_memory.available_memory_mb();
+        self.cached_total_memory_mb = self.preload_memory.total_memory_mb();
+        self.prefetch_window_max_distance = prefetch_retention::effective_prefetch_window_distance(
+            self.cached_available_memory_mb,
+            self.cached_total_memory_mb,
+        );
+    }
+
+    pub(super) fn result_gate_context(&self) -> result_gate::ResultGateContext {
         result_gate::ResultGateContext {
             current_index: self.current_index,
             image_count: self.image_files.len(),
-            max_distance: prefetch_retention::effective_prefetch_window_distance(
-                self.preload_memory.available_memory_mb(),
-                self.preload_memory.total_memory_mb(),
-            ),
+            max_distance: self.prefetch_window_max_distance,
         }
     }
 
@@ -942,13 +948,12 @@ impl ImageViewerApp {
     }
 
     pub(super) fn sync_loader_preload_plan(&mut self) {
-        self.preload_memory.refresh_if_stale();
-        let max_distance = prefetch_retention::effective_prefetch_window_distance(
-            self.preload_memory.available_memory_mb(),
-            self.preload_memory.total_memory_mb(),
-        );
         self.loader
-            .sync_preload_plan(self.current_index, self.image_files.len(), max_distance);
+            .sync_preload_plan(
+                self.current_index,
+                self.image_files.len(),
+                self.prefetch_window_max_distance,
+            );
         self.loader
             .set_output_mode(self.hdr_capabilities.output_mode);
     }
@@ -964,11 +969,7 @@ impl ImageViewerApp {
         if count == 0 {
             return;
         }
-        self.preload_memory.refresh_if_stale();
-        let max_distance = prefetch_retention::effective_prefetch_window_distance(
-            self.preload_memory.available_memory_mb(),
-            self.preload_memory.total_memory_mb(),
-        );
+        let max_distance = self.prefetch_window_max_distance;
         let current = self.current_index;
         let outside: Vec<usize> = (0..count)
             .filter(|&idx| {

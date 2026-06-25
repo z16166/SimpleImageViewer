@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Throttled sysinfo RAM snapshot for preload memory budgeting.
+//!
+//! Call [`PreloadMemorySnapshot::refresh_if_stale`] from the logic thread only
+//! ([`crate::app::ImageViewerApp::refresh_preload_memory_plan`]); hot paths read
+//! cached MB values without triggering sysinfo refresh.
 
 use std::time::Instant;
 
