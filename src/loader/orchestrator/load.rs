@@ -558,7 +558,7 @@ let plan_ref = Arc::clone(&preload_plan);
                             let _ =
                                 worker_tx.send(LoaderOutput::Refined(req.index));
                             crate::preload_debug!(
-                                "[PreloadDebug][RAW] refine_done idx={} gen={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
+                                "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
                                 req.index,
                                 preview_w,
                                 preview_h,
