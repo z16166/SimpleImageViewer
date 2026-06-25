@@ -182,18 +182,31 @@ impl ImageViewerApp {
                     match gate_decision {
                         result_gate::GateDecision::Requeue => {
                             self.loader.finish_image_request(idx);
-                            if self.loader.try_note_capacity_requeue(idx)
-                                && !self.hdr_image_cache.contains_key(&idx)
-                                && !self.loader.is_loading(idx)
-                                && !self.image_files.is_empty()
-                                && idx < self.image_files.len()
-                            {
-                                self.loader.request_load(
-                                    idx,
-                                    self.image_files[idx].clone(),
-                                    self.settings.raw_high_quality,
-                                    self.raw_demosaic_mode_for_index(idx),
+                            if self.loader.try_note_capacity_requeue(idx) {
+                                if !self.hdr_image_cache.contains_key(&idx)
+                                    && !self.loader.is_loading(idx)
+                                    && !self.image_files.is_empty()
+                                    && idx < self.image_files.len()
+                                {
+                                    self.loader.request_load(
+                                        idx,
+                                        self.image_files[idx].clone(),
+                                        self.settings.raw_high_quality,
+                                        self.raw_demosaic_mode_for_index(idx),
+                                    );
+                                }
+                            } else {
+                                log::warn!(
+                                    "[Loader] HDR capacity requeue cap reached for index {idx}{}",
+                                    if is_current { " (current image)" } else { "" }
                                 );
+                                if is_current
+                                    && !self.has_loaded_asset(idx)
+                                    && idx < self.image_files.len()
+                                {
+                                    self.sync_loader_preload_plan();
+                                    self.schedule_current_image_load_if_needed();
+                                }
                             }
                             continue;
                         }

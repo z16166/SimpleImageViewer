@@ -1,5 +1,5 @@
 use super::should_spawn_load_task;
-use crate::loader::{DecodeProfile, InFlightLoad, LoadIntent, decode_profile_stub};
+use crate::loader::{DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, decode_profile_stub};
 use std::collections::HashMap;
 
 #[test]
@@ -30,7 +30,6 @@ fn should_spawn_load_task_only_for_profile_upgrade() {
 #[test]
 fn should_spawn_load_task_supersedes_on_profile_downgrade() {
     use crate::loader::{DecodeProfile, ProfileSpawnRelation, profile_spawn_relation};
-    use crate::settings::RawDemosaicMode;
 
     let mut loading = HashMap::new();
     let hq = DecodeProfile {
@@ -52,4 +51,30 @@ fn should_spawn_load_task_supersedes_on_profile_downgrade() {
         loading.get(&3).map(|e| e.profile.raw_high_quality),
         Some(false)
     );
+}
+
+#[test]
+fn try_note_capacity_requeue_rejects_fourth_attempt() {
+    let loader = ImageLoader::new();
+    let index = 4;
+    assert!(loader.try_note_capacity_requeue(index));
+    assert!(loader.try_note_capacity_requeue(index));
+    assert!(loader.try_note_capacity_requeue(index));
+    assert_eq!(loader.test_capacity_requeue_count(index), 3);
+    assert!(!loader.try_note_capacity_requeue(index));
+    assert_eq!(loader.test_capacity_requeue_count(index), 3);
+    loader.clear_capacity_requeue(index);
+    assert_eq!(loader.test_capacity_requeue_count(index), 0);
+    assert!(loader.try_note_capacity_requeue(index));
+}
+
+#[test]
+fn cancel_all_clears_capacity_requeue_counts() {
+    let mut loader = ImageLoader::new();
+    let index = 2;
+    assert!(loader.try_note_capacity_requeue(index));
+    assert!(loader.try_note_capacity_requeue(index));
+    assert_eq!(loader.test_capacity_requeue_count(index), 2);
+    loader.cancel_all();
+    assert_eq!(loader.test_capacity_requeue_count(index), 0);
 }

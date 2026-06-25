@@ -24,10 +24,11 @@ use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, PreviewBundle, PreviewResult, ProfileSpawnRelation,
+    LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
     RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
     hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hq_preview_max_side, profile_spawn_relation, source_key_for_path,
+    hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
+    in_flight_profile_supersedes_load_result, source_key_for_path,
     static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
@@ -731,6 +732,15 @@ impl ImageLoader {
         self.capacity_requeue_counts.lock().remove(&index);
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_capacity_requeue_count(&self, index: usize) -> u32 {
+        self.capacity_requeue_counts
+            .lock()
+            .get(&index)
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn set_hdr_target_capacity(&self, capacity: f32) {
         self.hdr_target_capacity_bits
             .store(capacity.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -931,9 +941,7 @@ impl ImageLoader {
         adoptee_profile: &DecodeProfile,
     ) -> bool {
         loading.lock().get(&index).is_some_and(|registered| {
-            profile_spawn_relation(adoptee_profile, &registered.profile)
-                == ProfileSpawnRelation::Upgrade
-                || registered.profile.profile_epoch > adoptee_profile.profile_epoch
+            in_flight_profile_supersedes_hq_refinement(adoptee_profile, &registered.profile)
         })
     }
 
@@ -944,10 +952,7 @@ impl ImageLoader {
         spawn_profile: &DecodeProfile,
     ) -> bool {
         loading.lock().get(&index).is_some_and(|registered| {
-            matches!(
-                profile_spawn_relation(spawn_profile, &registered.profile),
-                ProfileSpawnRelation::Downgrade | ProfileSpawnRelation::Upgrade
-            ) || registered.profile.profile_epoch > spawn_profile.profile_epoch
+            in_flight_profile_supersedes_load_result(spawn_profile, &registered.profile)
         })
     }
 

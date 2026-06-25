@@ -112,6 +112,25 @@ pub fn profile_spawn_relation(
     }
 }
 
+/// True when an in-flight registration no longer matches a finished load worker profile.
+pub fn in_flight_profile_supersedes_load_result(
+    spawn_profile: &DecodeProfile,
+    in_flight: &DecodeProfile,
+) -> bool {
+    matches!(
+        profile_spawn_relation(spawn_profile, in_flight),
+        ProfileSpawnRelation::Downgrade | ProfileSpawnRelation::Upgrade
+    )
+}
+
+/// True when an in-flight registration is a strict upgrade over a finished HQ refinement worker.
+pub fn in_flight_profile_supersedes_hq_refinement(
+    adoptee_profile: &DecodeProfile,
+    in_flight: &DecodeProfile,
+) -> bool {
+    profile_spawn_relation(adoptee_profile, in_flight) == ProfileSpawnRelation::Upgrade
+}
+
 fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.raw_high_quality && !old.raw_high_quality {
         return true;
@@ -263,6 +282,59 @@ mod tests {
             profile_spawn_relation(&old, &new),
             ProfileSpawnRelation::Downgrade
         );
+    }
+
+    #[test]
+    fn equal_in_flight_profile_does_not_supersede_load_result() {
+        let profile = base_profile();
+        assert!(!in_flight_profile_supersedes_load_result(&profile, &profile));
+    }
+
+    #[test]
+    fn hq_downgrade_with_epoch_bump_supersedes_load_result() {
+        let worker = DecodeProfile {
+            raw_high_quality: true,
+            profile_epoch: 0,
+            ..base_profile()
+        };
+        let in_flight = DecodeProfile {
+            raw_high_quality: false,
+            profile_epoch: 1,
+            ..base_profile()
+        };
+        assert!(in_flight_profile_supersedes_load_result(&worker, &in_flight));
+    }
+
+    #[test]
+    fn epoch_only_bump_supersedes_via_spawn_relation_not_or_branch() {
+        let worker = base_profile();
+        let mut in_flight = base_profile();
+        in_flight.profile_epoch = worker.profile_epoch + 1;
+        assert_eq!(
+            profile_spawn_relation(&worker, &in_flight),
+            ProfileSpawnRelation::Upgrade
+        );
+        assert!(in_flight_profile_supersedes_load_result(
+            &worker, &in_flight
+        ));
+        assert!(in_flight_profile_supersedes_hq_refinement(
+            &worker, &in_flight
+        ));
+    }
+
+    #[test]
+    fn lower_epoch_in_flight_does_not_supersede_hq_refinement() {
+        let worker = DecodeProfile {
+            profile_epoch: 5,
+            ..base_profile()
+        };
+        let in_flight = DecodeProfile {
+            profile_epoch: 3,
+            ..base_profile()
+        };
+        assert!(!in_flight_profile_supersedes_hq_refinement(
+            &worker, &in_flight
+        ));
     }
 
     #[test]
