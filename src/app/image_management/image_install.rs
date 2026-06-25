@@ -265,6 +265,7 @@ impl ImageViewerApp {
             decoded,
             crate::loader::PreviewStage::Refined,
             Some((decoded.width, decoded.height)),
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
             ctx,
         );
     }
@@ -386,6 +387,11 @@ impl ImageViewerApp {
                 &strip_preview,
                 strip_stage,
                 Some((hdr.width, hdr.height)),
+                if strip_stage == crate::loader::PreviewStage::Initial {
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
+                } else {
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip
+                },
                 ctx,
             );
             }
@@ -435,6 +441,7 @@ impl ImageViewerApp {
                 &strip_preview,
                 crate::loader::PreviewStage::Refined,
                 logical_size,
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip,
                 ctx,
             );
             return;
@@ -445,6 +452,7 @@ impl ImageViewerApp {
             &strip_preview,
             crate::loader::PreviewStage::Refined,
             logical_size,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip,
             ctx,
         );
     }

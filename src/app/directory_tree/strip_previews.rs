@@ -24,8 +24,8 @@ use crate::app::ImageViewerApp;
 use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPendingGpuUpload, DirectoryTreeStripPreviewJobResult,
-    MAX_STRIP_GPU_UPLOADS_PER_PAINT, MAX_STRIP_PENDING_GPU_UPLOADS, decoded_rgba_size_valid,
-    should_replace_strip_thumbnail,
+    MAX_STRIP_GPU_UPLOADS_PER_PAINT, MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag,
+    decoded_rgba_size_valid, should_replace_strip_preview,
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
@@ -98,6 +98,7 @@ impl ImageViewerApp {
         decoded: DecodedImage,
         stage: PreviewStage,
         logical: Option<(u32, u32)>,
+        buffer_tag: StripPreviewBufferTag,
     ) {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
             return;
@@ -122,11 +123,12 @@ impl ImageViewerApp {
                 decoded,
                 stage,
                 logical,
+                buffer_tag,
             });
         #[cfg(feature = "preload-debug")]
         {
             crate::preload_debug!(
-                "[PreloadDebug][StripGpu] queue idx={} stage={:?} decoded={}x{} logical={:?} \
+                "[PreloadDebug][StripGpu] queue idx={} tag={buffer_tag:?} stage={:?} decoded={}x{} logical={:?} \
                  cache_contains={} cache_count={} pending_len={}",
                 index,
                 stage,
@@ -195,6 +197,7 @@ impl ImageViewerApp {
                 &item.decoded,
                 item.stage,
                 item.logical,
+                item.buffer_tag,
                 ctx,
             );
             #[cfg(feature = "preload-debug")]
@@ -313,6 +316,7 @@ impl ImageViewerApp {
             strip.into_owned(),
             PreviewStage::Initial,
             Some((width, height)),
+            StripPreviewBufferTag::IsoGainMapBaseline,
         );
     }
 
@@ -346,15 +350,31 @@ impl ImageViewerApp {
         if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()) && hdr.rgba_f32.is_empty() {
             return false;
         }
-        if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-            if self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(index, logical)
-            {
-                return false;
+        if self.directory_tree_strip_cache.contains(index) {
+            let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
+            let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
+            let hdr_strip_rank =
+                crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+                    StripPreviewBufferTag::HdrToneMappedStrip,
+                    PreviewStage::Refined,
+                );
+            if cached_tag.is_some_and(|tag| {
+                crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+                    tag,
+                    cached_stage.unwrap_or(PreviewStage::Initial),
+                ) >= hdr_strip_rank
+            }) {
+                if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+                    if self
+                        .directory_tree_strip_cache
+                        .is_valid_for_logical(index, logical)
+                    {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
             }
-        } else if self.directory_tree_strip_cache.contains(index) {
-            return false;
         }
         true
     }
@@ -419,6 +439,7 @@ impl ImageViewerApp {
                 decoded,
                 logical,
                 stage,
+                buffer_tag: StripPreviewBufferTag::HdrToneMappedStrip,
             };
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
@@ -466,6 +487,7 @@ impl ImageViewerApp {
         decoded: &crate::loader::DecodedImage,
         stage: crate::loader::PreviewStage,
         logical_size: Option<(u32, u32)>,
+        buffer_tag: StripPreviewBufferTag,
         ctx: &egui::Context,
     ) {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
@@ -489,60 +511,55 @@ impl ImageViewerApp {
                     .directory_tree_strip_cache
                     .is_valid_for_logical(index, logical)
             {
-                let from_installed_hdr = stage == crate::loader::PreviewStage::Refined
-                    && self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-                        logical.0 == hdr.width && logical.1 == hdr.height
-                    });
-                if !from_installed_hdr {
-                    let allow_initial_over_refined =
-                        self.strip_main_loader_sdr_unreliable_for_strip(index);
-                    let would_upgrade = should_replace_strip_thumbnail(
-                        self.directory_tree_strip_cache
-                            .cached_preview_max_side(index),
-                        self.directory_tree_strip_cache.cached_preview_stage(index),
-                        self.directory_tree_strip_cache
-                            .logical_sizes()
+                let would_upgrade = should_replace_strip_preview(
+                    self.directory_tree_strip_cache.cached_buffer_tag(index),
+                    self.directory_tree_strip_cache.cached_preview_stage(index),
+                    self.directory_tree_strip_cache
+                        .logical_sizes()
+                        .get(&index)
+                        .copied(),
+                    decoded,
+                    buffer_tag,
+                    stage,
+                    Some(logical),
+                );
+                if !would_upgrade {
+                    #[cfg(feature = "preload-debug")]
+                    crate::preload_debug!(
+                        "[PreloadDebug][Strip] skip strip cache idx={} reason=keep_existing_tag \
+                         tag={buffer_tag:?} logical={logical:?} decoded={}x{} hdr_cached={}",
+                        index,
+                        decoded.width,
+                        decoded.height,
+                        self.hdr_image_cache
                             .get(&index)
-                            .copied(),
-                        decoded,
-                        stage,
-                        Some(logical),
-                        strip_max_side,
-                        allow_initial_over_refined,
+                            .map(|hdr| format!("{}x{}", hdr.width, hdr.height))
+                            .unwrap_or_else(|| "none".to_string())
                     );
-                    if !would_upgrade {
-                        #[cfg(feature = "preload-debug")]
-                        crate::preload_debug!(
-                            "[PreloadDebug][Strip] skip strip cache idx={} reason=keep_cold_strip \
-                             logical={logical:?} decoded={}x{} hdr_cached={}",
-                            index,
-                            decoded.width,
-                            decoded.height,
-                            self.hdr_image_cache
-                                .get(&index)
-                                .map(|hdr| format!("{}x{}", hdr.width, hdr.height))
-                                .unwrap_or_else(|| "none".to_string())
-                        );
-                        return;
-                    }
+                    return;
                 }
             }
         }
         if self.directory_tree_nav_is_detached() {
-            self.queue_directory_tree_strip_gpu_upload(index, decoded.clone(), stage, logical_size);
+            self.queue_directory_tree_strip_gpu_upload(
+                index,
+                decoded.clone(),
+                stage,
+                logical_size,
+                buffer_tag,
+            );
             return;
         }
-        let allow_initial_over_refined = self.strip_main_loader_sdr_unreliable_for_strip(index);
         self.directory_tree_strip_cache.upsert_from_decoded(
             index,
             decoded,
             stage,
+            buffer_tag,
             logical_size,
             ctx,
             self.current_index,
             self.image_files.len(),
             strip_max_side,
-            allow_initial_over_refined,
         );
     }
 
@@ -607,24 +624,11 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        let incoming_max = preview_w.max(preview_h);
-        if self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(index, logical)
-        {
-            if self
-                .directory_tree_strip_cache
-                .cached_preview_max_side(index)
-                .is_some_and(|cached_max| incoming_max <= cached_max)
-            {
-                return;
-            }
-        }
         self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture.clone(),
             crate::loader::PreviewStage::Refined,
-            incoming_max,
+            StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
             self.current_index,
             self.image_files.len(),
@@ -645,15 +649,17 @@ impl ImageViewerApp {
             );
             return;
         }
+        if self.strip_main_loader_sdr_unreliable_for_strip(index) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] skip texture_cache sync idx={} reason=unreliable_main_sdr",
+                index
+            );
+            return;
+        }
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return;
         };
-        if self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(index, logical)
-        {
-            return;
-        }
         let Some(texture) = self.texture_cache.get(index).cloned() else {
             return;
         };
@@ -663,12 +669,11 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        let incoming_max = preview_w.max(preview_h);
         self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture,
             crate::loader::PreviewStage::Refined,
-            incoming_max,
+            StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some(logical),
             self.current_index,
             self.image_files.len(),
@@ -742,8 +747,8 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        if self.directory_tree_strip_cache.cached_preview_stage(index)
-            != Some(crate::loader::PreviewStage::Initial)
+        if self.directory_tree_strip_cache.cached_buffer_tag(index)
+            != Some(StripPreviewBufferTag::IsoGainMapBaseline)
         {
             return false;
         }
@@ -801,6 +806,7 @@ impl ImageViewerApp {
                 decoded,
                 logical,
                 stage: crate::loader::PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::HdrComposedStrip,
             };
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
@@ -979,6 +985,7 @@ impl ImageViewerApp {
                 decoded,
                 logical,
                 stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
             };
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
@@ -1059,6 +1066,7 @@ impl ImageViewerApp {
             result.decoded,
             result.stage,
             Some(result.logical),
+            result.buffer_tag,
         );
         if !self
             .directory_tree_strip_cache
@@ -1158,6 +1166,7 @@ impl ImageViewerApp {
                 result.decoded,
                 result.stage,
                 Some(result.logical),
+                result.buffer_tag,
             );
             let cache_valid = self
                 .directory_tree_strip_cache
@@ -1289,6 +1298,7 @@ impl ImageViewerApp {
                 decoded,
                 logical,
                 stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
             };
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
@@ -1452,6 +1462,7 @@ impl ImageViewerApp {
                 decoded,
                 PreviewStage::Initial,
                 self.directory_tree_strip_logical_size(index),
+                StripPreviewBufferTag::PreloadSdrFallback,
             );
         }
 
