@@ -451,42 +451,41 @@ impl ImageViewerApp {
         if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
             return false;
         }
-        if self.directory_tree_strip_cache.contains(index) {
-            let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
-            let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
-            let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr);
-            // ISO-deferred empty-float entries use the baseline sync path (early return above).
-            let target_tag =
-                crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                    !hdr.rgba_f32.is_empty(),
-                    fallback.is_sdr_deferred_placeholder(),
-                    false,
-                    false,
-                );
-            if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
-                return false;
-            }
-            let target_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-                target_tag,
-                PreviewStage::Refined,
+        let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) else {
+            return true;
+        };
+        let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
+        let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr);
+        // ISO-deferred empty-float entries use the baseline sync path (early return above).
+        let target_tag =
+            crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+                !hdr.rgba_f32.is_empty(),
+                fallback.is_sdr_deferred_placeholder(),
+                false,
+                false,
             );
-            if cached_tag.is_some_and(|tag| {
-                crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-                    tag,
-                    cached_stage.unwrap_or(PreviewStage::Initial),
-                ) >= target_rank
-            }) {
-                if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-                    if self
-                        .directory_tree_strip_cache
-                        .is_valid_for_logical(index, logical)
-                    {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
+        if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
+            return false;
+        }
+        let target_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+            target_tag,
+            PreviewStage::Refined,
+        );
+        let cached_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+            cached_tag,
+            cached_stage.unwrap_or(PreviewStage::Initial),
+        );
+        if cached_rank < target_rank {
+            return true;
+        }
+        let Some(logical) = self.directory_tree_strip_logical_size(index) else {
+            return false;
+        };
+        if self
+            .directory_tree_strip_cache
+            .is_valid_for_logical(index, logical)
+        {
+            return false;
         }
         true
     }
