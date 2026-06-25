@@ -345,6 +345,8 @@ impl ImageViewerApp {
     }
 
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
+        // Retention uses prefetch_window_max_distance (checklist #8): steady-state
+        // prefetched_tiles.len() <= prefetched_tiles_steady_state_cap(len, max_distance).
         let len = self.image_files.len();
         let current_index = self.current_index;
         let max_distance = self.prefetch_window_max_distance;

@@ -607,7 +607,8 @@ pub struct ImageViewerApp {
     pub(crate) tiled_primary_visible_scratch: HashSet<TileCoord>,
     pub(crate) tiled_visible_coords_scratch: Vec<TileCoord>,
 
-    // Tiled rendering instances decoded during prefetch
+    // Tiled rendering instances decoded during prefetch (bounded by prefetch window; see
+    // prefetch_retention::prefetched_tiles_steady_state_cap).
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
 
     // Theme state

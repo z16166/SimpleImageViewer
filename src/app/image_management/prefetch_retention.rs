@@ -19,6 +19,11 @@
 //! Replaces generation tolerance for prefetch CPU/GPU cache eviction. Current index
 //! is always retained; neighbors within the effective preload window are retained;
 //! window-outside entries survive only while a loader task is still registered.
+//!
+//! **Checklist #8:** `prefetched_tiles`, `hdr_image_cache`, and related index maps
+//! are bounded by the circular preload window (see [`prefetch_window_index_cap`]) plus
+//! at most one in-flight grace entry per active loader slot. Small folders
+//! (`image_count <= 2 * max_distance + 1`) intentionally retain every index.
 
 use super::{
     PREFETCH_WINDOW_DISTANCE, prefetch_circular_distance, prefetch_window_contains,
@@ -73,6 +78,22 @@ pub(super) fn effective_prefetch_window_distance(
     } else {
         PREFETCH_WINDOW_DISTANCE
     }
+}
+
+/// Max distinct indices inside the circular preload window (includes current).
+pub(super) fn prefetch_window_index_cap(image_count: usize, max_distance: usize) -> usize {
+    if image_count == 0 {
+        return 0;
+    }
+    image_count.min(2 * max_distance + 1)
+}
+
+/// Steady-state upper bound on `prefetched_tiles` length (current lives in `tile_manager`).
+///
+/// In-flight loads outside the window may temporarily add entries until navigation runs
+/// `evict_distant_prefetch_caches`.
+pub(super) fn prefetched_tiles_steady_state_cap(image_count: usize, max_distance: usize) -> usize {
+    prefetch_window_index_cap(image_count, max_distance).saturating_sub(1)
 }
 
 pub(super) fn prefetch_cache_retention(
@@ -156,5 +177,28 @@ mod tests {
             effective_prefetch_window_distance(4096, 8192),
             PREFETCH_WINDOW_DISTANCE
         );
+    }
+
+    #[test]
+    fn prefetch_window_caps_prefetched_tiles_for_large_folders() {
+        let d = PREFETCH_WINDOW_DISTANCE;
+        assert_eq!(prefetch_window_index_cap(100, d), 2 * d + 1);
+        assert_eq!(prefetched_tiles_steady_state_cap(100, d), 2 * d);
+    }
+
+    #[test]
+    fn small_folder_retains_all_indices_in_window() {
+        let d = PREFETCH_WINDOW_DISTANCE;
+        assert_eq!(prefetch_window_index_cap(3, d), 3);
+        assert_eq!(prefetched_tiles_steady_state_cap(3, d), 2);
+        for idx in 0..3 {
+            assert!(prefetch_window_contains(0, 3, idx, d));
+        }
+    }
+
+    #[test]
+    fn memory_guard_window_cap_is_current_index_only() {
+        assert_eq!(prefetch_window_index_cap(100, 0), 1);
+        assert_eq!(prefetched_tiles_steady_state_cap(100, 0), 0);
     }
 }
