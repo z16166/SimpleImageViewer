@@ -116,6 +116,11 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
     if ext == "avif" || ext == "avifs" {
         #[cfg(feature = "avif-native")]
         {
+            if let Some(result) =
+                crate::hdr::avif::decode_avif_strip_exif_thumbnail(bytes, path, max_side)
+            {
+                return Some(result);
+            }
             if let Some(result) = crate::hdr::avif::decode_avif_strip_precomposed_hdr(bytes, max_side)
             {
                 return Some(result);

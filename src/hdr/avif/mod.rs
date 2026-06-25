@@ -38,7 +38,8 @@ pub(crate) use metadata::avif_cicp_to_metadata;
 pub(crate) use decode::decode_avif_hdr_bytes;
 #[cfg(feature = "avif-native")]
 pub(crate) use strip_baseline::{
-    decode_avif_strip_iso_gain_map_baseline, decode_avif_strip_precomposed_hdr,
+    decode_avif_strip_exif_thumbnail, decode_avif_strip_iso_gain_map_baseline,
+    decode_avif_strip_precomposed_hdr,
 };
 #[cfg(feature = "avif-native")]
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;

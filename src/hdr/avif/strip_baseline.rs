@@ -16,12 +16,37 @@
 
 //! Fast directory-tree strip decode for ISO gain-map AVIF (baseline only, no gain-map plane RGB).
 
+use std::path::Path;
+
 use super::decode::{decode_avif_image_rgba_u16, libavif_result_to_string, read_avif_decoder_image};
 use super::gain_map::avif_gain_map_to_metadata;
 use super::metadata::{AvifMetadataExt, avif_yuv_to_rgb_output_metadata};
 use super::{avif_cicp_to_metadata};
 use crate::hdr::avif_gain_map_deferred::avif_build_iso_sdr_baseline_rgba8;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
+use crate::loader::downsample_decoded_for_strip;
+use crate::loader::{DecodedImage, preview_aspect_matches_logical};
+
+/// Directory-tree strip via embedded EXIF thumbnail + parse-only logical size (no HDR pixel decode).
+#[cfg(feature = "avif-native")]
+pub(crate) fn decode_avif_strip_exif_thumbnail(
+    bytes: &[u8],
+    path: &Path,
+    max_side: u32,
+) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+    let exif = crate::loader::extract_exif_thumbnail_from_bytes(bytes, path)?;
+    let (logical_w, logical_h) = super::orientation::libavif_probe_logical_size_from_bytes(bytes)?;
+    if !preview_aspect_matches_logical(exif.width, exif.height, logical_w, logical_h) {
+        return None;
+    }
+    let strip = downsample_decoded_for_strip(&exif, max_side)
+        .ok()?
+        .into_owned();
+    if !preview_aspect_matches_logical(strip.width, strip.height, logical_w, logical_h) {
+        return None;
+    }
+    Some(Ok((strip, (logical_w, logical_h))))
+}
 
 /// Decode ISO forward gain-map AVIF primary layer to SDR baseline RGBA8 only.
 ///

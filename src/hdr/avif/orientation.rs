@@ -67,7 +67,7 @@ pub(crate) fn avif_transforms_to_exif_orientation(image: &libavif_sys::avifImage
 /// After [`libavif_sys::avifDecoderParse`], `decoder->image` is filled from the container (incl. `irot` /
 /// `imir`) before bitstream decode — no need for full read.
 #[cfg(feature = "avif-native")]
-pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+fn libavif_parse_container_image(bytes: &[u8]) -> Option<libavif_sys::AvifDecoderOwned> {
     let decoder = libavif_sys::AvifDecoderOwned::new()?;
     unsafe {
         libavif_sys::siv_avif_decoder_set_strict_flags(
@@ -89,6 +89,40 @@ pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<
     if r != libavif_sys::AVIF_RESULT_OK {
         return None;
     }
+    Some(decoder)
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_display_dimensions(image: &libavif_sys::avifImage) -> (u32, u32) {
+    let width = image.width;
+    let height = image.height;
+    if width == 0 || height == 0 {
+        return (0, 0);
+    }
+    if image.transformFlags & AVIF_TRANSFORM_IROT_FLAG != 0 {
+        let angle = image.irot.angle & 3;
+        if angle == 1 || angle == 3 {
+            return (height, width);
+        }
+    }
+    (width, height)
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+    let decoder = libavif_parse_container_image(bytes)?;
+    let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
+    if img.is_null() {
+        return None;
+    }
+    let image = unsafe { &*img };
+    let (width, height) = avif_display_dimensions(image);
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let decoder = libavif_parse_container_image(bytes)?;
     let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
     if img.is_null() {
         return None;
