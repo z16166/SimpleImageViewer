@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::raw_osd::RawOsdInfo;
+use super::decode_profile::DecodeProfile;
 
 pub type SourceKey = u64;
 
@@ -219,7 +220,7 @@ pub trait TiledImageSource: Send + Sync {
     }
     /// Trigger background refinement to replace preview data with full-quality pixels.
     /// Default no-op; only RAW sources need background demosaicing.
-    fn request_refinement(&self, _index: usize, _generation: u64) {}
+    fn request_refinement(&self, _index: usize, _decode_profile: DecodeProfile) {}
 
     /// When true, the loader must not spawn a second HQ preview from [`Self::generate_preview`]
     /// because an async RAW demosaic worker owns HQ refinement (embedded bootstrap path).
@@ -341,6 +342,8 @@ pub enum RenderShape {
     Static,
     Tiled,
     Animated,
+    /// Decode shape not known at request time; install must still hard-check actual `ImageData`.
+    Unknown,
 }
 
 impl ImageData {
@@ -506,7 +509,7 @@ impl PreviewBundle {
 
 pub struct LoadResult {
     pub index: usize,
-    pub generation: u64,
+    pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
     pub result: Result<ImageData, String>,
     pub preview_bundle: PreviewBundle,
@@ -538,7 +541,7 @@ impl Clone for LoadResult {
         }
         Self {
             index: self.index,
-            generation: self.generation,
+            decode_profile: self.decode_profile.clone(),
             source_key: self.source_key,
             result: self.result.clone(),
             preview_bundle: self.preview_bundle.clone(),
@@ -556,14 +559,14 @@ impl Clone for LoadResult {
 /// placeholder fallback (see [`LoadResult::sdr_fallback_is_placeholder`]).
 pub struct HdrSdrFallbackResult {
     pub index: usize,
-    pub generation: u64,
+    pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
     pub fallback: Option<DecodedImage>,
 }
 
 pub struct TileResult {
     pub index: usize,
-    pub generation: u64,
+    pub decode_profile: DecodeProfile,
     pub col: u32,
     pub row: u32,
     pub pixel_kind: TilePixelKind,
@@ -610,7 +613,7 @@ impl TileDecodeSource {
 
 pub struct PreviewResult {
     pub index: usize,
-    pub generation: u64,
+    pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
     pub preview_bundle: PreviewBundle,
     pub error: Option<String>,
@@ -623,7 +626,7 @@ pub struct PreviewResult {
 impl PreviewResult {
     pub fn from_sdr_preview(
         index: usize,
-        generation: u64,
+        decode_profile: DecodeProfile,
         source_key: SourceKey,
         result: Result<DecodedImage, String>,
     ) -> Self {
@@ -633,7 +636,7 @@ impl PreviewResult {
         };
         Self {
             index,
-            generation,
+            decode_profile,
             source_key,
             preview_bundle,
             error,
@@ -650,13 +653,13 @@ pub enum LoaderOutput {
     /// Tone-mapped SDR fallback for static HDR (after native-HDR placeholder load).
     HdrSdrFallback(HdrSdrFallbackResult),
     /// Background refinement finished (e.g. LibRaw demosaic)
-    Refined(usize, u64),
+    Refined(usize),
 }
 
 pub struct RefinementRequest {
     pub path: PathBuf,
     pub index: usize,
-    pub generation: u64,
+    pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
     pub orientation_override: Option<i32>,
     pub logical_width: u32,

@@ -66,7 +66,6 @@ impl ImageViewerApp {
         let path = self.image_files[cur].clone();
         self.loader.request_load(
             cur,
-            self.generation,
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(cur),
@@ -100,10 +99,9 @@ impl ImageViewerApp {
         }
         let cur = self.current_index;
         preload_debug!(
-            "[PreloadDebug] schedule start: cur={} forward={} generation={} preload_enabled={}",
+            "[PreloadDebug] schedule start: cur={} forward={} preload_enabled={}",
             cur,
             forward,
-            self.generation,
             self.settings.preload
         );
 
@@ -130,21 +128,18 @@ impl ImageViewerApp {
         {
             if current_missing_hdr_plane && current_has_asset {
                 preload_debug!(
-                    "[PreloadDebug][RAW] request current reload: idx={} gen={} reason=missing_hdr_plane",
+                    "[PreloadDebug][RAW] request current reload: idx={} reason=missing_hdr_plane",
                     cur,
-                    self.generation,
                 );
             }
             let path = self.image_files[cur].clone();
             preload_debug!(
-                "[PreloadDebug] request current: idx={} gen={} path={}",
+                "[PreloadDebug] request current: idx={} path={}",
                 cur,
-                self.generation,
                 path.display()
             );
             self.loader.request_load(
-                cur,
-                self.generation,
+            cur,
                 path,
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
@@ -358,10 +353,9 @@ impl ImageViewerApp {
                         budget,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] request oversized preload: name={} idx={} gen={} file_size={} decode_budget={} budget={} path={}",
+                            "[PreloadDebug] request oversized preload: name={} idx={} file_size={} decode_budget={} budget={} path={}",
                             direction_name,
                             idx,
-                            self.generation,
                             file_size,
                             decode_budget_bytes,
                             budget,
@@ -394,18 +388,16 @@ impl ImageViewerApp {
             }
 
             preload_debug!(
-                "[PreloadDebug] request preload: name={} idx={} gen={} file_size={} decode_budget={} used_before={} path={}",
+                "[PreloadDebug] request preload: name={} idx={} file_size={} decode_budget={} used_before={} path={}",
                 direction_name,
                 idx,
-                self.generation,
                 file_size,
                 decode_budget_bytes,
                 new_bytes,
                 path.display()
             );
             self.loader.request_load(
-                idx,
-                self.generation,
+            idx,
                 path.clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),

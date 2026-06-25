@@ -563,8 +563,7 @@ impl ImageViewerApp {
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,
-            generation: 0,
-            prefetch_prev_generation: None,
+
             cached_music_count: None,
             cached_pixels_per_point: 1.0,
             active_modal: None,

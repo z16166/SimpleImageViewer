@@ -447,8 +447,7 @@ pub(crate) fn enqueue_hdr_plane_tile_decode(
         return;
     };
     loader.request_tile(
-        current_index,
-        tm.generation,
+        current_index, tm.decode_profile.clone(),
         tile_request_priority(tile_visits_len, visit_idx),
         source,
         coord.col,

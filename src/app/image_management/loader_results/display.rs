@@ -333,10 +333,9 @@ impl ImageViewerApp {
                         // Use the app generation so the worker spawn check matches global_gen.
                         // Clear any stale loading-map slot first so should_spawn_load_task accepts
                         // a re-queue at the same generation after the GPU path finished.
-                        self.loader.finish_image_request(idx, u64::MAX);
+                        self.loader.finish_image_request(idx);
                         self.loader.request_load(
-                            idx,
-                            self.generation,
+            idx,
                             path,
                             self.settings.raw_high_quality,
                             crate::settings::RawDemosaicMode::Cpu,

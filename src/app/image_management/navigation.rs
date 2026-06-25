@@ -115,16 +115,14 @@ impl ImageViewerApp {
         self.invalidate_all_raw_image_caches();
 
         crate::preload_debug!(
-            "[PreloadDebug][RAW] setting_reload raw_hq={} current_idx={} gen={}",
+            "[PreloadDebug][RAW] setting_reload raw_hq={} current_idx={}",
             self.settings.raw_high_quality,
             self.current_index,
-            self.generation
         );
 
         let path = self.image_files[self.current_index].clone();
         self.loader.request_load(
             self.current_index,
-            self.generation,
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),
@@ -137,8 +135,7 @@ impl ImageViewerApp {
     /// Drop every cached/prefetched RAW decode so a [`Settings::raw_high_quality`] toggle cannot
     /// leave neighbor images stuck in the previous performance/HQ pipeline.
     fn invalidate_all_raw_image_caches(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
+        self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.gpu_demosaic_failed_indices.clear();
         self.raw_gpu_demosaic_await_hdr_present = false;
@@ -174,12 +171,10 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.transition_start = None;
         self.pending_transition_target = None;
-        self.prefetch_prev_generation = None;
 
         crate::preload_debug!(
-            "[PreloadDebug][RAW] invalidate_all_raw_caches cleared {} raw indices gen={}",
+            "[PreloadDebug][RAW] invalidate_all_raw_caches cleared {} raw indices",
             _raw_index_count,
-            self.generation
         );
     }
 
@@ -403,25 +398,11 @@ impl ImageViewerApp {
 
         // Check if we have a prefetched TileManager ready to use!
         if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
-            // We successfully hit the cache!
-            // HQ preview tasks for disk-backed HDR tiles (EXR/JXL) are tagged with the load
-            // generation stamped on the prefetched TileManager at install time, not the app
-            // navigation generation. Record that load generation so handle_preview_update()
-            // accepts in-flight results instead of discarding them and re-decoding.
-            let load_gen = tm.generation;
-            let prefetch_gen = self.generation;
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-            self.prefetch_prev_generation = Some(load_gen);
-
-            tm.generation = self.generation;
+            tm.decode_profile = self.decode_profile_for_index(self.current_index);
             self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
-            // Trigger deferred refinement for RAW sources (LibRaw demosaic).
-            // HDR tiled sources: in-flight loader HQ previews carry `load_gen` and will be
-            // accepted by handle_preview_update via prefetch_prev_generation — no re-spawn needed.
             tm.get_source()
-                .request_refinement(self.current_index, self.generation);
+                .request_refinement(self.current_index, tm.decode_profile.clone());
 
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
                 tm.get_source(),
@@ -429,32 +410,24 @@ impl ImageViewerApp {
             self.tile_manager = Some(tm);
 
             crate::preload_debug!(
-                "[PreloadDebug][RAW] navigate prefetch_tile_hit idx={} gen={} raw_hq={} logical={}",
+                "[PreloadDebug][RAW] navigate prefetch_tile_hit idx={} raw_hq={} logical={}",
                 self.current_index,
-                self.generation,
                 self.settings.raw_high_quality,
                 self.current_image_res
                     .map(|(w, h)| format!("{w}x{h}"))
                     .unwrap_or_default()
             );
             log::debug!(
-                "[App] Cache Hit: Restored prefetched TileManager for index {} (load_gen={} nav_gen={} -> current_gen={})",
-                self.current_index,
-                load_gen,
-                prefetch_gen,
-                self.generation
+                "[App] Cache Hit: Restored prefetched TileManager for index {}",
+                self.current_index
             );
         } else if needs_animation_reload {
             crate::preload_debug!(
                 "[PreloadDebug] navigate animation_reload idx={} reason=first_frame_only_preload",
                 self.current_index
             );
-            self.prefetch_prev_generation = None;
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
             self.loader.request_load(
-                self.current_index,
-                self.generation,
+            self.current_index,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
@@ -476,7 +449,6 @@ impl ImageViewerApp {
                     .is_preview_placeholder(self.current_index),
                 self.tile_manager.is_some()
             );
-            self.prefetch_prev_generation = None;
             let is_tiled = self
                 .texture_cache
                 .is_preview_placeholder(self.current_index);
@@ -486,15 +458,12 @@ impl ImageViewerApp {
                     .contains_key(&self.current_index))
                 && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
                 if is_tiled {
                     if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                         self.set_current_image_resolution(Some((w, h)));
                     }
                     self.loader.request_load(
-                        self.current_index,
-                        self.generation,
+            self.current_index,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
                         self.raw_demosaic_mode_for_index(self.current_index),
@@ -502,8 +471,7 @@ impl ImageViewerApp {
                 } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
                     self.set_current_image_resolution(Some((src.width(), src.height())));
                     self.loader.request_load(
-                        self.current_index,
-                        self.generation,
+            self.current_index,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
                         self.raw_demosaic_mode_for_index(self.current_index),
@@ -526,18 +494,10 @@ impl ImageViewerApp {
                 &self.hdr_tiled_source_cache,
             );
             if missing_hdr && self.loader.is_loading_any(idx) {
-                // Fall back to the in-flight generation to reuse the ongoing background load.
-                // This is safe and accepted by accepts_background_image_generation as long as
-                // the index remains registered in the loader's loading map.
-                let inflight_gen = self.loader.current_generation(idx);
                 crate::preload_debug!(
-                    "[PreloadDebug][RAW] navigate inflight_reuse idx={} gen={}",
-                    idx,
-                    inflight_gen
+                    "[PreloadDebug][RAW] navigate inflight_reuse idx={}",
+                    idx
                 );
-                self.generation = inflight_gen;
-                self.loader.set_generation(inflight_gen);
-                self.prefetch_prev_generation = None;
                 if self.current_image_res.is_none() {
                     if let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
                         self.deferred_sdr_uploads
@@ -574,12 +534,8 @@ impl ImageViewerApp {
                         );
                     }
                 }
-                self.prefetch_prev_generation = None;
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
                 self.loader.request_load(
-                    idx,
-                    self.generation,
+            idx,
                     self.image_files[idx].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(idx),
@@ -589,39 +545,18 @@ impl ImageViewerApp {
 
         self.ensure_raw_inflight_bootstrap_present(self.current_index, ctx);
 
+        self.sync_loader_preload_plan();
+
         // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
         self.evict_distant_prefetch_caches();
+        self.cancel_outside_prefetch_window_loader_tasks();
 
         self.schedule_preloads(preload_forward);
-        // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
-        // current index that still carries the old prefetch generation — it may have arrived in
-        // the channel between the generation bump and now and must not be thrown away.
-        let also_keep = self
-            .prefetch_prev_generation
-            .map(|old_gen| (self.current_index, old_gen));
-        let survivor_current_index = self.current_index;
-        let survivor_image_count = self.image_files.len();
-        let survivor_generation = self.generation;
-        let survivor_prefetch_generation = self.prefetch_prev_generation;
-        self.loader.discard_pending_stale_outputs(
-            self.generation,
-            also_keep,
-            move |idx, result_gen| {
-                accepts_background_image_generation(
-                    survivor_current_index,
-                    survivor_image_count,
-                    survivor_generation,
-                    survivor_prefetch_generation,
-                    idx,
-                    result_gen,
-                )
-            },
-        );
+        self.discard_stale_loader_outputs();
         self.refresh_pixel_data_source_for_current_index();
         if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
             self.loader.request_load(
-                self.current_index,
-                self.generation,
+            self.current_index,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
@@ -683,7 +618,6 @@ impl ImageViewerApp {
 
         self.loader.request_load(
             self.current_index,
-            self.generation,
             self.image_files[self.current_index].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),

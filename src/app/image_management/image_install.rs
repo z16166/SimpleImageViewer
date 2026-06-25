@@ -324,7 +324,6 @@ impl ImageViewerApp {
                     self.hdr_in_flight_fallback_refinements.insert(idx);
                     self.loader.trigger_hdr_sdr_fallback_refinement(
                         idx,
-                        self.generation,
                         Arc::clone(&hdr),
                         source_key,
                     );
@@ -396,7 +395,7 @@ impl ImageViewerApp {
     pub(super) fn install_tiled_image(
         &mut self,
         idx: usize,
-        generation: u64,
+        decode_profile: crate::loader::DecodeProfile,
         source: Arc<dyn crate::loader::TiledImageSource>,
         hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
         sdr_preview: Option<&DecodedImage>,
@@ -421,8 +420,7 @@ impl ImageViewerApp {
         self.upload_tiled_bootstrap_preview(ctx, idx, sdr_preview, source.width(), source.height());
 
         let mut tm = build_tiled_manager_with_best_preview(
-            idx,
-            generation,
+            idx, decode_profile,
             Arc::clone(&source),
             self.texture_cache.get(idx).cloned(),
         );
@@ -440,7 +438,7 @@ impl ImageViewerApp {
             self.tile_manager = Some(tm);
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
-            source.request_refinement(idx, self.generation);
+            source.request_refinement(idx, self.decode_profile_for_index(idx));
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
                 Arc::clone(&source),
             ));
@@ -450,9 +448,8 @@ impl ImageViewerApp {
 
         if crate::preload_debug::path_is_raw(&self.image_files[idx]) {
             crate::preload_debug!(
-                "[PreloadDebug][RAW] install_tiled idx={} gen={} current={} logical={}x{} hdr={} sdr_preview={}",
+                "[PreloadDebug][RAW] install_tiled idx={} current={} logical={}x{} hdr={} sdr_preview={}",
                 idx,
-                generation,
                 idx == self.current_index,
                 source.width(),
                 source.height(),

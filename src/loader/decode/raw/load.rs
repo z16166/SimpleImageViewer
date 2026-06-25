@@ -35,8 +35,8 @@ use crate::loader::raw_osd::RawOsdContext;
 
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
-    DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult, RawLoadOutput,
-    RefinementRequest, source_key_for_path,
+    DecodeProfile, DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult,
+    RawLoadOutput, RefinementRequest, source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -147,6 +147,7 @@ fn load_raw_with_embedded_bootstrap(
     height: u32,
     refine_tx: Sender<RefinementRequest>,
     final_lr_flip: i32,
+    decode_profile: DecodeProfile,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
@@ -166,6 +167,7 @@ fn load_raw_with_embedded_bootstrap(
         refine_tx,
         final_lr_flip,
         true,
+        decode_profile,
         hdr_target_capacity,
         hdr_tone_map,
         hdr_buffer_slot.clone(),
@@ -195,24 +197,23 @@ pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
 fn emit_raw_hq_bootstrap_preview(
     load_tx: &crate::loader::orchestrator::LoaderOutputSender,
     index: usize,
-    generation: u64,
     path: &PathBuf,
     preview: &DecodedImage,
+    decode_profile: DecodeProfile,
     raw_bootstrap_osd: Option<RawOsdInfo>,
     #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] log_tag: &str,
 ) {
     crate::preload_debug!(
-        "[PreloadDebug][RAW-{}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        "[PreloadDebug][RAW-{}] bootstrap preview early idx={} {}x{} path={:?}",
         log_tag,
         index,
-        generation,
         preview.width,
         preview.height,
         path.file_name().unwrap_or_default()
     );
     let _ = load_tx.send(LoaderOutput::Preview(PreviewResult {
         index,
-        generation,
+        decode_profile,
         source_key: source_key_for_path(path),
         preview_bundle: PreviewBundle::refined().with_sdr(preview.clone()),
         error: None,
@@ -223,10 +224,10 @@ fn emit_raw_hq_bootstrap_preview(
 
 pub(crate) fn load_raw(
     index: usize,
-    generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
     load_tx: crate::loader::orchestrator::LoaderOutputSender,
+    decode_profile: DecodeProfile,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
@@ -288,9 +289,8 @@ pub(crate) fn load_raw(
     let _ = (open_timings.open_ms, open_timings.thumb_ms, prefetched);
     #[cfg(feature = "preload-debug")]
     crate::preload_debug!(
-        "[PreloadDebug][RAW] open phases idx={} gen={} open_ms={} thumb_ms={} prefetched={} path={:?}",
+        "[PreloadDebug][RAW] open phases idx={} open_ms={} thumb_ms={} prefetched={} path={:?}",
         index,
-        generation,
         open_timings.open_ms,
         open_timings.thumb_ms,
         prefetched,
@@ -388,9 +388,9 @@ pub(crate) fn load_raw(
             emit_raw_hq_bootstrap_preview(
                 &load_tx,
                 index,
-                generation,
                 path,
                 p,
+                decode_profile.clone(),
                 Some(osd_ctx.gpu_bootstrap_dims(p.width, p.height)),
                 "GPU",
             );
@@ -464,9 +464,9 @@ pub(crate) fn load_raw(
                 emit_raw_hq_bootstrap_preview(
                     &load_tx,
                     index,
-                    generation,
                     path,
                     p,
+                    decode_profile.clone(),
                     Some(osd_ctx.hq_bootstrap_dims(p.width, p.height)),
                     "CPU",
                 );
@@ -515,6 +515,7 @@ pub(crate) fn load_raw(
             height,
             refine_tx,
             final_lr_flip,
+            decode_profile.clone(),
             hdr_target_capacity,
             hdr_tone_map,
             &osd_ctx,

@@ -336,6 +336,7 @@ pub(crate) struct RawImageSource {
     orientation_override: i32,
     /// When false, [`Self::request_refinement`] is a no-op (performance mode uses embedded only).
     needs_refinement: bool,
+    decode_profile: crate::loader::DecodeProfile,
     hdr_target_capacity: f32,
     hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
     hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
@@ -350,6 +351,7 @@ impl RawImageSource {
         refine_tx: Sender<RefinementRequest>,
         orientation_override: i32,
         needs_refinement: bool,
+        decode_profile: crate::loader::DecodeProfile,
         hdr_target_capacity: f32,
         hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
         hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
@@ -383,6 +385,7 @@ impl RawImageSource {
             refine_tx,
             orientation_override,
             needs_refinement,
+            decode_profile,
             hdr_target_capacity,
             hdr_tone_map,
             hdr_developed_image,
@@ -472,12 +475,11 @@ impl TiledImageSource for RawImageSource {
         }
     }
 
-    fn request_refinement(&self, index: usize, generation: u64) {
+    fn request_refinement(&self, index: usize, decode_profile: crate::loader::DecodeProfile) {
         if !self.needs_refinement {
             crate::preload_debug!(
-                "[PreloadDebug][RAW] refine_skip idx={} gen={} reason=needs_refinement_false path={}",
+                "[PreloadDebug][RAW] refine_skip idx={} reason=needs_refinement_false path={}",
                 index,
-                generation,
                 self.path.display()
             );
             log::debug!(
@@ -487,21 +489,19 @@ impl TiledImageSource for RawImageSource {
             return;
         }
         crate::preload_debug!(
-            "[PreloadDebug][RAW] refine_queue idx={} gen={} hdr_cap={:.3} path={}",
+            "[PreloadDebug][RAW] refine_queue idx={} hdr_cap={:.3} path={}",
             index,
-            generation,
             self.hdr_target_capacity,
             self.path.display()
         );
         log::debug!(
-            "[RawImageSource] Triggering HQ refinement for index={}, gen={}",
-            index,
-            generation
+            "[RawImageSource] Triggering HQ refinement for index={}",
+            index
         );
         let _ = self.refine_tx.send(RefinementRequest {
             path: self.path.clone(),
             index,
-            generation,
+            decode_profile,
             source_key: source_key_for_path(&self.path),
             orientation_override: Some(self.orientation_override),
             logical_width: self.width,

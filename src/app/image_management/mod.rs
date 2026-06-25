@@ -38,8 +38,10 @@ mod hdr_state;
 mod image_install;
 mod loader_results;
 mod navigation;
+mod prefetch_retention;
 mod preload;
 mod preview;
+mod result_gate;
 
 #[cfg(test)]
 fn has_startup_target(
@@ -252,12 +254,8 @@ pub(crate) fn should_defer_hdr_sdr_fallback_install(
     transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_HOLD)
 }
 
-/// Circular distance within which prefetch CPU/GPU caches are retained and background decode
-/// results may survive a small number of navigation generation bumps.
+/// Circular distance within which prefetch CPU/GPU caches are retained (see `prefetch_retention`).
 pub(crate) const PREFETCH_WINDOW_DISTANCE: usize = 2;
-
-/// Max `generation` drift still accepted for in-window background `LoaderOutput::Image` installs.
-const BACKGROUND_IMAGE_GEN_TOLERANCE: u64 = 4;
 
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
 const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
@@ -436,12 +434,11 @@ fn image_file_entries_with_missing_tail(
 }
 
 fn build_tiled_manager_with_best_preview(
-    index: usize,
-    generation: u64,
+    index: usize, decode_profile: crate::loader::DecodeProfile,
     source: Arc<dyn crate::loader::TiledImageSource>,
     cached_handle: Option<egui::TextureHandle>,
 ) -> TileManager {
-    let mut tm = TileManager::with_source(index, generation, source);
+    let mut tm = TileManager::with_source(index, decode_profile, source);
     tm.preview_texture = cached_handle;
     tm
 }
@@ -691,7 +688,6 @@ fn invalidate_tile_manager_requests_for_view_change(
     tile_manager: &mut Option<TileManager>,
 ) -> bool {
     if let Some(tm) = tile_manager {
-        tm.generation = tm.generation.wrapping_add(1);
         tm.pending_tiles.clear();
         true
     } else {
@@ -834,6 +830,9 @@ impl<'a> ImageInstallPlan<'a> {
                     ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
                 }
             }
+            LoadedRenderShape::Unknown => Self::Error {
+                error: "image render shape unknown at install",
+            },
             LoadedRenderShape::Animated => match image_data {
                 ImageData::Animated(frames) => Self::Animated { frames },
                 ImageData::HdrAnimated(frames) => Self::HdrAnimated {
@@ -868,6 +867,162 @@ impl<'a> ImageInstallPlan<'a> {
     }
 }
 impl ImageViewerApp {
+    pub(super) fn result_gate_context(&mut self) -> result_gate::ResultGateContext {
+        self.preload_memory.refresh_if_stale();
+        result_gate::ResultGateContext {
+            current_index: self.current_index,
+            image_count: self.image_files.len(),
+            max_distance: prefetch_retention::effective_prefetch_window_distance(
+                self.preload_memory.available_memory_mb(),
+                self.preload_memory.total_memory_mb(),
+            ),
+        }
+    }
+
+    pub(super) fn display_requirements_for_index(
+        &self,
+        idx: usize,
+    ) -> crate::loader::DisplayRequirements {
+        use crate::loader::{LoadIntent, RenderShape};
+        crate::loader::DisplayRequirements {
+            raw_high_quality: self.settings.raw_high_quality,
+            raw_demosaic_mode: self.raw_demosaic_mode_for_index(idx),
+            output_mode: self.hdr_capabilities.output_mode,
+            ultra_hdr_decode_capacity: self.effective_ultra_hdr_decode_capacity(),
+            render_shape: RenderShape::Unknown,
+            load_intent: if idx == self.current_index {
+                LoadIntent::Current
+            } else {
+                LoadIntent::NeighborPrefetch
+            },
+            device_id: Some(self.current_device_id),
+        }
+    }
+
+    pub(super) fn decode_profile_for_index(&self, idx: usize) -> crate::loader::DecodeProfile {
+        let req = self.display_requirements_for_index(idx);
+        crate::loader::DecodeProfile {
+            raw_high_quality: req.raw_high_quality,
+            raw_demosaic_mode: req.raw_demosaic_mode,
+            output_mode: req.output_mode,
+            ultra_hdr_decode_capacity: req.ultra_hdr_decode_capacity,
+            render_shape: req.render_shape,
+            load_intent: req.load_intent,
+            profile_epoch: self.loader.profile_epoch(),
+        }
+    }
+
+    pub(super) fn sync_loader_preload_plan(&mut self) {
+        self.preload_memory.refresh_if_stale();
+        let max_distance = prefetch_retention::effective_prefetch_window_distance(
+            self.preload_memory.available_memory_mb(),
+            self.preload_memory.total_memory_mb(),
+        );
+        self.loader.sync_preload_plan(self.current_index, self.image_files.len(), max_distance);
+        self.loader.set_output_mode(self.hdr_capabilities.output_mode);
+    }
+
+    /// §3.G profile invalidation step 1: workers observe a newer epoch before cancel/spawn.
+    pub(super) fn invalidate_decode_profile_epoch(&mut self) {
+        self.loader.bump_profile_epoch();
+    }
+
+    /// Cancel loader in-flight entries for indices outside the effective preload window.
+    pub(super) fn cancel_outside_prefetch_window_loader_tasks(&mut self) {
+        let count = self.image_files.len();
+        if count == 0 {
+            return;
+        }
+        self.preload_memory.refresh_if_stale();
+        let max_distance = prefetch_retention::effective_prefetch_window_distance(
+            self.preload_memory.available_memory_mb(),
+            self.preload_memory.total_memory_mb(),
+        );
+        let current = self.current_index;
+        let outside: Vec<usize> = (0..count)
+            .filter(|&idx| {
+                idx != current && !prefetch_window_contains(current, count, idx, max_distance)
+            })
+            .collect();
+        if !outside.is_empty() {
+            self.loader.cancel_indices(outside);
+        }
+    }
+
+    pub(super) fn discard_stale_loader_outputs(&mut self) {
+        let gate_ctx = self.result_gate_context();
+        let files = self.image_files.clone();
+        let raw_hq = self.settings.raw_high_quality;
+        let output_mode = self.hdr_capabilities.output_mode;
+        let ultra_cap = self.effective_ultra_hdr_decode_capacity();
+        let device_id = self.current_device_id;
+        let current = self.current_index;
+
+        self.loader.discard_pending_stale_outputs_profile(|output, loading| {
+            match output {
+                LoaderOutput::Image(r) => {
+                    if !files
+                        .get(r.index)
+                        .is_some_and(|p| source_key_for_path(p) == r.source_key)
+                    {
+                        return false;
+                    }
+                    let is_loading = loading.contains_key(&r.index);
+                    if !gate_ctx.retention_for(r.index, is_loading).should_retain() {
+                        return false;
+                    }
+                    let display = crate::loader::DisplayRequirements {
+                        raw_high_quality: raw_hq,
+                        raw_demosaic_mode: crate::settings::RawDemosaicMode::Gpu,
+                        output_mode,
+                        ultra_hdr_decode_capacity: ultra_cap,
+                        render_shape: crate::loader::RenderShape::Unknown,
+                        load_intent: if r.index == current {
+                            crate::loader::LoadIntent::Current
+                        } else {
+                            crate::loader::LoadIntent::NeighborPrefetch
+                        },
+                        device_id: Some(device_id),
+                    };
+                    crate::loader::profile_satisfies_display(&r.decode_profile, &display)
+                }
+                LoaderOutput::Preview(p) => {
+                    if !files
+                        .get(p.index)
+                        .is_some_and(|path| source_key_for_path(path) == p.source_key)
+                    {
+                        return false;
+                    }
+                    let is_loading = loading.contains_key(&p.index);
+                    if !gate_ctx.retention_for(p.index, is_loading).should_retain() {
+                        return false;
+                    }
+                    let display = crate::loader::DisplayRequirements {
+                        raw_high_quality: raw_hq,
+                        raw_demosaic_mode: crate::settings::RawDemosaicMode::Gpu,
+                        output_mode,
+                        ultra_hdr_decode_capacity: ultra_cap,
+                        render_shape: crate::loader::RenderShape::Unknown,
+                        load_intent: if p.index == current {
+                            crate::loader::LoadIntent::Current
+                        } else {
+                            crate::loader::LoadIntent::NeighborPrefetch
+                        },
+                        device_id: Some(device_id),
+                    };
+                    crate::loader::profile_satisfies_display(&p.decode_profile, &display)
+                }
+                LoaderOutput::Refined(idx) => gate_ctx
+                    .retention_for(*idx, loading.contains_key(idx))
+                    .should_retain(),
+                LoaderOutput::Tile(t) => gate_ctx
+                    .retention_for(t.index, loading.contains_key(&t.index))
+                    .should_retain(),
+                LoaderOutput::HdrSdrFallback(_) => true,
+            }
+        });
+    }
+
     pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
         if self.transition_start.is_some() {
             return;
@@ -894,24 +1049,11 @@ impl ImageViewerApp {
                     .insert(self.current_index);
                 self.loader.trigger_hdr_sdr_fallback_refinement(
                     self.current_index,
-                    self.generation,
                     hdr,
                     source_key,
                 );
             }
         }
-    }
-
-    pub(super) fn accepts_background_image_generation(&self, idx: usize, generation: u64) -> bool {
-        accepts_background_image_generation_with_loader(
-            &self.loader,
-            self.current_index,
-            self.image_files.len(),
-            self.generation,
-            self.prefetch_prev_generation,
-            idx,
-            generation,
-        )
     }
 
     pub(super) fn raw_hq_index_requires_hdr_plane(&self, index: usize) -> bool {
@@ -940,62 +1082,6 @@ fn raw_hq_index_requires_hdr_plane(
         && image_files
             .get(index)
             .is_some_and(|p| crate::preload_debug::path_is_raw(p))
-}
-
-pub(super) fn accepts_background_image_generation(
-    current_index: usize,
-    image_count: usize,
-    current_generation: u64,
-    prefetch_prev_generation: Option<u64>,
-    idx: usize,
-    generation: u64,
-) -> bool {
-    if generation == current_generation {
-        return true;
-    }
-    if idx == current_index {
-        return prefetch_prev_generation == Some(generation);
-    }
-    if image_count == 0 {
-        return false;
-    }
-    if !prefetch_window_contains(current_index, image_count, idx, PREFETCH_WINDOW_DISTANCE) {
-        return false;
-    }
-    current_generation.wrapping_sub(generation) <= BACKGROUND_IMAGE_GEN_TOLERANCE
-}
-
-/// Shared generation gate for loader results and distant-prefetch eviction.
-pub(super) fn accepts_background_image_generation_with_loader(
-    loader: &crate::loader::ImageLoader,
-    current_index: usize,
-    image_count: usize,
-    current_generation: u64,
-    prefetch_prev_generation: Option<u64>,
-    idx: usize,
-    generation: u64,
-) -> bool {
-    if loader.is_loading(idx, generation) {
-        return true;
-    }
-    accepts_background_image_generation(
-        current_index,
-        image_count,
-        current_generation,
-        prefetch_prev_generation,
-        idx,
-        generation,
-    )
-}
-
-/// HQ loader previews are tagged with the load generation; a prefetched [`TileManager`] promoted
-/// via `prefetch_tile_hit` bumps `tm.generation` once while the in-flight preview still carries
-/// the install generation.
-pub(super) fn preview_generation_matches_prefetched_tile(
-    preview_generation: u64,
-    tile_generation: u64,
-) -> bool {
-    preview_generation == tile_generation || preview_generation.wrapping_add(1) == tile_generation
 }
 
 /// High-quality RAW navigation requires an HDR plane entry. Prefetch eviction may drop HDR while
@@ -1189,78 +1275,6 @@ mod raw_hq_navigate_missing_hdr_plane_tests {
     }
 }
 
-#[cfg(test)]
-mod background_image_generation_tests {
-    use super::accepts_background_image_generation;
-
-    #[test]
-    fn accepts_in_window_background_results_within_generation_tolerance() {
-        assert!(accepts_background_image_generation(
-            33, 100, 18, None, 34, 16
-        ));
-        assert!(!accepts_background_image_generation(
-            33, 100, 18, None, 34, 10
-        ));
-        assert!(!accepts_background_image_generation(
-            31, 100, 18, None, 34, 16
-        ));
-        assert!(!accepts_background_image_generation(
-            33, 100, 18, None, 40, 16
-        ));
-    }
-
-    #[test]
-    fn current_index_only_accepts_exact_or_prefetch_previous_generation() {
-        assert!(accepts_background_image_generation(
-            34, 100, 19, None, 34, 19
-        ));
-        assert!(accepts_background_image_generation(
-            34,
-            100,
-            19,
-            Some(18),
-            34,
-            18
-        ));
-        assert!(!accepts_background_image_generation(
-            34, 100, 19, None, 34, 18
-        ));
-    }
-
-    #[test]
-    fn current_index_accepts_inflight_loader_preview_after_prefetch_promotion() {
-        // Background preload tagged HQ preview with load_gen=5; user navigated to the image
-        // (current_gen=7) before the preview arrived. prefetch_prev_generation must carry load_gen.
-        assert!(accepts_background_image_generation(5, 12, 7, Some(5), 5, 5));
-        assert!(!accepts_background_image_generation(
-            5,
-            12,
-            7,
-            Some(6),
-            5,
-            5
-        ));
-    }
-
-    #[test]
-    fn neighbor_prefetch_preview_accepted_within_generation_tolerance() {
-        // idx=6 HQ preview (load_gen=10) arrives while viewing idx=5 (gen=12).
-        assert!(accepts_background_image_generation(5, 12, 12, None, 6, 10));
-    }
-}
-
-#[cfg(test)]
-mod prefetched_preview_generation_tests {
-    use super::preview_generation_matches_prefetched_tile;
-
-    #[test]
-    fn matches_load_generation_or_one_promotion_bump() {
-        assert!(preview_generation_matches_prefetched_tile(10, 10));
-        assert!(preview_generation_matches_prefetched_tile(10, 11));
-        assert!(!preview_generation_matches_prefetched_tile(10, 12));
-        assert!(!preview_generation_matches_prefetched_tile(10, 9));
-    }
-}
 
 pub(super) fn prefetch_circular_distance(
     current_index: usize,

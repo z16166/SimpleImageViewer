@@ -17,6 +17,7 @@
 //! Image loading (`ImageLoader`), decode pipeline ([`decode`]), helper modules, and GPU texture cache.
 
 mod decode;
+mod decode_profile;
 mod hdr_fallback;
 mod metadata;
 mod orchestrator;
@@ -43,6 +44,10 @@ pub use preview_caps::{
 pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::TextureCache;
+pub use decode_profile::{
+    DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
+    decode_profile_stub, decode_profile_with_epoch, profile_spawn_relation, profile_satisfies_display,
+};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;

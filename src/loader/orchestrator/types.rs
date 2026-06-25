@@ -17,7 +17,10 @@
 //! Worker pool, deferred loads, refinement channels, tile queue orchestration ([`ImageLoader`]).
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{LoaderOutput, RefinementRequest, TileDecodeSource, TilePixelKind};
+use crate::loader::{
+    DecodeProfile, InFlightLoad, LoaderOutput, ProfileSpawnRelation, RefinementRequest,
+    TileDecodeSource, TilePixelKind, profile_spawn_relation,
+};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
 
@@ -26,6 +29,8 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
+
+use super::preload_plan::PreloadPlanSnapshot;
 
 /// Crossbeam sender that wakes the root window when a decode worker posts a result.
 #[derive(Clone)]
@@ -63,7 +68,7 @@ impl LoaderOutputSender {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TileInFlightKey {
     index: usize,
-    generation: u64,
+    profile_epoch: u64,
     col: u32,
     row: u32,
     pixel_kind: TilePixelKind,
@@ -72,14 +77,14 @@ pub(crate) struct TileInFlightKey {
 impl TileInFlightKey {
     pub(crate) fn new(
         index: usize,
-        generation: u64,
+        profile_epoch: u64,
         col: u32,
         row: u32,
         pixel_kind: TilePixelKind,
     ) -> Self {
         Self {
             index,
-            generation,
+            profile_epoch,
             col,
             row,
             pixel_kind,
@@ -88,7 +93,7 @@ impl TileInFlightKey {
 }
 
 pub(crate) struct TileRequest {
-    pub(crate) generation: u64,
+    pub(crate) profile_epoch: u64,
     pub(crate) priority: f32, // Higher is better
     pub(crate) index: usize,
     pub(crate) col: u32,
@@ -98,7 +103,7 @@ pub(crate) struct TileRequest {
 
 impl PartialEq for TileRequest {
     fn eq(&self, other: &Self) -> bool {
-        self.generation == other.generation && self.priority == other.priority
+        self.profile_epoch == other.profile_epoch && self.priority == other.priority
     }
 }
 impl Eq for TileRequest {}
@@ -109,7 +114,7 @@ impl PartialOrd for TileRequest {
 }
 impl Ord for TileRequest {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.generation.cmp(&other.generation).then_with(|| {
+        self.profile_epoch.cmp(&other.profile_epoch).then_with(|| {
             self.priority
                 .partial_cmp(&other.priority)
                 .unwrap_or(Ordering::Equal)
@@ -121,13 +126,12 @@ impl Ord for TileRequest {
 /// cannot spawn one OS thread per request (see `ImageLoader::request_load`).
 pub(crate) struct DelayedFallbackJob {
     pub(crate) index: usize,
-    pub(crate) generation: u64,
+    pub(crate) decode_profile: DecodeProfile,
     pub(crate) path: PathBuf,
     pub(crate) high_quality: bool,
     pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
     pub(crate) claimed: Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) loading: Arc<Mutex<HashMap<usize, u64>>>,
-    pub(crate) current_gen: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) loading: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
     pub(crate) tx: LoaderOutputSender,
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) hdr_target_capacity: f32,
@@ -142,14 +146,21 @@ pub(crate) struct DelayedFallbackJob {
 }
 
 pub(crate) fn should_spawn_load_task(
-    loading: &mut HashMap<usize, u64>,
+    loading: &mut HashMap<usize, InFlightLoad>,
     index: usize,
-    generation: u64,
+    profile: DecodeProfile,
 ) -> bool {
-    match loading.get(&index).copied() {
-        Some(existing) if generation <= existing => false,
-        _ => {
-            loading.insert(index, generation);
+    match loading.get(&index) {
+        Some(existing) => match profile_spawn_relation(&existing.profile, &profile) {
+            ProfileSpawnRelation::Equal => false,
+            ProfileSpawnRelation::Upgrade => {
+                loading.insert(index, InFlightLoad { profile });
+                true
+            }
+            ProfileSpawnRelation::Downgrade => false,
+        },
+        None => {
+            loading.insert(index, InFlightLoad { profile });
             true
         }
     }
@@ -159,11 +170,9 @@ pub struct ImageLoader {
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
-    /// Maps image index -> latest requested generation ID.
-    pub(crate) loading: Arc<Mutex<HashMap<usize, u64>>>,
-    /// Global generation counter — updated on every navigation.
-    /// Spawned tasks check this to detect staleness and abort early.
-    pub(crate) current_gen: Arc<std::sync::atomic::AtomicU64>,
+    /// Maps image index -> registered in-flight load (profile + diagnostic generation).
+    pub(crate) loading: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+    pub(crate) preload_plan: Arc<PreloadPlanSnapshot>,
     pub(crate) pool: Arc<rayon::ThreadPool>,
     /// Priority queue for tile requests.
     pub(crate) tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
@@ -185,4 +194,5 @@ pub struct ImageLoader {
     /// Live epoch; compare before background GPU upload and on the main thread at registration.
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
+    pub(crate) output_mode_bits: Arc<AtomicU32>,
 }

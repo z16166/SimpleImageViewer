@@ -228,10 +228,10 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
     let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
     let result = load_image_file(
         1,
-        7,
         &path,
         crate::loader::orchestrator::LoaderOutputSender::new(tx),
         refine_tx,
+        crate::loader::decode_profile_stub(),
         false,
         crate::settings::RawDemosaicMode::Cpu,
         HdrToneMapSettings::default().target_hdr_capacity(),

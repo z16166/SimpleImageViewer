@@ -17,25 +17,37 @@
 use super::*;
 
 impl ImageViewerApp {
-    /// Handles a Refined notification: bumps generation so TileManager
+    /// Handles a Refined notification: refreshes TileManager decode profile and
     /// re-fetches tiles from the newly developed high-resolution buffer.
     pub(super) fn handle_refined_notification(
         &mut self,
         idx: usize,
-        gen_id: u64,
         ctx: &egui::Context,
     ) {
-        if idx == self.current_index && gen_id == self.generation {
+        let gate_ctx = self.result_gate_context();
+        let is_loading = self.loader.is_loading(idx);
+        if !gate_ctx.retention_for(idx, is_loading).should_retain() {
+            log::debug!(
+                "[App] Refined: ignoring idx={} outside preload retention window",
+                idx
+            );
+            return;
+        }
+
+        let display = self.display_requirements_for_index(idx);
+        let profile_ok = self
+            .loader
+            .in_flight_profile(idx)
+            .is_some_and(|p| crate::loader::profile_satisfies_display(&p, &display));
+        if idx == self.current_index && profile_ok {
             log::debug!("[App] Refined image notification for index={}", idx);
 
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
 
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-
+            let decode_profile = self.decode_profile_for_index(idx);
             if let Some(tm) = &mut self.tile_manager {
                 log::debug!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
-                tm.generation = self.generation;
+                tm.decode_profile = decode_profile;
                 tm.pending_tiles.clear();
                 self.texture_cache.remove(idx);
                 let preserve_hdr_tiled = self.hdr_tiled_source_cache.contains_key(&idx);
@@ -54,8 +66,7 @@ impl ImageViewerApp {
                 self.texture_cache.remove(idx);
                 self.remove_hdr_image_index(idx);
                 self.loader.request_load(
-                    self.current_index,
-                    self.generation,
+            self.current_index,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
@@ -73,15 +84,14 @@ impl ImageViewerApp {
         } else {
             // Non-current image refined in background OR stale refinement result.
 
-            // CRITICAL: If it's the current index but the generation doesn't match,
+            // CRITICAL: If it's the current index but profile/gen don't match,
             // it's a stale result from a previous visit. We MUST NOT evict the
             // CURRENT texture cache, otherwise the screen will flicker or go blank.
             if idx == self.current_index {
                 log::debug!(
-                    "[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})",
+                    "[App] Refined: ignoring stale background update for current index {} (profile_ok={})",
                     idx,
-                    gen_id,
-                    self.generation
+                    profile_ok
                 );
                 return;
             }
@@ -97,7 +107,7 @@ impl ImageViewerApp {
         }
     }
 
-    /// Returns `Some((idx, generation, path))` when the result was stale (wrong HDR capacity) and
+    /// Returns `Some((idx, path))` when the result was stale (wrong HDR capacity) and
     /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
     /// slot.
     pub(crate) fn handle_image_load_result(
@@ -106,25 +116,21 @@ impl ImageViewerApp {
         install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
         defer_sdr_upload: bool,
-    ) -> Option<(usize, u64, std::path::PathBuf)> {
+    ) -> Option<(usize, std::path::PathBuf)> {
         let idx = load_result.index;
-        let generation = load_result.generation;
-
         if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
             crate::preload_debug!(
-                "[PreloadDebug] stale-capacity drop: idx={} decoded_cap={:.3} current_cap={:.3} result_gen={} app_gen={}",
+                "[PreloadDebug] stale-capacity drop: idx={} decoded_cap={:.3} current_cap={:.3}",
                 idx,
                 load_result.target_hdr_capacity,
-                self.ultra_hdr_decode_capacity,
-                generation,
-                self.generation
+                self.ultra_hdr_decode_capacity
             );
             let requeue = if self.hdr_image_cache.contains_key(&idx) {
                 None
             } else if self.loader.is_loading_any(idx) {
                 None
             } else if !self.image_files.is_empty() && idx < self.image_files.len() {
-                Some((idx, self.generation, self.image_files[idx].clone()))
+                Some((idx, self.image_files[idx].clone()))
             } else {
                 None
             };
@@ -168,7 +174,7 @@ impl ImageViewerApp {
             } => {
                 self.install_tiled_image(
                     idx,
-                    generation,
+                    load_result.decode_profile.clone(),
                     source,
                     hdr_source,
                     sdr_preview,
@@ -200,7 +206,6 @@ impl ImageViewerApp {
         &mut self,
         load_result: &LoadResult,
         install_plan: &ImageInstallPlan<'_>,
-        generation: u64,
         _reason: &str,
         ctx: &egui::Context,
     ) -> bool {
@@ -217,12 +222,11 @@ impl ImageViewerApp {
             return false;
         };
         crate::preload_debug!(
-            "[PreloadDebug] install hdr-only defer sdr: idx={} current={} gen={} reason={_reason}",
+            "[PreloadDebug] install hdr-only defer sdr: idx={} current={} reason={_reason}",
             idx,
             self.current_index,
-            generation,
         );
-        self.loader.finish_image_request(idx, generation);
+        self.loader.finish_image_request(idx);
         self.handle_image_load_result(
             load_result,
             ImageInstallPlan::StaticHdr {

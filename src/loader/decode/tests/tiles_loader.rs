@@ -28,12 +28,11 @@ use crate::loader::{
 fn image_request_stays_inflight_until_ui_finishes_installing_result() {
     let mut loader = ImageLoader::new();
     let index = 7;
-    let generation = 11;
-    loader.test_register_inflight(index, generation);
+    loader.test_register_inflight(index);
 
     let load_result = LoadResult {
         index,
-        generation,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Err("synthetic".to_string()),
         preview_bundle: PreviewBundle::initial(),
@@ -48,10 +47,10 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
 
     let output = loader.poll().expect("polled image result");
     assert!(matches!(output, LoaderOutput::Image(_)));
-    assert!(loader.is_loading(index, generation));
+    assert!(loader.is_loading(index));
 
-    loader.finish_image_request(index, generation);
-    assert!(!loader.is_loading(index, generation));
+    loader.finish_image_request(index);
+    assert!(!loader.is_loading(index));
 }
 
 #[test]
@@ -74,7 +73,7 @@ fn request_tile_decodes_hdr_source_into_hdr_cache_and_reports_hdr_ready() {
         .expect("build HDR tiled source"),
     );
 
-    loader.request_tile(3, 0, 1.0, TileDecodeSource::Hdr(Arc::clone(&source)), 0, 0);
+    loader.request_tile(3, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(Arc::clone(&source)), 0, 0);
 
     let output = loader
         .rx
@@ -83,7 +82,6 @@ fn request_tile_decodes_hdr_source_into_hdr_cache_and_reports_hdr_ready() {
     match output {
         LoaderOutput::Tile(tile) => {
             assert_eq!(tile.index, 3);
-            assert_eq!(tile.generation, 0);
             assert_eq!(tile.col, 0);
             assert_eq!(tile.row, 0);
             assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);
@@ -131,7 +129,7 @@ fn request_tile_reports_ready_when_hdr_tile_is_already_cached() {
         )
         .expect("seed HDR tile cache");
 
-    loader.request_tile(3, 9, 1.0, TileDecodeSource::Hdr(source), 0, 0);
+    loader.request_tile(3, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(source), 0, 0);
 
     let output = loader
         .rx
@@ -140,7 +138,6 @@ fn request_tile_reports_ready_when_hdr_tile_is_already_cached() {
     match output {
         LoaderOutput::Tile(tile) => {
             assert_eq!(tile.index, 3);
-            assert_eq!(tile.generation, 9);
             assert_eq!(tile.col, 0);
             assert_eq!(tile.row, 0);
             assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);
@@ -196,7 +193,7 @@ fn request_tile_reports_ready_when_hdr_decode_fails() {
     let loader = ImageLoader::new();
     let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(FailingHdrTiledSource);
 
-    loader.request_tile(5, 13, 1.0, TileDecodeSource::Hdr(source), 0, 0);
+    loader.request_tile(5, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(source), 0, 0);
 
     let output = loader
         .rx
@@ -205,7 +202,6 @@ fn request_tile_reports_ready_when_hdr_decode_fails() {
     match output {
         LoaderOutput::Tile(tile) => {
             assert_eq!(tile.index, 5);
-            assert_eq!(tile.generation, 13);
             assert_eq!(tile.col, 0);
             assert_eq!(tile.row, 0);
             assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);

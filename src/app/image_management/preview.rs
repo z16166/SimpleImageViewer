@@ -37,8 +37,27 @@ impl ImageViewerApp {
     ) {
         // SDR pixels are already in PIXEL_CACHE; HDR pixels are already in the
         // HdrTiledSource cache. Either way, clear the shared pending marker.
+        let gate_ctx = self.result_gate_context();
         if let Some(ref mut tm) = self.tile_manager {
-            if tm.image_index == tile_result.index && tm.generation == tile_result.generation {
+            let source_key = crate::loader::source_key_for_path(
+                self.image_files
+                    .get(tile_result.index)
+                    .map(|p| p.as_path())
+                    .unwrap_or(std::path::Path::new("")),
+            );
+            let gate = result_gate::gate_tile_result(
+                &gate_ctx,
+                &tile_result,
+                tm.image_index,
+                &tm.decode_profile,
+                &self.image_files,
+                source_key,
+                self.loader.is_loading_any(tile_result.index),
+            );
+            if gate != result_gate::GateDecision::Accept {
+                return;
+            }
+            if tm.image_index == tile_result.index {
                 tm.pending_tiles.remove(&tile_result.pending_key());
                 if should_request_repaint_for_asset_update(
                     AssetUpdateKind::TileReady,
@@ -52,6 +71,8 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
+        let gate_ctx = self.result_gate_context();
+        let display = self.display_requirements_for_index(update.index);
         let Some(path_for_logs) = self.image_files.get(update.index) else {
             log::warn!(
                 "[App] Preview update discarded (index {} out of range; list len {})",
@@ -61,41 +82,24 @@ impl ImageViewerApp {
             return;
         };
 
-        // Drop stale previews using the same generation gate as background image installs so
-        // in-flight HQ results can update prefetched TileManagers after the user navigates away.
-        let registered_inflight = self.loader.is_loading_any(update.index)
-            && update.generation == self.loader.current_generation(update.index);
-        let is_prefetch_survivor = update.index == self.current_index
-            && (self.prefetch_prev_generation == Some(update.generation) || registered_inflight);
-
-        if !self.accepts_background_image_generation(update.index, update.generation) {
+        let gate_decision = result_gate::gate_preview_result(
+            &gate_ctx,
+            &update,
+            &self.image_files,
+            &display,
+            self.loader.is_loading_any(update.index),
+        );
+        if gate_decision != result_gate::GateDecision::Accept {
             let file_name = path_for_logs
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
             log::warn!(
-                "[App] [{}] Preview update discarded (stale generation): {} vs current {}",
+                "[App] [{}] Preview update discarded (result gate): idx={}",
                 file_name,
-                update.generation,
-                self.generation
+                update.index
             );
             return;
-        }
-
-        // Once we have accepted the prefetch-survivor result, clear the slot so future
-        // results with the old generation are correctly rejected.
-        if is_prefetch_survivor {
-            let file_name = path_for_logs
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            log::debug!(
-                "[App] [{}] Accepted in-flight prefetch preview (gen={} → promoted gen={})",
-                file_name,
-                update.generation,
-                self.generation
-            );
-            self.prefetch_prev_generation = None;
         }
 
         if let Some(osd) = &update.raw_bootstrap_osd {
@@ -137,7 +141,7 @@ impl ImageViewerApp {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index
-                        && (update.generation == tm.generation || is_prefetch_survivor)
+                        && update.decode_profile == tm.decode_profile
                     {
                         log::debug!(
                             "[App] HQ preview applied for current index {} ({}x{})",
@@ -157,25 +161,19 @@ impl ImageViewerApp {
                 }
 
                 // 2. Update prefetched TileManagers
-                if !is_prefetch_survivor {
-                    if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                        if preview_generation_matches_prefetched_tile(
-                            update.generation,
-                            tm.generation,
-                        ) {
-                            log::debug!(
-                                "[App] HQ preview applied for prefetched index {} ({}x{})",
-                                update.index,
-                                preview.width,
-                                preview.height
-                            );
-                            tm.set_preview(preview.clone(), ctx);
-                        }
+                if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
+                    if update.decode_profile == tm.decode_profile {
+                        log::debug!(
+                            "[App] HQ preview applied for prefetched index {} ({}x{})",
+                            update.index,
+                            preview.width,
+                            preview.height
+                        );
+                        tm.set_preview(preview.clone(), ctx);
                     }
                 }
 
-                // 3. Update global texture cache for tiled sources only. Static GPU RAW bootstrap
-                // previews are uploaded separately and must not be marked as tiled placeholders.
+                // 3. Update global texture cache
                 let preview_targets_tiled_canvas =
                     self.prefetched_tiles.contains_key(&update.index)
                         || self
