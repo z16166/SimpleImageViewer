@@ -49,18 +49,26 @@ fn finish_gain_map_strip(
 
 /// Try a lightweight ISO gain-map baseline decode for directory-tree strips.
 ///
+/// When `file_bytes` is `Some`, uses the caller's mmap (avoids a second open per checklist #29).
 /// Returns `None` when the path is not a supported gain-map container or the file uses a
 /// precomposed HDR primary (handled by the normal loader path). Ultra HDR JPEG is unchanged.
 pub(crate) fn try_fast_iso_gain_map_strip_from_path(
     path: &Path,
+    file_bytes: Option<&[u8]>,
     max_side: u32,
 ) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
     let ext = path
         .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let mmap = crate::mmap_util::map_file(path).ok()?;
-    let bytes = mmap.as_ref();
+    let owned_mmap;
+    let bytes = match file_bytes {
+        Some(bytes) => bytes,
+        None => {
+            owned_mmap = crate::mmap_util::map_file(path).ok()?;
+            owned_mmap.as_ref()
+        }
+    };
 
     if ext == "jxl" {
         #[cfg(feature = "jpegxl")]

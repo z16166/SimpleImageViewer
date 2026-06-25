@@ -87,7 +87,11 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     }
 
     let path_buf = path.to_path_buf();
-    if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(path, max_side) {
+    if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
+        path,
+        mmap.as_ref().map(|data| data.as_ref()),
+        max_side,
+    ) {
         return fast;
     }
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
