@@ -382,16 +382,30 @@ impl ImageViewerApp {
                 strip_preview.width,
                 strip_preview.height
             );
+                let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
+                    hdr.width,
+                    hdr.height,
+                    fallback.width,
+                    fallback.height,
+                    strip_preview.width,
+                    strip_preview.height,
+                    !hdr.rgba_f32.is_empty(),
+                );
+                let strip_tag =
+                    crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+                        !hdr.rgba_f32.is_empty(),
+                        sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
+                        strip_preview.is_sdr_deferred_placeholder(),
+                        strip_stage == crate::loader::PreviewStage::Initial
+                            && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                            && hdr.rgba_f32.is_empty(),
+                    );
             self.cache_directory_tree_strip_thumbnail(
                 idx,
                 &strip_preview,
                 strip_stage,
-                Some((hdr.width, hdr.height)),
-                if strip_stage == crate::loader::PreviewStage::Initial {
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
-                } else {
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip
-                },
+                Some(strip_logical),
+                strip_tag,
                 ctx,
             );
             }

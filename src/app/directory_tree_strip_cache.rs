@@ -38,13 +38,13 @@ pub(crate) enum StripPreviewBufferTag {
     MainWindowTextureCacheSdr,
     /// Main-window tile-manager preview texture clone.
     MainWindowTiledPreview,
-    /// Preload deferred SDR upload pixels without a dedicated strip tone-map pass.
+    /// Preload deferred SDR upload pixels, or embedded GPU-RAW bootstrap before float readback.
     PreloadSdrFallback,
     /// ISO gain-map deferred baseline only (`PreviewStage::Initial`).
     IsoGainMapBaseline,
     /// Strip-sized decode from cold worker, tiled source, or static SDR install path.
     StripDecodedPixels,
-    /// CPU tone-mapped HDR strip (`hdr_cache_sync`, preload install, fallback refinement).
+    /// CPU tone-mapped HDR strip (float `rgba_f32` tone-mapped on CPU).
     HdrToneMappedStrip,
     /// Composed HDR strip after iso-deferred gain-map apply (`PreviewStage::Refined` upgrade).
     HdrComposedStrip,
@@ -206,30 +206,24 @@ impl DirectoryTreeStripCache {
         let size = texture.size();
         let preview_w = size[0] as u32;
         let preview_h = size[1] as u32;
-        if let Some((logical_w, logical_h)) = logical
-            && !preview_aspect_matches_logical(preview_w, preview_h, logical_w, logical_h)
-        {
-            return;
-        }
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
-        let cached_logical = self.logical_sizes.get(&index).copied();
-        if !should_replace_strip_texture(
+        let cached_dims = self.preview_dimensions(index);
+        if !decide_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "insert_from_texture_handle",
             cached_tag,
             cached_stage,
-            cached_logical,
-            buffer_tag,
-            stage,
-            logical,
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical,
             preview_w,
             preview_h,
-        ) {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][StripCache] insert skip idx={} reason=should_replace_false \
-                 cached_tag={cached_tag:?} incoming_tag={buffer_tag:?} tex={preview_w}x{preview_h}",
-                index
-            );
+            decoded: None,
+        }) {
             return;
         }
         if let Some((logical_w, logical_h)) = logical {
@@ -255,36 +249,24 @@ impl DirectoryTreeStripCache {
         _total_count: usize,
         strip_max_side: u32,
     ) {
-        if decoded.is_sdr_deferred_placeholder() || buffer_tag == StripPreviewBufferTag::SdrDeferredPlaceholder
-        {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][StripCache] upsert skip idx={} reason=black_placeholder",
-                index
-            );
-            return;
-        }
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
-        let cached_logical = self.logical_sizes.get(&index).copied();
-        if !should_replace_strip_preview(
+        let cached_dims = self.preview_dimensions(index);
+        if !decide_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "upsert_from_decoded",
             cached_tag,
             cached_stage,
-            cached_logical,
-            decoded,
-            buffer_tag,
-            stage,
-            logical_size,
-        ) {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][StripCache] upsert skip idx={} reason=should_replace_false \
-                 cached_tag={cached_tag:?} cached_stage={cached_stage:?} \
-                 incoming_tag={buffer_tag:?} new={}x{} stage={stage:?} logical={logical_size:?}",
-                index,
-                decoded.width,
-                decoded.height
-            );
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical_size,
+            preview_w: decoded.width,
+            preview_h: decoded.height,
+            decoded: Some(decoded),
+        }) {
             return;
         }
         let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
@@ -474,72 +456,265 @@ pub(crate) fn strip_preview_quality_rank(
     tag.quality_rank(stage)
 }
 
+/// Buffer tag for HDR-related strip previews.
+///
+/// When CPU `rgba_f32` is still empty and only a deferred/black placeholder is available,
+/// callers must use [`StripPreviewBufferTag::SdrDeferredPlaceholder`] (lowest rank) rather than
+/// [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps any existing real preview.
+pub(crate) fn strip_buffer_tag_for_hdr_preview(
+    hdr_has_float_pixels: bool,
+    fallback_is_deferred_placeholder: bool,
+    decoded_is_deferred_placeholder: bool,
+    iso_deferred_empty_rgba: bool,
+) -> StripPreviewBufferTag {
+    if decoded_is_deferred_placeholder
+        || (!hdr_has_float_pixels && fallback_is_deferred_placeholder)
+    {
+        return StripPreviewBufferTag::SdrDeferredPlaceholder;
+    }
+    if iso_deferred_empty_rgba {
+        return StripPreviewBufferTag::IsoGainMapBaseline;
+    }
+    if hdr_has_float_pixels {
+        return StripPreviewBufferTag::HdrToneMappedStrip;
+    }
+    // Bootstrap or other real SDR fallback before float HDR readback — not tone-mapped yet.
+    StripPreviewBufferTag::PreloadSdrFallback
+}
+
+/// Inputs for a single strip-preview replace decision (decoded or texture path).
+#[allow(dead_code)] // several fields are read only by preload-debug logging
+pub(crate) struct StripPreviewReplaceParams<'a> {
+    pub index: usize,
+    pub source: &'static str,
+    pub cached_tag: Option<StripPreviewBufferTag>,
+    pub cached_stage: Option<PreviewStage>,
+    pub cached_logical: Option<(u32, u32)>,
+    pub cached_preview_w: Option<u32>,
+    pub cached_preview_h: Option<u32>,
+    pub incoming_tag: StripPreviewBufferTag,
+    pub incoming_stage: PreviewStage,
+    pub incoming_logical: Option<(u32, u32)>,
+    pub preview_w: u32,
+    pub preview_h: u32,
+    pub decoded: Option<&'a DecodedImage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StripPreviewReplaceOutcome {
+    AllowEmptySlot,
+    AllowHigherRank { cached_rank: u16, incoming_rank: u16 },
+    RejectDeferredPlaceholder,
+    RejectBlackPlaceholderTag,
+    RejectInvalidRgba,
+    RejectAspectMismatch,
+    RejectRankNotHigher { cached_rank: u16, incoming_rank: u16 },
+}
+
+impl StripPreviewReplaceOutcome {
+    fn allows_replace(self) -> bool {
+        matches!(
+            self,
+            Self::AllowEmptySlot | Self::AllowHigherRank { .. }
+        )
+    }
+
+    #[cfg(feature = "preload-debug")]
+    fn reason_label(self) -> &'static str {
+        match self {
+            Self::AllowEmptySlot => "empty_slot",
+            Self::AllowHigherRank { .. } => "higher_rank",
+            Self::RejectDeferredPlaceholder => "sdr_deferred_placeholder",
+            Self::RejectBlackPlaceholderTag => "black_placeholder_tag",
+            Self::RejectInvalidRgba => "invalid_rgba",
+            Self::RejectAspectMismatch => "aspect_mismatch",
+            Self::RejectRankNotHigher { .. } => "rank_not_higher",
+        }
+    }
+}
+
+fn evaluate_strip_preview_replace(
+    params: &StripPreviewReplaceParams<'_>,
+) -> StripPreviewReplaceOutcome {
+    if params.incoming_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
+        return StripPreviewReplaceOutcome::RejectBlackPlaceholderTag;
+    }
+    if let Some(decoded) = params.decoded {
+        if decoded.is_sdr_deferred_placeholder() {
+            return StripPreviewReplaceOutcome::RejectDeferredPlaceholder;
+        }
+        if !decoded_rgba_size_valid(decoded) {
+            return StripPreviewReplaceOutcome::RejectInvalidRgba;
+        }
+    }
+    if let Some((logical_w, logical_h)) = params.incoming_logical
+        && !preview_aspect_matches_logical(
+            params.preview_w,
+            params.preview_h,
+            logical_w,
+            logical_h,
+        )
+    {
+        return StripPreviewReplaceOutcome::RejectAspectMismatch;
+    }
+    match params.cached_tag {
+        None => StripPreviewReplaceOutcome::AllowEmptySlot,
+        Some(cached) => {
+            let incoming_rank =
+                strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
+            let cached_rank = strip_preview_quality_rank(
+                cached,
+                params.cached_stage.unwrap_or(PreviewStage::Initial),
+            );
+            if incoming_rank > cached_rank {
+                StripPreviewReplaceOutcome::AllowHigherRank {
+                    cached_rank,
+                    incoming_rank,
+                }
+            } else {
+                StripPreviewReplaceOutcome::RejectRankNotHigher {
+                    cached_rank,
+                    incoming_rank,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "preload-debug")]
+fn strip_preview_rgba_debug_hint(decoded: &DecodedImage) -> String {
+    let rgba = decoded.rgba();
+    let sample_bytes = rgba.len().min(4096);
+    let mut max_luma = 0_u8;
+    let mut nonzero = 0_usize;
+    for px in rgba[..sample_bytes].chunks_exact(4) {
+        let luma = px[0].max(px[1]).max(px[2]);
+        max_luma = max_luma.max(luma);
+        if luma > 0 {
+            nonzero += 1;
+        }
+    }
+    format!(
+        "placeholder={} max_luma={max_luma} nonzero_sample_px={nonzero}",
+        decoded.is_sdr_deferred_placeholder()
+    )
+}
+
+#[cfg(feature = "preload-debug")]
+fn log_strip_preview_replace_decision(
+    params: &StripPreviewReplaceParams<'_>,
+    outcome: StripPreviewReplaceOutcome,
+) {
+    let decision = if outcome.allows_replace() {
+        "allow"
+    } else {
+        "reject"
+    };
+    let incoming_rank =
+        strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
+    let cached_rank = params.cached_tag.map(|tag| {
+        strip_preview_quality_rank(tag, params.cached_stage.unwrap_or(PreviewStage::Initial))
+    });
+    let aspect_ok = params.incoming_logical.is_none_or(|(lw, lh)| {
+        preview_aspect_matches_logical(params.preview_w, params.preview_h, lw, lh)
+    });
+    let cached_aspect_ok = match (
+        params.cached_preview_w,
+        params.cached_preview_h,
+        params.cached_logical,
+    ) {
+        (Some(cw), Some(ch), Some((lw, lh))) => {
+            preview_aspect_matches_logical(cw, ch, lw, lh)
+        }
+        _ => false,
+    };
+    let pixel_hint = params
+        .decoded
+        .map(strip_preview_rgba_debug_hint)
+        .unwrap_or_else(|| "n/a".to_string());
+    crate::preload_debug!(
+        "[PreloadDebug][StripReplace] idx={} source={} decision={decision} reason={} \
+         cached_tag={:?} cached_stage={:?} cached_rank={cached_rank:?} \
+         cached_tex={}x{} cached_logical={:?} cached_aspect_ok={cached_aspect_ok} \
+         incoming_tag={:?} incoming_stage={:?} incoming_rank={incoming_rank} \
+         incoming_tex={}x{} incoming_logical={:?} aspect_ok={aspect_ok} pixel_hint={pixel_hint}",
+        params.index,
+        params.source,
+        outcome.reason_label(),
+        params.cached_tag,
+        params.cached_stage,
+        params.cached_preview_w.unwrap_or(0),
+        params.cached_preview_h.unwrap_or(0),
+        params.cached_logical,
+        params.incoming_tag,
+        params.incoming_stage,
+        params.preview_w,
+        params.preview_h,
+        params.incoming_logical,
+    );
+}
+
+/// Single gate for strip-preview replacement; logs the full decision under `preload-debug`.
+pub(crate) fn decide_strip_preview_replace(params: &StripPreviewReplaceParams<'_>) -> bool {
+    let outcome = evaluate_strip_preview_replace(params);
+    #[cfg(feature = "preload-debug")]
+    log_strip_preview_replace_decision(params, outcome);
+    outcome.allows_replace()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn should_replace_strip_preview(
     cached_tag: Option<StripPreviewBufferTag>,
     cached_stage: Option<PreviewStage>,
-    cached_logical: Option<(u32, u32)>,
     decoded: &DecodedImage,
     incoming_tag: StripPreviewBufferTag,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
 ) -> bool {
-    if incoming_tag == StripPreviewBufferTag::SdrDeferredPlaceholder
-        || decoded.is_sdr_deferred_placeholder()
-    {
-        return false;
-    }
-    if !decoded_rgba_size_valid(decoded) {
-        return false;
-    }
-    if let Some((logical_w, logical_h)) = logical_size
-        && !preview_aspect_matches_logical(decoded.width, decoded.height, logical_w, logical_h)
-    {
-        return false;
-    }
-    if logical_size.is_some_and(|logical| cached_logical != Some(logical)) {
-        return true;
-    }
-    match cached_tag {
-        None => true,
-        Some(cached) => {
-            let incoming_rank = strip_preview_quality_rank(incoming_tag, stage);
-            let cached_rank =
-                strip_preview_quality_rank(cached, cached_stage.unwrap_or(PreviewStage::Initial));
-            incoming_rank > cached_rank
-        }
-    }
+    evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+        index: usize::MAX,
+        source: "should_replace_strip_preview_test",
+        cached_tag,
+        cached_stage,
+        cached_logical: None,
+        cached_preview_w: None,
+        cached_preview_h: None,
+        incoming_tag,
+        incoming_stage: stage,
+        incoming_logical: logical_size,
+        preview_w: decoded.width,
+        preview_h: decoded.height,
+        decoded: Some(decoded),
+    })
+    .allows_replace()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn should_replace_strip_texture(
     cached_tag: Option<StripPreviewBufferTag>,
     cached_stage: Option<PreviewStage>,
-    cached_logical: Option<(u32, u32)>,
     incoming_tag: StripPreviewBufferTag,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
     preview_w: u32,
     preview_h: u32,
 ) -> bool {
-    if incoming_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
-        return false;
-    }
-    if let Some((logical_w, logical_h)) = logical_size
-        && !preview_aspect_matches_logical(preview_w, preview_h, logical_w, logical_h)
-    {
-        return false;
-    }
-    if logical_size.is_some_and(|logical| cached_logical != Some(logical)) {
-        return true;
-    }
-    match cached_tag {
-        None => true,
-        Some(cached) => {
-            let incoming_rank = strip_preview_quality_rank(incoming_tag, stage);
-            let cached_rank =
-                strip_preview_quality_rank(cached, cached_stage.unwrap_or(PreviewStage::Initial));
-            incoming_rank > cached_rank
-        }
-    }
+    evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+        index: usize::MAX,
+        source: "should_replace_strip_texture_test",
+        cached_tag,
+        cached_stage,
+        cached_logical: None,
+        cached_preview_w: None,
+        cached_preview_h: None,
+        incoming_tag,
+        incoming_stage: stage,
+        incoming_logical: logical_size,
+        preview_w,
+        preview_h,
+        decoded: None,
+    })
+    .allows_replace()
 }
 
 #[cfg(test)]
@@ -565,6 +740,43 @@ mod tests {
         assert!(matches!(out, Cow::Owned(_)));
         assert_eq!(out.width, 128);
         assert_eq!(out.height, 64);
+    }
+
+    #[test]
+    fn strip_buffer_tag_marks_empty_hdr_placeholder_as_deferred() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(false, true, false, false),
+            StripPreviewBufferTag::SdrDeferredPlaceholder
+        );
+    }
+
+    #[test]
+    fn strip_buffer_tag_uses_preload_fallback_for_bootstrap_before_float_readback() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(false, false, false, false),
+            StripPreviewBufferTag::PreloadSdrFallback
+        );
+    }
+
+    #[test]
+    fn strip_buffer_tag_uses_hdr_tone_mapped_when_float_pixels_ready() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(true, false, false, false),
+            StripPreviewBufferTag::HdrToneMappedStrip
+        );
+    }
+
+    #[test]
+    fn deferred_placeholder_rank_loses_to_main_window_tiled_preview() {
+        let cached_rank = strip_preview_quality_rank(
+            StripPreviewBufferTag::MainWindowTiledPreview,
+            PreviewStage::Refined,
+        );
+        let placeholder_rank = strip_preview_quality_rank(
+            StripPreviewBufferTag::SdrDeferredPlaceholder,
+            PreviewStage::Refined,
+        );
+        assert!(placeholder_rank < cached_rank);
     }
 
     #[test]
@@ -597,14 +809,12 @@ mod tests {
         assert!(!should_replace_strip_preview(
             None,
             None,
-            None,
             &bootstrap,
             StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Initial,
             Some((8000, 2000)),
         ));
         assert!(!should_replace_strip_preview(
-            None,
             None,
             None,
             &bootstrap,
@@ -620,7 +830,6 @@ mod tests {
         assert!(should_replace_strip_preview(
             Some(StripPreviewBufferTag::MainWindowTextureCacheSdr),
             Some(PreviewStage::Refined),
-            Some((480, 270)),
             &tone_mapped,
             StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
@@ -669,7 +878,6 @@ mod tests {
         assert!(!should_replace_strip_preview(
             Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Initial),
-            None,
             &black,
             StripPreviewBufferTag::SdrDeferredPlaceholder,
             PreviewStage::Refined,
@@ -678,7 +886,6 @@ mod tests {
         assert!(should_replace_strip_preview(
             Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Initial),
-            None,
             &good,
             StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
@@ -693,7 +900,6 @@ mod tests {
         assert!(!should_replace_strip_preview(
             Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            logical,
             &cold,
             StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Initial,
@@ -704,7 +910,6 @@ mod tests {
         assert!(!should_replace_strip_preview(
             Some(StripPreviewBufferTag::HdrToneMappedStrip),
             Some(PreviewStage::Refined),
-            logical,
             &black_placeholder,
             StripPreviewBufferTag::SdrDeferredPlaceholder,
             PreviewStage::Initial,
@@ -714,7 +919,6 @@ mod tests {
         assert!(should_replace_strip_preview(
             Some(StripPreviewBufferTag::IsoGainMapBaseline),
             Some(PreviewStage::Initial),
-            logical,
             &refined,
             StripPreviewBufferTag::HdrComposedStrip,
             PreviewStage::Refined,
@@ -728,7 +932,6 @@ mod tests {
         assert!(!should_replace_strip_preview(
             Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            Some((4807, 3205)),
             &fallback,
             StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Refined,
@@ -737,16 +940,36 @@ mod tests {
     }
 
     #[test]
-    fn strip_cache_allows_replace_when_logical_size_changes() {
+    fn strip_cache_logical_size_change_does_not_bypass_rank() {
         let fallback = DecodedImage::new(128, 85, vec![180; 128 * 85 * 4]);
-        assert!(should_replace_strip_preview(
+        assert!(!should_replace_strip_preview(
             Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            Some((4704, 3136)),
             &fallback,
             StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Refined,
             Some((4807, 3205)),
+        ));
+    }
+
+    #[test]
+    fn strip_cache_cold_initial_does_not_replace_hdr_refined_on_logical_drift() {
+        let cold = DecodedImage::new(128, 96, vec![200; 128 * 96 * 4]);
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::HdrToneMappedStrip),
+            Some(PreviewStage::Refined),
+            &cold,
+            StripPreviewBufferTag::StripDecodedPixels,
+            PreviewStage::Initial,
+            Some((3648, 2736)),
+        ));
+        assert!(should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
+            Some(PreviewStage::Initial),
+            &cold,
+            StripPreviewBufferTag::HdrToneMappedStrip,
+            PreviewStage::Refined,
+            Some((3718, 2778)),
         ));
     }
 

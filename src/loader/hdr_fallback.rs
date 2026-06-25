@@ -20,6 +20,7 @@ use crate::hdr::types::{
     HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings, HdrTransferFunction,
     DEFAULT_SDR_WHITE_NITS,
 };
+use crate::loader::DecodedImage;
 
 /// True when the HDR buffer carries a deferred ISO gain map (Ultra HDR / AVIF JPEG-R, etc.).
 pub(crate) fn hdr_has_iso_deferred_gain_map(hdr: &HdrImageBuffer) -> bool {
@@ -277,6 +278,49 @@ pub(crate) fn raw_gpu_source_has_bootstrap_preview(hdr: &HdrImageBuffer) -> bool
         .as_ref()
         .and_then(|source| source.bootstrap_preview.as_ref())
         .is_some()
+}
+
+/// Clone embedded GPU-RAW bootstrap SDR for strip fallback paths.
+pub(crate) fn hdr_raw_gpu_bootstrap_fallback_decoded(hdr: &HdrImageBuffer) -> Option<DecodedImage> {
+    hdr.metadata
+        .raw_gpu_source
+        .as_ref()
+        .and_then(|source| source.bootstrap_preview.clone())
+}
+
+/// Logical size stored with a strip thumbnail for aspect validation.
+///
+/// GPU RAW files may ship an embedded bootstrap whose aspect differs from HQ demosaic output
+/// (e.g. Samsung EX2F bootstrap 4000x2248 vs HQ 4040x3029). Until float HDR pixels exist,
+/// match the fallback/bootstrap aspect instead of forcing HQ logical.
+pub(crate) fn directory_tree_strip_logical_for_preview(
+    hdr_width: u32,
+    hdr_height: u32,
+    fallback_width: u32,
+    fallback_height: u32,
+    strip_width: u32,
+    strip_height: u32,
+    hdr_has_float_pixels: bool,
+) -> (u32, u32) {
+    if hdr_has_float_pixels
+        && crate::loader::preview_aspect_matches_logical(
+            strip_width,
+            strip_height,
+            hdr_width,
+            hdr_height,
+        )
+    {
+        (hdr_width, hdr_height)
+    } else if crate::loader::preview_aspect_matches_logical(
+        strip_width,
+        strip_height,
+        fallback_width,
+        fallback_height,
+    ) {
+        (fallback_width, fallback_height)
+    } else {
+        (hdr_width, hdr_height)
+    }
 }
 
 /// GPU CFA extract finished but demosaic has not yet populated `rgba_f32`.
@@ -757,5 +801,66 @@ mod tests {
         assert!(super::static_hdr_background_plane_upload_eligible(
             &hdr, 1.0, true
         ));
+    }
+
+    #[test]
+    fn strip_logical_prefers_bootstrap_aspect_before_hdr_float_ready() {
+        let logical = super::directory_tree_strip_logical_for_preview(
+            4040,
+            3029,
+            4000,
+            2248,
+            128,
+            72,
+            false,
+        );
+        assert_eq!(logical, (4000, 2248));
+    }
+
+    #[test]
+    fn strip_logical_uses_hdr_when_float_pixels_match() {
+        let logical = super::directory_tree_strip_logical_for_preview(
+            4040,
+            3029,
+            4000,
+            2248,
+            128,
+            96,
+            true,
+        );
+        assert_eq!(logical, (4040, 3029));
+    }
+
+    #[test]
+    fn hdr_raw_gpu_bootstrap_fallback_decoded_clones_embedded_preview() {
+        let preview = DecodedImage::new(4000, 2248, vec![128; 4000 * 2248 * 4]);
+        let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+            raw_width: 4040,
+            raw_height: 3029,
+            width: 4040,
+            height: 3029,
+            raw_pixels: Arc::new(vec![0; 16]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 65535.0,
+            bayer_pattern: [0, 1, 1, 2],
+            scene_color_scale: [1.0, 1.0, 1.0],
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+            bootstrap_preview: Some(preview.clone()),
+        });
+        let hdr = HdrImageBuffer {
+            width: 4040,
+            height: 3029,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        let cloned = super::hdr_raw_gpu_bootstrap_fallback_decoded(&hdr).expect("bootstrap");
+        assert_eq!(cloned.width, preview.width);
+        assert_eq!(cloned.height, preview.height);
+        assert!(!cloned.is_sdr_deferred_placeholder());
     }
 }
