@@ -18,17 +18,18 @@ use super::types::{
     should_spawn_load_task,
 };
 
+use crate::hdr::types::HdrOutputMode;
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, PreviewBundle, PreviewResult, ProfileSpawnRelation, RefinementRequest,
-    TileDecodeSource, TileResult, decode_profile_stub, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side, profile_spawn_relation,
-    source_key_for_path, static_hdr_background_plane_upload_eligible,
+    LoadResult, LoaderOutput, PreviewBundle, PreviewResult, ProfileSpawnRelation,
+    RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
+    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hq_preview_max_side, profile_spawn_relation, source_key_for_path,
+    static_hdr_background_plane_upload_eligible,
 };
-use crate::hdr::types::HdrOutputMode;
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender};
 use image::DynamicImage;
@@ -85,7 +86,7 @@ impl ImageLoader {
             }
         };
 
-let preload_plan = Arc::new(super::preload_plan::PreloadPlanSnapshot::new());
+        let preload_plan = Arc::new(super::preload_plan::PreloadPlanSnapshot::new());
         let output_mode_bits = Arc::new(AtomicU32::new(0));
         let hdr_target_capacity_bits = Arc::new(AtomicU32::new(
             HdrToneMapSettings::default()
@@ -158,11 +159,11 @@ let preload_plan = Arc::new(super::preload_plan::PreloadPlanSnapshot::new());
 
                         Self::do_load(
                             job.index,
-&job.path,
+                            &job.path,
                             job.tx.clone(),
                             job.refine_tx.clone(),
                             job.loading.clone(),
-job.decode_profile.clone(),
+                            job.decode_profile.clone(),
                             job.high_quality,
                             job.raw_demosaic_mode,
                             job.hdr_target_capacity,
@@ -200,7 +201,7 @@ job.decode_profile.clone(),
         for i in 0..worker_count {
             let queue = Arc::clone(&tile_queue);
             let tx = tx.clone();
-let plan_ref = Arc::clone(&preload_plan);
+            let plan_ref = Arc::clone(&preload_plan);
             let flight = Arc::clone(&in_flight);
 
             std::thread::Builder::new()
@@ -661,11 +662,15 @@ let plan_ref = Arc::clone(&preload_plan);
     }
 
     pub fn set_output_mode(&self, mode: HdrOutputMode) {
-        self.output_mode_bits.store(mode as u32, std::sync::atomic::Ordering::Release);
+        self.output_mode_bits
+            .store(mode as u32, std::sync::atomic::Ordering::Release);
     }
 
     fn output_mode_snapshot(&self) -> HdrOutputMode {
-        match self.output_mode_bits.load(std::sync::atomic::Ordering::Acquire) {
+        match self
+            .output_mode_bits
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             0 => HdrOutputMode::SdrToneMapped,
             1 => HdrOutputMode::WindowsScRgb,
             2 => HdrOutputMode::MacOsEdr,
@@ -678,13 +683,9 @@ let plan_ref = Arc::clone(&preload_plan);
         self.preload_plan.bump_profile_epoch()
     }
 
-    pub fn sync_preload_plan(
-        &self,
-        current_index: usize,
-        image_count: usize,
-        max_distance: usize,
-    ) {
-        self.preload_plan.write_navigation(current_index, image_count, max_distance);
+    pub fn sync_preload_plan(&self, current_index: usize, image_count: usize, max_distance: usize) {
+        self.preload_plan
+            .write_navigation(current_index, image_count, max_distance);
     }
 
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
@@ -703,7 +704,10 @@ let plan_ref = Arc::clone(&preload_plan);
         {
             let (lock, cvar) = &*self.delayed_fallback;
             let mut slot = lock.lock();
-            if slot.as_ref().is_some_and(|job| cancelled.contains(&job.index)) {
+            if slot
+                .as_ref()
+                .is_some_and(|job| cancelled.contains(&job.index))
+            {
                 *slot = None;
                 cvar.notify_one();
             }
@@ -853,7 +857,7 @@ let plan_ref = Arc::clone(&preload_plan);
                 tx1,
                 rtx1,
                 loading1,
-decode_profile_spawn,
+                decode_profile_spawn,
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
@@ -872,13 +876,13 @@ decode_profile_spawn,
         // did not claim first. Pending jobs are coalesced to a single slot (no per-request OS thread).
         let delayed_job = DelayedFallbackJob {
             index,
-decode_profile: decode_profile_for_job,
+            decode_profile: decode_profile_for_job,
             path: path2,
             high_quality,
             raw_demosaic_mode,
             claimed: claimed2,
             loading: loading2,
-tx: tx2,
+            tx: tx2,
             refine_tx: rtx2,
             hdr_target_capacity,
             hdr_tone_map,
@@ -1194,7 +1198,11 @@ tx: tx2,
                     } else {
                         let loading_sdr_hq = Arc::clone(&loading_ref);
                         REFINEMENT_POOL.spawn(move || {
-                            if Self::hq_refinement_superseded(&loading_sdr_hq, index, &result_profile) {
+                            if Self::hq_refinement_superseded(
+                                &loading_sdr_hq,
+                                index,
+                                &result_profile,
+                            ) {
                                 return;
                             }
 
@@ -1277,10 +1285,9 @@ tx: tx2,
             let _com = crate::wic::ComGuard::new();
 
             let limit = hq_preview_max_side();
-            let r_result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    source.generate_full_image_preview(limit, limit)
-                }));
+            let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                source.generate_full_image_preview(limit, limit)
+            }));
 
             match r_result {
                 Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {

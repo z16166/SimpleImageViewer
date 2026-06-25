@@ -141,7 +141,7 @@ impl ImageViewerApp {
                 path.display()
             );
             self.loader.request_load(
-            cur,
+                cur,
                 path,
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
@@ -212,9 +212,16 @@ impl ImageViewerApp {
 
         // Determine the "primary" and "secondary" directions.
         // Primary gets the larger budget; secondary gets the smaller one.
+        let strip_bootstrap = self.directory_tree_strip_bootstrap_after_scan
+            && self.directory_tree_list_previews_active();
         let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
+            let primary_max = if strip_bootstrap {
+                n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
+            } else {
+                MAX_PRELOAD_FORWARD
+            };
             (
-                MAX_PRELOAD_FORWARD,
+                primary_max,
                 self.preload_budget_forward,
                 MAX_PRELOAD_BACKWARD,
                 self.preload_budget_backward,
@@ -228,16 +235,32 @@ impl ImageViewerApp {
             )
         };
 
-        // Collect indices for each direction
-        let primary_indices: Vec<usize> = (1..=n.min(primary_max + 10)) // +10 headroom to skip tiled images
-            .map(|i| {
-                if forward {
-                    (cur + i) % n
-                } else {
-                    (cur + n - i) % n
+        // Collect indices for each direction.
+        let primary_indices: Vec<usize> = if strip_bootstrap && forward {
+            let cap = n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
+            let mut ordered = Vec::with_capacity(cap);
+            let mut seen = std::collections::HashSet::new();
+            let mut push = |idx: usize| {
+                if idx < cap && seen.insert(idx) {
+                    ordered.push(idx);
                 }
-            })
-            .collect();
+            };
+            push(cur);
+            for idx in 0..cap {
+                push(idx);
+            }
+            ordered
+        } else {
+            (1..=n.min(primary_max + 10))
+                .map(|i| {
+                    if forward {
+                        (cur + i) % n
+                    } else {
+                        (cur + n - i) % n
+                    }
+                })
+                .collect()
+        };
 
         let secondary_indices: Vec<usize> = (1..=n.min(secondary_max + 10))
             .map(|i| {
@@ -399,7 +422,7 @@ impl ImageViewerApp {
                 path.display()
             );
             self.loader.request_load(
-            idx,
+                idx,
                 path.clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),

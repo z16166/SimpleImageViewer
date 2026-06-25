@@ -63,10 +63,7 @@ pub(super) fn source_key_matches_index(
 }
 
 /// Install-time hard check: decoded shape vs an explicit required shape (never `Unknown`).
-pub fn render_shape_matches_install(
-    image_data: &ImageData,
-    required: RenderShape,
-) -> bool {
+pub fn render_shape_matches_install(image_data: &ImageData, required: RenderShape) -> bool {
     debug_assert!(required != RenderShape::Unknown);
     image_data.preferred_render_shape() == required
 }
@@ -431,14 +428,7 @@ mod tests {
         };
         let display = sample_display(LoadIntent::Current);
         assert_eq!(
-            gate_preview_result(
-                &ctx,
-                &preview,
-                &files,
-                &display,
-                false,
-                None
-            ),
+            gate_preview_result(&ctx, &preview, &files, &display, false, None),
             GateDecision::Discard
         );
     }

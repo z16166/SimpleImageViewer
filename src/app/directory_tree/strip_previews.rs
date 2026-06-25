@@ -21,13 +21,16 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
+use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPendingGpuUpload, DirectoryTreeStripPreviewJobResult,
     MAX_STRIP_GPU_UPLOADS_PER_PAINT, MAX_STRIP_PENDING_GPU_UPLOADS, decoded_rgba_size_valid,
+    should_replace_strip_thumbnail,
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
+    DecodedImage, PreviewStage, TiledImageSource, downsample_decoded_for_strip,
+    generate_directory_tree_thumb_from_path, hdr_has_iso_deferred_gain_map,
     preview_aspect_matches_logical,
 };
 
@@ -237,28 +240,198 @@ impl ImageViewerApp {
             .is_some_and(|pending| pending.hdr_frames.is_some())
     }
 
-    fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {
+    pub(crate) fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {
         if self.hdr_placeholder_fallback_indices.contains(&index) {
             return true;
         }
         if self.strip_hdr_animated_awaiting_real_strip_preview(index) {
             return true;
         }
-        self.ultra_hdr_capacity_sensitive_indices.contains(&index)
-            && self.hdr_sdr_fallback_indices.contains(&index)
-    }
-
-    pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
-        self.directory_tree_strip_cache.remove_index(index);
-        self.directory_tree_strip_cold_attempted.remove(&index);
-        self.directory_tree_strip_generate_inflight.remove(&index);
-        self.directory_tree_strip_tiled_attempted.remove(&index);
-    }
-
-    fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
-        if self.strip_main_loader_sdr_unreliable_for_strip(index) {
-            return true;
+        if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
+            return false;
         }
+        self.hdr_image_cache
+            .get(&index)
+            .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
+    }
+
+    fn iso_deferred_baseline_pixels_for_strip(
+        &self,
+        index: usize,
+    ) -> Option<(u32, u32, std::sync::Arc<Vec<u8>>)> {
+        if let Some(hdr) = self.hdr_image_cache.get(&index) {
+            if let Some(iso) = hdr
+                .metadata
+                .gain_map
+                .as_ref()
+                .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+            {
+                return Some((hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba)));
+            }
+        }
+        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
+            if !decoded.is_sdr_deferred_placeholder() {
+                return Some((decoded.width, decoded.height, decoded.arc_pixels()));
+            }
+        }
+        None
+    }
+
+    fn try_sync_strip_from_preloaded_iso_baseline(&mut self, index: usize) {
+        if index >= self.image_files.len() {
+            return;
+        }
+        if self.directory_tree_strip_cache.contains(index) {
+            return;
+        }
+        let Some((width, height, baseline)) = self.iso_deferred_baseline_pixels_for_strip(index)
+        else {
+            return;
+        };
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        let decoded = DecodedImage::from_arc(width, height, baseline);
+        let Ok(strip) = downsample_decoded_for_strip(&decoded, max_side) else {
+            return;
+        };
+        if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
+            return;
+        }
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] preload baseline sync idx={} decoded={}x{} logical={}x{}",
+            index,
+            strip.width,
+            strip.height,
+            width,
+            height
+        );
+        self.queue_directory_tree_strip_gpu_upload(
+            index,
+            strip.into_owned(),
+            PreviewStage::Initial,
+            Some((width, height)),
+        );
+    }
+
+    fn strip_fallback_for_hdr_cache_sync(
+        &self,
+        index: usize,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+    ) -> DecodedImage {
+        if let Some((width, height, baseline)) = self.iso_deferred_baseline_pixels_for_strip(index)
+        {
+            return DecodedImage::from_arc(width, height, baseline);
+        }
+        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
+            return decoded.clone();
+        }
+        crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)
+            .map(|pixels| DecodedImage::new(hdr.width, hdr.height, pixels))
+            .unwrap_or_else(|_| DecodedImage::new(hdr.width, hdr.height, Vec::new()))
+    }
+
+    fn strip_needs_hdr_cache_sync(&self, index: usize) -> bool {
+        if index >= self.image_files.len() {
+            return false;
+        }
+        if self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        let Some(hdr) = self.hdr_image_cache.get(&index) else {
+            return false;
+        };
+        if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()) && hdr.rgba_f32.is_empty() {
+            return false;
+        }
+        if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+            if self
+                .directory_tree_strip_cache
+                .is_valid_for_logical(index, logical)
+            {
+                return false;
+            }
+        } else if self.directory_tree_strip_cache.contains(index) {
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn try_schedule_strip_from_hdr_image_cache(&mut self, index: usize) -> bool {
+        if !self.strip_needs_hdr_cache_sync(index) {
+            return false;
+        }
+        let Some(hdr) = self.hdr_image_cache.get(&index).cloned() else {
+            return false;
+        };
+        let Some(list) = self.directory_tree.list.try_lock() else {
+            return false;
+        };
+        let list_generation = list.image_list_generation;
+        drop(list);
+
+        let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
+        let iso_deferred = crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+            && hdr.rgba_f32.is_empty();
+        let stage = if iso_deferred {
+            PreviewStage::Initial
+        } else {
+            PreviewStage::Refined
+        };
+
+        self.directory_tree_strip_generate_inflight.insert(index);
+        let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let path = self.image_files[index].clone();
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        let root_wake = self.root_redraw_wake_handle();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] pool submit idx={} kind=hdr_cache_sync max_side={}",
+            index,
+            max_side
+        );
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let decoded = match crate::loader::directory_tree_strip_from_hdr_or_fallback(
+                hdr.as_ref(),
+                &fallback,
+                max_side,
+            ) {
+                Ok(decoded) => decoded,
+                Err(err) => {
+                    log::debug!(
+                        "[DirectoryTree] Strip HDR cache sync failed for index {index}: {err}"
+                    );
+                    send_strip_inflight_release(&release_tx, index);
+                    return;
+                }
+            };
+            let logical = (hdr.width, hdr.height);
+            let job = DirectoryTreeStripPreviewJobResult {
+                index,
+                path,
+                image_list_generation: list_generation,
+                decoded,
+                logical,
+                stage,
+            };
+            if tx.try_send(job).is_ok() {
+                if let Some(wake) = root_wake {
+                    wake();
+                }
+            } else {
+                send_strip_inflight_release(&release_tx, index);
+            }
+        });
+        true
+    }
+
+    fn strip_texture_cache_sdr_is_dark_deferred_baseline(&self, index: usize) -> bool {
         if self
             .deferred_sdr_uploads
             .get(&index)
@@ -269,17 +442,22 @@ impl ImageViewerApp {
         let Some(hdr) = self.hdr_image_cache.get(&index) else {
             return false;
         };
-        if hdr
-            .metadata
-            .gain_map
-            .as_ref()
-            .and_then(|g| g.iso_deferred.as_ref())
-            .is_some()
-        {
-            return false;
+        if hdr_has_iso_deferred_gain_map(hdr.as_ref()) {
+            return true;
         }
         crate::loader::libraw_scene_linear_needs_eager_sdr_fallback(hdr.as_ref())
             && !crate::loader::hdr_display_requests_sdr_preview(self.ultra_hdr_decode_capacity)
+    }
+
+    pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
+        self.directory_tree_strip_cache.remove_index(index);
+        self.directory_tree_strip_cold_attempted.remove(&index);
+        self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_tiled_attempted.remove(&index);
+    }
+
+    fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
+        self.strip_texture_cache_sdr_is_dark_deferred_baseline(index)
     }
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
@@ -311,26 +489,42 @@ impl ImageViewerApp {
                     .directory_tree_strip_cache
                     .is_valid_for_logical(index, logical)
             {
-                let from_full_install = self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-                    logical.0 == hdr.width
-                        && logical.1 == hdr.height
-                        && decoded.width == hdr.width
-                        && decoded.height == hdr.height
-                });
-                if !from_full_install {
-                    #[cfg(feature = "preload-debug")]
-                    crate::preload_debug!(
-                        "[PreloadDebug][Strip] skip strip cache idx={} reason=keep_cold_strip \
-                         logical={logical:?} decoded={}x{} hdr_cached={}",
-                        index,
-                        decoded.width,
-                        decoded.height,
-                        self.hdr_image_cache
+                let from_installed_hdr = stage == crate::loader::PreviewStage::Refined
+                    && self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+                        logical.0 == hdr.width && logical.1 == hdr.height
+                    });
+                if !from_installed_hdr {
+                    let allow_initial_over_refined =
+                        self.strip_main_loader_sdr_unreliable_for_strip(index);
+                    let would_upgrade = should_replace_strip_thumbnail(
+                        self.directory_tree_strip_cache
+                            .cached_preview_max_side(index),
+                        self.directory_tree_strip_cache.cached_preview_stage(index),
+                        self.directory_tree_strip_cache
+                            .logical_sizes()
                             .get(&index)
-                            .map(|hdr| format!("{}x{}", hdr.width, hdr.height))
-                            .unwrap_or_else(|| "none".to_string())
+                            .copied(),
+                        decoded,
+                        stage,
+                        Some(logical),
+                        strip_max_side,
+                        allow_initial_over_refined,
                     );
-                    return;
+                    if !would_upgrade {
+                        #[cfg(feature = "preload-debug")]
+                        crate::preload_debug!(
+                            "[PreloadDebug][Strip] skip strip cache idx={} reason=keep_cold_strip \
+                             logical={logical:?} decoded={}x{} hdr_cached={}",
+                            index,
+                            decoded.width,
+                            decoded.height,
+                            self.hdr_image_cache
+                                .get(&index)
+                                .map(|hdr| format!("{}x{}", hdr.width, hdr.height))
+                                .unwrap_or_else(|| "none".to_string())
+                        );
+                        return;
+                    }
                 }
             }
         }
@@ -498,6 +692,22 @@ impl ImageViewerApp {
         if self.tiled_sdr_source_for_index(index).is_some() {
             return false;
         }
+        if self.settings.preload
+            && self.directory_tree_strip_bootstrap_after_scan
+            && index < self.image_files.len().min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
+        {
+            // Strip thumbnails come from preload install / hdr cache sync; avoid a second
+            // full decode on the strip pool (same CPU cost, doubles fan load).
+            return false;
+        }
+        if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+            if !hdr.rgba_f32.is_empty() {
+                return true;
+            }
+            self.iso_deferred_baseline_pixels_for_strip(index).is_some()
+        }) {
+            return false;
+        }
         if !self.strip_main_loader_sdr_unreliable_for_strip(index)
             && self
                 .deferred_sdr_uploads
@@ -512,19 +722,94 @@ impl ImageViewerApp {
         if self.directory_tree_strip_cold_attempted.contains(&index) {
             return false;
         }
-        let cached_preview_authoritative = !self.strip_main_loader_sdr_unreliable_for_strip(index);
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-            if cached_preview_authoritative
-                && self
-                    .directory_tree_strip_cache
-                    .is_valid_for_logical(index, logical)
+            if self
+                .directory_tree_strip_cache
+                .is_valid_for_logical(index, logical)
             {
                 return false;
             }
-        } else if cached_preview_authoritative && self.directory_tree_strip_cache.contains(index) {
+        } else if self.directory_tree_strip_cache.contains(index) {
             return false;
         }
         true
+    }
+
+    fn strip_needs_compose_upgrade(&self, index: usize) -> bool {
+        if index >= self.image_files.len() {
+            return false;
+        }
+        if self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        if self.directory_tree_strip_cache.cached_preview_stage(index)
+            != Some(crate::loader::PreviewStage::Initial)
+        {
+            return false;
+        }
+        self.hdr_image_cache
+            .get(&index)
+            .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
+    }
+
+    pub(crate) fn try_schedule_strip_compose_upgrade(&mut self, index: usize) {
+        if !self.strip_needs_compose_upgrade(index) {
+            return;
+        }
+        let Some(hdr) = self.hdr_image_cache.get(&index).cloned() else {
+            return;
+        };
+        let Some(list) = self.directory_tree.list.try_lock() else {
+            return;
+        };
+        let list_generation = list.image_list_generation;
+        drop(list);
+
+        self.directory_tree_strip_generate_inflight.insert(index);
+        let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let path = self.image_files[index].clone();
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        let root_wake = self.root_redraw_wake_handle();
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] pool submit idx={} kind=compose_upgrade max_side={}",
+            index,
+            max_side
+        );
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let decoded = match crate::loader::directory_tree_strip_composed_from_iso_deferred(
+                hdr.as_ref(),
+                max_side,
+            ) {
+                Ok(decoded) => decoded,
+                Err(err) => {
+                    log::debug!(
+                        "[DirectoryTree] Strip compose upgrade failed for index {index}: {err}"
+                    );
+                    send_strip_inflight_release(&release_tx, index);
+                    return;
+                }
+            };
+            let logical = (hdr.width, hdr.height);
+            let job = DirectoryTreeStripPreviewJobResult {
+                index,
+                path,
+                image_list_generation: list_generation,
+                decoded,
+                logical,
+                stage: crate::loader::PreviewStage::Refined,
+            };
+            if tx.try_send(job).is_ok() {
+                if let Some(wake) = root_wake {
+                    wake();
+                }
+            } else {
+                send_strip_inflight_release(&release_tx, index);
+            }
+        });
     }
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).
@@ -565,7 +850,7 @@ impl ImageViewerApp {
             return Vec::new();
         }
         let current = self.current_index.min(total.saturating_sub(1));
-        let mut ordered = Vec::with_capacity(schedule_budget.min(8));
+        let mut ordered = Vec::with_capacity(schedule_budget.min(32));
         let mut seen = std::collections::HashSet::new();
         let mut try_push = |index: usize| -> bool {
             if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {
@@ -636,11 +921,16 @@ impl ImageViewerApp {
             path.display(),
             max_side
         );
+        let use_fast_gain_map = path.extension().is_some_and(|ext| {
+            let ext = ext.to_string_lossy().to_ascii_lowercase();
+            ext == "avif" || ext == "avifs" || ext == "jxl"
+        });
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             crate::preload_debug!(
-                "[PreloadDebug][Strip] cold worker start idx={} path={}",
+                "[PreloadDebug][Strip] cold worker start idx={} path={} fast={}",
                 index,
-                path.display()
+                path.display(),
+                use_fast_gain_map
             );
             #[cfg(target_os = "windows")]
             let com_ok = ensure_strip_worker_com_initialized();
@@ -1019,6 +1309,33 @@ impl ImageViewerApp {
 
         self.poll_directory_tree_strip_preview_results(ctx);
 
+        let (visible_row_range, scroll_to_current_pending, defer_sync) = {
+            match self.directory_tree.list.try_lock() {
+                Some(list) => (
+                    list.image_list_visible_row_range,
+                    list.scroll_image_list_to_current,
+                    false,
+                ),
+                None => (None, false, true),
+            }
+        };
+        if defer_sync {
+            self.defer_directory_tree_file_list_sync();
+        }
+        let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
+        if bootstrap_visible
+            && self.settings.preload
+            && !self.preload_deferred_for_hdr_capacity
+            && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS
+        {
+            self.schedule_preloads(true);
+        }
+        let max_inflight = if bootstrap_visible {
+            MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
+        } else {
+            MAX_STRIP_GENERATE_INFLIGHT
+        };
+
         // Do not drop `cold_attempted` here when cache is empty: failed decodes (e.g. motion-video
         // JPG) stay out of cache but must remain attempted so they do not monopolize cold slots.
         self.directory_tree_strip_tiled_attempted.retain(|index| {
@@ -1067,6 +1384,18 @@ impl ImageViewerApp {
         }
 
         if file_count > 0 {
+            let preload_sync_cap = file_count.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
+            let hdr_sync_budget = max_inflight
+                .saturating_sub(self.directory_tree_strip_generate_inflight.len());
+            let mut hdr_sync_scheduled = 0usize;
+            for index in 0..preload_sync_cap {
+                self.try_sync_strip_from_preloaded_iso_baseline(index);
+                if hdr_sync_scheduled < hdr_sync_budget
+                    && self.try_schedule_strip_from_hdr_image_cache(index)
+                {
+                    hdr_sync_scheduled += 1;
+                }
+            }
             let current = self.current_index.min(file_count - 1);
             self.try_sync_strip_from_texture_cache(current);
             for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
@@ -1126,29 +1455,10 @@ impl ImageViewerApp {
             );
         }
 
-        let (visible_row_range, scroll_to_current_pending, defer_sync) = {
-            match self.directory_tree.list.try_lock() {
-                Some(list) => (
-                    list.image_list_visible_row_range,
-                    list.scroll_image_list_to_current,
-                    false,
-                ),
-                None => (None, false, true),
-            }
-        };
-        if defer_sync {
-            self.defer_directory_tree_file_list_sync();
-        }
-        let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
         let max_cold_per_frame = if bootstrap_visible {
             MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP
         } else {
             MAX_COLD_STRIP_GENERATES_PER_FRAME
-        };
-        let max_inflight = if bootstrap_visible {
-            MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
-        } else {
-            MAX_STRIP_GENERATE_INFLIGHT
         };
         let inflight_room =
             max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
@@ -1175,13 +1485,33 @@ impl ImageViewerApp {
             }
         }
         let mut cold_scheduled = 0usize;
-        if !self.scanning {
+        let allow_cold_strip = !self.scanning || bootstrap_visible;
+        if allow_cold_strip {
             for index in cold_candidates {
                 if cold_scheduled >= schedule_budget {
                     break;
                 }
                 self.try_generate_cold_directory_tree_strip_thumbnail(index);
                 cold_scheduled += 1;
+            }
+        }
+
+        let compose_room = inflight_room.saturating_sub(cold_scheduled);
+        if compose_room > 0 {
+            let mut compose_scheduled = 0usize;
+            if bootstrap_visible {
+                let compose_cap = file_count.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
+                for index in 0..compose_cap {
+                    if compose_scheduled >= compose_room {
+                        break;
+                    }
+                    if self.strip_needs_compose_upgrade(index) {
+                        self.try_schedule_strip_compose_upgrade(index);
+                        compose_scheduled += 1;
+                    }
+                }
+            } else if self.strip_needs_compose_upgrade(self.current_index) {
+                self.try_schedule_strip_compose_upgrade(self.current_index);
             }
         }
 

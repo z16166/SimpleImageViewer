@@ -30,7 +30,10 @@ impl ImageLoader {
     /// Profile / window based pending output filter (generation-plan Phase A).
     pub fn discard_pending_stale_outputs_profile(
         &mut self,
-        keep: impl Fn(&LoaderOutput, &std::collections::HashMap<usize, crate::loader::InFlightLoad>) -> bool,
+        keep: impl Fn(
+            &LoaderOutput,
+            &std::collections::HashMap<usize, crate::loader::InFlightLoad>,
+        ) -> bool,
     ) {
         let loading_snapshot = self.loading.lock().clone();
         let keep_output = |output: &LoaderOutput| -> bool {

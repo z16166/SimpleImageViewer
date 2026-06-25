@@ -191,7 +191,10 @@ mod tests {
             raw_high_quality: true,
             ..base_profile()
         };
-        assert_eq!(profile_spawn_relation(&old, &new), ProfileSpawnRelation::Upgrade);
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Upgrade
+        );
     }
 
     #[test]
@@ -201,7 +204,10 @@ mod tests {
             load_intent: LoadIntent::Current,
             ..base_profile()
         };
-        assert_eq!(profile_spawn_relation(&old, &new), ProfileSpawnRelation::Upgrade);
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Upgrade
+        );
     }
 
     #[test]

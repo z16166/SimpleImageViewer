@@ -29,6 +29,11 @@ mod texture_cache;
 mod tiled_sources;
 mod types;
 
+pub use decode_profile::{
+    DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
+    decode_profile_stub, decode_profile_with_epoch, output_mode_is_hdr, profile_satisfies_display,
+    profile_spawn_relation,
+};
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
 #[allow(unused_imports)]
@@ -44,19 +49,18 @@ pub use preview_caps::{
 pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::TextureCache;
-pub use decode_profile::{
-    DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
-    decode_profile_stub, decode_profile_with_epoch, output_mode_is_hdr, profile_spawn_relation,
-    profile_satisfies_display,
-};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;
 pub(crate) use decode::generate_directory_tree_thumb_from_path;
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
-    hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
-    hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_has_iso_deferred_gain_map, hdr_raw_gpu_demosaic_pending,
+    hdr_raw_gpu_refinement_is_pointless, hdr_sdr_fallback_is_placeholder_for_load,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder,     directory_tree_strip_composed_from_iso_deferred,
+    directory_tree_strip_from_hdr_or_fallback,
+    hdr_directory_tree_strip_sdr_at_max_side,
+    hdr_tone_map_settings_for_directory_tree_strip,
     hdr_to_sdr_with_user_tone, libraw_scene_linear_needs_eager_sdr_fallback,
     raw_gpu_source_has_bootstrap_preview, static_hdr_background_plane_upload_eligible,
 };

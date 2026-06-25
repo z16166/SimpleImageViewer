@@ -37,6 +37,39 @@ impl ImageViewerApp {
                 .is_some_and(|current| current.image_for_index(index).is_some())
     }
 
+    fn installed_hdr_directory_tree_strip_preview(
+        &self,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+        fallback: &DecodedImage,
+        _sdr_fallback_is_placeholder: bool,
+    ) -> Option<DecodedImage> {
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side).ok()
+    }
+
+    fn should_eager_cache_install_hdr_strip(&self, idx: usize) -> bool {
+        if !self.directory_tree_list_previews_active() {
+            return false;
+        }
+        if idx == self.current_index {
+            return true;
+        }
+        let total = self.image_files.len();
+        if total == 0 {
+            return false;
+        }
+        if self.directory_tree_strip_bootstrap_after_scan
+            && idx < total.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
+        {
+            return true;
+        }
+        super::prefetch_circular_distance(self.current_index, total, idx)
+            <= crate::app::directory_tree::DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS
+    }
+
     pub(super) fn insert_deferred_sdr_upload(
         &mut self,
         idx: usize,
@@ -317,28 +350,45 @@ impl ImageViewerApp {
                 height: hdr.height,
                 pixels: fallback.arc_pixels(),
             });
-            if sdr_fallback_is_placeholder
-                && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
-            {
-                if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
-                    let source_key = source_key_for_path(&self.image_files[idx]);
-                    self.hdr_in_flight_fallback_refinements.insert(idx);
-                    self.loader.trigger_hdr_sdr_fallback_refinement(
-                        idx,
-                        Arc::clone(&hdr),
-                        source_key,
-                    );
-                }
+        }
+        if sdr_fallback_is_placeholder && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+        {
+            if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
+                let source_key = source_key_for_path(&self.image_files[idx]);
+                self.hdr_in_flight_fallback_refinements.insert(idx);
+                self.loader
+                    .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
             }
         }
-        if !sdr_fallback_is_placeholder {
+        if self.should_eager_cache_install_hdr_strip(idx) {
+            if let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
+                &hdr,
+                fallback,
+                sdr_fallback_is_placeholder,
+            ) {
+                let strip_stage =
+                    if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                        && hdr.rgba_f32.is_empty()
+                    {
+                        crate::loader::PreviewStage::Initial
+                    } else {
+                        crate::loader::PreviewStage::Refined
+                    };
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
+                idx,
+                strip_preview.width,
+                strip_preview.height
+            );
             self.cache_directory_tree_strip_thumbnail(
                 idx,
-                fallback,
-                crate::loader::PreviewStage::Refined,
+                &strip_preview,
+                strip_stage,
                 Some((hdr.width, hdr.height)),
                 ctx,
             );
+            }
         }
     }
 
@@ -369,13 +419,20 @@ impl ImageViewerApp {
                 .get(&idx)
                 .map(|hdr| (hdr.width, hdr.height))
         });
+        let strip_preview = self
+            .hdr_image_cache
+            .get(&idx)
+            .and_then(|hdr| {
+                self.installed_hdr_directory_tree_strip_preview(hdr.as_ref(), &fallback_image, false)
+            })
+            .unwrap_or_else(|| fallback_image.clone());
         if active_hdr_plane_displays_current {
             // The float HDR plane is the displayed source; applying the refined SDR fallback here
             // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
             self.insert_deferred_sdr_upload(idx, fallback_image.clone());
             self.cache_directory_tree_strip_thumbnail(
                 idx,
-                &fallback_image,
+                &strip_preview,
                 crate::loader::PreviewStage::Refined,
                 logical_size,
                 ctx,
@@ -385,7 +442,7 @@ impl ImageViewerApp {
         self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
         self.cache_directory_tree_strip_thumbnail(
             idx,
-            &fallback_image,
+            &strip_preview,
             crate::loader::PreviewStage::Refined,
             logical_size,
             ctx,

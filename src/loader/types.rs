@@ -20,8 +20,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::raw_osd::RawOsdInfo;
 use super::decode_profile::DecodeProfile;
+use super::raw_osd::RawOsdInfo;
 
 pub type SourceKey = u64;
 

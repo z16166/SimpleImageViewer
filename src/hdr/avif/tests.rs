@@ -439,3 +439,44 @@ fn probe_netflix_cosmos_raw_decode() {
         sdr[i + 2]
     );
 }
+
+#[cfg(feature = "avif-native")]
+#[test]
+fn probe_gain_map_sample_avif_base_hdr_folder() {
+    use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
+    use crate::hdr::types::{HdrToneMapSettings, DEFAULT_SDR_WHITE_NITS};
+    use crate::loader::hdr_has_iso_deferred_gain_map;
+
+    let dir = std::path::Path::new(
+        r"F:\HDR\Gain_Map_Sample_Photos\Gain_Map_Sample_Photos\samples_avif_base_hdr",
+    );
+    if !dir.is_dir() {
+        eprintln!("skip: {}", dir.display());
+        return;
+    }
+    let path = dir.join("01_base_hdr.avif");
+    let bytes = std::fs::read(&path).expect("read");
+    let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, 1.0).expect("decode");
+    assert!(!hdr_has_iso_deferred_gain_map(&hdr));
+    let mean_luma = |pixels: &[u8]| -> f32 {
+        pixels
+            .chunks_exact(4)
+            .map(|px| 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32)
+            .sum::<f32>()
+            / (pixels.len() / 4).max(1) as f32
+    };
+    let default_tone = HdrToneMapSettings::default();
+    let bright_tone = HdrToneMapSettings {
+        max_display_nits: DEFAULT_SDR_WHITE_NITS,
+        ..default_tone
+    };
+    let default_sdr =
+        hdr_to_sdr_rgba8_with_tone_settings(&hdr, 0.0, &default_tone).expect("default sdr");
+    let bright_sdr =
+        hdr_to_sdr_rgba8_with_tone_settings(&hdr, 0.0, &bright_tone).expect("bright sdr");
+    eprintln!(
+        "01_base_hdr luma default={:.1} bright_peak={:.1}",
+        mean_luma(&default_sdr),
+        mean_luma(&bright_sdr)
+    );
+}

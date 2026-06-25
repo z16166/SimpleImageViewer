@@ -351,7 +351,7 @@ impl ImageViewerApp {
                 self.set_current_image_resolution(None);
                 self.animation = None;
                 self.loader.request_load(
-            self.current_index,
+                    self.current_index,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),

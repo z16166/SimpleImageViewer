@@ -18,6 +18,8 @@ mod brand;
 mod metadata;
 
 #[cfg(feature = "avif-native")]
+mod strip_baseline;
+#[cfg(feature = "avif-native")]
 mod decode;
 #[cfg(feature = "avif-native")]
 mod gain_map;
@@ -34,6 +36,10 @@ pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes;
+#[cfg(feature = "avif-native")]
+pub(crate) use strip_baseline::{
+    decode_avif_strip_iso_gain_map_baseline, decode_avif_strip_precomposed_hdr,
+};
 #[cfg(feature = "avif-native")]
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(all(test, feature = "avif-native"))]

@@ -16,7 +16,19 @@
 
 use std::sync::Arc;
 
-use crate::hdr::types::{HdrImageBuffer, HdrReference, HdrToneMapSettings, HdrTransferFunction};
+use crate::hdr::types::{
+    HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings, HdrTransferFunction,
+    DEFAULT_SDR_WHITE_NITS,
+};
+
+/// True when the HDR buffer carries a deferred ISO gain map (Ultra HDR / AVIF JPEG-R, etc.).
+pub(crate) fn hdr_has_iso_deferred_gain_map(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata
+        .gain_map
+        .as_ref()
+        .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+        .is_some()
+}
 
 #[inline]
 pub(crate) fn hdr_to_sdr_with_user_tone(
@@ -29,6 +41,120 @@ pub(crate) fn hdr_to_sdr_with_user_tone(
         return Ok(iso.sdr_rgba.as_ref().clone());
     }
     crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone)
+}
+
+/// CPU tone-mapped SDR for strip thumbnails and other previews.
+///
+/// Unlike [`hdr_to_sdr_with_user_tone`], deferred ISO gain-map images are forward-composed on
+/// the CPU first so previews match the bright GPU display path instead of the dark baseline SDR.
+pub(crate) fn hdr_to_display_sdr_rgba8_for_preview(
+    buffer: &HdrImageBuffer,
+    tone: &HdrToneMapSettings,
+) -> Result<Vec<u8>, String> {
+    if let Some(gain_map) = buffer.metadata.gain_map.as_ref()
+        && let Some(iso) = gain_map.iso_deferred.as_ref()
+    {
+        let rgba_f32 = crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+            buffer.width,
+            buffer.height,
+            iso,
+            tone.target_hdr_capacity(),
+        )?;
+        let composed = HdrImageBuffer {
+            width: buffer.width,
+            height: buffer.height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: buffer.color_space,
+            metadata: buffer.metadata.clone(),
+            rgba_f32: Arc::new(rgba_f32),
+        };
+        return crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+            &composed,
+            tone.exposure_ev,
+            tone,
+        );
+    }
+    hdr_to_sdr_with_user_tone(buffer, tone)
+}
+
+/// PQ/HLG strip previews use `max_display_nits == sdr_white_nits` so peak scaling does not
+/// crush AVIF/JPEG-HDR base layers to near-black SDR while the main viewer runs native HDR.
+pub(crate) fn hdr_tone_map_settings_for_directory_tree_strip() -> HdrToneMapSettings {
+    HdrToneMapSettings {
+        max_display_nits: DEFAULT_SDR_WHITE_NITS,
+        ..HdrToneMapSettings::default()
+    }
+}
+
+/// CPU SDR bytes for directory-tree strip thumbnails (cold worker + post-install upgrade).
+pub(crate) fn hdr_to_directory_tree_strip_sdr_rgba8(
+    buffer: &HdrImageBuffer,
+) -> Result<Vec<u8>, String> {
+    let tone = hdr_tone_map_settings_for_directory_tree_strip();
+    hdr_to_display_sdr_rgba8_for_preview(buffer, &tone)
+}
+
+/// Strip-sized SDR preview: downsample HDR first, then tone-map (avoids full-frame CPU work).
+pub(crate) fn hdr_directory_tree_strip_sdr_at_max_side(
+    buffer: &HdrImageBuffer,
+    max_side: u32,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    if buffer.rgba_f32.is_empty() {
+        return Err(format!(
+            "HDR strip preview requires float pixels ({}x{})",
+            buffer.width, buffer.height
+        ));
+    }
+    let preview = crate::hdr::tiled::downsample_hdr_image_nearest(
+        buffer,
+        max_side,
+        max_side,
+    )?;
+    let pixels = hdr_to_directory_tree_strip_sdr_rgba8(&preview)?;
+    Ok((preview.width, preview.height, pixels))
+}
+
+/// CPU strip thumbnail from an installed HDR buffer, or downsampled SDR fallback when empty.
+pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
+    hdr: &HdrImageBuffer,
+    fallback: &crate::loader::DecodedImage,
+    max_side: u32,
+) -> Result<crate::loader::DecodedImage, String> {
+    use crate::loader::downsample_decoded_for_strip;
+
+    if !hdr.rgba_f32.is_empty() {
+        if let Ok((width, height, pixels)) = hdr_directory_tree_strip_sdr_at_max_side(hdr, max_side)
+        {
+            return Ok(crate::loader::DecodedImage::new(width, height, pixels));
+        }
+    }
+
+    if !fallback.is_sdr_deferred_placeholder() {
+        return downsample_decoded_for_strip(fallback, max_side).map(|cow| cow.into_owned());
+    }
+
+    if hdr_has_iso_deferred_gain_map(hdr) {
+        let tone = hdr_tone_map_settings_for_directory_tree_strip();
+        let pixels = hdr_to_display_sdr_rgba8_for_preview(hdr, &tone)?;
+        let decoded = crate::loader::DecodedImage::new(hdr.width, hdr.height, pixels);
+        return downsample_decoded_for_strip(&decoded, max_side).map(|cow| cow.into_owned());
+    }
+
+    Err("strip preview unavailable: no HDR pixels or SDR fallback".to_string())
+}
+
+/// CPU-composed SDR strip from an ISO deferred HDR buffer (post-GPU / post-install upgrade).
+pub(crate) fn directory_tree_strip_composed_from_iso_deferred(
+    hdr: &HdrImageBuffer,
+    max_side: u32,
+) -> Result<crate::loader::DecodedImage, String> {
+    if !hdr_has_iso_deferred_gain_map(hdr) {
+        return Err("strip compose upgrade requires ISO deferred gain map".to_string());
+    }
+    let tone = hdr_tone_map_settings_for_directory_tree_strip();
+    let pixels = hdr_to_display_sdr_rgba8_for_preview(hdr, &tone)?;
+    let decoded = crate::loader::DecodedImage::new(hdr.width, hdr.height, pixels);
+    crate::loader::downsample_decoded_for_strip(&decoded, max_side).map(|cow| cow.into_owned())
 }
 
 /// Display-referred peak headroom used by the loader: values `<= 1.0` (plus epsilon) mean SDR or
@@ -255,6 +381,112 @@ mod tests {
                 .expect("fallback");
         assert_eq!(out.pixels.as_slice(), iso_sdr);
         assert!(!out.is_deferred_placeholder);
+    }
+
+    #[test]
+    fn directory_tree_strip_from_empty_hdr_uses_sdr_fallback() {
+        use crate::loader::DecodedImage;
+
+        let hdr = HdrImageBuffer {
+            width: 4,
+            height: 4,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::default(),
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        let fallback = DecodedImage::new(4, 4, vec![200_u8; 4 * 4 * 4]);
+        let strip =
+            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        assert_eq!(strip.width, 4);
+        assert_eq!(strip.height, 4);
+        assert_eq!(strip.rgba()[0], 200);
+    }
+
+    #[test]
+    fn directory_tree_strip_iso_deferred_prefers_fallback_baseline() {
+        use crate::loader::DecodedImage;
+        use crate::hdr::types::IsoGainMapGpuSource;
+
+        let iso_sdr = Arc::new(vec![180_u8; 4 * 4 * 4]);
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::clone(&iso_sdr),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
+        });
+        let hdr = HdrImageBuffer {
+            width: 4,
+            height: 4,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        let fallback = DecodedImage::new(4, 4, iso_sdr.to_vec());
+        let strip =
+            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        assert_eq!(strip.rgba()[0], 180);
+    }
+
+    #[test]
+    fn display_sdr_preview_composes_iso_deferred_baseline() {
+        let iso_sdr = vec![32_u8, 32, 32, 255];
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "JPEG_R",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [4.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        let tone = HdrToneMapSettings::default();
+        let baseline = hdr_to_sdr_with_user_tone(&hdr, &tone).expect("baseline");
+        let preview = hdr_to_display_sdr_rgba8_for_preview(&hdr, &tone).expect("preview");
+        assert_eq!(baseline, iso_sdr);
+        assert_ne!(preview, iso_sdr);
     }
 
     #[test]

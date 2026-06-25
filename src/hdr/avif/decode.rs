@@ -68,18 +68,10 @@ pub(crate) fn decode_avif_hdr_with_target_capacity(
 }
 
 #[cfg(feature = "avif-native")]
-pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
+pub(crate) fn read_avif_decoder_image(
     bytes: &[u8],
-    target_hdr_capacity: f32,
-) -> Result<HdrImageBuffer, String> {
-    // Universal-viewer policy: immediately after each `avifDecoderCreate()`, force
-    // `decoder->strictFlags = AVIF_STRICT_DISABLED` (0) — same as idiomatic C/C++ — so every
-    // strictFlags-gated check in libavif is off (legacy encoders, missing alpha `ispe`, etc.).
-    // Note: a few BMFF paths still fail without consulting `strictFlags`.
+) -> Result<libavif_sys::AvifImageOwned, String> {
     let strict_flags = libavif_sys::AVIF_STRICT_DISABLED;
-
-    // Request gain-map items first (`AVIF_IMAGE_CONTENT_ALL`). Some inputs fail when the decoder
-    // walks optional gain-map associations; retry with color+alpha only.
     let content_flag_attempts: [(u32, &'static str); 2] = [
         (libavif_sys::AVIF_IMAGE_CONTENT_ALL, "color+alpha+gainmap"),
         (
@@ -134,9 +126,15 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         return Err(last_err.unwrap_or_else(|| "libavif decode failed".to_string()));
     }
 
-    // SAFETY: `image_ptr` is only set from `AvifImageOwned::into_raw()` after
-    // `avifDecoderReadMemory` succeeds — caller-owned empty image, not `siv_avif_decoder_get_image`.
-    let image = unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) };
+    Ok(unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) })
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
+    let image = read_avif_decoder_image(bytes)?;
     super::avif_image_to_hdr_buffer(image.as_ptr(), target_hdr_capacity)
 }
 pub(crate) fn avif_image_icc_bytes(image: &libavif_sys::avifImage) -> &[u8] {

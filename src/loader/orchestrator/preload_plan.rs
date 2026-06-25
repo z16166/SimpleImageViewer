@@ -40,12 +40,7 @@ impl PreloadPlanSnapshot {
         }
     }
 
-    pub fn write_navigation(
-        &self,
-        current_index: usize,
-        image_count: usize,
-        max_distance: usize,
-    ) {
+    pub fn write_navigation(&self, current_index: usize, image_count: usize, max_distance: usize) {
         self.current_index.store(current_index, Ordering::Release);
         self.image_count.store(image_count, Ordering::Release);
         self.max_distance.store(max_distance, Ordering::Release);

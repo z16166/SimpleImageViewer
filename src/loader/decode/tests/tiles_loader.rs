@@ -73,7 +73,14 @@ fn request_tile_decodes_hdr_source_into_hdr_cache_and_reports_hdr_ready() {
         .expect("build HDR tiled source"),
     );
 
-    loader.request_tile(3, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(Arc::clone(&source)), 0, 0);
+    loader.request_tile(
+        3,
+        crate::loader::decode_profile_stub(),
+        1.0,
+        TileDecodeSource::Hdr(Arc::clone(&source)),
+        0,
+        0,
+    );
 
     let output = loader
         .rx
@@ -129,7 +136,14 @@ fn request_tile_reports_ready_when_hdr_tile_is_already_cached() {
         )
         .expect("seed HDR tile cache");
 
-    loader.request_tile(3, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(source), 0, 0);
+    loader.request_tile(
+        3,
+        crate::loader::decode_profile_stub(),
+        1.0,
+        TileDecodeSource::Hdr(source),
+        0,
+        0,
+    );
 
     let output = loader
         .rx
@@ -193,7 +207,14 @@ fn request_tile_reports_ready_when_hdr_decode_fails() {
     let loader = ImageLoader::new();
     let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(FailingHdrTiledSource);
 
-    loader.request_tile(5, crate::loader::decode_profile_stub(), 1.0, TileDecodeSource::Hdr(source), 0, 0);
+    loader.request_tile(
+        5,
+        crate::loader::decode_profile_stub(),
+        1.0,
+        TileDecodeSource::Hdr(source),
+        0,
+        0,
+    );
 
     let output = loader
         .rx

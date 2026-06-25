@@ -45,7 +45,7 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
 }
 
 /// Limit GPU texture uploads per paint pass (checklist #3).
-pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 4;
+pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
 pub(crate) struct DirectoryTreeStripCache {
@@ -142,6 +142,10 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn cached_preview_max_side(&self, index: usize) -> Option<u32> {
         self.preview_max_side.get(&index).copied()
+    }
+
+    pub(crate) fn cached_preview_stage(&self, index: usize) -> Option<PreviewStage> {
+        self.preview_stage.get(&index).copied()
     }
 
     pub(crate) fn insert_from_texture_handle(
@@ -415,7 +419,7 @@ pub(crate) fn should_replace_strip_thumbnail(
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
     strip_max_side: u32,
-    allow_initial_over_refined: bool,
+    _allow_initial_over_refined: bool,
 ) -> bool {
     if decoded.is_sdr_deferred_placeholder() {
         return false;
@@ -441,12 +445,6 @@ pub(crate) fn should_replace_strip_thumbnail(
         None => true,
         Some(cached_max_side) => {
             if stage == PreviewStage::Refined && cached_stage == Some(PreviewStage::Initial) {
-                return true;
-            }
-            if stage == PreviewStage::Initial
-                && cached_stage == Some(PreviewStage::Refined)
-                && allow_initial_over_refined
-            {
                 return true;
             }
             new_max_side > cached_max_side
@@ -604,25 +602,26 @@ mod tests {
     }
 
     #[test]
-    fn strip_cache_cold_initial_may_replace_refined_sync() {
+    fn strip_cache_cold_initial_does_not_replace_refined() {
+        let logical = Some((512_u32, 512_u32));
         let cold = DecodedImage::new(128, 128, vec![200; 128 * 128 * 4]);
         assert!(!should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Refined),
-            None,
+            logical,
             &cold,
             PreviewStage::Initial,
-            Some((512, 512)),
+            logical,
             128,
             false,
         ));
-        assert!(should_replace_strip_thumbnail(
+        assert!(!should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Refined),
-            None,
+            logical,
             &cold,
             PreviewStage::Initial,
-            Some((512, 512)),
+            logical,
             128,
             true,
         ));
@@ -631,12 +630,23 @@ mod tests {
         assert!(!should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Refined),
-            None,
+            logical,
             &black_placeholder,
             PreviewStage::Initial,
-            Some((512, 512)),
+            logical,
             128,
             true,
+        ));
+        let refined = DecodedImage::new(512, 512, vec![220; 512 * 512 * 4]);
+        assert!(should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Initial),
+            logical,
+            &refined,
+            PreviewStage::Refined,
+            logical,
+            128,
+            false,
         ));
     }
 

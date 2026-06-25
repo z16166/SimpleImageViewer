@@ -1,5 +1,5 @@
 use super::should_spawn_load_task;
-use crate::loader::{decode_profile_stub, DecodeProfile, InFlightLoad, LoadIntent};
+use crate::loader::{DecodeProfile, InFlightLoad, LoadIntent, decode_profile_stub};
 use std::collections::HashMap;
 
 #[test]
@@ -48,5 +48,8 @@ fn should_spawn_load_task_supersedes_on_profile_downgrade() {
         ProfileSpawnRelation::Downgrade
     );
     assert!(should_spawn_load_task(&mut loading, 3, sdr.clone()));
-    assert_eq!(loading.get(&3).map(|e| e.profile.raw_high_quality), Some(false));
+    assert_eq!(
+        loading.get(&3).map(|e| e.profile.raw_high_quality),
+        Some(false)
+    );
 }

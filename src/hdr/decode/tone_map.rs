@@ -36,7 +36,8 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
 /// Same as [`hdr_to_sdr_rgba8`] but uses explicit SDR white / peak display nits
 /// (e.g. from user tone-map settings) for PQ/HLG peak scaling. Caller-supplied
 /// `max_display_nits` is raised by [`HdrImageMetadata::luminance::mastering_max_nits`]
-/// when that hint exceeds it (content peak vs display capability).
+/// when that hint exceeds it (content peak vs display capability), unless the caller
+/// pinned peak to SDR white (directory-tree strip previews).
 pub fn hdr_to_sdr_rgba8_with_tone_settings(
     buffer: &HdrImageBuffer,
     exposure_ev: f32,
@@ -65,9 +66,14 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     }
 
     let mut tone = *tone;
-    if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
-        if max.is_finite() && max > tone.sdr_white_nits {
-            tone.max_display_nits = tone.max_display_nits.max(max);
+    // Directory-tree strip previews pass `max_display_nits == sdr_white_nits`; do not
+    // raise from mastering metadata or PQ thumbnails crush to ~20% luminance.
+    let strip_preview_pinned = tone.max_display_nits <= tone.sdr_white_nits + 0.5;
+    if !strip_preview_pinned {
+        if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
+            if max.is_finite() && max > tone.sdr_white_nits {
+                tone.max_display_nits = tone.max_display_nits.max(max);
+            }
         }
     }
 

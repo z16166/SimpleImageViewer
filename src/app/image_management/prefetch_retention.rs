@@ -21,7 +21,7 @@
 //! window-outside entries survive only while a loader task is still registered.
 
 use super::{
-    prefetch_circular_distance, prefetch_window_contains, PREFETCH_WINDOW_DISTANCE,
+    PREFETCH_WINDOW_DISTANCE, prefetch_circular_distance, prefetch_window_contains,
     should_skip_background_preloads_for_memory,
 };
 
@@ -152,6 +152,9 @@ mod tests {
 
     #[test]
     fn normal_memory_uses_default_window_distance() {
-        assert_eq!(effective_prefetch_window_distance(4096, 8192), PREFETCH_WINDOW_DISTANCE);
+        assert_eq!(
+            effective_prefetch_window_distance(4096, 8192),
+            PREFETCH_WINDOW_DISTANCE
+        );
     }
 }

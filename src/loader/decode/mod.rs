@@ -22,6 +22,7 @@
 mod assemble;
 mod detect;
 mod directory_tree_thumb;
+mod gain_map_strip;
 mod hdr_formats;
 mod jpeg;
 mod modern;

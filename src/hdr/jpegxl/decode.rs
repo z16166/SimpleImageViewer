@@ -352,6 +352,7 @@ fn jxl_finish_static_frame(
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: &HdrToneMapSettings,
+    strip_baseline_only: bool,
 ) -> Result<ImageData, String> {
     use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
@@ -362,11 +363,18 @@ fn jxl_finish_static_frame(
         width,
         height,
         &metadata,
+        strip_baseline_only,
     ) {
+        JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
+            return Ok(ImageData::Static(DecodedImage::new(width, height, baseline)));
+        }
         JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
         | JxlJhgmFrameOutcome::GpuDeferred(hdr)
         | JxlJhgmFrameOutcome::CpuComposed(hdr) => hdr,
         JxlJhgmFrameOutcome::Unprocessed => {
+            if strip_baseline_only {
+                return Err("JPEG XL strip baseline path requires ISO gain map".to_string());
+            }
             let color_space = metadata.color_space_hint();
             HdrImageBuffer {
                 width,
@@ -402,7 +410,7 @@ pub(crate) fn jxl_tag_display_referred_when_sdr_grade(metadata: &mut HdrImageMet
 }
 
 #[cfg(feature = "jpegxl")]
-fn jxl_sanitize_straight_alpha(rgba: &mut [f32]) {
+pub(crate) fn jxl_sanitize_straight_alpha(rgba: &mut [f32]) {
     for px in rgba.chunks_exact_mut(4) {
         if px[3] <= 0.0 {
             px[0] = 0.0;
@@ -447,7 +455,13 @@ fn jxl_build_hdr_animated_image_data(
             info.xsize,
             info.ysize,
             &frame_metadata,
+            false,
         ) {
+            JxlJhgmFrameOutcome::IsoGainMapBaseline(_) => {
+                return Err(
+                    "JPEG XL animated jhgm strip baseline is not supported".to_string(),
+                );
+            }
             JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
             | JxlJhgmFrameOutcome::GpuDeferred(hdr)
             | JxlJhgmFrameOutcome::CpuComposed(hdr) => hdr,
@@ -531,6 +545,44 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    decode_jxl_bytes_to_image_data_impl(
+        bytes,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        false,
+    )
+}
+
+/// ISO `jhgm` directory-tree strip: decode primary only, skip gain-map codestream decode.
+#[cfg(feature = "jpegxl")]
+pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
+    bytes: &[u8],
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let tone_map = HdrToneMapSettings::default();
+    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true)? {
+        ImageData::Static(mut decoded) => Ok((
+            decoded.take_rgba_owned(),
+            decoded.width,
+            decoded.height,
+        )),
+        ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_) => {
+            Err("JPEG XL strip baseline expected Static image data".to_string())
+        }
+        ImageData::Animated(_) | ImageData::Tiled(_) => {
+            Err("JPEG XL strip baseline does not support animation or tiling".to_string())
+        }
+    }
+}
+
+#[cfg(feature = "jpegxl")]
+fn decode_jxl_bytes_to_image_data_impl(
+    bytes: &[u8],
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
+    tone_map: HdrToneMapSettings,
+    strip_baseline_only: bool,
 ) -> Result<ImageData, String> {
     let probe_len = bytes.len().min(16).max(2);
     if !is_jxl_header(&bytes[..probe_len]) {
@@ -769,6 +821,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     decode_target_hdr_capacity,
                     display_hdr_target_capacity,
                     &tone_map,
+                    strip_baseline_only,
                 );
             }
             libjxl_sys::JXL_DEC_ERROR => {
