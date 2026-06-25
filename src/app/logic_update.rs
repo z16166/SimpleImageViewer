@@ -272,7 +272,7 @@ impl ImageViewerApp {
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
         let awaiting_raw_hdr_present = self.raw_gpu_demosaic_needs_repaint_wake();
         let loader_has_pending = self.loader.has_pending_outputs();
-        let current_still_loading = self.loader.is_loading_any(self.current_index);
+        let current_still_loading = self.loader.is_loading(self.current_index);
         if self.settings.auto_switch
             || self.scanning
             || loader_has_pending
@@ -304,7 +304,7 @@ impl ImageViewerApp {
         );
         self.ensure_root_redraw_wake(frame);
         let loader_active =
-            self.loader.has_pending_outputs() || self.loader.is_loading_any(self.current_index);
+            self.loader.has_pending_outputs() || self.loader.is_loading(self.current_index);
         if self.raw_gpu_demosaic_needs_repaint_wake() || loader_active {
             ctx.request_repaint();
             self.wake_root_for_logic();

@@ -330,9 +330,7 @@ impl ImageViewerApp {
                     self.deferred_sdr_uploads.remove(&idx);
                     crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
                     if let Some(path) = self.image_files.get(idx).cloned() {
-                        // Use the app generation so the worker spawn check matches global_gen.
-                        // Clear any stale loading-map slot first so should_spawn_load_task accepts
-                        // a re-queue at the same generation after the GPU path finished.
+                        // Clear any stale loading-map slot so profile spawn accepts the CPU retry.
                         self.loader.finish_image_request(idx);
                         self.loader.request_load(
             idx,

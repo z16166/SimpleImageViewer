@@ -107,36 +107,15 @@ impl ImageViewerApp {
         }
     }
 
-    /// Returns `Some((idx, path))` when the result was stale (wrong HDR capacity) and
-    /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
-    /// slot.
+    /// Installs a gated load result into caches and the current view.
     pub(crate) fn handle_image_load_result(
         &mut self,
         load_result: &LoadResult,
         install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
         defer_sdr_upload: bool,
-    ) -> Option<(usize, std::path::PathBuf)> {
+    ) {
         let idx = load_result.index;
-        if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
-            crate::preload_debug!(
-                "[PreloadDebug] stale-capacity drop: idx={} decoded_cap={:.3} current_cap={:.3}",
-                idx,
-                load_result.target_hdr_capacity,
-                self.ultra_hdr_decode_capacity
-            );
-            let requeue = if self.hdr_image_cache.contains_key(&idx) {
-                None
-            } else if self.loader.is_loading_any(idx) {
-                None
-            } else if !self.image_files.is_empty() && idx < self.image_files.len() {
-                Some((idx, self.image_files[idx].clone()))
-            } else {
-                None
-            };
-            return requeue;
-        }
-
         if let Some(osd) = &load_result.raw_osd {
             if osd.sensor_size.0 > 0 {
                 self.set_raw_metadata_for_index(idx, Some(osd.clone()), ctx);
@@ -197,7 +176,6 @@ impl ImageViewerApp {
                 self.install_image_error(idx, error);
             }
         }
-        None
     }
 
     /// Installs the HDR plane for a background static RAW result while leaving the SDR fallback

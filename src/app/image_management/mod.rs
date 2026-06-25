@@ -500,25 +500,11 @@ fn transition_direction_is_next(current_index: usize, target_index: usize, total
     navigation_is_forward(current_index, target_index, total)
 }
 
-fn source_key_matches_index(
-    image_files: &[PathBuf],
-    index: usize,
-    source_key: crate::loader::SourceKey,
-) -> bool {
-    image_files
-        .get(index)
-        .is_some_and(|path| source_key_for_path(path) == source_key)
-}
-
-fn output_mode_is_hdr(mode: crate::hdr::types::HdrOutputMode) -> bool {
-    mode != crate::hdr::types::HdrOutputMode::SdrToneMapped
-}
-
 fn output_mode_crosses_hdr_sdr_boundary(
     previous: crate::hdr::types::HdrOutputMode,
     next: crate::hdr::types::HdrOutputMode,
 ) -> bool {
-    output_mode_is_hdr(previous) != output_mode_is_hdr(next)
+    crate::loader::output_mode_is_hdr(previous) != crate::loader::output_mode_is_hdr(next)
 }
 
 /// True when the active monitor has reported enough metadata to pick a stable Ultra HDR
@@ -695,7 +681,7 @@ fn invalidate_tile_manager_requests_for_view_change(
     }
 }
 
-const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
+pub(super) const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
 
 /// HQ RAW static HDR planes are scene-linear; display tone mapping uses the live
 /// `ultra_hdr_decode_capacity` and does not require a full re-decode when the monitor
@@ -952,13 +938,35 @@ impl ImageViewerApp {
     pub(super) fn discard_stale_loader_outputs(&mut self) {
         let gate_ctx = self.result_gate_context();
         let files = self.image_files.clone();
+        let current = self.current_index;
         let raw_hq = self.settings.raw_high_quality;
         let output_mode = self.hdr_capabilities.output_mode;
         let ultra_cap = self.effective_ultra_hdr_decode_capacity();
         let device_id = self.current_device_id;
-        let current = self.current_index;
+        let gpu_failed = self.gpu_demosaic_failed_indices.clone();
+        let settings_demosaic = self.settings.raw_demosaic_mode;
 
         self.loader.discard_pending_stale_outputs_profile(|output, loading| {
+            let demosaic_for = |idx: usize| {
+                if gpu_failed.contains(&idx) {
+                    crate::settings::RawDemosaicMode::Cpu
+                } else {
+                    settings_demosaic
+                }
+            };
+            let display_for = |idx: usize| crate::loader::DisplayRequirements {
+                raw_high_quality: raw_hq,
+                raw_demosaic_mode: demosaic_for(idx),
+                output_mode,
+                ultra_hdr_decode_capacity: ultra_cap,
+                render_shape: crate::loader::RenderShape::Unknown,
+                load_intent: if idx == current {
+                    crate::loader::LoadIntent::Current
+                } else {
+                    crate::loader::LoadIntent::NeighborPrefetch
+                },
+                device_id: Some(device_id),
+            };
             match output {
                 LoaderOutput::Image(r) => {
                     if !files
@@ -971,20 +979,10 @@ impl ImageViewerApp {
                     if !gate_ctx.retention_for(r.index, is_loading).should_retain() {
                         return false;
                     }
-                    let display = crate::loader::DisplayRequirements {
-                        raw_high_quality: raw_hq,
-                        raw_demosaic_mode: crate::settings::RawDemosaicMode::Gpu,
-                        output_mode,
-                        ultra_hdr_decode_capacity: ultra_cap,
-                        render_shape: crate::loader::RenderShape::Unknown,
-                        load_intent: if r.index == current {
-                            crate::loader::LoadIntent::Current
-                        } else {
-                            crate::loader::LoadIntent::NeighborPrefetch
-                        },
-                        device_id: Some(device_id),
-                    };
-                    crate::loader::profile_satisfies_display(&r.decode_profile, &display)
+                    crate::loader::profile_satisfies_display(
+                        &r.decode_profile,
+                        &display_for(r.index),
+                    )
                 }
                 LoaderOutput::Preview(p) => {
                     if !files
@@ -997,20 +995,10 @@ impl ImageViewerApp {
                     if !gate_ctx.retention_for(p.index, is_loading).should_retain() {
                         return false;
                     }
-                    let display = crate::loader::DisplayRequirements {
-                        raw_high_quality: raw_hq,
-                        raw_demosaic_mode: crate::settings::RawDemosaicMode::Gpu,
-                        output_mode,
-                        ultra_hdr_decode_capacity: ultra_cap,
-                        render_shape: crate::loader::RenderShape::Unknown,
-                        load_intent: if p.index == current {
-                            crate::loader::LoadIntent::Current
-                        } else {
-                            crate::loader::LoadIntent::NeighborPrefetch
-                        },
-                        device_id: Some(device_id),
-                    };
-                    crate::loader::profile_satisfies_display(&p.decode_profile, &display)
+                    crate::loader::profile_satisfies_display(
+                        &p.decode_profile,
+                        &display_for(p.index),
+                    )
                 }
                 LoaderOutput::Refined(idx) => gate_ctx
                     .retention_for(*idx, loading.contains_key(idx))

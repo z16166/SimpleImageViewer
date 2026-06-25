@@ -493,7 +493,7 @@ impl ImageViewerApp {
                 &self.hdr_image_cache,
                 &self.hdr_tiled_source_cache,
             );
-            if missing_hdr && self.loader.is_loading_any(idx) {
+            if missing_hdr && self.loader.is_loading(idx) {
                 crate::preload_debug!(
                     "[PreloadDebug][RAW] navigate inflight_reuse idx={}",
                     idx

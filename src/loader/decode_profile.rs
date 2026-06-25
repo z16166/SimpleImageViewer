@@ -43,7 +43,9 @@ pub struct DecodeProfile {
     pub profile_epoch: u64,
 }
 
-/// Placeholder profile for legacy call sites during Phase A migration.
+/// Placeholder profile for tests and tile-manager bootstrap before a real load is registered.
+/// `profile_epoch: 0` matches a live epoch-0 snapshot; callers that need staleness isolation
+/// should use [`decode_profile_with_epoch`].
 pub fn decode_profile_stub() -> DecodeProfile {
     DecodeProfile {
         raw_high_quality: false,
@@ -64,6 +66,8 @@ pub fn decode_profile_with_epoch(epoch: u64) -> DecodeProfile {
 }
 
 /// Runtime display requirements assembled on the main thread at install / poll.
+/// `animation_playback` (generation-plan §3.F) is intentionally omitted: playback speed /
+/// pause affects display refresh only and does not change decode profile acceptance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayRequirements {
     pub raw_high_quality: bool,
@@ -119,8 +123,12 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.ultra_hdr_decode_capacity > old.ultra_hdr_decode_capacity + HDR_CAPACITY_MATCH_EPSILON {
         return true;
     }
+    // Demosaic partial order: Cpu → Gpu is upgrade; Gpu → Cpu is Downgrade (see tests).
     if new.raw_demosaic_mode != old.raw_demosaic_mode {
-        return true;
+        return matches!(
+            (old.raw_demosaic_mode, new.raw_demosaic_mode),
+            (RawDemosaicMode::Cpu, RawDemosaicMode::Gpu)
+        );
     }
     if new.load_intent == LoadIntent::Current && old.load_intent == LoadIntent::NeighborPrefetch {
         return true;
@@ -128,7 +136,9 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     false
 }
 
-/// Core profile fields that must match for install (load_intent may differ when neighbor becomes current).
+/// Core profile fields that must match for install-time acceptance.
+/// `render_shape` is checked separately at install (§3.C); `load_intent` may differ when a
+/// neighbor prefetch result becomes the current image.
 pub fn profile_core_matches(result: &DecodeProfile, display: &DisplayRequirements) -> bool {
     result.raw_high_quality == display.raw_high_quality
         && result.raw_demosaic_mode == display.raw_demosaic_mode
@@ -192,6 +202,32 @@ mod tests {
             ..base_profile()
         };
         assert_eq!(profile_spawn_relation(&old, &new), ProfileSpawnRelation::Upgrade);
+    }
+
+    #[test]
+    fn gpu_to_cpu_demosaic_is_downgrade() {
+        let old = base_profile();
+        let new = DecodeProfile {
+            raw_demosaic_mode: RawDemosaicMode::Cpu,
+            ..base_profile()
+        };
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Downgrade
+        );
+    }
+
+    #[test]
+    fn cpu_to_gpu_demosaic_is_upgrade() {
+        let old = DecodeProfile {
+            raw_demosaic_mode: RawDemosaicMode::Cpu,
+            ..base_profile()
+        };
+        let new = base_profile();
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Upgrade
+        );
     }
 
     #[test]

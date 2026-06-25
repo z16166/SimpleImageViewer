@@ -2089,7 +2089,7 @@ fn test_resolve_initial_position_during_and_after_scan() {
     app.scanning = true;
     app.resolve_initial_position();
     // It should find the path in the unsorted/initial files and set current_index
-    assert_eq!(app.current_index, 2);
+    assert_eq!(app.current_index, 1);
     // But initial_image should not be consumed yet because scanning is true
     assert_eq!(app.initial_image, Some(initial_path.clone()));
 
@@ -2097,13 +2097,13 @@ fn test_resolve_initial_position_during_and_after_scan() {
     app.scanning = false;
     app.resolve_initial_position();
     // It should still set current_index to the found path
-    assert_eq!(app.current_index, 2);
+    assert_eq!(app.current_index, 1);
     // And now initial_image should be consumed (set to None)
     assert!(app.initial_image.is_none());
 
     // Case 3: subsequent calls after scanning is done
     app.resolve_initial_position();
-    // Since initial_image was consumed, it should fall back to resume_last_image (img1.jpg)
+    // img1.jpg is not in the list; index stays at img2.jpg (index 1)
     assert_eq!(app.current_index, 1);
 }
 

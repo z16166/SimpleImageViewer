@@ -157,7 +157,12 @@ pub(crate) fn should_spawn_load_task(
                 loading.insert(index, InFlightLoad { profile });
                 true
             }
-            ProfileSpawnRelation::Downgrade => false,
+            ProfileSpawnRelation::Downgrade => {
+                // Supersede the registered profile so gate/install reject stale output; spawn the
+                // downgraded request (old worker may still finish but is no longer registered).
+                loading.insert(index, InFlightLoad { profile });
+                true
+            }
         },
         None => {
             loading.insert(index, InFlightLoad { profile });
@@ -170,7 +175,7 @@ pub struct ImageLoader {
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
-    /// Maps image index -> registered in-flight load (profile + diagnostic generation).
+    /// Maps image index -> registered in-flight load (decode profile for spawn dedup and gate checks).
     pub(crate) loading: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
     pub(crate) preload_plan: Arc<PreloadPlanSnapshot>,
     pub(crate) pool: Arc<rayon::ThreadPool>,

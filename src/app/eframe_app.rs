@@ -169,7 +169,7 @@ impl eframe::App for ImageViewerApp {
         }
         if pass.is_root()
             && !self.scanning
-            && (self.loader.has_pending_outputs() || self.loader.is_loading_any(self.current_index))
+            && (self.loader.has_pending_outputs() || self.loader.is_loading(self.current_index))
         {
             self.process_loaded_images(ctx, &mut Some(frame));
         }

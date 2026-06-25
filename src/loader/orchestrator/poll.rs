@@ -23,11 +23,6 @@ use std::time::{Duration, Instant};
 const LOADER_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl ImageLoader {
-    /// True when any generation is in-flight for `index` (including CPU fallback reloads).
-    pub fn is_loading_any(&self, index: usize) -> bool {
-        self.loading.lock().contains_key(&index)
-    }
-
     pub(crate) fn active_load_count(&self) -> usize {
         self.loading.lock().len()
     }
@@ -140,8 +135,8 @@ impl ImageLoader {
     /// for the rayon decode pool. In-flight LibRaw OpenMP work cannot be cancelled;
     /// callers must terminate via [`crate::startup::force_process_exit`] afterward on Unix.
     ///
-    /// Sets `current_gen` to `u64::MAX` so any late decode worker treats queued work as stale.
-    /// This loader must not be reused after this call — it is only valid on the process-exit path.
+    /// Clears all registered loads via [`Self::cancel_all`]. This loader must not be reused
+    /// after this call — it is only valid on the process-exit path.
     pub fn prepare_for_process_exit(&mut self) {
         self.cancel_all();
         self.raw_open_prefetch.clear_all();

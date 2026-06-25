@@ -52,7 +52,7 @@ impl ImageViewerApp {
                 &tm.decode_profile,
                 &self.image_files,
                 source_key,
-                self.loader.is_loading_any(tile_result.index),
+                self.loader.is_loading(tile_result.index),
             );
             if gate != result_gate::GateDecision::Accept {
                 return;
@@ -82,12 +82,25 @@ impl ImageViewerApp {
             return;
         };
 
+        let existing_stage = self
+            .tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == update.index && tm.preview_texture.is_some())
+            .map(|_| crate::loader::PreviewStage::Refined)
+            .or_else(|| {
+                self.prefetched_tiles
+                    .get(&update.index)
+                    .filter(|tm| tm.preview_texture.is_some())
+                    .map(|_| crate::loader::PreviewStage::Refined)
+            });
+
         let gate_decision = result_gate::gate_preview_result(
             &gate_ctx,
             &update,
             &self.image_files,
             &display,
-            self.loader.is_loading_any(update.index),
+            self.loader.is_loading(update.index),
+            existing_stage,
         );
         if gate_decision != result_gate::GateDecision::Accept {
             let file_name = path_for_logs

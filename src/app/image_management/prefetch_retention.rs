@@ -27,7 +27,7 @@ use super::{
 
 /// Why a prefetch cache entry is kept during distant eviction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PrefetchRetainReason {
+pub(crate) enum PrefetchRetainReason {
     CurrentIndex,
     WithinWindow { distance: usize },
     InFlightLoad,
@@ -35,13 +35,13 @@ pub(super) enum PrefetchRetainReason {
 
 /// Why a prefetch cache entry is evicted during distant eviction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PrefetchEvictReason {
+pub(crate) enum PrefetchEvictReason {
     EmptyList,
     OutsideWindow { distance: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PrefetchCacheRetention {
+pub(crate) enum PrefetchCacheRetention {
     Retain(PrefetchRetainReason),
     Evict(PrefetchEvictReason),
 }
@@ -93,6 +93,8 @@ pub(super) fn prefetch_cache_retention(
         return PrefetchCacheRetention::Retain(PrefetchRetainReason::WithinWindow { distance });
     }
     if is_loading {
+        // Strategy B (in-flight grace): retain cache entries while a load is still registered,
+        // even when the index left the preload window. Loader cancel clears registration next.
         return PrefetchCacheRetention::Retain(PrefetchRetainReason::InFlightLoad);
     }
     PrefetchCacheRetention::Evict(PrefetchEvictReason::OutsideWindow { distance })

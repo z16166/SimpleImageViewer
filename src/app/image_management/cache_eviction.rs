@@ -347,7 +347,7 @@ impl ImageViewerApp {
                 len,
                 max_distance,
                 idx,
-                self.loader.is_loading_any(idx),
+                self.loader.is_loading(idx),
             )
         };
 

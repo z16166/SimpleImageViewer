@@ -688,9 +688,25 @@ let plan_ref = Arc::clone(&preload_plan);
     }
 
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
-        let mut loading = self.loading.lock();
-        for idx in indices {
-            loading.remove(&idx);
+        use std::collections::HashSet;
+
+        let cancelled: HashSet<usize> = indices.into_iter().collect();
+        if cancelled.is_empty() {
+            return;
+        }
+        {
+            let mut loading = self.loading.lock();
+            for idx in &cancelled {
+                loading.remove(idx);
+            }
+        }
+        {
+            let (lock, cvar) = &*self.delayed_fallback;
+            let mut slot = lock.lock();
+            if slot.as_ref().is_some_and(|job| cancelled.contains(&job.index)) {
+                *slot = None;
+                cvar.notify_one();
+            }
         }
     }
 
@@ -882,14 +898,11 @@ tx: tx2,
         }
     }
 
-    /// True when [`ImageLoader::loading`] shows a **strictly newer** registered load generation for
-    /// `index` than the adoption generation from the decode worker (`adoptee_generation`).
+    /// True when [`ImageLoader::loading`] shows a **strictly newer** registered profile for
+    /// `index` than the adoption profile from the decode / refinement worker.
     ///
-    /// HQ refinement must **not** use `loader.current_gen` alone for staleness: prefetch promotion to
-    /// the current TileManager bumps [`ImageLoader::set_generation`] without re-queuing a load while
-    /// the UI deliberately accepts prefetch-era previews (`prefetch_prev_generation` in image
-    /// management). Likewise, `finish_image_request` clears the map without implying supersession for
-    /// in-flight refinement.
+    /// Prefetch promotion can accept in-flight previews whose profile still matches display
+    /// requirements; `finish_image_request` clearing the map does not alone imply supersession.
     #[inline]
     fn hq_refinement_superseded(
         loading: &Arc<Mutex<HashMap<usize, InFlightLoad>>>,
@@ -900,6 +913,20 @@ tx: tx2,
             profile_spawn_relation(adoptee_profile, &registered.profile)
                 == ProfileSpawnRelation::Upgrade
                 || registered.profile.profile_epoch > adoptee_profile.profile_epoch
+        })
+    }
+
+    /// True when the registered in-flight profile no longer matches this worker's spawn profile.
+    fn load_result_superseded(
+        loading: &Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+        index: usize,
+        spawn_profile: &DecodeProfile,
+    ) -> bool {
+        loading.lock().get(&index).is_some_and(|registered| {
+            matches!(
+                profile_spawn_relation(spawn_profile, &registered.profile),
+                ProfileSpawnRelation::Downgrade | ProfileSpawnRelation::Upgrade
+            ) || registered.profile.profile_epoch > spawn_profile.profile_epoch
         })
     }
 
@@ -991,19 +1018,17 @@ tx: tx2,
             }
         }
 
-        let final_profile = {
-            let map = loading_ref.lock();
-            if let Some(entry) = map.get(&index) {
-                entry.profile.clone()
-            } else {
-                return;
-            }
-        };
-
-        load_result.decode_profile = final_profile;
-        if let Ok(data) = &load_result.result {
-            load_result.decode_profile.render_shape = data.preferred_render_shape();
+        if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
+            return;
         }
+
+        // Stamp with the spawn profile, not the live registered profile — a downgrade can
+        // replace `loading[idx]` while this worker still holds a higher decode product.
+        let mut result_profile = decode_profile.clone();
+        if let Ok(data) = &load_result.result {
+            result_profile.render_shape = data.preferred_render_shape();
+        }
+        load_result.decode_profile = result_profile;
 
         {
             let loading = loading_ref.lock();
@@ -1220,12 +1245,18 @@ tx: tx2,
                     }
                 }
                 (None, None) => {
+                    if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
+                        return;
+                    }
                     let _ = tx.send(LoaderOutput::Image(load_result));
                     return;
                 }
             }
         }
 
+        if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
+            return;
+        }
         let _ = tx.send(LoaderOutput::Image(load_result));
     }
 

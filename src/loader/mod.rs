@@ -46,7 +46,8 @@ pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels
 pub use texture_cache::TextureCache;
 pub use decode_profile::{
     DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
-    decode_profile_stub, decode_profile_with_epoch, profile_spawn_relation, profile_satisfies_display,
+    decode_profile_stub, decode_profile_with_epoch, output_mode_is_hdr, profile_spawn_relation,
+    profile_satisfies_display,
 };
 pub use types::*;
 

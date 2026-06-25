@@ -20,9 +20,10 @@ use std::path::PathBuf;
 
 use crate::loader::{
     DecodeProfile, DisplayRequirements, ImageData, LoadResult, PreviewResult, PreviewStage,
-    SourceKey, TileResult, profile_satisfies_display, source_key_for_path,
+    RenderShape, SourceKey, TileResult, profile_satisfies_display, source_key_for_path,
 };
 
+use super::hdr_load_result_capacity_is_stale;
 use super::prefetch_retention::{PrefetchCacheRetention, prefetch_cache_retention};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,23 +31,6 @@ pub enum GateDecision {
     Accept,
     Discard,
     Requeue,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateDiscardReason {
-    SourceKeyMismatch,
-    OutsidePreloadWindow,
-    ProfileMismatch,
-    StaleRefinedNotification,
-    StaleTileBinding,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateAcceptReason {
-    CurrentIndex,
-    WithinPreloadWindow,
-    InFlightLoad,
-    ProfileMatch,
 }
 
 /// Context for window-based retention shared with prefetch cache eviction.
@@ -68,7 +52,7 @@ impl ResultGateContext {
     }
 }
 
-fn source_key_matches_index(
+pub(super) fn source_key_matches_index(
     image_files: &[PathBuf],
     index: usize,
     source_key: SourceKey,
@@ -78,15 +62,34 @@ fn source_key_matches_index(
         .is_some_and(|path| source_key_for_path(path) == source_key)
 }
 
-/// Install-time hard check: decoded shape vs viewer requirement.
+/// Install-time hard check: decoded shape vs an explicit required shape (never `Unknown`).
 pub fn render_shape_matches_install(
     image_data: &ImageData,
-    required: crate::loader::RenderShape,
+    required: RenderShape,
 ) -> bool {
-    if required == crate::loader::RenderShape::Unknown {
-        return true;
-    }
+    debug_assert!(required != RenderShape::Unknown);
     image_data.preferred_render_shape() == required
+}
+
+fn render_shape_acceptable_at_install(
+    load_result: &LoadResult,
+    display: &DisplayRequirements,
+) -> bool {
+    let Ok(data) = &load_result.result else {
+        return true;
+    };
+    let actual = data.preferred_render_shape();
+    if display.render_shape != RenderShape::Unknown
+        && !render_shape_matches_install(data, display.render_shape)
+    {
+        return false;
+    }
+    if load_result.decode_profile.render_shape != RenderShape::Unknown
+        && actual != load_result.decode_profile.render_shape
+    {
+        return false;
+    }
+    true
 }
 
 /// Gate for full `LoadResult` before GPU upload / cache install.
@@ -98,22 +101,22 @@ pub fn gate_load_result(
     is_loading: bool,
 ) -> GateDecision {
     let idx = load_result.index;
+    // ③ source_key identity
     if !source_key_matches_index(image_files, idx, load_result.source_key) {
         return GateDecision::Discard;
     }
+    // ① preload window (+ in-flight retention while registered)
     if !ctx.retention_for(idx, is_loading).should_retain() {
         return GateDecision::Discard;
     }
+    // ② decode/display profile
     if !profile_satisfies_display(&load_result.decode_profile, display) {
         return GateDecision::Discard;
     }
-    if display.render_shape != crate::loader::RenderShape::Unknown {
-        if let Ok(data) = &load_result.result {
-            if !render_shape_matches_install(data, display.render_shape) {
-                return GateDecision::Discard;
-            }
-        }
+    if !render_shape_acceptable_at_install(load_result, display) {
+        return GateDecision::Discard;
     }
+    // RAW HQ bootstrap without an HDR plane cannot satisfy the current viewer.
     if load_result.decode_profile.raw_high_quality
         && load_result.raw_osd.is_some()
         && !load_result
@@ -122,6 +125,11 @@ pub fn gate_load_result(
             .is_ok_and(|d| d.has_plane(crate::loader::PixelPlaneKind::Hdr))
     {
         return GateDecision::Discard;
+    }
+    // device_id mismatch for pre-uploaded planes is handled in
+    // `try_register_preuploaded_hdr_plane` (planes dropped, decode result still installs).
+    if hdr_load_result_capacity_is_stale(load_result, display.ultra_hdr_decode_capacity) {
+        return GateDecision::Requeue;
     }
     GateDecision::Accept
 }
@@ -133,6 +141,7 @@ pub fn gate_preview_result(
     image_files: &[PathBuf],
     display: &DisplayRequirements,
     is_loading: bool,
+    existing_stage: Option<PreviewStage>,
 ) -> GateDecision {
     let idx = preview.index;
     if !source_key_matches_index(image_files, idx, preview.source_key) {
@@ -143,6 +152,12 @@ pub fn gate_preview_result(
     }
     if !profile_satisfies_display(&preview.decode_profile, display) {
         return GateDecision::Discard;
+    }
+    let incoming = preview.preview_bundle.stage();
+    if let Some(existing) = existing_stage {
+        if !preview_stage_should_upgrade(existing, incoming) {
+            return GateDecision::Discard;
+        }
     }
     GateDecision::Accept
 }
@@ -176,7 +191,7 @@ pub fn gate_tile_result(
 pub fn preview_stage_should_upgrade(existing: PreviewStage, incoming: PreviewStage) -> bool {
     matches!(
         (existing, incoming),
-        (PreviewStage::Initial, PreviewStage::Refined)
+        (_, PreviewStage::Refined) | (PreviewStage::Initial, PreviewStage::Initial)
     )
 }
 
@@ -192,7 +207,7 @@ pub fn gate_decision_log_label(decision: GateDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::{LoadIntent, RenderShape};
+    use crate::loader::LoadIntent;
     use crate::settings::RawDemosaicMode;
 
     fn sample_profile(intent: LoadIntent) -> DecodeProfile {
@@ -228,10 +243,15 @@ mod tests {
         };
         let profile = sample_profile(LoadIntent::NeighborPrefetch);
         let display = sample_display(LoadIntent::Current);
+        let mut files = Vec::new();
+        for i in 0..10 {
+            files.push(PathBuf::from(format!("img{i}.jpg")));
+        }
+        let key = source_key_for_path(&files[5]);
         let load = LoadResult {
             index: 5,
             decode_profile: profile,
-            source_key: 42,
+            source_key: key,
             result: Ok(crate::loader::ImageData::Static(
                 crate::loader::DecodedImage::new(1, 1, vec![0]),
             )),
@@ -243,21 +263,110 @@ mod tests {
             uploaded_planes: None,
             device_id: None,
         };
-        let files = vec![PathBuf::from("a.jpg")];
-        // Extend files for index 5 - use dummy paths
-        let mut files = Vec::new();
-        for i in 0..10 {
-            files.push(PathBuf::from(format!("img{i}.jpg")));
-        }
-        // Fix source key
-        let key = source_key_for_path(&files[5]);
+        assert_eq!(
+            gate_load_result(&ctx, &load, &files, &display, false),
+            GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn rejects_hq_decode_profile_after_display_downgrade() {
+        let ctx = ResultGateContext {
+            current_index: 0,
+            image_count: 1,
+            max_distance: 2,
+        };
+        let files = vec![PathBuf::from("img0.cr2")];
+        let hq_profile = DecodeProfile {
+            raw_high_quality: true,
+            ..sample_profile(LoadIntent::Current)
+        };
+        let sdr_display = DisplayRequirements {
+            raw_high_quality: false,
+            ..sample_display(LoadIntent::Current)
+        };
         let load = LoadResult {
-            source_key: key,
-            ..load
+            index: 0,
+            decode_profile: hq_profile,
+            source_key: source_key_for_path(&files[0]),
+            result: Ok(crate::loader::ImageData::Static(
+                crate::loader::DecodedImage::new(1, 1, vec![0]),
+            )),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+            raw_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+        };
+        assert_eq!(
+            gate_load_result(&ctx, &load, &files, &sdr_display, false),
+            GateDecision::Discard
+        );
+    }
+
+    #[test]
+    fn accepts_load_with_stale_preupload_device_id() {
+        let ctx = ResultGateContext {
+            current_index: 0,
+            image_count: 1,
+            max_distance: 2,
+        };
+        let files = vec![PathBuf::from("img0.hdr")];
+        let display = DisplayRequirements {
+            device_id: Some(1),
+            ..sample_display(LoadIntent::Current)
+        };
+        let load = LoadResult {
+            index: 0,
+            decode_profile: sample_profile(LoadIntent::Current),
+            source_key: source_key_for_path(&files[0]),
+            result: Ok(crate::loader::ImageData::Static(
+                crate::loader::DecodedImage::new(1, 1, vec![0]),
+            )),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+            raw_osd: None,
+            uploaded_planes: None,
+            device_id: Some(999),
         };
         assert_eq!(
             gate_load_result(&ctx, &load, &files, &display, false),
             GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn rejects_initial_preview_when_refined_already_installed() {
+        let ctx = ResultGateContext {
+            current_index: 0,
+            image_count: 1,
+            max_distance: 2,
+        };
+        let files = vec![PathBuf::from("img0.jpg")];
+        let preview = PreviewResult {
+            index: 0,
+            decode_profile: sample_profile(LoadIntent::Current),
+            source_key: source_key_for_path(&files[0]),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            raw_bootstrap_osd: None,
+            cpu_demosaic_ms: None,
+            error: None,
+        };
+        let display = sample_display(LoadIntent::Current);
+        assert_eq!(
+            gate_preview_result(
+                &ctx,
+                &preview,
+                &files,
+                &display,
+                false,
+                Some(PreviewStage::Refined)
+            ),
+            GateDecision::Discard
         );
     }
 }

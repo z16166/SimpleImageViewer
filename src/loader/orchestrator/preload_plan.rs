@@ -18,6 +18,10 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+/// Default preload radius before the main thread publishes navigation.
+/// Keep in sync with `crate::app::image_management::PREFETCH_WINDOW_DISTANCE`.
+const DEFAULT_MAX_DISTANCE: usize = 2;
+
 /// Main-thread snapshot of navigation / preload window for worker early-exit.
 pub struct PreloadPlanSnapshot {
     pub current_index: AtomicUsize,
@@ -31,7 +35,7 @@ impl PreloadPlanSnapshot {
         Self {
             current_index: AtomicUsize::new(0),
             image_count: AtomicUsize::new(0),
-            max_distance: AtomicUsize::new(2),
+            max_distance: AtomicUsize::new(DEFAULT_MAX_DISTANCE),
             profile_epoch: AtomicU64::new(0),
         }
     }
@@ -70,7 +74,8 @@ impl PreloadPlanSnapshot {
     pub fn index_in_window(&self, idx: usize) -> bool {
         let count = self.image_count();
         if count == 0 {
-            return false;
+            // Navigation not published yet — do not drop tile/refine work (tests, early startup).
+            return true;
         }
         let current = self.current_index();
         if idx == current {
@@ -80,5 +85,16 @@ impl PreloadPlanSnapshot {
         let dist_forward = (idx + count - current) % count;
         let dist_backward = (current + count - idx) % count;
         dist_forward.min(dist_backward) <= max_distance
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_in_window_before_navigation_published() {
+        let plan = PreloadPlanSnapshot::new();
+        assert!(plan.index_in_window(99));
     }
 }

@@ -164,25 +164,36 @@ impl ImageViewerApp {
                         &load_result,
                         &self.image_files,
                         &display,
-                        self.loader.is_loading_any(idx),
+                        self.loader.is_loading(idx),
                     );
-                    if gate_decision != result_gate::GateDecision::Accept {
-                        #[cfg(feature = "preload-debug")]
-                        preload_debug!(
-                            "[PreloadDebug] discard image: idx={} gate={}",
-                            idx,
-                            result_gate::gate_decision_log_label(gate_decision)
-                        );
-                        self.loader.finish_image_request(idx);
-                        continue;
-                    }
-                    if !source_key_matches_index(&self.image_files, idx, load_result.source_key) {
-                        log::warn!(
-                            "[App] Image result discarded (source key mismatch): index={}",
-                            idx,
-                        );
-                        self.loader.finish_image_request(idx);
-                        continue;
+                    match gate_decision {
+                        result_gate::GateDecision::Requeue => {
+                            self.loader.finish_image_request(idx);
+                            if !self.hdr_image_cache.contains_key(&idx)
+                                && !self.loader.is_loading(idx)
+                                && !self.image_files.is_empty()
+                                && idx < self.image_files.len()
+                            {
+                                self.loader.request_load(
+                                    idx,
+                                    self.image_files[idx].clone(),
+                                    self.settings.raw_high_quality,
+                                    self.raw_demosaic_mode_for_index(idx),
+                                );
+                            }
+                            continue;
+                        }
+                        result_gate::GateDecision::Discard => {
+                            #[cfg(feature = "preload-debug")]
+                            preload_debug!(
+                                "[PreloadDebug] discard image: idx={} gate={}",
+                                idx,
+                                result_gate::gate_decision_log_label(gate_decision)
+                            );
+                            self.loader.finish_image_request(idx);
+                            continue;
+                        }
+                        result_gate::GateDecision::Accept => {}
                     }
 
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
@@ -366,18 +377,7 @@ impl ImageViewerApp {
                         sdr_upload_bytes_this_frame
                     );
                     self.loader.finish_image_request(idx);
-                    if let Some((requeue_idx, requeue_path)) =
-                        self.handle_image_load_result(&load_result, install_plan, ctx, false)
-                    {
-                        // The slot was just freed by finish_image_request above; it is now safe to
-                        // re-queue.  The loader holds the current (correct) HDR capacity.
-                        self.loader.request_load(
-            requeue_idx,
-                            requeue_path,
-                            self.settings.raw_high_quality,
-                            self.raw_demosaic_mode_for_index(requeue_idx),
-                        );
-                    }
+                    self.handle_image_load_result(&load_result, install_plan, ctx, false);
                     uploads_this_frame += 1;
                     if !is_current && estimated_sdr_upload_bytes > 0 {
                         self.last_background_upload_at = Some(Instant::now());
@@ -396,17 +396,6 @@ impl ImageViewerApp {
 
                 LoaderOutput::Preview(preview_update) => {
                     let preview_is_current = preview_update.index == self.current_index;
-                    if !source_key_matches_index(
-                        &self.image_files,
-                        preview_update.index,
-                        preview_update.source_key,
-                    ) {
-                        log::warn!(
-                            "[App] Preview update discarded (source key mismatch): index={}",
-                            preview_update.index
-                        );
-                        continue;
-                    }
 
                     if should_yield_background_result_for_pending_transition(
                         preview_is_current,
@@ -521,7 +510,11 @@ impl ImageViewerApp {
 
                 LoaderOutput::HdrSdrFallback(update) => {
                     let is_current = update.index == self.current_index;
-                    if !source_key_matches_index(&self.image_files, update.index, update.source_key)
+                    if !result_gate::source_key_matches_index(
+                        &self.image_files,
+                        update.index,
+                        update.source_key,
+                    )
                     {
                         self.hdr_in_flight_fallback_refinements
                             .remove(&update.index);
@@ -529,6 +522,15 @@ impl ImageViewerApp {
                             "[App] HDR SDR fallback discarded (source key mismatch): index={}",
                             update.index
                         );
+                        continue;
+                    }
+                    let display = self.display_requirements_for_index(update.index);
+                    if !crate::loader::profile_satisfies_display(
+                        &update.decode_profile,
+                        &display,
+                    ) {
+                        self.hdr_in_flight_fallback_refinements
+                            .remove(&update.index);
                         continue;
                     }
                     if should_yield_background_result_for_pending_transition(
@@ -675,9 +677,9 @@ impl ImageViewerApp {
             let frame_ms = crate::preload_debug::elapsed_ms(loaded_started);
             if frame_ms > 16 {
                 crate::preload_debug!(
-                    "[PreloadDebug] process_loaded_images frame_ms={} generation={}",
+                    "[PreloadDebug] process_loaded_images frame_ms={} current_idx={}",
                     frame_ms,
-                    idx
+                    self.current_index
                 );
             }
         }
