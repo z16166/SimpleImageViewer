@@ -140,6 +140,7 @@ impl ImageViewerApp {
         self.gpu_demosaic_failed_indices.clear();
         self.raw_gpu_demosaic_await_hdr_present = false;
         self.hdr_raw_gpu_demosaic_pending_key_index.clear();
+        self.cpu_raw_refinement_pending_indices.clear();
 
         let raw_indices: Vec<usize> = self
             .image_files
@@ -403,6 +404,8 @@ impl ImageViewerApp {
 
             tm.get_source()
                 .request_refinement(self.current_index, tm.decode_profile.clone());
+
+            self.note_cpu_raw_refinement_requested(self.current_index);
 
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
                 tm.get_source(),

@@ -191,6 +191,10 @@ impl ImageViewerApp {
                                 result_gate::gate_decision_log_label(gate_decision)
                             );
                             self.loader.finish_image_request(idx);
+                            if is_current && !self.has_loaded_asset(idx) {
+                                self.sync_loader_preload_plan();
+                                self.schedule_current_image_load_if_needed();
+                            }
                             continue;
                         }
                         result_gate::GateDecision::Accept => {}

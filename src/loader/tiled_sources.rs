@@ -336,7 +336,6 @@ pub(crate) struct RawImageSource {
     orientation_override: i32,
     /// When false, [`Self::request_refinement`] is a no-op (performance mode uses embedded only).
     needs_refinement: bool,
-    decode_profile: crate::loader::DecodeProfile,
     hdr_target_capacity: f32,
     hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
     hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
@@ -351,7 +350,6 @@ impl RawImageSource {
         refine_tx: Sender<RefinementRequest>,
         orientation_override: i32,
         needs_refinement: bool,
-        decode_profile: crate::loader::DecodeProfile,
         hdr_target_capacity: f32,
         hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
         hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
@@ -385,7 +383,6 @@ impl RawImageSource {
             refine_tx,
             orientation_override,
             needs_refinement,
-            decode_profile,
             hdr_target_capacity,
             hdr_tone_map,
             hdr_developed_image,

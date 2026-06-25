@@ -153,7 +153,6 @@ pub(crate) fn develop_full_resolution(
         refine_tx,
         final_lr_flip,
         false,
-        crate::loader::decode_profile_stub(),
         hdr_target_capacity,
         hdr_tone_map,
         None,

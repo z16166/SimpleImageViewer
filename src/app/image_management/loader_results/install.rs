@@ -42,6 +42,10 @@ impl ImageViewerApp {
         if idx == self.current_index && profile_ok {
             log::debug!("[App] Refined image notification for index={}", idx);
 
+            self.promote_current_raw_osd_after_cpu_refine(idx, ctx);
+            self.clear_cpu_raw_refinement_pending(idx);
+            self.wake_root_for_logic();
+
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
 
             let decode_profile = self.decode_profile_for_index(idx);

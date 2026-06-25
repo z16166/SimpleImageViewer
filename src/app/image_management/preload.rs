@@ -48,6 +48,7 @@ impl ImageViewerApp {
         if self.preload_deferred_for_hdr_capacity {
             return;
         }
+        self.sync_loader_preload_plan();
 
         let cur = self.current_index.min(n.saturating_sub(1));
         let current_has_asset = self.has_loaded_asset(cur);
@@ -97,6 +98,7 @@ impl ImageViewerApp {
             );
             return;
         }
+        self.sync_loader_preload_plan();
         let cur = self.current_index;
         preload_debug!(
             "[PreloadDebug] schedule start: cur={} forward={} preload_enabled={}",

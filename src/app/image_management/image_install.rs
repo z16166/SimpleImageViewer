@@ -439,6 +439,7 @@ impl ImageViewerApp {
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
             source.request_refinement(idx, self.decode_profile_for_index(idx));
+            self.note_cpu_raw_refinement_requested(idx);
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
                 Arc::clone(&source),
             ));

@@ -117,6 +117,12 @@ impl ImageViewerApp {
 
         if let Some(osd) = &update.raw_bootstrap_osd {
             self.set_raw_metadata_for_index(update.index, Some(osd.clone()), ctx);
+            if matches!(
+                osd.render_pixels,
+                crate::loader::RawRenderPixels::FullDevelop { .. }
+            ) {
+                self.clear_cpu_raw_refinement_pending(update.index);
+            }
         }
 
         if update.preview_bundle.hdr().is_some() {

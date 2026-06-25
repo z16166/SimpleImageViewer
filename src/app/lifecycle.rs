@@ -528,6 +528,7 @@ impl ImageViewerApp {
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
+            cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,
@@ -702,6 +703,8 @@ impl ImageViewerApp {
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader
             .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
+        app.loader
+            .set_output_mode(app.hdr_capabilities.output_mode);
         app.sync_loader_hdr_callback_upload_snapshot();
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",

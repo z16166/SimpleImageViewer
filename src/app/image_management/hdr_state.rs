@@ -51,6 +51,7 @@ impl ImageViewerApp {
         // Clears all per-index RAW OSD rows (directory switch / full list reorder).
         self.raw_metadata.clear();
         self.hdr_in_flight_fallback_refinements.clear();
+        self.cpu_raw_refinement_pending_indices.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
@@ -85,6 +86,7 @@ impl ImageViewerApp {
         self.hdr_raw_gpu_demosaic_baked_indices.remove(&index);
         self.raw_gpu_embedded_bootstrap_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
+        self.cpu_raw_refinement_pending_indices.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self

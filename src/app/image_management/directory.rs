@@ -285,6 +285,8 @@ impl ImageViewerApp {
             .retain(|_, idx| *idx == keep);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == keep);
+        self.cpu_raw_refinement_pending_indices
+            .retain(|&idx| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == keep);

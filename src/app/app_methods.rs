@@ -51,6 +51,17 @@ impl ImageViewerApp {
                 .contains(&self.current_index)
     }
 
+    /// True while the current image's CPU LibRaw HQ refine worker is in flight.
+    pub(crate) fn cpu_raw_refinement_needs_repaint_wake(&self) -> bool {
+        self.cpu_raw_refinement_pending_indices
+            .contains(&self.current_index)
+    }
+
+    /// True while any async RAW develop work for the current image still needs frame wake.
+    pub(crate) fn raw_async_work_needs_repaint_wake(&self) -> bool {
+        self.raw_gpu_demosaic_needs_repaint_wake() || self.cpu_raw_refinement_needs_repaint_wake()
+    }
+
     pub(crate) fn layout_uses_fullscreen_metrics(&self) -> bool {
         self.settings.fullscreen
     }

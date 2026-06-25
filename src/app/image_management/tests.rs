@@ -1529,6 +1529,7 @@ fn make_test_app() -> ImageViewerApp {
         hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
+        cpu_raw_refinement_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
         ultra_hdr_capacity_sensitive_indices: HashSet::new(),
         animation: None,
@@ -2127,6 +2128,19 @@ fn raw_gpu_demosaic_sync_present_waits_for_bake_not_in_flight_pending() {
     app.hdr_raw_gpu_demosaic_baked_indices.remove(&0);
     app.raw_gpu_demosaic_await_hdr_present = true;
     assert!(app.raw_gpu_demosaic_needs_sync_present());
+}
+
+#[test]
+fn cpu_raw_refinement_pending_keeps_async_repaint_wake() {
+    let mut app = make_test_app();
+    app.current_index = 2;
+
+    app.cpu_raw_refinement_pending_indices.insert(2);
+    assert!(app.cpu_raw_refinement_needs_repaint_wake());
+    assert!(app.raw_async_work_needs_repaint_wake());
+
+    app.cpu_raw_refinement_pending_indices.remove(&2);
+    assert!(!app.cpu_raw_refinement_needs_repaint_wake());
 }
 
 #[test]

@@ -103,6 +103,50 @@ impl ImageViewerApp {
         changed
     }
 
+    pub(crate) fn note_cpu_raw_refinement_requested(&mut self, index: usize) {
+        if self
+            .image_files
+            .get(index)
+            .is_some_and(|path| crate::preload_debug::path_is_raw(path))
+        {
+            self.cpu_raw_refinement_pending_indices.insert(index);
+        }
+    }
+
+    pub(crate) fn clear_cpu_raw_refinement_pending(&mut self, index: usize) {
+        self.cpu_raw_refinement_pending_indices.remove(&index);
+    }
+
+    /// Promote the current RAW OSD to full develop as soon as CPU refine completes.
+    pub(crate) fn promote_current_raw_osd_after_cpu_refine(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) {
+        if index != self.current_index {
+            return;
+        }
+        if !self
+            .image_files
+            .get(index)
+            .is_some_and(|path| crate::preload_debug::path_is_raw(path))
+        {
+            return;
+        }
+        let (width, height) = self
+            .tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == index)
+            .map(|tm| (tm.full_width, tm.full_height))
+            .or(self.current_image_res)
+            .unwrap_or((0, 0));
+        if width == 0 || height == 0 {
+            return;
+        }
+        let osd = crate::loader::RawOsdInfo::refine_complete(width, height, 0);
+        self.set_raw_metadata_for_index(index, Some(osd), ctx);
+    }
+
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
         if let Some(path) = self.cached_frame_hdr_render_path {
             return Some(path);
