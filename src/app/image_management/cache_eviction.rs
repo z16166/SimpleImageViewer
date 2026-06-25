@@ -118,6 +118,9 @@ impl ImageViewerApp {
         if self.hq_tiled_preview_pending_indices.remove(&from) {
             self.hq_tiled_preview_pending_indices.insert(to);
         }
+        if let Some(mode) = self.installed_display_modes.remove(&from) {
+            self.installed_display_modes.insert(to, mode);
+        }
         if self.ultra_hdr_capacity_sensitive_indices.remove(&from) {
             self.ultra_hdr_capacity_sensitive_indices.insert(to);
         }
@@ -294,6 +297,7 @@ impl ImageViewerApp {
     pub(super) fn handle_texture_cache_eviction(&mut self, evicted_idx: usize) {
         self.animation_cache.remove(&evicted_idx);
         self.pending_anim_frames.remove(&evicted_idx);
+        self.clear_installed_display_mode(evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
     }
 
@@ -331,6 +335,7 @@ impl ImageViewerApp {
             self.animation_cache.remove(&idx);
             self.pending_anim_frames.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
+            self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
         }
     }
@@ -515,6 +520,7 @@ impl ImageViewerApp {
             self.texture_cache.remove(idx);
             self.animation_cache.remove(&idx);
             self.pending_anim_frames.remove(&idx);
+            self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
         }
 
@@ -565,6 +571,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
         permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
+        permute_usize_hashmap(&mut self.installed_display_modes, old_to_new);
         permute_usize_set(&mut self.ultra_hdr_capacity_sensitive_indices, old_to_new);
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 

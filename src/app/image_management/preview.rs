@@ -215,9 +215,10 @@ impl ImageViewerApp {
                             .as_ref()
                             .is_some_and(|tm| tm.image_index == update.index);
                 if preview_targets_tiled_canvas
+                    && !self.index_uses_animated_pipeline(update.index)
                     && should_cache_tiled_sdr_preview(
                         self.texture_cache.contains(update.index),
-                        self.texture_cache.is_preview_placeholder(update.index),
+                        self.texture_cache.needs_tile_manager(update.index),
                         self.texture_cache.cached_preview_max_side(update.index),
                         preview.width.max(preview.height),
                     )
@@ -271,11 +272,7 @@ impl ImageViewerApp {
 
     /// Promote cached HQ preview into the active tile manager and re-trigger HQ generation when
     /// only bootstrap remains (e.g. after prefetch eviction discarded an HQ update).
-    pub(crate) fn sync_and_ensure_hq_tiled_preview(
-        &mut self,
-        idx: usize,
-        ctx: &egui::Context,
-    ) {
+    pub(crate) fn sync_and_ensure_hq_tiled_preview(&mut self, idx: usize, ctx: &egui::Context) {
         let tm_max = self
             .tile_manager
             .as_ref()
@@ -307,10 +304,7 @@ impl ImageViewerApp {
             }
         }
 
-        let effective_max = self
-            .texture_cache
-            .cached_preview_max_side(idx)
-            .or(tm_max);
+        let effective_max = self.texture_cache.cached_preview_max_side(idx).or(tm_max);
         let bootstrap_max = crate::constants::DEFAULT_PREVIEW_SIZE;
         let is_bootstrap_only = effective_max.is_none_or(|m| m <= bootstrap_max);
         if !is_bootstrap_only {
@@ -322,7 +316,11 @@ impl ImageViewerApp {
             return;
         }
 
-        let Some(tm) = self.tile_manager.as_ref().filter(|tm| tm.image_index == idx) else {
+        let Some(tm) = self
+            .tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == idx)
+        else {
             return;
         };
         let source = tm.get_source();
@@ -340,10 +338,7 @@ impl ImageViewerApp {
         self.hq_tiled_preview_pending_indices.insert(idx);
         self.loader
             .trigger_hq_tiled_sdr_preview(idx, source, profile, source_key);
-        log::debug!(
-            "[App] Triggered on-demand HQ tiled preview for idx={}",
-            idx
-        );
+        log::debug!("[App] Triggered on-demand HQ tiled preview for idx={}", idx);
     }
 
     pub(crate) fn log_large_image(&self, idx: usize, w: u32, h: u32) {
@@ -397,7 +392,7 @@ impl ImageViewerApp {
         if self.hdr_image_cache.contains_key(&idx) {
             return;
         }
-        if self.texture_cache.contains(idx) && !self.texture_cache.is_preview_placeholder(idx) {
+        if self.texture_cache.contains(idx) && !self.texture_cache.needs_tile_manager(idx) {
             return;
         }
         self.queue_or_upload_raw_gpu_bootstrap_texture(idx, preview, ctx);

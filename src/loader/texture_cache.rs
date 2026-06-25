@@ -30,10 +30,10 @@ fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
 
 pub struct TextureCache {
     pub textures: HashMap<usize, egui::TextureHandle>,
-    /// Original image dimensions (may differ from texture size for Tiled previews).
+    /// Original image dimensions (may differ from texture size for tiled previews).
     original_res: HashMap<usize, (u32, u32)>,
-    /// Flag indicating if the image was Tiled/Large and needs TileManager reconstruction.
-    is_tiled: HashMap<usize, bool>,
+    /// True when the index uses the tiled pyramid pipeline (PSB/EXR/large raster).
+    needs_tile_manager: HashMap<usize, bool>,
     max_size: usize,
 }
 
@@ -42,7 +42,7 @@ impl TextureCache {
         Self {
             textures: HashMap::new(),
             original_res: HashMap::new(),
-            is_tiled: HashMap::new(),
+            needs_tile_manager: HashMap::new(),
             max_size,
         }
     }
@@ -53,13 +53,13 @@ impl TextureCache {
         handle: egui::TextureHandle,
         orig_w: u32,
         orig_h: u32,
-        tiled: bool,
+        needs_tile_manager: bool,
         current_index: usize,
         total_count: usize,
     ) -> Option<usize> {
         self.textures.insert(index, handle);
         self.original_res.insert(index, (orig_w, orig_h));
-        self.is_tiled.insert(index, tiled);
+        self.needs_tile_manager.insert(index, needs_tile_manager);
         self.evict(current_index, total_count)
     }
 
@@ -73,16 +73,10 @@ impl TextureCache {
         }
     }
 
-    pub fn set_preview_placeholder(&mut self, index: usize, tiled: bool) {
-        if self.textures.contains_key(&index) {
-            self.is_tiled.insert(index, tiled);
-        }
-    }
-
     pub fn remove(&mut self, index: usize) {
         self.textures.remove(&index);
         self.original_res.remove(&index);
-        self.is_tiled.remove(&index);
+        self.needs_tile_manager.remove(&index);
     }
 
     pub fn relocate(&mut self, from: usize, to: usize) {
@@ -95,18 +89,16 @@ impl TextureCache {
         if let Some(res) = self.original_res.remove(&from) {
             self.original_res.insert(to, res);
         }
-        if let Some(tiled) = self.is_tiled.remove(&from) {
-            self.is_tiled.insert(to, tiled);
+        if let Some(flag) = self.needs_tile_manager.remove(&from) {
+            self.needs_tile_manager.insert(to, flag);
         }
     }
 
     pub fn permute(&mut self, old_to_new: &[usize]) {
         permute_usize_hashmap(&mut self.textures, old_to_new);
         permute_usize_hashmap(&mut self.original_res, old_to_new);
-        permute_usize_hashmap(&mut self.is_tiled, old_to_new);
+        permute_usize_hashmap(&mut self.needs_tile_manager, old_to_new);
     }
-
-    /// Check if the image at index is a Tiled/Large image.
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
         self.textures.get(&index)
@@ -116,8 +108,11 @@ impl TextureCache {
         self.textures.contains_key(&index)
     }
 
-    pub fn is_preview_placeholder(&self, index: usize) -> bool {
-        self.is_tiled.get(&index).copied().unwrap_or(false)
+    pub fn needs_tile_manager(&self, index: usize) -> bool {
+        self.needs_tile_manager
+            .get(&index)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Longer side of the **uploaded** preview texture in pixels (not the full-image logical size).
@@ -132,7 +127,7 @@ impl TextureCache {
     pub fn clear_all(&mut self) {
         self.textures.clear();
         self.original_res.clear();
-        self.is_tiled.clear();
+        self.needs_tile_manager.clear();
     }
 
     fn evict(&mut self, current_index: usize, total_count: usize) -> Option<usize> {
@@ -154,7 +149,7 @@ impl TextureCache {
         if let Some(idx) = to_remove {
             self.textures.remove(&idx);
             self.original_res.remove(&idx);
-            self.is_tiled.remove(&idx);
+            self.needs_tile_manager.remove(&idx);
             Some(idx)
         } else {
             None
@@ -178,13 +173,13 @@ mod tests {
         assert!(cache.contains(3));
         assert!(!cache.contains(7));
         assert_eq!(cache.get_original_res(3), Some((100, 200)));
-        assert!(cache.is_preview_placeholder(3));
+        assert!(cache.needs_tile_manager(3));
 
         cache.relocate(3, 7);
 
         assert!(!cache.contains(3));
         assert!(cache.contains(7));
         assert_eq!(cache.get_original_res(7), Some((100, 200)));
-        assert!(cache.is_preview_placeholder(7));
+        assert!(cache.needs_tile_manager(7));
     }
 }

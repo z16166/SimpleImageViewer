@@ -448,6 +448,8 @@ pub struct ImageViewerApp {
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
+    /// Display pipeline recorded when an image is installed (`Static` / `Tiled` / `Animated`).
+    pub(crate) installed_display_modes: HashMap<usize, crate::loader::RenderShape>,
 
     // Pan/drag state (used in non-fullscreen 1:1 mode)
     pub(crate) pan_offset: Vec2,

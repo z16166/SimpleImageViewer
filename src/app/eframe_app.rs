@@ -167,10 +167,7 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
             self.wake_root_for_logic();
         }
-        if pass.is_root()
-            && !self.scanning
-            && (self.loader.has_pending_outputs() || self.loader.is_loading(self.current_index))
-        {
+        if pass.is_root() && self.needs_process_loaded_images() {
             self.process_loaded_images(ctx, &mut Some(frame));
         }
         if self.should_run_logic_shared() {

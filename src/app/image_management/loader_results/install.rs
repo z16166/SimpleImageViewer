@@ -19,11 +19,7 @@ use super::*;
 impl ImageViewerApp {
     /// Handles a Refined notification: refreshes TileManager decode profile and
     /// re-fetches tiles from the newly developed high-resolution buffer.
-    pub(super) fn handle_refined_notification(
-        &mut self,
-        idx: usize,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn handle_refined_notification(&mut self, idx: usize, ctx: &egui::Context) {
         let gate_ctx = self.result_gate_context();
         let is_loading = self.loader.is_loading(idx);
         if !gate_ctx.retention_for(idx, is_loading).should_retain() {
@@ -63,6 +59,19 @@ impl ImageViewerApp {
                             Some(crate::app::CurrentHdrTiledImage::new(idx, source));
                     }
                 }
+            } else if self.index_uses_tiled_pipeline(idx) {
+                log::warn!(
+                    "[App] Refined: Tiled mode without TileManager for index {}. Attempting to reload.",
+                    idx
+                );
+                self.texture_cache.remove(idx);
+                self.remove_hdr_image_index(idx);
+                self.loader.request_load(
+                    self.current_index,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(self.current_index),
+                );
             } else {
                 log::warn!(
                     "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
@@ -70,7 +79,7 @@ impl ImageViewerApp {
                 self.texture_cache.remove(idx);
                 self.remove_hdr_image_index(idx);
                 self.loader.request_load(
-            self.current_index,
+                    self.current_index,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),

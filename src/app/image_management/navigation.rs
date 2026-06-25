@@ -158,6 +158,7 @@ impl ImageViewerApp {
         let _raw_index_count = raw_indices.len();
         for idx in raw_indices {
             self.texture_cache.remove(idx);
+            self.clear_installed_display_mode(idx);
             self.remove_hdr_image_resources(idx);
             self.raw_metadata.remove(idx);
             self.prefetched_tiles.remove(&idx);
@@ -370,85 +371,75 @@ impl ImageViewerApp {
         }
 
         // Try to pull from predictive cache if available
-        if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
-            if let Some(hdr_frames) = &cached_anim.hdr_frames {
-                if let Some(hdr) = hdr_frames.first() {
-                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
-                        self.current_index,
-                        Arc::clone(hdr),
-                    ));
-                }
-            }
-            self.animation = Some(AnimationPlayback {
-                image_index: cached_anim.image_index,
-                textures: cached_anim.textures.clone(),
-                hdr_frames: cached_anim.hdr_frames.clone(),
-                delays: cached_anim.delays.clone(),
-                current_frame: 0,
-                frame_start: Instant::now(),
-                cpu_frames: cached_anim.cpu_frames.clone(),
-            });
-        }
+        self.ensure_current_animation_playback();
 
-        let needs_animation_reload = needs_stale_animated_first_frame_reload(
-            &self.image_files,
-            self.current_index,
-            &self.animation_cache,
-            &self.pending_anim_frames,
-            self.texture_cache.contains(self.current_index),
-        );
+        let needs_animation_reload = self.needs_stale_animated_first_frame_reload();
 
         // Check if we have a prefetched TileManager ready to use!
-        if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
-            tm.decode_profile = self.decode_profile_for_index(self.current_index);
-            self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
+        if self.index_uses_animated_pipeline(self.current_index) {
+            if self.prefetched_tiles.remove(&self.current_index).is_some() {
+                log::debug!(
+                    "[App] Dropped stale prefetched TileManager for animated index {}",
+                    self.current_index
+                );
+            }
+        } else if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
+            if self.index_uses_tiled_pipeline(self.current_index) {
+                tm.decode_profile = self.decode_profile_for_index(self.current_index);
+                self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
-            tm.get_source()
-                .request_refinement(self.current_index, tm.decode_profile.clone());
+                tm.get_source()
+                    .request_refinement(self.current_index, tm.decode_profile.clone());
 
-            self.note_cpu_raw_refinement_requested(self.current_index);
+                self.note_cpu_raw_refinement_requested(self.current_index);
 
-            if self.texture_cache.contains(self.current_index) {
-                let tm_max = tm.preview_texture.as_ref().map(|h| {
-                    let s = h.size();
-                    s[0].max(s[1]) as u32
-                });
-                let cached_max = self
-                    .texture_cache
-                    .cached_preview_max_side(self.current_index);
-                if tm.preview_texture.is_none()
-                    || cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
-                {
-                    if let Some(handle) = self.texture_cache.get(self.current_index) {
-                        tm.preview_texture = Some(handle.clone());
+                if self.texture_cache.contains(self.current_index) {
+                    let tm_max = tm.preview_texture.as_ref().map(|h| {
+                        let s = h.size();
+                        s[0].max(s[1]) as u32
+                    });
+                    let cached_max = self
+                        .texture_cache
+                        .cached_preview_max_side(self.current_index);
+                    if tm.preview_texture.is_none()
+                        || cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
+                    {
+                        if let Some(handle) = self.texture_cache.get(self.current_index) {
+                            tm.preview_texture = Some(handle.clone());
+                        }
                     }
                 }
+
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                    tm.get_source(),
+                ));
+                self.tile_manager = Some(tm);
+
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] navigate prefetch_tile_hit idx={} raw_hq={} logical={}",
+                    self.current_index,
+                    self.settings.raw_high_quality,
+                    self.current_image_res
+                        .map(|(w, h)| format!("{w}x{h}"))
+                        .unwrap_or_default()
+                );
+                log::debug!(
+                    "[App] Cache Hit: Restored prefetched TileManager for index {}",
+                    self.current_index
+                );
+            } else {
+                log::debug!(
+                    "[App] Dropped stale prefetched TileManager for non-tiled index {}",
+                    self.current_index
+                );
             }
-
-            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
-                tm.get_source(),
-            ));
-            self.tile_manager = Some(tm);
-
-            crate::preload_debug!(
-                "[PreloadDebug][RAW] navigate prefetch_tile_hit idx={} raw_hq={} logical={}",
-                self.current_index,
-                self.settings.raw_high_quality,
-                self.current_image_res
-                    .map(|(w, h)| format!("{w}x{h}"))
-                    .unwrap_or_default()
-            );
-            log::debug!(
-                "[App] Cache Hit: Restored prefetched TileManager for index {}",
-                self.current_index
-            );
         } else if needs_animation_reload {
             crate::preload_debug!(
                 "[PreloadDebug] navigate animation_reload idx={} reason=first_frame_only_preload",
                 self.current_index
             );
             self.loader.request_load(
-            self.current_index,
+                self.current_index,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
@@ -463,28 +454,24 @@ impl ImageViewerApp {
             )
         {
             crate::preload_debug!(
-                "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
+                "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} display_mode={:?} tile_mgr={}",
                 self.current_index,
                 self.settings.raw_high_quality,
-                self.texture_cache
-                    .is_preview_placeholder(self.current_index),
+                self.installed_display_mode(self.current_index),
                 self.tile_manager.is_some()
             );
-            let is_tiled = self
-                .texture_cache
-                .is_preview_placeholder(self.current_index);
-            let needs_tile_manager_rebuild = (is_tiled
+            let needs_tile_manager_rebuild = (self.index_uses_tiled_pipeline(self.current_index)
                 || self
                     .hdr_tiled_source_cache
                     .contains_key(&self.current_index))
                 && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
-                if is_tiled {
+                if self.index_uses_tiled_pipeline(self.current_index) {
                     if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                         self.set_current_image_resolution(Some((w, h)));
                     }
                     self.loader.request_load(
-            self.current_index,
+                        self.current_index,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
                         self.raw_demosaic_mode_for_index(self.current_index),
@@ -492,7 +479,7 @@ impl ImageViewerApp {
                 } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
                     self.set_current_image_resolution(Some((src.width(), src.height())));
                     self.loader.request_load(
-            self.current_index,
+                        self.current_index,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
                         self.raw_demosaic_mode_for_index(self.current_index),
@@ -515,10 +502,7 @@ impl ImageViewerApp {
                 &self.hdr_tiled_source_cache,
             );
             if missing_hdr && self.loader.is_loading(idx) {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW] navigate inflight_reuse idx={}",
-                    idx
-                );
+                crate::preload_debug!("[PreloadDebug][RAW] navigate inflight_reuse idx={}", idx);
                 if self.current_image_res.is_none() {
                     if let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
                         self.deferred_sdr_uploads
@@ -556,7 +540,7 @@ impl ImageViewerApp {
                     }
                 }
                 self.loader.request_load(
-            idx,
+                    idx,
                     self.image_files[idx].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(idx),
@@ -577,7 +561,7 @@ impl ImageViewerApp {
         self.refresh_pixel_data_source_for_current_index();
         if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
             self.loader.request_load(
-            self.current_index,
+                self.current_index,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),

@@ -289,6 +289,7 @@ impl ImageViewerApp {
             .retain(|&idx| idx == keep);
         self.hq_tiled_preview_pending_indices
             .retain(|&idx| idx == keep);
+        self.installed_display_modes.retain(|&idx, _| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == keep);
@@ -572,7 +573,7 @@ impl ImageViewerApp {
 
                                     let fallback_path = self.image_files[0].clone();
                                     self.loader.request_load(
-            0,
+                                        0,
                                         fallback_path,
                                         self.settings.raw_high_quality,
                                         self.raw_demosaic_mode_for_index(0),

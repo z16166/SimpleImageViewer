@@ -66,6 +66,13 @@ impl ImageViewerApp {
                 .contains(&self.current_index)
     }
 
+    /// True while the main thread still needs to poll loader output and/or upload deferred work.
+    pub(crate) fn needs_process_loaded_images(&self) -> bool {
+        self.loader.has_pending_outputs()
+            || self.loader.is_loading(self.current_index)
+            || !self.pending_anim_frames.is_empty()
+    }
+
     pub(crate) fn layout_uses_fullscreen_metrics(&self) -> bool {
         self.settings.fullscreen
     }

@@ -273,6 +273,10 @@ impl ImageViewerApp {
             }
         }
         self.flush_deferred_sdr_upload_for_current(ctx);
+        self.process_pending_animation_uploads(ctx);
+        if self.index_uses_animated_pipeline(self.current_index) {
+            self.ensure_current_animation_playback();
+        }
         self.try_start_pending_transition_if_ready();
     }
 
@@ -333,7 +337,7 @@ impl ImageViewerApp {
                         // Clear any stale loading-map slot so profile spawn accepts the CPU retry.
                         self.loader.finish_image_request(idx);
                         self.loader.request_load(
-            idx,
+                            idx,
                             path,
                             self.settings.raw_high_quality,
                             crate::settings::RawDemosaicMode::Cpu,

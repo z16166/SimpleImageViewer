@@ -21,27 +21,14 @@ use super::*;
 const MAX_HDR_REGISTER_PREWARM_REPUSH: u8 = 30;
 
 impl ImageViewerApp {
-    /// Process results from the background ImageLoader.
-    pub(crate) fn process_loaded_images(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &mut Option<&mut eframe::Frame>,
-    ) {
-        #[cfg(feature = "preload-debug")]
-        let loaded_started = std::time::Instant::now();
-        if self.scanning {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][Scan] process_loaded_images skipped while scanning frame_ms={}",
-                crate::preload_debug::elapsed_ms(loaded_started)
-            );
+    /// Upload deferred animation frames to GPU (max 8 per call). Runs even while scanning.
+    pub(crate) fn process_pending_animation_uploads(&mut self, ctx: &egui::Context) {
+        if self.pending_anim_frames.is_empty() {
             return;
         }
-        self.flush_deferred_sdr_upload_for_current(ctx);
-        let is_transitioning = self.transition_start.is_some();
 
-        // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
+        let is_transitioning = self.transition_start.is_some();
         let pending_idx = super::super::prefetch_animation_upload_index(
             &self.pending_anim_frames,
             self.current_index,
@@ -86,6 +73,10 @@ impl ImageViewerApp {
                 finished = pending.next_frame >= pending.frames.len();
             }
 
+            if pending_idx == self.current_index {
+                self.ensure_current_animation_playback();
+            }
+
             if finished {
                 if let Some(pending) = self.pending_anim_frames.remove(&pending_idx) {
                     let idx = pending.image_index;
@@ -107,6 +98,7 @@ impl ImageViewerApp {
                                     Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
                             }
                         }
+                        self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
                             image_index: playback.image_index,
                             textures: playback.textures.clone(),
@@ -123,6 +115,27 @@ impl ImageViewerApp {
                 ctx.request_repaint();
             }
         }
+    }
+
+    /// Process results from the background ImageLoader.
+    pub(crate) fn process_loaded_images(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut Option<&mut eframe::Frame>,
+    ) {
+        #[cfg(feature = "preload-debug")]
+        let loaded_started = std::time::Instant::now();
+        self.flush_deferred_sdr_upload_for_current(ctx);
+        self.process_pending_animation_uploads(ctx);
+        if self.scanning {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] loader poll skipped while scanning frame_ms={}",
+                crate::preload_debug::elapsed_ms(loaded_started)
+            );
+            return;
+        }
+        let is_transitioning = self.transition_start.is_some();
 
         // ── 2. Process results from the background ImageLoader ──
         //
@@ -518,8 +531,7 @@ impl ImageViewerApp {
                         &self.image_files,
                         update.index,
                         update.source_key,
-                    )
-                    {
+                    ) {
                         self.hdr_in_flight_fallback_refinements
                             .remove(&update.index);
                         log::warn!(
@@ -529,10 +541,7 @@ impl ImageViewerApp {
                         continue;
                     }
                     let display = self.display_requirements_for_index(update.index);
-                    if !crate::loader::profile_satisfies_display(
-                        &update.decode_profile,
-                        &display,
-                    ) {
+                    if !crate::loader::profile_satisfies_display(&update.decode_profile, &display) {
                         self.hdr_in_flight_fallback_refinements
                             .remove(&update.index);
                         continue;
@@ -784,7 +793,8 @@ impl ImageViewerApp {
             }
         }
 
-        self.hdr_register_prewarm_repush_counts.remove(&load_result.index);
+        self.hdr_register_prewarm_repush_counts
+            .remove(&load_result.index);
         true
     }
 

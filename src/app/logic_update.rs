@@ -271,6 +271,8 @@ impl ImageViewerApp {
         // Keep repainting while loading, auto-switching, playing music, or folder picker open
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
         let awaiting_raw_hdr_present = self.raw_async_work_needs_repaint_wake();
+        let animation_active = self.animation_needs_repaint_wake();
+        let animation_upload_pending = self.animation_upload_pending_for_current();
         let loader_has_pending = self.loader.has_pending_outputs();
         let current_still_loading = self.loader.is_loading(self.current_index);
         if self.settings.auto_switch
@@ -279,6 +281,8 @@ impl ImageViewerApp {
             || current_still_loading
             || self.folder_picker.in_flight()
             || awaiting_raw_hdr_present
+            || animation_active
+            || animation_upload_pending
         {
             ctx.request_repaint();
         } else if is_music_playing {
@@ -303,9 +307,11 @@ impl ImageViewerApp {
             "frame.painting_viewport_id should match ROOT paint"
         );
         self.ensure_root_redraw_wake(frame, ctx);
-        let loader_active =
-            self.loader.has_pending_outputs() || self.loader.is_loading(self.current_index);
-        if self.raw_async_work_needs_repaint_wake() || loader_active {
+        if self.raw_async_work_needs_repaint_wake()
+            || self.animation_needs_repaint_wake()
+            || self.animation_upload_pending_for_current()
+            || self.needs_process_loaded_images()
+        {
             ctx.request_repaint();
             self.wake_root_for_logic();
         }

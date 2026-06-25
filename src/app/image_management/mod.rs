@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 mod cache_eviction;
 mod directory;
+mod display_mode;
 mod hdr_state;
 mod image_install;
 mod loader_results;
@@ -80,14 +81,14 @@ fn should_upload_tiled_bootstrap_preview(
 
 fn should_cache_tiled_sdr_preview(
     cache_contains_index: bool,
-    is_preview_placeholder: bool,
+    needs_tile_manager: bool,
     cached_preview_max_side: Option<u32>,
     preview_max_side: u32,
 ) -> bool {
     if !cache_contains_index {
         return true;
     }
-    if !is_preview_placeholder {
+    if !needs_tile_manager {
         return false;
     }
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
@@ -470,7 +471,8 @@ fn image_file_entries_with_missing_tail(
 }
 
 fn build_tiled_manager_with_best_preview(
-    index: usize, decode_profile: crate::loader::DecodeProfile,
+    index: usize,
+    decode_profile: crate::loader::DecodeProfile,
     source: Arc<dyn crate::loader::TiledImageSource>,
     cached_handle: Option<egui::TextureHandle>,
 ) -> TileManager {
@@ -940,8 +942,10 @@ impl ImageViewerApp {
             self.preload_memory.available_memory_mb(),
             self.preload_memory.total_memory_mb(),
         );
-        self.loader.sync_preload_plan(self.current_index, self.image_files.len(), max_distance);
-        self.loader.set_output_mode(self.hdr_capabilities.output_mode);
+        self.loader
+            .sync_preload_plan(self.current_index, self.image_files.len(), max_distance);
+        self.loader
+            .set_output_mode(self.hdr_capabilities.output_mode);
     }
 
     /// §3.G profile invalidation step 1: workers observe a newer epoch before cancel/spawn.
@@ -982,69 +986,70 @@ impl ImageViewerApp {
         let gpu_failed = self.gpu_demosaic_failed_indices.clone();
         let settings_demosaic = self.settings.raw_demosaic_mode;
 
-        self.loader.discard_pending_stale_outputs_profile(|output, loading| {
-            let demosaic_for = |idx: usize| {
-                if gpu_failed.contains(&idx) {
-                    crate::settings::RawDemosaicMode::Cpu
-                } else {
-                    settings_demosaic
+        self.loader
+            .discard_pending_stale_outputs_profile(|output, loading| {
+                let demosaic_for = |idx: usize| {
+                    if gpu_failed.contains(&idx) {
+                        crate::settings::RawDemosaicMode::Cpu
+                    } else {
+                        settings_demosaic
+                    }
+                };
+                let display_for = |idx: usize| crate::loader::DisplayRequirements {
+                    raw_high_quality: raw_hq,
+                    raw_demosaic_mode: demosaic_for(idx),
+                    output_mode,
+                    ultra_hdr_decode_capacity: ultra_cap,
+                    render_shape: crate::loader::RenderShape::Unknown,
+                    load_intent: if idx == current {
+                        crate::loader::LoadIntent::Current
+                    } else {
+                        crate::loader::LoadIntent::NeighborPrefetch
+                    },
+                    device_id: Some(device_id),
+                };
+                match output {
+                    LoaderOutput::Image(r) => {
+                        if !files
+                            .get(r.index)
+                            .is_some_and(|p| source_key_for_path(p) == r.source_key)
+                        {
+                            return false;
+                        }
+                        let is_loading = loading.contains_key(&r.index);
+                        if !gate_ctx.retention_for(r.index, is_loading).should_retain() {
+                            return false;
+                        }
+                        crate::loader::profile_satisfies_display(
+                            &r.decode_profile,
+                            &display_for(r.index),
+                        )
+                    }
+                    LoaderOutput::Preview(p) => {
+                        if !files
+                            .get(p.index)
+                            .is_some_and(|path| source_key_for_path(path) == p.source_key)
+                        {
+                            return false;
+                        }
+                        let is_loading = loading.contains_key(&p.index);
+                        if !gate_ctx.retention_for(p.index, is_loading).should_retain() {
+                            return false;
+                        }
+                        crate::loader::profile_satisfies_display(
+                            &p.decode_profile,
+                            &display_for(p.index),
+                        )
+                    }
+                    LoaderOutput::Refined(idx) => gate_ctx
+                        .retention_for(*idx, loading.contains_key(idx))
+                        .should_retain(),
+                    LoaderOutput::Tile(t) => gate_ctx
+                        .retention_for(t.index, loading.contains_key(&t.index))
+                        .should_retain(),
+                    LoaderOutput::HdrSdrFallback(_) => true,
                 }
-            };
-            let display_for = |idx: usize| crate::loader::DisplayRequirements {
-                raw_high_quality: raw_hq,
-                raw_demosaic_mode: demosaic_for(idx),
-                output_mode,
-                ultra_hdr_decode_capacity: ultra_cap,
-                render_shape: crate::loader::RenderShape::Unknown,
-                load_intent: if idx == current {
-                    crate::loader::LoadIntent::Current
-                } else {
-                    crate::loader::LoadIntent::NeighborPrefetch
-                },
-                device_id: Some(device_id),
-            };
-            match output {
-                LoaderOutput::Image(r) => {
-                    if !files
-                        .get(r.index)
-                        .is_some_and(|p| source_key_for_path(p) == r.source_key)
-                    {
-                        return false;
-                    }
-                    let is_loading = loading.contains_key(&r.index);
-                    if !gate_ctx.retention_for(r.index, is_loading).should_retain() {
-                        return false;
-                    }
-                    crate::loader::profile_satisfies_display(
-                        &r.decode_profile,
-                        &display_for(r.index),
-                    )
-                }
-                LoaderOutput::Preview(p) => {
-                    if !files
-                        .get(p.index)
-                        .is_some_and(|path| source_key_for_path(path) == p.source_key)
-                    {
-                        return false;
-                    }
-                    let is_loading = loading.contains_key(&p.index);
-                    if !gate_ctx.retention_for(p.index, is_loading).should_retain() {
-                        return false;
-                    }
-                    crate::loader::profile_satisfies_display(
-                        &p.decode_profile,
-                        &display_for(p.index),
-                    )
-                }
-                LoaderOutput::Refined(idx) => gate_ctx
-                    .retention_for(*idx, loading.contains_key(idx))
-                    .should_retain(),
-                LoaderOutput::Tile(t) => gate_ctx
-                    .retention_for(t.index, loading.contains_key(&t.index))
-                    .should_retain(),
-                LoaderOutput::HdrSdrFallback(_) => true,
-            }
-        });
+            });
     }
 
     pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
@@ -1166,8 +1171,8 @@ pub(crate) fn raw_hq_has_bootstrap_sdr_only(
 mod tiled_hq_preview_apply_tests {
     use super::{refined_preview_applies_to_tile_manager, tiled_existing_preview_stage};
     use crate::loader::{
-        DecodeProfile, DisplayRequirements, LoadIntent, PreviewBundle, PreviewResult,
-        PreviewStage, RenderShape,
+        DecodeProfile, DisplayRequirements, LoadIntent, PreviewBundle, PreviewResult, PreviewStage,
+        RenderShape,
     };
     use crate::settings::RawDemosaicMode;
     use crate::tile_cache::TileManager;
@@ -1243,8 +1248,7 @@ mod tiled_hq_preview_apply_tests {
     #[test]
     fn bootstrap_preview_stage_is_initial_not_refined() {
         let ctx = egui::Context::default();
-        let color_image =
-            ColorImage::from_rgba_unmultiplied([512, 164], &vec![0u8; 512 * 164 * 4]);
+        let color_image = ColorImage::from_rgba_unmultiplied([512, 164], &vec![0u8; 512 * 164 * 4]);
         let handle = ctx.load_texture("boot", color_image, TextureOptions::LINEAR);
         let mut cache = crate::loader::TextureCache::new(4);
         cache.insert(0, handle, 69_536, 22_230, true, 0, 10);
@@ -1406,7 +1410,6 @@ mod raw_hq_navigate_missing_hdr_plane_tests {
     }
 }
 
-
 pub(super) fn prefetch_circular_distance(
     current_index: usize,
     image_count: usize,
@@ -1500,28 +1503,6 @@ fn prefetch_animation_upload_index(
     } else {
         pending_anim_frames.keys().next().copied()
     }
-}
-
-/// True when a preloaded GIF/WebP/APNG has only its first-frame SDR texture cached.
-pub(super) fn needs_stale_animated_first_frame_reload(
-    image_files: &[PathBuf],
-    current_index: usize,
-    animation_cache: &HashMap<usize, AnimationPlayback>,
-    pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
-    has_sdr_texture: bool,
-) -> bool {
-    if animation_cache.contains_key(&current_index)
-        || pending_anim_frames.contains_key(&current_index)
-    {
-        return false;
-    }
-    let Some(path) = image_files.get(current_index) else {
-        return false;
-    };
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
-    crate::loader::is_maybe_animated(ext) && has_sdr_texture
 }
 
 fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> Option<usize> {

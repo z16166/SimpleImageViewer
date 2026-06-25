@@ -159,7 +159,11 @@ fn navigation_preserves_current_tile_manager_for_restore() {
         width: 4096,
         height: 4096,
     });
-    let mut tile_manager = Some(TileManager::with_source(7, crate::loader::decode_profile_stub(), source));
+    let mut tile_manager = Some(TileManager::with_source(
+        7,
+        crate::loader::decode_profile_stub(),
+        source,
+    ));
     let mut prefetched_tiles = HashMap::new();
 
     preserve_current_tile_manager_for_navigation(7, 8, &mut tile_manager, &mut prefetched_tiles);
@@ -376,10 +380,7 @@ fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
 #[test]
 fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
     let mut app = make_test_app();
-    app.image_files = vec![
-        PathBuf::from("current.jpg"),
-        PathBuf::from("small.jpg"),
-    ];
+    app.image_files = vec![PathBuf::from("current.jpg"), PathBuf::from("small.jpg")];
     app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
@@ -1204,14 +1205,18 @@ fn current_hdr_tiled_preview_match_is_index_scoped() {
 
 #[test]
 fn view_change_clears_pending_tile_requests() {
-    use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
     use crate::loader::TilePixelKind;
+    use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
 
     let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
         width: 1024,
         height: 768,
     });
-    let mut tile_manager = Some(TileManager::with_source(4, crate::loader::decode_profile_stub(), source));
+    let mut tile_manager = Some(TileManager::with_source(
+        4,
+        crate::loader::decode_profile_stub(),
+        source,
+    ));
     tile_manager
         .as_mut()
         .unwrap()
@@ -1443,7 +1448,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
     );
 }
 
-fn make_test_app() -> ImageViewerApp {
+pub(crate) fn make_test_app() -> ImageViewerApp {
     let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
     let (lightweight_file_op_tx, _lightweight_file_op_rx) = crossbeam_channel::unbounded();
     let (save_tx, _save_rx) = crossbeam_channel::unbounded();
@@ -1623,6 +1628,7 @@ fn make_test_app() -> ImageViewerApp {
         last_logic_shared_at: None,
         ipc_rx,
         animation_cache: HashMap::new(),
+        installed_display_modes: HashMap::new(),
         tile_manager: None,
         tiled_primary_visible_scratch: HashSet::new(),
         tiled_visible_coords_scratch: Vec::new(),
@@ -2038,7 +2044,9 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
     app.current_index = 0;
 
     let pixels = std::sync::Arc::new(vec![0u8; 16]);
-    PIXEL_CACHE.lock().insert(4, TileCoord { col: 0, row: 0 }, pixels);
+    PIXEL_CACHE
+        .lock()
+        .insert(4, TileCoord { col: 0, row: 0 }, pixels);
 
     app.evict_distant_prefetch_caches();
 
@@ -2052,6 +2060,7 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
 
 #[test]
 fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
+    use crate::loader::RenderShape;
     use eframe::egui;
 
     let mut app = make_test_app();
@@ -2062,9 +2071,11 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
     let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
     app.texture_cache.insert(1, handle, 2048, 1536, true, 0, 2);
+    app.record_installed_display_mode(1, RenderShape::Tiled);
 
     assert!(app.texture_cache.contains(1));
-    assert!(app.texture_cache.is_preview_placeholder(1));
+    assert!(app.texture_cache.needs_tile_manager(1));
+    assert!(app.index_uses_tiled_pipeline(1));
     assert!(app.tile_manager.is_none());
     assert!(!app.prefetched_tiles.contains_key(&1));
     assert!(!app.hdr_tiled_source_cache.contains_key(&1));
@@ -2080,10 +2091,7 @@ fn test_resolve_initial_position_during_and_after_scan() {
     let mut app = make_test_app();
     let initial_path = PathBuf::from("img2.jpg");
     app.initial_image = Some(initial_path.clone());
-    app.image_files = vec![
-        PathBuf::from("img0.jpg"),
-        PathBuf::from("img2.jpg"),
-    ];
+    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img2.jpg")];
     app.settings.resume_last_image = true;
     app.settings.last_viewed_image = Some(PathBuf::from("img1.jpg"));
 
@@ -2304,8 +2312,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         }));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0));
-    assert!(
-        app.loader.poll().is_none());
+    assert!(app.loader.poll().is_none());
     assert!(
         app.current_hdr_image.is_some(),
         "load result should still install after registration skip"
@@ -2344,8 +2351,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         }));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0));
-    assert!(
-        app.loader.poll().is_none());
+    assert!(app.loader.poll().is_none());
     assert!(
         app.current_hdr_image.is_some(),
         "load result should still install after registration skip"

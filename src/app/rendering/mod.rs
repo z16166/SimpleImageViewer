@@ -163,8 +163,8 @@ impl ImageViewerApp {
                 }
 
                 // ── Rendering dispatch ────────────────────────────────────────
-                if self.tiled_canvas_matches_current_index() {
-                    // Large-image tiled path → tiled.rs
+                if self.should_draw_tiled_canvas() {
+                    // Large-image tiled path -> tiled.rs
                     self.draw_tiled_image(ui, screen_rect, &canvas_resp);
                 } else {
                     let texture = self.texture_cache.get(self.current_index).cloned();

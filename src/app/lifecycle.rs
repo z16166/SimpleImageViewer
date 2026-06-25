@@ -599,6 +599,7 @@ impl ImageViewerApp {
             last_logic_shared_at: None,
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
+            installed_display_modes: std::collections::HashMap::new(),
             tile_manager: None,
             tiled_primary_visible_scratch: HashSet::new(),
             tiled_visible_coords_scratch: Vec::new(),
@@ -704,8 +705,7 @@ impl ImageViewerApp {
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader
             .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
-        app.loader
-            .set_output_mode(app.hdr_capabilities.output_mode);
+        app.loader.set_output_mode(app.hdr_capabilities.output_mode);
         app.sync_loader_hdr_callback_upload_snapshot();
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
