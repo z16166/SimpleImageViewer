@@ -15,6 +15,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Atomic preload plan snapshot for background workers (generation-plan §3.G).
+//!
+//! Worker-visible navigation fields use per-field atomics (not one struct-wide lock).
+//! [`PreloadPlanSnapshot::write_navigation`] stores `current_index`, `image_count`, then
+//! `max_distance` with Release ordering. Workers may observe a torn snapshot (e.g. new
+//! `current_index` with a stale `max_distance`) because each field is loaded independently
+//! with Acquire. That is intentional: mismatches only make [`Self::index_in_window`] conservative
+//! (extra early-exit or extra retained work), never accept out-of-window results incorrectly.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -41,6 +48,8 @@ impl PreloadPlanSnapshot {
         }
     }
 
+    /// Publish navigation from the main thread. Fields are written in dependency order;
+    /// workers tolerate torn reads between stores (see module docs).
     pub fn write_navigation(&self, current_index: usize, image_count: usize, max_distance: usize) {
         self.current_index.store(current_index, Ordering::Release);
         self.image_count.store(image_count, Ordering::Release);
@@ -67,6 +76,10 @@ impl PreloadPlanSnapshot {
         self.max_distance.load(Ordering::Acquire)
     }
 
+    /// Whether `idx` is within the published preload window (worker early-exit).
+    ///
+    /// Loads each atomic field separately; a torn snapshot vs `write_navigation` is safe
+    /// (conservative window check only — see module docs).
     pub fn index_in_window(&self, idx: usize) -> bool {
         let count = self.image_count();
         if count == 0 {

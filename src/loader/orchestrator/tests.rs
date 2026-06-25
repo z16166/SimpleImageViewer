@@ -55,7 +55,7 @@ fn should_spawn_load_task_supersedes_on_profile_downgrade() {
 
 #[test]
 fn try_note_capacity_requeue_rejects_fourth_attempt() {
-    let loader = ImageLoader::new();
+    let mut loader = ImageLoader::new();
     let index = 4;
     assert!(loader.try_note_capacity_requeue(index));
     assert!(loader.try_note_capacity_requeue(index));

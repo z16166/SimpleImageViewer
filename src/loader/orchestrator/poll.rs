@@ -131,7 +131,7 @@ impl ImageLoader {
             let (lock, _) = &*self.tile_queue;
             lock.lock().clear();
         }
-        self.capacity_requeue_counts.lock().clear();
+        self.capacity_requeue_counts.clear();
         while self.rx.try_recv().is_ok() {}
     }
 

@@ -175,8 +175,9 @@ pub struct ImageLoader {
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
-    /// Maps image index -> registered in-flight load (decode profile for spawn dedup and gate checks).
+    /// Shared with worker threads; maps image index -> registered in-flight load.
     pub(crate) loading: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+    /// Worker-readable navigation window (atomics — see [`PreloadPlanSnapshot`]).
     pub(crate) preload_plan: Arc<PreloadPlanSnapshot>,
     pub(crate) pool: Arc<rayon::ThreadPool>,
     /// Priority queue for tile requests.
@@ -200,6 +201,6 @@ pub struct ImageLoader {
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) output_mode_bits: Arc<AtomicU32>,
-    /// Per-index HDR capacity stale requeue attempts (generation-plan requeue storm cap).
-    pub(crate) capacity_requeue_counts: Arc<Mutex<std::collections::HashMap<usize, u32>>>,
+    /// Main-thread-only HDR capacity requeue storm cap (not shared with workers; no lock needed).
+    pub(crate) capacity_requeue_counts: std::collections::HashMap<usize, u32>,
 }

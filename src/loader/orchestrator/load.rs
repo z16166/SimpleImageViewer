@@ -607,7 +607,7 @@ impl ImageLoader {
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
             wgpu_is_opengl: false,
             output_mode_bits,
-            capacity_requeue_counts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            capacity_requeue_counts: std::collections::HashMap::new(),
         }
     }
 
@@ -698,9 +698,8 @@ impl ImageLoader {
             }
         }
         {
-            let mut requeue_counts = self.capacity_requeue_counts.lock();
             for idx in &cancelled {
-                requeue_counts.remove(idx);
+                self.capacity_requeue_counts.remove(idx);
             }
         }
         {
@@ -718,9 +717,8 @@ impl ImageLoader {
 
     const MAX_HDR_CAPACITY_REQUEUE_COUNT: u32 = 3;
 
-    pub fn try_note_capacity_requeue(&self, index: usize) -> bool {
-        let mut counts = self.capacity_requeue_counts.lock();
-        let entry = counts.entry(index).or_insert(0);
+    pub fn try_note_capacity_requeue(&mut self, index: usize) -> bool {
+        let entry = self.capacity_requeue_counts.entry(index).or_insert(0);
         if *entry >= Self::MAX_HDR_CAPACITY_REQUEUE_COUNT {
             return false;
         }
@@ -728,14 +726,13 @@ impl ImageLoader {
         true
     }
 
-    pub fn clear_capacity_requeue(&self, index: usize) {
-        self.capacity_requeue_counts.lock().remove(&index);
+    pub fn clear_capacity_requeue(&mut self, index: usize) {
+        self.capacity_requeue_counts.remove(&index);
     }
 
     #[cfg(test)]
     pub(crate) fn test_capacity_requeue_count(&self, index: usize) -> u32 {
         self.capacity_requeue_counts
-            .lock()
             .get(&index)
             .copied()
             .unwrap_or(0)
