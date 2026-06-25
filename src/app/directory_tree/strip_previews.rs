@@ -16,6 +16,7 @@
 
 //! Directory-tree strip thumbnail generation, polling, and cache invalidation.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -280,14 +281,45 @@ impl ImageViewerApp {
         None
     }
 
-    fn strip_needs_iso_baseline_sync(&self, index: usize) -> bool {
+    /// One pass over preload caches for indices `< up_to` (checklist #29 / bootstrap batching).
+    fn collect_iso_baseline_pixels_up_to(
+        &self,
+        up_to: usize,
+    ) -> HashMap<usize, (u32, u32, Arc<Vec<u8>>)> {
+        let up_to = up_to.min(self.image_files.len());
+        let mut baselines = HashMap::new();
+        for (&index, hdr) in &self.hdr_image_cache {
+            if index >= up_to {
+                continue;
+            }
+            if let Some(iso) = hdr
+                .metadata
+                .gain_map
+                .as_ref()
+                .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+            {
+                baselines.insert(index, (hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba)));
+            }
+        }
+        for (&index, decoded) in &self.deferred_sdr_uploads {
+            if index >= up_to || baselines.contains_key(&index) {
+                continue;
+            }
+            if !decoded.is_sdr_deferred_placeholder() {
+                baselines.insert(index, (decoded.width, decoded.height, decoded.arc_pixels()));
+            }
+        }
+        baselines
+    }
+
+    fn strip_needs_iso_baseline_sync_inner(&self, index: usize, has_baseline: bool) -> bool {
         if index >= self.image_files.len() {
             return false;
         }
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        if self.iso_deferred_baseline_pixels_for_strip(index).is_none() {
+        if !has_baseline {
             return false;
         }
         let target_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
@@ -314,14 +346,16 @@ impl ImageViewerApp {
         true
     }
 
-    pub(crate) fn try_schedule_strip_from_preloaded_iso_baseline(&mut self, index: usize) -> bool {
-        if !self.strip_needs_iso_baseline_sync(index) {
+    fn try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
+        &mut self,
+        index: usize,
+        width: u32,
+        height: u32,
+        baseline: Arc<Vec<u8>>,
+    ) -> bool {
+        if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
-        let Some((width, height, baseline)) = self.iso_deferred_baseline_pixels_for_strip(index)
-        else {
-            return false;
-        };
         let Some(list) = self.directory_tree.list.try_lock() else {
             return false;
         };
@@ -1533,11 +1567,19 @@ impl ImageViewerApp {
             let iso_sync_budget = max_inflight
                 .saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut hdr_sync_scheduled = 0usize;
+            let iso_baselines = self.collect_iso_baseline_pixels_up_to(preload_sync_cap);
             for index in 0..preload_sync_cap {
-                if iso_sync_scheduled < iso_sync_budget
-                    && self.try_schedule_strip_from_preloaded_iso_baseline(index)
-                {
-                    iso_sync_scheduled += 1;
+                if iso_sync_scheduled < iso_sync_budget {
+                    if let Some((width, height, baseline)) = iso_baselines.get(&index) {
+                        if self.try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
+                            index,
+                            *width,
+                            *height,
+                            Arc::clone(baseline),
+                        ) {
+                            iso_sync_scheduled += 1;
+                        }
+                    }
                 }
                 if hdr_sync_scheduled < hdr_sync_budget
                     && self.try_schedule_strip_from_hdr_image_cache(index)
