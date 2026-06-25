@@ -182,7 +182,8 @@ impl ImageViewerApp {
                     match gate_decision {
                         result_gate::GateDecision::Requeue => {
                             self.loader.finish_image_request(idx);
-                            if !self.hdr_image_cache.contains_key(&idx)
+                            if self.loader.try_note_capacity_requeue(idx)
+                                && !self.hdr_image_cache.contains_key(&idx)
                                 && !self.loader.is_loading(idx)
                                 && !self.image_files.is_empty()
                                 && idx < self.image_files.len()
@@ -203,14 +204,24 @@ impl ImageViewerApp {
                                 idx,
                                 result_gate::gate_decision_log_label(gate_decision)
                             );
+                            let source_still_valid = result_gate::source_key_matches_index(
+                                &self.image_files,
+                                idx,
+                                load_result.source_key,
+                            );
                             self.loader.finish_image_request(idx);
-                            if is_current && !self.has_loaded_asset(idx) {
+                            if is_current
+                                && !self.has_loaded_asset(idx)
+                                && source_still_valid
+                            {
                                 self.sync_loader_preload_plan();
                                 self.schedule_current_image_load_if_needed();
                             }
                             continue;
                         }
-                        result_gate::GateDecision::Accept => {}
+                        result_gate::GateDecision::Accept => {
+                            self.loader.clear_capacity_requeue(idx);
+                        }
                     }
 
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {

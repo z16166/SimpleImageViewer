@@ -18,9 +18,10 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+
 /// Default preload radius before the main thread publishes navigation.
-/// Keep in sync with `crate::app::image_management::PREFETCH_WINDOW_DISTANCE`.
-const DEFAULT_MAX_DISTANCE: usize = 2;
+const DEFAULT_MAX_DISTANCE: usize = DEFAULT_PREFETCH_WINDOW_DISTANCE;
 
 /// Main-thread snapshot of navigation / preload window for worker early-exit.
 pub struct PreloadPlanSnapshot {

@@ -606,6 +606,7 @@ impl ImageLoader {
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
             wgpu_is_opengl: false,
             output_mode_bits,
+            capacity_requeue_counts: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -663,20 +664,14 @@ impl ImageLoader {
 
     pub fn set_output_mode(&self, mode: HdrOutputMode) {
         self.output_mode_bits
-            .store(mode as u32, std::sync::atomic::Ordering::Release);
+            .store(mode.to_storage_bits(), std::sync::atomic::Ordering::Release);
     }
 
     fn output_mode_snapshot(&self) -> HdrOutputMode {
-        match self
-            .output_mode_bits
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            0 => HdrOutputMode::SdrToneMapped,
-            1 => HdrOutputMode::WindowsScRgb,
-            2 => HdrOutputMode::MacOsEdr,
-            3 => HdrOutputMode::WaylandHdr,
-            _ => HdrOutputMode::SdrToneMapped,
-        }
+        HdrOutputMode::from_storage_bits(
+            self.output_mode_bits
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
     }
 
     pub fn bump_profile_epoch(&self) -> u64 {
@@ -702,6 +697,12 @@ impl ImageLoader {
             }
         }
         {
+            let mut requeue_counts = self.capacity_requeue_counts.lock();
+            for idx in &cancelled {
+                requeue_counts.remove(idx);
+            }
+        }
+        {
             let (lock, cvar) = &*self.delayed_fallback;
             let mut slot = lock.lock();
             if slot
@@ -712,6 +713,22 @@ impl ImageLoader {
                 cvar.notify_one();
             }
         }
+    }
+
+    const MAX_HDR_CAPACITY_REQUEUE_COUNT: u32 = 3;
+
+    pub fn try_note_capacity_requeue(&self, index: usize) -> bool {
+        let mut counts = self.capacity_requeue_counts.lock();
+        let entry = counts.entry(index).or_insert(0);
+        if *entry >= Self::MAX_HDR_CAPACITY_REQUEUE_COUNT {
+            return false;
+        }
+        *entry += 1;
+        true
+    }
+
+    pub fn clear_capacity_requeue(&self, index: usize) {
+        self.capacity_requeue_counts.lock().remove(&index);
     }
 
     pub fn set_hdr_target_capacity(&self, capacity: f32) {

@@ -151,10 +151,85 @@ pub(crate) fn directory_tree_strip_composed_from_iso_deferred(
     if !hdr_has_iso_deferred_gain_map(hdr) {
         return Err("strip compose upgrade requires ISO deferred gain map".to_string());
     }
+    if !hdr.rgba_f32.is_empty() {
+        let (width, height, pixels) = hdr_directory_tree_strip_sdr_at_max_side(hdr, max_side)?;
+        return Ok(crate::loader::DecodedImage::new(width, height, pixels));
+    }
+    let iso = hdr
+        .metadata
+        .gain_map
+        .as_ref()
+        .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+        .ok_or_else(|| "strip compose upgrade missing ISO deferred planes".to_string())?;
+    let (strip_w, strip_h) =
+        crate::hdr::tiled::preview_dimensions(hdr.width, hdr.height, max_side, max_side);
+    if strip_w == 0 || strip_h == 0 {
+        return Err("strip compose upgrade dimensions must be non-zero".to_string());
+    }
+    let sdr_strip = downsample_rgba8_nearest(
+        iso.sdr_rgba.as_slice(),
+        hdr.width,
+        hdr.height,
+        strip_w,
+        strip_h,
+    );
+    let gain_strip_w = ((u64::from(iso.gain_width) * u64::from(strip_w)) / u64::from(hdr.width))
+        .max(1)
+        .min(u64::from(iso.gain_width)) as u32;
+    let gain_strip_h = ((u64::from(iso.gain_height) * u64::from(strip_h)) / u64::from(hdr.height))
+        .max(1)
+        .min(u64::from(iso.gain_height)) as u32;
+    let gain_strip = downsample_rgba8_nearest(
+        iso.gain_rgba.as_slice(),
+        iso.gain_width,
+        iso.gain_height,
+        gain_strip_w,
+        gain_strip_h,
+    );
+    let deferred_strip = crate::hdr::types::IsoGainMapGpuSource {
+        sdr_rgba: std::sync::Arc::new(sdr_strip),
+        gain_rgba: std::sync::Arc::new(gain_strip),
+        gain_width: gain_strip_w,
+        gain_height: gain_strip_h,
+        metadata: iso.metadata,
+    };
     let tone = hdr_tone_map_settings_for_directory_tree_strip();
-    let pixels = hdr_to_display_sdr_rgba8_for_preview(hdr, &tone)?;
-    let decoded = crate::loader::DecodedImage::new(hdr.width, hdr.height, pixels);
-    crate::loader::downsample_decoded_for_strip(&decoded, max_side).map(|cow| cow.into_owned())
+    let rgba_f32 = crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+        strip_w,
+        strip_h,
+        &deferred_strip,
+        tone.target_hdr_capacity(),
+    )?;
+    let composed = HdrImageBuffer {
+        width: strip_w,
+        height: strip_h,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: hdr.color_space,
+        metadata: hdr.metadata.clone(),
+        rgba_f32: std::sync::Arc::new(rgba_f32),
+    };
+    let pixels = hdr_to_directory_tree_strip_sdr_rgba8(&composed)?;
+    Ok(crate::loader::DecodedImage::new(strip_w, strip_h, pixels))
+}
+
+fn downsample_rgba8_nearest(
+    pixels: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> Vec<u8> {
+    let mut out = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+    for y in 0..dst_h {
+        let src_y = crate::hdr::tiled::preview_sample_coord(y, dst_h, src_h);
+        for x in 0..dst_w {
+            let src_x = crate::hdr::tiled::preview_sample_coord(x, dst_w, src_w);
+            let src_i = (src_y as usize * src_w as usize + src_x as usize) * 4;
+            let dst_i = (y as usize * dst_w as usize + x as usize) * 4;
+            out[dst_i..dst_i + 4].copy_from_slice(&pixels[src_i..src_i + 4]);
+        }
+    }
+    out
 }
 
 /// Display-referred peak headroom used by the loader: values `<= 1.0` (plus epsilon) mean SDR or

@@ -31,7 +31,8 @@ mod types;
 
 pub use decode_profile::{
     DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
-    decode_profile_stub, decode_profile_with_epoch, output_mode_is_hdr, profile_satisfies_display,
+    DEFAULT_PREFETCH_WINDOW_DISTANCE, HDR_CAPACITY_MATCH_EPSILON, decode_profile_stub,
+    decode_profile_with_epoch, output_mode_is_hdr, profile_satisfies_display,
     profile_spawn_relation,
 };
 pub use orchestrator::ImageLoader;

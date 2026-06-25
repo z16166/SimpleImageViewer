@@ -21,7 +21,9 @@ use crate::settings::RawDemosaicMode;
 
 use super::RenderShape;
 
-const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
+pub const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
+/// Default preload radius until the main thread publishes navigation.
+pub const DEFAULT_PREFETCH_WINDOW_DISTANCE: usize = 2;
 
 /// Whether a load was requested for the current image or a neighbor prefetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,9 +113,6 @@ pub fn profile_spawn_relation(
 }
 
 fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
-    if new.profile_epoch > old.profile_epoch {
-        return true;
-    }
     if new.raw_high_quality && !old.raw_high_quality {
         return true;
     }
@@ -123,7 +122,7 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.ultra_hdr_decode_capacity > old.ultra_hdr_decode_capacity + HDR_CAPACITY_MATCH_EPSILON {
         return true;
     }
-    // Demosaic partial order: Cpu → Gpu is upgrade; Gpu → Cpu is Downgrade (see tests).
+    // Demosaic partial order: Cpu -> Gpu is upgrade; Gpu -> Cpu is Downgrade (see tests).
     if new.raw_demosaic_mode != old.raw_demosaic_mode {
         return matches!(
             (old.raw_demosaic_mode, new.raw_demosaic_mode),
@@ -133,7 +132,19 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.load_intent == LoadIntent::Current && old.load_intent == LoadIntent::NeighborPrefetch {
         return true;
     }
+    if new.profile_epoch > old.profile_epoch && profile_decode_capabilities_equal(old, new) {
+        return true;
+    }
     false
+}
+
+fn profile_decode_capabilities_equal(old: &DecodeProfile, new: &DecodeProfile) -> bool {
+    old.raw_high_quality == new.raw_high_quality
+        && old.raw_demosaic_mode == new.raw_demosaic_mode
+        && old.output_mode == new.output_mode
+        && (old.ultra_hdr_decode_capacity - new.ultra_hdr_decode_capacity).abs()
+            <= HDR_CAPACITY_MATCH_EPSILON
+        && old.render_shape == new.render_shape
 }
 
 /// Core profile fields that must match for install-time acceptance.
@@ -233,6 +244,24 @@ mod tests {
         assert_eq!(
             profile_spawn_relation(&old, &new),
             ProfileSpawnRelation::Upgrade
+        );
+    }
+
+    #[test]
+    fn hq_downgrade_with_epoch_bump_is_downgrade() {
+        let old = DecodeProfile {
+            raw_high_quality: true,
+            profile_epoch: 0,
+            ..base_profile()
+        };
+        let new = DecodeProfile {
+            raw_high_quality: false,
+            profile_epoch: 1,
+            ..base_profile()
+        };
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Downgrade
         );
     }
 

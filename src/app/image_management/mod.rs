@@ -292,7 +292,7 @@ pub(crate) fn should_defer_hdr_sdr_fallback_install(
 }
 
 /// Circular distance within which prefetch CPU/GPU caches are retained (see `prefetch_retention`).
-pub(crate) const PREFETCH_WINDOW_DISTANCE: usize = 2;
+pub(crate) const PREFETCH_WINDOW_DISTANCE: usize = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
 
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
 const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
@@ -719,7 +719,7 @@ fn invalidate_tile_manager_requests_for_view_change(
     }
 }
 
-pub(super) const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
+pub(super) use crate::loader::HDR_CAPACITY_MATCH_EPSILON as HDR_CAPACITY_STALE_EPSILON;
 
 /// HQ RAW static HDR planes are scene-linear; display tone mapping uses the live
 /// `ultra_hdr_decode_capacity` and does not require a full re-decode when the monitor
@@ -913,7 +913,12 @@ impl ImageViewerApp {
             raw_demosaic_mode: self.raw_demosaic_mode_for_index(idx),
             output_mode: self.hdr_capabilities.output_mode,
             ultra_hdr_decode_capacity: self.effective_ultra_hdr_decode_capacity(),
-            render_shape: RenderShape::Unknown,
+            render_shape: if self.has_loaded_asset(idx) {
+                self.installed_display_mode(idx)
+                    .unwrap_or(RenderShape::Unknown)
+            } else {
+                RenderShape::Unknown
+            },
             load_intent: if idx == self.current_index {
                 LoadIntent::Current
             } else {
@@ -977,7 +982,7 @@ impl ImageViewerApp {
 
     pub(super) fn discard_stale_loader_outputs(&mut self) {
         let gate_ctx = self.result_gate_context();
-        let files = self.image_files.clone();
+        let files = &self.image_files;
         let current = self.current_index;
         let raw_hq = self.settings.raw_high_quality;
         let output_mode = self.hdr_capabilities.output_mode;

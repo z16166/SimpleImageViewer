@@ -52,6 +52,7 @@ impl ImageViewerApp {
         self.animation = None;
         self.animation_cache.clear();
         self.pending_anim_frames.clear();
+        self.installed_display_modes.clear();
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
@@ -60,6 +61,7 @@ impl ImageViewerApp {
         self.prev_transition_rect = None;
         self.transition_start = None;
         crate::tile_cache::PIXEL_CACHE.lock().clear();
+        self.discard_stale_loader_outputs();
     }
 
     /// Relocate index-keyed caches when the image list order changes.
@@ -256,6 +258,8 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.hq_tiled_preview_pending_indices
             .retain(|&idx| idx == except_idx);
+        self.installed_display_modes
+            .retain(|&idx, _| idx == except_idx);
         self.deferred_sdr_uploads
             .retain(|&idx, _| idx == except_idx);
         self.raw_metadata

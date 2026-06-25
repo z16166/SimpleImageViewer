@@ -200,4 +200,6 @@ pub struct ImageLoader {
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) output_mode_bits: Arc<AtomicU32>,
+    /// Per-index HDR capacity stale requeue attempts (generation-plan requeue storm cap).
+    pub(crate) capacity_requeue_counts: Arc<Mutex<std::collections::HashMap<usize, u32>>>,
 }

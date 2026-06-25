@@ -64,7 +64,9 @@ pub(super) fn source_key_matches_index(
 
 /// Install-time hard check: decoded shape vs an explicit required shape (never `Unknown`).
 pub fn render_shape_matches_install(image_data: &ImageData, required: RenderShape) -> bool {
-    debug_assert!(required != RenderShape::Unknown);
+    if required == RenderShape::Unknown {
+        return false;
+    }
     image_data.preferred_render_shape() == required
 }
 
@@ -180,7 +182,8 @@ pub fn gate_tile_result(
     if !source_key_matches_index(image_files, tile.index, source_key) {
         return GateDecision::Discard;
     }
-    if tile.decode_profile != *tm_profile {
+    // Tile workers emit epoch-only stubs; binding is (index, profile_epoch) per generation-plan.
+    if tile.decode_profile.profile_epoch != tm_profile.profile_epoch {
         return GateDecision::Discard;
     }
     if !ctx.retention_for(tile.index, is_loading).should_retain() {
@@ -403,6 +406,74 @@ mod tests {
                 Some(PreviewStage::Initial)
             ),
             GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn accepts_tile_result_when_worker_profile_is_epoch_stub() {
+        let ctx = ResultGateContext {
+            current_index: 0,
+            image_count: 1,
+            max_distance: 2,
+        };
+        let files = vec![PathBuf::from("img0.exr")];
+        let tm_profile = DecodeProfile {
+            raw_high_quality: true,
+            raw_demosaic_mode: RawDemosaicMode::Gpu,
+            output_mode: crate::hdr::types::HdrOutputMode::WindowsScRgb,
+            ultra_hdr_decode_capacity: 2.0,
+            render_shape: RenderShape::Tiled,
+            load_intent: LoadIntent::Current,
+            profile_epoch: 7,
+        };
+        let tile = TileResult {
+            index: 0,
+            decode_profile: crate::loader::decode_profile_with_epoch(7),
+            col: 0,
+            row: 0,
+            pixel_kind: crate::loader::TilePixelKind::Hdr,
+        };
+        assert_eq!(
+            gate_tile_result(
+                &ctx,
+                &tile,
+                0,
+                &tm_profile,
+                &files,
+                source_key_for_path(&files[0]),
+                false,
+            ),
+            GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn discards_tile_result_when_profile_epoch_mismatch() {
+        let ctx = ResultGateContext {
+            current_index: 0,
+            image_count: 1,
+            max_distance: 2,
+        };
+        let files = vec![PathBuf::from("img0.exr")];
+        let tm_profile = sample_profile(LoadIntent::Current);
+        let tile = TileResult {
+            index: 0,
+            decode_profile: crate::loader::decode_profile_with_epoch(99),
+            col: 0,
+            row: 0,
+            pixel_kind: crate::loader::TilePixelKind::Sdr,
+        };
+        assert_eq!(
+            gate_tile_result(
+                &ctx,
+                &tile,
+                0,
+                &tm_profile,
+                &files,
+                source_key_for_path(&files[0]),
+                false,
+            ),
+            GateDecision::Discard
         );
     }
 

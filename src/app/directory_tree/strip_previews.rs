@@ -280,44 +280,103 @@ impl ImageViewerApp {
         None
     }
 
-    fn try_sync_strip_from_preloaded_iso_baseline(&mut self, index: usize) {
+    fn strip_needs_iso_baseline_sync(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
-            return;
+            return false;
         }
-        if self.directory_tree_strip_cache.contains(index) {
-            return;
+        if self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        if self.iso_deferred_baseline_pixels_for_strip(index).is_none() {
+            return false;
+        }
+        let target_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+            StripPreviewBufferTag::IsoGainMapBaseline,
+            PreviewStage::Initial,
+        );
+        if let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) {
+            let cached_stage = self
+                .directory_tree_strip_cache
+                .cached_preview_stage(index)
+                .unwrap_or(PreviewStage::Initial);
+            let cached_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+                cached_tag, cached_stage,
+            );
+            if cached_rank >= target_rank {
+                if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+                    return !self
+                        .directory_tree_strip_cache
+                        .is_valid_for_logical(index, logical);
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn try_schedule_strip_from_preloaded_iso_baseline(&mut self, index: usize) -> bool {
+        if !self.strip_needs_iso_baseline_sync(index) {
+            return false;
         }
         let Some((width, height, baseline)) = self.iso_deferred_baseline_pixels_for_strip(index)
         else {
-            return;
+            return false;
         };
+        let Some(list) = self.directory_tree.list.try_lock() else {
+            return false;
+        };
+        let list_generation = list.image_list_generation;
+        drop(list);
+
+        self.directory_tree_strip_generate_inflight.insert(index);
+        let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
-        let decoded = DecodedImage::from_arc(width, height, baseline);
-        let Ok(strip) = downsample_decoded_for_strip(&decoded, max_side) else {
-            return;
-        };
-        if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
-            return;
-        }
+        let root_wake = self.root_redraw_wake_handle();
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
-            "[PreloadDebug][Strip] preload baseline sync idx={} decoded={}x{} logical={}x{}",
+            "[PreloadDebug][Strip] pool submit idx={} kind=iso_baseline_sync max_side={}",
             index,
-            strip.width,
-            strip.height,
-            width,
-            height
+            max_side
         );
-        self.queue_directory_tree_strip_gpu_upload(
-            index,
-            strip.into_owned(),
-            PreviewStage::Initial,
-            Some((width, height)),
-            StripPreviewBufferTag::IsoGainMapBaseline,
-        );
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let decoded = DecodedImage::from_arc(width, height, baseline);
+            let strip = match downsample_decoded_for_strip(&decoded, max_side) {
+                Ok(strip) => strip.into_owned(),
+                Err(err) => {
+                    log::debug!(
+                        "[DirectoryTree] Strip ISO baseline sync failed for index {index}: {err}"
+                    );
+                    send_strip_inflight_release(&release_tx, index);
+                    return;
+                }
+            };
+            if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
+                send_strip_inflight_release(&release_tx, index);
+                return;
+            }
+            let job = DirectoryTreeStripPreviewJobResult {
+                index,
+                path,
+                image_list_generation: list_generation,
+                decoded: strip,
+                logical: (width, height),
+                stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
+            };
+            if tx.try_send(job).is_ok() {
+                if let Some(wake) = root_wake {
+                    wake();
+                }
+            } else {
+                send_strip_inflight_release(&release_tx, index);
+            }
+        });
+        true
     }
 
     fn strip_fallback_for_hdr_cache_sync(
@@ -747,8 +806,20 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        if self.directory_tree_strip_cache.cached_buffer_tag(index)
-            != Some(StripPreviewBufferTag::IsoGainMapBaseline)
+        let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) else {
+            return false;
+        };
+        let compose_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+            StripPreviewBufferTag::HdrComposedStrip,
+            PreviewStage::Refined,
+        );
+        let cached_stage = self
+            .directory_tree_strip_cache
+            .cached_preview_stage(index)
+            .unwrap_or(PreviewStage::Initial);
+        if crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
+            cached_tag, cached_stage,
+        ) >= compose_rank
         {
             return false;
         }
@@ -779,6 +850,7 @@ impl ImageViewerApp {
             .directory_tree_list_preview_size
             .strip_max_side();
         let root_wake = self.root_redraw_wake_handle();
+        #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][Strip] pool submit idx={} kind=compose_upgrade max_side={}",
             index,
@@ -927,17 +999,20 @@ impl ImageViewerApp {
             path.display(),
             max_side
         );
-        let use_fast_gain_map = path.extension().is_some_and(|ext| {
-            let ext = ext.to_string_lossy().to_ascii_lowercase();
-            ext == "avif" || ext == "avifs" || ext == "jxl"
-        });
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
-            crate::preload_debug!(
-                "[PreloadDebug][Strip] cold worker start idx={} path={} fast={}",
-                index,
-                path.display(),
-                use_fast_gain_map
-            );
+            #[cfg(feature = "preload-debug")]
+            {
+                let use_fast_gain_map = path.extension().is_some_and(|ext| {
+                    let ext = ext.to_string_lossy().to_ascii_lowercase();
+                    ext == "avif" || ext == "avifs" || ext == "jxl"
+                });
+                crate::preload_debug!(
+                    "[PreloadDebug][Strip] cold worker start idx={} path={} fast={}",
+                    index,
+                    path.display(),
+                    use_fast_gain_map
+                );
+            }
             #[cfg(target_os = "windows")]
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
@@ -1397,9 +1472,16 @@ impl ImageViewerApp {
             let preload_sync_cap = file_count.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
             let hdr_sync_budget = max_inflight
                 .saturating_sub(self.directory_tree_strip_generate_inflight.len());
+            let mut iso_sync_scheduled = 0usize;
+            let iso_sync_budget = max_inflight
+                .saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut hdr_sync_scheduled = 0usize;
             for index in 0..preload_sync_cap {
-                self.try_sync_strip_from_preloaded_iso_baseline(index);
+                if iso_sync_scheduled < iso_sync_budget
+                    && self.try_schedule_strip_from_preloaded_iso_baseline(index)
+                {
+                    iso_sync_scheduled += 1;
+                }
                 if hdr_sync_scheduled < hdr_sync_budget
                     && self.try_schedule_strip_from_hdr_image_cache(index)
                 {
