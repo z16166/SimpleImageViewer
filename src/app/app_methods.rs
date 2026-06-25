@@ -25,6 +25,32 @@ use super::hotkeys_ui::build_hotkeys_issue_message;
 use super::types::ImageViewerApp;
 
 impl ImageViewerApp {
+    /// Live swap-chain format: prefer the painter mailbox over the startup clone in [`Self::hdr_target_format`].
+    pub(crate) fn effective_hdr_target_format(&self) -> Option<wgpu::TextureFormat> {
+        self.hdr_target_format
+            .or_else(|| self.active_target_format.get())
+    }
+
+    /// True when GPU RAW demosaic has baked and the frame still needs a forced HDR plane draw
+    /// (render plan routes SDR, or the first post-bake present is pending).
+    ///
+    /// Does not include in-flight GPU bake (`hdr_raw_gpu_demosaic_pending_indices`); during
+    /// pending the canvas should draw the SDR bootstrap via the normal render path.
+    pub(crate) fn raw_gpu_demosaic_needs_sync_present(&self) -> bool {
+        self.raw_gpu_demosaic_await_hdr_present
+            || self
+                .hdr_raw_gpu_demosaic_baked_indices
+                .contains(&self.current_index)
+    }
+
+    /// True while GPU RAW demosaic is in flight or awaiting the sync-present HDR draw.
+    pub(crate) fn raw_gpu_demosaic_needs_repaint_wake(&self) -> bool {
+        self.raw_gpu_demosaic_needs_sync_present()
+            || self
+                .hdr_raw_gpu_demosaic_pending_indices
+                .contains(&self.current_index)
+    }
+
     pub(crate) fn layout_uses_fullscreen_metrics(&self) -> bool {
         self.settings.fullscreen
     }

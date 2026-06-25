@@ -22,8 +22,8 @@ use crate::loader::raw_osd::RawRenderPixels;
 use crossbeam_channel::unbounded;
 use std::path::PathBuf;
 
-fn dummy_load_tx() -> crossbeam_channel::Sender<crate::loader::LoaderOutput> {
-    unbounded().0
+fn dummy_load_tx() -> crate::loader::orchestrator::LoaderOutputSender {
+    crate::loader::orchestrator::LoaderOutputSender::new(unbounded().0)
 }
 
 #[test]

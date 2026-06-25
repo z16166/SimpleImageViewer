@@ -42,7 +42,7 @@ fn should_show_loading_hint(
 }
 
 impl ImageViewerApp {
-    pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Block canvas mouse interaction when a modal dialog is open.
         // egui::Modal renders its own dimming overlay, so we do not need to
         // draw one manually here any more.
@@ -133,7 +133,7 @@ impl ImageViewerApp {
                     return;
                 }
 
-                self.prepare_display_frame(ui.ctx());
+                self.prepare_display_frame(ui.ctx(), Some(frame));
 
                 // ── Error message ─────────────────────────────────────────────
                 if let Some(ref err) = self.error_message {
@@ -194,8 +194,6 @@ impl ImageViewerApp {
                         self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
                     }
                 }
-
-                self.finish_display_frame(ui.ctx());
 
                 let current_img_size = self
                     .current_image_res

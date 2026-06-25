@@ -192,12 +192,15 @@ impl DirectoryTreeStripCache {
         }
         let cached_max_side = self.preview_max_side.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
+        let cached_logical = self.logical_sizes.get(&index).copied();
         if !should_replace_strip_thumbnail(
             cached_max_side,
             cached_stage,
+            cached_logical,
             decoded,
             stage,
             logical_size,
+            strip_max_side,
             allow_initial_over_refined,
         ) {
             #[cfg(feature = "preload-debug")]
@@ -234,7 +237,7 @@ impl DirectoryTreeStripCache {
             color_image,
             TextureOptions::LINEAR,
         );
-        let preview_max_side = decoded.width.max(decoded.height);
+        let preview_max_side = thumb.width.max(thumb.height);
         if let Some(logical) = logical_size {
             self.logical_sizes.insert(index, logical);
         }
@@ -392,12 +395,26 @@ pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
     decoded.rgba().len() == decoded.width as usize * decoded.height as usize * 4
 }
 
+/// Max side of the strip thumbnail after `downsample_decoded_for_strip`, not the source decode.
+pub(crate) fn strip_thumb_max_side(decoded: &DecodedImage, strip_max_side: u32) -> u32 {
+    let source_max = decoded.width.max(decoded.height);
+    if source_max <= strip_max_side {
+        return source_max;
+    }
+    let scale = strip_max_side as f32 / source_max as f32;
+    let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
+    let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
+    out_w.max(out_h)
+}
+
 pub(crate) fn should_replace_strip_thumbnail(
     cached_max_side: Option<u32>,
     cached_stage: Option<PreviewStage>,
+    cached_logical: Option<(u32, u32)>,
     decoded: &DecodedImage,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
+    strip_max_side: u32,
     allow_initial_over_refined: bool,
 ) -> bool {
     if decoded.is_sdr_deferred_placeholder() {
@@ -411,7 +428,15 @@ pub(crate) fn should_replace_strip_thumbnail(
     {
         return false;
     }
-    let new_max_side = decoded.width.max(decoded.height);
+    if logical_size.is_some_and(|logical| cached_logical != Some(logical)) {
+        return true;
+    }
+    if logical_size.is_some_and(|(logical_w, logical_h)| {
+        decoded.width == logical_w && decoded.height == logical_h && stage == PreviewStage::Refined
+    }) {
+        return true;
+    }
+    let new_max_side = strip_thumb_max_side(decoded, strip_max_side);
     match cached_max_side {
         None => true,
         Some(cached_max_side) => {
@@ -484,17 +509,21 @@ mod tests {
         assert!(!should_replace_strip_thumbnail(
             None,
             None,
+            None,
             &bootstrap,
             PreviewStage::Initial,
             Some((8000, 2000)),
+            128,
             false,
         ));
         assert!(!should_replace_strip_thumbnail(
             None,
             None,
+            None,
             &bootstrap,
             PreviewStage::Refined,
             Some((800, 8000)),
+            128,
             false,
         ));
     }
@@ -503,11 +532,13 @@ mod tests {
     fn strip_cache_upgrades_refined_preview_over_initial_bootstrap() {
         let refined = DecodedImage::new(2048, 512, vec![180; 2048 * 512 * 4]);
         assert!(should_replace_strip_thumbnail(
-            Some(512),
+            Some(128),
             Some(PreviewStage::Initial),
+            None,
             &refined,
             PreviewStage::Refined,
             Some((8000, 2000)),
+            128,
             false,
         ));
     }
@@ -553,17 +584,21 @@ mod tests {
         assert!(!should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Initial),
+            None,
             &black,
             PreviewStage::Refined,
             Some((4096, 2048)),
+            128,
             false,
         ));
         assert!(should_replace_strip_thumbnail(
             Some(128),
             Some(PreviewStage::Initial),
+            None,
             &good,
             PreviewStage::Refined,
             Some((4096, 2048)),
+            128,
             false,
         ));
     }
@@ -572,30 +607,87 @@ mod tests {
     fn strip_cache_cold_initial_may_replace_refined_sync() {
         let cold = DecodedImage::new(128, 128, vec![200; 128 * 128 * 4]);
         assert!(!should_replace_strip_thumbnail(
-            Some(150),
+            Some(128),
             Some(PreviewStage::Refined),
+            None,
             &cold,
             PreviewStage::Initial,
             Some((512, 512)),
+            128,
             false,
         ));
         assert!(should_replace_strip_thumbnail(
-            Some(150),
+            Some(128),
             Some(PreviewStage::Refined),
+            None,
             &cold,
             PreviewStage::Initial,
             Some((512, 512)),
+            128,
             true,
         ));
         let black_placeholder =
             DecodedImage::new_sdr_deferred_placeholder(150, 150, vec![0; 150 * 150 * 4]);
         assert!(!should_replace_strip_thumbnail(
-            Some(150),
+            Some(128),
             Some(PreviewStage::Refined),
+            None,
             &black_placeholder,
             PreviewStage::Initial,
             Some((512, 512)),
+            128,
             true,
+        ));
+    }
+
+    #[test]
+    fn strip_thumb_max_side_uses_downsampled_output_not_source() {
+        let decoded = DecodedImage::new(4807, 3205, vec![0; 4807 * 3205 * 4]);
+        assert_eq!(strip_thumb_max_side(&decoded, 128), 128);
+    }
+
+    #[test]
+    fn strip_cache_rejects_bootstrap_at_same_thumb_tier() {
+        let bootstrap = DecodedImage::new(4704, 3136, vec![180; 4704 * 3136 * 4]);
+        assert!(!should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Refined),
+            Some((4807, 3205)),
+            &bootstrap,
+            PreviewStage::Refined,
+            Some((4807, 3205)),
+            128,
+            false,
+        ));
+    }
+
+    #[test]
+    fn strip_cache_allows_replace_when_logical_size_changes() {
+        let fallback = DecodedImage::new(4807, 3205, vec![180; 4807 * 3205 * 4]);
+        assert!(should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Refined),
+            Some((4704, 3136)),
+            &fallback,
+            PreviewStage::Refined,
+            Some((4807, 3205)),
+            128,
+            false,
+        ));
+    }
+
+    #[test]
+    fn strip_cache_full_res_refined_refreshes_same_thumb_tier() {
+        let fallback = DecodedImage::new(4807, 3205, vec![180; 4807 * 3205 * 4]);
+        assert!(should_replace_strip_thumbnail(
+            Some(128),
+            Some(PreviewStage::Refined),
+            Some((4807, 3205)),
+            &fallback,
+            PreviewStage::Refined,
+            Some((4807, 3205)),
+            128,
+            false,
         ));
     }
 

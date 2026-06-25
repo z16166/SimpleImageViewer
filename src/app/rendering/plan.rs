@@ -62,6 +62,7 @@ impl RenderPlan {
             target_format,
             output_mode,
             false,
+            false,
         )
     }
 
@@ -72,6 +73,7 @@ impl RenderPlan {
         target_format: Option<wgpu::TextureFormat>,
         output_mode: HdrRenderOutputMode,
         prefer_sdr_for_pending_gpu_demosaic: bool,
+        force_hdr_plane_after_raw_demosaic: bool,
     ) -> Self {
         let backend = select_render_backend(
             has_hdr_plane,
@@ -79,6 +81,7 @@ impl RenderPlan {
             target_format.is_some(),
             output_mode,
             prefer_sdr_for_pending_gpu_demosaic,
+            force_hdr_plane_after_raw_demosaic,
         );
         let active_plane = match backend {
             PlaneBackendKind::Sdr => PixelPlaneKind::Sdr,
@@ -104,6 +107,7 @@ pub(crate) fn build_render_plan_for_state(
     target_format: Option<wgpu::TextureFormat>,
     monitor_selection: Option<&HdrMonitorSelection>,
     prefer_sdr_for_pending_gpu_demosaic: bool,
+    force_hdr_plane_after_raw_demosaic: bool,
 ) -> RenderPlan {
     let output_mode =
         crate::hdr::monitor::effective_render_output_mode(target_format, monitor_selection);
@@ -114,6 +118,7 @@ pub(crate) fn build_render_plan_for_state(
         target_format,
         output_mode,
         prefer_sdr_for_pending_gpu_demosaic,
+        force_hdr_plane_after_raw_demosaic,
     )
 }
 
@@ -128,6 +133,7 @@ impl ImageViewerApp {
             && crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
                 self.current_index,
                 &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_raw_gpu_demosaic_baked_indices,
                 &self.hdr_image_cache,
                 has_sdr_fallback,
                 self.texture_cache.contains(self.current_index),
@@ -142,9 +148,10 @@ impl ImageViewerApp {
             shape,
             has_hdr_plane,
             has_sdr_fallback,
-            self.hdr_target_format,
+            self.effective_hdr_target_format(),
             self.effective_hdr_monitor_selection().as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
+            self.raw_gpu_demosaic_await_hdr_present,
         )
     }
 }
@@ -170,9 +177,13 @@ pub(crate) fn select_render_backend(
     has_hdr_target: bool,
     output_mode: HdrRenderOutputMode,
     prefer_sdr_for_pending_gpu_demosaic: bool,
+    force_hdr_plane_after_raw_demosaic: bool,
 ) -> PlaneBackendKind {
     if prefer_sdr_for_pending_gpu_demosaic {
         return PlaneBackendKind::Sdr;
+    }
+    if force_hdr_plane_after_raw_demosaic && has_hdr_plane && has_hdr_target {
+        return PlaneBackendKind::Hdr;
     }
     if has_hdr_plane && has_hdr_target && output_mode.is_native_hdr() {
         PlaneBackendKind::Hdr
@@ -269,6 +280,7 @@ mod tests {
             Some(wgpu::TextureFormat::Bgra8Unorm),
             HdrRenderOutputMode::SdrToneMapped,
             false,
+            false,
         );
         assert_eq!(plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
@@ -282,6 +294,7 @@ mod tests {
             /* has_sdr_fallback */ false,
             Some(wgpu::TextureFormat::Bgra8Unorm),
             HdrRenderOutputMode::SdrToneMapped,
+            false,
             false,
         );
         assert_eq!(plan_no_hdr.backend, PlaneBackendKind::Sdr);
@@ -333,6 +346,7 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             Some(&non_hdr_monitor),
             false,
+            false,
         );
         assert_eq!(sdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -347,6 +361,7 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             Some(&hdr_monitor),
             false,
+            false,
         );
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -360,6 +375,7 @@ mod tests {
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
             Some(&hdr_monitor),
+            false,
             false,
         );
         assert_eq!(tiled_plan.backend, PlaneBackendKind::Hdr);
@@ -378,6 +394,7 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             None,
             false,
+            false,
         );
         assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -395,8 +412,24 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             HdrRenderOutputMode::NativeHdr,
             true,
+            false,
         );
         assert_eq!(plan.backend, PlaneBackendKind::Sdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
+    }
+
+    #[test]
+    fn render_plan_forces_hdr_after_raw_demosaic_while_awaiting_present() {
+        let plan = super::RenderPlan::new_with_sdr_fallback(
+            super::RenderShape::Static,
+            true,
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::NativeHdr,
+            false,
+            true,
+        );
+        assert_eq!(plan.backend, PlaneBackendKind::Hdr);
+        assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
     }
 }

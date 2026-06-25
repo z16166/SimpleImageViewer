@@ -14,7 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, ImageLoader, TileInFlightKey, TileRequest, should_spawn_load_task,
+    DelayedFallbackJob, ImageLoader, LoaderOutputSender, TileInFlightKey, TileRequest,
+    should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrToneMapSettings;
@@ -575,7 +576,7 @@ impl ImageLoader {
 
         Self {
             raw_open_prefetch,
-            tx,
+            tx: LoaderOutputSender::new(tx),
             rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
             current_gen,
@@ -853,7 +854,7 @@ impl ImageLoader {
         index: usize,
         generation: u64,
         path: &PathBuf,
-        tx: Sender<LoaderOutput>,
+        tx: super::types::LoaderOutputSender,
         refine_tx: Sender<RefinementRequest>,
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         _current_gen: Arc<std::sync::atomic::AtomicU64>,
@@ -1195,7 +1196,7 @@ impl ImageLoader {
 
         REFINEMENT_POOL.spawn(move || {
             struct RefinementGuard {
-                tx: Sender<LoaderOutput>,
+                tx: super::types::LoaderOutputSender,
                 index: usize,
                 generation: u64,
                 source_key: u64,

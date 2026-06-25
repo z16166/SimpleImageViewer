@@ -42,8 +42,8 @@ use crossbeam_channel::Sender;
 use std::path::{Path, PathBuf};
 
 use super::{
-    DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewBundle, PreviewStage,
-    RefinementRequest, source_key_for_path,
+    DecodedImage, ImageData, LoadResult, PreviewBundle, PreviewStage, RefinementRequest,
+    source_key_for_path,
 };
 use super::{
     extract_exif_thumbnail, hdr_display_requests_sdr_preview,
@@ -62,7 +62,7 @@ pub(crate) fn load_image_file(
     generation: u64,
     index: usize,
     path: &PathBuf,
-    tx: Sender<LoaderOutput>,
+    tx: crate::loader::orchestrator::LoaderOutputSender,
     refine_tx: Sender<RefinementRequest>,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,

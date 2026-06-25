@@ -193,7 +193,7 @@ fn load_raw_with_embedded_bootstrap(
 pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
 
 fn emit_raw_hq_bootstrap_preview(
-    load_tx: &Sender<LoaderOutput>,
+    load_tx: &crate::loader::orchestrator::LoaderOutputSender,
     index: usize,
     generation: u64,
     path: &PathBuf,
@@ -226,7 +226,7 @@ pub(crate) fn load_raw(
     generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
-    load_tx: Sender<LoaderOutput>,
+    load_tx: crate::loader::orchestrator::LoaderOutputSender,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,

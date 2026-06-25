@@ -25,7 +25,7 @@ impl ImageViewerApp {
         run
     }
 
-    pub(super) fn logic_shared(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+    pub(super) fn logic_shared(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // `frame` is always ROOT integration (eframe fork); safe for loader wgpu on aux paint.
 
         // Poll tray commands (handlers wake the event loop via request_repaint).
@@ -220,8 +220,6 @@ impl ImageViewerApp {
             ctx.request_repaint();
         }
         if !self.scanning {
-            self.process_loaded_images(ctx, &mut Some(frame));
-            self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame));
             // Upload deferred CPU pixels for the outgoing frame before navigation captures
             // `prev_texture` (preloaded neighbors often skip GPU upload until display).
             self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
@@ -272,10 +270,15 @@ impl ImageViewerApp {
 
         // Keep repainting while loading, auto-switching, playing music, or folder picker open
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
+        let awaiting_raw_hdr_present = self.raw_gpu_demosaic_needs_repaint_wake();
+        let loader_has_pending = self.loader.has_pending_outputs();
+        let current_still_loading = self.loader.is_loading_any(self.current_index);
         if self.settings.auto_switch
             || self.scanning
-            || !self.loader.rx.is_empty()
+            || loader_has_pending
+            || current_still_loading
             || self.folder_picker.in_flight()
+            || awaiting_raw_hdr_present
         {
             ctx.request_repaint();
         } else if is_music_playing {
@@ -300,6 +303,12 @@ impl ImageViewerApp {
             "frame.painting_viewport_id should match ROOT paint"
         );
         self.ensure_root_redraw_wake(frame);
+        let loader_active =
+            self.loader.has_pending_outputs() || self.loader.is_loading_any(self.current_index);
+        if self.raw_gpu_demosaic_needs_repaint_wake() || loader_active {
+            ctx.request_repaint();
+            self.wake_root_for_logic();
+        }
         // Cache window placement (outer position, inner size, maximized) so
         // `on_exit` can persist it without needing a `ctx`. egui exposes the
         // OS-level outer rect via `ViewportInfo::outer_rect`; on multi-monitor

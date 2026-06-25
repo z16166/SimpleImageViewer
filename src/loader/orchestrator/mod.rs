@@ -25,5 +25,6 @@ pub(crate) use raw_prefetch::{RawOpenPhaseTimings, RawOpenPrefetch, should_prefe
 mod tests;
 
 pub use types::ImageLoader;
+pub(crate) use types::LoaderOutputSender;
 #[cfg(test)]
 pub(crate) use types::{TileInFlightKey, should_spawn_load_task};

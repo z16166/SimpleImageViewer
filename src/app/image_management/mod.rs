@@ -603,6 +603,7 @@ pub(crate) fn startup_preload_defer_can_release(
 pub(crate) fn prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
     index: usize,
     hdr_raw_gpu_demosaic_pending_indices: &std::collections::HashSet<usize>,
+    hdr_raw_gpu_demosaic_baked_indices: &std::collections::HashSet<usize>,
     hdr_image_cache: &std::collections::HashMap<
         usize,
         std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
@@ -610,6 +611,9 @@ pub(crate) fn prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
     has_sdr_fallback: bool,
     texture_cache_contains: bool,
 ) -> bool {
+    if hdr_raw_gpu_demosaic_baked_indices.contains(&index) {
+        return false;
+    }
     if !hdr_raw_gpu_demosaic_pending_indices.contains(&index) {
         return false;
     }
@@ -1085,13 +1089,25 @@ mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
     fn prefers_sdr_while_gpu_demosaic_still_pending() {
         let hdr = gpu_raw_pending_hdr();
         let mut pending = HashSet::from([0usize]);
+        let baked = HashSet::new();
         let cache = HashMap::from([(0usize, hdr)]);
         assert!(prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
-            0, &pending, &cache, true, false,
+            0, &pending, &baked, &cache, true, false,
         ));
         pending.remove(&0);
         assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
-            0, &pending, &cache, true, false,
+            0, &pending, &baked, &cache, true, false,
+        ));
+    }
+
+    #[test]
+    fn skips_sdr_bootstrap_when_gpu_demosaic_baked() {
+        let hdr = gpu_raw_pending_hdr();
+        let pending = HashSet::from([0usize]);
+        let baked = HashSet::from([0usize]);
+        let cache = HashMap::from([(0usize, hdr)]);
+        assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+            0, &pending, &baked, &cache, true, false,
         ));
     }
 
@@ -1100,9 +1116,10 @@ mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
         let mut hdr = gpu_raw_pending_hdr();
         Arc::make_mut(&mut hdr).rgba_f32 = Arc::new(vec![1.0; 4 * 4 * 4]);
         let pending = HashSet::from([0usize]);
+        let baked = HashSet::new();
         let cache = HashMap::from([(0usize, hdr)]);
         assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
-            0, &pending, &cache, true, true,
+            0, &pending, &baked, &cache, true, true,
         ));
     }
 }

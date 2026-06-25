@@ -217,9 +217,11 @@ impl ImageViewerApp {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(window) = frame.winit_window() {
             let window = Arc::clone(window);
-            self.root_redraw_wake = Some(Arc::new(move || {
+            let wake = Arc::new(move || {
                 window.request_redraw();
-            }));
+            }) as crate::app::RootRedrawWake;
+            self.root_redraw_wake = Some(Arc::clone(&wake));
+            self.loader.set_root_redraw_wake(wake);
         }
     }
 

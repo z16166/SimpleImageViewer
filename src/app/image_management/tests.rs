@@ -1515,6 +1515,7 @@ fn make_test_app() -> ImageViewerApp {
         hdr_sdr_fallback_indices: HashSet::new(),
         hdr_placeholder_fallback_indices: HashSet::new(),
         hdr_raw_gpu_demosaic_pending_indices: HashSet::new(),
+        hdr_raw_gpu_demosaic_baked_indices: HashSet::new(),
         hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
         raw_gpu_demosaic_await_hdr_present: false,
@@ -2046,6 +2047,28 @@ fn test_resolve_initial_position_during_and_after_scan() {
 }
 
 #[test]
+fn raw_gpu_demosaic_sync_present_waits_for_bake_not_in_flight_pending() {
+    let mut app = make_test_app();
+    app.current_index = 0;
+
+    app.hdr_raw_gpu_demosaic_pending_indices.insert(0);
+    assert!(
+        !app.raw_gpu_demosaic_needs_sync_present(),
+        "in-flight bake must not enter sync-present (draw bootstrap instead)"
+    );
+    assert!(app.raw_gpu_demosaic_needs_repaint_wake());
+
+    app.hdr_raw_gpu_demosaic_pending_indices.remove(&0);
+    app.hdr_raw_gpu_demosaic_baked_indices.insert(0);
+    assert!(app.raw_gpu_demosaic_needs_sync_present());
+    assert!(app.raw_gpu_demosaic_needs_repaint_wake());
+
+    app.hdr_raw_gpu_demosaic_baked_indices.remove(&0);
+    app.raw_gpu_demosaic_await_hdr_present = true;
+    assert!(app.raw_gpu_demosaic_needs_sync_present());
+}
+
+#[test]
 fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
     use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
@@ -2113,7 +2136,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
         });
 
     let ctx = egui::Context::default();
-    app.prepare_display_frame(&ctx);
+    app.tick_raw_gpu_demosaic_completion(&ctx, None);
 
     assert_eq!(app.settings.raw_demosaic_mode, RawDemosaicMode::Gpu);
     assert!(app.gpu_demosaic_failed_indices.contains(&0));
@@ -2506,6 +2529,53 @@ fn raw_hdr_plane_ready_releases_embedded_bootstrap_not_fallback_slot() {
     app.on_raw_hdr_plane_ready(0);
 
     assert!(!app.raw_gpu_embedded_bootstrap_indices.contains(&0));
+    assert!(!app.texture_cache.contains(0));
+    assert!(app.hdr_sdr_fallback_indices.contains(&0));
+    assert!(!crate::loader::raw_gpu_source_has_bootstrap_preview(
+        app.hdr_image_cache.get(&0).unwrap()
+    ));
+}
+
+#[test]
+fn raw_hdr_plane_ready_releases_fallback_texture_keeps_fallback_slot() {
+    let mut app = make_test_app();
+    let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+    metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+        raw_width: 2,
+        raw_height: 2,
+        width: 2,
+        height: 2,
+        raw_pixels: Arc::new(vec![0; 4]),
+        black_level: [0.0; 4],
+        cfa_scale: [1.0; 4],
+        rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        maximum: 1.0,
+        bayer_pattern: [0, 1, 1, 2],
+        scene_color_scale: [1.0, 1.0, 1.0],
+        demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+        bootstrap_preview: Some(crate::loader::DecodedImage::new(1, 1, vec![1, 2, 3, 255])),
+    });
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 2,
+        height: 2,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.hdr_image_cache.insert(0, Arc::clone(&hdr));
+    app.hdr_sdr_fallback_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_hdr_sdr_fallback_texture(
+        0,
+        &crate::loader::DecodedImage::new(1, 1, vec![9, 9, 9, 255]),
+        &ctx,
+    );
+    assert!(app.texture_cache.contains(0));
+    assert!(!app.raw_gpu_embedded_bootstrap_indices.contains(&0));
+
+    app.on_raw_hdr_plane_ready(0);
+
     assert!(!app.texture_cache.contains(0));
     assert!(app.hdr_sdr_fallback_indices.contains(&0));
     assert!(!crate::loader::raw_gpu_source_has_bootstrap_preview(

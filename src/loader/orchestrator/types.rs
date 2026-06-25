@@ -27,6 +27,39 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
+/// Crossbeam sender that wakes the root window when a decode worker posts a result.
+#[derive(Clone)]
+pub(crate) struct LoaderOutputSender {
+    inner: Sender<LoaderOutput>,
+    root_wake: Arc<parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+}
+
+impl LoaderOutputSender {
+    pub(crate) fn new(inner: Sender<LoaderOutput>) -> Self {
+        Self {
+            inner,
+            root_wake: Arc::new(parking_lot::Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn set_root_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.root_wake.lock() = Some(wake);
+    }
+
+    pub(crate) fn send(
+        &self,
+        output: LoaderOutput,
+    ) -> Result<(), crossbeam_channel::SendError<LoaderOutput>> {
+        let result = self.inner.send(output);
+        if result.is_ok()
+            && let Some(wake) = self.root_wake.lock().as_ref()
+        {
+            wake();
+        }
+        result
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TileInFlightKey {
     index: usize,
@@ -95,7 +128,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) claimed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) loading: Arc<Mutex<HashMap<usize, u64>>>,
     pub(crate) current_gen: Arc<std::sync::atomic::AtomicU64>,
-    pub(crate) tx: Sender<LoaderOutput>,
+    pub(crate) tx: LoaderOutputSender,
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
@@ -124,7 +157,7 @@ pub(crate) fn should_spawn_load_task(
 
 pub struct ImageLoader {
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
-    pub(crate) tx: Sender<LoaderOutput>,
+    pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
     /// Maps image index -> latest requested generation ID.
     pub(crate) loading: Arc<Mutex<HashMap<usize, u64>>>,

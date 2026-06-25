@@ -36,6 +36,16 @@ impl ImageViewerApp {
         if self.transition_start.is_some() {
             return true;
         }
+        if self
+            .hdr_raw_gpu_demosaic_pending_indices
+            .contains(&self.current_index)
+            || self.raw_gpu_demosaic_await_hdr_present
+            || self
+                .hdr_raw_gpu_demosaic_baked_indices
+                .contains(&self.current_index)
+        {
+            return true;
+        }
         // Keep prev/current HDR image-plane bindings pinned for one extra frame after the
         // transition is declared settled. 50ms covers a normal 60Hz/120Hz frame handoff without
         // keeping abandoned bindings resident long enough to fight the LRU cache.
@@ -178,6 +188,7 @@ impl ImageViewerApp {
             crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
                 self.current_index,
                 &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_raw_gpu_demosaic_baked_indices,
                 &self.hdr_image_cache,
                 has_sdr_fallback,
                 self.texture_cache.contains(self.current_index),
@@ -352,11 +363,16 @@ impl ImageViewerApp {
         if should_route_through_hdr_plane(&render_plan) {
             if self.raw_gpu_demosaic_await_hdr_present {
                 self.raw_gpu_demosaic_await_hdr_present = false;
+                self.hdr_raw_gpu_demosaic_baked_indices
+                    .remove(&self.current_index);
                 if self.settings.preload {
                     self.schedule_preloads(true);
                 }
             }
-            if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
+            let hdr_target_format = render_plan
+                .target_format
+                .or_else(|| self.effective_hdr_target_format());
+            if let (Some(hdr_image), Some(target_format)) = (hdr_image, hdr_target_format) {
                 let geometric_transition = matches!(
                     self.active_transition,
                     TransitionStyle::PageFlip | TransitionStyle::Curtain | TransitionStyle::Ripple
@@ -402,6 +418,55 @@ impl ImageViewerApp {
                 }
                 return;
             }
+        }
+
+        // Demosaic finished but the render plan still routes SDR (e.g. stale bootstrap texture
+        // or target format not yet wired into the plan). Force one HDR plane draw instead of
+        // showing the embedded preview until the user moves the mouse.
+        if self.raw_gpu_demosaic_needs_sync_present() {
+            let hdr_target_format = render_plan
+                .target_format
+                .or_else(|| self.effective_hdr_target_format());
+            let hdr_for_sync = self
+                .hdr_image_cache
+                .get(&self.current_index)
+                .cloned()
+                .or_else(|| {
+                    self.current_hdr_image
+                        .as_ref()
+                        .and_then(|current| current.image_for_index(self.current_index))
+                        .cloned()
+                });
+            if let (Some(hdr_image), Some(target_format)) = (hdr_for_sync, hdr_target_format) {
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    screen_rect,
+                    hdr_image_plane_rect(&final_layout),
+                    hdr_image,
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    render_plan.output_mode,
+                    rotation,
+                    tp.alpha,
+                    None,
+                );
+                self.raw_gpu_demosaic_await_hdr_present = false;
+                self.hdr_raw_gpu_demosaic_baked_indices
+                    .remove(&self.current_index);
+                if self.settings.preload {
+                    self.schedule_preloads(true);
+                }
+                ui.ctx().request_repaint();
+                return;
+            }
+            // Cannot sync-present (missing HDR plane or target format); drop await flags so
+            // post_rendering RepaintNow does not spin without drawing.
+            self.raw_gpu_demosaic_await_hdr_present = false;
+            self.hdr_raw_gpu_demosaic_baked_indices
+                .remove(&self.current_index);
+            ui.ctx().request_repaint();
+            self.wake_root_for_logic();
+            return;
         }
 
         // --- Draw sequence ---

@@ -230,7 +230,7 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
         1,
         7,
         &path,
-        tx,
+        crate::loader::orchestrator::LoaderOutputSender::new(tx),
         refine_tx,
         false,
         crate::settings::RawDemosaicMode::Cpu,
