@@ -441,6 +441,8 @@ pub struct ImageViewerApp {
     pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
     pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
+    /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).
+    pub(crate) hq_tiled_preview_pending_indices: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
     pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,

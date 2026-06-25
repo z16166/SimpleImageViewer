@@ -1260,6 +1260,57 @@ tx: tx2,
         let _ = tx.send(LoaderOutput::Image(load_result));
     }
 
+    /// Regenerate an HQ SDR preview for a tiled source when bootstrap-only remains in cache.
+    pub fn trigger_hq_tiled_sdr_preview(
+        &self,
+        index: usize,
+        source: Arc<dyn crate::loader::TiledImageSource>,
+        decode_profile: DecodeProfile,
+        source_key: u64,
+    ) {
+        if source.defers_loader_hq_preview() {
+            return;
+        }
+        let tx = self.tx.clone();
+        REFINEMENT_POOL.spawn(move || {
+            #[cfg(target_os = "windows")]
+            let _com = crate::wic::ComGuard::new();
+
+            let limit = hq_preview_max_side();
+            let r_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    source.generate_full_image_preview(limit, limit)
+                }));
+
+            match r_result {
+                Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                    log::debug!(
+                        "[Loader] On-demand HQ preview generated: {}x{} (source {}x{}) idx={}",
+                        pw,
+                        ph,
+                        source.width(),
+                        source.height(),
+                        index,
+                    );
+                    let _ = tx.send(LoaderOutput::Preview(PreviewResult::from_sdr_preview(
+                        index,
+                        decode_profile,
+                        source_key,
+                        Ok(DecodedImage::new(pw, ph, p_pixels)),
+                    )));
+                }
+                Err(e) => {
+                    log::error!(
+                        "[Loader] On-demand HQ preview PANICKED idx={}: {:?}",
+                        index,
+                        e
+                    );
+                }
+                _ => {}
+            }
+        });
+    }
+
     pub fn trigger_hdr_sdr_fallback_refinement(
         &self,
         index: usize,

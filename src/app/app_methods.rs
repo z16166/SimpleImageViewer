@@ -59,7 +59,11 @@ impl ImageViewerApp {
 
     /// True while any async RAW develop work for the current image still needs frame wake.
     pub(crate) fn raw_async_work_needs_repaint_wake(&self) -> bool {
-        self.raw_gpu_demosaic_needs_repaint_wake() || self.cpu_raw_refinement_needs_repaint_wake()
+        self.raw_gpu_demosaic_needs_repaint_wake()
+            || self.cpu_raw_refinement_needs_repaint_wake()
+            || self
+                .hq_tiled_preview_pending_indices
+                .contains(&self.current_index)
     }
 
     pub(crate) fn layout_uses_fullscreen_metrics(&self) -> bool {

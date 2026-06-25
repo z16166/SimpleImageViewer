@@ -147,9 +147,6 @@ pub fn gate_preview_result(
     if !source_key_matches_index(image_files, idx, preview.source_key) {
         return GateDecision::Discard;
     }
-    if !ctx.retention_for(idx, is_loading).should_retain() {
-        return GateDecision::Discard;
-    }
     if !profile_satisfies_display(&preview.decode_profile, display) {
         return GateDecision::Discard;
     }
@@ -158,6 +155,14 @@ pub fn gate_preview_result(
         if !preview_stage_should_upgrade(existing, incoming) {
             return GateDecision::Discard;
         }
+    }
+    // Refined HQ previews are expensive to regenerate for large tiled sources (PSB/EXR).
+    // Keep them even when the index falls outside the prefetch retention window.
+    if incoming == PreviewStage::Refined {
+        return GateDecision::Accept;
+    }
+    if !ctx.retention_for(idx, is_loading).should_retain() {
+        return GateDecision::Discard;
     }
     GateDecision::Accept
 }
@@ -365,6 +370,74 @@ mod tests {
                 &display,
                 false,
                 Some(PreviewStage::Refined)
+            ),
+            GateDecision::Discard
+        );
+    }
+
+    #[test]
+    fn accepts_refined_preview_outside_prefetch_window() {
+        let ctx = ResultGateContext {
+            current_index: 37,
+            image_count: 100,
+            max_distance: 2,
+        };
+        let mut files = Vec::new();
+        for i in 0..100 {
+            files.push(PathBuf::from(format!("img{i}.psb")));
+        }
+        let preview = PreviewResult {
+            index: 40,
+            decode_profile: sample_profile(LoadIntent::NeighborPrefetch),
+            source_key: source_key_for_path(&files[40]),
+            preview_bundle: crate::loader::PreviewBundle::refined(),
+            raw_bootstrap_osd: None,
+            cpu_demosaic_ms: None,
+            error: None,
+        };
+        let display = sample_display(LoadIntent::Current);
+        assert_eq!(
+            gate_preview_result(
+                &ctx,
+                &preview,
+                &files,
+                &display,
+                false,
+                Some(PreviewStage::Initial)
+            ),
+            GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn discards_initial_preview_outside_prefetch_window() {
+        let ctx = ResultGateContext {
+            current_index: 37,
+            image_count: 100,
+            max_distance: 2,
+        };
+        let mut files = Vec::new();
+        for i in 0..100 {
+            files.push(PathBuf::from(format!("img{i}.psb")));
+        }
+        let preview = PreviewResult {
+            index: 40,
+            decode_profile: sample_profile(LoadIntent::NeighborPrefetch),
+            source_key: source_key_for_path(&files[40]),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            raw_bootstrap_osd: None,
+            cpu_demosaic_ms: None,
+            error: None,
+        };
+        let display = sample_display(LoadIntent::Current);
+        assert_eq!(
+            gate_preview_result(
+                &ctx,
+                &preview,
+                &files,
+                &display,
+                false,
+                None
             ),
             GateDecision::Discard
         );

@@ -141,6 +141,7 @@ impl ImageViewerApp {
         self.raw_gpu_demosaic_await_hdr_present = false;
         self.hdr_raw_gpu_demosaic_pending_key_index.clear();
         self.cpu_raw_refinement_pending_indices.clear();
+        self.hq_tiled_preview_pending_indices.clear();
 
         let raw_indices: Vec<usize> = self
             .image_files
@@ -407,6 +408,23 @@ impl ImageViewerApp {
 
             self.note_cpu_raw_refinement_requested(self.current_index);
 
+            if self.texture_cache.contains(self.current_index) {
+                let tm_max = tm.preview_texture.as_ref().map(|h| {
+                    let s = h.size();
+                    s[0].max(s[1]) as u32
+                });
+                let cached_max = self
+                    .texture_cache
+                    .cached_preview_max_side(self.current_index);
+                if tm.preview_texture.is_none()
+                    || cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
+                {
+                    if let Some(handle) = self.texture_cache.get(self.current_index) {
+                        tm.preview_texture = Some(handle.clone());
+                    }
+                }
+            }
+
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
                 tm.get_source(),
             ));
@@ -566,6 +584,7 @@ impl ImageViewerApp {
             );
         }
         self.trigger_current_hdr_fallback_refinement_if_needed();
+        self.sync_and_ensure_hq_tiled_preview(self.current_index, ctx);
         self.try_start_pending_transition_if_ready();
         self.sync_directory_tree_file_list_state(ctx);
     }

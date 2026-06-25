@@ -529,6 +529,7 @@ impl ImageViewerApp {
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
+            hq_tiled_preview_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,

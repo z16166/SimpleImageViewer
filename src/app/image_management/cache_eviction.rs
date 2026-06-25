@@ -115,6 +115,9 @@ impl ImageViewerApp {
         if self.cpu_raw_refinement_pending_indices.remove(&from) {
             self.cpu_raw_refinement_pending_indices.insert(to);
         }
+        if self.hq_tiled_preview_pending_indices.remove(&from) {
+            self.hq_tiled_preview_pending_indices.insert(to);
+        }
         if self.ultra_hdr_capacity_sensitive_indices.remove(&from) {
             self.ultra_hdr_capacity_sensitive_indices.insert(to);
         }
@@ -247,6 +250,8 @@ impl ImageViewerApp {
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == except_idx);
         self.cpu_raw_refinement_pending_indices
+            .retain(|&idx| idx == except_idx);
+        self.hq_tiled_preview_pending_indices
             .retain(|&idx| idx == except_idx);
         self.deferred_sdr_uploads
             .retain(|&idx, _| idx == except_idx);
@@ -559,6 +564,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
+        permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
         permute_usize_set(&mut self.ultra_hdr_capacity_sensitive_indices, old_to_new);
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 

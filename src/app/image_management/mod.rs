@@ -100,6 +100,42 @@ fn should_cache_tiled_hdr_preview(
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
+fn tiled_existing_preview_stage(
+    texture_cache: &crate::loader::TextureCache,
+    index: usize,
+    has_preview_texture: bool,
+) -> Option<crate::loader::PreviewStage> {
+    if !has_preview_texture {
+        return None;
+    }
+    if texture_cache
+        .cached_preview_max_side(index)
+        .is_some_and(|max| max > crate::constants::DEFAULT_PREVIEW_SIZE)
+    {
+        Some(crate::loader::PreviewStage::Refined)
+    } else {
+        Some(crate::loader::PreviewStage::Initial)
+    }
+}
+
+fn refined_preview_applies_to_tile_manager(
+    tm: &TileManager,
+    update: &crate::loader::PreviewResult,
+    display: &crate::loader::DisplayRequirements,
+) -> bool {
+    if tm.image_index != update.index {
+        return false;
+    }
+    if update.decode_profile == tm.decode_profile {
+        return true;
+    }
+    if update.preview_bundle.stage() != crate::loader::PreviewStage::Refined {
+        return false;
+    }
+    crate::loader::profile_satisfies_display(&update.decode_profile, display)
+        && crate::loader::profile_satisfies_display(&tm.decode_profile, display)
+}
+
 const BYTES_PER_MIB: usize = 1024 * 1024;
 const LOW_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 16 * BYTES_PER_MIB;
 const MEDIUM_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 32 * BYTES_PER_MIB;
@@ -1124,6 +1160,113 @@ pub(crate) fn raw_hq_has_bootstrap_sdr_only(
         hdr_image_cache,
         hdr_tiled_source_cache,
     ) && (has_sdr_texture || has_deferred_sdr)
+}
+
+#[cfg(test)]
+mod tiled_hq_preview_apply_tests {
+    use super::{refined_preview_applies_to_tile_manager, tiled_existing_preview_stage};
+    use crate::loader::{
+        DecodeProfile, DisplayRequirements, LoadIntent, PreviewBundle, PreviewResult,
+        PreviewStage, RenderShape,
+    };
+    use crate::settings::RawDemosaicMode;
+    use crate::tile_cache::TileManager;
+    use eframe::egui::{self, ColorImage, TextureOptions};
+    use std::sync::Arc;
+
+    fn sample_profile(epoch: u64) -> DecodeProfile {
+        DecodeProfile {
+            raw_high_quality: false,
+            raw_demosaic_mode: RawDemosaicMode::Cpu,
+            output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+            ultra_hdr_decode_capacity: 1.0,
+            render_shape: RenderShape::Tiled,
+            load_intent: LoadIntent::NeighborPrefetch,
+            profile_epoch: epoch,
+        }
+    }
+
+    fn sample_display() -> DisplayRequirements {
+        DisplayRequirements {
+            raw_high_quality: false,
+            raw_demosaic_mode: RawDemosaicMode::Cpu,
+            output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+            ultra_hdr_decode_capacity: 1.0,
+            render_shape: RenderShape::Tiled,
+            load_intent: LoadIntent::Current,
+            device_id: None,
+        }
+    }
+
+    #[test]
+    fn refined_preview_applies_when_profile_epoch_differs_but_display_matches() {
+        struct EmptySource;
+        impl crate::loader::TiledImageSource for EmptySource {
+            fn width(&self) -> u32 {
+                1
+            }
+            fn height(&self) -> u32 {
+                1
+            }
+            fn extract_tile(&self, _: u32, _: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+                Arc::new(vec![0; (w * h * 4) as usize])
+            }
+            fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+                (max_w, max_h, vec![0; (max_w * max_h * 4) as usize])
+            }
+            fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+                None
+            }
+        }
+        let mut tm = TileManager::with_source(
+            3,
+            sample_profile(2),
+            Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
+        );
+        tm.image_index = 3;
+        let update = PreviewResult {
+            index: 3,
+            decode_profile: sample_profile(1),
+            source_key: 0,
+            preview_bundle: PreviewBundle::refined(),
+            error: None,
+            cpu_demosaic_ms: None,
+            raw_bootstrap_osd: None,
+        };
+        assert!(refined_preview_applies_to_tile_manager(
+            &tm,
+            &update,
+            &sample_display()
+        ));
+    }
+
+    #[test]
+    fn bootstrap_preview_stage_is_initial_not_refined() {
+        let ctx = egui::Context::default();
+        let color_image =
+            ColorImage::from_rgba_unmultiplied([512, 164], &vec![0u8; 512 * 164 * 4]);
+        let handle = ctx.load_texture("boot", color_image, TextureOptions::LINEAR);
+        let mut cache = crate::loader::TextureCache::new(4);
+        cache.insert(0, handle, 69_536, 22_230, true, 0, 10);
+        assert_eq!(
+            tiled_existing_preview_stage(&cache, 0, true),
+            Some(PreviewStage::Initial)
+        );
+    }
+
+    #[test]
+    fn hq_cached_preview_stage_is_refined() {
+        let ctx = egui::Context::default();
+        let color_image =
+            ColorImage::from_rgba_unmultiplied([1024, 328], &vec![0u8; 1024 * 328 * 4]);
+        let handle = ctx.load_texture("hq", color_image, TextureOptions::LINEAR);
+        let mut cache = crate::loader::TextureCache::new(4);
+        cache.insert(0, handle, 69_536, 22_230, true, 0, 10);
+        assert_eq!(
+            tiled_existing_preview_stage(&cache, 0, true),
+            Some(PreviewStage::Refined)
+        );
+    }
 }
 
 #[cfg(test)]

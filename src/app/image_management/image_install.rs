@@ -419,6 +419,10 @@ impl ImageViewerApp {
 
         self.upload_tiled_bootstrap_preview(ctx, idx, sdr_preview, source.width(), source.height());
 
+        if !source.defers_loader_hq_preview() {
+            self.hq_tiled_preview_pending_indices.insert(idx);
+        }
+
         let mut tm = build_tiled_manager_with_best_preview(
             idx, decode_profile,
             Arc::clone(&source),

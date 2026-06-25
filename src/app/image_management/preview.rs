@@ -85,13 +85,21 @@ impl ImageViewerApp {
         let existing_stage = self
             .tile_manager
             .as_ref()
-            .filter(|tm| tm.image_index == update.index && tm.preview_texture.is_some())
-            .map(|_| crate::loader::PreviewStage::Refined)
+            .and_then(|tm| {
+                tiled_existing_preview_stage(
+                    &self.texture_cache,
+                    update.index,
+                    tm.image_index == update.index && tm.preview_texture.is_some(),
+                )
+            })
             .or_else(|| {
-                self.prefetched_tiles
-                    .get(&update.index)
-                    .filter(|tm| tm.preview_texture.is_some())
-                    .map(|_| crate::loader::PreviewStage::Refined)
+                self.prefetched_tiles.get(&update.index).and_then(|tm| {
+                    tiled_existing_preview_stage(
+                        &self.texture_cache,
+                        update.index,
+                        tm.preview_texture.is_some(),
+                    )
+                })
             });
 
         let gate_decision = result_gate::gate_preview_result(
@@ -139,7 +147,9 @@ impl ImageViewerApp {
         // Apply HQ preview if it matches the currently displayed tile manager.
         // Also check prefetched tiles and update the texture cache for future navigations.
         let preview = update.preview_bundle.sdr().cloned();
-        match (preview, update.error) {
+        let preview_error = update.error.clone();
+        let current_tile_profile = self.decode_profile_for_index(update.index);
+        match (preview, preview_error) {
             (Some(preview), _) => {
                 self.cache_directory_tree_strip_thumbnail(
                     update.index,
@@ -159,9 +169,10 @@ impl ImageViewerApp {
                 }
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
-                    if tm.image_index == update.index
-                        && update.decode_profile == tm.decode_profile
-                    {
+                    if refined_preview_applies_to_tile_manager(tm, &update, &display) {
+                        if update.decode_profile != tm.decode_profile {
+                            tm.decode_profile = current_tile_profile.clone();
+                        }
                         log::debug!(
                             "[App] HQ preview applied for current index {} ({}x{})",
                             update.index,
@@ -181,7 +192,10 @@ impl ImageViewerApp {
 
                 // 2. Update prefetched TileManagers
                 if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                    if update.decode_profile == tm.decode_profile {
+                    if refined_preview_applies_to_tile_manager(tm, &update, &display) {
+                        if update.decode_profile != tm.decode_profile {
+                            tm.decode_profile = current_tile_profile.clone();
+                        }
                         log::debug!(
                             "[App] HQ preview applied for prefetched index {} ({}x{})",
                             update.index,
@@ -191,6 +205,7 @@ impl ImageViewerApp {
                         tm.set_preview(preview.clone(), ctx);
                     }
                 }
+                self.hq_tiled_preview_pending_indices.remove(&update.index);
 
                 // 3. Update global texture cache
                 let preview_targets_tiled_canvas =
@@ -252,6 +267,83 @@ impl ImageViewerApp {
                 }
             }
         }
+    }
+
+    /// Promote cached HQ preview into the active tile manager and re-trigger HQ generation when
+    /// only bootstrap remains (e.g. after prefetch eviction discarded an HQ update).
+    pub(crate) fn sync_and_ensure_hq_tiled_preview(
+        &mut self,
+        idx: usize,
+        ctx: &egui::Context,
+    ) {
+        let tm_max = self
+            .tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == idx)
+            .and_then(|tm| {
+                tm.preview_texture.as_ref().map(|h| {
+                    let s = h.size();
+                    s[0].max(s[1]) as u32
+                })
+            });
+        let cached_max = self.texture_cache.cached_preview_max_side(idx);
+
+        if cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t)) {
+            if let Some(handle) = self.texture_cache.get(idx) {
+                if let Some(tm) = self
+                    .tile_manager
+                    .as_mut()
+                    .filter(|tm| tm.image_index == idx)
+                {
+                    tm.preview_texture = Some(handle.clone());
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::PreviewUpgraded,
+                        true,
+                        false,
+                    ) {
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
+
+        let effective_max = self
+            .texture_cache
+            .cached_preview_max_side(idx)
+            .or(tm_max);
+        let bootstrap_max = crate::constants::DEFAULT_PREVIEW_SIZE;
+        let is_bootstrap_only = effective_max.is_none_or(|m| m <= bootstrap_max);
+        if !is_bootstrap_only {
+            self.hq_tiled_preview_pending_indices.remove(&idx);
+            return;
+        }
+
+        if self.loader.is_loading(idx) || self.hq_tiled_preview_pending_indices.contains(&idx) {
+            return;
+        }
+
+        let Some(tm) = self.tile_manager.as_ref().filter(|tm| tm.image_index == idx) else {
+            return;
+        };
+        let source = tm.get_source();
+        if source.defers_loader_hq_preview() {
+            return;
+        }
+
+        let profile = self.decode_profile_for_index(idx);
+        let source_key = crate::loader::source_key_for_path(
+            self.image_files
+                .get(idx)
+                .map(|p| p.as_path())
+                .unwrap_or(std::path::Path::new("")),
+        );
+        self.hq_tiled_preview_pending_indices.insert(idx);
+        self.loader
+            .trigger_hq_tiled_sdr_preview(idx, source, profile, source_key);
+        log::debug!(
+            "[App] Triggered on-demand HQ tiled preview for idx={}",
+            idx
+        );
     }
 
     pub(crate) fn log_large_image(&self, idx: usize, w: u32, h: u32) {

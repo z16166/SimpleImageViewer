@@ -1530,6 +1530,7 @@ fn make_test_app() -> ImageViewerApp {
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         cpu_raw_refinement_pending_indices: HashSet::new(),
+        hq_tiled_preview_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
         ultra_hdr_capacity_sensitive_indices: HashSet::new(),
         animation: None,
