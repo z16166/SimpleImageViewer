@@ -269,7 +269,7 @@ pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) ->
 /// is immediately after **`version`** (confirmed for libheif ≥ 1.x).
 #[cfg(feature = "heif-native")]
 pub(crate) struct HeifDecodeOptionsIgnoredGeometryOwned {
-    guard: Option<libheif_sys::HeifDecodingOptionsGuard>,
+    guard: libheif_sys::HeifDecodingOptionsGuard,
 }
 
 #[cfg(feature = "heif-native")]
@@ -280,14 +280,11 @@ impl HeifDecodeOptionsIgnoredGeometryOwned {
         unsafe {
             *guard.as_mut_ptr().cast::<u8>().add(1) = 1;
         }
-        Some(Self { guard: Some(guard) })
+        Some(Self { guard })
     }
 
     pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_decoding_options {
-        self.guard
-            .as_ref()
-            .map(|g| g.as_ptr())
-            .unwrap_or(std::ptr::null())
+        self.guard.as_ptr()
     }
 }
 

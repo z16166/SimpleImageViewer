@@ -57,6 +57,12 @@ pub fn downsample_rgba8_box(
         dst_w <= src_w && dst_h <= src_h,
         "downsample_rgba8_box does not support upscaling (src {src_w}x{src_h}, dst {dst_w}x{dst_h})"
     );
+    debug_assert!(
+        src.len() >= src_w as usize * src_h as usize * 4,
+        "downsample_rgba8_box src buffer too short: {} bytes for {src_w}x{src_h} (need {})",
+        src.len(),
+        src_w as usize * src_h as usize * 4
+    );
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
     #[cfg(target_arch = "x86_64")]
