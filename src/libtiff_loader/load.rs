@@ -35,7 +35,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::handle::TiffHandle;
+use super::handle::{TiffHandle, path_to_tiff_name};
 use super::mmap::{
     TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
@@ -49,8 +49,7 @@ pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
     unsafe {
-        let c_path = CString::new(path.to_str().unwrap_or("image.tif"))
-            .map_err(|_| "Invalid path".to_string())?;
+        let c_path = path_to_tiff_name(path);
         let c_mode = CString::new("r").map_err(|_| "Invalid mode".to_string())?;
         let tif_ptr = lib::TIFFClientOpen(
             c_path.as_ptr(),
@@ -102,10 +101,7 @@ pub fn load_via_libtiff(
     });
 
     unsafe {
-        let c_path = match CString::new(path.to_str().unwrap_or("image.tif")) {
-            Ok(c) => c,
-            Err(_) => return Err("Invalid path string for C conversion".to_string()),
-        };
+        let c_path = path_to_tiff_name(path);
         let c_mode = match CString::new("r") {
             Ok(c) => c,
             Err(_) => return Err("Invalid mode string for C conversion".to_string()),

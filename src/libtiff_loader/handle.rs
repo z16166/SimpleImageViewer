@@ -25,6 +25,16 @@ use super::mmap::{
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
 };
 
+/// Build a `CString` for the libtiff `TIFFClientOpen` name parameter from a `Path`.
+///
+/// The name is metadata (error messages, `TIFFFileName()`) — actual file I/O goes through
+/// Rust `memmap2` callbacks that use wide-char APIs on Windows.  `to_string_lossy()` gives
+/// the real filename even on Unix paths with non-UTF-8 bytes, without panicking.
+pub(crate) fn path_to_tiff_name(path: &Path) -> CString {
+    CString::new(path.to_string_lossy().as_bytes())
+        .unwrap_or_else(|_| CString::new("image.tif").unwrap())
+}
+
 /// RAII handle for a TIFF object — delegates close to [`lib::TiffGuard`] and keeps
 /// the memory-map context alive until the handle is dropped.
 ///
@@ -52,10 +62,7 @@ pub(crate) fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHan
     let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
 
     unsafe {
-        let c_path = match CString::new(path.to_str().unwrap_or("image.tif")) {
-            Ok(c) => c,
-            Err(_) => return Err("Invalid path string for C conversion".to_string()),
-        };
+        let c_path = path_to_tiff_name(path);
         let c_mode = match CString::new("r") {
             Ok(c) => c,
             Err(_) => return Err("Invalid mode string for C conversion".to_string()),
