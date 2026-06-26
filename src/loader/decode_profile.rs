@@ -141,7 +141,10 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.ultra_hdr_decode_capacity > old.ultra_hdr_decode_capacity + HDR_CAPACITY_MATCH_EPSILON {
         return true;
     }
-    // Demosaic partial order: Cpu -> Gpu is upgrade; Gpu -> Cpu is Downgrade (see tests).
+    // Demosaic partial order: Cpu -> Gpu is Upgrade; Gpu -> Cpu is Downgrade.
+    // GPU demosaic runs on the render thread with near-zero loader-thread cost; CPU demosaic
+    // consumes the loader thread pool, so switching back from Gpu to Cpu is a throughput
+    // regression, not a capability gain.
     if new.raw_demosaic_mode != old.raw_demosaic_mode {
         return matches!(
             (old.raw_demosaic_mode, new.raw_demosaic_mode),
