@@ -269,7 +269,7 @@ impl DirectoryTreeStripCache {
         }) {
             return;
         }
-        let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
+        let thumb = match downsample_decoded_for_strip(decoded.clone(), strip_max_side) {
             Ok(thumb) => thumb,
             Err(err) => {
                 log::warn!(
@@ -719,16 +719,13 @@ pub(crate) fn should_replace_strip_texture(
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
 
     #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {
         let decoded = DecodedImage::new(64, 48, vec![0; 64 * 48 * 4]);
-        let out = downsample_decoded_for_strip(&decoded, 128).expect("downsample");
-        assert!(matches!(out, Cow::Borrowed(_)));
+        let out = downsample_decoded_for_strip(decoded, 128).expect("downsample");
         assert_eq!(out.width, 64);
         assert_eq!(out.height, 48);
     }
@@ -736,8 +733,7 @@ mod tests {
     #[test]
     fn downsample_decoded_for_strip_scales_large_images() {
         let decoded = DecodedImage::new(512, 256, vec![0; 512 * 256 * 4]);
-        let out = downsample_decoded_for_strip(&decoded, 128).expect("downsample");
-        assert!(matches!(out, Cow::Owned(_)));
+        let out = downsample_decoded_for_strip(decoded, 128).expect("downsample");
         assert_eq!(out.width, 128);
         assert_eq!(out.height, 64);
     }

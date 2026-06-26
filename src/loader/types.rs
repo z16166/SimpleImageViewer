@@ -129,15 +129,6 @@ impl DecodedImage {
         self.sdr_deferred_placeholder = true;
     }
 
-    pub(crate) fn with_resized_rgba(&self, width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        Self {
-            width,
-            height,
-            pixels: Arc::new(pixels),
-            sdr_deferred_placeholder: self.sdr_deferred_placeholder,
-        }
-    }
-
     pub fn into_arc_pixels(self) -> Arc<Vec<u8>> {
         self.pixels
     }

@@ -16,43 +16,31 @@
 
 //! Shared downsample helper for directory-tree strip thumbnails.
 
-use std::borrow::Cow;
-
-use image::RgbaImage;
 use image::imageops::{FilterType, resize};
 
 use crate::loader::DecodedImage;
 
-pub(crate) fn downsample_decoded_for_strip<'a>(
-    decoded: &'a DecodedImage,
+/// Downsample `decoded` so its long edge fits within `max_side`.
+///
+/// When this [`DecodedImage`] holds the only [`Arc`] reference to the pixel buffer,
+/// [`DecodedImage::into_rgba8_image`] extracts the buffer without copying (zero-copy).
+/// If the buffer is shared, the data is cloned once — never twice.
+pub(crate) fn downsample_decoded_for_strip(
+    decoded: DecodedImage,
     max_side: u32,
-) -> Result<Cow<'a, DecodedImage>, String> {
-    let max_dim = decoded.width.max(decoded.height);
+) -> Result<DecodedImage, String> {
+    let w = decoded.width;
+    let h = decoded.height;
+    let max_dim = w.max(h);
     if max_dim <= max_side {
-        return Ok(Cow::Borrowed(decoded));
+        return Ok(decoded);
     }
-    let expected_len = decoded.width as usize * decoded.height as usize * 4;
-    let rgba = decoded.rgba();
-    if rgba.len() != expected_len {
-        return Err(format!(
-            "DecodedImage dimensions {}x{} do not match RGBA buffer size",
-            decoded.width, decoded.height
-        ));
-    }
-    let src =
-        RgbaImage::from_raw(decoded.width, decoded.height, rgba.to_vec()).ok_or_else(|| {
-            format!(
-                "DecodedImage dimensions {}x{} do not match RGBA buffer size",
-                decoded.width, decoded.height
-            )
-        })?;
+    // Zero-copy when this DecodedImage holds the only Arc reference.
+    // Falls back to cloning the pixel data when the Arc is shared.
+    let src = decoded.into_rgba8_image()?;
     let scale = max_side as f32 / max_dim as f32;
-    let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
-    let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
+    let out_w = ((w as f32 * scale).round() as u32).max(1);
+    let out_h = ((h as f32 * scale).round() as u32).max(1);
     let resized = resize(&src, out_w, out_h, FilterType::Triangle);
-    Ok(Cow::Owned(decoded.with_resized_rgba(
-        out_w,
-        out_h,
-        resized.into_raw(),
-    )))
+    Ok(DecodedImage::from(resized))
 }

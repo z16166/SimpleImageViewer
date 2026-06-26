@@ -82,8 +82,8 @@ impl ImageViewerApp {
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             let decoded = DecodedImage::from_arc(width, height, baseline);
-            let strip = match downsample_decoded_for_strip(&decoded, max_side) {
-                Ok(strip) => strip.into_owned(),
+            let strip = match downsample_decoded_for_strip(decoded, max_side) {
+                Ok(strip) => strip,
                 Err(err) => {
                     log::debug!(
                         "[DirectoryTree] Strip ISO baseline sync failed for index {index}: {err}"

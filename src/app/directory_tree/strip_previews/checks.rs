@@ -30,9 +30,8 @@ use crate::app::directory_tree_strip_cache::{
 };
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, downsample_decoded_for_strip,
-    generate_directory_tree_thumb_from_path, hdr_has_iso_deferred_gain_map,
-    preview_aspect_matches_logical,
+    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
+    hdr_has_iso_deferred_gain_map, preview_aspect_matches_logical,
 };
 
 #[cfg(target_os = "windows")]
