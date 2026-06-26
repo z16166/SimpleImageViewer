@@ -41,7 +41,12 @@ pub fn downsample_rgba8_box(
     dst_w: u32,
     dst_h: u32,
 ) -> Vec<u8> {
-    debug_assert!(src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0);
+    // Zero dimensions would divide-by-zero in the scalar path and UB in SIMD
+    // paths via get_unchecked.  Return empty — all callers guarantee non-zero
+    // but this is a public API.
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Vec::new();
+    }
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
     #[cfg(target_arch = "x86_64")]

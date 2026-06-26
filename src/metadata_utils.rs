@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
 
 /// Extension-only hint for HEIF container orientation sidecars (`Exif` may not be reachable via
@@ -38,6 +38,36 @@ fn is_jxl_extension(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("jxl"))
 }
 
+/// Parse EXIF Orientation from an already-opened container reader.
+///
+/// Returns `0` when no valid **Orientation** tag (1–8) is found.
+fn read_exif_orientation<R: BufRead + Seek>(reader: &mut R) -> u16 {
+    let exifreader = exif::Reader::new();
+    if let Ok(exif_data) = exifreader.read_from_container(reader) {
+        if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+            // Some writers store Orientation as BYTE or LONG; Short is most common.
+            if let Some(o) = field.value.get_uint(0) {
+                let o = o as u16;
+                if (1..=8).contains(&o) {
+                    return o;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Read EXIF Orientation from an in-memory byte buffer (e.g. mmap’d file data).
+///
+/// Avoids re-opening the file when the caller already has the bytes in memory.
+/// Returns `0` when no valid **Orientation** tag is found.  Does **not** fall
+/// back to format-specific probes (`irot`/`imir`, JXL, etc.) — those require a
+/// file path.
+pub fn get_exif_orientation_from_bytes(data: &[u8]) -> u16 {
+    let mut reader = BufReader::new(Cursor::new(data));
+    read_exif_orientation(&mut reader)
+}
+
 /// [`exif::Reader::read_from_container`] first (TIFF / HEIF BMFF scan). When that does not return an
 /// **Orientation** tag, **`.avif`/`.avifs`** use libavif’s container transform (`irot` / `imir`) mapped to
 /// the same 1–8 EXIF convention. **`.heic`/`.heif`/`.hif`**: `Exif` metadata item when present, then **`irot`/`imir`**
@@ -51,17 +81,9 @@ fn is_jxl_extension(path: &Path) -> bool {
 pub fn get_exif_orientation(path: &Path) -> u16 {
     if let Ok(file) = File::open(path) {
         let mut reader = BufReader::new(file);
-        let exifreader = exif::Reader::new();
-        if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
-            if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-                // Some writers store Orientation as BYTE or LONG; Short is most common.
-                if let Some(o) = field.value.get_uint(0) {
-                    let o = o as u16;
-                    if (1..=8).contains(&o) {
-                        return o;
-                    }
-                }
-            }
+        let o = read_exif_orientation(&mut reader);
+        if o != 0 {
+            return o;
         }
     }
     #[cfg(feature = "avif-native")]

@@ -44,6 +44,11 @@ fn memory_rgba_preview(
     if width == 0 || height == 0 {
         return (0, 0, Vec::new());
     }
+    // Guard against mismatched buffer length (downstream SIMD paths use
+    // get_unchecked which is UB when the slice is too short).
+    if pixels.len() < (width as usize * height as usize * 4) {
+        return (0, 0, Vec::new());
+    }
     let scale = (max_w as f64 / width as f64)
         .min(max_h as f64 / height as f64)
         .min(1.0);

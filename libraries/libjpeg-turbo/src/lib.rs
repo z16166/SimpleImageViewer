@@ -220,8 +220,15 @@ pub fn decode_to_rgba(jpeg_data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 /// Find the best DCT scaling factor such that the output dominant dimension does not exceed
-/// `max_side`.  Chooses the factor with the greatest reduction (smallest `num / denom`) among
-/// the supported factors that still keep the long edge ≤ `max_side`.
+/// `max_side`.
+///
+/// Among the supported factors that keep the long edge ≤ `max_side`, selects the one with the
+/// **largest** ratio (least reduction) so the DCT-scaled output is as close to `max_side` as
+/// possible — maximising strip preview fidelity.  When no factor can satisfy `max_side` (e.g. a
+/// 4000 px image with `max_side`=256 — even 1/8 yields 500 > 256), falls back to the smallest
+/// factor (e.g. 1/8).  The caller subsequently applies a SIMD box-filter downsample from that
+/// intermediate, which is still ~64× faster and ~64× less peak memory than full-resolution
+/// decode.
 fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
     let dominant = orig_w.max(orig_h);
     let mut num_factors: c_int = 0;
@@ -233,23 +240,19 @@ fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
 
     let factors = unsafe { std::slice::from_raw_parts(factors_ptr, num_factors as usize) };
 
-    // Prime with identity (no scaling).
-    let mut best_num: i32 = 1;
-    let mut best_denom: i32 = 1;
-
-    // Track the smallest available DCT factor (smallest num/denom ratio) as a
-    // fallback.  Factors are sorted ascending by ratio; the first entry is the
-    // smallest (e.g. 1/8).
-    let smallest = &factors[0];
-    let fallback_num = smallest.num;
-    let fallback_denom = smallest.denom;
+    // Factors are sorted ascending by ratio; the first entry is the smallest
+    // (e.g. 1/8).  Initialize to the smallest factor as a safe fallback for
+    // large images where no factor satisfies max_side.
+    let mut best_num = factors[0].num;
+    let mut best_denom = factors[0].denom;
 
     for f in factors {
         let scaled = (dominant as u64 * f.num as u64) / f.denom as u64;
         if scaled <= max_side as u64 {
-            // Prefer the factor with the greatest reduction (smallest ratio).
+            // Prefer the factor with the LEAST reduction (largest ratio) so the
+            // decoded output is as close to max_side as possible.
             match (f.num as i64 * best_denom as i64).cmp(&(best_num as i64 * f.denom as i64)) {
-                Ordering::Less => {
+                Ordering::Greater => {
                     best_num = f.num;
                     best_denom = f.denom;
                 }
@@ -260,19 +263,9 @@ fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
                         best_denom = f.denom;
                     }
                 }
-                Ordering::Greater => {}
+                Ordering::Less => {}
             }
         }
-    }
-
-    // When no DCT factor can bring the dominant dimension ≤ max_side (e.g. a
-    // 4096 px image with max_side=256 — even 1/8 yields 512 > 256), use the
-    // smallest available factor instead of identity.  This avoids a
-    // full-resolution 48 MB decode; the caller applies a subsequent box-filter
-    // downsample from the DCT-scaled intermediate if needed.
-    if best_num == 1 && best_denom == 1 && dominant > max_side {
-        best_num = fallback_num;
-        best_denom = fallback_denom;
     }
 
     let out_w = ((orig_w as u64 * best_num as u64) / best_denom as u64).max(1) as i32;

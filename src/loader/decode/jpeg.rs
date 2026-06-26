@@ -155,7 +155,7 @@ pub(crate) fn load_jpeg_from_mapped(
 /// full HDR-aware decode path.  Otherwise returns the DCT-scaled thumbnail plus the
 /// original (logical) image dimensions.
 pub(crate) fn try_decode_jpeg_strip_dct(
-    path: &PathBuf,
+    _path: &PathBuf,
     jpeg_data: &[u8],
     max_side: u32,
 ) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
@@ -167,7 +167,9 @@ pub(crate) fn try_decode_jpeg_strip_dct(
         return None;
     }
 
-    let orientation = crate::metadata_utils::get_exif_orientation(path);
+    // Use the bytes variant to avoid re-opening the already mmap'd file
+    // (checklist #29 — "avoid opening the same file multiple times").
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(jpeg_data);
     let (orig_w, orig_h, scaled_w, scaled_h, pixels) =
         match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
             Ok(v) => v,
