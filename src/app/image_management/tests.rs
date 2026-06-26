@@ -1477,6 +1477,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         pixel_region_first_point: None,
         settings: Settings::default(),
         image_files: Vec::new(),
+        cached_image_strip_path_index: None,
         file_byte_len_by_index: Vec::new(),
         file_modified_unix_by_index: Vec::new(),
         current_index: 0,

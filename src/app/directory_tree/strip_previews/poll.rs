@@ -17,6 +17,7 @@
 //! Asynchronous strip preview result polling and failure recovery.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -89,17 +90,39 @@ impl ImageViewerApp {
     }
 
 
+    fn image_strip_path_index(&mut self) -> &HashMap<PathBuf, usize> {
+        let key = (
+            self.image_files.as_ptr() as usize,
+            self.image_files.len(),
+        );
+        let stale = self
+            .cached_image_strip_path_index
+            .as_ref()
+            .map_or(true, |(k, _)| *k != key);
+        if stale {
+            let map: HashMap<PathBuf, usize> = self
+                .image_files
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.clone(), i))
+                .collect();
+            self.cached_image_strip_path_index = Some((key, map));
+        }
+        &self
+            .cached_image_strip_path_index
+            .as_ref()
+            .expect("just inserted")
+            .1
+    }
+
+
     fn try_apply_relocated_strip_preview_result(
         &mut self,
         result: DirectoryTreeStripPreviewJobResult,
         ctx: &egui::Context,
     ) -> bool {
         self.clear_strip_preview_attempt_state(result.index);
-        let Some(new_index) = self
-            .image_files
-            .iter()
-            .position(|path| path == &result.path)
-        else {
+        let Some(&new_index) = self.image_strip_path_index().get(&result.path) else {
             return false;
         };
         if new_index != result.index {

@@ -458,6 +458,7 @@ impl ImageViewerApp {
             save_tx,
             initial_image,
             image_files: Vec::new(),
+            cached_image_strip_path_index: None,
             file_byte_len_by_index: Vec::new(),
             file_modified_unix_by_index: Vec::new(),
             current_index: 0,

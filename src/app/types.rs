@@ -333,6 +333,10 @@ pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
     pub(crate) image_files: Vec<PathBuf>,
+    /// Lazily-built path→index cache for strip preview relocation. Keyed by
+    /// `(as_ptr, len)` so any mutation (push/remove/insert/clear/reassign)
+    /// invalidates it without touching mutation sites.
+    pub(crate) cached_image_strip_path_index: Option<((usize, usize), HashMap<PathBuf, usize>)>,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
     /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).
