@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.7] - 2026-06-25
+
+### Fixed
+- **GIF animation playback**: Animated GIF images play again after a regression in the previous release.
+- **Navigation strip previews for HDR photos**: HDR gain-map AVIF and JXL thumbnails appear in the file list instead of staying on a placeholder, with fewer CPU-side decode errors.
+- **Navigation strip previews for RAW photos**: GPU RAW thumbnails in the file list no longer get replaced by a black placeholder while the full demosaic is still running.
+- **Folder change loading**: Fixed a case where switching folders could briefly stall background image loading.
+
+### Improved
+- **Navigation panel responsiveness**: File list thumbnails fill in faster after opening a large HDR folder, and the app uses less CPU while the list is still populating.
+- **Background image loading**: Switching folders, changing RAW quality, or toggling HDR mode mid-load no longer causes a brief flash of a wrong or outdated image — the loader now checks whether a finished decode still matches the current viewer settings before showing it, and cancels stale work earlier. This is especially noticeable when browsing quickly through RAW or HDR folders.
+
 ## [2.7.6] - 2026-06-24
 
 ### Fixed
