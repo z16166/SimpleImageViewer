@@ -16,9 +16,6 @@
 
 //! Directory-tree strip thumbnail generation, polling, and cache invalidation.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
@@ -152,15 +149,16 @@ impl ImageViewerApp {
             let iso_sync_budget = max_inflight
                 .saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut hdr_sync_scheduled = 0usize;
-            let iso_baselines = self.collect_iso_baseline_pixels_up_to(preload_sync_cap);
             for index in 0..preload_sync_cap {
                 if iso_sync_scheduled < iso_sync_budget {
-                    if let Some((width, height, baseline)) = iso_baselines.get(&index) {
+                    if let Some((width, height, baseline)) =
+                        self.iso_deferred_baseline_pixels_for_strip(index)
+                    {
                         if self.try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
                             index,
-                            *width,
-                            *height,
-                            Arc::clone(baseline),
+                            width,
+                            height,
+                            baseline,
                         ) {
                             iso_sync_scheduled += 1;
                         }

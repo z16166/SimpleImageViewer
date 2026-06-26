@@ -16,7 +16,6 @@
 
 //! Strip preview need-checks, logical size lookup, and cache helper predicates.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -69,7 +68,7 @@ impl ImageViewerApp {
     }
 
 
-    fn iso_deferred_baseline_pixels_for_strip(
+    pub(super) fn iso_deferred_baseline_pixels_for_strip(
         &self,
         index: usize,
     ) -> Option<(u32, u32, std::sync::Arc<Vec<u8>>)> {
@@ -89,38 +88,6 @@ impl ImageViewerApp {
             }
         }
         None
-    }
-
-
-    /// One pass over preload caches for indices `< up_to` (checklist #29 / bootstrap batching).
-    pub(super) fn collect_iso_baseline_pixels_up_to(
-        &self,
-        up_to: usize,
-    ) -> HashMap<usize, (u32, u32, Arc<Vec<u8>>)> {
-        let up_to = up_to.min(self.image_files.len());
-        let mut baselines = HashMap::new();
-        for (&index, hdr) in &self.hdr_image_cache {
-            if index >= up_to {
-                continue;
-            }
-            if let Some(iso) = hdr
-                .metadata
-                .gain_map
-                .as_ref()
-                .and_then(|gain_map| gain_map.iso_deferred.as_ref())
-            {
-                baselines.insert(index, (hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba)));
-            }
-        }
-        for (&index, decoded) in &self.deferred_sdr_uploads {
-            if index >= up_to || baselines.contains_key(&index) {
-                continue;
-            }
-            if !decoded.is_sdr_deferred_placeholder() {
-                baselines.insert(index, (decoded.width, decoded.height, decoded.arc_pixels()));
-            }
-        }
-        baselines
     }
 
 
