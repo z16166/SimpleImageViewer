@@ -58,7 +58,7 @@ impl ImageViewerApp {
 
         // Extract dimensions first; transition handling below needs mutable access to self.
         let (full_width, full_height) = {
-            let tm = self.tile_manager.as_ref().unwrap();
+            let tm = self.tile_manager();
             (tm.full_width, tm.full_height)
         };
         let img_size = Vec2::new(full_width as f32, full_height as f32);
@@ -166,7 +166,7 @@ impl ImageViewerApp {
         // preview_scale: ratio of preview texture resolution to the ORIGINAL image resolution.
         // This tells us at what display scale the preview's native pixels would be 1:1.
         // Above this scale, tiles provide higher quality than the preview.
-        let preview_scale = if let Some(ref p) = self.tile_manager.as_ref().unwrap().preview_texture
+        let preview_scale = if let Some(ref p) = self.tile_manager().preview_texture
         {
             p.size()[0] as f32 / rotated_img_size.x.max(1.0)
         } else {
@@ -218,7 +218,7 @@ impl ImageViewerApp {
         if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
             || (plane_backend == PlaneBackendKind::Hdr && !hdr_preview_drawn)
         {
-            if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
+            if let Some(ref preview) = self.tile_manager().preview_texture {
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
                 draw_plane(
                     ui,
@@ -297,7 +297,7 @@ impl ImageViewerApp {
             } else {
                 screen_rect
             };
-            let visible = self.tile_manager.as_ref().unwrap().visible_tiles(
+            let visible = self.tile_manager().visible_tiles(
                 unrotated_dest,
                 tile_clip,
                 padding,
@@ -472,7 +472,7 @@ impl ImageViewerApp {
                     .unwrap()
                     .stats_for_visible(&visible_coords);
                 let (total_gpu, total_mem, _total_pnd) =
-                    self.tile_manager.as_ref().unwrap().tiles_and_pending();
+                    self.tile_manager().tiles_and_pending();
 
                 let debug_text = format!(
                     "VIS: {} (GPU:{} RDY:{} PND:{}) | ALL: (GPU:{} MEM:{}) | SCALE: {:.3}",
@@ -504,7 +504,7 @@ impl ImageViewerApp {
                     .has_ready_to_upload(&visible_coords)
                     || has_pending_visible_tiles_for_backend(
                         plane_backend,
-                        &self.tile_manager.as_ref().unwrap().pending_tiles,
+                        &self.tile_manager().pending_tiles,
                         &visible_coords,
                     ),
             );

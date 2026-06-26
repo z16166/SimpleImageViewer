@@ -23,6 +23,7 @@ use crate::ui::dialogs::modal_state::ActiveModal;
 
 use super::hotkeys_ui::build_hotkeys_issue_message;
 use super::types::ImageViewerApp;
+use crate::tile_cache::TileManager;
 
 impl ImageViewerApp {
     /// Live swap-chain format: prefer the painter mailbox over the startup clone in [`Self::hdr_target_format`].
@@ -198,6 +199,15 @@ impl ImageViewerApp {
             self.effective_hdr_monitor_selection().as_ref(),
             render_output_mode,
         )
+    }
+
+    /// Shortcut for `self.tile_manager.as_ref().unwrap()` — the tiled draw path
+    /// is only entered when a [`TileManager`] is active.
+    #[inline]
+    pub(crate) fn tile_manager(&self) -> &TileManager {
+        self.tile_manager
+            .as_ref()
+            .expect("tile_manager accessed without active tiled source")
     }
 
     pub(crate) fn focus_and_unminimize_window(ctx: &egui::Context) {
