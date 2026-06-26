@@ -481,7 +481,7 @@ fn try_jpeg_dct_strip_fast_path(
         return None;
     }
     let data = mmap?;
-    super::jpeg::try_decode_jpeg_strip_dct(&path.to_path_buf(), data, max_side)
+    super::jpeg::try_decode_jpeg_strip_dct(data, max_side)
 }
 
 #[cfg(test)]

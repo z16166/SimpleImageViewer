@@ -24,8 +24,11 @@ use simple_image_viewer::simd_downsample::downsample_rgba8_box;
 /// Takes `&DecodedImage` to avoid unnecessary [`Arc`] reference-count
 /// operations when the caller already holds a reference (e.g. `hdr_fallback`).
 /// Uses a SIMD-accelerated box-filter (area-averaging) downsample that
-/// operates on the borrowed pixel slice — zero-copy regardless of whether
-/// the [`Arc`] is shared or unique.
+/// operates on the borrowed pixel slice — zero-copy *when downsampling occurs*.
+///
+/// When the image is already small enough (`max_dim <= max_side`), this
+/// returns a cheap [`DecodedImage::clone`] (an [`Arc`] ref-count bump, not a
+/// pixel buffer copy) rather than performing a no-op downsample.
 pub(crate) fn downsample_decoded_for_strip(
     decoded: &DecodedImage,
     max_side: u32,

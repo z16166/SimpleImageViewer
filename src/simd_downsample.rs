@@ -31,16 +31,14 @@ use core::arch::aarch64::*;
 /// its footprint.  Operates on a borrowed `&[u8]` slice — zero-copy of the source
 /// buffer.
 ///
-/// # Contract
-///
-/// This function only supports **downscaling** (or same-size). Passing `dst_w > src_w`
-/// or `dst_h > src_h` is a logic error — output pixels may have empty source footprints,
-/// leading to division by zero in the scalar fallback.
-///
 /// # Panics
 ///
-/// Panics if `dst_w > src_w` or `dst_h > src_h` (upscaling not supported).
-/// In release mode, the scalar path panics with division by zero; the SIMD path produces black pixels.
+/// In debug mode, panics (via `debug_assert!`) if `dst_w > src_w` or `dst_h > src_h`
+/// (upscaling not supported).  In release mode, the assertion is skipped and the
+/// function produces all-black pixels — empty source footprints yield `count == 0`,
+/// the guard at the end of the scalar loop skips the division, and the SIMD paths
+/// likewise leave the output pixel at zero.
+///
 /// Returns an empty `Vec<u8>` if any dimension is zero.
 pub fn downsample_rgba8_box(
     src: &[u8],
