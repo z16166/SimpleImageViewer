@@ -115,7 +115,11 @@ pub fn downsample_rgba8_box(
 }
 
 // ── Scalar fallback ───────────────────────────────────────────────────────────
+// Only compiled on architectures where runtime feature detection may fall through
+// (x86_64 without AVX2/SSE4.1, and non-aarch64/non-x86_64).  On aarch64, NEON is
+// always available and the scalar path is never called.
 
+#[cfg(not(target_arch = "aarch64"))]
 fn downsample_rgba8_box_scalar(
     pixels: &[u8],
     src_w: u32,
@@ -741,6 +745,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     #[test]
     fn scalar_fallback_matches_reference() {
         for &(sw, sh, dw, dh) in TEST_SIZES {
