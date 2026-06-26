@@ -101,10 +101,16 @@ pub fn downsample_rgba8_box(
         unsafe {
             downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
         }
-        return dst;
+        // Fall through to `dst` — no early return here (unlike the x86_64
+        // blocks above which use runtime feature detection and may or may not
+        // return).  This keeps the function exit point unambiguous on aarch64
+        // and avoids the unreachable_code warning.
     }
 
-    downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
+    }
     dst
 }
 
