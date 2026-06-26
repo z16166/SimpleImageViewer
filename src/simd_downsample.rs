@@ -65,19 +65,31 @@ pub fn downsample_rgba8_box(
     );
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
+    // Pre-compute column-to-source-range mapping once — all SIMD kernels need
+    // identical x0/x1 arrays, so computing them here avoids duplicating the
+    // allocation and math across three kernels.
+    let dst_w_u = dst_w as usize;
+    let mut x0 = vec![0_u32; dst_w_u];
+    let mut x1 = vec![0_u32; dst_w_u];
+    for dx in 0..dst_w_u {
+        x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
+        x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
+            .min(src_w as u64) as u32;
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_avx2(src, src_w, src_h, &mut dst, dst_w, dst_h);
+                downsample_rgba8_box_avx2(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
             }
             return dst;
         }
         if is_x86_feature_detected!("sse4.1") {
             // SAFETY: SSE4.1 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_sse41(src, src_w, src_h, &mut dst, dst_w, dst_h);
+                downsample_rgba8_box_sse41(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
             }
             return dst;
         }
@@ -87,7 +99,7 @@ pub fn downsample_rgba8_box(
     {
         // SAFETY: NEON is always available on aarch64.
         unsafe {
-            downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h);
+            downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
         }
         return dst;
     }
@@ -159,20 +171,14 @@ unsafe fn downsample_rgba8_box_sse41(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: SSE4.1 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 4;
         let blocks = (dst_w_u / simd_w) as isize;
@@ -323,20 +329,14 @@ unsafe fn downsample_rgba8_box_avx2(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: AVX2 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 8;
         let blocks = (dst_w_u / simd_w) as isize;
@@ -488,20 +488,14 @@ unsafe fn downsample_rgba8_box_neon(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: NEON enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 4;
         let blocks = (dst_w_u / simd_w) as isize;

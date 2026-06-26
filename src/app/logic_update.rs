@@ -466,8 +466,11 @@ impl ImageViewerApp {
         if tone != self.hdr_renderer.tone_map {
             self.sync_hdr_tone_map_settings();
         }
-        // Re-borrow after potential &mut self — HdrMonitorSelection carries a
-        // heap-allocated String; avoid the per-frame clone.
+        // Re-borrow after potential &mut self calls above (e.g. sync_hdr_tone_map_settings).
+        // Safe because `frame_effective_hdr_monitor_selection` is assigned once at the top of
+        // this method (line 412) and never mutated afterward — the re-borrow sees the same
+        // value as the first borrow at line 436.  HdrMonitorSelection carries a heap-allocated
+        // String; re-borrowing avoids the per-frame clone.
         let effective_selection = self.frame_effective_hdr_monitor_selection.as_ref();
 
         // If the active monitor's HDR capability disagrees with the current
