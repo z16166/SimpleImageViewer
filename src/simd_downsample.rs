@@ -39,7 +39,8 @@ use core::arch::aarch64::*;
 ///
 /// # Panics
 ///
-/// Panics in debug if any dimension is zero or if `dst` exceeds `src` in either axis.
+/// Panics in debug if `dst` exceeds `src` in either axis (upscaling).
+/// Returns an empty `Vec<u8>` if any dimension is zero.
 pub fn downsample_rgba8_box(
     src: &[u8],
     src_w: u32,
