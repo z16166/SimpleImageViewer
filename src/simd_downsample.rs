@@ -536,23 +536,29 @@ unsafe fn downsample_rgba8_box_neon(
                         acc_g = vaddq_u32(acc_g, g_v);
                         acc_b = vaddq_u32(acc_b, b_v);
                         acc_a = vaddq_u32(acc_a, a_v);
-                        acc_cnt = vaddq_u32(acc_cnt, active);
+                        acc_cnt = vsubq_u32(acc_cnt, active);
                     }
                 }
 
+                // SAFETY (extract closure): all lane indices are compile-time
+                // constants 0..3 inside the match arms below.
+                let extract = |v: uint32x4_t, lane: usize| -> u32 {
+                    match lane {
+                        0 => vgetq_lane_u32::<0>(v),
+                        1 => vgetq_lane_u32::<1>(v),
+                        2 => vgetq_lane_u32::<2>(v),
+                        3 => vgetq_lane_u32::<3>(v),
+                        _ => 0,
+                    }
+                };
                 for i in 0..simd_w {
-                    // SAFETY: lane indices 0..3 are compile-time constants.
-                    let cnt = vgetq_lane_u32::<{ i }>(acc_cnt);
+                    let cnt = extract(acc_cnt, i);
                     if cnt > 0 {
                         let di = (dy * dst_w_u + base_x + i) * 4;
-                        *dst.get_unchecked_mut(di) =
-                            (vgetq_lane_u32::<{ i }>(acc_r) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 1) =
-                            (vgetq_lane_u32::<{ i }>(acc_g) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 2) =
-                            (vgetq_lane_u32::<{ i }>(acc_b) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 3) =
-                            (vgetq_lane_u32::<{ i }>(acc_a) / cnt) as u8;
+                        *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 2) = (extract(acc_b, i) / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 3) = (extract(acc_a, i) / cnt) as u8;
                     }
                 }
             }

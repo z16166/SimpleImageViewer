@@ -180,7 +180,12 @@ pub(crate) fn try_decode_jpeg_strip_dct(
     };
 
     let (scaled_w, scaled_h, pixels) =
-        match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
+        match libjpeg_turbo::decode_to_rgba_with_max_side_given_dims(
+            jpeg_data,
+            orig_w,
+            orig_h,
+            max_side,
+        ) {
             Ok(v) => v,
             Err(e) => return Some(Err(e)),
         };
