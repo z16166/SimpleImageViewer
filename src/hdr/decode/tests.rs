@@ -354,6 +354,47 @@ fn hdr_to_sdr_rgba8_with_tone_settings_respects_max_display_nits() {
 }
 
 #[test]
+fn strip_pinned_max_display_nits_not_raised_by_mastering_peak() {
+    use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
+
+    let mut meta = HdrImageMetadata::default();
+    meta.transfer_function = HdrTransferFunction::Pq;
+    meta.luminance.mastering_max_nits = Some(1000.0);
+    meta.color_profile = HdrColorProfile::Cicp {
+        color_primaries: 9,
+        transfer_characteristics: 16,
+        matrix_coefficients: 0,
+        full_range: true,
+    };
+    let buffer = HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::Rec2020Linear,
+        metadata: meta,
+        rgba_f32: Arc::new(vec![0.6, 0.6, 0.6, 1.0]),
+    };
+    let strip_tone = HdrToneMapSettings {
+        max_display_nits: DEFAULT_SDR_WHITE_NITS,
+        ..HdrToneMapSettings::default()
+    };
+    let crushed = HdrToneMapSettings {
+        max_display_nits: 1000.0,
+        ..HdrToneMapSettings::default()
+    };
+    let bright =
+        hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &strip_tone).expect("strip tone");
+    let dark =
+        hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &crushed).expect("crushed tone");
+    let sum_bright: u32 = bright[..3].iter().map(|&b| b as u32).sum();
+    let sum_dark: u32 = dark[..3].iter().map(|&b| b as u32).sum();
+    assert!(
+        sum_bright > sum_dark,
+        "strip-pinned nits should stay bright despite mastering peak: {sum_bright} vs {sum_dark}"
+    );
+}
+
+#[test]
 fn tone_map_rejects_malformed_buffer_length() {
     let buffer = HdrImageBuffer {
         width: 1,

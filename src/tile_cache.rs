@@ -272,6 +272,14 @@ impl TilePixelCache {
         self.lru.clear();
         self.current_bytes = 0;
     }
+
+    /// Unique image indices with at least one cached tile (for preload eviction scans).
+    pub fn distinct_image_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = self.entries.keys().map(|(idx, _, _)| *idx).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +319,7 @@ mod tests {
             width: 4096,
             height: 4096,
         });
-        let mut manager = TileManager::with_source(0, 1, source);
+        let mut manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
         manager.pending_tiles.insert(PendingTileKey::new(
             TileCoord { col: 0, row: 0 },
             crate::loader::TilePixelKind::Sdr,
@@ -375,8 +383,8 @@ pub struct TileManager {
     /// Full image dimensions (original pixels).
     pub full_width: u32,
     pub full_height: u32,
-    /// Generation ID of the load that created this manager.
-    pub generation: u64,
+    /// Decode profile binding for tile / preview stale checks.
+    pub decode_profile: crate::loader::DecodeProfile,
 
     /// The downscaled preview texture (fits on screen).
     pub preview_texture: Option<TextureHandle>,
@@ -407,14 +415,14 @@ impl TileManager {
     /// Create a new TileManager from an arbitrary tiled image source.
     pub fn with_source(
         index: usize,
-        generation: u64,
+        decode_profile: crate::loader::DecodeProfile,
         source: Arc<dyn crate::loader::TiledImageSource>,
     ) -> Self {
         Self {
             image_index: index,
             full_width: source.width(),
             full_height: source.height(),
-            generation,
+            decode_profile,
             preview_texture: None,
             source,
             tiles: HashMap::new(),

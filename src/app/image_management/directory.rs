@@ -137,9 +137,6 @@ impl ImageViewerApp {
         self.current_file_name.clear();
         self.osd.invalidate();
         self.loader.cancel_all();
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
-        self.prefetch_prev_generation = None;
         self.pending_preload_after_directory_scan = false;
         self.directory_tree_strip_bootstrap_after_scan = false;
         self.directory_tree_strip_bootstrap_frames = 0;
@@ -246,8 +243,6 @@ impl ImageViewerApp {
 
         // Cancel all in-flight background loads; the index space is about to change.
         self.loader.cancel_all();
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
 
         // ------------------------------------------------------------------
         // Selectively evict preload state: keep only the current image entry
@@ -290,6 +285,11 @@ impl ImageViewerApp {
             .retain(|_, idx| *idx == keep);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == keep);
+        self.cpu_raw_refinement_pending_indices
+            .retain(|&idx| idx == keep);
+        self.hq_tiled_preview_pending_indices
+            .retain(|&idx| idx == keep);
+        self.installed_display_modes.retain(|&idx, _| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == keep);
@@ -310,7 +310,6 @@ impl ImageViewerApp {
         self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
-        self.prefetch_prev_generation = None;
 
         self.pending_anim_frames.retain(|&idx, _| idx == keep);
 
@@ -575,7 +574,6 @@ impl ImageViewerApp {
                                     let fallback_path = self.image_files[0].clone();
                                     self.loader.request_load(
                                         0,
-                                        self.generation,
                                         fallback_path,
                                         self.settings.raw_high_quality,
                                         self.raw_demosaic_mode_for_index(0),

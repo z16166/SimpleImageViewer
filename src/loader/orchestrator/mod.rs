@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 mod load;
 mod poll;
+mod preload_plan;
 mod raw_prefetch;
 mod tiles;
 mod types;

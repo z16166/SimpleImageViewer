@@ -1,0 +1,325 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! Per-index display pipeline recorded at image install time.
+
+use crate::loader::RenderShape;
+use std::path::PathBuf;
+
+use super::ImageViewerApp;
+
+fn index_path_is_maybe_animated(image_files: &[PathBuf], index: usize) -> bool {
+    image_files
+        .get(index)
+        .and_then(|path| path.extension())
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| crate::loader::is_maybe_animated(&ext.to_ascii_lowercase()))
+}
+
+impl ImageViewerApp {
+    pub(crate) fn record_installed_display_mode(&mut self, index: usize, mode: RenderShape) {
+        debug_assert!(mode != RenderShape::Unknown);
+        self.installed_display_modes.insert(index, mode);
+    }
+
+    pub(crate) fn installed_display_mode(&self, index: usize) -> Option<RenderShape> {
+        self.installed_display_modes.get(&index).copied()
+    }
+
+    pub(crate) fn clear_installed_display_mode(&mut self, index: usize) {
+        self.installed_display_modes.remove(&index);
+    }
+
+    pub(crate) fn index_uses_tiled_pipeline(&self, index: usize) -> bool {
+        self.installed_display_mode(index) == Some(RenderShape::Tiled)
+    }
+
+    pub(crate) fn index_uses_animated_pipeline(&self, index: usize) -> bool {
+        self.installed_display_mode(index) == Some(RenderShape::Animated)
+    }
+
+    pub(crate) fn should_draw_tiled_canvas(&self) -> bool {
+        self.index_uses_tiled_pipeline(self.current_index)
+            && self.tiled_canvas_matches_current_index()
+    }
+
+    pub(crate) fn animation_needs_repaint_wake(&self) -> bool {
+        self.index_uses_animated_pipeline(self.current_index)
+            && self.animation.as_ref().is_some_and(|anim| {
+                anim.image_index == self.current_index && anim.textures.len() > 1
+            })
+    }
+
+    pub(crate) fn animation_upload_pending_for_current(&self) -> bool {
+        self.index_uses_animated_pipeline(self.current_index)
+            && self.pending_anim_frames.contains_key(&self.current_index)
+    }
+
+    /// True when a preloaded animated file has only its first-frame SDR texture cached.
+    pub(crate) fn needs_stale_animated_first_frame_reload(&self) -> bool {
+        let current_index = self.current_index;
+        if self.installed_display_mode(current_index) == Some(RenderShape::Static) {
+            return false;
+        }
+        if self.animation_cache.contains_key(&current_index)
+            || self.pending_anim_frames.contains_key(&current_index)
+        {
+            return false;
+        }
+        if !self.texture_cache.contains(current_index) {
+            return false;
+        }
+        self.index_uses_animated_pipeline(current_index)
+            || index_path_is_maybe_animated(&self.image_files, current_index)
+    }
+
+    /// Restore or promote animation playback for the current index.
+    pub(crate) fn ensure_current_animation_playback(&mut self) {
+        let idx = self.current_index;
+        if !self.index_uses_animated_pipeline(idx) {
+            return;
+        }
+        self.tile_manager = None;
+
+        if self
+            .animation
+            .as_ref()
+            .is_some_and(|anim| anim.image_index == idx && anim.textures.len() > 1)
+        {
+            return;
+        }
+
+        if let Some(cached) = self.animation_cache.get(&idx) {
+            if cached.textures.len() > 1 {
+                if let Some(hdr_frames) = &cached.hdr_frames {
+                    if let Some(hdr) = hdr_frames.first() {
+                        self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                            idx,
+                            std::sync::Arc::clone(hdr),
+                        ));
+                    }
+                }
+                self.animation = Some(crate::app::AnimationPlayback {
+                    image_index: cached.image_index,
+                    textures: cached.textures.clone(),
+                    hdr_frames: cached.hdr_frames.clone(),
+                    delays: cached.delays.clone(),
+                    current_frame: 0,
+                    frame_start: std::time::Instant::now(),
+                    cpu_frames: cached.cpu_frames.clone(),
+                });
+            }
+            return;
+        }
+
+        let Some(pending) = self.pending_anim_frames.get(&idx) else {
+            return;
+        };
+        if pending.textures.len() <= 1 {
+            return;
+        }
+        let uploaded = pending.textures.len();
+        self.animation = Some(crate::app::AnimationPlayback {
+            image_index: pending.image_index,
+            textures: pending.textures.clone(),
+            hdr_frames: pending.hdr_frames.clone(),
+            delays: pending.delays.clone(),
+            current_frame: 0,
+            frame_start: std::time::Instant::now(),
+            cpu_frames: Some(
+                pending
+                    .frames
+                    .iter()
+                    .take(uploaded)
+                    .map(|frame| frame.arc_pixels())
+                    .collect(),
+            ),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::{DecodeProfile, LoadIntent, RenderShape};
+    use crate::settings::RawDemosaicMode;
+    use crate::tile_cache::TileManager;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct EmptySource;
+    impl crate::loader::TiledImageSource for EmptySource {
+        fn width(&self) -> u32 {
+            1
+        }
+        fn height(&self) -> u32 {
+            1
+        }
+        fn extract_tile(&self, _: u32, _: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; (w * h * 4) as usize])
+        }
+        fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+            (max_w, max_h, vec![0; (max_w * max_h * 4) as usize])
+        }
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    fn sample_tiled_profile() -> DecodeProfile {
+        DecodeProfile {
+            raw_high_quality: false,
+            raw_demosaic_mode: RawDemosaicMode::Cpu,
+            output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+            ultra_hdr_decode_capacity: 1.0,
+            render_shape: RenderShape::Tiled,
+            load_intent: LoadIntent::Current,
+            profile_epoch: 0,
+        }
+    }
+
+    fn app_with_mode(index: usize, mode: RenderShape) -> ImageViewerApp {
+        let mut app = crate::app::image_management::tests::make_test_app();
+        app.image_files = vec![PathBuf::from("test.gif")];
+        app.set_current_index(index);
+        app.record_installed_display_mode(index, mode);
+        app
+    }
+
+    #[test]
+    fn tiled_pipeline_requires_recorded_mode_and_tile_manager() {
+        let mut app = app_with_mode(0, RenderShape::Tiled);
+        assert!(!app.should_draw_tiled_canvas());
+        app.tile_manager = Some(TileManager::with_source(
+            0,
+            sample_tiled_profile(),
+            Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
+        ));
+        assert!(app.should_draw_tiled_canvas());
+    }
+
+    #[test]
+    fn animated_pipeline_blocks_tiled_draw_even_with_tile_manager() {
+        let mut app = app_with_mode(0, RenderShape::Animated);
+        app.tile_manager = Some(TileManager::with_source(
+            0,
+            sample_tiled_profile(),
+            Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
+        ));
+        assert!(!app.should_draw_tiled_canvas());
+    }
+
+    #[test]
+    fn stale_animated_reload_only_for_animated_mode_with_texture_only() {
+        let mut app = app_with_mode(0, RenderShape::Animated);
+        let ctx = eframe::egui::Context::default();
+        let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+        let handle = ctx.load_texture("f0", color_image, eframe::egui::TextureOptions::LINEAR);
+        app.texture_cache.insert(0, handle, 1, 1, false, 0, 1);
+        assert!(app.needs_stale_animated_first_frame_reload());
+
+        app.record_installed_display_mode(0, RenderShape::Static);
+        assert!(!app.needs_stale_animated_first_frame_reload());
+    }
+
+    #[test]
+    fn pending_animation_uploads_keep_process_loaded_images_active() {
+        use crate::app::types::PendingAnimUpload;
+        use crate::loader::AnimationFrame;
+        use std::time::Duration;
+
+        let mut app = app_with_mode(0, RenderShape::Animated);
+        app.pending_anim_frames.insert(
+            0,
+            PendingAnimUpload {
+                image_index: 0,
+                hdr_frames: None,
+                frames: vec![
+                    AnimationFrame::new(1, 1, vec![0; 4], Duration::from_millis(100)),
+                    AnimationFrame::new(1, 1, vec![1; 4], Duration::from_millis(100)),
+                ],
+                textures: Vec::new(),
+                delays: Vec::new(),
+                next_frame: 0,
+            },
+        );
+        assert!(app.needs_process_loaded_images());
+    }
+
+    #[test]
+    fn animation_upload_completes_after_loader_idle() {
+        use crate::app::types::PendingAnimUpload;
+        use crate::loader::AnimationFrame;
+        use std::time::Duration;
+
+        let mut app = app_with_mode(0, RenderShape::Animated);
+        let frames: Vec<AnimationFrame> = (0..10)
+            .map(|i| AnimationFrame::new(1, 1, vec![i; 4], Duration::from_millis(100)))
+            .collect();
+        app.pending_anim_frames.insert(
+            0,
+            PendingAnimUpload {
+                image_index: 0,
+                hdr_frames: None,
+                frames,
+                textures: Vec::new(),
+                delays: Vec::new(),
+                next_frame: 0,
+            },
+        );
+        let ctx = eframe::egui::Context::default();
+        app.process_loaded_images(&ctx, &mut None);
+        assert!(app.pending_anim_frames.contains_key(&0));
+        assert!(!app.loader.is_loading(0));
+
+        app.process_loaded_images(&ctx, &mut None);
+        assert!(!app.pending_anim_frames.contains_key(&0));
+        assert!(app.animation_cache.contains_key(&0));
+        assert!(
+            app.animation
+                .as_ref()
+                .is_some_and(|anim| anim.textures.len() == 10)
+        );
+    }
+
+    #[test]
+    fn animation_upload_runs_while_scanning() {
+        use crate::app::types::PendingAnimUpload;
+        use crate::loader::AnimationFrame;
+        use std::time::Duration;
+
+        let mut app = app_with_mode(0, RenderShape::Animated);
+        app.scanning = true;
+        let frames: Vec<AnimationFrame> = (0..4)
+            .map(|i| AnimationFrame::new(1, 1, vec![i; 4], Duration::from_millis(100)))
+            .collect();
+        app.pending_anim_frames.insert(
+            0,
+            PendingAnimUpload {
+                image_index: 0,
+                hdr_frames: None,
+                frames,
+                textures: Vec::new(),
+                delays: Vec::new(),
+                next_frame: 0,
+            },
+        );
+        let ctx = eframe::egui::Context::default();
+        app.process_pending_animation_uploads(&ctx);
+        assert!(!app.pending_anim_frames.contains_key(&0));
+        assert!(app.animation_cache.contains_key(&0));
+    }
+}

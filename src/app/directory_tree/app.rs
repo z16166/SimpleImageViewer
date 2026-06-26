@@ -210,19 +210,29 @@ impl ImageViewerApp {
     }
 
     /// Lazily capture a root-window redraw hook (Windows child viewports do not wake ROOT).
-    pub(crate) fn ensure_root_redraw_wake(&mut self, frame: &eframe::Frame) {
+    pub(crate) fn ensure_root_redraw_wake(&mut self, frame: &eframe::Frame, ctx: &egui::Context) {
         if self.root_redraw_wake.is_some() {
             return;
         }
+        let ctx = ctx.clone();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(window) = frame.winit_window() {
             let window = Arc::clone(window);
             let wake = Arc::new(move || {
+                // egui routes through the winit UserEvent proxy and wakes WaitUntil;
+                // request_redraw alone can stall until the next user input on Windows.
+                ctx.request_repaint();
                 window.request_redraw();
             }) as crate::app::RootRedrawWake;
             self.root_redraw_wake = Some(Arc::clone(&wake));
             self.loader.set_root_redraw_wake(wake);
+            return;
         }
+        let wake = Arc::new(move || {
+            ctx.request_repaint();
+        }) as crate::app::RootRedrawWake;
+        self.root_redraw_wake = Some(Arc::clone(&wake));
+        self.loader.set_root_redraw_wake(wake);
     }
 
     pub(crate) fn wake_root_for_logic(&self) {
@@ -1621,7 +1631,8 @@ impl ImageViewerApp {
             || self.pending_directory_tree_state_sync
             || self.directory_tree_strip_bootstrap_after_scan
             || !self.directory_tree_strip_generate_inflight.is_empty()
-            || !self.directory_tree_strip_pending_gpu.is_empty()
+            || !self.directory_tree_strip_pending_gpu_initial.is_empty()
+            || !self.directory_tree_strip_pending_gpu_refined.is_empty()
             || folder_reveal_pending;
         if strip_work_pending {
             if self.directory_tree_strip_cache.gpu_revision() > 0 {

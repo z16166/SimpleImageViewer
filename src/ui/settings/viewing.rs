@@ -88,7 +88,6 @@ pub(super) fn draw_viewing_tab(
                 if app.pixel_data_source.is_none() && !app.image_files.is_empty() {
                     app.loader.request_load(
                         app.current_index,
-                        app.generation,
                         app.image_files[app.current_index].clone(),
                         app.settings.raw_high_quality,
                         app.settings.raw_demosaic_mode,

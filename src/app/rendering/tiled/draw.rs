@@ -442,7 +442,6 @@ impl ImageViewerApp {
                                     continue; // Don't break — still need to draw already-Ready tiles below
                                 }
                                 let source = tm.get_source();
-                                let generation = tm.generation;
                                 let priority = tile_request_priority(tile_visits.len(), idx);
                                 if let Some(source) = tile_decode_source_for_backend(
                                     plane_backend,
@@ -451,7 +450,7 @@ impl ImageViewerApp {
                                 ) {
                                     loader.request_tile(
                                         current_index,
-                                        generation,
+                                        tm.decode_profile.clone(),
                                         priority,
                                         source,
                                         coord.col,

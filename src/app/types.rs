@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -333,6 +333,10 @@ pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
     pub(crate) image_files: Vec<PathBuf>,
+    /// Lazily-built path→index cache for strip preview relocation. Keyed by
+    /// `image_list_generation` so any mutation that bumps the generation
+    /// invalidates it without touching individual mutation sites.
+    pub(crate) cached_image_strip_path_index: Option<(u64, HashMap<PathBuf, usize>)>,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
     /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).
@@ -431,7 +435,7 @@ pub struct ImageViewerApp {
     /// not the tone-mapped HDR fallback texture (`img_hdr_fallback_*`).
     pub(crate) raw_gpu_embedded_bootstrap_indices: HashSet<usize>,
     /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
-    pub(crate) hdr_register_prewarm_repush_counts: HashMap<(usize, u64), u8>,
+    pub(crate) hdr_register_prewarm_repush_counts: HashMap<usize, u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
@@ -439,11 +443,17 @@ pub struct ImageViewerApp {
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
     /// HDR indices for which fallback refinement is currently in-flight.
     pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
+    /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
+    pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
+    /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).
+    pub(crate) hq_tiled_preview_pending_indices: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
     pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
+    /// Display pipeline recorded when an image is installed (`Static` / `Tiled` / `Animated`).
+    pub(crate) installed_display_modes: HashMap<usize, crate::loader::RenderShape>,
 
     // Pan/drag state (used in non-fullscreen 1:1 mode)
     pub(crate) pan_offset: Vec2,
@@ -497,8 +507,15 @@ pub struct ImageViewerApp {
     >,
     pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
     pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
-    pub(crate) directory_tree_strip_pending_gpu:
-        Vec<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Pending GPU uploads with `PreviewStage::Initial`, drained first on eviction.
+    pub(crate) directory_tree_strip_pending_gpu_initial:
+        VecDeque<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Pending GPU uploads with `PreviewStage::Refined`, evicted only after Initial queue is empty.
+    pub(crate) directory_tree_strip_pending_gpu_refined:
+        VecDeque<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Monotonic counter assigned to each pending upload; used to merge both queues in FIFO order
+    /// during flush.
+    pub(crate) directory_tree_strip_pending_gpu_next_seq: u64,
     /// Background Places loader; polled from `logic()`.
     pub(crate) directory_tree_places_load_rx:
         Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,
@@ -509,12 +526,6 @@ pub struct ImageViewerApp {
     pub(crate) temp_font_size: Option<f32>,
 
     // Cached state
-    pub(crate) generation: u64,
-    /// When a prefetched TileManager is promoted to current, `generation` is incremented
-    /// so tile workers use the new value. But any in-flight HDR HQ preview task launched
-    /// during prefetch still carries the old generation. We store that old value here so
-    /// `handle_preview_update` can accept the result instead of discarding it as stale.
-    pub(crate) prefetch_prev_generation: Option<u64>,
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,
 
@@ -552,6 +563,9 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_bootstrap_after_scan: bool,
     /// Frames elapsed in strip bootstrap mode; used to exit high-throughput limits.
     pub(crate) directory_tree_strip_bootstrap_frames: u32,
+    /// Cooldown frames after a `schedule_preloads(true)` call during strip bootstrap.
+    /// Prevents redundant per-frame scheduling when all preload slots are already full.
+    pub(crate) strip_preload_cooldown_frames: u32,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
@@ -607,7 +621,8 @@ pub struct ImageViewerApp {
     pub(crate) tiled_primary_visible_scratch: HashSet<TileCoord>,
     pub(crate) tiled_visible_coords_scratch: Vec<TileCoord>,
 
-    // Tiled rendering instances decoded during prefetch
+    // Tiled rendering instances decoded during prefetch (bounded by prefetch window; see
+    // prefetch_retention::prefetched_tiles_steady_state_cap).
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
 
     // Theme state
@@ -647,6 +662,10 @@ pub struct ImageViewerApp {
     /// Reused for preload memory guard checks so navigation does not rebuild
     /// sysinfo's system snapshot state on every preload scheduling pass.
     pub(crate) preload_memory: crate::app::preload_memory::PreloadMemorySnapshot,
+    /// Updated from [`ImageViewerApp::refresh_preload_memory_plan`] on the logic thread only.
+    pub(crate) cached_available_memory_mb: u64,
+    pub(crate) cached_total_memory_mb: u64,
+    pub(crate) prefetch_window_max_distance: usize,
 
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)

@@ -21,27 +21,14 @@ use super::*;
 const MAX_HDR_REGISTER_PREWARM_REPUSH: u8 = 30;
 
 impl ImageViewerApp {
-    /// Process results from the background ImageLoader.
-    pub(crate) fn process_loaded_images(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &mut Option<&mut eframe::Frame>,
-    ) {
-        #[cfg(feature = "preload-debug")]
-        let loaded_started = std::time::Instant::now();
-        if self.scanning {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][Scan] process_loaded_images skipped while scanning frame_ms={}",
-                crate::preload_debug::elapsed_ms(loaded_started)
-            );
+    /// Upload deferred animation frames to GPU (max 8 per call). Runs even while scanning.
+    pub(crate) fn process_pending_animation_uploads(&mut self, ctx: &egui::Context) {
+        if self.pending_anim_frames.is_empty() {
             return;
         }
-        self.flush_deferred_sdr_upload_for_current(ctx);
-        let is_transitioning = self.transition_start.is_some();
 
-        // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
+        let is_transitioning = self.transition_start.is_some();
         let pending_idx = super::super::prefetch_animation_upload_index(
             &self.pending_anim_frames,
             self.current_index,
@@ -86,6 +73,10 @@ impl ImageViewerApp {
                 finished = pending.next_frame >= pending.frames.len();
             }
 
+            if pending_idx == self.current_index {
+                self.ensure_current_animation_playback();
+            }
+
             if finished {
                 if let Some(pending) = self.pending_anim_frames.remove(&pending_idx) {
                     let idx = pending.image_index;
@@ -107,6 +98,7 @@ impl ImageViewerApp {
                                     Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
                             }
                         }
+                        self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
                             image_index: playback.image_index,
                             textures: playback.textures.clone(),
@@ -123,13 +115,33 @@ impl ImageViewerApp {
                 ctx.request_repaint();
             }
         }
+    }
+
+    /// Process results from the background ImageLoader.
+    pub(crate) fn process_loaded_images(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut Option<&mut eframe::Frame>,
+    ) {
+        #[cfg(feature = "preload-debug")]
+        let loaded_started = std::time::Instant::now();
+        self.flush_deferred_sdr_upload_for_current(ctx);
+        self.process_pending_animation_uploads(ctx);
+        if self.scanning {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Scan] loader poll skipped while scanning frame_ms={}",
+                crate::preload_debug::elapsed_ms(loaded_started)
+            );
+            return;
+        }
+        let is_transitioning = self.transition_start.is_some();
 
         // ── 2. Process results from the background ImageLoader ──
         //
-        // Generation vs `prefetch_prev_generation` / in-window tolerance:
-        // Background `LoaderOutput::Image` results within `PREFETCH_WINDOW_DISTANCE` may install
-        // when their request generation is slightly behind `self.generation`, so rapid forward
-        // navigation does not discard a just-finished RAW preload before its HDR plane is cached.
+        // Profile + retention gate (`result_gate` / `prefetch_retention`):
+        // Background `LoaderOutput::Image` within the preload window may install when profile
+        // matches display requirements; distant indices survive only while loader in-flight.
         //
         // QUOTA DESIGN:
         //   - We count each ctx.load_texture() call as one "upload slot".
@@ -157,35 +169,72 @@ impl ImageViewerApp {
             match output {
                 LoaderOutput::Image(mut load_result) => {
                     let idx = load_result.index;
-                    let generation = load_result.generation;
                     let is_current = idx == self.current_index;
-                    let gen_match = self.accepts_background_image_generation(idx, generation);
-
-                    // CRITICAL: Drop stale results outside the prefetch survivor window.
-                    // This prevents a race where deleting an image reuses the index
-                    // but a late decode from the deleted file arrives and overwrites
-                    // the new current image state.
-                    if !gen_match {
-                        self.loader.finish_image_request(idx, generation);
-                        continue;
-                    }
-                    if generation != self.generation {
-                        crate::preload_debug!(
-                            "[PreloadDebug] install image survivor: idx={} current={} result_gen={} app_gen={}",
-                            idx,
-                            self.current_index,
-                            generation,
-                            self.generation
-                        );
-                    }
-                    if !source_key_matches_index(&self.image_files, idx, load_result.source_key) {
-                        log::warn!(
-                            "[App] Image result discarded (source key mismatch): index={} generation={}",
-                            idx,
-                            generation
-                        );
-                        self.loader.finish_image_request(idx, generation);
-                        continue;
+                    let gate_ctx = self.result_gate_context();
+                    let display = self.display_requirements_for_index(idx);
+                    let gate_decision = result_gate::gate_load_result(
+                        &gate_ctx,
+                        &load_result,
+                        &self.image_files,
+                        &display,
+                        self.loader.is_loading(idx),
+                    );
+                    match gate_decision {
+                        result_gate::GateDecision::Requeue => {
+                            self.loader.finish_image_request(idx);
+                            if self.loader.try_note_capacity_requeue(idx) {
+                                if !self.hdr_image_cache.contains_key(&idx)
+                                    && !self.loader.is_loading(idx)
+                                    && !self.image_files.is_empty()
+                                    && idx < self.image_files.len()
+                                {
+                                    self.loader.request_load(
+                                        idx,
+                                        self.image_files[idx].clone(),
+                                        self.settings.raw_high_quality,
+                                        self.raw_demosaic_mode_for_index(idx),
+                                    );
+                                }
+                            } else {
+                                log::warn!(
+                                    "[Loader] HDR capacity requeue cap reached for index {idx}{}",
+                                    if is_current { " (current image)" } else { "" }
+                                );
+                                if is_current
+                                    && !self.has_loaded_asset(idx)
+                                    && idx < self.image_files.len()
+                                {
+                                    self.sync_loader_preload_plan();
+                                    self.schedule_current_image_load_if_needed();
+                                }
+                            }
+                            continue;
+                        }
+                        result_gate::GateDecision::Discard => {
+                            #[cfg(feature = "preload-debug")]
+                            preload_debug!(
+                                "[PreloadDebug] discard image: idx={} gate={}",
+                                idx,
+                                result_gate::gate_decision_log_label(gate_decision)
+                            );
+                            let source_still_valid = result_gate::source_key_matches_index(
+                                &self.image_files,
+                                idx,
+                                load_result.source_key,
+                            );
+                            self.loader.finish_image_request(idx);
+                            if is_current
+                                && !self.has_loaded_asset(idx)
+                                && source_still_valid
+                            {
+                                self.sync_loader_preload_plan();
+                                self.schedule_current_image_load_if_needed();
+                            }
+                            continue;
+                        }
+                        result_gate::GateDecision::Accept => {
+                            self.loader.clear_capacity_requeue(idx);
+                        }
                     }
 
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
@@ -200,10 +249,9 @@ impl ImageViewerApp {
                         self.current_index,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield image install: idx={} current={} gen={} reason=pending_transition_target",
+                            "[PreloadDebug] yield image install: idx={} current={} reason=pending_transition_target",
                             idx,
                             self.current_index,
-                            generation,
                         );
                         yielded_background_outputs.push(LoaderOutput::Image(load_result));
                         continue;
@@ -214,10 +262,9 @@ impl ImageViewerApp {
                         current_refinement_pending,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield image install: idx={} current={} gen={} reason=current_refinement_pending",
+                            "[PreloadDebug] yield image install: idx={} current={} reason=current_refinement_pending",
                             idx,
                             self.current_index,
-                            generation,
                         );
                         yielded_background_outputs.push(LoaderOutput::Image(load_result));
                         continue;
@@ -232,7 +279,6 @@ impl ImageViewerApp {
                         if self.try_install_background_static_hdr_hdr_only(
                             &load_result,
                             &install_plan,
-                            generation,
                             if is_transitioning {
                                 "transition"
                             } else {
@@ -250,10 +296,9 @@ impl ImageViewerApp {
                             continue;
                         }
                         preload_debug!(
-                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason={}",
+                            "[PreloadDebug] defer image install: idx={} current={} reason={}",
                             idx,
                             self.current_index,
-                            generation,
                             if is_transitioning {
                                 "transition"
                             } else {
@@ -278,7 +323,6 @@ impl ImageViewerApp {
                         if self.try_install_background_static_hdr_hdr_only(
                             &load_result,
                             &install_plan,
-                            generation,
                             "sdr_upload_budget",
                             ctx,
                         ) {
@@ -292,10 +336,9 @@ impl ImageViewerApp {
                             continue;
                         }
                         preload_debug!(
-                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            "[PreloadDebug] defer image install: idx={} current={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
                             idx,
                             self.current_index,
-                            generation,
                             sdr_upload_bytes_this_frame,
                             estimated_sdr_upload_bytes,
                             sdr_upload_budget_bytes_this_frame
@@ -310,7 +353,6 @@ impl ImageViewerApp {
                         if self.try_install_background_static_hdr_hdr_only(
                             &load_result,
                             &install_plan,
-                            generation,
                             "global_upload_quota",
                             ctx,
                         ) {
@@ -324,10 +366,9 @@ impl ImageViewerApp {
                             continue;
                         }
                         preload_debug!(
-                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            "[PreloadDebug] defer image install: idx={} current={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             idx,
                             self.current_index,
-                            generation,
                             uploads_this_frame,
                             background_upload_quota
                         );
@@ -345,7 +386,6 @@ impl ImageViewerApp {
                         if self.try_install_background_static_hdr_hdr_only(
                             &load_result,
                             &install_plan,
-                            generation,
                             "post_transition_spacing",
                             ctx,
                         ) {
@@ -359,10 +399,9 @@ impl ImageViewerApp {
                             continue;
                         }
                         preload_debug!(
-                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=post_transition_spacing",
+                            "[PreloadDebug] defer image install: idx={} current={} reason=post_transition_spacing",
                             idx,
                             self.current_index,
-                            generation,
                         );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -370,29 +409,16 @@ impl ImageViewerApp {
                     }
 
                     preload_debug!(
-                        "[PreloadDebug] install image: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        "[PreloadDebug] install image: idx={} current={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
                         idx,
                         self.current_index,
-                        generation,
                         is_current,
                         estimated_sdr_upload_bytes,
                         uploads_this_frame,
                         sdr_upload_bytes_this_frame
                     );
-                    self.loader.finish_image_request(idx, generation);
-                    if let Some((requeue_idx, requeue_gen, requeue_path)) =
-                        self.handle_image_load_result(&load_result, install_plan, ctx, false)
-                    {
-                        // The slot was just freed by finish_image_request above; it is now safe to
-                        // re-queue.  The loader holds the current (correct) HDR capacity.
-                        self.loader.request_load(
-                            requeue_idx,
-                            requeue_gen,
-                            requeue_path,
-                            self.settings.raw_high_quality,
-                            self.raw_demosaic_mode_for_index(requeue_idx),
-                        );
-                    }
+                    self.loader.finish_image_request(idx);
+                    self.handle_image_load_result(&load_result, install_plan, ctx, false);
                     uploads_this_frame += 1;
                     if !is_current && estimated_sdr_upload_bytes > 0 {
                         self.last_background_upload_at = Some(Instant::now());
@@ -411,18 +437,6 @@ impl ImageViewerApp {
 
                 LoaderOutput::Preview(preview_update) => {
                     let preview_is_current = preview_update.index == self.current_index;
-                    if !source_key_matches_index(
-                        &self.image_files,
-                        preview_update.index,
-                        preview_update.source_key,
-                    ) {
-                        log::warn!(
-                            "[App] Preview update discarded (source key mismatch): index={} generation={}",
-                            preview_update.index,
-                            preview_update.generation
-                        );
-                        continue;
-                    }
 
                     if should_yield_background_result_for_pending_transition(
                         preview_is_current,
@@ -430,10 +444,9 @@ impl ImageViewerApp {
                         self.current_index,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield preview update: idx={} current={} gen={} reason=pending_transition_target",
+                            "[PreloadDebug] yield preview update: idx={} current={} reason=pending_transition_target",
                             preview_update.index,
-                            self.current_index,
-                            preview_update.generation,
+                            self.current_index
                         );
                         yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
                         continue;
@@ -444,10 +457,9 @@ impl ImageViewerApp {
                         current_refinement_pending,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield preview update: idx={} current={} gen={} reason=current_refinement_pending",
+                            "[PreloadDebug] yield preview update: idx={} current={} reason=current_refinement_pending",
                             preview_update.index,
-                            self.current_index,
-                            preview_update.generation,
+                            self.current_index
                         );
                         yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
                         continue;
@@ -461,10 +473,9 @@ impl ImageViewerApp {
                         is_transitioning,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=transition",
+                            "[PreloadDebug] defer preview update: idx={} current={} reason=transition",
                             preview_update.index,
-                            self.current_index,
-                            preview_update.generation
+                            self.current_index
                         );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
@@ -475,10 +486,9 @@ impl ImageViewerApp {
                         && uploads_this_frame >= background_upload_quota
                     {
                         preload_debug!(
-                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            "[PreloadDebug] defer preview update: idx={} current={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             preview_update.index,
                             self.current_index,
-                            preview_update.generation,
                             uploads_this_frame,
                             background_upload_quota
                         );
@@ -494,20 +504,18 @@ impl ImageViewerApp {
                         )
                     {
                         preload_debug!(
-                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=post_transition_spacing",
+                            "[PreloadDebug] defer preview update: idx={} current={} reason=post_transition_spacing",
                             preview_update.index,
-                            self.current_index,
-                            preview_update.generation,
+                            self.current_index
                         );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         break;
                     }
                     preload_debug!(
-                        "[PreloadDebug] install preview: idx={} current={} gen={} is_current={} uploads_before={}",
+                        "[PreloadDebug] install preview: idx={} current={} is_current={} uploads_before={}",
                         preview_update.index,
                         self.current_index,
-                        preview_update.generation,
                         preview_is_current,
                         uploads_this_frame
                     );
@@ -526,35 +534,40 @@ impl ImageViewerApp {
                     self.handle_tile_load_result(tile_result, ctx);
                 }
 
-                LoaderOutput::Refined(idx, gen_id) => {
-                    // Metadata-only notification — no load_texture call here.
+                LoaderOutput::Refined(idx) => {
                     if self
                         .image_files
                         .get(idx)
                         .is_some_and(|p| crate::preload_debug::path_is_raw(p))
                     {
                         crate::preload_debug!(
-                            "[PreloadDebug][RAW] refined_notify idx={} gen={} current={} app_gen={}",
+                            "[PreloadDebug][RAW] refined_notify idx={} current={}",
                             idx,
-                            gen_id,
-                            idx == self.current_index,
-                            self.generation
+                            idx == self.current_index
                         );
                     }
-                    self.handle_refined_notification(idx, gen_id, ctx);
+                    self.handle_refined_notification(idx, ctx);
                 }
 
                 LoaderOutput::HdrSdrFallback(update) => {
                     let is_current = update.index == self.current_index;
-                    if !source_key_matches_index(&self.image_files, update.index, update.source_key)
-                    {
+                    if !result_gate::source_key_matches_index(
+                        &self.image_files,
+                        update.index,
+                        update.source_key,
+                    ) {
                         self.hdr_in_flight_fallback_refinements
                             .remove(&update.index);
                         log::warn!(
-                            "[App] HDR SDR fallback discarded (source key mismatch): index={} generation={}",
-                            update.index,
-                            update.generation
+                            "[App] HDR SDR fallback discarded (source key mismatch): index={}",
+                            update.index
                         );
+                        continue;
+                    }
+                    let display = self.display_requirements_for_index(update.index);
+                    if !crate::loader::profile_satisfies_display(&update.decode_profile, &display) {
+                        self.hdr_in_flight_fallback_refinements
+                            .remove(&update.index);
                         continue;
                     }
                     if should_yield_background_result_for_pending_transition(
@@ -563,10 +576,9 @@ impl ImageViewerApp {
                         self.current_index,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} gen={} reason=pending_transition_target",
+                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} reason=pending_transition_target",
                             update.index,
-                            self.current_index,
-                            update.generation,
+                            self.current_index
                         );
                         yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
                         continue;
@@ -577,10 +589,9 @@ impl ImageViewerApp {
                         current_refinement_pending,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} gen={} reason=current_refinement_pending",
+                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} reason=current_refinement_pending",
                             update.index,
-                            self.current_index,
-                            update.generation,
+                            self.current_index
                         );
                         yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
                         continue;
@@ -595,10 +606,9 @@ impl ImageViewerApp {
                         self.transition_settled_at,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason={}",
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason={}",
                             update.index,
                             self.current_index,
-                            update.generation,
                             if is_transitioning {
                                 "transition"
                             } else {
@@ -618,10 +628,9 @@ impl ImageViewerApp {
                         )
                     {
                         preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
                             update.index,
                             self.current_index,
-                            update.generation,
                             sdr_upload_bytes_this_frame,
                             estimated_sdr_upload_bytes,
                             sdr_upload_budget_bytes_this_frame
@@ -632,10 +641,9 @@ impl ImageViewerApp {
                     }
                     if !is_current && uploads_this_frame >= background_upload_quota {
                         preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             update.index,
                             self.current_index,
-                            update.generation,
                             uploads_this_frame,
                             background_upload_quota
                         );
@@ -651,20 +659,18 @@ impl ImageViewerApp {
                         )
                     {
                         preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=post_transition_spacing",
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=post_transition_spacing",
                             update.index,
-                            self.current_index,
-                            update.generation,
+                            self.current_index
                         );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         break;
                     }
                     preload_debug!(
-                        "[PreloadDebug] install hdr_sdr_fallback: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        "[PreloadDebug] install hdr_sdr_fallback: idx={} current={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
                         update.index,
                         self.current_index,
-                        update.generation,
                         is_current,
                         estimated_sdr_upload_bytes,
                         uploads_this_frame,
@@ -708,9 +714,9 @@ impl ImageViewerApp {
             let frame_ms = crate::preload_debug::elapsed_ms(loaded_started);
             if frame_ms > 16 {
                 crate::preload_debug!(
-                    "[PreloadDebug] process_loaded_images frame_ms={} generation={}",
+                    "[PreloadDebug] process_loaded_images frame_ms={} current_idx={}",
                     frame_ms,
-                    self.generation
+                    self.current_index
                 );
             }
         }
@@ -812,12 +818,12 @@ impl ImageViewerApp {
         }
 
         self.hdr_register_prewarm_repush_counts
-            .remove(&(load_result.index, load_result.generation));
+            .remove(&load_result.index);
         true
     }
 
     fn finish_or_defer_hdr_preupload_registration(&mut self, load_result: &mut LoadResult) -> bool {
-        let key = (load_result.index, load_result.generation);
+        let key = load_result.index;
         let count = self
             .hdr_register_prewarm_repush_counts
             .entry(key)

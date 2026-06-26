@@ -22,13 +22,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::hdr::types::HdrToneMapSettings;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{
     DecodedImage, ImageData, TiledImageSource, extract_exif_thumbnail,
-    extract_exif_thumbnail_from_mmap, hdr_to_sdr_with_user_tone, preview_aspect_matches_logical,
+    extract_exif_thumbnail_from_mmap, preview_aspect_matches_logical,
 };
 
 use super::assemble::make_image_data;
@@ -56,7 +55,7 @@ fn try_directory_tree_exif_thumb(
     if !preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
         return None;
     }
-    let decoded = downsample_decoded_to_max_side(exif, max_side).ok()?;
+    let decoded = downsample_decoded_to_max_side(exif.clone(), max_side).ok()?;
     Some((decoded, logical))
 }
 
@@ -64,10 +63,15 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     path: &Path,
     max_side: u32,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
+    let skip_exif_fast_path = super::modern::is_hdr_capable_modern_format_path(path);
     let mmap = crate::mmap_util::map_file(path).ok();
-    let exif = match mmap.as_ref() {
-        Some(data) => extract_exif_thumbnail_from_mmap(data, path),
-        None => extract_exif_thumbnail(path),
+    let exif = if skip_exif_fast_path {
+        None
+    } else {
+        match mmap.as_ref() {
+            Some(data) => extract_exif_thumbnail_from_mmap(data, path),
+            None => extract_exif_thumbnail(path),
+        }
     };
     if let Some(exif) = exif.as_ref() {
         let exif_logical = (exif.width, exif.height);
@@ -83,6 +87,13 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     }
 
     let path_buf = path.to_path_buf();
+    if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
+        path,
+        mmap.as_ref().map(|data| data.as_ref()),
+        max_side,
+    ) {
+        return fast;
+    }
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
@@ -145,7 +156,7 @@ fn open_image_data_for_directory_tree_thumb(
         .unwrap_or_else(|| "unknown".to_string());
     let ext = path_extension_ascii_lower(path.as_path()).unwrap_or_default();
     let hdr_target_capacity = DIRECTORY_TREE_THUMB_HDR_CAPACITY;
-    let hdr_tone_map = HdrToneMapSettings::default();
+    let hdr_tone_map = crate::loader::hdr_tone_map_settings_for_directory_tree_strip();
     let high_quality = false;
 
     if path_has_extension(path, "exr") {
@@ -383,18 +394,16 @@ fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
 }
 
 fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<DecodedImage, String> {
-    let tone = HdrToneMapSettings::default();
     match image_data {
-        ImageData::Static(image) => downsample_decoded_to_max_side(image, max_side),
+        ImageData::Static(image) => downsample_decoded_to_max_side(image.clone(), max_side),
         ImageData::Hdr { hdr, fallback, .. } => {
-            let sdr = sdr_preview_for_hdr_fallback(hdr, fallback, &tone)?;
-            downsample_decoded_to_max_side(&sdr, max_side)
+            sdr_preview_for_hdr_fallback(hdr, fallback, max_side)
         }
         ImageData::Animated(frames) => frames
             .first()
             .map(|frame| {
                 downsample_decoded_to_max_side(
-                    &DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
+                    DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
                     max_side,
                 )
             })
@@ -405,17 +414,14 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
             let preview = tiled_source_preview(fallback.as_ref(), max_side)?;
             if preview.is_sdr_deferred_placeholder() {
                 let (width, height, rgba) = hdr.generate_sdr_preview(max_side, max_side)?;
-                downsample_decoded_to_max_side(&DecodedImage::new(width, height, rgba), max_side)
+                downsample_decoded_to_max_side(DecodedImage::new(width, height, rgba), max_side)
             } else {
                 Ok(preview)
             }
         }
         ImageData::HdrAnimated(frames) => frames
             .first()
-            .map(|frame| {
-                let sdr = sdr_preview_for_hdr_fallback(&frame.hdr, &frame.fallback, &tone)?;
-                downsample_decoded_to_max_side(&sdr, max_side)
-            })
+            .map(|frame| sdr_preview_for_hdr_fallback(&frame.hdr, &frame.fallback, max_side))
             .transpose()?
             .ok_or_else(|| "animated HDR image has no frames".to_string()),
     }
@@ -424,17 +430,9 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
 fn sdr_preview_for_hdr_fallback(
     hdr: &crate::hdr::types::HdrImageBuffer,
     fallback: &DecodedImage,
-    tone: &HdrToneMapSettings,
+    max_side: u32,
 ) -> Result<DecodedImage, String> {
-    if fallback.is_sdr_deferred_placeholder() {
-        Ok(DecodedImage::new(
-            hdr.width,
-            hdr.height,
-            hdr_to_sdr_with_user_tone(hdr, tone)?,
-        ))
-    } else {
-        Ok(fallback.clone())
-    }
+    crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side)
 }
 
 fn tiled_source_preview(
@@ -456,10 +454,10 @@ fn tiled_source_preview(
 }
 
 fn downsample_decoded_to_max_side(
-    decoded: &DecodedImage,
+    decoded: DecodedImage,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    downsample_decoded_for_strip(decoded, max_side).map(|cow| cow.into_owned())
+    downsample_decoded_for_strip(decoded, max_side)
 }
 
 #[cfg(test)]

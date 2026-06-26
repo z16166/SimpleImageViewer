@@ -348,12 +348,29 @@ fn log_unrecognized_embedded_icc_profile_once(icc: &[u8]) {
 }
 
 #[allow(dead_code)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrOutputMode {
-    SdrToneMapped,
-    WindowsScRgb,
-    MacOsEdr,
-    WaylandHdr,
+    SdrToneMapped = 0,
+    WindowsScRgb = 1,
+    MacOsEdr = 2,
+    WaylandHdr = 3,
+}
+
+impl HdrOutputMode {
+    pub fn to_storage_bits(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_storage_bits(bits: u32) -> Self {
+        match bits {
+            0 => Self::SdrToneMapped,
+            1 => Self::WindowsScRgb,
+            2 => Self::MacOsEdr,
+            3 => Self::WaylandHdr,
+            _ => Self::SdrToneMapped,
+        }
+    }
 }
 
 #[allow(dead_code)]

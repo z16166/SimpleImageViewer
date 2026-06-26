@@ -22,7 +22,7 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 #[test]
@@ -159,14 +159,18 @@ fn navigation_preserves_current_tile_manager_for_restore() {
         width: 4096,
         height: 4096,
     });
-    let mut tile_manager = Some(TileManager::with_source(7, 42, source));
+    let mut tile_manager = Some(TileManager::with_source(
+        7,
+        crate::loader::decode_profile_stub(),
+        source,
+    ));
     let mut prefetched_tiles = HashMap::new();
 
     preserve_current_tile_manager_for_navigation(7, 8, &mut tile_manager, &mut prefetched_tiles);
 
     assert!(tile_manager.is_none());
     assert!(prefetched_tiles.contains_key(&7));
-    assert_eq!(prefetched_tiles.get(&7).unwrap().generation, 42);
+    assert_eq!(prefetched_tiles.get(&7).unwrap().image_index, 7);
 }
 
 #[test]
@@ -360,7 +364,6 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
 #[test]
 fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
     let mut app = make_test_app();
-    app.generation = 7;
     app.image_files = vec![
         PathBuf::from("current.jpg"),
         PathBuf::from("huge.jpg"),
@@ -370,30 +373,25 @@ fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
-    assert!(!app.loader.is_loading(1, app.generation));
-    assert!(app.loader.is_loading(2, app.generation));
+    assert!(!app.loader.is_loading(1));
+    assert!(app.loader.is_loading(2));
 }
 
 #[test]
 fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
     let mut app = make_test_app();
-    app.generation = 7;
-    app.image_files = vec![
-        PathBuf::from("current.jpg"),
-        PathBuf::from("huge.tif"),
-        PathBuf::from("small.jpg"),
-    ];
+    app.image_files = vec![PathBuf::from("current.jpg"), PathBuf::from("small.jpg")];
     app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
-    assert!(app.loader.is_loading(1, app.generation));
-    assert!(!app.loader.is_loading(2, app.generation));
+    assert!(app.loader.is_loading(1));
+    assert!(!app.loader.is_loading(2));
 }
 
 #[test]
 fn tiled_hdr_preview_replaces_only_missing_or_smaller_cached_preview() {
-    assert!(should_cache_tiled_hdr_preview(None, 1024));
+    assert!(should_cache_tiled_hdr_preview(None, 4096));
     assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
     assert!(!should_cache_tiled_hdr_preview(Some(4096), 1024));
     assert!(!should_cache_tiled_hdr_preview(Some(4096), 4096));
@@ -719,16 +717,16 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
 }
 
 #[test]
-fn accepts_registered_inflight_generation_outside_prefetch_window() {
-    let mut app = make_test_app();
-    app.current_index = 233;
-    app.generation = 18;
-    app.image_files = (0..250)
-        .map(|i| std::path::PathBuf::from(format!("img{i}.ORF")))
-        .collect();
-    app.loader.test_register_inflight(230, 16);
-    assert!(app.accepts_background_image_generation(230, 16));
-    assert!(!app.accepts_background_image_generation(230, 15));
+fn retention_keeps_registered_inflight_outside_prefetch_window() {
+    use super::result_gate::ResultGateContext;
+
+    let ctx = ResultGateContext {
+        current_index: 233,
+        image_count: 250,
+        max_distance: 2,
+    };
+    assert!(ctx.retention_for(230, true).should_retain());
+    assert!(!ctx.retention_for(230, false).should_retain());
 }
 
 #[test]
@@ -779,7 +777,6 @@ fn background_preload_defers_while_current_raw_gpu_path_active() {
 #[test]
 fn background_preload_schedule_with_force_neighbors() {
     let mut app = make_test_app();
-    app.generation = 12;
     app.image_files = vec![
         std::path::PathBuf::from("current.NEF"),
         std::path::PathBuf::from("neighbor1.jpg"),
@@ -804,23 +801,23 @@ fn background_preload_schedule_with_force_neighbors() {
 
     // Simulate current RAW image is loading on loader, and demosaic await present is true.
     // So current_raw_gpu_path_active will be true.
-    app.loader.test_register_inflight(0, 12);
+    app.loader.test_register_inflight(0);
     app.raw_gpu_demosaic_await_hdr_present = true;
 
     // Call schedule_preloads_with_options with force_neighbors = false.
     // Neighbors should NOT be preloaded since it is deferred.
     app.schedule_preloads_with_options(true, false);
-    assert!(!app.loader.is_loading(1, 12));
-    assert!(!app.loader.is_loading(2, 12));
+    assert!(!app.loader.is_loading(1));
+    assert!(!app.loader.is_loading(2));
 
-    // Now current_is_loading becomes false (load task finished, e.g. on EDR capacity refine after retain)
+    // Now current_is_loading becomes false (load task finished)
     // but raw_gpu_demosaic_await_hdr_present is still true (so current_raw_gpu_path_active is still true).
-    app.loader.finish_image_request(0, 12);
+    app.loader.finish_image_request(0);
 
     // Call schedule_preloads_with_options with force_neighbors = true.
     // It should bypass the defer return and preload neighbor1.
     app.schedule_preloads_with_options(true, true);
-    assert!(app.loader.is_loading(1, 12));
+    assert!(app.loader.is_loading(1));
 }
 
 #[test]
@@ -931,7 +928,7 @@ fn post_transition_background_uploads_are_spaced() {
 fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
     let result = crate::loader::PreviewResult {
         index: 1,
-        generation: 0,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: source_key_for_path(&PathBuf::from("preview.avif")),
         preview_bundle: PreviewBundle::refined(),
         error: None,
@@ -972,7 +969,7 @@ fn current_hdr_plane_ignores_refined_sdr_fallback_install() {
 
     let update = crate::loader::HdrSdrFallbackResult {
         index: 0,
-        generation: app.generation,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: source_key_for_path(&app.image_files[0]),
         fallback: Some(DecodedImage::new(1, 1, vec![255, 255, 255, 255])),
     };
@@ -1172,16 +1169,17 @@ fn asset_update_repaint_policy_centralizes_current_and_tile_rules() {
 }
 
 #[test]
-fn tiled_manager_install_helper_preserves_source_and_generation() {
+fn tiled_manager_install_helper_preserves_source_and_profile() {
     let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
         width: 1024,
         height: 768,
     });
+    let profile = crate::loader::decode_profile_stub();
 
-    let tm = build_tiled_manager_with_best_preview(9, 17, source, None);
+    let tm = build_tiled_manager_with_best_preview(9, profile.clone(), source, None);
 
     assert_eq!(tm.image_index, 9);
-    assert_eq!(tm.generation, 17);
+    assert_eq!(tm.decode_profile, profile);
     assert_eq!(tm.full_width, 1024);
     assert_eq!(tm.full_height, 768);
 }
@@ -1206,28 +1204,41 @@ fn current_hdr_tiled_preview_match_is_index_scoped() {
 }
 
 #[test]
-fn view_change_invalidates_only_tile_manager_generation() {
+fn view_change_clears_pending_tile_requests() {
+    use crate::loader::TilePixelKind;
+    use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
+
     let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
         width: 1024,
         height: 768,
     });
-    let mut tile_manager = Some(TileManager::with_source(4, 9, source));
-    let loader_generation = 3;
+    let mut tile_manager = Some(TileManager::with_source(
+        4,
+        crate::loader::decode_profile_stub(),
+        source,
+    ));
+    tile_manager
+        .as_mut()
+        .unwrap()
+        .pending_tiles
+        .insert(PendingTileKey::new(
+            TileCoord { col: 0, row: 0 },
+            TilePixelKind::Sdr,
+        ));
 
     assert!(invalidate_tile_manager_requests_for_view_change(
         &mut tile_manager
     ));
 
     let tile_manager = tile_manager.expect("tile manager should remain installed");
-    assert_eq!(tile_manager.generation, 10);
-    assert_eq!(loader_generation, 3);
+    assert!(tile_manager.pending_tiles.is_empty());
 }
 
 #[test]
 fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
     let load = LoadResult {
         index: 0,
-        generation: 1,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
             hdr: crate::hdr::types::HdrImageBuffer {
@@ -1256,7 +1267,7 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
 fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
     let load = LoadResult {
         index: 0,
-        generation: 1,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
             hdr: crate::hdr::types::HdrImageBuffer {
@@ -1284,7 +1295,7 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
 fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
     let load = LoadResult {
         index: 0,
-        generation: 1,
+        decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
             hdr: crate::hdr::types::HdrImageBuffer {
@@ -1437,7 +1448,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
     );
 }
 
-fn make_test_app() -> ImageViewerApp {
+pub(crate) fn make_test_app() -> ImageViewerApp {
     let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
     let (lightweight_file_op_tx, _lightweight_file_op_rx) = crossbeam_channel::unbounded();
     let (save_tx, _save_rx) = crossbeam_channel::unbounded();
@@ -1466,6 +1477,7 @@ fn make_test_app() -> ImageViewerApp {
         pixel_region_first_point: None,
         settings: Settings::default(),
         image_files: Vec::new(),
+        cached_image_strip_path_index: None,
         file_byte_len_by_index: Vec::new(),
         file_modified_unix_by_index: Vec::new(),
         current_index: 0,
@@ -1523,6 +1535,8 @@ fn make_test_app() -> ImageViewerApp {
         hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
+        cpu_raw_refinement_pending_indices: HashSet::new(),
+        hq_tiled_preview_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
         ultra_hdr_capacity_sensitive_indices: HashSet::new(),
         animation: None,
@@ -1563,13 +1577,13 @@ fn make_test_app() -> ImageViewerApp {
             tx
         },
         directory_tree_strip_inflight_release_rx: crossbeam_channel::never(),
-        directory_tree_strip_pending_gpu: Vec::new(),
+        directory_tree_strip_pending_gpu_initial: VecDeque::new(),
+        directory_tree_strip_pending_gpu_refined: VecDeque::new(),
+        directory_tree_strip_pending_gpu_next_seq: 0,
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,
-        generation: 0,
-        prefetch_prev_generation: None,
         cached_music_count: None,
         cached_pixels_per_point: 1.0,
         active_modal: None,
@@ -1591,6 +1605,7 @@ fn make_test_app() -> ImageViewerApp {
         pending_preload_after_directory_scan: false,
         directory_tree_strip_bootstrap_after_scan: false,
         directory_tree_strip_bootstrap_frames: 0,
+        strip_preload_cooldown_frames: 0,
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
@@ -1617,6 +1632,7 @@ fn make_test_app() -> ImageViewerApp {
         last_logic_shared_at: None,
         ipc_rx,
         animation_cache: HashMap::new(),
+        installed_display_modes: HashMap::new(),
         tile_manager: None,
         tiled_primary_visible_scratch: HashSet::new(),
         tiled_visible_coords_scratch: Vec::new(),
@@ -1640,6 +1656,9 @@ fn make_test_app() -> ImageViewerApp {
         preload_budget_forward: 100 * 1024 * 1024,
         preload_budget_backward: 100 * 1024 * 1024,
         preload_memory: crate::app::preload_memory::PreloadMemorySnapshot::new(),
+        cached_available_memory_mb: 0,
+        cached_total_memory_mb: 0,
+        prefetch_window_max_distance: crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE,
         context_menu_pos: None,
         context_menu_viewport: None,
         context_menu_label_cache: None,
@@ -1816,7 +1835,7 @@ fn install_current_tiled_hdr_image_refreshes_hdr_osd_line() {
 
     app.install_tiled_image(
         0,
-        app.generation,
+        crate::loader::decode_profile_stub(),
         Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
         Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
         None,
@@ -1925,7 +1944,7 @@ fn evict_distant_prefetch_caches_evicts_all_distant_prefetched_tiled_and_hdr_res
 
     let tm3 = TileManager::with_source(
         3,
-        42,
+        crate::loader::decode_profile_stub(),
         Arc::clone(&dummy_source) as Arc<dyn crate::loader::TiledImageSource>,
     );
     app.prefetched_tiles.insert(3, tm3);
@@ -1987,7 +2006,68 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
 }
 
 #[test]
+fn evict_distant_prefetch_caches_retains_outside_window_while_loading() {
+    use eframe::egui;
+
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("img0.jpg"),
+        PathBuf::from("img1.jpg"),
+        PathBuf::from("img2.jpg"),
+        PathBuf::from("img3.jpg"),
+        PathBuf::from("img4.jpg"),
+        PathBuf::from("img5.jpg"),
+        PathBuf::from("img6.jpg"),
+    ];
+    app.current_index = 0;
+
+    let ctx = egui::Context::default();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+    let handle = ctx.load_texture("distant_loading", color_image, egui::TextureOptions::LINEAR);
+    app.texture_cache.insert(5, handle, 1024, 768, false, 0, 7);
+
+    // Simulate in-flight neighbor preload at idx 5 (outside window distance 2).
+    app.loader.test_register_inflight(5);
+
+    app.evict_distant_prefetch_caches();
+
+    assert!(app.texture_cache.contains(5));
+}
+
+#[test]
+fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
+    use crate::tile_cache::{PIXEL_CACHE, TileCoord};
+
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("img0.jpg"),
+        PathBuf::from("img1.jpg"),
+        PathBuf::from("img2.jpg"),
+        PathBuf::from("img3.jpg"),
+        PathBuf::from("img4.jpg"),
+        PathBuf::from("img5.jpg"),
+        PathBuf::from("img6.jpg"),
+    ];
+    app.current_index = 0;
+
+    let pixels = std::sync::Arc::new(vec![0u8; 16]);
+    PIXEL_CACHE
+        .lock()
+        .insert(4, TileCoord { col: 0, row: 0 }, pixels);
+
+    app.evict_distant_prefetch_caches();
+
+    assert!(
+        PIXEL_CACHE
+            .lock()
+            .get(4, TileCoord { col: 0, row: 0 })
+            .is_none()
+    );
+}
+
+#[test]
 fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
+    use crate::loader::RenderShape;
     use eframe::egui;
 
     let mut app = make_test_app();
@@ -1998,9 +2078,11 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
     let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
     app.texture_cache.insert(1, handle, 2048, 1536, true, 0, 2);
+    app.record_installed_display_mode(1, RenderShape::Tiled);
 
     assert!(app.texture_cache.contains(1));
-    assert!(app.texture_cache.is_preview_placeholder(1));
+    assert!(app.texture_cache.needs_tile_manager(1));
+    assert!(app.index_uses_tiled_pipeline(1));
     assert!(app.tile_manager.is_none());
     assert!(!app.prefetched_tiles.contains_key(&1));
     assert!(!app.hdr_tiled_source_cache.contains_key(&1));
@@ -2008,7 +2090,7 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     app.navigate_to(1, &ctx);
 
     assert_eq!(app.current_image_res, Some((2048, 1536)));
-    assert!(app.loader.is_loading(1, app.generation));
+    assert!(app.loader.is_loading(1));
 }
 
 #[test]
@@ -2016,11 +2098,7 @@ fn test_resolve_initial_position_during_and_after_scan() {
     let mut app = make_test_app();
     let initial_path = PathBuf::from("img2.jpg");
     app.initial_image = Some(initial_path.clone());
-    app.image_files = vec![
-        PathBuf::from("img0.jpg"),
-        PathBuf::from("img1.jpg"),
-        PathBuf::from("img2.jpg"),
-    ];
+    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img2.jpg")];
     app.settings.resume_last_image = true;
     app.settings.last_viewed_image = Some(PathBuf::from("img1.jpg"));
 
@@ -2028,7 +2106,7 @@ fn test_resolve_initial_position_during_and_after_scan() {
     app.scanning = true;
     app.resolve_initial_position();
     // It should find the path in the unsorted/initial files and set current_index
-    assert_eq!(app.current_index, 2);
+    assert_eq!(app.current_index, 1);
     // But initial_image should not be consumed yet because scanning is true
     assert_eq!(app.initial_image, Some(initial_path.clone()));
 
@@ -2036,13 +2114,13 @@ fn test_resolve_initial_position_during_and_after_scan() {
     app.scanning = false;
     app.resolve_initial_position();
     // It should still set current_index to the found path
-    assert_eq!(app.current_index, 2);
+    assert_eq!(app.current_index, 1);
     // And now initial_image should be consumed (set to None)
     assert!(app.initial_image.is_none());
 
     // Case 3: subsequent calls after scanning is done
     app.resolve_initial_position();
-    // Since initial_image was consumed, it should fall back to resume_last_image (img1.jpg)
+    // img1.jpg is not in the list; index stays at img2.jpg (index 1)
     assert_eq!(app.current_index, 1);
 }
 
@@ -2069,6 +2147,19 @@ fn raw_gpu_demosaic_sync_present_waits_for_bake_not_in_flight_pending() {
 }
 
 #[test]
+fn cpu_raw_refinement_pending_keeps_async_repaint_wake() {
+    let mut app = make_test_app();
+    app.current_index = 2;
+
+    app.cpu_raw_refinement_pending_indices.insert(2);
+    assert!(app.cpu_raw_refinement_needs_repaint_wake());
+    assert!(app.raw_async_work_needs_repaint_wake());
+
+    app.cpu_raw_refinement_pending_indices.remove(&2);
+    assert!(!app.cpu_raw_refinement_needs_repaint_wake());
+}
+
+#[test]
 fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
     use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
@@ -2079,8 +2170,6 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     let mut app = make_test_app();
     app.settings.raw_demosaic_mode = RawDemosaicMode::Gpu;
     app.settings.raw_high_quality = true;
-    app.generation = 3;
-    app.loader.set_generation(app.generation);
     app.image_files = vec![PathBuf::from("sentinel_test.cr2")];
     app.current_index = 0;
 
@@ -2142,7 +2231,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     assert!(app.gpu_demosaic_failed_indices.contains(&0));
     assert!(!app.hdr_raw_gpu_demosaic_pending_indices.contains(&0));
     assert!(!app.hdr_image_cache.contains_key(&0));
-    assert!(app.loader.is_loading(0, app.generation));
+    assert!(app.loader.is_loading(0));
     assert_eq!(app.raw_demosaic_mode_for_index(0), RawDemosaicMode::Cpu);
 
     use crate::loader::{LoadResult, LoaderOutput, PreviewBundle, source_key_for_path};
@@ -2150,7 +2239,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     app.loader
         .test_send_loader_output(LoaderOutput::Image(LoadResult {
             index: 0,
-            generation: app.generation,
+            decode_profile: crate::loader::decode_profile_stub(),
             source_key,
             result: Err("synthetic cpu fallback complete".to_string()),
             preview_bundle: PreviewBundle::initial(),
@@ -2162,7 +2251,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             device_id: None,
         }));
     app.process_loaded_images(&ctx, &mut None);
-    assert!(!app.loader.is_loading(0, app.generation));
+    assert!(!app.loader.is_loading(0));
 }
 
 #[test]
@@ -2206,7 +2295,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
     let mut app = make_test_app();
     app.image_files = vec![std::path::PathBuf::from("preupload_test.hdr")];
     app.current_index = 0;
-    app.loader.test_register_inflight(0, app.generation);
+    app.loader.test_register_inflight(0);
     let source_key = source_key_for_path(&app.image_files[0]);
     let ctx = egui::Context::default();
 
@@ -2214,7 +2303,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
     app.loader
         .test_send_loader_output(LoaderOutput::Image(LoadResult {
             index: 0,
-            generation: app.generation,
+            decode_profile: crate::loader::decode_profile_stub(),
             source_key,
             result: Ok(crate::loader::ImageData::Hdr {
                 hdr,
@@ -2229,11 +2318,8 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             device_id: Some(999),
         }));
     app.process_loaded_images(&ctx, &mut None);
-    assert!(!app.loader.is_loading(0, app.generation));
-    assert!(
-        app.loader.poll().is_none(),
-        "stale device_id must drop planes without repush"
-    );
+    assert!(!app.loader.is_loading(0));
+    assert!(app.loader.poll().is_none());
     assert!(
         app.current_hdr_image.is_some(),
         "load result should still install after registration skip"
@@ -2252,11 +2338,11 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
     };
     let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
         .expect("background plane upload");
-    app.loader.test_register_inflight(0, app.generation);
+    app.loader.test_register_inflight(0);
     app.loader
         .test_send_loader_output(LoaderOutput::Image(LoadResult {
             index: 0,
-            generation: app.generation,
+            decode_profile: crate::loader::decode_profile_stub(),
             source_key,
             result: Ok(crate::loader::ImageData::Hdr {
                 hdr,
@@ -2271,11 +2357,8 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             device_id: Some(app.current_device_id),
         }));
     app.process_loaded_images(&ctx, &mut None);
-    assert!(!app.loader.is_loading(0, app.generation));
-    assert!(
-        app.loader.poll().is_none(),
-        "missing frame context must drop planes without repush"
-    );
+    assert!(!app.loader.is_loading(0));
+    assert!(app.loader.poll().is_none());
     assert!(
         app.current_hdr_image.is_some(),
         "load result should still install after registration skip"
@@ -2615,12 +2698,12 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
             index,
             &decoded,
             crate::loader::PreviewStage::Refined,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
             None,
             &ctx,
             0,
             3,
             128,
-            false,
         );
     }
 
@@ -2649,12 +2732,12 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
         0,
         &decoded,
         crate::loader::PreviewStage::Refined,
+        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
         None,
         &ctx,
         0,
         1,
         128,
-        false,
     );
 
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);

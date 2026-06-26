@@ -25,7 +25,7 @@ use crate::ui::utils::{
 };
 use eframe::egui::{self, Vec2};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -458,6 +458,7 @@ impl ImageViewerApp {
             save_tx,
             initial_image,
             image_files: Vec::new(),
+            cached_image_strip_path_index: None,
             file_byte_len_by_index: Vec::new(),
             file_modified_unix_by_index: Vec::new(),
             current_index: 0,
@@ -475,6 +476,7 @@ impl ImageViewerApp {
             pending_preload_after_directory_scan: false,
             directory_tree_strip_bootstrap_after_scan: false,
             directory_tree_strip_bootstrap_frames: 0,
+            strip_preload_cooldown_frames: 0,
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
@@ -528,6 +530,8 @@ impl ImageViewerApp {
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
+            cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
+            hq_tiled_preview_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,
@@ -558,13 +562,14 @@ impl ImageViewerApp {
             directory_tree_strip_preview_rx,
             directory_tree_strip_inflight_release_tx,
             directory_tree_strip_inflight_release_rx,
-            directory_tree_strip_pending_gpu: Vec::new(),
+            directory_tree_strip_pending_gpu_initial: VecDeque::new(),
+            directory_tree_strip_pending_gpu_refined: VecDeque::new(),
+            directory_tree_strip_pending_gpu_next_seq: 0,
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,
-            generation: 0,
-            prefetch_prev_generation: None,
+
             cached_music_count: None,
             cached_pixels_per_point: 1.0,
             active_modal: None,
@@ -598,6 +603,7 @@ impl ImageViewerApp {
             last_logic_shared_at: None,
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
+            installed_display_modes: std::collections::HashMap::new(),
             tile_manager: None,
             tiled_primary_visible_scratch: HashSet::new(),
             tiled_visible_coords_scratch: Vec::new(),
@@ -613,6 +619,9 @@ impl ImageViewerApp {
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
             preload_memory: crate::app::preload_memory::PreloadMemorySnapshot::new(),
+            cached_available_memory_mb: 0,
+            cached_total_memory_mb: 0,
+            prefetch_window_max_distance: crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE,
             file_op_rx,
             file_op_tx,
             lightweight_file_op_tx,
@@ -703,6 +712,7 @@ impl ImageViewerApp {
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader
             .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
+        app.loader.set_output_mode(app.hdr_capabilities.output_mode);
         app.sync_loader_hdr_callback_upload_snapshot();
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",

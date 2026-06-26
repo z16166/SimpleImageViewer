@@ -51,6 +51,8 @@ impl ImageViewerApp {
         // Clears all per-index RAW OSD rows (directory switch / full list reorder).
         self.raw_metadata.clear();
         self.hdr_in_flight_fallback_refinements.clear();
+        self.cpu_raw_refinement_pending_indices.clear();
+        self.hq_tiled_preview_pending_indices.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
@@ -85,6 +87,8 @@ impl ImageViewerApp {
         self.hdr_raw_gpu_demosaic_baked_indices.remove(&index);
         self.raw_gpu_embedded_bootstrap_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
+        self.cpu_raw_refinement_pending_indices.remove(&index);
+        self.hq_tiled_preview_pending_indices.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
@@ -175,9 +179,8 @@ impl ImageViewerApp {
             return;
         }
         preload_debug!(
-            "[PreloadDebug] schedule after HDR capacity refresh: cur={} gen={}",
+            "[PreloadDebug] schedule after HDR capacity refresh: cur={}",
             self.current_index,
-            self.generation
         );
         self.maybe_prefetch_startup_raw_open();
         self.schedule_preloads(true);
@@ -324,6 +327,7 @@ impl ImageViewerApp {
             raw_retain.len()
         );
 
+        self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.clear_preloaded_assets_for_capacity_change();
 
@@ -343,14 +347,11 @@ impl ImageViewerApp {
             ) {
                 self.refresh_current_hdr_presentation_after_capacity_refine();
             } else {
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
                 self.tile_manager = None;
                 self.set_current_image_resolution(None);
                 self.animation = None;
                 self.loader.request_load(
                     self.current_index,
-                    self.generation,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
@@ -365,8 +366,7 @@ impl ImageViewerApp {
     }
 
     fn reload_current_after_hdr_sdr_output_boundary_change(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
+        self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.clear_preloaded_assets_for_capacity_change();
 
@@ -389,10 +389,8 @@ impl ImageViewerApp {
         self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
-        self.prefetch_prev_generation = None;
         self.loader.request_load(
             idx,
-            self.generation,
             self.image_files[idx].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(idx),

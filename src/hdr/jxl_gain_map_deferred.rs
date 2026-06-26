@@ -60,6 +60,8 @@ pub(crate) enum JxlJhgmFrameOutcome {
     GpuDeferred(HdrImageBuffer),
     /// Forward gain map composed on the CPU.
     CpuComposed(HdrImageBuffer),
+    /// ISO forward gain-map SDR baseline only (directory-tree strip fast path).
+    IsoGainMapBaseline(Vec<u8>),
 }
 
 /// Quantize libjxl primary floats into ISO gain-map baseline sRGB u8 samples.
@@ -222,6 +224,7 @@ pub(crate) fn finish_jxl_jhgm_frame(
     width: u32,
     height: u32,
     metadata: &HdrImageMetadata,
+    strip_baseline_only: bool,
 ) -> JxlJhgmFrameOutcome {
     let Some(jhgm_box) = jhgm_box else {
         return JxlJhgmFrameOutcome::Unprocessed;
@@ -248,6 +251,11 @@ pub(crate) fn finish_jxl_jhgm_frame(
     }
 
     let color_space = metadata.color_space_hint();
+    if strip_baseline_only {
+        return JxlJhgmFrameOutcome::IsoGainMapBaseline(jxl_rgba_f32_to_iso_sdr_baseline(
+            rgba, color_space, metadata,
+        ));
+    }
     match apply_jxl_jhgm_gain_map_gpu_deferred(
         &parsed,
         target_hdr_capacity,
@@ -308,7 +316,7 @@ mod tests {
     fn jxl_gpu_deferred_without_jhgm_box_returns_unprocessed() {
         let rgba = vec![1.0_f32, 0.5, 0.25, 1.0];
         let meta = HdrImageMetadata::default();
-        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta);
+        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta, false);
         assert!(matches!(out, JxlJhgmFrameOutcome::Unprocessed));
     }
 

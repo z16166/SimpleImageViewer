@@ -226,12 +226,8 @@ impl ImageViewerApp {
             }
             self.error_message = None;
             self.is_font_error = false;
-
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
             self.loader.request_load(
                 self.current_index,
-                self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
@@ -409,12 +405,8 @@ impl ImageViewerApp {
             }
             self.error_message = None;
             self.is_font_error = false;
-
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
             self.loader.request_load(
                 self.current_index,
-                self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),

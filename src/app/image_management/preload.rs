@@ -48,10 +48,11 @@ impl ImageViewerApp {
         if self.preload_deferred_for_hdr_capacity {
             return;
         }
+        self.sync_loader_preload_plan();
 
         let cur = self.current_index.min(n.saturating_sub(1));
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading_any(cur);
+        let current_is_loading = self.loader.is_loading(cur);
         let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
             &self.image_files,
             cur,
@@ -66,7 +67,6 @@ impl ImageViewerApp {
         let path = self.image_files[cur].clone();
         self.loader.request_load(
             cur,
-            self.generation,
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(cur),
@@ -98,12 +98,12 @@ impl ImageViewerApp {
             );
             return;
         }
+        self.sync_loader_preload_plan();
         let cur = self.current_index;
         preload_debug!(
-            "[PreloadDebug] schedule start: cur={} forward={} generation={} preload_enabled={}",
+            "[PreloadDebug] schedule start: cur={} forward={} preload_enabled={}",
             cur,
             forward,
-            self.generation,
             self.settings.preload
         );
 
@@ -111,7 +111,7 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let mut current_is_loading = self.loader.is_loading_any(cur);
+        let mut current_is_loading = self.loader.is_loading(cur);
         preload_debug!(
             "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
             cur,
@@ -130,21 +130,18 @@ impl ImageViewerApp {
         {
             if current_missing_hdr_plane && current_has_asset {
                 preload_debug!(
-                    "[PreloadDebug][RAW] request current reload: idx={} gen={} reason=missing_hdr_plane",
+                    "[PreloadDebug][RAW] request current reload: idx={} reason=missing_hdr_plane",
                     cur,
-                    self.generation,
                 );
             }
             let path = self.image_files[cur].clone();
             preload_debug!(
-                "[PreloadDebug] request current: idx={} gen={} path={}",
+                "[PreloadDebug] request current: idx={} path={}",
                 cur,
-                self.generation,
                 path.display()
             );
             self.loader.request_load(
                 cur,
-                self.generation,
                 path,
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
@@ -185,9 +182,8 @@ impl ImageViewerApp {
             return;
         }
 
-        self.preload_memory.refresh_if_stale();
-        let available_memory_mb = self.preload_memory.available_memory_mb();
-        let total_memory_mb = self.preload_memory.total_memory_mb();
+        let available_memory_mb = self.cached_available_memory_mb;
+        let total_memory_mb = self.cached_total_memory_mb;
         let memory_guard_threshold_mb =
             background_preload_memory_guard_threshold_mb(total_memory_mb);
         if should_skip_background_preloads_for_memory(available_memory_mb, total_memory_mb) {
@@ -215,9 +211,16 @@ impl ImageViewerApp {
 
         // Determine the "primary" and "secondary" directions.
         // Primary gets the larger budget; secondary gets the smaller one.
+        let strip_bootstrap = self.directory_tree_strip_bootstrap_after_scan
+            && self.directory_tree_list_previews_active();
         let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
+            let primary_max = if strip_bootstrap {
+                n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
+            } else {
+                MAX_PRELOAD_FORWARD
+            };
             (
-                MAX_PRELOAD_FORWARD,
+                primary_max,
                 self.preload_budget_forward,
                 MAX_PRELOAD_BACKWARD,
                 self.preload_budget_backward,
@@ -231,16 +234,32 @@ impl ImageViewerApp {
             )
         };
 
-        // Collect indices for each direction
-        let primary_indices: Vec<usize> = (1..=n.min(primary_max + 10)) // +10 headroom to skip tiled images
-            .map(|i| {
-                if forward {
-                    (cur + i) % n
-                } else {
-                    (cur + n - i) % n
+        // Collect indices for each direction.
+        let primary_indices: Vec<usize> = if strip_bootstrap && forward {
+            let cap = n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
+            let mut ordered = Vec::with_capacity(cap);
+            let mut seen = std::collections::HashSet::new();
+            let mut push = |idx: usize| {
+                if idx < cap && seen.insert(idx) {
+                    ordered.push(idx);
                 }
-            })
-            .collect();
+            };
+            push(cur);
+            for idx in 0..cap {
+                push(idx);
+            }
+            ordered
+        } else {
+            (1..=n.min(primary_max + 10))
+                .map(|i| {
+                    if forward {
+                        (cur + i) % n
+                    } else {
+                        (cur + n - i) % n
+                    }
+                })
+                .collect()
+        };
 
         let secondary_indices: Vec<usize> = (1..=n.min(secondary_max + 10))
             .map(|i| {
@@ -306,7 +325,7 @@ impl ImageViewerApp {
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
-            let is_loading = self.loader.is_loading_any(idx);
+            let is_loading = self.loader.is_loading(idx);
             if has_asset || is_loading {
                 preload_debug!(
                     "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
@@ -358,10 +377,9 @@ impl ImageViewerApp {
                         budget,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] request oversized preload: name={} idx={} gen={} file_size={} decode_budget={} budget={} path={}",
+                            "[PreloadDebug] request oversized preload: name={} idx={} file_size={} decode_budget={} budget={} path={}",
                             direction_name,
                             idx,
-                            self.generation,
                             file_size,
                             decode_budget_bytes,
                             budget,
@@ -394,10 +412,9 @@ impl ImageViewerApp {
             }
 
             preload_debug!(
-                "[PreloadDebug] request preload: name={} idx={} gen={} file_size={} decode_budget={} used_before={} path={}",
+                "[PreloadDebug] request preload: name={} idx={} file_size={} decode_budget={} used_before={} path={}",
                 direction_name,
                 idx,
-                self.generation,
                 file_size,
                 decode_budget_bytes,
                 new_bytes,
@@ -405,7 +422,6 @@ impl ImageViewerApp {
             );
             self.loader.request_load(
                 idx,
-                self.generation,
                 path.clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),

@@ -27,6 +27,53 @@ use crate::app::index_cache_permute::permute_usize_hashmap;
 /// Maximum strip preview textures retained in memory (LRU eviction).
 pub(crate) const DIRECTORY_TREE_STRIP_CACHE_MAX: usize = 128;
 
+/// Provenance of pixels stored in the directory-tree strip cache.
+///
+/// Replacement decisions use tag quality rank, not decoded or texture dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum StripPreviewBufferTag {
+    /// Black deferred SDR placeholder (`DecodedImage::sdr_deferred_placeholder`); never stored.
+    SdrDeferredPlaceholder,
+    /// Main-window `texture_cache` SDR clone (may be animated HDR placeholder or dark iso baseline).
+    MainWindowTextureCacheSdr,
+    /// Main-window tile-manager preview texture clone.
+    MainWindowTiledPreview,
+    /// Preload deferred SDR upload pixels, or embedded GPU-RAW bootstrap before float readback.
+    PreloadSdrFallback,
+    /// ISO gain-map deferred baseline only (`PreviewStage::Initial`).
+    IsoGainMapBaseline,
+    /// Strip-sized decode from cold worker, tiled source, or static SDR install path.
+    StripDecodedPixels,
+    /// CPU tone-mapped HDR strip (float `rgba_f32` tone-mapped on CPU).
+    HdrToneMappedStrip,
+    /// Composed HDR strip after iso-deferred gain-map apply (`PreviewStage::Refined` upgrade).
+    HdrComposedStrip,
+}
+
+impl StripPreviewBufferTag {
+    /// Number of [`PreviewStage`] variants. Each tag occupies this many consecutive ranks
+    /// so that stage upgrades within the same tag always increase the rank.
+    const PREVIEW_STAGE_COUNT: u16 = 2;
+
+    fn quality_rank(self, stage: PreviewStage) -> u16 {
+        let base = match self {
+            Self::SdrDeferredPlaceholder => 0,
+            Self::MainWindowTextureCacheSdr => 1,
+            Self::MainWindowTiledPreview => 2,
+            Self::PreloadSdrFallback => 3,
+            Self::IsoGainMapBaseline => 4,
+            Self::StripDecodedPixels => 5,
+            Self::HdrToneMappedStrip => 6,
+            Self::HdrComposedStrip => 7,
+        };
+        let stage_bonus = match stage {
+            PreviewStage::Initial => 0,
+            PreviewStage::Refined => 1,
+        };
+        base * Self::PREVIEW_STAGE_COUNT + stage_bonus
+    }
+}
+
 pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub index: usize,
     pub path: PathBuf,
@@ -34,6 +81,7 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub decoded: DecodedImage,
     pub logical: (u32, u32),
     pub stage: PreviewStage,
+    pub buffer_tag: StripPreviewBufferTag,
 }
 
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
@@ -42,15 +90,19 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub decoded: DecodedImage,
     pub stage: PreviewStage,
     pub logical: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    /// Monotonic insertion-order sequence number so that flush can merge the
+    /// per-stage queues in FIFO order.
+    pub seq: u64,
 }
 
 /// Limit GPU texture uploads per paint pass (checklist #3).
-pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 4;
+pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
-    preview_max_side: HashMap<usize, u32>,
+    preview_buffer_tag: HashMap<usize, StripPreviewBufferTag>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
     lru_order: VecDeque<usize>,
@@ -61,7 +113,7 @@ impl Default for DirectoryTreeStripCache {
     fn default() -> Self {
         Self {
             textures: HashMap::new(),
-            preview_max_side: HashMap::new(),
+            preview_buffer_tag: HashMap::new(),
             preview_stage: HashMap::new(),
             logical_sizes: HashMap::new(),
             lru_order: VecDeque::new(),
@@ -84,7 +136,7 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn remove_index(&mut self, index: usize) {
         self.textures.remove(&index);
-        self.preview_max_side.remove(&index);
+        self.preview_buffer_tag.remove(&index);
         self.preview_stage.remove(&index);
         self.logical_sizes.remove(&index);
         if let Some(pos) = self.lru_order.iter().position(|&cached| cached == index) {
@@ -140,30 +192,57 @@ impl DirectoryTreeStripCache {
         false
     }
 
-    pub(crate) fn cached_preview_max_side(&self, index: usize) -> Option<u32> {
-        self.preview_max_side.get(&index).copied()
+    pub(crate) fn cached_buffer_tag(&self, index: usize) -> Option<StripPreviewBufferTag> {
+        self.preview_buffer_tag.get(&index).copied()
     }
 
+    pub(crate) fn cached_preview_stage(&self, index: usize) -> Option<PreviewStage> {
+        self.preview_stage.get(&index).copied()
+    }
+
+    /// Insert a strip texture from the main-window texture cache.
+    ///
+    /// Takes `&TextureHandle` to avoid cloning when the strip cache already
+    /// holds an equal-or-better entry for this index. The clone only happens
+    /// after [`decide_strip_preview_replace`] confirms the replacement.
     pub(crate) fn insert_from_texture_handle(
         &mut self,
         index: usize,
-        texture: egui::TextureHandle,
+        texture: &egui::TextureHandle,
         stage: PreviewStage,
-        preview_max_side: u32,
+        buffer_tag: StripPreviewBufferTag,
         logical: Option<(u32, u32)>,
         _current_index: usize,
         _total_count: usize,
     ) {
+        let size = texture.size();
+        let preview_w = size[0] as u32;
+        let preview_h = size[1] as u32;
+        let cached_tag = self.preview_buffer_tag.get(&index).copied();
+        let cached_stage = self.preview_stage.get(&index).copied();
+        let cached_dims = self.preview_dimensions(index);
+        if !decide_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "insert_from_texture_handle",
+            cached_tag,
+            cached_stage,
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical,
+            preview_w,
+            preview_h,
+            decoded: None,
+        }) {
+            return;
+        }
         if let Some((logical_w, logical_h)) = logical {
-            let size = texture.size();
-            if !preview_aspect_matches_logical(size[0] as u32, size[1] as u32, logical_w, logical_h)
-            {
-                return;
-            }
             self.logical_sizes.insert(index, (logical_w, logical_h));
         }
-        self.textures.insert(index, texture);
-        self.preview_max_side.insert(index, preview_max_side);
+        self.textures.insert(index, texture.clone());
+        self.preview_buffer_tag.insert(index, buffer_tag);
         self.preview_stage.insert(index, stage);
         self.touch_lru(index);
         self.bump_gpu_revision();
@@ -175,46 +254,34 @@ impl DirectoryTreeStripCache {
         index: usize,
         decoded: &DecodedImage,
         stage: PreviewStage,
+        buffer_tag: StripPreviewBufferTag,
         logical_size: Option<(u32, u32)>,
         ctx: &egui::Context,
         _current_index: usize,
         _total_count: usize,
         strip_max_side: u32,
-        allow_initial_over_refined: bool,
     ) {
-        if decoded.is_sdr_deferred_placeholder() {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][StripCache] upsert skip idx={} reason=black_placeholder",
-                index
-            );
-            return;
-        }
-        let cached_max_side = self.preview_max_side.get(&index).copied();
+        let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
-        let cached_logical = self.logical_sizes.get(&index).copied();
-        if !should_replace_strip_thumbnail(
-            cached_max_side,
+        let cached_dims = self.preview_dimensions(index);
+        if !decide_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "upsert_from_decoded",
+            cached_tag,
             cached_stage,
-            cached_logical,
-            decoded,
-            stage,
-            logical_size,
-            strip_max_side,
-            allow_initial_over_refined,
-        ) {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][StripCache] upsert skip idx={} reason=should_replace_false \
-                 cached_max_side={cached_max_side:?} cached_stage={cached_stage:?} \
-                 new={}x{} stage={stage:?} logical={logical_size:?}",
-                index,
-                decoded.width,
-                decoded.height
-            );
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical_size,
+            preview_w: decoded.width,
+            preview_h: decoded.height,
+            decoded: Some(decoded),
+        }) {
             return;
         }
-        let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
+        let thumb = match downsample_decoded_for_strip(decoded.clone(), strip_max_side) {
             Ok(thumb) => thumb,
             Err(err) => {
                 log::warn!(
@@ -237,12 +304,11 @@ impl DirectoryTreeStripCache {
             color_image,
             TextureOptions::LINEAR,
         );
-        let preview_max_side = thumb.width.max(thumb.height);
         if let Some(logical) = logical_size {
             self.logical_sizes.insert(index, logical);
         }
         self.textures.insert(index, handle);
-        self.preview_max_side.insert(index, preview_max_side);
+        self.preview_buffer_tag.insert(index, buffer_tag);
         self.preview_stage.insert(index, stage);
         self.touch_lru(index);
         self.bump_gpu_revision();
@@ -251,7 +317,7 @@ impl DirectoryTreeStripCache {
         self.evict_if_needed();
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
-            "[PreloadDebug][StripCache] upsert ok idx={} tex={}x{} logical={logical_size:?} \
+            "[PreloadDebug][StripCache] upsert ok idx={} tag={buffer_tag:?} tex={}x{} logical={logical_size:?} \
              cache_count={} evicted={} rev={}",
             index,
             thumb.width,
@@ -273,8 +339,8 @@ impl DirectoryTreeStripCache {
         if let Some(tex) = self.textures.remove(&from) {
             self.textures.insert(to, tex);
         }
-        if let Some(max_side) = self.preview_max_side.remove(&from) {
-            self.preview_max_side.insert(to, max_side);
+        if let Some(tag) = self.preview_buffer_tag.remove(&from) {
+            self.preview_buffer_tag.insert(to, tag);
         }
         if let Some(stage) = self.preview_stage.remove(&from) {
             self.preview_stage.insert(to, stage);
@@ -298,7 +364,7 @@ impl DirectoryTreeStripCache {
     #[allow(dead_code)]
     pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
         remap_partial_hashmap(&mut self.textures, old_to_new);
-        remap_partial_hashmap(&mut self.preview_max_side, old_to_new);
+        remap_partial_hashmap(&mut self.preview_buffer_tag, old_to_new);
         remap_partial_hashmap(&mut self.preview_stage, old_to_new);
         remap_partial_hashmap(&mut self.logical_sizes, old_to_new);
         self.lru_order.retain_mut(|index| {
@@ -315,7 +381,7 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
         permute_usize_hashmap(&mut self.textures, old_to_new);
-        permute_usize_hashmap(&mut self.preview_max_side, old_to_new);
+        permute_usize_hashmap(&mut self.preview_buffer_tag, old_to_new);
         permute_usize_hashmap(&mut self.preview_stage, old_to_new);
         permute_usize_hashmap(&mut self.logical_sizes, old_to_new);
         for index in &mut self.lru_order {
@@ -327,7 +393,7 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
         self.textures.retain(|index, _| keep(*index));
-        self.preview_max_side.retain(|index, _| keep(*index));
+        self.preview_buffer_tag.retain(|index, _| keep(*index));
         self.preview_stage.retain(|index, _| keep(*index));
         self.logical_sizes.retain(|index, _| keep(*index));
         self.lru_order.retain(|index| keep(*index));
@@ -337,7 +403,7 @@ impl DirectoryTreeStripCache {
     /// logical sizes are kept so regeneration can validate aspect ratio.
     pub(crate) fn clear_gpu_textures(&mut self) {
         self.textures.clear();
-        self.preview_max_side.clear();
+        self.preview_buffer_tag.clear();
         self.preview_stage.clear();
         self.lru_order.clear();
         self.bump_gpu_revision();
@@ -345,7 +411,7 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn clear_all(&mut self) {
         self.textures.clear();
-        self.preview_max_side.clear();
+        self.preview_buffer_tag.clear();
         self.preview_stage.clear();
         self.logical_sizes.clear();
         self.lru_order.clear();
@@ -366,7 +432,7 @@ impl DirectoryTreeStripCache {
                     self.textures.len().saturating_sub(1)
                 );
                 self.textures.remove(&idx);
-                self.preview_max_side.remove(&idx);
+                self.preview_buffer_tag.remove(&idx);
                 self.preview_stage.remove(&idx);
                 self.logical_sizes.remove(&idx);
                 evicted = true;
@@ -395,77 +461,283 @@ pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
     decoded.rgba().len() == decoded.width as usize * decoded.height as usize * 4
 }
 
-/// Max side of the strip thumbnail after `downsample_decoded_for_strip`, not the source decode.
-pub(crate) fn strip_thumb_max_side(decoded: &DecodedImage, strip_max_side: u32) -> u32 {
-    let source_max = decoded.width.max(decoded.height);
-    if source_max <= strip_max_side {
-        return source_max;
-    }
-    let scale = strip_max_side as f32 / source_max as f32;
-    let out_w = ((decoded.width as f32 * scale).round() as u32).max(1);
-    let out_h = ((decoded.height as f32 * scale).round() as u32).max(1);
-    out_w.max(out_h)
+pub(crate) fn strip_preview_quality_rank(
+    tag: StripPreviewBufferTag,
+    stage: PreviewStage,
+) -> u16 {
+    tag.quality_rank(stage)
 }
 
-pub(crate) fn should_replace_strip_thumbnail(
-    cached_max_side: Option<u32>,
-    cached_stage: Option<PreviewStage>,
-    cached_logical: Option<(u32, u32)>,
-    decoded: &DecodedImage,
-    stage: PreviewStage,
-    logical_size: Option<(u32, u32)>,
-    strip_max_side: u32,
-    allow_initial_over_refined: bool,
-) -> bool {
-    if decoded.is_sdr_deferred_placeholder() {
-        return false;
-    }
-    if !decoded_rgba_size_valid(decoded) {
-        return false;
-    }
-    if let Some((logical_w, logical_h)) = logical_size
-        && !preview_aspect_matches_logical(decoded.width, decoded.height, logical_w, logical_h)
+/// Buffer tag for HDR-related strip previews.
+///
+/// When CPU `rgba_f32` is still empty and only a deferred/black placeholder is available,
+/// callers must use [`StripPreviewBufferTag::SdrDeferredPlaceholder`] (lowest rank) rather than
+/// [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps any existing real preview.
+pub(crate) fn strip_buffer_tag_for_hdr_preview(
+    hdr_has_float_pixels: bool,
+    fallback_is_deferred_placeholder: bool,
+    decoded_is_deferred_placeholder: bool,
+    iso_deferred_empty_rgba: bool,
+) -> StripPreviewBufferTag {
+    if decoded_is_deferred_placeholder
+        || (!hdr_has_float_pixels && fallback_is_deferred_placeholder)
     {
-        return false;
+        return StripPreviewBufferTag::SdrDeferredPlaceholder;
     }
-    if logical_size.is_some_and(|logical| cached_logical != Some(logical)) {
-        return true;
+    if iso_deferred_empty_rgba {
+        return StripPreviewBufferTag::IsoGainMapBaseline;
     }
-    if logical_size.is_some_and(|(logical_w, logical_h)| {
-        decoded.width == logical_w && decoded.height == logical_h && stage == PreviewStage::Refined
-    }) {
-        return true;
+    if hdr_has_float_pixels {
+        return StripPreviewBufferTag::HdrToneMappedStrip;
     }
-    let new_max_side = strip_thumb_max_side(decoded, strip_max_side);
-    match cached_max_side {
-        None => true,
-        Some(cached_max_side) => {
-            if stage == PreviewStage::Refined && cached_stage == Some(PreviewStage::Initial) {
-                return true;
-            }
-            if stage == PreviewStage::Initial
-                && cached_stage == Some(PreviewStage::Refined)
-                && allow_initial_over_refined
-            {
-                return true;
-            }
-            new_max_side > cached_max_side
+    // Bootstrap or other real SDR fallback before float HDR readback — not tone-mapped yet.
+    StripPreviewBufferTag::PreloadSdrFallback
+}
+
+/// Inputs for a single strip-preview replace decision (decoded or texture path).
+#[allow(dead_code)] // several fields are read only by preload-debug logging
+pub(crate) struct StripPreviewReplaceParams<'a> {
+    pub index: usize,
+    pub source: &'static str,
+    pub cached_tag: Option<StripPreviewBufferTag>,
+    pub cached_stage: Option<PreviewStage>,
+    pub cached_logical: Option<(u32, u32)>,
+    pub cached_preview_w: Option<u32>,
+    pub cached_preview_h: Option<u32>,
+    pub incoming_tag: StripPreviewBufferTag,
+    pub incoming_stage: PreviewStage,
+    pub incoming_logical: Option<(u32, u32)>,
+    pub preview_w: u32,
+    pub preview_h: u32,
+    pub decoded: Option<&'a DecodedImage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StripPreviewReplaceOutcome {
+    AllowEmptySlot,
+    AllowHigherRank { cached_rank: u16, incoming_rank: u16 },
+    RejectDeferredPlaceholder,
+    RejectBlackPlaceholderTag,
+    RejectInvalidRgba,
+    RejectAspectMismatch,
+    RejectRankNotHigher { cached_rank: u16, incoming_rank: u16 },
+}
+
+impl StripPreviewReplaceOutcome {
+    fn allows_replace(self) -> bool {
+        matches!(
+            self,
+            Self::AllowEmptySlot | Self::AllowHigherRank { .. }
+        )
+    }
+
+    #[cfg(feature = "preload-debug")]
+    fn reason_label(self) -> &'static str {
+        match self {
+            Self::AllowEmptySlot => "empty_slot",
+            Self::AllowHigherRank { .. } => "higher_rank",
+            Self::RejectDeferredPlaceholder => "sdr_deferred_placeholder",
+            Self::RejectBlackPlaceholderTag => "black_placeholder_tag",
+            Self::RejectInvalidRgba => "invalid_rgba",
+            Self::RejectAspectMismatch => "aspect_mismatch",
+            Self::RejectRankNotHigher { .. } => "rank_not_higher",
         }
     }
 }
 
+fn evaluate_strip_preview_replace(
+    params: &StripPreviewReplaceParams<'_>,
+) -> StripPreviewReplaceOutcome {
+    if params.incoming_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
+        return StripPreviewReplaceOutcome::RejectBlackPlaceholderTag;
+    }
+    if let Some(decoded) = params.decoded {
+        if decoded.is_sdr_deferred_placeholder() {
+            return StripPreviewReplaceOutcome::RejectDeferredPlaceholder;
+        }
+        if !decoded_rgba_size_valid(decoded) {
+            return StripPreviewReplaceOutcome::RejectInvalidRgba;
+        }
+    }
+    if let Some((logical_w, logical_h)) = params.incoming_logical
+        && !preview_aspect_matches_logical(
+            params.preview_w,
+            params.preview_h,
+            logical_w,
+            logical_h,
+        )
+    {
+        return StripPreviewReplaceOutcome::RejectAspectMismatch;
+    }
+    match params.cached_tag {
+        None => StripPreviewReplaceOutcome::AllowEmptySlot,
+        Some(cached) => {
+            let incoming_rank =
+                strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
+            let cached_rank = strip_preview_quality_rank(
+                cached,
+                params.cached_stage.unwrap_or(PreviewStage::Initial),
+            );
+            if incoming_rank > cached_rank {
+                StripPreviewReplaceOutcome::AllowHigherRank {
+                    cached_rank,
+                    incoming_rank,
+                }
+            } else {
+                StripPreviewReplaceOutcome::RejectRankNotHigher {
+                    cached_rank,
+                    incoming_rank,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "preload-debug")]
+fn strip_preview_rgba_debug_hint(decoded: &DecodedImage) -> String {
+    let rgba = decoded.rgba();
+    let sample_bytes = rgba.len().min(4096);
+    let mut max_luma = 0_u8;
+    let mut nonzero = 0_usize;
+    for px in rgba[..sample_bytes].chunks_exact(4) {
+        let luma = px[0].max(px[1]).max(px[2]);
+        max_luma = max_luma.max(luma);
+        if luma > 0 {
+            nonzero += 1;
+        }
+    }
+    format!(
+        "placeholder={} max_luma={max_luma} nonzero_sample_px={nonzero}",
+        decoded.is_sdr_deferred_placeholder()
+    )
+}
+
+#[cfg(feature = "preload-debug")]
+fn log_strip_preview_replace_decision(
+    params: &StripPreviewReplaceParams<'_>,
+    outcome: StripPreviewReplaceOutcome,
+) {
+    let decision = if outcome.allows_replace() {
+        "allow"
+    } else {
+        "reject"
+    };
+    let incoming_rank =
+        strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
+    let cached_rank = params.cached_tag.map(|tag| {
+        strip_preview_quality_rank(tag, params.cached_stage.unwrap_or(PreviewStage::Initial))
+    });
+    let aspect_ok = params.incoming_logical.is_none_or(|(lw, lh)| {
+        preview_aspect_matches_logical(params.preview_w, params.preview_h, lw, lh)
+    });
+    let cached_aspect_ok = match (
+        params.cached_preview_w,
+        params.cached_preview_h,
+        params.cached_logical,
+    ) {
+        (Some(cw), Some(ch), Some((lw, lh))) => {
+            preview_aspect_matches_logical(cw, ch, lw, lh)
+        }
+        _ => false,
+    };
+    let pixel_hint = params
+        .decoded
+        .map(strip_preview_rgba_debug_hint)
+        .unwrap_or_else(|| "n/a".to_string());
+    crate::preload_debug!(
+        "[PreloadDebug][StripReplace] idx={} source={} decision={decision} reason={} \
+         cached_tag={:?} cached_stage={:?} cached_rank={cached_rank:?} \
+         cached_tex={}x{} cached_logical={:?} cached_aspect_ok={cached_aspect_ok} \
+         incoming_tag={:?} incoming_stage={:?} incoming_rank={incoming_rank} \
+         incoming_tex={}x{} incoming_logical={:?} aspect_ok={aspect_ok} pixel_hint={pixel_hint}",
+        params.index,
+        params.source,
+        outcome.reason_label(),
+        params.cached_tag,
+        params.cached_stage,
+        params.cached_preview_w.unwrap_or(0),
+        params.cached_preview_h.unwrap_or(0),
+        params.cached_logical,
+        params.incoming_tag,
+        params.incoming_stage,
+        params.preview_w,
+        params.preview_h,
+        params.incoming_logical,
+    );
+}
+
+/// Single gate for strip-preview replacement; logs the full decision under `preload-debug`.
+pub(crate) fn decide_strip_preview_replace(params: &StripPreviewReplaceParams<'_>) -> bool {
+    let outcome = evaluate_strip_preview_replace(params);
+    #[cfg(feature = "preload-debug")]
+    log_strip_preview_replace_decision(params, outcome);
+    outcome.allows_replace()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn should_replace_strip_preview(
+    cached_tag: Option<StripPreviewBufferTag>,
+    cached_stage: Option<PreviewStage>,
+    decoded: &DecodedImage,
+    incoming_tag: StripPreviewBufferTag,
+    stage: PreviewStage,
+    logical_size: Option<(u32, u32)>,
+) -> bool {
+    evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+        index: usize::MAX,
+        source: "should_replace_strip_preview_test",
+        cached_tag,
+        cached_stage,
+        cached_logical: None,
+        cached_preview_w: None,
+        cached_preview_h: None,
+        incoming_tag,
+        incoming_stage: stage,
+        incoming_logical: logical_size,
+        preview_w: decoded.width,
+        preview_h: decoded.height,
+        decoded: Some(decoded),
+    })
+    .allows_replace()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn should_replace_strip_texture(
+    cached_tag: Option<StripPreviewBufferTag>,
+    cached_stage: Option<PreviewStage>,
+    incoming_tag: StripPreviewBufferTag,
+    stage: PreviewStage,
+    logical_size: Option<(u32, u32)>,
+    preview_w: u32,
+    preview_h: u32,
+) -> bool {
+    evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+        index: usize::MAX,
+        source: "should_replace_strip_texture_test",
+        cached_tag,
+        cached_stage,
+        cached_logical: None,
+        cached_preview_w: None,
+        cached_preview_h: None,
+        incoming_tag,
+        incoming_stage: stage,
+        incoming_logical: logical_size,
+        preview_w,
+        preview_h,
+        decoded: None,
+    })
+    .allows_replace()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
 
     #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {
         let decoded = DecodedImage::new(64, 48, vec![0; 64 * 48 * 4]);
-        let out = downsample_decoded_for_strip(&decoded, 128).expect("downsample");
-        assert!(matches!(out, Cow::Borrowed(_)));
+        let out = downsample_decoded_for_strip(decoded, 128).expect("downsample");
         assert_eq!(out.width, 64);
         assert_eq!(out.height, 48);
     }
@@ -473,10 +745,46 @@ mod tests {
     #[test]
     fn downsample_decoded_for_strip_scales_large_images() {
         let decoded = DecodedImage::new(512, 256, vec![0; 512 * 256 * 4]);
-        let out = downsample_decoded_for_strip(&decoded, 128).expect("downsample");
-        assert!(matches!(out, Cow::Owned(_)));
+        let out = downsample_decoded_for_strip(decoded, 128).expect("downsample");
         assert_eq!(out.width, 128);
         assert_eq!(out.height, 64);
+    }
+
+    #[test]
+    fn strip_buffer_tag_marks_empty_hdr_placeholder_as_deferred() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(false, true, false, false),
+            StripPreviewBufferTag::SdrDeferredPlaceholder
+        );
+    }
+
+    #[test]
+    fn strip_buffer_tag_uses_preload_fallback_for_bootstrap_before_float_readback() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(false, false, false, false),
+            StripPreviewBufferTag::PreloadSdrFallback
+        );
+    }
+
+    #[test]
+    fn strip_buffer_tag_uses_hdr_tone_mapped_when_float_pixels_ready() {
+        assert_eq!(
+            strip_buffer_tag_for_hdr_preview(true, false, false, false),
+            StripPreviewBufferTag::HdrToneMappedStrip
+        );
+    }
+
+    #[test]
+    fn deferred_placeholder_rank_loses_to_main_window_tiled_preview() {
+        let cached_rank = strip_preview_quality_rank(
+            StripPreviewBufferTag::MainWindowTiledPreview,
+            PreviewStage::Refined,
+        );
+        let placeholder_rank = strip_preview_quality_rank(
+            StripPreviewBufferTag::SdrDeferredPlaceholder,
+            PreviewStage::Refined,
+        );
+        assert!(placeholder_rank < cached_rank);
     }
 
     #[test]
@@ -490,12 +798,12 @@ mod tests {
                 index,
                 &decoded,
                 PreviewStage::Refined,
+                StripPreviewBufferTag::StripDecodedPixels,
                 None,
                 &ctx,
                 0,
                 total,
                 128,
-                false,
             );
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
@@ -506,40 +814,34 @@ mod tests {
     #[test]
     fn strip_cache_rejects_preview_with_mismatched_aspect() {
         let bootstrap = DecodedImage::new(512, 512, vec![0; 512 * 512 * 4]);
-        assert!(!should_replace_strip_thumbnail(
-            None,
+        assert!(!should_replace_strip_preview(
             None,
             None,
             &bootstrap,
+            StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Initial,
             Some((8000, 2000)),
-            128,
-            false,
         ));
-        assert!(!should_replace_strip_thumbnail(
-            None,
+        assert!(!should_replace_strip_preview(
             None,
             None,
             &bootstrap,
+            StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
             Some((800, 8000)),
-            128,
-            false,
         ));
     }
 
     #[test]
-    fn strip_cache_upgrades_refined_preview_over_initial_bootstrap() {
-        let refined = DecodedImage::new(2048, 512, vec![180; 2048 * 512 * 4]);
-        assert!(should_replace_strip_thumbnail(
-            Some(128),
-            Some(PreviewStage::Initial),
-            None,
-            &refined,
+    fn strip_cache_upgrades_hdr_tone_mapped_over_texture_cache_sdr() {
+        let tone_mapped = DecodedImage::new(128, 72, vec![180; 128 * 72 * 4]);
+        assert!(should_replace_strip_preview(
+            Some(StripPreviewBufferTag::MainWindowTextureCacheSdr),
+            Some(PreviewStage::Refined),
+            &tone_mapped,
+            StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
-            Some((8000, 2000)),
-            128,
-            false,
+            Some((480, 270)),
         ));
     }
 
@@ -552,12 +854,12 @@ mod tests {
             0,
             &good,
             PreviewStage::Initial,
+            StripPreviewBufferTag::StripDecodedPixels,
             Some((512, 256)),
             &ctx,
             0,
             1,
             128,
-            false,
         );
         assert!(cache.contains(0));
         let black = DecodedImage::new_sdr_deferred_placeholder(512, 256, vec![0; 512 * 256 * 4]);
@@ -565,12 +867,12 @@ mod tests {
             0,
             &black,
             PreviewStage::Refined,
+            StripPreviewBufferTag::SdrDeferredPlaceholder,
             Some((512, 256)),
             &ctx,
             0,
             1,
             128,
-            false,
         );
         assert!(cache.contains(0));
         assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
@@ -581,113 +883,101 @@ mod tests {
         let good = DecodedImage::new(128, 64, vec![200; 128 * 64 * 4]);
         let black =
             DecodedImage::new_sdr_deferred_placeholder(4096, 2048, vec![0; 4096 * 2048 * 4]);
-        assert!(!should_replace_strip_thumbnail(
-            Some(128),
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Initial),
-            None,
             &black,
+            StripPreviewBufferTag::SdrDeferredPlaceholder,
             PreviewStage::Refined,
             Some((4096, 2048)),
-            128,
-            false,
         ));
-        assert!(should_replace_strip_thumbnail(
-            Some(128),
+        assert!(should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Initial),
-            None,
             &good,
+            StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
             Some((4096, 2048)),
-            128,
-            false,
         ));
     }
 
     #[test]
-    fn strip_cache_cold_initial_may_replace_refined_sync() {
+    fn strip_cache_cold_initial_does_not_replace_refined() {
+        let logical = Some((512_u32, 512_u32));
         let cold = DecodedImage::new(128, 128, vec![200; 128 * 128 * 4]);
-        assert!(!should_replace_strip_thumbnail(
-            Some(128),
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            None,
             &cold,
+            StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Initial,
-            Some((512, 512)),
-            128,
-            false,
-        ));
-        assert!(should_replace_strip_thumbnail(
-            Some(128),
-            Some(PreviewStage::Refined),
-            None,
-            &cold,
-            PreviewStage::Initial,
-            Some((512, 512)),
-            128,
-            true,
+            logical,
         ));
         let black_placeholder =
             DecodedImage::new_sdr_deferred_placeholder(150, 150, vec![0; 150 * 150 * 4]);
-        assert!(!should_replace_strip_thumbnail(
-            Some(128),
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::HdrToneMappedStrip),
             Some(PreviewStage::Refined),
-            None,
             &black_placeholder,
+            StripPreviewBufferTag::SdrDeferredPlaceholder,
             PreviewStage::Initial,
-            Some((512, 512)),
-            128,
-            true,
+            logical,
         ));
-    }
-
-    #[test]
-    fn strip_thumb_max_side_uses_downsampled_output_not_source() {
-        let decoded = DecodedImage::new(4807, 3205, vec![0; 4807 * 3205 * 4]);
-        assert_eq!(strip_thumb_max_side(&decoded, 128), 128);
-    }
-
-    #[test]
-    fn strip_cache_rejects_bootstrap_at_same_thumb_tier() {
-        let bootstrap = DecodedImage::new(4704, 3136, vec![180; 4704 * 3136 * 4]);
-        assert!(!should_replace_strip_thumbnail(
-            Some(128),
-            Some(PreviewStage::Refined),
-            Some((4807, 3205)),
-            &bootstrap,
+        let refined = DecodedImage::new(128, 128, vec![220; 128 * 128 * 4]);
+        assert!(should_replace_strip_preview(
+            Some(StripPreviewBufferTag::IsoGainMapBaseline),
+            Some(PreviewStage::Initial),
+            &refined,
+            StripPreviewBufferTag::HdrComposedStrip,
             PreviewStage::Refined,
-            Some((4807, 3205)),
-            128,
-            false,
+            logical,
         ));
     }
 
     #[test]
-    fn strip_cache_allows_replace_when_logical_size_changes() {
+    fn strip_cache_rejects_same_tag_tier_refresh_by_dimensions() {
         let fallback = DecodedImage::new(4807, 3205, vec![180; 4807 * 3205 * 4]);
-        assert!(should_replace_strip_thumbnail(
-            Some(128),
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            Some((4704, 3136)),
             &fallback,
+            StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Refined,
             Some((4807, 3205)),
-            128,
-            false,
         ));
     }
 
     #[test]
-    fn strip_cache_full_res_refined_refreshes_same_thumb_tier() {
-        let fallback = DecodedImage::new(4807, 3205, vec![180; 4807 * 3205 * 4]);
-        assert!(should_replace_strip_thumbnail(
-            Some(128),
+    fn strip_cache_logical_size_change_does_not_bypass_rank() {
+        let fallback = DecodedImage::new(128, 85, vec![180; 128 * 85 * 4]);
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
             Some(PreviewStage::Refined),
-            Some((4807, 3205)),
             &fallback,
+            StripPreviewBufferTag::StripDecodedPixels,
             PreviewStage::Refined,
             Some((4807, 3205)),
-            128,
-            false,
+        ));
+    }
+
+    #[test]
+    fn strip_cache_cold_initial_does_not_replace_hdr_refined_on_logical_drift() {
+        let cold = DecodedImage::new(128, 96, vec![200; 128 * 96 * 4]);
+        assert!(!should_replace_strip_preview(
+            Some(StripPreviewBufferTag::HdrToneMappedStrip),
+            Some(PreviewStage::Refined),
+            &cold,
+            StripPreviewBufferTag::StripDecodedPixels,
+            PreviewStage::Initial,
+            Some((3648, 2736)),
+        ));
+        assert!(should_replace_strip_preview(
+            Some(StripPreviewBufferTag::StripDecodedPixels),
+            Some(PreviewStage::Initial),
+            &cold,
+            StripPreviewBufferTag::HdrToneMappedStrip,
+            PreviewStage::Refined,
+            Some((3718, 2778)),
         ));
     }
 
@@ -705,12 +995,12 @@ mod tests {
             0,
             &decoded,
             PreviewStage::Refined,
+            StripPreviewBufferTag::StripDecodedPixels,
             Some((640, 320)),
             &ctx,
             0,
             1,
             128,
-            false,
         );
         assert!(cache.contains(0));
         cache.clear_gpu_textures();
@@ -729,7 +1019,15 @@ mod tests {
             egui::ColorImage::from_rgba_unmultiplied([8, 8], &rgba),
             egui::TextureOptions::LINEAR,
         );
-        cache.insert_from_texture_handle(0, handle, PreviewStage::Refined, 8, Some((80, 80)), 0, 1);
+        cache.insert_from_texture_handle(
+            0,
+            &handle,
+            PreviewStage::Refined,
+            StripPreviewBufferTag::MainWindowTextureCacheSdr,
+            Some((80, 80)),
+            0,
+            1,
+        );
         assert!(cache.contains(0));
         assert_eq!(cache.gpu_revision(), 1);
     }
@@ -745,12 +1043,12 @@ mod tests {
                 index,
                 &decoded,
                 PreviewStage::Refined,
+                StripPreviewBufferTag::StripDecodedPixels,
                 None,
                 &ctx,
                 0,
                 3,
                 128,
-                false,
             );
         }
         // Swap indices 1 and 2.
@@ -770,12 +1068,12 @@ mod tests {
             0,
             &decoded,
             PreviewStage::Refined,
+            StripPreviewBufferTag::StripDecodedPixels,
             None,
             &ctx,
             0,
             1,
             128,
-            false,
         );
         cache.relocate(0, 5);
         assert!(cache.contains(5));

@@ -472,12 +472,11 @@ impl TiledImageSource for RawImageSource {
         }
     }
 
-    fn request_refinement(&self, index: usize, generation: u64) {
+    fn request_refinement(&self, index: usize, decode_profile: crate::loader::DecodeProfile) {
         if !self.needs_refinement {
             crate::preload_debug!(
-                "[PreloadDebug][RAW] refine_skip idx={} gen={} reason=needs_refinement_false path={}",
+                "[PreloadDebug][RAW] refine_skip idx={} reason=needs_refinement_false path={}",
                 index,
-                generation,
                 self.path.display()
             );
             log::debug!(
@@ -487,21 +486,19 @@ impl TiledImageSource for RawImageSource {
             return;
         }
         crate::preload_debug!(
-            "[PreloadDebug][RAW] refine_queue idx={} gen={} hdr_cap={:.3} path={}",
+            "[PreloadDebug][RAW] refine_queue idx={} hdr_cap={:.3} path={}",
             index,
-            generation,
             self.hdr_target_capacity,
             self.path.display()
         );
         log::debug!(
-            "[RawImageSource] Triggering HQ refinement for index={}, gen={}",
-            index,
-            generation
+            "[RawImageSource] Triggering HQ refinement for index={}",
+            index
         );
         let _ = self.refine_tx.send(RefinementRequest {
             path: self.path.clone(),
             index,
-            generation,
+            decode_profile,
             source_key: source_key_for_path(&self.path),
             orientation_override: Some(self.orientation_override),
             logical_width: self.width,

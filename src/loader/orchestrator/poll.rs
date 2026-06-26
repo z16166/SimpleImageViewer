@@ -18,58 +18,41 @@ use super::types::ImageLoader;
 use crate::loader::LoaderOutput;
 use crossbeam_channel::TryRecvError;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const LOADER_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl ImageLoader {
-    /// True when any generation is in-flight for `index` (including CPU fallback reloads).
-    pub fn is_loading_any(&self, index: usize) -> bool {
-        self.loading.lock().contains_key(&index)
-    }
-
     pub(crate) fn active_load_count(&self) -> usize {
         self.loading.lock().len()
     }
 
-    /// Drop queued decode results from a previous `generation` so rapid navigation
-    /// cannot retain hundreds of megabytes in the unbounded channel / defer queue.
-    ///
-    /// `also_keep_preview` — when `Some((index, gen))`, Preview results for that
-    /// specific (index, generation) are also preserved even though they don't match
-    /// `keep_generation`. Used when a prefetched TileManager is promoted to current:
-    /// the prefetch-phase HQ preview task carries the old generation and must not be
-    /// discarded merely because the generation counter was bumped on promotion.
-    pub fn discard_pending_stale_outputs(
+    /// Profile / window based pending output filter (generation-plan Phase A).
+    pub fn discard_pending_stale_outputs_profile(
         &mut self,
-        keep_generation: u64,
-        also_keep_preview: Option<(usize, u64)>,
-        also_keep_image: impl Fn(usize, u64) -> bool,
+        keep: impl Fn(
+            &LoaderOutput,
+            &std::collections::HashMap<usize, crate::loader::InFlightLoad>,
+        ) -> bool,
     ) {
-        let keep = |output: &LoaderOutput| -> bool {
+        let loading_snapshot = self.loading.lock().clone();
+        let keep_output = |output: &LoaderOutput| -> bool {
             match output {
-                LoaderOutput::Image(r) => {
-                    r.generation == keep_generation || also_keep_image(r.index, r.generation)
-                }
-                LoaderOutput::Preview(p) => {
-                    p.generation == keep_generation
-                        || also_keep_preview
-                            .is_some_and(|(idx, old_gen)| p.index == idx && p.generation == old_gen)
-                }
                 LoaderOutput::HdrSdrFallback(_) => true,
-                LoaderOutput::Refined(_, g) => *g == keep_generation,
-                LoaderOutput::Tile(t) => t.generation == keep_generation,
+                _ => keep(output, &loading_snapshot),
             }
         };
 
         let mut retained = std::collections::VecDeque::new();
         for output in self.local_queue.drain(..) {
-            if keep(&output) {
+            if keep_output(&output) {
                 retained.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock();
-                if loading.get(&r.index) == Some(&r.generation) {
+                if loading
+                    .get(&r.index)
+                    .is_some_and(|e| e.profile == r.decode_profile)
+                {
                     loading.remove(&r.index);
                 }
             }
@@ -77,11 +60,14 @@ impl ImageLoader {
         self.local_queue = retained;
 
         while let Ok(output) = self.rx.try_recv() {
-            if keep(&output) {
+            if keep_output(&output) {
                 self.local_queue.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock();
-                if loading.get(&r.index) == Some(&r.generation) {
+                if loading
+                    .get(&r.index)
+                    .is_some_and(|e| e.profile == r.decode_profile)
+                {
                     loading.remove(&r.index);
                 }
             }
@@ -108,13 +94,8 @@ impl ImageLoader {
         }
     }
 
-    pub fn finish_image_request(&self, index: usize, generation: u64) {
-        let mut loading = self.loading.lock();
-        if let Some(&g) = loading.get(&index) {
-            if g <= generation {
-                loading.remove(&index);
-            }
-        }
+    pub fn finish_image_request(&self, index: usize) {
+        self.loading.lock().remove(&index);
     }
 
     /// Push a result back so it is retried on the next frame.
@@ -150,6 +131,7 @@ impl ImageLoader {
             let (lock, _) = &*self.tile_queue;
             lock.lock().clear();
         }
+        self.capacity_requeue_counts.clear();
         while self.rx.try_recv().is_ok() {}
     }
 
@@ -157,18 +139,22 @@ impl ImageLoader {
     /// for the rayon decode pool. In-flight LibRaw OpenMP work cannot be cancelled;
     /// callers must terminate via [`crate::startup::force_process_exit`] afterward on Unix.
     ///
-    /// Sets `current_gen` to `u64::MAX` so any late decode worker treats queued work as stale.
-    /// This loader must not be reused after this call — it is only valid on the process-exit path.
+    /// Clears all registered loads via [`Self::cancel_all`]. This loader must not be reused
+    /// after this call — it is only valid on the process-exit path.
     pub fn prepare_for_process_exit(&mut self) {
-        self.current_gen.store(u64::MAX, Ordering::Relaxed);
         self.cancel_all();
         self.raw_open_prefetch.clear_all();
         drain_rayon_pool_for_exit(&self.pool, LOADER_EXIT_DRAIN_TIMEOUT);
     }
 
     #[cfg(test)]
-    pub(crate) fn test_register_inflight(&self, index: usize, generation: u64) {
-        self.loading.lock().insert(index, generation);
+    pub(crate) fn test_register_inflight(&self, index: usize) {
+        self.loading.lock().insert(
+            index,
+            crate::loader::InFlightLoad {
+                profile: crate::loader::decode_profile_stub(),
+            },
+        );
     }
 
     #[cfg(test)]

@@ -22,6 +22,7 @@
 mod assemble;
 mod detect;
 mod directory_tree_thumb;
+mod gain_map_strip;
 mod hdr_formats;
 mod jpeg;
 mod modern;
@@ -59,11 +60,11 @@ use raster::{load_gif, load_png, load_psd, load_static, load_webp};
 use raw::load_raw;
 
 pub(crate) fn load_image_file(
-    generation: u64,
     index: usize,
     path: &PathBuf,
     tx: crate::loader::orchestrator::LoaderOutputSender,
     refine_tx: Sender<RefinementRequest>,
+    decode_profile: crate::loader::DecodeProfile,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
@@ -123,10 +124,10 @@ pub(crate) fn load_image_file(
         if is_raw {
             let out = load_raw(
                 index,
-                generation,
                 path,
                 refine_tx.clone(),
                 tx.clone(),
+                decode_profile.clone(),
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
@@ -159,10 +160,10 @@ pub(crate) fn load_image_file(
                 );
                 return load_raw(
                     index,
-                    generation,
                     path,
                     refine_tx.clone(),
                     tx.clone(),
+                    decode_profile.clone(),
                     high_quality,
                     raw_demosaic_mode,
                     hdr_target_capacity,
@@ -481,7 +482,7 @@ pub(crate) fn load_image_file(
 
     LoadResult {
         index,
-        generation,
+        decode_profile,
         source_key: source_key_for_path(path),
         ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,

@@ -61,16 +61,12 @@ impl ImageViewerApp {
                         self.current_rotation = 0;
                         self.set_zoom_factor(1.0);
                         self.pan_offset = egui::Vec2::ZERO;
-
-                        self.generation = self.generation.wrapping_add(1);
-                        self.loader.set_generation(self.generation);
                         self.status_message =
                             t!("status.found", count = self.image_files.len().to_string())
                                 .to_string();
                         self.images_ever_loaded = true;
                         self.loader.request_load(
                             self.current_index,
-                            self.generation,
                             self.image_files[self.current_index].clone(),
                             self.settings.raw_high_quality,
                             self.raw_demosaic_mode_for_index(self.current_index),
@@ -182,13 +178,9 @@ impl ImageViewerApp {
                         self.current_rotation = 0;
                         self.set_zoom_factor(1.0);
                         self.pan_offset = egui::Vec2::ZERO;
-
-                        self.generation = self.generation.wrapping_add(1);
-                        self.loader.set_generation(self.generation);
                         self.images_ever_loaded = true; // Mark as loaded so it renders immediately
                         self.loader.request_load(
                             self.current_index,
-                            self.generation,
                             self.image_files[self.current_index].clone(),
                             self.settings.raw_high_quality,
                             self.raw_demosaic_mode_for_index(self.current_index),

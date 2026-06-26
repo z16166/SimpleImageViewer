@@ -273,6 +273,10 @@ impl ImageViewerApp {
             }
         }
         self.flush_deferred_sdr_upload_for_current(ctx);
+        self.process_pending_animation_uploads(ctx);
+        if self.index_uses_animated_pipeline(self.current_index) {
+            self.ensure_current_animation_playback();
+        }
         self.try_start_pending_transition_if_ready();
     }
 
@@ -330,13 +334,10 @@ impl ImageViewerApp {
                     self.deferred_sdr_uploads.remove(&idx);
                     crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
                     if let Some(path) = self.image_files.get(idx).cloned() {
-                        // Use the app generation so the worker spawn check matches global_gen.
-                        // Clear any stale loading-map slot first so should_spawn_load_task accepts
-                        // a re-queue at the same generation after the GPU path finished.
-                        self.loader.finish_image_request(idx, u64::MAX);
+                        // Clear any stale loading-map slot so profile spawn accepts the CPU retry.
+                        self.loader.finish_image_request(idx);
                         self.loader.request_load(
                             idx,
-                            self.generation,
                             path,
                             self.settings.raw_high_quality,
                             crate::settings::RawDemosaicMode::Cpu,

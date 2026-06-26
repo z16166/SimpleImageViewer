@@ -23,6 +23,14 @@ use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
 };
+
+/// Strip previews pin `max_display_nits` to SDR white; allow a small tolerance when comparing.
+///
+/// 0.5 nits is chosen (not a tighter f32 epsilon) because SDR white is typically calibrated to
+/// integer nits (80, 100, 203, etc.) and mastering-display metadata often originates from
+/// fixed-point encodings. A half-nit guard band absorbs accumulated floating-point rounding
+/// from metadata conversion chains while still detecting a real display-target override.
+pub(crate) const STRIP_PREVIEW_NITS_PIN_EPSILON: f32 = 0.5;
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {
     let mut tone = HdrToneMapSettings::default();
     if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
@@ -36,7 +44,8 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
 /// Same as [`hdr_to_sdr_rgba8`] but uses explicit SDR white / peak display nits
 /// (e.g. from user tone-map settings) for PQ/HLG peak scaling. Caller-supplied
 /// `max_display_nits` is raised by [`HdrImageMetadata::luminance::mastering_max_nits`]
-/// when that hint exceeds it (content peak vs display capability).
+/// when that hint exceeds it (content peak vs display capability), unless the caller
+/// pinned peak to SDR white (directory-tree strip previews).
 pub fn hdr_to_sdr_rgba8_with_tone_settings(
     buffer: &HdrImageBuffer,
     exposure_ev: f32,
@@ -65,9 +74,15 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     }
 
     let mut tone = *tone;
-    if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
-        if max.is_finite() && max > tone.sdr_white_nits {
-            tone.max_display_nits = tone.max_display_nits.max(max);
+    // Directory-tree strip previews pass `max_display_nits == sdr_white_nits`; do not
+    // raise from mastering metadata or PQ thumbnails crush to ~20% luminance.
+    let strip_preview_pinned =
+        tone.max_display_nits <= tone.sdr_white_nits + STRIP_PREVIEW_NITS_PIN_EPSILON;
+    if !strip_preview_pinned {
+        if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
+            if max.is_finite() && max > tone.sdr_white_nits {
+                tone.max_display_nits = tone.max_display_nits.max(max);
+            }
         }
     }
 

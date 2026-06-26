@@ -44,9 +44,7 @@ impl ImageViewerApp {
     }
 
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {
-        let next_gen = self.generation.wrapping_add(1);
-        self.generation = next_gen;
-        self.loader.set_generation(self.generation);
+        self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
@@ -54,6 +52,7 @@ impl ImageViewerApp {
         self.animation = None;
         self.animation_cache.clear();
         self.pending_anim_frames.clear();
+        self.installed_display_modes.clear();
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
@@ -61,8 +60,8 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
         self.transition_start = None;
-        self.prefetch_prev_generation = None;
         crate::tile_cache::PIXEL_CACHE.lock().clear();
+        self.discard_stale_loader_outputs();
     }
 
     /// Relocate index-keyed caches when the image list order changes.
@@ -114,6 +113,15 @@ impl ImageViewerApp {
         }
         if self.hdr_in_flight_fallback_refinements.remove(&from) {
             self.hdr_in_flight_fallback_refinements.insert(to);
+        }
+        if self.cpu_raw_refinement_pending_indices.remove(&from) {
+            self.cpu_raw_refinement_pending_indices.insert(to);
+        }
+        if self.hq_tiled_preview_pending_indices.remove(&from) {
+            self.hq_tiled_preview_pending_indices.insert(to);
+        }
+        if let Some(mode) = self.installed_display_modes.remove(&from) {
+            self.installed_display_modes.insert(to, mode);
         }
         if self.ultra_hdr_capacity_sensitive_indices.remove(&from) {
             self.ultra_hdr_capacity_sensitive_indices.insert(to);
@@ -187,8 +195,6 @@ impl ImageViewerApp {
         &mut self,
         except_idx: usize,
     ) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
         self.loader.cancel_all();
 
         // 1. Texture cache: remove everything except except_idx
@@ -248,6 +254,12 @@ impl ImageViewerApp {
             .retain(|_, idx| *idx == except_idx);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == except_idx);
+        self.cpu_raw_refinement_pending_indices
+            .retain(|&idx| idx == except_idx);
+        self.hq_tiled_preview_pending_indices
+            .retain(|&idx| idx == except_idx);
+        self.installed_display_modes
+            .retain(|&idx, _| idx == except_idx);
         self.deferred_sdr_uploads
             .retain(|&idx, _| idx == except_idx);
         self.raw_metadata
@@ -279,7 +291,6 @@ impl ImageViewerApp {
         self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
-        self.prefetch_prev_generation = None;
 
         // Clear only non-except_idx entries from the global tile pixel cache
         crate::tile_cache::PIXEL_CACHE
@@ -290,6 +301,7 @@ impl ImageViewerApp {
     pub(super) fn handle_texture_cache_eviction(&mut self, evicted_idx: usize) {
         self.animation_cache.remove(&evicted_idx);
         self.pending_anim_frames.remove(&evicted_idx);
+        self.clear_installed_display_mode(evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
     }
 
@@ -327,33 +339,32 @@ impl ImageViewerApp {
             self.animation_cache.remove(&idx);
             self.pending_anim_frames.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
+            self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
         }
     }
 
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
+        // Retention uses prefetch_window_max_distance (checklist #8): steady-state
+        // prefetched_tiles.len() <= prefetched_tiles_steady_state_cap(len, max_distance).
         let len = self.image_files.len();
         let current_index = self.current_index;
-        let generation = self.generation;
-        let loader = &self.loader;
+        let max_distance = self.prefetch_window_max_distance;
+        preload_debug!(
+            "[PreloadDebug] prefetch eviction scan: cur={} len={} max_distance={} available_mb={}",
+            current_index,
+            len,
+            max_distance,
+            self.cached_available_memory_mb
+        );
 
-        let retain_prefetch_entry = |idx: usize| {
-            if prefetch_window_contains(current_index, len, idx, PREFETCH_WINDOW_DISTANCE) {
-                return true;
-            }
-            if !loader.is_loading_any(idx) {
-                return false;
-            }
-            let idx_gen = loader.current_generation(idx);
-            // `prefetch_prev_generation` is inert for distant indices; pass `None` (see review).
-            accepts_background_image_generation_with_loader(
-                loader,
+        let retention_for = |idx: usize| {
+            prefetch_retention::prefetch_cache_retention(
                 current_index,
                 len,
-                generation,
-                None,
+                max_distance,
                 idx,
-                idx_gen,
+                self.loader.is_loading(idx),
             )
         };
 
@@ -361,22 +372,49 @@ impl ImageViewerApp {
         let mut distant_indices = Vec::new();
 
         self.prefetched_tiles.retain(|&idx, _| {
-            let keep = retain_prefetch_entry(idx);
+            let decision = retention_for(idx);
+            let keep = decision.should_retain();
             if !keep {
+                preload_debug!(
+                    "[PreloadDebug] prefetch eviction retain=false: kind=prefetched_tiles idx={} reason={}",
+                    idx,
+                    decision.log_label()
+                );
                 distant_indices.push(idx);
             }
             keep
         });
 
-        self.deferred_sdr_uploads
-            .retain(|&idx, _| retain_prefetch_entry(idx));
+        self.deferred_sdr_uploads.retain(|&idx, _| {
+            let decision = retention_for(idx);
+            let keep = decision.should_retain();
+            if !keep {
+                preload_debug!(
+                    "[PreloadDebug] prefetch eviction retain=false: kind=deferred_sdr idx={} reason={}",
+                    idx,
+                    decision.log_label()
+                );
+                distant_indices.push(idx);
+            }
+            keep
+        });
 
         // Gather distant static HDR images
         let distant_hdr: Vec<usize> = self
             .hdr_image_cache
             .keys()
             .copied()
-            .filter(|&idx| !retain_prefetch_entry(idx))
+            .filter(|&idx| {
+                let decision = retention_for(idx);
+                if !decision.should_retain() {
+                    preload_debug!(
+                        "[PreloadDebug] prefetch eviction retain=false: kind=hdr_image idx={} reason={}",
+                        idx,
+                        decision.log_label()
+                    );
+                }
+                !decision.should_retain()
+            })
             .collect();
         distant_indices.extend(distant_hdr);
 
@@ -388,7 +426,17 @@ impl ImageViewerApp {
             .hdr_tiled_source_cache
             .keys()
             .copied()
-            .filter(|&idx| !retain_prefetch_entry(idx))
+            .filter(|&idx| {
+                let decision = retention_for(idx);
+                if !decision.should_retain() {
+                    preload_debug!(
+                        "[PreloadDebug] prefetch eviction retain=false: kind=hdr_tiled_source idx={} reason={}",
+                        idx,
+                        decision.log_label()
+                    );
+                }
+                !decision.should_retain()
+            })
             .collect();
         distant_indices.extend(distant_tiled_hdr);
 
@@ -401,7 +449,17 @@ impl ImageViewerApp {
             .textures
             .keys()
             .copied()
-            .filter(|&idx| !retain_prefetch_entry(idx))
+            .filter(|&idx| {
+                let decision = retention_for(idx);
+                if !decision.should_retain() {
+                    preload_debug!(
+                        "[PreloadDebug] prefetch eviction retain=false: kind=texture idx={} reason={}",
+                        idx,
+                        decision.log_label()
+                    );
+                }
+                !decision.should_retain()
+            })
             .collect();
         distant_indices.extend(distant_textures);
 
@@ -409,20 +467,69 @@ impl ImageViewerApp {
             .animation_cache
             .keys()
             .copied()
-            .filter(|&idx| !retain_prefetch_entry(idx))
+            .filter(|&idx| {
+                let decision = retention_for(idx);
+                if !decision.should_retain() {
+                    preload_debug!(
+                        "[PreloadDebug] prefetch eviction retain=false: kind=animation idx={} reason={}",
+                        idx,
+                        decision.log_label()
+                    );
+                }
+                !decision.should_retain()
+            })
             .collect();
         distant_indices.extend(distant_animations);
+
+        let distant_pixel_cache: Vec<usize> = crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .distinct_image_indices()
+            .into_iter()
+            .filter(|&idx| {
+                let decision = retention_for(idx);
+                if !decision.should_retain() {
+                    preload_debug!(
+                        "[PreloadDebug] prefetch eviction retain=false: kind=pixel_cache idx={} reason={}",
+                        idx,
+                        decision.log_label()
+                    );
+                }
+                !decision.should_retain()
+            })
+            .collect();
+        distant_indices.extend(distant_pixel_cache);
 
         // Deduplicate the combined list of indices to evict
         distant_indices.sort_unstable();
         distant_indices.dedup();
 
+        #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+        let evicted_count = distant_indices.len();
+
+        if !distant_indices.is_empty() {
+            let pixel_cache_indices: std::collections::HashSet<usize> =
+                distant_indices.iter().copied().collect();
+            preload_debug!(
+                "[PreloadDebug] prefetch eviction pixel_cache remove: indices={:?}",
+                distant_indices
+            );
+            crate::tile_cache::PIXEL_CACHE
+                .lock()
+                .remove_images(&pixel_cache_indices);
+        }
+
         for idx in distant_indices {
             self.texture_cache.remove(idx);
             self.animation_cache.remove(&idx);
             self.pending_anim_frames.remove(&idx);
+            self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
         }
+
+        preload_debug!(
+            "[PreloadDebug] prefetch eviction done: evicted_count={}",
+            evicted_count
+        );
     }
 
     pub(crate) fn permute_image_file_arrays(&mut self, order: &[usize]) {
@@ -450,8 +557,6 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn permute_index_keyed_caches(&mut self, old_to_new: &[usize]) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
         self.loader.cancel_all();
 
         self.texture_cache.permute(old_to_new);
@@ -466,6 +571,9 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
+        permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
+        permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
+        permute_usize_hashmap(&mut self.installed_display_modes, old_to_new);
         permute_usize_set(&mut self.ultra_hdr_capacity_sensitive_indices, old_to_new);
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 
@@ -544,8 +652,6 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
-
-        self.prefetch_prev_generation = None;
         self.invalidate_random_slideshow_order();
     }
 }

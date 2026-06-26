@@ -163,14 +163,14 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame, pass: eframe::LogicPass) {
+        if pass.is_root() {
+            self.refresh_preload_memory_plan();
+        }
         if pass.is_root() && self.tick_raw_gpu_demosaic_completion(ctx, Some(frame)) {
             ctx.request_repaint();
             self.wake_root_for_logic();
         }
-        if pass.is_root()
-            && !self.scanning
-            && (self.loader.has_pending_outputs() || self.loader.is_loading_any(self.current_index))
-        {
+        if pass.is_root() && self.needs_process_loaded_images() {
             self.process_loaded_images(ctx, &mut Some(frame));
         }
         if self.should_run_logic_shared() {
