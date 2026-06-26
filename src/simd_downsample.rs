@@ -31,9 +31,15 @@ use core::arch::aarch64::*;
 /// its footprint.  Operates on a borrowed `&[u8]` slice — zero-copy of the source
 /// buffer.
 ///
+/// # Contract
+///
+/// This function only supports **downscaling** (or same-size). Passing `dst_w > src_w`
+/// or `dst_h > src_h` is a logic error — output pixels may have empty source footprints,
+/// leading to division by zero in the scalar fallback.
+///
 /// # Panics
 ///
-/// Panics in debug if any dimension is zero.
+/// Panics in debug if any dimension is zero or if `dst` exceeds `src` in either axis.
 pub fn downsample_rgba8_box(
     src: &[u8],
     src_w: u32,
@@ -47,6 +53,10 @@ pub fn downsample_rgba8_box(
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return Vec::new();
     }
+    debug_assert!(
+        dst_w <= src_w && dst_h <= src_h,
+        "downsample_rgba8_box does not support upscaling (src {src_w}x{src_h}, dst {dst_w}x{dst_h})"
+    );
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
     #[cfg(target_arch = "x86_64")]
@@ -122,10 +132,12 @@ fn downsample_rgba8_box_scalar(
             }
 
             let di = (dst_y as usize * dst_w as usize + dst_x as usize) * 4;
-            dst[di] = (sum_r / count) as u8;
-            dst[di + 1] = (sum_g / count) as u8;
-            dst[di + 2] = (sum_b / count) as u8;
-            dst[di + 3] = (sum_a / count) as u8;
+            if count > 0 {
+                dst[di] = (sum_r / count) as u8;
+                dst[di + 1] = (sum_g / count) as u8;
+                dst[di + 2] = (sum_b / count) as u8;
+                dst[di + 3] = (sum_a / count) as u8;
+            }
         }
     }
 }
@@ -197,11 +209,18 @@ unsafe fn downsample_rgba8_box_sse41(
                         ]);
 
                         let sx_v = _mm_set1_epi32(sx as i32);
+                        // Flip the sign bit to use signed comparison intrinsics
+                        // (`_mm_cmpgt_epi32`) for unsigned u32 values.  Without the
+                        // flip, coordinates ≥ 2^31 would be treated as negative.
+                        let sign_bit128 = _mm_set1_epi32(i32::MIN);
+                        let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
+                        let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
+                        let sx_v_u = _mm_xor_si128(sx_v, sign_bit128);
                         // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge =
-                            _mm_andnot_si128(_mm_cmpgt_epi32(x0_v, sx_v), _mm_set1_epi32(!0));
+                            _mm_andnot_si128(_mm_cmpgt_epi32(x0_v_u, sx_v_u), _mm_set1_epi32(!0));
                         // sx < x1  →  x1 > sx
-                        let mask_lt = _mm_cmpgt_epi32(x1_v, sx_v);
+                        let mask_lt = _mm_cmpgt_epi32(x1_v_u, sx_v_u);
                         let active = _mm_and_si128(mask_ge, mask_lt);
 
                         if _mm_testz_si128(active, active) != 0 {
@@ -276,10 +295,12 @@ unsafe fn downsample_rgba8_box_sse41(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -348,11 +369,19 @@ unsafe fn downsample_rgba8_box_avx2(
                         ]);
 
                         let sx_v = _mm256_set1_epi32(sx as i32);
+                        // Flip the sign bit to use signed comparison intrinsics
+                        // (`_mm256_cmpgt_epi32`) for unsigned u32 values.
+                        let sign_bit256 = _mm256_set1_epi32(i32::MIN);
+                        let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
+                        let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
+                        let sx_v_u = _mm256_xor_si256(sx_v, sign_bit256);
+                        // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge = _mm256_andnot_si256(
-                            _mm256_cmpgt_epi32(x0_v, sx_v),
+                            _mm256_cmpgt_epi32(x0_v_u, sx_v_u),
                             _mm256_set1_epi32(!0),
                         );
-                        let mask_lt = _mm256_cmpgt_epi32(x1_v, sx_v);
+                        // sx < x1  →  x1 > sx
+                        let mask_lt = _mm256_cmpgt_epi32(x1_v_u, sx_v_u);
                         let active = _mm256_and_si256(mask_ge, mask_lt);
 
                         if _mm256_testz_si256(active, active) != 0 {
@@ -431,10 +460,12 @@ unsafe fn downsample_rgba8_box_avx2(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -590,10 +621,12 @@ unsafe fn downsample_rgba8_box_neon(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -760,10 +793,18 @@ mod tests {
     }
 
     #[test]
-    fn small_upscale_does_not_panic() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "upscaling"))]
+    fn upscale_panics_in_debug() {
         let src = make_patterned_rgba(10, 10);
-        let result = downsample_rgba8_box(&src, 10, 10, 20, 20);
-        assert_eq!(result.len(), 20 * 20 * 4);
+        let _result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+    }
+
+    #[test]
+    fn near_identity_downscale() {
+        // 20→10 is a 2× downscale, well within the supported contract.
+        let src = make_patterned_rgba(20, 20);
+        let result = downsample_rgba8_box(&src, 20, 20, 10, 10);
+        assert_eq!(result.len(), 10 * 10 * 4);
     }
 
     #[test]

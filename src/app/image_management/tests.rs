@@ -1606,6 +1606,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_bootstrap_after_scan: false,
         directory_tree_strip_bootstrap_frames: 0,
         strip_preload_cooldown_frames: 0,
+        strip_stale_retain_last_generation: u64::MAX,
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),

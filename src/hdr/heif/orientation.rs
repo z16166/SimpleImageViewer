@@ -292,14 +292,6 @@ impl HeifDecodeOptionsIgnoredGeometryOwned {
 }
 
 #[cfg(feature = "heif-native")]
-impl Drop for HeifDecodeOptionsIgnoredGeometryOwned {
-    fn drop(&mut self) {
-        // HeifDecodingOptionsGuard handles the free; just let the Option drop.
-        self.guard.take();
-    }
-}
-
-#[cfg(feature = "heif-native")]
 pub(crate) fn allocate_decode_options_for_heif_manual_geometry_fixup(
     bytes: &[u8],
 ) -> Option<HeifDecodeOptionsIgnoredGeometryOwned> {
