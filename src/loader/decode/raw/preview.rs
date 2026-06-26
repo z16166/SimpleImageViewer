@@ -63,7 +63,8 @@ pub(crate) fn raw_embedded_preview_meets_hq_requirement(
         return true;
     }
     // Accept camera full-size embedded JPEGs that are slightly below the monitor HQ cap.
-    let hq_floor = (hq_side / 2).max(1024);
+    const EMBEDDED_PREVIEW_HQ_MIN_FLOOR: u32 = 1024;
+    let hq_floor = (hq_side / 2).max(EMBEDDED_PREVIEW_HQ_MIN_FLOOR);
     preview_long >= hq_floor && raw_embedded_preview_covers_sensor(preview, raw_w, raw_h)
 }
 

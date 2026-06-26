@@ -349,7 +349,8 @@ mod tests {
                     ),
                 };
                 assert!(
-                    w <= 8192 && h <= 8192,
+                    w <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
+                        && h <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE,
                     "QT mislabeled JPG decoded to {w}x{h}"
                 );
             }

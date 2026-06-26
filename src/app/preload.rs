@@ -94,13 +94,18 @@ pub(crate) fn capacity_refresh_should_reschedule_preloads(
 /// Compute preload byte budgets based on total system RAM.
 /// Forward budget = total_ram / 32, backward = total_ram / 64, both clamped.
 pub(crate) fn compute_preload_budgets() -> (u64, u64) {
+    const MIN_FORWARD_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+    const MAX_FORWARD_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+    const MIN_BACKWARD_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
+    const MAX_BACKWARD_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
     let total = sys.total_memory(); // bytes
 
-    let forward = (total / 32).clamp(64 * 1024 * 1024, 512 * 1024 * 1024);
-    let backward = (total / 64).clamp(32 * 1024 * 1024, 256 * 1024 * 1024);
+    let forward = (total / 32).clamp(MIN_FORWARD_BUDGET_BYTES, MAX_FORWARD_BUDGET_BYTES);
+    let backward = (total / 64).clamp(MIN_BACKWARD_BUDGET_BYTES, MAX_BACKWARD_BUDGET_BYTES);
 
     log::info!(
         "Preload budgets: forward={} MB, backward={} MB (system RAM={} MB)",
