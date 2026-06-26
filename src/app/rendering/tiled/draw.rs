@@ -303,9 +303,7 @@ impl ImageViewerApp {
                 padding,
             );
             let primary_visible =
-                self.tile_manager
-                    .as_ref()
-                    .unwrap()
+                self.tile_manager()
                     .visible_tiles(unrotated_dest, tile_clip, 0.0);
             let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
             self.tiled_primary_visible_scratch.clear();
@@ -373,7 +371,7 @@ impl ImageViewerApp {
                     None
                 };
 
-                let tm = self.tile_manager.as_mut().unwrap();
+                let tm = self.tile_manager.as_mut().expect("tile_manager accessed without active tiled source");
 
                 for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
                     if tile_plane_kind_for_backend(plane_backend) == TiledPlaneKind::Hdr {
@@ -466,11 +464,8 @@ impl ImageViewerApp {
             // DEBUG HUD: real-time tiled rendering diagnostics
             #[cfg(feature = "tile-debug")]
             if self.settings.show_osd {
-                let (vis_gpu, vis_ready, vis_pending) = self
-                    .tile_manager
-                    .as_ref()
-                    .unwrap()
-                    .stats_for_visible(&visible_coords);
+                let (vis_gpu, vis_ready, vis_pending) =
+                    self.tile_manager().stats_for_visible(&visible_coords);
                 let (total_gpu, total_mem, _total_pnd) =
                     self.tile_manager().tiles_and_pending();
 
@@ -498,9 +493,7 @@ impl ImageViewerApp {
             // request another repaint immediately to keep the pipeline moving.
             let has_more_ready = should_repaint_for_ready_tiles_for_backend(
                 plane_backend,
-                self.tile_manager
-                    .as_ref()
-                    .unwrap()
+                self.tile_manager()
                     .has_ready_to_upload(&visible_coords)
                     || has_pending_visible_tiles_for_backend(
                         plane_backend,
