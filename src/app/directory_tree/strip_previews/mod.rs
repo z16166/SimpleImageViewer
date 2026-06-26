@@ -74,25 +74,22 @@ impl ImageViewerApp {
 
         self.poll_directory_tree_strip_preview_results(ctx);
 
-        let (visible_row_range, scroll_to_current_pending, defer_sync) = {
-            match self.directory_tree.list.try_lock() {
-                Some(list) => (
+        let (visible_row_range, scroll_to_current_pending) =
+            if let Some(list) = self.directory_tree.list.try_lock() {
+                (
                     list.image_list_visible_row_range,
                     list.scroll_image_list_to_current,
-                    false,
-                ),
-                None => (None, false, true),
-            }
-        };
-        if defer_sync {
-            self.defer_directory_tree_file_list_sync();
-        }
+                )
+            } else {
+                self.defer_directory_tree_file_list_sync();
+                (None, false)
+            };
         let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
-        if bootstrap_visible
+        let can_preload = bootstrap_visible
             && self.settings.preload
             && !self.preload_deferred_for_hdr_capacity
-            && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS
-        {
+            && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS;
+        if can_preload {
             self.schedule_preloads(true);
         }
         let max_inflight = if bootstrap_visible {
