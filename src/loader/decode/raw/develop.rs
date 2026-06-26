@@ -120,13 +120,11 @@ pub(crate) fn develop_full_resolution(
         match processor.develop() {
             Ok(img) => {
                 let rgba = img.to_rgba8();
+                let rw = rgba.width();
+                let rh = rgba.height();
                 return Ok(RawLoadOutput {
-                    image: make_image_data(DecodedImage::from(rgba.clone())),
-                    osd: osd_ctx.full_develop(
-                        rgba.width(),
-                        rgba.height(),
-                        RawDemosaicBackend::Host,
-                    ),
+                    image: make_image_data(DecodedImage::from(rgba)),
+                    osd: osd_ctx.full_develop(rw, rh, RawDemosaicBackend::Host),
                 });
             }
             Err(e) => {

@@ -39,7 +39,8 @@ pub(crate) fn hdr_to_sdr_with_user_tone(
     if let Some(gain_map) = buffer.metadata.gain_map.as_ref()
         && let Some(iso) = gain_map.iso_deferred.as_ref()
     {
-        return Ok(iso.sdr_rgba.as_ref().clone());
+        let arc = std::sync::Arc::clone(&iso.sdr_rgba);
+        return Ok(std::sync::Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()));
     }
     crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone)
 }
