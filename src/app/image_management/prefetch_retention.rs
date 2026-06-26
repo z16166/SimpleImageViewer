@@ -81,6 +81,7 @@ pub(super) fn effective_prefetch_window_distance(
 }
 
 /// Max distinct indices inside the circular preload window (includes current).
+#[allow(dead_code)]
 pub(super) fn prefetch_window_index_cap(image_count: usize, max_distance: usize) -> usize {
     if image_count == 0 {
         return 0;
@@ -92,6 +93,7 @@ pub(super) fn prefetch_window_index_cap(image_count: usize, max_distance: usize)
 ///
 /// In-flight loads outside the window may temporarily add entries until navigation runs
 /// `evict_distant_prefetch_caches`.
+#[allow(dead_code)]
 pub(super) fn prefetched_tiles_steady_state_cap(image_count: usize, max_distance: usize) -> usize {
     prefetch_window_index_cap(image_count, max_distance).saturating_sub(1)
 }

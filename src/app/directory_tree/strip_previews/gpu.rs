@@ -16,33 +16,20 @@
 
 //! Directory-tree strip GPU upload pipeline and cache write-through.
 
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
-use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPendingGpuUpload, DirectoryTreeStripPreviewJobResult,
+    DirectoryTreeStripPendingGpuUpload,
     MAX_STRIP_GPU_UPLOADS_PER_PAINT, MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag,
-    StripPreviewReplaceParams, decoded_rgba_size_valid, decide_strip_preview_replace,
+    StripPreviewReplaceParams, decide_strip_preview_replace,
 };
-use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource, generate_directory_tree_thumb_from_path,
-    hdr_has_iso_deferred_gain_map, preview_aspect_matches_logical,
+    DecodedImage, PreviewStage,
+    hdr_has_iso_deferred_gain_map,
 };
 
-#[cfg(target_os = "windows")]
-use super::super::workers::ensure_strip_worker_com_initialized;
-use super::{
-    BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
-    DirectoryTreeListPreviewLayout, MAX_COLD_STRIP_GENERATES_PER_FRAME,
-    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
-    MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES, MAX_STRIP_GENERATE_INFLIGHT,
-    MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
-};
 
 impl ImageViewerApp {
     fn evict_strip_pending_gpu_uploads(&mut self, need: usize) -> usize {
