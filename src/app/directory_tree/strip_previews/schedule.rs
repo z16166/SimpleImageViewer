@@ -387,10 +387,15 @@ impl ImageViewerApp {
         }
         let current = self.current_index.min(total.saturating_sub(1));
         let mut ordered = Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
-        let mut seen = std::collections::HashSet::new();
+        // Per-frame dedup guard: at most MAX_COLD_STRIP_SCHEDULE_PER_FRAME (32) items end up
+        // in this Vec — a linear scan is faster than the hash-table allocation + hashing overhead.
+        let mut seen = Vec::with_capacity(MAX_COLD_STRIP_SCHEDULE_PER_FRAME);
         let mut try_push = |index: usize| -> bool {
-            if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {
-                ordered.push(index);
+            if index < total && !seen.contains(&index) {
+                seen.push(index);
+                if self.strip_index_needs_cold_thumbnail(index) {
+                    ordered.push(index);
+                }
             }
             ordered.len() >= schedule_budget
         };
