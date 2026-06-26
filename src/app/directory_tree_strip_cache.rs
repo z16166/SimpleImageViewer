@@ -51,6 +51,10 @@ pub(crate) enum StripPreviewBufferTag {
 }
 
 impl StripPreviewBufferTag {
+    /// Number of [`PreviewStage`] variants. Each tag occupies this many consecutive ranks
+    /// so that stage upgrades within the same tag always increase the rank.
+    const PREVIEW_STAGE_COUNT: u16 = 2;
+
     fn quality_rank(self, stage: PreviewStage) -> u16 {
         let base = match self {
             Self::SdrDeferredPlaceholder => 0,
@@ -66,7 +70,7 @@ impl StripPreviewBufferTag {
             PreviewStage::Initial => 0,
             PreviewStage::Refined => 1,
         };
-        base * 2 + stage_bonus
+        base * Self::PREVIEW_STAGE_COUNT + stage_bonus
     }
 }
 
