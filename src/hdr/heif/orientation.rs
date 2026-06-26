@@ -72,7 +72,7 @@ pub(crate) fn heif_exif_orientation_from_raw_handle(
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> Option<u16> {
-    heif_exif_orientation_from_raw_handle(primary.0)
+    heif_exif_orientation_from_raw_handle(primary.as_ptr())
 }
 
 /// Read [`exif::Tag::Orientation`] from libheif-attached `Exif` metadata items (works when pure ISOBMFF
@@ -182,7 +182,7 @@ pub(crate) fn libheif_primary_decode_should_ignore_embedded_geometry(bytes: &[u8
     let Ok((ctx, primary)) = open_heif_primary_from_bytes(bytes) else {
         return false;
     };
-    libheif_primary_geometric_mirror_rotation_only(ctx.0.cast_const(), primary.0)
+    libheif_primary_geometric_mirror_rotation_only(ctx.as_ptr(), primary.as_ptr())
 }
 
 #[cfg(feature = "heif-native")]
@@ -253,10 +253,10 @@ pub(crate) fn libheif_transformation_props_to_manual_exif(
 #[cfg(feature = "heif-native")]
 pub(crate) fn libheif_manual_geometry_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
     let (ctx, primary) = open_heif_primary_from_bytes(bytes).ok()?;
-    if !libheif_primary_geometric_mirror_rotation_only(ctx.0.cast_const(), primary.0) {
+    if !libheif_primary_geometric_mirror_rotation_only(ctx.as_ptr(), primary.as_ptr()) {
         return None;
     }
-    libheif_transformation_props_to_manual_exif(ctx.0.cast_const(), primary.0)
+    libheif_transformation_props_to_manual_exif(ctx.as_ptr(), primary.as_ptr())
 }
 
 #[cfg(feature = "heif-native")]
@@ -269,36 +269,33 @@ pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) ->
 /// is immediately after **`version`** (confirmed for libheif ≥ 1.x).
 #[cfg(feature = "heif-native")]
 pub(crate) struct HeifDecodeOptionsIgnoredGeometryOwned {
-    ptr: *mut libheif_sys::heif_decoding_options,
+    guard: Option<libheif_sys::HeifDecodingOptionsGuard>,
 }
 
 #[cfg(feature = "heif-native")]
 impl HeifDecodeOptionsIgnoredGeometryOwned {
     pub(crate) fn new_ignore_transformations() -> Option<Self> {
+        let guard = libheif_sys::HeifDecodingOptionsGuard::new()?;
+        // Set byte at offset 1 → `ignore_transformations` in libheif's C struct.
         unsafe {
-            let ptr = libheif_sys::heif_decoding_options_alloc();
-            if ptr.is_null() {
-                return None;
-            }
-            *ptr.cast::<u8>().add(1) = 1;
-            Some(Self { ptr })
+            *guard.as_mut_ptr().cast::<u8>().add(1) = 1;
         }
+        Some(Self { guard: Some(guard) })
     }
 
     pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_decoding_options {
-        self.ptr.cast_const()
+        self.guard
+            .as_ref()
+            .map(|g| g.as_ptr())
+            .unwrap_or(std::ptr::null())
     }
 }
 
 #[cfg(feature = "heif-native")]
 impl Drop for HeifDecodeOptionsIgnoredGeometryOwned {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe {
-                libheif_sys::heif_decoding_options_free(self.ptr);
-            }
-            self.ptr = std::ptr::null_mut();
-        }
+        // HeifDecodingOptionsGuard handles the free; just let the Option drop.
+        self.guard.take();
     }
 }
 
@@ -339,8 +336,8 @@ pub(crate) fn decoded_pixels_match_swapped_ispe(
         Err(_) => return false,
     };
     unsafe {
-        let iw = libheif_sys::heif_image_handle_get_ispe_width(primary.0);
-        let ih = libheif_sys::heif_image_handle_get_ispe_height(primary.0);
+        let iw = libheif_sys::heif_image_handle_get_ispe_width(primary.as_ptr());
+        let ih = libheif_sys::heif_image_handle_get_ispe_height(primary.as_ptr());
         if iw <= 0 || ih <= 0 {
             return false;
         }

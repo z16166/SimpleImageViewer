@@ -76,11 +76,11 @@ pub(crate) fn decode_heif_hdr_bytes(
 ) -> Result<HdrImageBuffer, String> {
     let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
-    let mut metadata = read_heif_metadata(handle.0);
-    if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle.0) {
+    let mut metadata = read_heif_metadata(handle.as_ptr());
+    if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle.as_ptr()) {
         metadata.gain_map = Some(diagnostic);
     }
-    refine_heif_transfer_for_primary_bit_depth(handle.0, &mut metadata);
+    refine_heif_transfer_for_primary_bit_depth(handle.as_ptr(), &mut metadata);
     crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
 
     let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
@@ -88,13 +88,13 @@ pub(crate) fn decode_heif_hdr_bytes(
         .as_ref()
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
-    let mut hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+    let mut hdr = decode_primary_heif_to_hdr(handle.as_ptr(), metadata, decode_opts_ptr)?;
 
     // Apple HDR gain map: only decode the auxiliary plane when display headroom weight > 0
     // (SDR tone-mapped output keeps the primary plane; skip redundant libheif + CPU work).
-    if heif_has_apple_hdr_gain_map_auxiliary(handle.0) {
+    if heif_has_apple_hdr_gain_map_auxiliary(handle.as_ptr()) {
         let headroom = crate::hdr::heif_apple_gain_map::resolve_apple_hdr_headroom_from_exif(
-            crate::hdr::heif_apple_gain_map::read_heif_exif_block(handle.0).as_deref(),
+            crate::hdr::heif_apple_gain_map::read_heif_exif_block(handle.as_ptr()).as_deref(),
         );
         if crate::hdr::heif_apple_gain_map::should_apply_apple_heic_gain_map(
             hdr_target_capacity,
@@ -108,7 +108,7 @@ pub(crate) fn decode_heif_hdr_bytes(
                 hdr_target_capacity,
             );
             if let Some((gain_w, gain_h, gain_rgba)) =
-                decode_heif_gain_map(handle.0, decode_opts_ptr)
+                decode_heif_gain_map(handle.as_ptr(), decode_opts_ptr)
             {
                 let headroom_span = headroom.linear_headroom - 1.0;
                 match crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(

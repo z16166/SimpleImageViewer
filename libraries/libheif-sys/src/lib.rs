@@ -258,3 +258,217 @@ unsafe extern "C" {
         out_data: *mut libc::c_void,
     ) -> heif_error;
 }
+
+// ── RAII guards ────────────────────────────────────────────────────────
+//
+// Drop order convention for libheif: image → handle → context (bottom-up).
+// Rust struct field drop order is declaration order, so declare guards in
+// reverse of the C release order when storing them in the same struct.
+
+use std::fmt;
+use std::ptr::NonNull;
+
+// ── heif_context ──────────────────────────────────────────────────────
+
+/// Owns a [`heif_context`] and calls [`heif_context_free`] on drop.
+#[must_use = "HeifContextGuard will free the context on drop"]
+pub struct HeifContextGuard {
+    ptr: NonNull<heif_context>,
+}
+
+impl HeifContextGuard {
+    /// Allocate a new context. Returns `None` on allocation failure.
+    pub fn new() -> Option<Self> {
+        let ptr = NonNull::new(unsafe { heif_context_alloc() })?;
+        Some(Self { ptr })
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *mut heif_context {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for HeifContextGuard {
+    fn drop(&mut self) {
+        unsafe { heif_context_free(self.ptr.as_ptr()) };
+    }
+}
+
+impl fmt::Debug for HeifContextGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeifContextGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ── heif_image_handle ─────────────────────────────────────────────────
+
+/// Owns a [`heif_image_handle`] and calls [`heif_image_handle_release`] on drop.
+#[must_use = "HeifImageHandleGuard will release the handle on drop"]
+pub struct HeifImageHandleGuard {
+    ptr: NonNull<heif_image_handle>,
+}
+
+impl HeifImageHandleGuard {
+    /// Wrap a raw handle obtained from e.g. [`heif_context_get_primary_image_handle`].
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, non-null handle that has not been passed to another guard.
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut heif_image_handle) -> Self {
+        Self {
+            ptr: NonNull::new(ptr).expect("HeifImageHandleGuard constructed with null handle"),
+        }
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const heif_image_handle {
+        self.ptr.as_ptr().cast_const()
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&self) -> *mut heif_image_handle {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for HeifImageHandleGuard {
+    fn drop(&mut self) {
+        unsafe { heif_image_handle_release(self.ptr.as_ptr().cast_const()) };
+    }
+}
+
+impl fmt::Debug for HeifImageHandleGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeifImageHandleGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ── heif_image ────────────────────────────────────────────────────────
+
+/// Owns a decoded [`heif_image`] and calls [`heif_image_release`] on drop.
+#[must_use = "HeifImageGuard will release the image on drop"]
+pub struct HeifImageGuard {
+    ptr: NonNull<heif_image>,
+}
+
+impl HeifImageGuard {
+    /// Wrap a raw image obtained from [`heif_decode_image`].
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, non-null image that has not been passed to another guard.
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut heif_image) -> Self {
+        Self {
+            ptr: NonNull::new(ptr).expect("HeifImageGuard constructed with null image"),
+        }
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const heif_image {
+        self.ptr.as_ptr().cast_const()
+    }
+}
+
+impl Drop for HeifImageGuard {
+    fn drop(&mut self) {
+        unsafe { heif_image_release(self.ptr.as_ptr().cast_const()) };
+    }
+}
+
+impl fmt::Debug for HeifImageGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeifImageGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ── heif_decoding_options ─────────────────────────────────────────────
+
+/// Owns a [`heif_decoding_options`] and calls [`heif_decoding_options_free`] on drop.
+#[must_use = "HeifDecodingOptionsGuard will free the options on drop"]
+pub struct HeifDecodingOptionsGuard {
+    ptr: NonNull<heif_decoding_options>,
+}
+
+impl HeifDecodingOptionsGuard {
+    /// Allocate new decoding options. Returns `None` on allocation failure.
+    pub fn new() -> Option<Self> {
+        let ptr = NonNull::new(unsafe { heif_decoding_options_alloc() })?;
+        Some(Self { ptr })
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const heif_decoding_options {
+        self.ptr.as_ptr().cast_const()
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&self) -> *mut heif_decoding_options {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for HeifDecodingOptionsGuard {
+    fn drop(&mut self) {
+        unsafe { heif_decoding_options_free(self.ptr.as_ptr()) };
+    }
+}
+
+impl fmt::Debug for HeifDecodingOptionsGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeifDecodingOptionsGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ── heif_color_profile_nclx ───────────────────────────────────────────
+
+/// Owns a [`heif_color_profile_nclx`] and calls [`heif_nclx_color_profile_free`] on drop.
+#[must_use = "HeifNclxProfileGuard will free the NCLX profile on drop"]
+pub struct HeifNclxProfileGuard {
+    ptr: NonNull<heif_color_profile_nclx>,
+}
+
+impl HeifNclxProfileGuard {
+    /// Wrap a raw NCLX profile pointer obtained from [`heif_image_handle_get_nclx_color_profile`].
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, non-null profile that has not been passed to another guard.
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut heif_color_profile_nclx) -> Self {
+        Self {
+            ptr: NonNull::new(ptr)
+                .expect("HeifNclxProfileGuard constructed with null profile"),
+        }
+    }
+
+    /// Access the NCLX profile data.
+    #[inline]
+    pub fn as_ref(&self) -> &heif_color_profile_nclx {
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+impl Drop for HeifNclxProfileGuard {
+    fn drop(&mut self) {
+        unsafe { heif_nclx_color_profile_free(self.ptr.as_ptr()) };
+    }
+}
+
+impl fmt::Debug for HeifNclxProfileGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeifNclxProfileGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}

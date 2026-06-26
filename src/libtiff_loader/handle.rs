@@ -25,19 +25,21 @@ use super::mmap::{
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
 };
 
-/// RAII handle for a TIFF object, ensures the handle is closed and context is kept alive.
+/// RAII handle for a TIFF object — delegates close to [`lib::TiffGuard`] and keeps
+/// the memory-map context alive until the handle is dropped.
+///
+/// Field order is load-bearing: `guard` (→ `TIFFClose`) must drop **before** `_context`
+/// (→ mmap free), matching the C lifecycle contract of `TIFFClientOpen`.
 pub struct TiffHandle {
-    pub(crate) ptr: *mut lib::TIFF,
+    pub(crate) guard: lib::TiffGuard,
     pub(crate) _context: Box<TiffMmapContext>,
 }
 
-impl Drop for TiffHandle {
-    fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe {
-                lib::TIFFClose(self.ptr);
-            }
-        }
+impl TiffHandle {
+    /// Raw pointer for FFI calls. Prefer the typed helpers on [`lib::TiffGuard`] when possible.
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *mut lib::TIFF {
+        self.guard.as_ptr()
     }
 }
 
@@ -76,7 +78,7 @@ pub(crate) fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHan
             return Err("TIFFClientOpen failed".to_string());
         }
         Ok(TiffHandle {
-            ptr: tif_ptr,
+            guard: lib::TiffGuard::from_ptr(tif_ptr),
             _context: ctx,
         })
     }

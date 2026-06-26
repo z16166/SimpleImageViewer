@@ -94,12 +94,13 @@ pub(crate) fn decode_primary_heif_to_hdr(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct RawHeifImage(pub *mut libheif_sys::heif_image);
+pub(crate) struct RawHeifImage(pub libheif_sys::HeifImageGuard);
 
 #[cfg(feature = "heif-native")]
-impl Drop for RawHeifImage {
-    fn drop(&mut self) {
-        unsafe { libheif_sys::heif_image_release(self.0) };
+impl RawHeifImage {
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_image {
+        self.0.as_ptr()
     }
 }
 
@@ -125,7 +126,9 @@ pub(crate) fn heif_try_decode_into(
             message: std::ptr::null(),
         });
     }
-    Ok(RawHeifImage(image_ptr))
+    Ok(RawHeifImage(unsafe {
+        libheif_sys::HeifImageGuard::from_ptr(image_ptr)
+    }))
 }
 
 #[cfg(feature = "heif-native")]
@@ -161,7 +164,7 @@ pub(crate) fn decode_primary_interleaved_rrggbbaa_le(
         }
     };
 
-    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.0, 4)
+    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.as_ptr(), 4)
 }
 
 #[cfg(feature = "heif-native")]
@@ -186,7 +189,7 @@ pub(crate) fn decode_primary_interleaved_rrggbbe_le(
         }
     };
 
-    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.0, 3)
+    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.as_ptr(), 3)
 }
 
 #[cfg(feature = "heif-native")]
@@ -211,7 +214,7 @@ pub(crate) fn decode_primary_interleaved_rgba8(
         }
     };
 
-    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.0, 4)
+    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.as_ptr(), 4)
 }
 
 #[cfg(feature = "heif-native")]
@@ -236,7 +239,7 @@ pub(crate) fn decode_primary_interleaved_rgb8(
         }
     };
 
-    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.0, 3)
+    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.as_ptr(), 3)
 }
 
 #[cfg(feature = "heif-native")]
@@ -261,7 +264,7 @@ pub(crate) fn decode_primary_planar_rgb444(
         }
     };
 
-    hdr_buffer_from_planar_rgb444(handle, metadata, img.0)
+    hdr_buffer_from_planar_rgb444(handle, metadata, img.as_ptr())
 }
 
 #[cfg(feature = "heif-native")]
@@ -288,7 +291,7 @@ pub(crate) fn decode_primary_ycbcr(
         }
     };
 
-    hdr_buffer_from_ycbcr(handle, metadata, img.0, chroma)
+    hdr_buffer_from_ycbcr(handle, metadata, img.as_ptr(), chroma)
 }
 
 #[cfg(feature = "heif-native")]

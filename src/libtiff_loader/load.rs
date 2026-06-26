@@ -129,17 +129,17 @@ pub fn load_via_libtiff(
         }
 
         let handle = TiffHandle {
-            ptr: tif_ptr,
+            guard: lib::TiffGuard::from_ptr(tif_ptr),
             _context: ctx,
         };
 
         let mut width: lib::uint32 = 0;
         let mut height: lib::uint32 = 0;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_IMAGEWIDTH, &mut width);
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_IMAGELENGTH, &mut height);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_IMAGEWIDTH, &mut width);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_IMAGELENGTH, &mut height);
 
         let mut bps: u16 = 0;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
 
         if width == 0 || height == 0 {
             return Err("TIFF has zero width or height".to_string());
@@ -148,16 +148,16 @@ pub fn load_via_libtiff(
         let mut photo: u16 = 0;
         let mut compression: u16 = 0;
         let mut orientation: u16 = 1;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_PHOTOMETRIC, &mut photo);
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_COMPRESSION, &mut compression);
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_ORIENTATION, &mut orientation);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_PHOTOMETRIC, &mut photo);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_COMPRESSION, &mut compression);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ORIENTATION, &mut orientation);
 
         let mut sample_format: u16 = lib::SAMPLEFORMAT_UINT;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_SAMPLEFORMAT, &mut sample_format);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_SAMPLEFORMAT, &mut sample_format);
         let mut spp: u16 = 0;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
         let mut planar_config: u16 = CONFIG_CONTIG;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_PLANARCONFIG, &mut planar_config);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_PLANARCONFIG, &mut planar_config);
 
         let pixel_count_pre = width as u64 * height as u64;
         if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp)
@@ -165,7 +165,7 @@ pub fn load_via_libtiff(
         {
             let spp_use = if spp == 0 { 1 } else { spp };
             match decode_ieee_scene_linear_rgba32f(
-                handle.ptr,
+                handle.as_ptr(),
                 width,
                 height,
                 bps,
@@ -236,7 +236,7 @@ pub fn load_via_libtiff(
             && !crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         {
             let spp_use = if spp == 0 { 3 } else { spp };
-            match decode_uint16_rgb_scene_linear_rgba32f(handle.ptr, width, height, spp_use) {
+            match decode_uint16_rgb_scene_linear_rgba32f(handle.as_ptr(), width, height, spp_use) {
                 Ok(mut rgba_f32) => {
                     let mut w = width;
                     let mut h = height;
@@ -284,7 +284,7 @@ pub fn load_via_libtiff(
             && pixel_count_pre <= 256 * 1024 * 1024
         {
             match decode_logl_logluv_scene_linear_rgba32f(
-                handle.ptr,
+                handle.as_ptr(),
                 width,
                 height,
                 photo,
@@ -370,11 +370,11 @@ pub fn load_via_libtiff(
         let is_large = pixel_count >= tiled_threshold || width > limit || height > limit;
 
         if !force_static && is_large {
-            if lib::TIFFIsTiled(handle.ptr) != 0 {
+            if lib::TIFFIsTiled(handle.as_ptr()) != 0 {
                 let mut tile_width: lib::uint32 = 0;
                 let mut tile_height: lib::uint32 = 0;
-                lib::TIFFGetField(handle.ptr, lib::TIFFTAG_TILEWIDTH, &mut tile_width);
-                lib::TIFFGetField(handle.ptr, lib::TIFFTAG_TILELENGTH, &mut tile_height);
+                lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_TILEWIDTH, &mut tile_width);
+                lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_TILELENGTH, &mut tile_height);
 
                 if tile_width == 0 || tile_height == 0 {
                     return Err("TIFF is tiled but tile dimensions are zero".to_string());
@@ -391,7 +391,7 @@ pub fn load_via_libtiff(
                 })));
             } else {
                 let mut rps: lib::uint32 = 0;
-                if lib::TIFFGetField(handle.ptr, lib::TIFFTAG_ROWSPERSTRIP, &mut rps) == 0
+                if lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ROWSPERSTRIP, &mut rps) == 0
                     || rps == 0
                 {
                     rps = height;
@@ -425,7 +425,7 @@ pub fn load_via_libtiff(
 
         // Try RGBA interface first (fast, handles color spaces)
         let mut bps: u16 = 0;
-        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
+        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
 
         let mut success = false;
         let mut pixels = Vec::new();
@@ -433,7 +433,7 @@ pub fn load_via_libtiff(
         // Try RGBA interface first ONLY if not forced static
         if !force_static {
             let mut raster: Vec<lib::uint32> = vec![0; total_pixels];
-            if lib::TIFFReadRGBAImageOriented(handle.ptr, width, height, raster.as_mut_ptr(), 1, 0)
+            if lib::TIFFReadRGBAImageOriented(handle.as_ptr(), width, height, raster.as_mut_ptr(), 1, 0)
                 != 0
             {
                 pixels = vec![0u8; total_pixels * 4];
@@ -448,7 +448,7 @@ pub fn load_via_libtiff(
 
         if !success {
             // Fallback to manual scanline decode
-            pixels = manual_decode_scanline(handle.ptr, width, height)?;
+            pixels = manual_decode_scanline(handle.as_ptr(), width, height)?;
         }
 
         if orientation > 1 {
