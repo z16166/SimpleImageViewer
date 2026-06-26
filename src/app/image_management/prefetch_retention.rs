@@ -85,7 +85,7 @@ pub(super) fn prefetch_window_index_cap(image_count: usize, max_distance: usize)
     if image_count == 0 {
         return 0;
     }
-    image_count.min(2 * max_distance + 1)
+    image_count.min(max_distance.saturating_mul(2).saturating_add(1))
 }
 
 /// Steady-state upper bound on `prefetched_tiles` length (current lives in `tile_manager`).
