@@ -149,6 +149,51 @@ pub(crate) fn load_jpeg_from_mapped(
     Ok(make_image_data(DecodedImage::new(w, h, pixels)))
 }
 
+/// Strip preview fast path: decode a baseline JPEG with DCT-domain scaling.
+///
+/// Returns `None` when this is an Ultra HDR / JPEG_R image that must go through the
+/// full HDR-aware decode path.  Otherwise returns the DCT-scaled thumbnail plus the
+/// original (logical) image dimensions.
+pub(crate) fn try_decode_jpeg_strip_dct(
+    path: &PathBuf,
+    jpeg_data: &[u8],
+    max_side: u32,
+) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+    // Ultra HDR / JPEG_R images must go through the full HDR-aware decode path.
+    if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(jpeg_data)
+        .ok()
+        .is_some_and(|info| info.is_ultra_hdr)
+    {
+        return None;
+    }
+
+    let orientation = crate::metadata_utils::get_exif_orientation(path);
+    let (orig_w, orig_h) = match libjpeg_turbo::decode_jpeg_dimensions(jpeg_data) {
+        Ok(dims) => dims,
+        Err(e) => return Some(Err(e)),
+    };
+    // Logical = oriented original dimensions (rotation swaps width/height).
+    let logical = if orientation > 4 {
+        (orig_h, orig_w)
+    } else {
+        (orig_w, orig_h)
+    };
+
+    let (scaled_w, scaled_h, pixels) =
+        match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+
+    if orientation > 1 {
+        let (out_w, out_h, out_pixels) =
+            crate::libtiff_loader::apply_orientation_buffer(pixels, scaled_w, scaled_h, orientation);
+        Some(Ok((DecodedImage::new(out_w, out_h, out_pixels), logical)))
+    } else {
+        Some(Ok((DecodedImage::new(scaled_w, scaled_h, pixels), logical)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::load_jpeg_with_target_capacity;
