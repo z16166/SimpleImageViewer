@@ -80,10 +80,17 @@ pub struct heif_image {
     _private: [u8; 0],
 }
 
-/// Opaque; always allocate with [`heif_decoding_options_alloc`].
+/// Allocate with [`heif_decoding_options_alloc`] — the struct may grow in future
+/// libheif versions; only access fields through the guard's safe setters/getters.
+///
+/// Field layout matches `struct heif_decoding_options` in `<libheif/heif_decoding.h>`.
+/// We only declare the version-1 fields we actually use; `heif_decoding_options_alloc`
+/// zero-initializes the full allocation including any trailing fields added by newer
+/// libheif versions, so accessing only the declared prefix is sound.
 #[repr(C)]
 pub struct heif_decoding_options {
-    _private: [u8; 0],
+    pub version: u8,
+    pub ignore_transformations: u8,
 }
 
 #[repr(C)]
@@ -410,9 +417,14 @@ impl HeifDecodingOptionsGuard {
         self.ptr.as_ptr().cast_const()
     }
 
+    /// Set the version-1 `ignore_transformations` flag. When `true`, the decoder
+    /// skips embedded crop/rotation/mirror geometry and returns raw raster pixels.
     #[inline]
-    pub fn as_mut_ptr(&self) -> *mut heif_decoding_options {
-        self.ptr.as_ptr()
+    pub fn set_ignore_transformations(&mut self, ignore: bool) {
+        // SAFETY: self.ptr is a valid NonNull<heif_decoding_options> from
+        // heif_decoding_options_alloc, and &mut self guarantees exclusive access.
+        let p = unsafe { self.ptr.as_mut() };
+        p.ignore_transformations = ignore as u8;
     }
 }
 

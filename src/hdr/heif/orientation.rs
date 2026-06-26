@@ -265,8 +265,8 @@ pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) ->
     libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
 }
 
-/// Decoding options: **`ignore_transformations = true`**. Matches `struct heif_decoding_options`: `ignore_transformations`
-/// is immediately after **`version`** (confirmed for libheif ≥ 1.x).
+/// Decoding options with `ignore_transformations = true`, instructing the decoder
+/// to skip embedded crop/rotation/mirror geometry and return raw raster pixels.
 #[cfg(feature = "heif-native")]
 pub(crate) struct HeifDecodeOptionsIgnoredGeometryOwned {
     guard: libheif_sys::HeifDecodingOptionsGuard,
@@ -275,11 +275,8 @@ pub(crate) struct HeifDecodeOptionsIgnoredGeometryOwned {
 #[cfg(feature = "heif-native")]
 impl HeifDecodeOptionsIgnoredGeometryOwned {
     pub(crate) fn new_ignore_transformations() -> Option<Self> {
-        let guard = libheif_sys::HeifDecodingOptionsGuard::new()?;
-        // Set byte at offset 1 → `ignore_transformations` in libheif's C struct.
-        unsafe {
-            *guard.as_mut_ptr().cast::<u8>().add(1) = 1;
-        }
+        let mut guard = libheif_sys::HeifDecodingOptionsGuard::new()?;
+        guard.set_ignore_transformations(true);
         Some(Self { guard })
     }
 
