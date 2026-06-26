@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -503,8 +503,15 @@ pub struct ImageViewerApp {
     >,
     pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
     pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
-    pub(crate) directory_tree_strip_pending_gpu:
-        Vec<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Pending GPU uploads with `PreviewStage::Initial`, drained first on eviction.
+    pub(crate) directory_tree_strip_pending_gpu_initial:
+        VecDeque<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Pending GPU uploads with `PreviewStage::Refined`, evicted only after Initial queue is empty.
+    pub(crate) directory_tree_strip_pending_gpu_refined:
+        VecDeque<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
+    /// Monotonic counter assigned to each pending upload; used to merge both queues in FIFO order
+    /// during flush.
+    pub(crate) directory_tree_strip_pending_gpu_next_seq: u64,
     /// Background Places loader; polled from `logic()`.
     pub(crate) directory_tree_places_load_rx:
         Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,

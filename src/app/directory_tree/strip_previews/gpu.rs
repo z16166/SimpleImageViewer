@@ -52,24 +52,21 @@ impl ImageViewerApp {
         let mut dropped_indices = Vec::new();
         let mut still_need = need;
 
-        if still_need > 0 {
-            let mut kept = Vec::with_capacity(self.directory_tree_strip_pending_gpu.len());
-            for item in self.directory_tree_strip_pending_gpu.drain(..) {
-                if still_need > 0 && item.stage == PreviewStage::Initial {
-                    dropped_indices.push(item.index);
-                    still_need -= 1;
-                } else {
-                    kept.push(item);
-                }
-            }
-            self.directory_tree_strip_pending_gpu = kept;
+        // Evict Initial-stage items first (lower priority), O(1) pop from front.
+        while still_need > 0 {
+            let Some(item) = self.directory_tree_strip_pending_gpu_initial.pop_front() else {
+                break;
+            };
+            dropped_indices.push(item.index);
+            still_need -= 1;
         }
 
-        if still_need > 0 {
-            let drop_count = still_need.min(self.directory_tree_strip_pending_gpu.len());
-            for item in self.directory_tree_strip_pending_gpu.drain(..drop_count) {
-                dropped_indices.push(item.index);
-            }
+        // Fall back to evicting from the front of the Refined queue.
+        while still_need > 0 {
+            let Some(item) = self.directory_tree_strip_pending_gpu_refined.pop_front() else {
+                break;
+            };
+            dropped_indices.push(item.index);
         }
 
         let dropped = dropped_indices.len();
@@ -98,11 +95,11 @@ impl ImageViewerApp {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
             return;
         }
-        if self.directory_tree_strip_pending_gpu.len() >= MAX_STRIP_PENDING_GPU_UPLOADS {
+        let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
+            + self.directory_tree_strip_pending_gpu_refined.len();
+        if pending_len >= MAX_STRIP_PENDING_GPU_UPLOADS {
             let dropped = self.evict_strip_pending_gpu_uploads(
-                self.directory_tree_strip_pending_gpu
-                    .len()
-                    .saturating_sub(MAX_STRIP_PENDING_GPU_UPLOADS - 1),
+                pending_len.saturating_sub(MAX_STRIP_PENDING_GPU_UPLOADS - 1),
             );
             log::warn!(
                 "[DirectoryTree] Strip pending GPU upload queue full; dropped {dropped} item(s)"
@@ -112,16 +109,25 @@ impl ImageViewerApp {
         let decoded_w = decoded.width;
         #[cfg(feature = "preload-debug")]
         let decoded_h = decoded.height;
-        self.directory_tree_strip_pending_gpu
-            .push(DirectoryTreeStripPendingGpuUpload {
-                index,
-                decoded,
-                stage,
-                logical,
-                buffer_tag,
-            });
+        let seq = self.directory_tree_strip_pending_gpu_next_seq;
+        self.directory_tree_strip_pending_gpu_next_seq += 1;
+        let upload = DirectoryTreeStripPendingGpuUpload {
+            index,
+            decoded,
+            stage,
+            logical,
+            buffer_tag,
+            seq,
+        };
+        match stage {
+            PreviewStage::Initial => &mut self.directory_tree_strip_pending_gpu_initial,
+            PreviewStage::Refined => &mut self.directory_tree_strip_pending_gpu_refined,
+        }
+        .push_back(upload);
         #[cfg(feature = "preload-debug")]
         {
+            let pending_len2 = self.directory_tree_strip_pending_gpu_initial.len()
+                + self.directory_tree_strip_pending_gpu_refined.len();
             crate::preload_debug!(
                 "[PreloadDebug][StripGpu] queue idx={} tag={buffer_tag:?} stage={:?} decoded={}x{} logical={:?} \
                  cache_contains={} cache_count={} pending_len={}",
@@ -132,7 +138,7 @@ impl ImageViewerApp {
                 logical,
                 self.directory_tree_strip_cache.contains(index),
                 self.directory_tree_strip_cache.textures().len(),
-                self.directory_tree_strip_pending_gpu.len()
+                pending_len2
             );
         }
     }
@@ -168,22 +174,43 @@ impl ImageViewerApp {
 
 
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
-        if self.directory_tree_strip_pending_gpu.is_empty() {
+        let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
+            + self.directory_tree_strip_pending_gpu_refined.len();
+        if pending_len == 0 {
             return;
         }
         let revision_before = self.directory_tree_strip_cache.gpu_revision();
-        let take = MAX_STRIP_GPU_UPLOADS_PER_PAINT.min(self.directory_tree_strip_pending_gpu.len());
-        let batch: Vec<_> = self
-            .directory_tree_strip_pending_gpu
-            .drain(..take)
-            .collect();
+        let take = MAX_STRIP_GPU_UPLOADS_PER_PAINT.min(pending_len);
+        // Merge the per-stage queues in FIFO order by comparing sequence numbers.
+        let mut batch = Vec::with_capacity(take);
+        for _ in 0..take {
+            let from_initial = self
+                .directory_tree_strip_pending_gpu_initial
+                .front()
+                .map(|item| item.seq);
+            let from_refined = self
+                .directory_tree_strip_pending_gpu_refined
+                .front()
+                .map(|item| item.seq);
+            let source = match (from_initial, from_refined) {
+                (Some(si), Some(sr)) if si < sr => {
+                    &mut self.directory_tree_strip_pending_gpu_initial
+                }
+                (Some(_), Some(_)) => &mut self.directory_tree_strip_pending_gpu_refined,
+                (Some(_), None) => &mut self.directory_tree_strip_pending_gpu_initial,
+                (None, Some(_)) => &mut self.directory_tree_strip_pending_gpu_refined,
+                (None, None) => break,
+            };
+            batch.push(source.pop_front().unwrap());
+        }
         #[cfg(feature = "preload-debug")]
         {
             let indices: Vec<usize> = batch.iter().map(|item| item.index).collect();
+            let remaining = self.directory_tree_strip_pending_gpu_initial.len()
+                + self.directory_tree_strip_pending_gpu_refined.len();
             crate::preload_debug!(
-                "[PreloadDebug][StripGpu] flush take={} pending_left={} indices={indices:?}",
+                "[PreloadDebug][StripGpu] flush take={} pending_left={remaining} indices={indices:?}",
                 batch.len(),
-                self.directory_tree_strip_pending_gpu.len()
             );
         }
         for item in batch {
@@ -214,7 +241,8 @@ impl ImageViewerApp {
         }
         let cache_revision_changed =
             self.directory_tree_strip_cache.gpu_revision() != revision_before;
-        let pending_uploads_remain = !self.directory_tree_strip_pending_gpu.is_empty();
+        let pending_uploads_remain = !self.directory_tree_strip_pending_gpu_initial.is_empty()
+            || !self.directory_tree_strip_pending_gpu_refined.is_empty();
         #[cfg(feature = "preload-debug")]
         if cache_revision_changed && !pending_uploads_remain {
             crate::preload_debug!(

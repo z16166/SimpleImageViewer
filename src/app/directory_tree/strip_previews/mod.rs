@@ -337,17 +337,23 @@ impl ImageViewerApp {
 
 
     fn permute_directory_tree_strip_pending_gpu(&mut self, old_to_new: &[usize]) {
-        self.directory_tree_strip_pending_gpu.retain_mut(|pending| {
-            if pending.index >= old_to_new.len() {
-                return false;
-            }
-            let new_idx = old_to_new[pending.index];
-            if new_idx == usize::MAX {
-                return false;
-            }
-            pending.index = new_idx;
-            true
-        });
+        let permute_deque = |deque: &mut std::collections::VecDeque<
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload,
+        >| {
+            deque.retain_mut(|pending| {
+                if pending.index >= old_to_new.len() {
+                    return false;
+                }
+                let new_idx = old_to_new[pending.index];
+                if new_idx == usize::MAX {
+                    return false;
+                }
+                pending.index = new_idx;
+                true
+            });
+        };
+        permute_deque(&mut self.directory_tree_strip_pending_gpu_initial);
+        permute_deque(&mut self.directory_tree_strip_pending_gpu_refined);
     }
 
 
@@ -475,7 +481,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
-        self.directory_tree_strip_pending_gpu.clear();
+        self.directory_tree_strip_pending_gpu_initial.clear();
+        self.directory_tree_strip_pending_gpu_refined.clear();
         {
             let mut list = self.directory_tree.list.lock();
             list.image_list_generation = list.image_list_generation.wrapping_add(1);

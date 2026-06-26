@@ -87,6 +87,9 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub stage: PreviewStage,
     pub logical: Option<(u32, u32)>,
     pub buffer_tag: StripPreviewBufferTag,
+    /// Monotonic insertion-order sequence number so that flush can merge the
+    /// per-stage queues in FIFO order.
+    pub seq: u64,
 }
 
 /// Limit GPU texture uploads per paint pass (checklist #3).

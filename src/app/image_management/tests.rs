@@ -22,7 +22,7 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 #[test]
@@ -1576,7 +1576,9 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
             tx
         },
         directory_tree_strip_inflight_release_rx: crossbeam_channel::never(),
-        directory_tree_strip_pending_gpu: Vec::new(),
+        directory_tree_strip_pending_gpu_initial: VecDeque::new(),
+        directory_tree_strip_pending_gpu_refined: VecDeque::new(),
+        directory_tree_strip_pending_gpu_next_seq: 0,
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,

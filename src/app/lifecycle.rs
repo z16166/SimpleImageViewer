@@ -25,7 +25,7 @@ use crate::ui::utils::{
 };
 use eframe::egui::{self, Vec2};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -560,7 +560,9 @@ impl ImageViewerApp {
             directory_tree_strip_preview_rx,
             directory_tree_strip_inflight_release_tx,
             directory_tree_strip_inflight_release_rx,
-            directory_tree_strip_pending_gpu: Vec::new(),
+            directory_tree_strip_pending_gpu_initial: VecDeque::new(),
+            directory_tree_strip_pending_gpu_refined: VecDeque::new(),
+            directory_tree_strip_pending_gpu_next_seq: 0,
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,

@@ -236,7 +236,8 @@ impl ImageViewerApp {
                     result.logical.1,
                     self.directory_tree_strip_cold_attempted
                         .contains(&result.index),
-                    self.directory_tree_strip_pending_gpu.len()
+                    self.directory_tree_strip_pending_gpu_initial.len()
+                        + self.directory_tree_strip_pending_gpu_refined.len()
                 );
             }
             if !cache_valid {

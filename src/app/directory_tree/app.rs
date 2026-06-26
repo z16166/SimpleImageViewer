@@ -1631,7 +1631,8 @@ impl ImageViewerApp {
             || self.pending_directory_tree_state_sync
             || self.directory_tree_strip_bootstrap_after_scan
             || !self.directory_tree_strip_generate_inflight.is_empty()
-            || !self.directory_tree_strip_pending_gpu.is_empty()
+            || !self.directory_tree_strip_pending_gpu_initial.is_empty()
+            || !self.directory_tree_strip_pending_gpu_refined.is_empty()
             || folder_reveal_pending;
         if strip_work_pending {
             if self.directory_tree_strip_cache.gpu_revision() > 0 {
