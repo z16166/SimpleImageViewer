@@ -60,6 +60,7 @@ pub(super) const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
 pub(super) const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT: f32 = 22.0;
 pub(super) const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
+pub(super) const MAX_COLD_STRIP_SCHEDULE_PER_FRAME: usize = 32;
 pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
 pub(super) const MAX_STRIP_GENERATE_INFLIGHT: usize = 2;
 /// Modest strip cold-gen limits while the file list is first filling after a scan.

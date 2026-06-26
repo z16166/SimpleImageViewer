@@ -40,9 +40,9 @@ use super::workers::ensure_strip_worker_com_initialized;
 use super::{
     BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
     DirectoryTreeListPreviewLayout, MAX_COLD_STRIP_GENERATES_PER_FRAME,
-    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES,
-    MAX_STRIP_GENERATE_INFLIGHT, MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP,
-    MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
+    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+    MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES, MAX_STRIP_GENERATE_INFLIGHT,
+    MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
 fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, index: usize) {
@@ -1008,7 +1008,7 @@ impl ImageViewerApp {
             return Vec::new();
         }
         let current = self.current_index.min(total.saturating_sub(1));
-        let mut ordered = Vec::with_capacity(schedule_budget.min(32));
+        let mut ordered = Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
         let mut seen = std::collections::HashSet::new();
         let mut try_push = |index: usize| -> bool {
             if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {

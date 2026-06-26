@@ -50,8 +50,14 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
 
 /// Decode ISO forward gain-map AVIF primary layer to SDR baseline RGBA8 only.
 ///
-/// Skips [`super::gain_map::decode_avif_gain_map`] (second full-plane YUV to RGB). Returns `None`
-/// when the file has no forward ISO gain map so callers can use the normal loader path.
+/// Skips [`super::gain_map::decode_avif_gain_map`] (second full-plane YUV to RGB).
+///
+/// Returns:
+/// - `None` — file has no forward ISO gain map (precomposed HDR or no gain map at all);
+///   callers should try alternate decode paths.
+/// - `Some(Err(...))` — file has a forward ISO gain map but decoding failed;
+///   callers should propagate the error rather than silently falling back.
+/// - `Some(Ok(...))` — baseline RGBA8 pixels ready for downsampling.
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     bytes: &[u8],

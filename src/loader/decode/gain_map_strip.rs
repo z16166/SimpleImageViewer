@@ -65,7 +65,16 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
     let bytes = match file_bytes {
         Some(bytes) => bytes,
         None => {
-            owned_mmap = crate::mmap_util::map_file(path).ok()?;
+            owned_mmap = match crate::mmap_util::map_file(path) {
+                Ok(mmap) => mmap,
+                Err(err) => {
+                    log::debug!(
+                        "[DirectoryTree] Fast gain-map strip mmap failed for {}: {err}",
+                        path.display()
+                    );
+                    return None;
+                }
+            };
             owned_mmap.as_ref()
         }
     };
