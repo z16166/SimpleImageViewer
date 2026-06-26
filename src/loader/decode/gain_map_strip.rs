@@ -128,11 +128,11 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
             {
                 return Some(result);
             }
-            if let Some(result) = crate::hdr::avif::decode_avif_strip_precomposed_hdr(bytes, max_side)
+            if let Some(result) = crate::hdr::avif::decode_avif_strip_precomposed_hdr(bytes, path, max_side)
             {
                 return Some(result);
             }
-            let result = crate::hdr::avif::decode_avif_strip_iso_gain_map_baseline(bytes)?;
+            let result = crate::hdr::avif::decode_avif_strip_iso_gain_map_baseline(bytes, path)?;
             return Some(result.and_then(|(baseline, width, height)| {
                 finish_gain_map_strip(baseline, width, height, max_side, path)
             }));

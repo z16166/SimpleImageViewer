@@ -59,10 +59,11 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     bytes: &[u8],
+    path: &Path,
 ) -> Option<Result<(Vec<u8>, u32, u32), String>> {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_iso: {err}"))),
     };
     let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.gainMap.is_null() {
@@ -71,7 +72,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     let gain_map = unsafe { &*image_ref.gainMap };
     let gain_metadata = match avif_gain_map_to_metadata(gain_map) {
         Ok(metadata) => metadata,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: parse gain map metadata: {err}"))),
     };
     if iso_gain_map_skips_forward_compose(gain_metadata) {
         return None;
@@ -80,7 +81,9 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     let width = image_ref.width;
     let height = image_ref.height;
     if width == 0 || height == 0 {
-        return Some(Err("libavif decoded zero-sized image".to_string()));
+        return Some(Err(format!(
+            "{path:?}: libavif decoded zero-sized image"
+        )));
     }
 
     let metadata = avif_cicp_to_metadata(
@@ -99,7 +102,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
         &libavif_result_to_string,
     ) {
         Ok(ok) => ok,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: decode ISO gain-map RGBA u16: {err}"))),
     };
 
     let baseline = avif_build_iso_sdr_baseline_rgba8(
@@ -119,11 +122,12 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_precomposed_hdr(
     bytes: &[u8],
+    path: &Path,
     max_side: u32,
 ) -> Option<Result<(crate::loader::DecodedImage, (u32, u32)), String>> {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_precomposed: {err}"))),
     };
     let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.gainMap.is_null() {
@@ -132,7 +136,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
     let gain_map = unsafe { &*image_ref.gainMap };
     let gain_metadata = match avif_gain_map_to_metadata(gain_map) {
         Ok(metadata) => metadata,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: parse gain map metadata: {err}"))),
     };
     if !iso_gain_map_skips_forward_compose(gain_metadata) {
         return None;
@@ -140,11 +144,11 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
 
     let hdr = match super::avif_image_to_hdr_buffer(image.as_ptr(), 1.0) {
         Ok(hdr) => hdr,
-        Err(err) => return Some(Err(err)),
+        Err(err) => return Some(Err(format!("{path:?}: convert to HDR buffer: {err}"))),
     };
     if hdr.rgba_f32.is_empty() {
         return Some(Err(format!(
-            "precomposed AVIF strip requires float HDR pixels ({}x{})",
+            "{path:?}: precomposed AVIF strip requires float HDR pixels ({}x{})",
             hdr.width, hdr.height
         )));
     }
@@ -152,7 +156,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
     let (width, height, pixels) =
         match crate::loader::hdr_directory_tree_strip_sdr_at_max_side(&hdr, max_side) {
             Ok(ok) => ok,
-            Err(err) => return Some(Err(err)),
+            Err(err) => return Some(Err(format!("{path:?}: tone-map HDR strip: {err}"))),
         };
     Some(Ok((
         crate::loader::DecodedImage::new(width, height, pixels),
