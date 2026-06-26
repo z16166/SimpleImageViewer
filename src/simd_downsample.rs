@@ -39,7 +39,8 @@ use core::arch::aarch64::*;
 ///
 /// # Panics
 ///
-/// Panics in debug if `dst` exceeds `src` in either axis (upscaling).
+/// Panics if `dst_w > src_w` or `dst_h > src_h` (upscaling not supported).
+/// In release mode, the scalar path panics with division by zero; the SIMD path produces black pixels.
 /// Returns an empty `Vec<u8>` if any dimension is zero.
 pub fn downsample_rgba8_box(
     src: &[u8],
