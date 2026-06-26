@@ -246,6 +246,7 @@ impl ImageViewerApp {
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
+            &self.image_files[index],
             self.current_index,
             self.image_files.len(),
         );
@@ -292,6 +293,7 @@ impl ImageViewerApp {
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some(logical),
+            &self.image_files[index],
             self.current_index,
             self.image_files.len(),
         );

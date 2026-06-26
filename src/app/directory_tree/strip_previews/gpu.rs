@@ -347,6 +347,7 @@ impl ImageViewerApp {
             stage,
             buffer_tag,
             logical_size,
+            &self.image_files[index],
             ctx,
             self.current_index,
             self.image_files.len(),

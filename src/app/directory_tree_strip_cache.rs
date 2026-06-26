@@ -200,6 +200,52 @@ impl DirectoryTreeStripCache {
         self.preview_stage.get(&index).copied()
     }
 
+    /// Write a strip texture into the cache after the caller has already
+    /// acquired an [`egui::TextureHandle`] (by clone or by GPU upload).
+    ///
+    /// All call sites that update a strip thumbnail in memory flow through
+    /// this single function, so `preload-debug` logging is centralized here.
+    fn commit_strip_texture(
+        &mut self,
+        index: usize,
+        texture: egui::TextureHandle,
+        buffer_tag: StripPreviewBufferTag,
+        stage: PreviewStage,
+        logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
+    ) {
+        let _ = path; // used by preload-debug logging below
+        #[cfg(feature = "preload-debug")]
+        let tex_size = texture.size();
+        #[cfg(feature = "preload-debug")]
+        let tex_w = tex_size[0];
+        #[cfg(feature = "preload-debug")]
+        let tex_h = tex_size[1];
+        #[cfg(feature = "preload-debug")]
+        let count_before = self.textures.len();
+
+        if let Some(logical) = logical_size {
+            self.logical_sizes.insert(index, logical);
+        }
+        self.textures.insert(index, texture);
+        self.preview_buffer_tag.insert(index, buffer_tag);
+        self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
+        self.bump_gpu_revision();
+        self.evict_if_needed();
+
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripCache] commit idx={} path={} tag={buffer_tag:?} stage={stage:?} \
+             tex={tex_w}x{tex_h} logical={logical_size:?} \
+             cache_count_before={count_before} cache_count_after={} rev={}",
+            index,
+            path.display(),
+            self.textures.len(),
+            self.gpu_revision
+        );
+    }
+
     /// Insert a strip texture from the main-window texture cache.
     ///
     /// Takes `&TextureHandle` to avoid cloning when the strip cache already
@@ -212,6 +258,7 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         buffer_tag: StripPreviewBufferTag,
         logical: Option<(u32, u32)>,
+        path: &std::path::Path,
         _current_index: usize,
         _total_count: usize,
     ) {
@@ -238,15 +285,7 @@ impl DirectoryTreeStripCache {
         }) {
             return;
         }
-        if let Some((logical_w, logical_h)) = logical {
-            self.logical_sizes.insert(index, (logical_w, logical_h));
-        }
-        self.textures.insert(index, texture.clone());
-        self.preview_buffer_tag.insert(index, buffer_tag);
-        self.preview_stage.insert(index, stage);
-        self.touch_lru(index);
-        self.bump_gpu_revision();
-        self.evict_if_needed();
+        self.commit_strip_texture(index, texture.clone(), buffer_tag, stage, logical, path);
     }
 
     pub(crate) fn upsert_from_decoded(
@@ -256,6 +295,7 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         buffer_tag: StripPreviewBufferTag,
         logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
         ctx: &egui::Context,
         _current_index: usize,
         _total_count: usize,
@@ -304,28 +344,7 @@ impl DirectoryTreeStripCache {
             color_image,
             TextureOptions::LINEAR,
         );
-        if let Some(logical) = logical_size {
-            self.logical_sizes.insert(index, logical);
-        }
-        self.textures.insert(index, handle);
-        self.preview_buffer_tag.insert(index, buffer_tag);
-        self.preview_stage.insert(index, stage);
-        self.touch_lru(index);
-        self.bump_gpu_revision();
-        #[cfg(feature = "preload-debug")]
-        let count_before_evict = self.textures.len();
-        self.evict_if_needed();
-        #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][StripCache] upsert ok idx={} tag={buffer_tag:?} tex={}x{} logical={logical_size:?} \
-             cache_count={} evicted={} rev={}",
-            index,
-            thumb.width,
-            thumb.height,
-            self.textures.len(),
-            count_before_evict.saturating_sub(self.textures.len()),
-            self.gpu_revision
-        );
+        self.commit_strip_texture(index, handle, buffer_tag, stage, logical_size, path);
     }
 
     pub(crate) fn relocate(&mut self, from: usize, to: usize) {
