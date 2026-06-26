@@ -239,9 +239,9 @@ impl eframe::App for ImageViewerApp {
 
         if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
             egui::Window::new(if cfg!(not(target_os = "windows")) {
-                t!("print.title_pdf").to_string()
+                t!("print.title_pdf")
             } else {
-                t!("print.title").to_string()
+                t!("print.title")
             })
             .collapsible(false)
             .resizable(false)
@@ -249,21 +249,21 @@ impl eframe::App for ImageViewerApp {
             .show(&ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(t!("print.processing").to_string());
+                    ui.label(t!("print.processing"));
                 });
             });
 
             if let Some(rx) = &self.print_status_rx {
                 while let Ok(msg) = rx.try_recv() {
                     if let Some(m) = msg {
-                        self.status_message = t!("print.failed", err = m).to_string();
+                        self.status_message = t!("print.failed", err = m).into();
                     }
                 }
             }
         } else if let Some(rx) = self.print_status_rx.take() {
             while let Ok(msg) = rx.try_recv() {
                 if let Some(m) = msg {
-                    self.status_message = t!("print.failed", err = m).to_string();
+                    self.status_message = t!("print.failed", err = m).into();
                 }
             }
         }
