@@ -16,31 +16,29 @@
 
 //! Shared downsample helper for directory-tree strip thumbnails.
 
-use image::imageops::{FilterType, resize};
-
 use crate::loader::DecodedImage;
+use simple_image_viewer::simd_downsample::downsample_rgba8_box;
 
 /// Downsample `decoded` so its long edge fits within `max_side`.
 ///
-/// When this [`DecodedImage`] holds the only [`Arc`] reference to the pixel buffer,
-/// [`DecodedImage::into_rgba8_image`] extracts the buffer without copying (zero-copy).
-/// If the buffer is shared, the data is cloned once — never twice.
+/// Takes `&DecodedImage` to avoid unnecessary [`Arc`] reference-count
+/// operations when the caller already holds a reference (e.g. `hdr_fallback`).
+/// Uses a SIMD-accelerated box-filter (area-averaging) downsample that
+/// operates on the borrowed pixel slice — zero-copy regardless of whether
+/// the [`Arc`] is shared or unique.
 pub(crate) fn downsample_decoded_for_strip(
-    decoded: DecodedImage,
+    decoded: &DecodedImage,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
     let w = decoded.width;
     let h = decoded.height;
     let max_dim = w.max(h);
     if max_dim <= max_side {
-        return Ok(decoded);
+        return Ok(decoded.clone());
     }
-    // Zero-copy when this DecodedImage holds the only Arc reference.
-    // Falls back to cloning the pixel data when the Arc is shared.
-    let src = decoded.into_rgba8_image()?;
     let scale = max_side as f32 / max_dim as f32;
     let out_w = ((w as f32 * scale).round() as u32).max(1);
     let out_h = ((h as f32 * scale).round() as u32).max(1);
-    let resized = resize(&src, out_w, out_h, FilterType::Triangle);
-    Ok(DecodedImage::from(resized))
+    let pixels = downsample_rgba8_box(decoded.rgba(), w, h, out_w, out_h);
+    Ok(DecodedImage::new(out_w, out_h, pixels))
 }

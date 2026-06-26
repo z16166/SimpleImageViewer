@@ -131,14 +131,14 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
     }
 
     if !fallback.is_sdr_deferred_placeholder() {
-        return downsample_decoded_for_strip(fallback.clone(), max_side);
+        return downsample_decoded_for_strip(fallback, max_side);
     }
 
     if hdr_has_iso_deferred_gain_map(hdr) {
         let tone = hdr_tone_map_settings_for_directory_tree_strip();
         let pixels = hdr_to_display_sdr_rgba8_for_preview(hdr, &tone)?;
         let decoded = crate::loader::DecodedImage::new(hdr.width, hdr.height, pixels);
-        return downsample_decoded_for_strip(decoded, max_side);
+        return downsample_decoded_for_strip(&decoded, max_side);
     }
 
     Err("strip preview unavailable: no HDR pixels or SDR fallback".to_string())

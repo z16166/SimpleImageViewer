@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.8] - 2026-06-26
+
+### Improved
+- **Navigation strip preview generation**: File list thumbnails appear faster after opening a folder, especially for JPEG and HDR photos — the viewer now uses SIMD-accelerated downsampling and can extract previews directly from compressed JPEG data without fully decoding the image first.
+- **Memory efficiency during thumbnail generation**: Generating strip previews uses less memory by sharing image buffers instead of copying them, keeping large folders smoother to browse.
+
 ## [2.7.7] - 2026-06-25
 
 ### Fixed

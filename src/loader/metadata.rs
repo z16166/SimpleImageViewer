@@ -71,22 +71,20 @@ fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(
             reader.seek(SeekFrom::Start(off as u64)).ok()?;
             let mut blob = vec![0u8; len_usize];
             if reader.read_exact(&mut blob).is_ok() {
-                if let Ok(img) = image::load_from_memory(&blob) {
-                    let rgba = img.into_rgba8();
+                // EXIF thumbnail blobs are embedded JPEGs — use libjpeg_turbo
+                // directly instead of the `image` crate's generic detect-and-decode
+                // path (which would re-detect JPEG internally anyway).
+                if let Ok((w, h, rgba)) = libjpeg_turbo::decode_to_rgba(&blob) {
                     log::debug!(
                         "[{}] Extracted EXIF thumbnail ({}x{}) from offset {}",
                         path.file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown"),
-                        rgba.width(),
-                        rgba.height(),
+                        w,
+                        h,
                         off
                     );
-                    return Some(DecodedImage::new(
-                        rgba.width(),
-                        rgba.height(),
-                        rgba.into_raw(),
-                    ));
+                    return Some(DecodedImage::new(w, h, rgba));
                 }
             }
         }

@@ -35,7 +35,7 @@ fn finish_gain_map_strip(
         ));
     }
     let decoded = DecodedImage::new(width, height, baseline);
-    let strip = downsample_decoded_for_strip(decoded, max_side)
+    let strip = downsample_decoded_for_strip(&decoded, max_side)
         .map_err(|err| err.to_string())?;
     if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
         return Err(format!(
@@ -93,7 +93,7 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
                         lh
                     );
                     let decoded = DecodedImage::new(pw, ph, rgba8);
-                    let strip = downsample_decoded_for_strip(decoded, max_side)
+                    let strip = downsample_decoded_for_strip(&decoded, max_side)
                         .map_err(|err| err.to_string())?;
                     if !preview_aspect_matches_logical(strip.width, strip.height, lw, lh) {
                         return Err(format!(

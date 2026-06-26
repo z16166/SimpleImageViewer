@@ -39,7 +39,7 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
     if !preview_aspect_matches_logical(exif.width, exif.height, logical_w, logical_h) {
         return None;
     }
-    let strip = downsample_decoded_for_strip(exif, max_side).ok()?;
+    let strip = downsample_decoded_for_strip(&exif, max_side).ok()?;
     if !preview_aspect_matches_logical(strip.width, strip.height, logical_w, logical_h) {
         return None;
     }

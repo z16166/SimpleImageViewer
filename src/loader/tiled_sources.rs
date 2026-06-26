@@ -27,11 +27,13 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::types::{
     DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
 };
+use simple_image_viewer::simd_downsample::downsample_rgba8_box;
 
 /// Aspect-preserving downscale for in-memory RGBA8 tiles.
 ///
-/// Do not use [`image::imageops::thumbnail`] here: in image 0.25 it always allocates
-/// `max_w x max_h` and stretches the source to fill that rectangle.
+/// Uses a SIMD-accelerated box-filter (area-averaging) downsample instead of
+/// [`image::imageops::resize`] with Triangle filtering.  Strip thumbnail quality
+/// requirements are modest and box filtering is a better match for downscaling.
 fn memory_rgba_preview(
     width: u32,
     height: u32,
@@ -42,17 +44,17 @@ fn memory_rgba_preview(
     if width == 0 || height == 0 {
         return (0, 0, Vec::new());
     }
+    // Guard against mismatched buffer length (downstream SIMD paths use
+    // get_unchecked which is UB when the slice is too short).
+    if pixels.len() < (width as usize * height as usize * 4) {
+        return (0, 0, Vec::new());
+    }
     let scale = (max_w as f64 / width as f64)
         .min(max_h as f64 / height as f64)
         .min(1.0);
     let out_w = (width as f64 * scale).round().max(1.0) as u32;
     let out_h = (height as f64 * scale).round().max(1.0) as u32;
-    let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(width, height, pixels)
-    else {
-        return (0, 0, Vec::new());
-    };
-    let resized =
-        image::imageops::resize(&buf, out_w, out_h, image::imageops::FilterType::Triangle);
+    let out = downsample_rgba8_box(pixels, width, height, out_w, out_h);
     crate::preload_debug!(
         "[PreloadDebug][Strip] memory preview logical={}x{} max={}x{} -> {}x{}",
         width,
@@ -62,7 +64,7 @@ fn memory_rgba_preview(
         out_w,
         out_h
     );
-    (out_w, out_h, resized.into_raw())
+    (out_w, out_h, out)
 }
 
 /// A TiledImageSource that serves tiles from an in-memory byte buffer.

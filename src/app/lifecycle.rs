@@ -477,6 +477,7 @@ impl ImageViewerApp {
             directory_tree_strip_bootstrap_after_scan: false,
             directory_tree_strip_bootstrap_frames: 0,
             strip_preload_cooldown_frames: 0,
+            strip_stale_retain_last_generation: u64::MAX,
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
