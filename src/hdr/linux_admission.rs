@@ -167,6 +167,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: hdr_supported.then_some("Wayland wp_color_management"),
+            current_edr_headroom: None,
             native_surface_encoding: hdr_supported.then_some(HdrNativeSurfaceEncoding::PqHdr10),
             reference_luminance_nits: reference_nits,
             linux_wp_transfer: Some(transfer),

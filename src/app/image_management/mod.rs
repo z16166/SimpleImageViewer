@@ -546,8 +546,15 @@ fn output_mode_crosses_hdr_sdr_boundary(
 }
 
 /// True when the active monitor has reported enough metadata to pick a stable Ultra HDR
-/// decode capacity (macOS EDR often reports `MacOsEdr` + `target_hdr_capacity()` before
-/// `maximumExtendedDynamicRangeColorComponentValue` arrives).
+/// decode capacity.
+///
+/// **macOS:** `true` once [`HdrMonitorSelection::max_hdr_capacity`] is set from
+/// [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue).
+/// That value is available on the first successful probe even while
+/// [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue)
+/// is still `1.0` (no EDR content on screen yet). Live current headroom lives in
+/// [`HdrMonitorSelection::current_edr_headroom`] and does not gate decode. Full policy:
+/// `src/hdr/monitor/macos.rs`.
 pub(crate) fn monitor_hdr_decode_capacity_is_known(
     selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
 ) -> bool {
@@ -579,6 +586,13 @@ pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::fro
 /// decode capacity is not still gated at 1.0 by `SdrToneMapped` output (swap chain may
 /// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
 ///
+/// **macOS EDR release order** (Apple has no custom tolerance; see `src/hdr/monitor/macos.rs`):
+/// 1. Swap-chain hot-swapped to float EDR (`MacOsEdr`) — not `SdrToneMapped`.
+/// 2. `interim_hdr_decode_capacity > 1.0` from tone-map settings while waiting for NSScreen probe.
+/// 3. [`monitor_hdr_decode_capacity_is_known`] — potential headroom from
+///    [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue).
+/// 4. Fallback timeout [`STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE`] if probe never reports potential.
+///
 /// When native HDR swap-chain requests are disabled, `SdrToneMapped` is the intentional
 /// terminal path (not a transient state before `Rgb10a2Unorm` hot-swap). WSI may still
 /// report `hdr_supported = true` on Wayland while the user keeps tone-mapped SDR output.
@@ -589,6 +603,7 @@ pub(crate) fn startup_preload_defer_can_release(
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
     now: std::time::Instant,
+    interim_hdr_decode_capacity: f32,
 ) -> bool {
     if !runtime_probe_completed {
         return false;
@@ -603,6 +618,12 @@ pub(crate) fn startup_preload_defer_can_release(
     if matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped) {
         return false;
     }
+    // Step 2 in startup_preload_defer_can_release (macOS): settings-based interim capacity
+    // before NSScreen potential is probed. Not an Apple API — app-only bootstrap.
+    if interim_hdr_decode_capacity > 1.0 + crate::loader::HDR_CAPACITY_MATCH_EPSILON {
+        return true;
+    }
+    // Step 3: macOS potential headroom (Apple fixed ceiling) or Windows/Linux probe metadata.
     if monitor_hdr_decode_capacity_is_known(selection) {
         return true;
     }
@@ -721,9 +742,9 @@ fn invalidate_tile_manager_requests_for_view_change(
 
 pub(super) use crate::loader::HDR_CAPACITY_MATCH_EPSILON as HDR_CAPACITY_STALE_EPSILON;
 
-/// HQ RAW static HDR planes are scene-linear; display tone mapping uses the live
-/// `ultra_hdr_decode_capacity` and does not require a full re-decode when the monitor
-/// reports a refined EDR headroom (e.g. 3.478 → 3.786).
+/// HQ RAW static HDR planes are scene-linear; display tone mapping uses live headroom and does
+/// not require a full re-decode when macOS *current* EDR drifts while *potential* is unchanged
+/// (Apple: current is dynamic — WWDC22 10114; see `src/hdr/monitor/macos.rs`).
 pub(crate) fn raw_hq_static_hdr_retainable_on_capacity_refine(
     image_files: &[std::path::PathBuf],
     index: usize,
@@ -979,6 +1000,15 @@ impl ImageViewerApp {
         if !outside.is_empty() {
             self.loader.cancel_indices(outside);
         }
+    }
+
+    /// Drop all in-flight loader registrations except the current image so navigation
+    /// is not starved behind long neighbor RAW decodes.
+    pub(super) fn cancel_loader_tasks_except_current(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        self.loader.cancel_all_except(self.current_index);
     }
 
     pub(super) fn discard_stale_loader_outputs(&mut self) {

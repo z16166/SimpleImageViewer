@@ -240,7 +240,17 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        self.directory_tree_strip_cache.insert_from_texture_handle(
+        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
+            index,
+            crate::loader::PreviewStage::Refined,
+            StripPreviewBufferTag::MainWindowTiledPreview,
+            Some(logical),
+            preview_w,
+            preview_h,
+        ) {
+            return;
+        }
+        let _ = self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture,
             crate::loader::PreviewStage::Refined,
@@ -287,7 +297,17 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        self.directory_tree_strip_cache.insert_from_texture_handle(
+        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
+            index,
+            crate::loader::PreviewStage::Refined,
+            StripPreviewBufferTag::MainWindowTextureCacheSdr,
+            Some(logical),
+            preview_w,
+            preview_h,
+        ) {
+            return;
+        }
+        if self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture,
             crate::loader::PreviewStage::Refined,
@@ -296,17 +316,18 @@ impl ImageViewerApp {
             &self.image_files[index],
             self.current_index,
             self.image_files.len(),
-        );
-        #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][DirTree] strip sync from texture_cache idx={} logical={}x{} tex={}x{} cache_rev={}",
-            index,
-            logical.0,
-            logical.1,
-            preview_w,
-            preview_h,
-            self.directory_tree_strip_cache.gpu_revision()
-        );
+        ) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][DirTree] strip sync from texture_cache idx={} logical={}x{} tex={}x{} cache_rev={}",
+                index,
+                logical.0,
+                logical.1,
+                preview_w,
+                preview_h,
+                self.directory_tree_strip_cache.gpu_revision()
+            );
+        }
     }
 
 

@@ -62,7 +62,7 @@ fn monitor_probe_runs_first_time_immediately_on_signature_change() {
     state.last_signature = Some(first);
     state.last_probe_at = Some(start);
     if cfg!(target_os = "macos") {
-        // Same signature: macOS re-probes for EDR capacity on the timer while still unknown.
+        // Same signature: macOS does not timer-poll; notification + first potential probe only.
         assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
     } else {
         // Windows: timer reprobe even when the viewport signature is unchanged (outer rect
@@ -75,7 +75,83 @@ fn monitor_probe_runs_first_time_immediately_on_signature_change() {
 }
 
 #[test]
-fn macos_current_edr_reprobe_uses_interval_without_viewport_change() {
+fn macos_edr_headroom_reprobes_on_notification_not_on_interval() {
+    use super::macos_screen_parameters;
+
+    let start = Instant::now();
+    let signature = HdrMonitorSignature {
+        outer_rect: Some([0, 0, 100, 100]),
+        monitor_size: Some([1920, 1080]),
+        native_pixels_per_point_milli: Some(1000),
+    };
+    let mut state = HdrMonitorState::default();
+    state.last_signature = Some(signature);
+    state.last_probe_at = Some(start);
+    state.selection = Some(macos_edr_selection_from_values(
+        "Built-in XDR".to_string(),
+        2.0,
+        16.0,
+        0.0,
+    ));
+
+    assert!(!state.should_probe_for_platform(
+        signature,
+        start + HDR_MONITOR_PROBE_INTERVAL,
+        true,
+        true
+    ));
+    macos_screen_parameters::test_set_headroom_refresh_pending();
+    assert!(state.should_probe_for_platform(
+        signature,
+        start + HDR_MONITOR_PROBE_INTERVAL,
+        true,
+        true
+    ));
+}
+
+#[test]
+fn macos_current_edr_reprobes_until_potential_headroom_known() {
+    let start = Instant::now();
+    let signature = HdrMonitorSignature {
+        outer_rect: Some([0, 0, 100, 100]),
+        monitor_size: Some([1920, 1080]),
+        native_pixels_per_point_milli: Some(1000),
+    };
+    let mut state = HdrMonitorState::default();
+    state.last_signature = Some(signature);
+    state.last_probe_at = Some(start);
+    state.selection = Some(macos_edr_selection_from_values(
+        "Built-in XDR".to_string(),
+        1.0,
+        1.0,
+        0.0,
+    ));
+
+    assert!(!state.should_probe_for_platform(
+        signature,
+        start + Duration::from_millis(100),
+        true,
+        true
+    ));
+
+    state.selection = Some(macos_edr_selection_from_values(
+        "Built-in XDR".to_string(),
+        1.0,
+        16.0,
+        0.0,
+    ));
+    state.selection.as_mut().unwrap().max_hdr_capacity = None;
+
+    assert!(state.should_probe_for_platform(
+        signature,
+        start + Duration::from_millis(100),
+        true,
+        true
+    ));
+}
+
+#[test]
+fn macos_edr_does_not_timer_poll_when_potential_known() {
     let start = Instant::now();
     let signature = HdrMonitorSignature {
         outer_rect: Some([0, 0, 100, 100]),
@@ -98,20 +174,13 @@ fn macos_current_edr_reprobe_uses_interval_without_viewport_change() {
         true,
         true
     ));
-    assert!(state.should_probe_for_platform(
+    assert!(!state.should_probe_for_platform(
         signature,
         start + HDR_MONITOR_PROBE_INTERVAL,
         true,
         true
     ));
-    assert!(state.should_probe_for_platform(
-        signature,
-        start + HDR_MONITOR_PROBE_INTERVAL,
-        false,
-        true
-    ));
-    // `supports_current_edr_reprobe == false` is the Windows/Linux call shape: same
-    // signature still schedules DXGI refresh on the timer (see `should_probe_for_platform`).
+    // Windows/Linux call shape: timer reprobe still applies when macOS reprobe flag is false.
     assert!(state.should_probe_for_platform(
         signature,
         start + HDR_MONITOR_PROBE_INTERVAL,
@@ -163,11 +232,12 @@ fn macos_edr_values_build_capacity_based_monitor_selection() {
 
     assert!(selection.hdr_supported);
     assert_eq!(selection.label, "Built-in XDR");
-    assert_eq!(selection.max_hdr_capacity, Some(2.2));
+    assert_eq!(selection.max_hdr_capacity, Some(4.0));
     assert_eq!(
         selection.hdr_capacity_source,
-        Some("macOS maximumExtendedDynamicRangeColorComponentValue")
+        Some("macOS maximumPotentialExtendedDynamicRangeColorComponentValue")
     );
+    assert_eq!(selection.current_edr_headroom, Some(2.2));
     assert_eq!(selection.max_luminance_nits, None);
     assert_eq!(selection.max_full_frame_luminance_nits, None);
 }
@@ -181,12 +251,16 @@ fn macos_sdr_edr_values_build_non_hdr_monitor_selection() {
 }
 
 #[test]
-fn macos_potential_edr_only_does_not_force_decode_capacity() {
+fn macos_potential_edr_sets_stable_decode_capacity_before_current_ramps() {
     let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 1.0, 16.0, 0.0);
 
     assert!(selection.hdr_supported);
-    assert_eq!(selection.max_hdr_capacity, None);
-    assert_eq!(selection.hdr_capacity_source, None);
+    assert_eq!(selection.max_hdr_capacity, Some(16.0));
+    assert_eq!(
+        selection.hdr_capacity_source,
+        Some("macOS maximumPotentialExtendedDynamicRangeColorComponentValue")
+    );
+    assert_eq!(selection.current_edr_headroom, Some(1.0));
 }
 
 #[cfg(target_os = "macos")]

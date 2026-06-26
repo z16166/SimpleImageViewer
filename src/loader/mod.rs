@@ -31,7 +31,8 @@ mod types;
 
 pub use decode_profile::{
     DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
-    DEFAULT_PREFETCH_WINDOW_DISTANCE, HDR_CAPACITY_MATCH_EPSILON, decode_profile_stub,
+    DEFAULT_PREFETCH_WINDOW_DISTANCE, HDR_CAPACITY_MATCH_EPSILON, MAX_IMG_LOADER_THREADS,
+    decode_profile_stub,
     decode_profile_with_epoch, in_flight_profile_supersedes_hq_refinement,
     in_flight_profile_supersedes_load_result, output_mode_is_hdr, profile_satisfies_display,
     profile_spawn_relation,

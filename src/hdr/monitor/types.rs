@@ -96,8 +96,26 @@ pub struct HdrMonitorSelection {
     pub label: String,
     pub max_luminance_nits: Option<f32>,
     pub max_full_frame_luminance_nits: Option<f32>,
+    /// Ultra HDR decode headroom used for loader spawn and cache invalidation.
+    ///
+    /// **macOS:** populated from
+    /// [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue)
+    /// (fixed for the `NSScreen` instance). Do **not** store the dynamic
+    /// [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue)
+    /// here — see [`Self::current_edr_headroom`]. Policy: `src/hdr/monitor/macos.rs`.
+    ///
+    /// **Windows / Linux:** DXGI peak nits, Wayland metadata, or WSI-derived capacity.
     pub max_hdr_capacity: Option<f32>,
     pub hdr_capacity_source: Option<&'static str>,
+    /// **macOS only:** live
+    /// [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue).
+    ///
+    /// Apple / WWDC22 ([10114](https://developer.apple.com/videos/play/wwdc2022/10114)):
+    /// read before each draw and tone-map to this value; it may change without potential
+    /// changing. Refreshed via [`super::macos_screen_parameters`] (Apple
+    /// `didChangeScreenParametersNotification`) — must **not** drive decode-cache invalidation
+    /// (see `refresh_ultra_hdr_decode_capacity` in `src/app/image_management/hdr_state.rs`).
+    pub current_edr_headroom: Option<f32>,
     pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
     /// Reference / mastering white from `wp_color_management` (Linux tone-map metadata).
     pub reference_luminance_nits: Option<f32>,
@@ -117,6 +135,7 @@ impl HdrMonitorSelection {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            current_edr_headroom: None,
             native_surface_encoding: None,
             reference_luminance_nits: None,
             linux_wp_transfer: None,

@@ -1610,8 +1610,12 @@ impl ImageViewerApp {
         self.ensure_directory_tree_places_loaded();
 
         if self.pending_preload_after_directory_scan {
+            let defer_active = self.preload_deferred_for_hdr_capacity;
             self.pending_preload_after_directory_scan = false;
             self.schedule_preloads(true);
+            if defer_active && self.preload_deferred_for_hdr_capacity {
+                self.pending_preload_after_directory_scan = true;
+            }
         }
 
         self.ensure_directory_tree_strip_thumbnails(ctx);

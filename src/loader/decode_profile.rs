@@ -24,6 +24,8 @@ use super::RenderShape;
 pub const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
 /// Default preload radius until the main thread publishes navigation.
 pub const DEFAULT_PREFETCH_WINDOW_DISTANCE: usize = 2;
+/// Cap img-loader rayon pool size and neighbor prefetch concurrency.
+pub const MAX_IMG_LOADER_THREADS: usize = 3;
 
 /// Whether a load was requested for the current image or a neighbor prefetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

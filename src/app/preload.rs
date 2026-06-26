@@ -23,7 +23,8 @@ use super::types::{HardwareTier, UltraHdrCapacityRefresh};
 pub(crate) const MAX_PRELOAD_FORWARD: usize = 5;
 pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
 /// Cap simultaneous image decoders so HQ RAW GPU extract is not starved by neighbor preloads.
-pub(crate) const MAX_CONCURRENT_DECODER_LOADS: usize = 3;
+pub(crate) const MAX_CONCURRENT_DECODER_LOADS: usize =
+    crate::loader::MAX_IMG_LOADER_THREADS;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
 /// Max CPU-side SDR previews queued for deferred GPU upload (neighbors + HDR fallbacks).
@@ -32,6 +33,14 @@ pub(crate) const MAX_DEFERRED_SDR_UPLOADS: usize = 12;
 /// Avoid refreshing sysinfo RAM stats on every preload schedule during rapid navigation.
 pub(crate) const PRELOAD_MEMORY_REFRESH_MIN_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(1);
+
+/// Decode-time Ultra HDR headroom for loader spawn and cache invalidation.
+///
+/// **macOS:** uses [`HdrMonitorSelection::max_hdr_capacity`] (NSScreen **potential** —
+/// [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue)).
+/// Does **not** use [`HdrMonitorSelection::current_edr_headroom`] (dynamic **current**).
+/// Display tone-mapping reads current headroom separately; see
+/// [`crate::settings::Settings::hdr_tone_map_settings_for_monitor`] and `src/hdr/monitor/macos.rs`.
 pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
     settings: crate::hdr::types::HdrToneMapSettings,
     output_mode: crate::hdr::types::HdrOutputMode,

@@ -169,6 +169,7 @@ impl ImageViewerApp {
             self.hdr_capabilities.output_mode,
             self.hdr_monitor_state.runtime_probe_completed_at(),
             std::time::Instant::now(),
+            self.effective_ultra_hdr_decode_capacity(),
         ) {
             #[cfg(feature = "preload-debug")]
             self.debug_log_preload_defer_gate(false);
@@ -187,16 +188,22 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn refresh_ultra_hdr_decode_capacity(&mut self, ctx: &egui::Context) {
-        const CAPACITY_EPSILON: f32 = 0.001;
         let next_output_mode = self.hdr_capabilities.output_mode;
+        // Decode capacity only (macOS: NSScreen *potential* — see `src/hdr/monitor/macos.rs`).
         let next_capacity = self.effective_ultra_hdr_decode_capacity();
         let crosses_hdr_sdr_boundary = output_mode_crosses_hdr_sdr_boundary(
             self.ultra_hdr_decode_output_mode,
             next_output_mode,
         );
-        if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON
+        if (next_capacity - self.ultra_hdr_decode_capacity).abs()
+            <= crate::loader::HDR_CAPACITY_MATCH_EPSILON
             && !crosses_hdr_sdr_boundary
         {
+            // macOS: live *current* headroom may have changed without potential changing —
+            // update tone-map only (WWDC22 10114), no loader/cache invalidation. Current
+            // headroom updates are driven by didChangeScreenParametersNotification
+            // (`macos_screen_parameters.rs`), not a timer poll.
+            self.sync_hdr_tone_map_settings();
             let selection = self.effective_hdr_monitor_selection();
             let can_release = startup_preload_defer_can_release(
                 self.hdr_monitor_state.runtime_probe_completed(),
@@ -205,6 +212,7 @@ impl ImageViewerApp {
                 next_output_mode,
                 self.hdr_monitor_state.runtime_probe_completed_at(),
                 std::time::Instant::now(),
+                next_capacity,
             );
             #[cfg(feature = "preload-debug")]
             self.debug_log_preload_defer_gate(can_release);

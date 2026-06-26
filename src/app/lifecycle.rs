@@ -447,8 +447,9 @@ impl ImageViewerApp {
         } else {
             ImageLoader::new()
         };
-        // Raw open prefetch waits for the first runtime HDR capacity probe (macOS EDR).
-        // Starting it earlier would decode at capacity 1.0 and be discarded on probe.
+        // Defer neighbor/current preload until HDR output mode + decode headroom are known.
+        // macOS EDR: uses NSScreen *potential* for decode (not dynamic *current*) — see
+        // `src/hdr/monitor/macos.rs` and [`startup_preload_defer_can_release`].
         let preload_deferred_for_hdr_capacity =
             crate::hdr::surface::native_hdr_swapchain_requests_enabled(
                 settings.hdr_native_surface_enabled_effective(),

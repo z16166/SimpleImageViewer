@@ -247,7 +247,35 @@ impl DirectoryTreeStripCache {
     }
 
     /// Insert a strip texture from the main-window texture cache.
-    ///
+    /// Whether a main-window texture clone would upgrade the strip entry (no logging).
+    pub(crate) fn strip_texture_handle_would_replace(
+        &self,
+        index: usize,
+        stage: PreviewStage,
+        buffer_tag: StripPreviewBufferTag,
+        logical: Option<(u32, u32)>,
+        preview_w: u32,
+        preview_h: u32,
+    ) -> bool {
+        let cached_dims = self.preview_dimensions(index);
+        evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "strip_texture_handle_probe",
+            cached_tag: self.preview_buffer_tag.get(&index).copied(),
+            cached_stage: self.preview_stage.get(&index).copied(),
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical,
+            preview_w,
+            preview_h,
+            decoded: None,
+        })
+        .allows_replace()
+    }
+
     /// Takes `&TextureHandle` to avoid cloning when the strip cache already
     /// holds an equal-or-better entry for this index. The clone only happens
     /// after [`decide_strip_preview_replace`] confirms the replacement.
@@ -261,7 +289,7 @@ impl DirectoryTreeStripCache {
         path: &std::path::Path,
         _current_index: usize,
         _total_count: usize,
-    ) {
+    ) -> bool {
         let size = texture.size();
         let preview_w = size[0] as u32;
         let preview_h = size[1] as u32;
@@ -283,9 +311,10 @@ impl DirectoryTreeStripCache {
             preview_h,
             decoded: None,
         }) {
-            return;
+            return false;
         }
         self.commit_strip_texture(index, texture.clone(), buffer_tag, stage, logical, path);
+        true
     }
 
     pub(crate) fn upsert_from_decoded(
@@ -752,6 +781,7 @@ pub(crate) fn should_replace_strip_texture(
 mod tests {
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
+    use std::path::Path;
 
     #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {
@@ -819,6 +849,7 @@ mod tests {
                 PreviewStage::Refined,
                 StripPreviewBufferTag::StripDecodedPixels,
                 None,
+                Path::new("/test/strip.jpg"),
                 &ctx,
                 0,
                 total,
@@ -875,6 +906,7 @@ mod tests {
             PreviewStage::Initial,
             StripPreviewBufferTag::StripDecodedPixels,
             Some((512, 256)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -888,6 +920,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::SdrDeferredPlaceholder,
             Some((512, 256)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -1016,6 +1049,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::StripDecodedPixels,
             Some((640, 320)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -1044,6 +1078,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some((80, 80)),
+            Path::new("/test/strip.jpg"),
             0,
             1,
         );
@@ -1064,6 +1099,7 @@ mod tests {
                 PreviewStage::Refined,
                 StripPreviewBufferTag::StripDecodedPixels,
                 None,
+                Path::new("/test/strip.jpg"),
                 &ctx,
                 0,
                 3,
@@ -1089,6 +1125,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::StripDecodedPixels,
             None,
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,

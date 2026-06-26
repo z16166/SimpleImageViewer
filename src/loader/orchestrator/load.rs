@@ -24,7 +24,7 @@ use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
+    LoadResult, LoaderOutput, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
     RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
     hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
     hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
@@ -47,8 +47,9 @@ impl ImageLoader {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
             crossbeam_channel::unbounded();
-        let pool_builder =
-            rayon::ThreadPoolBuilder::new().thread_name(|i| format!("img-loader-{i}"));
+        let pool_builder = rayon::ThreadPoolBuilder::new()
+            .num_threads(MAX_IMG_LOADER_THREADS)
+            .thread_name(|i| format!("img-loader-{i}"));
 
         #[cfg(target_os = "windows")]
         let pool_builder = pool_builder.spawn_handler(|rayon_thread| {
@@ -684,6 +685,18 @@ impl ImageLoader {
             .write_navigation(current_index, image_count, max_distance);
     }
 
+    pub fn cancel_all_except(&mut self, keep_index: usize) {
+        let cancelled: Vec<usize> = {
+            let loading = self.loading.lock();
+            loading
+                .keys()
+                .filter(|&&idx| idx != keep_index)
+                .copied()
+                .collect()
+        };
+        self.cancel_indices(cancelled);
+    }
+
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
         use std::collections::HashSet;
 
@@ -811,6 +824,14 @@ impl ImageLoader {
         };
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
+        if load_intent == LoadIntent::NeighborPrefetch {
+            let loading_snapshot = self.loading.lock();
+            if loading_snapshot.len() >= MAX_IMG_LOADER_THREADS
+                && !loading_snapshot.contains_key(&index)
+            {
+                return;
+            }
+        }
         {
             let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
@@ -857,7 +878,7 @@ impl ImageLoader {
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
         let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
-        self.pool.spawn(move || {
+        let run_worker = move || {
             {
                 let loading = loading1.lock();
                 if !loading.contains_key(&index) {
@@ -894,7 +915,34 @@ impl ImageLoader {
                 wgpu_device_id_live_spawn,
                 hdr_callback_upload_active_live_spawn,
             );
-        });
+        };
+        if load_intent == LoadIntent::Current {
+            let thread_name = format!("img-loader-current-{index}");
+            #[cfg(target_os = "windows")]
+            {
+                let _ = std::thread::Builder::new()
+                    .name(thread_name)
+                    .spawn(move || {
+                        match crate::wic::ComGuard::new() {
+                            Ok(_com) => run_worker(),
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to initialize COM on current-image loader thread: {e:?}"
+                                );
+                                run_worker();
+                            }
+                        }
+                    });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = std::thread::Builder::new()
+                    .name(thread_name)
+                    .spawn(run_worker);
+            }
+        } else {
+            self.pool.spawn(run_worker);
+        }
 
         // Fallback: one shared worker sleeps 50ms then tries `do_load` if the pool task
         // did not claim first. Pending jobs are coalesced to a single slot (no per-request OS thread).
