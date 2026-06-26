@@ -193,10 +193,15 @@ impl DirectoryTreeStripCache {
         self.preview_stage.get(&index).copied()
     }
 
+    /// Insert a strip texture from the main-window texture cache.
+    ///
+    /// Takes `&TextureHandle` to avoid cloning when the strip cache already
+    /// holds an equal-or-better entry for this index. The clone only happens
+    /// after [`decide_strip_preview_replace`] confirms the replacement.
     pub(crate) fn insert_from_texture_handle(
         &mut self,
         index: usize,
-        texture: egui::TextureHandle,
+        texture: &egui::TextureHandle,
         stage: PreviewStage,
         buffer_tag: StripPreviewBufferTag,
         logical: Option<(u32, u32)>,
@@ -229,7 +234,7 @@ impl DirectoryTreeStripCache {
         if let Some((logical_w, logical_h)) = logical {
             self.logical_sizes.insert(index, (logical_w, logical_h));
         }
-        self.textures.insert(index, texture);
+        self.textures.insert(index, texture.clone());
         self.preview_buffer_tag.insert(index, buffer_tag);
         self.preview_stage.insert(index, stage);
         self.touch_lru(index);
@@ -1009,7 +1014,7 @@ mod tests {
         );
         cache.insert_from_texture_handle(
             0,
-            handle,
+            &handle,
             PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some((80, 80)),

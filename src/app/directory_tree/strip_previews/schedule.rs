@@ -251,7 +251,7 @@ impl ImageViewerApp {
         }
         self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
-            texture.clone(),
+            texture,
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
@@ -286,7 +286,7 @@ impl ImageViewerApp {
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return;
         };
-        let Some(texture) = self.texture_cache.get(index).cloned() else {
+        let Some(texture) = self.texture_cache.get(index) else {
             return;
         };
         let size = texture.size();
