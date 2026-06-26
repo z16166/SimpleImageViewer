@@ -37,8 +37,9 @@ use super::{
     BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
     DirectoryTreeListPreviewLayout, MAX_COLD_STRIP_GENERATES_PER_FRAME,
     MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
-    MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES, MAX_STRIP_GENERATE_INFLIGHT,
-    MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
+    MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME, MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES,
+    MAX_STRIP_GENERATE_INFLIGHT, MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP,
+    MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
 mod checks;
@@ -81,12 +82,21 @@ impl ImageViewerApp {
                 (None, false)
             };
         let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
-        let can_preload = bootstrap_visible
-            && self.settings.preload
-            && !self.preload_deferred_for_hdr_capacity
-            && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS;
-        if can_preload {
-            self.schedule_preloads(true);
+        // Cooldown: once all preload slots fill, schedule_preloads(true) is idempotent;
+        // skip for a few frames to avoid redundant per-frame scheduling overhead.
+        let preload_cooled_down = self.strip_preload_cooldown_frames == 0;
+        if preload_cooled_down {
+            let can_preload = bootstrap_visible
+                && self.settings.preload
+                && !self.preload_deferred_for_hdr_capacity
+                && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS;
+            if can_preload {
+                self.schedule_preloads(true);
+                self.strip_preload_cooldown_frames = 3;
+            }
+        } else {
+            self.strip_preload_cooldown_frames =
+                self.strip_preload_cooldown_frames.saturating_sub(1);
         }
         let max_inflight = if bootstrap_visible {
             MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
@@ -200,34 +210,58 @@ impl ImageViewerApp {
             generated_this_frame += 1;
         }
 
-        let deferred_indices: Vec<usize> = self.deferred_sdr_uploads.keys().copied().collect();
-        for index in deferred_indices {
-            if self.tiled_sdr_source_for_index(index).is_some() {
-                continue;
-            }
-            if self.strip_main_loader_sdr_unreliable_for_strip(index) {
-                continue;
-            }
-            if self.directory_tree_strip_cache.contains(index) {
-                continue;
-            }
-            if self
-                .deferred_sdr_uploads
-                .get(&index)
-                .is_some_and(DecodedImage::is_sdr_deferred_placeholder)
-            {
-                continue;
-            }
-            let Some(decoded) = self.deferred_sdr_uploads.get(&index).cloned() else {
-                continue;
+        // Collect keys in ring-distance order so the nearest deferred entries go first,
+        // then bound to MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME to avoid O(cache_size)
+        // per-frame iteration when many HDR images have deferred SDR fallbacks.
+        let deferred_upload_budget = MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME;
+        if deferred_upload_budget > 0 {
+            let deferred_indices: Vec<usize> = {
+                let file_count = self.image_files.len();
+                let current = self.current_index.min(file_count.saturating_sub(1));
+                let mut keys: Vec<usize> = self.deferred_sdr_uploads.keys().copied().collect();
+                keys.sort_by_key(|&idx| {
+                    if file_count == 0 || idx == current {
+                        return 0;
+                    }
+                    let forward = (idx + file_count - current) % file_count;
+                    let backward = (current + file_count - idx) % file_count;
+                    forward.min(backward)
+                });
+                keys
             };
-            self.queue_directory_tree_strip_gpu_upload(
-                index,
-                decoded,
-                PreviewStage::Initial,
-                self.directory_tree_strip_logical_size(index),
-                StripPreviewBufferTag::PreloadSdrFallback,
-            );
+            let mut deferred_processed = 0usize;
+            for index in deferred_indices {
+                if deferred_processed >= deferred_upload_budget {
+                    break;
+                }
+                if self.tiled_sdr_source_for_index(index).is_some() {
+                    continue;
+                }
+                if self.strip_main_loader_sdr_unreliable_for_strip(index) {
+                    continue;
+                }
+                if self.directory_tree_strip_cache.contains(index) {
+                    continue;
+                }
+                if self
+                    .deferred_sdr_uploads
+                    .get(&index)
+                    .is_some_and(DecodedImage::is_sdr_deferred_placeholder)
+                {
+                    continue;
+                }
+                let Some(decoded) = self.deferred_sdr_uploads.get(&index).cloned() else {
+                    continue;
+                };
+                self.queue_directory_tree_strip_gpu_upload(
+                    index,
+                    decoded,
+                    PreviewStage::Initial,
+                    self.directory_tree_strip_logical_size(index),
+                    StripPreviewBufferTag::PreloadSdrFallback,
+                );
+                deferred_processed += 1;
+            }
         }
 
         let max_cold_per_frame = if bootstrap_visible {
