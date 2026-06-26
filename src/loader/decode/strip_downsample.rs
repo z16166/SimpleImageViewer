@@ -21,18 +21,20 @@ use simple_image_viewer::simd_downsample::downsample_rgba8_box;
 
 /// Downsample `decoded` so its long edge fits within `max_side`.
 ///
+/// Takes `&DecodedImage` to avoid unnecessary [`Arc`] reference-count
+/// operations when the caller already holds a reference (e.g. `hdr_fallback`).
 /// Uses a SIMD-accelerated box-filter (area-averaging) downsample that
 /// operates on the borrowed pixel slice — zero-copy regardless of whether
 /// the [`Arc`] is shared or unique.
 pub(crate) fn downsample_decoded_for_strip(
-    decoded: DecodedImage,
+    decoded: &DecodedImage,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
     let w = decoded.width;
     let h = decoded.height;
     let max_dim = w.max(h);
     if max_dim <= max_side {
-        return Ok(decoded);
+        return Ok(decoded.clone());
     }
     let scale = max_side as f32 / max_dim as f32;
     let out_w = ((w as f32 * scale).round() as u32).max(1);

@@ -282,44 +282,24 @@ fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
 
 /// Decode a JPEG to RGBA8 with DCT-domain scaling.
 ///
-/// The output dimensions are chosen via [`best_dct_scaled_dims`] so the long edge does not
-/// exceed `max_side`.  When the JPEG is already smaller than `max_side`, no scaling is applied.
+/// Returns `(orig_w, orig_h, out_w, out_h, pixels)` — original JPEG dimensions plus the
+/// decoded output dimensions and pixel buffer.  The output long edge is chosen via
+/// [`best_dct_scaled_dims`] so it does not exceed `max_side`.  When the JPEG is already
+/// smaller than `max_side`, no scaling is applied and `out_*` equals `orig_*`.
 ///
 /// Because the scale factor is an exact `tjGetScalingFactors` ratio, `tjDecompress2` performs
 /// IDCT at the reduced size — avoiding full-resolution decode, allocations, and the subsequent
-/// software downsample.  For a 4000×3000 → 256px strip preview this is roughly 10× faster and
+/// software downsample.  For a 4000×3000 → 256 px strip preview this is roughly 10× faster and
 /// uses ~64× less peak memory than a full decode + `image::imageops::resize`.
 pub fn decode_to_rgba_with_max_side(
     jpeg_data: &[u8],
     max_side: u32,
-) -> Result<(u32, u32, Vec<u8>), String> {
+) -> Result<(u32, u32, u32, u32, Vec<u8>), String> {
     let decompressor = Decompressor::new()?;
     let (orig_w, orig_h, _) = decompressor.decompress_header(jpeg_data)?;
     let orig_w_u = orig_w as u32;
     let orig_h_u = orig_h as u32;
-    decode_to_rgba_with_max_side_impl(&decompressor, jpeg_data, orig_w_u, orig_h_u, max_side)
-}
 
-/// Variant of [`decode_to_rgba_with_max_side`] that reuses pre-parsed dimensions from a
-/// prior `tjDecompressHeader3` call — avoids a redundant header parse when the caller
-/// already knows the logical image size (e.g. for orientation computation).
-pub fn decode_to_rgba_with_max_side_given_dims(
-    jpeg_data: &[u8],
-    orig_w: u32,
-    orig_h: u32,
-    max_side: u32,
-) -> Result<(u32, u32, Vec<u8>), String> {
-    let decompressor = Decompressor::new()?;
-    decode_to_rgba_with_max_side_impl(&decompressor, jpeg_data, orig_w, orig_h, max_side)
-}
-
-fn decode_to_rgba_with_max_side_impl(
-    decompressor: &Decompressor,
-    jpeg_data: &[u8],
-    orig_w_u: u32,
-    orig_h_u: u32,
-    max_side: u32,
-) -> Result<(u32, u32, Vec<u8>), String> {
     if orig_w_u.max(orig_h_u) <= max_side {
         let pixels = decompressor.decompress(
             jpeg_data,
@@ -327,10 +307,10 @@ fn decode_to_rgba_with_max_side_impl(
             orig_h_u as i32,
             TJPF::RGBA,
         )?;
-        return Ok((orig_w_u, orig_h_u, pixels));
+        return Ok((orig_w_u, orig_h_u, orig_w_u, orig_h_u, pixels));
     }
 
     let (out_w, out_h) = best_dct_scaled_dims(orig_w_u, orig_h_u, max_side);
     let pixels = decompressor.decompress(jpeg_data, out_w, out_h, TJPF::RGBA)?;
-    Ok((out_w as u32, out_h as u32, pixels))
+    Ok((orig_w_u, orig_h_u, out_w as u32, out_h as u32, pixels))
 }

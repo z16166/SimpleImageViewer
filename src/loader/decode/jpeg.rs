@@ -168,27 +168,17 @@ pub(crate) fn try_decode_jpeg_strip_dct(
     }
 
     let orientation = crate::metadata_utils::get_exif_orientation(path);
-    let (orig_w, orig_h) = match libjpeg_turbo::decode_jpeg_dimensions(jpeg_data) {
-        Ok(dims) => dims,
-        Err(e) => return Some(Err(e)),
-    };
+    let (orig_w, orig_h, scaled_w, scaled_h, pixels) =
+        match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
     // Logical = oriented original dimensions (rotation swaps width/height).
     let logical = if orientation > 4 {
         (orig_h, orig_w)
     } else {
         (orig_w, orig_h)
     };
-
-    let (scaled_w, scaled_h, pixels) =
-        match libjpeg_turbo::decode_to_rgba_with_max_side_given_dims(
-            jpeg_data,
-            orig_w,
-            orig_h,
-            max_side,
-        ) {
-            Ok(v) => v,
-            Err(e) => return Some(Err(e)),
-        };
 
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =

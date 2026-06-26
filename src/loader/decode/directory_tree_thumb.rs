@@ -464,7 +464,7 @@ fn downsample_decoded_to_max_side(
     decoded: DecodedImage,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    downsample_decoded_for_strip(decoded, max_side)
+    downsample_decoded_for_strip(&decoded, max_side)
 }
 
 /// Try to produce a strip thumbnail from a baseline JPEG using DCT-domain scaling.
