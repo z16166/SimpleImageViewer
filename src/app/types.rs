@@ -566,6 +566,11 @@ pub struct ImageViewerApp {
     /// Cooldown frames after a `schedule_preloads(true)` call during strip bootstrap.
     /// Prevents redundant per-frame scheduling when all preload slots are already full.
     pub(crate) strip_preload_cooldown_frames: u32,
+    /// Last `image_list_generation` at which strip stale-index retain was run.
+    /// Stale-index cleanup (O(n) per HashSet) is only needed when the file list
+    /// has shrunk; skipping it when the generation is unchanged avoids wasteful
+    /// per-frame iteration over sets that can grow to directory-scale (10k+).
+    pub(crate) strip_stale_retain_last_generation: u64,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,

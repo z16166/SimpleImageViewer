@@ -337,14 +337,28 @@ impl ImageViewerApp {
             );
         }
 
-        self.directory_tree_strip_cache
-            .retain(|index| index < self.image_files.len());
-        self.directory_tree_strip_tiled_attempted
-            .retain(|index| *index < self.image_files.len());
-        self.directory_tree_strip_generate_inflight
-            .retain(|index| *index < self.image_files.len());
-        self.directory_tree_strip_cold_attempted
-            .retain(|index| *index < self.image_files.len());
+        // Stale-index cleanup: remove entries whose index now exceeds the file list
+        // (e.g. after deletion or re-scan shrink). The `image_list_generation` counter
+        // is bumped on every structural list mutation — only run the O(n) retain when
+        // the generation has actually changed. When the directory is idle this skips
+        // 4 × HashSet::retain that can each grow to directory scale (10k+ entries).
+        let current_gen = self
+            .directory_tree
+            .list
+            .try_lock()
+            .map(|list| list.image_list_generation)
+            .unwrap_or(self.strip_stale_retain_last_generation);
+        if current_gen != self.strip_stale_retain_last_generation {
+            self.strip_stale_retain_last_generation = current_gen;
+            self.directory_tree_strip_cache
+                .retain(|index| index < self.image_files.len());
+            self.directory_tree_strip_tiled_attempted
+                .retain(|index| *index < self.image_files.len());
+            self.directory_tree_strip_generate_inflight
+                .retain(|index| *index < self.image_files.len());
+            self.directory_tree_strip_cold_attempted
+                .retain(|index| *index < self.image_files.len());
+        }
     }
 
 
