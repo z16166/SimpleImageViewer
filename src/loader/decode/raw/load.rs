@@ -326,9 +326,10 @@ pub(crate) fn load_raw(
                 width,
                 height
             );
+            let osd = osd_ctx.embedded_render(&p);
             return Ok(RawLoadOutput {
-                image: make_image_data(p.clone()),
-                osd: osd_ctx.embedded_render(&p),
+                image: make_image_data(p),
+                osd,
             });
         }
         crate::preload_debug!(

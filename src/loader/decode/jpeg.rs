@@ -155,7 +155,6 @@ pub(crate) fn load_jpeg_from_mapped(
 /// full HDR-aware decode path.  Otherwise returns the DCT-scaled thumbnail plus the
 /// original (logical) image dimensions.
 pub(crate) fn try_decode_jpeg_strip_dct(
-    _path: &PathBuf,
     jpeg_data: &[u8],
     max_side: u32,
 ) -> Option<Result<(DecodedImage, (u32, u32)), String>> {

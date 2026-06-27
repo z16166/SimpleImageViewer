@@ -75,9 +75,10 @@ pub struct RawProcessor {
     is_unpacked: bool,
 }
 
-/// RAII wrapper for memory allocated by LibRaw (e.g., via libraw_dcraw_make_mem_image).
+/// RAII wrapper for memory allocated by LibRaw (e.g., via `libraw_dcraw_make_mem_image`).
+/// Delegates memory management to [`ffi::LibRawProcessedImageGuard`].
 struct LibRawMemory {
-    ptr: *mut ffi::libraw_processed_image_t,
+    guard: Option<ffi::LibRawProcessedImageGuard>,
 }
 
 impl LibRawMemory {
@@ -85,20 +86,23 @@ impl LibRawMemory {
         if ptr.is_null() {
             None
         } else {
-            Some(Self { ptr })
+            Some(Self {
+                guard: Some(unsafe { ffi::LibRawProcessedImageGuard::from_ptr(ptr) }),
+            })
         }
     }
 
     fn as_ref(&self) -> &ffi::libraw_processed_image_t {
-        unsafe { &*self.ptr }
+        self.guard
+            .as_ref()
+            .expect("LibRawMemory used after drop")
+            .as_ref()
     }
 }
 
 impl Drop for LibRawMemory {
     fn drop(&mut self) {
-        unsafe {
-            ffi::libraw_dcraw_clear_mem(self.ptr);
-        }
+        self.guard.take();
     }
 }
 

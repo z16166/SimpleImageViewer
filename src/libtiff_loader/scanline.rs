@@ -75,7 +75,7 @@ impl LibTiffScanlineSource {
         let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
 
         let decoded = unsafe {
-            lib::TIFFReadRGBAStrip(handle.ptr, strip_idx * rps, strip_buf.as_mut_ptr()) != 0
+            lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr()) != 0
         };
 
         if !decoded {
@@ -206,7 +206,7 @@ impl TiledImageSource for LibTiffScanlineSource {
             }
         };
 
-        let embedded = extract_embedded_thumbnail(handle.ptr, self.width, max_dim);
+        let embedded = extract_embedded_thumbnail(handle.as_ptr(), self.width, max_dim);
 
         if let Some(res) = embedded {
             let thumb_max = res.0.max(res.1);
@@ -233,7 +233,7 @@ impl TiledImageSource for LibTiffScanlineSource {
             ph
         );
 
-        let tif_ptr = handle.ptr;
+        let tif_ptr = handle.as_ptr();
         let rps = self.rows_per_strip;
         let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
         let mut last_strip_idx = u32::MAX;

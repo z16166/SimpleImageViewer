@@ -490,6 +490,7 @@ fn startup_preload_defer_can_release_now(
     selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
+    interim_hdr_decode_capacity: f32,
 ) -> bool {
     super::startup_preload_defer_can_release(
         runtime_probe_completed,
@@ -498,6 +499,7 @@ fn startup_preload_defer_can_release_now(
         output_mode,
         probe_completed_at,
         std::time::Instant::now(),
+        interim_hdr_decode_capacity,
     )
 }
 
@@ -553,6 +555,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_known,
         HdrOutputMode::WindowsScRgb,
         None,
+        1.0,
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -560,6 +563,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_sdr,
         HdrOutputMode::SdrToneMapped,
         None,
+        1.0,
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -567,6 +571,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_known,
         HdrOutputMode::SdrToneMapped,
         None,
+        1.0,
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -574,6 +579,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_unknown,
         HdrOutputMode::WindowsScRgb,
         None,
+        1.0,
     ));
     assert!(!super::monitor_hdr_decode_capacity_is_known(
         selection_hdr_source_only
@@ -584,6 +590,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_source_only,
         HdrOutputMode::WindowsScRgb,
         None,
+        1.0,
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -591,6 +598,7 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_known,
         HdrOutputMode::WindowsScRgb,
         None,
+        1.0,
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -598,6 +606,15 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         selection_hdr_known,
         HdrOutputMode::MacOsEdr,
         None,
+        1.0,
+    ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        true,
+        selection_hdr_unknown,
+        HdrOutputMode::MacOsEdr,
+        None,
+        4.926,
     ));
 }
 
@@ -623,6 +640,7 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         Some(&selection_wsi_hdr),
         HdrOutputMode::SdrToneMapped,
         None,
+        1.0,
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -630,6 +648,7 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         Some(&selection_wsi_hdr),
         HdrOutputMode::SdrToneMapped,
         None,
+        1.0,
     ));
 }
 
@@ -658,6 +677,7 @@ fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
         HdrOutputMode::WindowsScRgb,
         Some(probe_at),
         now,
+        1.0,
     ));
 }
 
@@ -1603,9 +1623,11 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         scan_generation: 0,
         scan_results_pending_since: None,
         pending_preload_after_directory_scan: false,
+        pending_preload_after_scan_last_attempt: None,
         directory_tree_strip_bootstrap_after_scan: false,
         directory_tree_strip_bootstrap_frames: 0,
         strip_preload_cooldown_frames: 0,
+        strip_stale_retain_last_generation: u64::MAX,
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
@@ -2700,6 +2722,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
             crate::loader::PreviewStage::Refined,
             crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
             None,
+            &paths[index],
             &ctx,
             0,
             3,
@@ -2734,6 +2757,7 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
         crate::loader::PreviewStage::Refined,
         crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
         None,
+        &old_files[0],
         &ctx,
         0,
         1,

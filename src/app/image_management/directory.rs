@@ -138,6 +138,7 @@ impl ImageViewerApp {
         self.osd.invalidate();
         self.loader.cancel_all();
         self.pending_preload_after_directory_scan = false;
+        self.pending_preload_after_scan_last_attempt = None;
         self.directory_tree_strip_bootstrap_after_scan = false;
         self.directory_tree_strip_bootstrap_frames = 0;
         self.reset_directory_tree_file_list_for_scan();
@@ -609,6 +610,7 @@ impl ImageViewerApp {
                             t!("status.found", count = count.to_string()).to_string();
                         if self.defer_main_preload_for_directory_tree_list() {
                             self.pending_preload_after_directory_scan = true;
+                            self.pending_preload_after_scan_last_attempt = None;
                             self.directory_tree_strip_bootstrap_after_scan = true;
                             self.directory_tree_strip_bootstrap_frames = 0;
                         } else {
@@ -637,6 +639,7 @@ impl ImageViewerApp {
         if first_batch_current_load_pending && !done {
             if self.defer_main_preload_for_directory_tree_list() {
                 self.pending_preload_after_directory_scan = true;
+                self.pending_preload_after_scan_last_attempt = None;
                 self.directory_tree_strip_bootstrap_after_scan = true;
                 self.directory_tree_strip_bootstrap_frames = 0;
             } else {

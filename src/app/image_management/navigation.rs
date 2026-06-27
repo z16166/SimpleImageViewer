@@ -322,6 +322,7 @@ impl ImageViewerApp {
             &mut self.prefetched_tiles,
         );
         self.set_current_index(target_index);
+        self.cancel_loader_tasks_except_current();
         self.refresh_current_file_name();
         self.current_hdr_image = self
             .first_cached_hdr_still_for_index(self.current_index)

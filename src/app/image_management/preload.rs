@@ -90,6 +90,7 @@ impl ImageViewerApp {
                     self.hdr_capabilities.output_mode,
                     self.hdr_monitor_state.runtime_probe_completed_at(),
                     std::time::Instant::now(),
+                    self.effective_ultra_hdr_decode_capacity(),
                 );
                 self.debug_log_preload_defer_gate(can_release);
             }

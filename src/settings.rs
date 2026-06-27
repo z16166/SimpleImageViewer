@@ -800,6 +800,28 @@ impl Settings {
                 .min(probed_peak)
                 .max(self.hdr_sdr_white_nits);
         }
+        // macOS EDR display headroom (Apple / WWDC22 10114:
+        // https://developer.apple.com/videos/play/wwdc2022/10114):
+        // tone-map to live [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue)
+        // (`current_edr_headroom`), not potential (`max_hdr_capacity`). Linear headroom × SDR
+        // white nits → display peak. Refreshed each frame via `sync_hdr_tone_map_settings` when
+        // only current drifts. Policy: `src/hdr/monitor/macos.rs`.
+        //
+        // Intentionally replaces (not `.min` with) the probed-peak clamp above: on macOS the live
+        // EDR headroom scalar is the authoritative per-draw ceiling per Apple; probed nits can
+        // lag or reflect a different metric than `current × sdr_white`.
+        #[cfg(target_os = "macos")]
+        if !matches!(
+            render_output_mode,
+            crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped
+        ) {
+            if let Some(headroom) = monitor
+                .and_then(|selection| selection.current_edr_headroom)
+                .filter(|value| value.is_finite() && *value >= 1.0)
+            {
+                max_display_nits = self.hdr_sdr_white_nits.max(1.0) * headroom;
+            }
+        }
         let exposure_ev = match render_output_mode {
             crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped => self.hdr_exposure_ev_sdr,
             _ => self.hdr_exposure_ev_native,

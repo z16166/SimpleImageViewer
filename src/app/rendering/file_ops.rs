@@ -71,7 +71,7 @@ impl ImageViewerApp {
             // and dimensions. The background thread will do the actual
             // downsampling to avoid blocking the UI.
             if is_tiled {
-                let tm = self.tile_manager.as_ref().unwrap();
+                let tm = self.tile_manager();
                 tile_pixel_buffer = tm.pixel_buffer_arc();
                 tile_full_width = tm.full_width;
                 tile_full_height = tm.full_height;

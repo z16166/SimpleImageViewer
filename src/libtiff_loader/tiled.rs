@@ -75,7 +75,7 @@ impl TiledImageSource for LibTiffTiledSource {
             }
         };
 
-        let tif_ptr = handle.ptr;
+        let tif_ptr = handle.as_ptr();
         let tw = self.tile_width;
         let th = self.tile_height;
         let mut tile_buf = vec![0u32; (tw as usize) * (th as usize)];
@@ -132,7 +132,7 @@ impl TiledImageSource for LibTiffTiledSource {
             }
         };
 
-        let embedded = extract_embedded_thumbnail(handle.ptr, self.width, max_dim);
+        let embedded = extract_embedded_thumbnail(handle.as_ptr(), self.width, max_dim);
 
         if let Some(res) = embedded {
             let thumb_max = res.0.max(res.1);
@@ -159,7 +159,7 @@ impl TiledImageSource for LibTiffTiledSource {
             ph
         );
 
-        let tif_ptr = handle.ptr;
+        let tif_ptr = handle.as_ptr();
         let tw = self.tile_width;
         let th = self.tile_height;
         let mut tile_buf = vec![0u32; (tw * th) as usize];

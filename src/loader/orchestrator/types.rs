@@ -201,6 +201,9 @@ pub struct ImageLoader {
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) output_mode_bits: Arc<AtomicU32>,
+    /// Dedicated OS threads running [`LoadIntent::Current`] decode (bounded — see
+    /// [`crate::loader::MAX_CURRENT_IMAGE_OS_THREADS`]).
+    pub(crate) current_image_os_threads: Arc<std::sync::atomic::AtomicUsize>,
     /// Main-thread-only HDR capacity requeue storm cap (not shared with workers; no lock needed).
     pub(crate) capacity_requeue_counts: std::collections::HashMap<usize, u32>,
 }

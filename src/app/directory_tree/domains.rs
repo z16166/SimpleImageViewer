@@ -393,17 +393,6 @@ pub(super) fn publish_preview_snapshot(
             preview_logical_sizes.insert(index, size);
         }
     }
-    #[cfg(feature = "preload-debug")]
-    {
-        let texture_count = preview_textures.len();
-        let indices: Vec<usize> = preview_textures.keys().copied().collect();
-        crate::preload_debug!(
-            "[PreloadDebug][DirTree] publish_preview_snapshot rev={} rows={} \
-             texture_count={texture_count} indices={indices:?}",
-            cache_revision,
-            row_count
-        );
-    }
     swap.store(Arc::new(DirectoryTreePreviewSnapshot {
         revision: cache_revision,
         list_publish_generation,

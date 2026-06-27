@@ -410,7 +410,6 @@ impl ImageViewerApp {
         let now = Instant::now();
         self.clear_frame_render_plan_cache();
         self.frame_effective_hdr_monitor_selection = self.effective_hdr_monitor_selection();
-        let effective_selection = self.frame_effective_hdr_monitor_selection.clone();
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         let main_window_outer_top_left = self
             .cached_window_placement
@@ -433,16 +432,18 @@ impl ImageViewerApp {
             self.hdr_capabilities.native_presentation_enabled,
             self.hdr_target_format,
         );
-        let output_mode = crate::hdr::monitor::effective_capability_output_mode(
-            self.hdr_target_format,
-            effective_selection.as_ref(),
-        );
-        self.hdr_capabilities.output_mode = output_mode;
-
-        let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
-            self.hdr_target_format,
-            effective_selection.as_ref(),
-        );
+        let (output_mode, render_output_mode) = {
+            let es = self.frame_effective_hdr_monitor_selection.as_ref();
+            let om = crate::hdr::monitor::effective_capability_output_mode(
+                self.hdr_target_format,
+                es,
+            );
+            let rom = crate::hdr::monitor::effective_render_output_mode(
+                self.hdr_target_format,
+                es,
+            );
+            (om, rom)
+        };
         if matches!(
             self.hdr_target_format,
             Some(wgpu::TextureFormat::Rgb10a2Unorm)
@@ -465,6 +466,12 @@ impl ImageViewerApp {
         if tone != self.hdr_renderer.tone_map {
             self.sync_hdr_tone_map_settings();
         }
+        // Re-borrow after potential &mut self calls above (e.g. sync_hdr_tone_map_settings).
+        // Safe because `frame_effective_hdr_monitor_selection` is assigned once at the top of
+        // this method (line 412) and never mutated afterward — the re-borrow sees the same
+        // value as the first borrow at line 436.  HdrMonitorSelection carries a heap-allocated
+        // String; re-borrowing avoids the per-frame clone.
+        let effective_selection = self.frame_effective_hdr_monitor_selection.as_ref();
 
         // If the active monitor's HDR capability disagrees with the current
         // swap-chain target format, ask the Painter to hot-swap. This is what
@@ -487,7 +494,7 @@ impl ImageViewerApp {
             );
         let desired_target_format = crate::hdr::surface::desired_target_format_for_active_monitor(
             native_surface_requests_enabled,
-            effective_selection.as_ref(),
+            effective_selection,
         );
         if let Some(desired_format) = desired_target_format
             && Some(desired_format) != self.hdr_target_format
@@ -498,8 +505,8 @@ impl ImageViewerApp {
                      monitor={:?} hdr_supported={:?} native_surface_enabled={}",
                     self.hdr_target_format,
                     desired_format,
-                    effective_selection.as_ref().map(|s| s.label.as_str()),
-                    effective_selection.as_ref().map(|s| s.hdr_supported),
+                    effective_selection.map(|s| s.label.as_str()),
+                    effective_selection.map(|s| s.hdr_supported),
                     native_surface_requests_enabled,
                 );
                 self.last_logged_swap_chain_format_request = Some(desired_format);
@@ -522,6 +529,12 @@ impl ImageViewerApp {
                 self.hdr_capabilities.backend,
                 self.hdr_target_format,
             );
+        // Cross-platform: keep loader/preload gate state aligned with the per-frame probe.
+        // Startup `detect_from_wgpu_state` may leave `output_mode = SdrToneMapped` while the
+        // live swap chain is still `Bgra8Unorm`; macOS has no spawn-time format probe
+        // and relies on a runtime hot-swap to `Rgba16Float`.
+        self.hdr_capabilities.output_mode = output_mode;
+        self.hdr_capabilities.current_surface_format = self.hdr_target_format;
         #[cfg(target_os = "linux")]
         {
             let wsi = self.vulkan_wsi_hdr_gates.get();
@@ -529,7 +542,7 @@ impl ImageViewerApp {
                 &mut self.last_logged_linux_hdr_runtime_diag,
                 crate::hdr::linux_diag::LinuxHdrRuntimeDiagInput {
                     wp: self.hdr_monitor_state.selection(),
-                    effective: effective_selection.as_ref(),
+                    effective: effective_selection,
                     wsi: crate::hdr::wsi_probe::WsiHdrSurfaceGates {
                         hdr10_st2084_rgb10a2: wsi.hdr10_st2084_rgb10a2,
                         extended_srgb_linear_rgba16f: wsi.extended_srgb_linear_rgba16f,
@@ -572,7 +585,7 @@ impl ImageViewerApp {
                 swap_request_outcome,
                 wsi,
                 wp_selection,
-                effective_selection.as_ref(),
+                effective_selection,
                 output_mode,
                 self.hdr_capabilities.native_presentation_enabled,
             );

@@ -240,12 +240,23 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        self.directory_tree_strip_cache.insert_from_texture_handle(
+        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
+            index,
+            crate::loader::PreviewStage::Refined,
+            StripPreviewBufferTag::MainWindowTiledPreview,
+            Some(logical),
+            preview_w,
+            preview_h,
+        ) {
+            return;
+        }
+        let _ = self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture,
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
+            &self.image_files[index],
             self.current_index,
             self.image_files.len(),
         );
@@ -286,25 +297,37 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        self.directory_tree_strip_cache.insert_from_texture_handle(
+        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
+            index,
+            crate::loader::PreviewStage::Refined,
+            StripPreviewBufferTag::MainWindowTextureCacheSdr,
+            Some(logical),
+            preview_w,
+            preview_h,
+        ) {
+            return;
+        }
+        if self.directory_tree_strip_cache.insert_from_texture_handle(
             index,
             texture,
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some(logical),
+            &self.image_files[index],
             self.current_index,
             self.image_files.len(),
-        );
-        #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][DirTree] strip sync from texture_cache idx={} logical={}x{} tex={}x{} cache_rev={}",
-            index,
-            logical.0,
-            logical.1,
-            preview_w,
-            preview_h,
-            self.directory_tree_strip_cache.gpu_revision()
-        );
+        ) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][DirTree] strip sync from texture_cache idx={} logical={}x{} tex={}x{} cache_rev={}",
+                index,
+                logical.0,
+                logical.1,
+                preview_w,
+                preview_h,
+                self.directory_tree_strip_cache.gpu_revision()
+            );
+        }
     }
 
 
@@ -387,10 +410,15 @@ impl ImageViewerApp {
         }
         let current = self.current_index.min(total.saturating_sub(1));
         let mut ordered = Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
-        let mut seen = std::collections::HashSet::new();
+        // Per-frame dedup guard: at most MAX_COLD_STRIP_SCHEDULE_PER_FRAME (32) items end up
+        // in this Vec — a linear scan is faster than the hash-table allocation + hashing overhead.
+        let mut seen = Vec::with_capacity(MAX_COLD_STRIP_SCHEDULE_PER_FRAME);
         let mut try_push = |index: usize| -> bool {
-            if index < total && seen.insert(index) && self.strip_index_needs_cold_thumbnail(index) {
-                ordered.push(index);
+            if index < total && !seen.contains(&index) {
+                seen.push(index);
+                if self.strip_index_needs_cold_thumbnail(index) {
+                    ordered.push(index);
+                }
             }
             ordered.len() >= schedule_budget
         };

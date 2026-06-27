@@ -209,12 +209,14 @@ pub(crate) fn decode_heif_gain_map(
         );
         return None;
     }
-    let aux_handle = HeifAuxiliaryImageHandle(aux_handle_ptr);
+    let aux_handle = HeifAuxiliaryImageHandle(unsafe {
+        libheif_sys::HeifImageHandleGuard::from_ptr(aux_handle_ptr)
+    });
 
     let mut image_ptr = std::ptr::null_mut();
     let err = unsafe {
         libheif_sys::heif_decode_image(
-            aux_handle.0,
+            aux_handle.as_ptr(),
             &mut image_ptr,
             libheif_sys::heif_colorspace_RGB,
             libheif_sys::heif_chroma_interleaved_RGBA,
@@ -228,10 +230,16 @@ pub(crate) fn decode_heif_gain_map(
         );
         return None;
     }
-    let _image_guard = RawHeifImage(image_ptr);
+    let gain_image = RawHeifImage(unsafe {
+        libheif_sys::HeifImageGuard::from_ptr(image_ptr)
+    });
 
-    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image_ptr) };
-    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image_ptr) };
+    let width_i = unsafe {
+        libheif_sys::heif_image_get_primary_width(gain_image.as_ptr())
+    };
+    let height_i = unsafe {
+        libheif_sys::heif_image_get_primary_height(gain_image.as_ptr())
+    };
     if width_i <= 0 || height_i <= 0 {
         log::warn!(
             "[HDR] Invalid auxiliary gain map dimensions: {}x{}",
@@ -246,7 +254,7 @@ pub(crate) fn decode_heif_gain_map(
     let mut stride = 0_usize;
     let plane = unsafe {
         libheif_sys::heif_image_get_plane_readonly2(
-            image_ptr,
+            gain_image.as_ptr(),
             libheif_sys::heif_channel_interleaved,
             &mut stride,
         )
@@ -312,11 +320,12 @@ pub(crate) fn decode_heif_gain_map(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifAuxiliaryImageHandle(pub(crate) *mut libheif_sys::heif_image_handle);
+pub(crate) struct HeifAuxiliaryImageHandle(pub(crate) libheif_sys::HeifImageHandleGuard);
 
 #[cfg(feature = "heif-native")]
-impl Drop for HeifAuxiliaryImageHandle {
-    fn drop(&mut self) {
-        unsafe { libheif_sys::heif_image_handle_release(self.0) };
+impl HeifAuxiliaryImageHandle {
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_image_handle {
+        self.0.as_ptr()
     }
 }

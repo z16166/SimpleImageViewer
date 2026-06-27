@@ -67,26 +67,24 @@ pub(crate) fn append_mini_format_read_hint(action: &str, msg: String) -> String 
 // --- libheif session (context + primary handle) ---------------------------------------------
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifCtxGuard(pub *mut libheif_sys::heif_context);
+pub(crate) struct HeifCtxGuard(pub libheif_sys::HeifContextGuard);
 
 #[cfg(feature = "heif-native")]
-impl Drop for HeifCtxGuard {
-    fn drop(&mut self) {
-        unsafe {
-            libheif_sys::heif_context_free(self.0);
-        }
+impl HeifCtxGuard {
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *mut libheif_sys::heif_context {
+        self.0.as_ptr()
     }
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifPrimaryGuard(pub *mut libheif_sys::heif_image_handle);
+pub(crate) struct HeifPrimaryGuard(pub libheif_sys::HeifImageHandleGuard);
 
 #[cfg(feature = "heif-native")]
-impl Drop for HeifPrimaryGuard {
-    fn drop(&mut self) {
-        unsafe {
-            libheif_sys::heif_image_handle_release(self.0);
-        }
+impl HeifPrimaryGuard {
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_image_handle {
+        self.0.as_ptr()
     }
 }
 
@@ -131,15 +129,15 @@ pub(crate) fn open_heif_primary_from_bytes(
         });
     }
 
-    let context = HeifCtxGuard(unsafe { libheif_sys::heif_context_alloc() });
-    if context.0.is_null() {
-        return Err("Failed to allocate libheif context".to_string());
-    }
+    let context = HeifCtxGuard(
+        libheif_sys::HeifContextGuard::new()
+            .ok_or_else(|| "Failed to allocate libheif context".to_string())?
+    );
 
     ensure_heif_ok_lib(
         unsafe {
             libheif_sys::heif_context_read_from_memory_without_copy(
-                context.0,
+                context.as_ptr(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
                 std::ptr::null(),
@@ -150,14 +148,19 @@ pub(crate) fn open_heif_primary_from_bytes(
 
     let mut handle_ptr = std::ptr::null_mut();
     ensure_heif_ok_lib(
-        unsafe { libheif_sys::heif_context_get_primary_image_handle(context.0, &mut handle_ptr) },
+        unsafe { libheif_sys::heif_context_get_primary_image_handle(context.as_ptr(), &mut handle_ptr) },
         "get HEIF primary image",
     )?;
     if handle_ptr.is_null() {
         return Err("libheif returned a null primary image handle".to_string());
     }
 
-    Ok((context, HeifPrimaryGuard(handle_ptr)))
+    Ok((
+        context,
+        HeifPrimaryGuard(unsafe {
+            libheif_sys::HeifImageHandleGuard::from_ptr(handle_ptr)
+        }),
+    ))
 }
 
 /// Parse embedded Exif item payload (`Exif` metadata). Mirrors [`kamadak_exif::isobmff::get_exif_attr`]

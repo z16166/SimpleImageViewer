@@ -16,6 +16,10 @@
 
 mod effective;
 mod macos;
+#[cfg(target_os = "macos")]
+mod objc_util;
+#[cfg(target_os = "macos")]
+mod macos_screen_parameters;
 mod probe;
 mod state;
 mod types;

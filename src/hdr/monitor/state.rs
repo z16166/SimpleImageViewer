@@ -98,6 +98,9 @@ impl HdrMonitorState {
         main_window_outer_top_left: Option<[i32; 2]>,
         settings_spawn_top_left: Option<[i32; 2]>,
     ) -> Option<&HdrMonitorSelection> {
+        #[cfg(target_os = "macos")]
+        super::macos_screen_parameters::ensure_observer_installed();
+
         let signature = HdrMonitorSignature::from_main_viewport(ctx);
 
         // When a spawn-time DXGI probe already seeded a valid selection, record the first
@@ -150,9 +153,16 @@ impl HdrMonitorState {
                 if !self.last_probe_failed {
                     log::warn!(
                         "[HDR] active monitor HDR probe FAILED: {err} \
-                         (will retry on next viewport change / 750ms; \
+                         (will retry on next viewport change{}; \
                          dynamic HDR↔SDR swap-chain switching is disabled \
-                         until probe succeeds)"
+                         until probe succeeds)",
+                        if cfg!(target_os = "macos") {
+                            " or didChangeScreenParametersNotification"
+                        } else if cfg!(target_os = "windows") {
+                            " / ~200ms timer"
+                        } else {
+                            " / 750ms timer"
+                        }
                     );
                     self.last_probe_failed = true;
                 } else {
@@ -189,6 +199,7 @@ impl HdrMonitorState {
         signature: HdrMonitorSignature,
         now: Instant,
         _hdr_content_visible: bool,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
         supports_current_edr_reprobe: bool,
     ) -> bool {
         let interval_elapsed = match self.last_probe_at {
@@ -196,9 +207,9 @@ impl HdrMonitorState {
             None => true,
         };
         if self.last_signature == Some(signature) {
+            #[cfg(target_os = "macos")]
             if supports_current_edr_reprobe {
-                return self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
-                    && interval_elapsed;
+                return self.should_probe_macos_edr_headroom(interval_elapsed);
             }
             // Windows (and other non-macOS): `HdrMonitorSignature` can stay identical for
             // many frames while the native frame is dragged between monitors because
@@ -230,12 +241,27 @@ impl HdrMonitorState {
         true
     }
 
-    fn should_reprobe_current_edr_capacity(&self, supports_current_edr_reprobe: bool) -> bool {
-        if !supports_current_edr_reprobe {
-            return false;
+    /// macOS live EDR headroom refresh — notification-driven per Apple docs (no timer poll).
+    ///
+    /// **Side effect:** consumes a pending `didChangeScreenParametersNotification` via
+    /// [`take_headroom_refresh_pending`](super::macos_screen_parameters::take_headroom_refresh_pending).
+    /// Callers must run a full NSScreen probe when this returns `true` (today only
+    /// `should_probe_for_platform` when the viewport signature is unchanged).
+    ///
+    /// [`NSApplication.didChangeScreenParametersNotification`](https://developer.apple.com/documentation/appkit/nsapplication/didchangescreenparametersnotification)
+    /// when [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue)
+    /// changes; plus the first probe until **potential** headroom is known. Viewport signature
+    /// changes are handled by the caller (`should_probe_for_platform` returns `true` earlier).
+    /// See `macos_screen_parameters.rs` and `macos.rs`.
+    #[cfg(target_os = "macos")]
+    fn should_probe_macos_edr_headroom(&self, interval_elapsed: bool) -> bool {
+        if super::macos_screen_parameters::take_headroom_refresh_pending() {
+            return true;
         }
-        self.selection.as_ref().is_some_and(|selection| {
-            selection.hdr_supported && selection.max_hdr_capacity.is_none()
-        })
+        // Potential headroom unknown: retry on the standard probe interval, not every frame.
+        interval_elapsed
+            && self.selection.as_ref().is_some_and(|selection| {
+                selection.hdr_supported && selection.max_hdr_capacity.is_none()
+            })
     }
 }

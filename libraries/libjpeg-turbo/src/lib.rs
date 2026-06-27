@@ -288,6 +288,10 @@ pub fn decode_to_rgba_with_max_side(
     jpeg_data: &[u8],
     max_side: u32,
 ) -> Result<(u32, u32, u32, u32, Vec<u8>), String> {
+    // turbojpegʼs tjDecompress2 re-parses the SOF marker internally even when
+    // the caller already called decompress_header — the overhead is negligible
+    // (a few dozen bytes of fixed-length fields) so we donʼt add API surface for
+    // a "decode without re-parse" fast path.
     let decompressor = Decompressor::new()?;
     let (orig_w, orig_h, _) = decompressor.decompress_header(jpeg_data)?;
     let orig_w_u = orig_w as u32;

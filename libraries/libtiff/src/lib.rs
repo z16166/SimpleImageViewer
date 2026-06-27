@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::ffi::{c_char, c_int, c_void};
+use std::fmt;
 
 pub type TIFF = c_void;
 #[allow(non_camel_case_types)]
@@ -93,4 +94,124 @@ unsafe extern "C" {
     pub fn TIFFScanlineSize(tif: *mut TIFF) -> tsize_t;
     pub fn TIFFDefaultStripSize(tif: *mut TIFF, request: uint32) -> uint32;
     pub fn TIFFIsByteSwapped(tif: *mut TIFF) -> c_int;
+}
+
+// ── RAII guards ────────────────────────────────────────────────────────
+
+/// Owns a [`TIFF`] handle and calls [`TIFFClose`] on drop.
+///
+/// A `TIFF` handle is **not** `Send`: LibTIFF is not thread-safe, and the caller must
+/// either guard access with a `Mutex` or ensure exclusive ownership on a single thread.
+#[must_use = "TiffGuard will close the TIFF handle on drop"]
+pub struct TiffGuard {
+    ptr: *mut TIFF,
+}
+
+// SAFETY: The caller is responsible for ensuring the TIFF handle is only used from one
+// thread at a time (the common `Mutex<TiffGuard>` pattern). We intentionally do not
+// auto-derive `Send` — the caller must explicitly opt in with `unsafe impl Send`.
+unsafe impl Send for TiffGuard {}
+
+impl TiffGuard {
+    /// Wrap an already-open TIFF handle. The caller must ensure `ptr` is a valid,
+    /// non-null handle from [`TIFFOpen`] or [`TIFFClientOpen`].
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid `*mut TIFF` that has not been passed to another guard.
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut TIFF) -> Self {
+        debug_assert!(!ptr.is_null(), "TiffGuard constructed with null TIFF*");
+        Self { ptr }
+    }
+
+    /// Raw pointer to the underlying `TIFF` handle (for FFI calls).
+    #[inline]
+    pub fn as_ptr(&self) -> *mut TIFF {
+        self.ptr
+    }
+
+    /// Consume the guard and return the raw pointer without closing.
+    ///
+    /// The caller becomes responsible for calling [`TIFFClose`].
+    #[inline]
+    pub fn into_raw(mut self) -> *mut TIFF {
+        let ptr = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        ptr
+    }
+
+    // ── Typed `TIFFGetField` wrappers ──────────────────────────────────
+
+    /// Read a `u16` tag (e.g. `BITSPERSAMPLE`, `ORIENTATION`, `PHOTOMETRIC`).
+    ///
+    /// Returns `None` when the tag is not present or the field read fails.
+    #[inline]
+    pub unsafe fn get_field_u16(&self, tag: u32) -> Option<u16> {
+        let mut val: u16 = 0;
+        if unsafe { TIFFGetField(self.ptr, tag, &mut val) } != 0 {
+            Some(val)
+        } else {
+            None
+        }
+    }
+
+    /// Read a `u32` tag (e.g. `IMAGEWIDTH`, `IMAGELENGTH`, `TILEWIDTH`, `ROWSPERSTRIP`).
+    #[inline]
+    pub unsafe fn get_field_u32(&self, tag: u32) -> Option<u32> {
+        let mut val: u32 = 0;
+        if unsafe { TIFFGetField(self.ptr, tag, &mut val) } != 0 {
+            Some(val)
+        } else {
+            None
+        }
+    }
+
+    /// Read a `f64` tag (e.g. `SMINSAMPLEVALUE`, `SMAXSAMPLEVALUE`).
+    #[inline]
+    pub unsafe fn get_field_f64(&self, tag: u32) -> Option<f64> {
+        let mut val: f64 = 0.0;
+        if unsafe { TIFFGetField(self.ptr, tag, &mut val) } != 0 {
+            Some(val)
+        } else {
+            None
+        }
+    }
+
+    /// Read the colormap tag (three `*mut u16` pointers: R, G, B).
+    #[inline]
+    pub unsafe fn get_field_colormap(
+        &self,
+        tag: u32,
+    ) -> Option<(*mut u16, *mut u16, *mut u16)> {
+        let (mut r, mut g, mut b) = (
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if unsafe { TIFFGetField(self.ptr, tag, &mut r, &mut g, &mut b) } != 0 {
+            Some((r, g, b))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for TiffGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                TIFFClose(self.ptr);
+            }
+        }
+    }
+}
+
+impl fmt::Debug for TiffGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TiffGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
 }

@@ -200,8 +200,82 @@ impl DirectoryTreeStripCache {
         self.preview_stage.get(&index).copied()
     }
 
-    /// Insert a strip texture from the main-window texture cache.
+    /// Write a strip texture into the cache after the caller has already
+    /// acquired an [`egui::TextureHandle`] (by clone or by GPU upload).
     ///
+    /// All call sites that update a strip thumbnail in memory flow through
+    /// this single function, so `preload-debug` logging is centralized here.
+    fn commit_strip_texture(
+        &mut self,
+        index: usize,
+        texture: egui::TextureHandle,
+        buffer_tag: StripPreviewBufferTag,
+        stage: PreviewStage,
+        logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
+    ) {
+        let _ = path; // used by preload-debug logging below
+        #[cfg(feature = "preload-debug")]
+        let tex_size = texture.size();
+        #[cfg(feature = "preload-debug")]
+        let tex_w = tex_size[0];
+        #[cfg(feature = "preload-debug")]
+        let tex_h = tex_size[1];
+        #[cfg(feature = "preload-debug")]
+        let count_before = self.textures.len();
+
+        if let Some(logical) = logical_size {
+            self.logical_sizes.insert(index, logical);
+        }
+        self.textures.insert(index, texture);
+        self.preview_buffer_tag.insert(index, buffer_tag);
+        self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
+        self.bump_gpu_revision();
+        self.evict_if_needed();
+
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripCache] commit idx={} path={} tag={buffer_tag:?} stage={stage:?} \
+             tex={tex_w}x{tex_h} logical={logical_size:?} \
+             cache_count_before={count_before} cache_count_after={} rev={}",
+            index,
+            path.display(),
+            self.textures.len(),
+            self.gpu_revision
+        );
+    }
+
+    /// Insert a strip texture from the main-window texture cache.
+    /// Whether a main-window texture clone would upgrade the strip entry (no logging).
+    pub(crate) fn strip_texture_handle_would_replace(
+        &self,
+        index: usize,
+        stage: PreviewStage,
+        buffer_tag: StripPreviewBufferTag,
+        logical: Option<(u32, u32)>,
+        preview_w: u32,
+        preview_h: u32,
+    ) -> bool {
+        let cached_dims = self.preview_dimensions(index);
+        evaluate_strip_preview_replace(&StripPreviewReplaceParams {
+            index,
+            source: "strip_texture_handle_probe",
+            cached_tag: self.preview_buffer_tag.get(&index).copied(),
+            cached_stage: self.preview_stage.get(&index).copied(),
+            cached_logical: self.logical_sizes.get(&index).copied(),
+            cached_preview_w: cached_dims.map(|(w, _)| w),
+            cached_preview_h: cached_dims.map(|(_, h)| h),
+            incoming_tag: buffer_tag,
+            incoming_stage: stage,
+            incoming_logical: logical,
+            preview_w,
+            preview_h,
+            decoded: None,
+        })
+        .allows_replace()
+    }
+
     /// Takes `&TextureHandle` to avoid cloning when the strip cache already
     /// holds an equal-or-better entry for this index. The clone only happens
     /// after [`decide_strip_preview_replace`] confirms the replacement.
@@ -212,9 +286,10 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         buffer_tag: StripPreviewBufferTag,
         logical: Option<(u32, u32)>,
+        path: &std::path::Path,
         _current_index: usize,
         _total_count: usize,
-    ) {
+    ) -> bool {
         let size = texture.size();
         let preview_w = size[0] as u32;
         let preview_h = size[1] as u32;
@@ -236,17 +311,10 @@ impl DirectoryTreeStripCache {
             preview_h,
             decoded: None,
         }) {
-            return;
+            return false;
         }
-        if let Some((logical_w, logical_h)) = logical {
-            self.logical_sizes.insert(index, (logical_w, logical_h));
-        }
-        self.textures.insert(index, texture.clone());
-        self.preview_buffer_tag.insert(index, buffer_tag);
-        self.preview_stage.insert(index, stage);
-        self.touch_lru(index);
-        self.bump_gpu_revision();
-        self.evict_if_needed();
+        self.commit_strip_texture(index, texture.clone(), buffer_tag, stage, logical, path);
+        true
     }
 
     pub(crate) fn upsert_from_decoded(
@@ -256,6 +324,7 @@ impl DirectoryTreeStripCache {
         stage: PreviewStage,
         buffer_tag: StripPreviewBufferTag,
         logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
         ctx: &egui::Context,
         _current_index: usize,
         _total_count: usize,
@@ -304,28 +373,7 @@ impl DirectoryTreeStripCache {
             color_image,
             TextureOptions::LINEAR,
         );
-        if let Some(logical) = logical_size {
-            self.logical_sizes.insert(index, logical);
-        }
-        self.textures.insert(index, handle);
-        self.preview_buffer_tag.insert(index, buffer_tag);
-        self.preview_stage.insert(index, stage);
-        self.touch_lru(index);
-        self.bump_gpu_revision();
-        #[cfg(feature = "preload-debug")]
-        let count_before_evict = self.textures.len();
-        self.evict_if_needed();
-        #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][StripCache] upsert ok idx={} tag={buffer_tag:?} tex={}x{} logical={logical_size:?} \
-             cache_count={} evicted={} rev={}",
-            index,
-            thumb.width,
-            thumb.height,
-            self.textures.len(),
-            count_before_evict.saturating_sub(self.textures.len()),
-            self.gpu_revision
-        );
+        self.commit_strip_texture(index, handle, buffer_tag, stage, logical_size, path);
     }
 
     pub(crate) fn relocate(&mut self, from: usize, to: usize) {
@@ -733,6 +781,7 @@ pub(crate) fn should_replace_strip_texture(
 mod tests {
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
+    use std::path::Path;
 
     #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {
@@ -800,6 +849,7 @@ mod tests {
                 PreviewStage::Refined,
                 StripPreviewBufferTag::StripDecodedPixels,
                 None,
+                Path::new("/test/strip.jpg"),
                 &ctx,
                 0,
                 total,
@@ -856,6 +906,7 @@ mod tests {
             PreviewStage::Initial,
             StripPreviewBufferTag::StripDecodedPixels,
             Some((512, 256)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -869,6 +920,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::SdrDeferredPlaceholder,
             Some((512, 256)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -997,6 +1049,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::StripDecodedPixels,
             Some((640, 320)),
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,
@@ -1025,6 +1078,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some((80, 80)),
+            Path::new("/test/strip.jpg"),
             0,
             1,
         );
@@ -1045,6 +1099,7 @@ mod tests {
                 PreviewStage::Refined,
                 StripPreviewBufferTag::StripDecodedPixels,
                 None,
+                Path::new("/test/strip.jpg"),
                 &ctx,
                 0,
                 3,
@@ -1070,6 +1125,7 @@ mod tests {
             PreviewStage::Refined,
             StripPreviewBufferTag::StripDecodedPixels,
             None,
+            Path::new("/test/strip.jpg"),
             &ctx,
             0,
             1,

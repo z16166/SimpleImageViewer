@@ -33,7 +33,13 @@ use core::arch::aarch64::*;
 ///
 /// # Panics
 ///
-/// Panics in debug if any dimension is zero.
+/// In debug mode, panics (via `debug_assert!`) if `dst_w > src_w` or `dst_h > src_h`
+/// (upscaling not supported).  In release mode, the assertion is skipped and the
+/// function produces all-black pixels — empty source footprints yield `count == 0`,
+/// the guard at the end of the scalar loop skips the division, and the SIMD paths
+/// likewise leave the output pixel at zero.
+///
+/// Returns an empty `Vec<u8>` if any dimension is zero.
 pub fn downsample_rgba8_box(
     src: &[u8],
     src_w: u32,
@@ -47,21 +53,43 @@ pub fn downsample_rgba8_box(
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return Vec::new();
     }
+    debug_assert!(
+        dst_w <= src_w && dst_h <= src_h,
+        "downsample_rgba8_box does not support upscaling (src {src_w}x{src_h}, dst {dst_w}x{dst_h})"
+    );
+    debug_assert!(
+        src.len() >= src_w as usize * src_h as usize * 4,
+        "downsample_rgba8_box src buffer too short: {} bytes for {src_w}x{src_h} (need {})",
+        src.len(),
+        src_w as usize * src_h as usize * 4
+    );
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+
+    // Pre-compute column-to-source-range mapping once — all SIMD kernels need
+    // identical x0/x1 arrays, so computing them here avoids duplicating the
+    // allocation and math across three kernels.
+    let dst_w_u = dst_w as usize;
+    let mut x0 = vec![0_u32; dst_w_u];
+    let mut x1 = vec![0_u32; dst_w_u];
+    for dx in 0..dst_w_u {
+        x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
+        x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
+            .min(src_w as u64) as u32;
+    }
 
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_avx2(src, src_w, src_h, &mut dst, dst_w, dst_h);
+                downsample_rgba8_box_avx2(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
             }
             return dst;
         }
         if is_x86_feature_detected!("sse4.1") {
             // SAFETY: SSE4.1 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_sse41(src, src_w, src_h, &mut dst, dst_w, dst_h);
+                downsample_rgba8_box_sse41(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
             }
             return dst;
         }
@@ -71,17 +99,27 @@ pub fn downsample_rgba8_box(
     {
         // SAFETY: NEON is always available on aarch64.
         unsafe {
-            downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h);
+            downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
         }
-        return dst;
+        // Fall through to `dst` — no early return here (unlike the x86_64
+        // blocks above which use runtime feature detection and may or may not
+        // return).  This keeps the function exit point unambiguous on aarch64
+        // and avoids the unreachable_code warning.
     }
 
-    downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
+    }
     dst
 }
 
 // ── Scalar fallback ───────────────────────────────────────────────────────────
+// Only compiled on architectures where runtime feature detection may fall through
+// (x86_64 without AVX2/SSE4.1, and non-aarch64/non-x86_64).  On aarch64, NEON is
+// always available and the scalar path is never called.
 
+#[cfg(not(target_arch = "aarch64"))]
 fn downsample_rgba8_box_scalar(
     pixels: &[u8],
     src_w: u32,
@@ -122,10 +160,12 @@ fn downsample_rgba8_box_scalar(
             }
 
             let di = (dst_y as usize * dst_w as usize + dst_x as usize) * 4;
-            dst[di] = (sum_r / count) as u8;
-            dst[di + 1] = (sum_g / count) as u8;
-            dst[di + 2] = (sum_b / count) as u8;
-            dst[di + 3] = (sum_a / count) as u8;
+            if count > 0 {
+                dst[di] = (sum_r / count) as u8;
+                dst[di + 1] = (sum_g / count) as u8;
+                dst[di + 2] = (sum_b / count) as u8;
+                dst[di + 3] = (sum_a / count) as u8;
+            }
         }
     }
 }
@@ -141,20 +181,14 @@ unsafe fn downsample_rgba8_box_sse41(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: SSE4.1 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 4;
         let blocks = (dst_w_u / simd_w) as isize;
@@ -197,11 +231,18 @@ unsafe fn downsample_rgba8_box_sse41(
                         ]);
 
                         let sx_v = _mm_set1_epi32(sx as i32);
+                        // Flip the sign bit to use signed comparison intrinsics
+                        // (`_mm_cmpgt_epi32`) for unsigned u32 values.  Without the
+                        // flip, coordinates ≥ 2^31 would be treated as negative.
+                        let sign_bit128 = _mm_set1_epi32(i32::MIN);
+                        let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
+                        let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
+                        let sx_v_u = _mm_xor_si128(sx_v, sign_bit128);
                         // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge =
-                            _mm_andnot_si128(_mm_cmpgt_epi32(x0_v, sx_v), _mm_set1_epi32(!0));
+                            _mm_andnot_si128(_mm_cmpgt_epi32(x0_v_u, sx_v_u), _mm_set1_epi32(!0));
                         // sx < x1  →  x1 > sx
-                        let mask_lt = _mm_cmpgt_epi32(x1_v, sx_v);
+                        let mask_lt = _mm_cmpgt_epi32(x1_v_u, sx_v_u);
                         let active = _mm_and_si128(mask_ge, mask_lt);
 
                         if _mm_testz_si128(active, active) != 0 {
@@ -276,10 +317,12 @@ unsafe fn downsample_rgba8_box_sse41(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -296,20 +339,14 @@ unsafe fn downsample_rgba8_box_avx2(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: AVX2 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 8;
         let blocks = (dst_w_u / simd_w) as isize;
@@ -348,11 +385,19 @@ unsafe fn downsample_rgba8_box_avx2(
                         ]);
 
                         let sx_v = _mm256_set1_epi32(sx as i32);
+                        // Flip the sign bit to use signed comparison intrinsics
+                        // (`_mm256_cmpgt_epi32`) for unsigned u32 values.
+                        let sign_bit256 = _mm256_set1_epi32(i32::MIN);
+                        let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
+                        let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
+                        let sx_v_u = _mm256_xor_si256(sx_v, sign_bit256);
+                        // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge = _mm256_andnot_si256(
-                            _mm256_cmpgt_epi32(x0_v, sx_v),
+                            _mm256_cmpgt_epi32(x0_v_u, sx_v_u),
                             _mm256_set1_epi32(!0),
                         );
-                        let mask_lt = _mm256_cmpgt_epi32(x1_v, sx_v);
+                        // sx < x1  →  x1 > sx
+                        let mask_lt = _mm256_cmpgt_epi32(x1_v_u, sx_v_u);
                         let active = _mm256_and_si256(mask_ge, mask_lt);
 
                         if _mm256_testz_si256(active, active) != 0 {
@@ -431,10 +476,12 @@ unsafe fn downsample_rgba8_box_avx2(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -451,20 +498,14 @@ unsafe fn downsample_rgba8_box_neon(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
+    x0: &[u32],
+    x1: &[u32],
 ) {
     // SAFETY: NEON enabled via #[target_feature]. Caller must ensure support.
     unsafe {
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
-
-        let mut x0 = vec![0_u32; dst_w_u];
-        let mut x1 = vec![0_u32; dst_w_u];
-        for dx in 0..dst_w_u {
-            x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-            x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
-                .min(src_w as u64) as u32;
-        }
 
         let simd_w: usize = 4;
         let blocks = (dst_w_u / simd_w) as isize;
@@ -590,10 +631,12 @@ unsafe fn downsample_rgba8_box_neon(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
-                *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
-                *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
-                *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                if count > 0 {
+                    *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+                    *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+                    *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+                    *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+                }
             }
         }
     }
@@ -702,6 +745,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     #[test]
     fn scalar_fallback_matches_reference() {
         for &(sw, sh, dw, dh) in TEST_SIZES {
@@ -760,10 +804,18 @@ mod tests {
     }
 
     #[test]
-    fn small_upscale_does_not_panic() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "upscaling"))]
+    fn upscale_panics_in_debug() {
         let src = make_patterned_rgba(10, 10);
-        let result = downsample_rgba8_box(&src, 10, 10, 20, 20);
-        assert_eq!(result.len(), 20 * 20 * 4);
+        let _result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+    }
+
+    #[test]
+    fn near_identity_downscale() {
+        // 20→10 is a 2× downscale, well within the supported contract.
+        let src = make_patterned_rgba(20, 20);
+        let result = downsample_rgba8_box(&src, 20, 20, 10, 10);
+        assert_eq!(result.len(), 10 * 10 * 4);
     }
 
     #[test]

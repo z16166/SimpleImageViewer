@@ -80,12 +80,15 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
             if o <= 1 {
                 return ImageData::Tiled(source);
             }
+            let w = source.width();
+            let h = source.height();
             let Some(full_px) = source.full_pixels() else {
                 return ImageData::Tiled(source);
             };
-            let w = source.width();
-            let h = source.height();
-            let vec = (*full_px).clone();
+            // Release the TiledImageSource's Arc handle so try_unwrap can
+            // recover the owned Vec without cloning when it is the last reference.
+            drop(source);
+            let vec = std::sync::Arc::try_unwrap(full_px).unwrap_or_else(|a| (*a).clone());
             let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(vec, w, h, o);
             let rebuilt =
                 crate::loader::tiled_sources::MemoryImageSource::new(ow, oh, Arc::new(opx));

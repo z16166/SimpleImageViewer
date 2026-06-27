@@ -212,3 +212,103 @@ pub fn version() -> String {
         std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }
+
+// ── RAII guards ────────────────────────────────────────────────────────
+
+/// Owns a [`libraw_data_t`] and calls [`libraw_close`] on drop.
+///
+/// A `libraw_data_t` is **not** `Send` by default. Callers that guarantee
+/// exclusive serialized access may opt in with `unsafe impl Send`.
+#[must_use = "LibRawDataGuard will close the LibRaw instance on drop"]
+pub struct LibRawDataGuard {
+    ptr: *mut libraw_data_t,
+}
+
+impl LibRawDataGuard {
+    /// Allocate and initialise a new LibRaw instance.
+    ///
+    /// Returns `None` if [`libraw_init`] returns a null pointer.
+    pub fn new() -> Option<Self> {
+        let ptr = unsafe { libraw_init(0) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(Self { ptr })
+        }
+    }
+
+    /// Raw pointer for FFI calls.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut libraw_data_t {
+        self.ptr
+    }
+}
+
+impl Drop for LibRawDataGuard {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { libraw_close(self.ptr); }
+        }
+    }
+}
+
+impl std::fmt::Debug for LibRawDataGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibRawDataGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
+
+// ── libraw_processed_image_t ─────────────────────────────────────────
+
+/// Owns a [`libraw_processed_image_t`] and calls [`libraw_dcraw_clear_mem`] on drop.
+#[must_use = "LibRawProcessedImageGuard will free the processed image on drop"]
+pub struct LibRawProcessedImageGuard {
+    ptr: *mut libraw_processed_image_t,
+}
+
+impl LibRawProcessedImageGuard {
+    /// Wrap a raw processed-image pointer obtained from
+    /// [`libraw_dcraw_make_mem_image`] or [`libraw_dcraw_make_mem_thumb`].
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, non-null pointer that has not been passed to
+    /// another guard or to [`libraw_dcraw_clear_mem`].
+    #[inline]
+    pub unsafe fn from_ptr(ptr: *mut libraw_processed_image_t) -> Self {
+        debug_assert!(!ptr.is_null(), "LibRawProcessedImageGuard constructed with null");
+        Self { ptr }
+    }
+
+    /// Reference to the underlying C struct.
+    #[inline]
+    pub fn as_ref(&self) -> &libraw_processed_image_t {
+        unsafe { &*self.ptr }
+    }
+
+    /// Consume the guard and return the raw pointer without freeing.
+    #[inline]
+    pub fn into_raw(mut self) -> *mut libraw_processed_image_t {
+        let ptr = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        ptr
+    }
+}
+
+impl Drop for LibRawProcessedImageGuard {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { libraw_dcraw_clear_mem(self.ptr); }
+        }
+    }
+}
+
+impl std::fmt::Debug for LibRawProcessedImageGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibRawProcessedImageGuard")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
+}
