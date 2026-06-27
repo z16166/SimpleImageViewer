@@ -199,6 +199,7 @@ impl HdrMonitorState {
         signature: HdrMonitorSignature,
         now: Instant,
         _hdr_content_visible: bool,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
         supports_current_edr_reprobe: bool,
     ) -> bool {
         let interval_elapsed = match self.last_probe_at {
@@ -206,6 +207,7 @@ impl HdrMonitorState {
             None => true,
         };
         if self.last_signature == Some(signature) {
+            #[cfg(target_os = "macos")]
             if supports_current_edr_reprobe {
                 return self.should_probe_macos_edr_headroom(interval_elapsed);
             }
@@ -251,6 +253,7 @@ impl HdrMonitorState {
     /// changes; plus the first probe until **potential** headroom is known. Viewport signature
     /// changes are handled by the caller (`should_probe_for_platform` returns `true` earlier).
     /// See `macos_screen_parameters.rs` and `macos.rs`.
+    #[cfg(target_os = "macos")]
     fn should_probe_macos_edr_headroom(&self, interval_elapsed: bool) -> bool {
         if super::macos_screen_parameters::take_headroom_refresh_pending() {
             return true;

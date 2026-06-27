@@ -74,6 +74,7 @@ fn monitor_probe_runs_first_time_immediately_on_signature_change() {
     assert!(state.should_probe(moved, start + Duration::from_millis(100), false));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_edr_headroom_reprobes_on_notification_not_on_interval() {
     use super::macos_screen_parameters;
@@ -109,6 +110,7 @@ fn macos_edr_headroom_reprobes_on_notification_not_on_interval() {
     ));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_current_edr_reprobes_until_potential_headroom_known() {
     let start = Instant::now();
@@ -156,6 +158,7 @@ fn macos_current_edr_reprobes_until_potential_headroom_known() {
     ));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_edr_does_not_timer_poll_when_potential_known() {
     let start = Instant::now();
