@@ -115,6 +115,7 @@ pub struct HdrMonitorSelection {
     /// changing. Refreshed via [`super::macos_screen_parameters`] (Apple
     /// `didChangeScreenParametersNotification`) — must **not** drive decode-cache invalidation
     /// (see `refresh_ultra_hdr_decode_capacity` in `src/app/image_management/hdr_state.rs`).
+    #[cfg(target_os = "macos")]
     pub current_edr_headroom: Option<f32>,
     pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
     /// Reference / mastering white from `wp_color_management` (Linux tone-map metadata).
@@ -135,6 +136,7 @@ impl HdrMonitorSelection {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            #[cfg(target_os = "macos")]
             current_edr_headroom: None,
             native_surface_encoding: None,
             reference_luminance_nits: None,
