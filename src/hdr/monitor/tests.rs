@@ -235,6 +235,7 @@ fn non_hdr_selected_monitor_forces_sdr_tone_mapping_on_float_surface() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_edr_values_build_capacity_based_monitor_selection() {
     let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 2.2, 4.0, 1.5);
@@ -259,6 +260,7 @@ fn macos_sdr_edr_values_build_non_hdr_monitor_selection() {
     assert_eq!(selection.max_hdr_capacity, None);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_potential_edr_sets_stable_decode_capacity_before_current_ramps() {
     let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 1.0, 16.0, 0.0);

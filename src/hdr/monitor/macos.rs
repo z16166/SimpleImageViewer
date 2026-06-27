@@ -51,7 +51,7 @@
 //! `src/app/image_management/hdr_state.rs` (`refresh_ultra_hdr_decode_capacity`).
 
 use super::types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, unused_variables))]
 pub(crate) fn macos_edr_selection_from_values(
     label: String,
     current_edr_capacity: f32,
@@ -59,7 +59,9 @@ pub(crate) fn macos_edr_selection_from_values(
     reference_edr_capacity: f32,
 ) -> HdrMonitorSelection {
     // Map probe results into HdrMonitorSelection — see module docs above for Apple sources.
-    let potential_cap = finite_positive_capacity(potential_edr_capacity).filter(|value| *value > 1.0);
+    let potential_cap =
+        finite_positive_capacity(potential_edr_capacity).filter(|value| *value > 1.0);
+    #[cfg(target_os = "macos")]
     let current_headroom = finite_positive_capacity(current_edr_capacity);
     // Decode path: potential only (Apple: "determined when you create the NSScreen object,
     // and doesn't change afterwards").
@@ -86,6 +88,7 @@ pub(crate) fn macos_edr_selection_from_values(
         // WWDC22 10114). Stored here; refreshed via didChangeScreenParametersNotification
         // (`macos_screen_parameters.rs`) without decode invalidation.
         // https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue
+        #[cfg(target_os = "macos")]
         current_edr_headroom: current_headroom,
         native_surface_encoding: hdr_supported.then_some(HdrNativeSurfaceEncoding::LinearScRgb),
         reference_luminance_nits: None,
@@ -159,4 +162,3 @@ pub(crate) fn macos_active_monitor_hdr_status() -> Result<HdrMonitorSelection, S
         label, current, potential, reference,
     ))
 }
-

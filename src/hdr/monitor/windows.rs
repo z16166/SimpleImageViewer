@@ -103,7 +103,6 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         ),
                         max_hdr_capacity: None,
                         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
-                        current_edr_headroom: None,
                         native_surface_encoding: hdr_supported
                             .then_some(HdrNativeSurfaceEncoding::LinearScRgb),
                         reference_luminance_nits: None,
