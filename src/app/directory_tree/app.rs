@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use eframe::egui;
@@ -1609,12 +1610,22 @@ impl ImageViewerApp {
         self.poll_directory_tree_places_load();
         self.ensure_directory_tree_places_loaded();
 
+        const PENDING_PRELOAD_DEFER_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
         if self.pending_preload_after_directory_scan {
-            let defer_active = self.preload_deferred_for_hdr_capacity;
-            self.pending_preload_after_directory_scan = false;
-            self.schedule_preloads(true);
-            if defer_active && self.preload_deferred_for_hdr_capacity {
-                self.pending_preload_after_directory_scan = true;
+            let now = Instant::now();
+            let due = self
+                .pending_preload_after_scan_last_attempt
+                .map(|last| now.duration_since(last) >= PENDING_PRELOAD_DEFER_RETRY_INTERVAL)
+                .unwrap_or(true);
+            if due {
+                let defer_active = self.preload_deferred_for_hdr_capacity;
+                self.pending_preload_after_directory_scan = false;
+                self.pending_preload_after_scan_last_attempt = Some(now);
+                self.schedule_preloads(true);
+                if defer_active && self.preload_deferred_for_hdr_capacity {
+                    self.pending_preload_after_directory_scan = true;
+                }
             }
         }
 

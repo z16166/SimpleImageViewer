@@ -806,6 +806,10 @@ impl Settings {
         // (`current_edr_headroom`), not potential (`max_hdr_capacity`). Linear headroom × SDR
         // white nits → display peak. Refreshed each frame via `sync_hdr_tone_map_settings` when
         // only current drifts. Policy: `src/hdr/monitor/macos.rs`.
+        //
+        // Intentionally replaces (not `.min` with) the probed-peak clamp above: on macOS the live
+        // EDR headroom scalar is the authoritative per-draw ceiling per Apple; probed nits can
+        // lag or reflect a different metric than `current × sdr_white`.
         #[cfg(target_os = "macos")]
         if !matches!(
             render_output_mode,

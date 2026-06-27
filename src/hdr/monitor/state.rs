@@ -241,6 +241,11 @@ impl HdrMonitorState {
 
     /// macOS live EDR headroom refresh — notification-driven per Apple docs (no timer poll).
     ///
+    /// **Side effect:** consumes a pending `didChangeScreenParametersNotification` via
+    /// [`take_headroom_refresh_pending`](super::macos_screen_parameters::take_headroom_refresh_pending).
+    /// Callers must run a full NSScreen probe when this returns `true` (today only
+    /// `should_probe_for_platform` when the viewport signature is unchanged).
+    ///
     /// [`NSApplication.didChangeScreenParametersNotification`](https://developer.apple.com/documentation/appkit/nsapplication/didchangescreenparametersnotification)
     /// when [`maximumExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumextendeddynamicrangecolorcomponentvalue)
     /// changes; plus the first probe until **potential** headroom is known. Viewport signature

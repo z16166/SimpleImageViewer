@@ -72,9 +72,8 @@ pub(crate) fn macos_edr_selection_from_values(
     } else {
         (None, None)
     };
-    // hdr_supported: potential > 1.0 and/or reference > 0 per Apple property semantics.
-    let hdr_supported = capacity.is_some()
-        || finite_positive_capacity(potential_edr_capacity).is_some_and(|value| value > 1.0)
+    // hdr_supported: potential > 1.0 and/or reference > 1.0 per Apple property semantics.
+    let hdr_supported = potential_cap.is_some()
         || finite_positive_capacity(reference_edr_capacity).is_some_and(|value| value > 1.0);
     HdrMonitorSelection {
         hdr_supported,

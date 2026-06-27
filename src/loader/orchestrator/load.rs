@@ -825,6 +825,10 @@ impl ImageLoader {
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
         if load_intent == LoadIntent::NeighborPrefetch {
+            // Soft cap before registering the job. Two prefetches can both pass this read-only
+            // check while the pool is below the limit; the insert below serializes registration
+            // and `should_spawn_load_task` rejects the loser. Benign TOCTOU — do not merge the
+            // locks (would hold the mutex across `spawn_decode_profile`).
             let loading_snapshot = self.loading.lock();
             if loading_snapshot.len() >= MAX_IMG_LOADER_THREADS
                 && !loading_snapshot.contains_key(&index)
@@ -918,27 +922,50 @@ impl ImageLoader {
         };
         if load_intent == LoadIntent::Current {
             let thread_name = format!("img-loader-current-{index}");
-            #[cfg(target_os = "windows")]
-            {
-                let _ = std::thread::Builder::new()
-                    .name(thread_name)
-                    .spawn(move || {
+            // Keep the worker in an Arc so a failed OS-thread spawn can fall back to the pool
+            // instead of dropping the closure (which would leave only the 50ms delayed fallback).
+            let worker = Arc::new(Mutex::new(Some(run_worker)));
+            let worker_for_thread = Arc::clone(&worker);
+            let spawn_result = {
+                #[cfg(target_os = "windows")]
+                {
+                    std::thread::Builder::new().name(thread_name).spawn(move || {
                         match crate::wic::ComGuard::new() {
-                            Ok(_com) => run_worker(),
+                            Ok(_com) => {
+                                if let Some(w) = worker_for_thread.lock().take() {
+                                    w();
+                                }
+                            }
                             Err(e) => {
                                 log::error!(
                                     "Failed to initialize COM on current-image loader thread: {e:?}"
                                 );
-                                run_worker();
+                                if let Some(w) = worker_for_thread.lock().take() {
+                                    w();
+                                }
                             }
                         }
-                    });
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let _ = std::thread::Builder::new()
-                    .name(thread_name)
-                    .spawn(run_worker);
+                    })
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    std::thread::Builder::new().name(thread_name).spawn(move || {
+                        if let Some(w) = worker_for_thread.lock().take() {
+                            w();
+                        }
+                    })
+                }
+            };
+            match spawn_result {
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!(
+                        "[Loader] Failed to spawn current-image thread: {e}, falling back to pool"
+                    );
+                    if let Some(w) = worker.lock().take() {
+                        self.pool.spawn(w);
+                    }
+                }
             }
         } else {
             self.pool.spawn(run_worker);

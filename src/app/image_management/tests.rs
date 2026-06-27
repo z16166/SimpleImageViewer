@@ -1623,6 +1623,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         scan_generation: 0,
         scan_results_pending_since: None,
         pending_preload_after_directory_scan: false,
+        pending_preload_after_scan_last_attempt: None,
         directory_tree_strip_bootstrap_after_scan: false,
         directory_tree_strip_bootstrap_frames: 0,
         strip_preload_cooldown_frames: 0,

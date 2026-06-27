@@ -529,8 +529,8 @@ impl ImageViewerApp {
                 self.hdr_capabilities.backend,
                 self.hdr_target_format,
             );
-        // Keep loader/preload gate state aligned with the per-frame probe. Startup
-        // `detect_from_wgpu_state` may leave `output_mode = SdrToneMapped` while the
+        // Cross-platform: keep loader/preload gate state aligned with the per-frame probe.
+        // Startup `detect_from_wgpu_state` may leave `output_mode = SdrToneMapped` while the
         // live swap chain is still `Bgra8Unorm`; macOS has no spawn-time format probe
         // and relies on a runtime hot-swap to `Rgba16Float`.
         self.hdr_capabilities.output_mode = output_mode;

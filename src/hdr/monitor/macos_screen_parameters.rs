@@ -130,11 +130,14 @@ unsafe fn install_observer() -> Result<(), String> {
                 ) {
                     return Err("class_addMethod(screenParametersChanged:) failed".into());
                 }
+                // Class pairs cannot be deallocated; `INSTALL_ONCE` registers at most once.
                 objc_registerClassPair(class);
                 class
             }
         };
 
+        // Observer lives for the process lifetime; NSNotificationCenter retains it (MRC).
+        // Intentional no-release — `ensure_observer_installed` is Once-guarded.
         let observer = {
             let allocated = objc_msg_send_id(observer_class, objc_sel("alloc")?);
             objc_msg_send_id(allocated, objc_sel("init")?)
