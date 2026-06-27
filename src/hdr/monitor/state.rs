@@ -207,7 +207,7 @@ impl HdrMonitorState {
         };
         if self.last_signature == Some(signature) {
             if supports_current_edr_reprobe {
-                return self.should_probe_macos_edr_headroom();
+                return self.should_probe_macos_edr_headroom(interval_elapsed);
             }
             // Windows (and other non-macOS): `HdrMonitorSignature` can stay identical for
             // many frames while the native frame is dragged between monitors because
@@ -251,12 +251,14 @@ impl HdrMonitorState {
     /// changes; plus the first probe until **potential** headroom is known. Viewport signature
     /// changes are handled by the caller (`should_probe_for_platform` returns `true` earlier).
     /// See `macos_screen_parameters.rs` and `macos.rs`.
-    fn should_probe_macos_edr_headroom(&self) -> bool {
+    fn should_probe_macos_edr_headroom(&self, interval_elapsed: bool) -> bool {
         if super::macos_screen_parameters::take_headroom_refresh_pending() {
             return true;
         }
-        self.selection.as_ref().is_some_and(|selection| {
-            selection.hdr_supported && selection.max_hdr_capacity.is_none()
-        })
+        // Potential headroom unknown: retry on the standard probe interval, not every frame.
+        interval_elapsed
+            && self.selection.as_ref().is_some_and(|selection| {
+                selection.hdr_supported && selection.max_hdr_capacity.is_none()
+            })
     }
 }

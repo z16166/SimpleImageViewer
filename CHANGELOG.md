@@ -4,9 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [2.7.8] - 2026-06-26
 
+### Fixed
+- **macOS HDR startup loading**: On EDR displays, opening a folder no longer gets stuck on a black “loading…” screen while the app waits for display capability detection — startup preloading and HDR decoding proceed sooner on supported Macs.
+- **RAW decode blocked by preloading**: The photo you are viewing decodes with higher priority, so heavy neighbor preloading no longer leaves the current RAW file waiting in line behind background work.
+
 ### Improved
 - **Navigation strip preview generation**: File list thumbnails appear faster after opening a folder, especially for JPEG and HDR photos — the viewer now uses SIMD-accelerated downsampling and can extract previews directly from compressed JPEG data without fully decoding the image first.
 - **Memory efficiency during thumbnail generation**: Generating strip previews uses less memory by sharing image buffers instead of copying them, keeping large folders smoother to browse.
+- **macOS HDR tone mapping**: Brightness headroom updates when macOS reports screen or display changes, keeping HDR output aligned with your monitor without constant background probing.
+- **Fast browsing through RAW and HDR folders**: Rapid arrow-key navigation no longer piles up unbounded background decode threads; preloading retries are paced while HDR detection is still settling, so long sessions stay responsive.
+- **HDR brightness during display transitions**: On macOS, tone mapping no longer dips below normal SDR brightness when the system briefly reports transitional display headroom values.
 
 ## [2.7.7] - 2026-06-25
 

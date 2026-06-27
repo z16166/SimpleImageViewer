@@ -101,26 +101,28 @@ fn finite_positive_capacity(value: f32) -> Option<f32> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
+    use super::objc_util;
+
     let screen = unsafe {
-        let app_class = objc_class("NSApplication")?;
-        let app = objc_msg_send_id(app_class, objc_sel("sharedApplication")?);
+        let app_class = objc_util::objc_class("NSApplication")?;
+        let app = objc_util::objc_msg_send_id(app_class, objc_util::objc_sel("sharedApplication")?);
         let mut window = if app.is_null() {
             std::ptr::null_mut()
         } else {
-            objc_msg_send_id(app, objc_sel("keyWindow")?)
+            objc_util::objc_msg_send_id(app, objc_util::objc_sel("keyWindow")?)
         };
         if window.is_null() && !app.is_null() {
-            window = objc_msg_send_id(app, objc_sel("mainWindow")?);
+            window = objc_util::objc_msg_send_id(app, objc_util::objc_sel("mainWindow")?);
         }
 
         let mut screen = if window.is_null() {
             std::ptr::null_mut()
         } else {
-            objc_msg_send_id(window, objc_sel("screen")?)
+            objc_util::objc_msg_send_id(window, objc_util::objc_sel("screen")?)
         };
         if screen.is_null() {
-            let screen_class = objc_class("NSScreen")?;
-            screen = objc_msg_send_id(screen_class, objc_sel("mainScreen")?);
+            let screen_class = objc_util::objc_class("NSScreen")?;
+            screen = objc_util::objc_msg_send_id(screen_class, objc_util::objc_sel("mainScreen")?);
         }
         screen
     };
@@ -129,26 +131,27 @@ pub(crate) fn macos_active_monitor_hdr_status() -> Result<HdrMonitorSelection, S
     }
 
     let label = unsafe {
-        let localized_name = objc_msg_send_id(screen, objc_sel("localizedName")?);
-        ns_string_to_string(localized_name).unwrap_or_else(|| "macOS screen".to_string())
+        let localized_name =
+            objc_util::objc_msg_send_id(screen, objc_util::objc_sel("localizedName")?);
+        objc_util::ns_string_to_string(localized_name).unwrap_or_else(|| "macOS screen".to_string())
     };
     // NSScreen EDR probes — property semantics documented in the module header above.
     let current = unsafe {
-        objc_msg_send_f64(
+        objc_util::objc_msg_send_f64(
             screen,
-            objc_sel("maximumExtendedDynamicRangeColorComponentValue")?,
+            objc_util::objc_sel("maximumExtendedDynamicRangeColorComponentValue")?,
         ) as f32
     };
     let potential = unsafe {
-        objc_msg_send_f64(
+        objc_util::objc_msg_send_f64(
             screen,
-            objc_sel("maximumPotentialExtendedDynamicRangeColorComponentValue")?,
+            objc_util::objc_sel("maximumPotentialExtendedDynamicRangeColorComponentValue")?,
         ) as f32
     };
     let reference = unsafe {
-        objc_msg_send_f64(
+        objc_util::objc_msg_send_f64(
             screen,
-            objc_sel("maximumReferenceExtendedDynamicRangeColorComponentValue")?,
+            objc_util::objc_sel("maximumReferenceExtendedDynamicRangeColorComponentValue")?,
         ) as f32
     };
 
@@ -157,69 +160,3 @@ pub(crate) fn macos_active_monitor_hdr_status() -> Result<HdrMonitorSelection, S
     ))
 }
 
-#[cfg(target_os = "macos")]
-type ObjcId = *mut std::ffi::c_void;
-
-#[cfg(target_os = "macos")]
-type ObjcSel = *mut std::ffi::c_void;
-
-#[cfg(target_os = "macos")]
-#[link(name = "AppKit", kind = "framework")]
-unsafe extern "C" {}
-
-#[cfg(target_os = "macos")]
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn objc_getClass(name: *const std::ffi::c_char) -> ObjcId;
-    fn sel_registerName(name: *const std::ffi::c_char) -> ObjcSel;
-    #[link_name = "objc_msgSend"]
-    fn objc_msg_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId;
-}
-
-#[cfg(target_os = "macos")]
-fn objc_class(name: &str) -> Result<ObjcId, String> {
-    let name = std::ffi::CString::new(name).map_err(|err| err.to_string())?;
-    let class = unsafe { objc_getClass(name.as_ptr()) };
-    if class.is_null() {
-        Err(format!(
-            "Objective-C class was not found: {}",
-            name.to_string_lossy()
-        ))
-    } else {
-        Ok(class)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn objc_sel(name: &str) -> Result<ObjcSel, String> {
-    let name = std::ffi::CString::new(name).map_err(|err| err.to_string())?;
-    let selector = unsafe { sel_registerName(name.as_ptr()) };
-    if selector.is_null() {
-        Err(format!(
-            "Objective-C selector was not found: {}",
-            name.to_string_lossy()
-        ))
-    } else {
-        Ok(selector)
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn objc_msg_send_f64(receiver: ObjcId, selector: ObjcSel) -> f64 {
-    let send: unsafe extern "C" fn(ObjcId, ObjcSel) -> f64 =
-        unsafe { std::mem::transmute(objc_msg_send_id as *const ()) };
-    unsafe { send(receiver, selector) }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn ns_string_to_string(value: ObjcId) -> Option<String> {
-    if value.is_null() {
-        return None;
-    }
-    let ptr = unsafe { objc_msg_send_id(value, objc_sel("UTF8String").ok()?) };
-    if ptr.is_null() {
-        return None;
-    }
-    let text = unsafe { std::ffi::CStr::from_ptr(ptr.cast()).to_string_lossy() };
-    Some(text.into_owned())
-}

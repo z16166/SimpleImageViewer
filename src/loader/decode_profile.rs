@@ -26,6 +26,8 @@ pub const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
 pub const DEFAULT_PREFETCH_WINDOW_DISTANCE: usize = 2;
 /// Cap img-loader rayon pool size and neighbor prefetch concurrency.
 pub const MAX_IMG_LOADER_THREADS: usize = 3;
+/// Cap dedicated OS threads for [`LoadIntent::Current`] (fast navigation otherwise spawns unboundedly).
+pub const MAX_CURRENT_IMAGE_OS_THREADS: usize = 2;
 
 /// Whether a load was requested for the current image or a neighbor prefetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

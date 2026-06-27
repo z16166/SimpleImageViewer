@@ -24,7 +24,8 @@ use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
+    LoadResult, LoaderOutput, MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle,
+    PreviewResult,
     RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
     hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
     hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
@@ -608,6 +609,7 @@ impl ImageLoader {
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
             wgpu_is_opengl: false,
             output_mode_bits,
+            current_image_os_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             capacity_requeue_counts: std::collections::HashMap::new(),
         }
     }
@@ -921,49 +923,83 @@ impl ImageLoader {
             );
         };
         if load_intent == LoadIntent::Current {
-            let thread_name = format!("img-loader-current-{index}");
-            // Keep the worker in an Arc so a failed OS-thread spawn can fall back to the pool
-            // instead of dropping the closure (which would leave only the 50ms delayed fallback).
-            let worker = Arc::new(Mutex::new(Some(run_worker)));
-            let worker_for_thread = Arc::clone(&worker);
-            let spawn_result = {
-                #[cfg(target_os = "windows")]
-                {
-                    std::thread::Builder::new().name(thread_name).spawn(move || {
-                        match crate::wic::ComGuard::new() {
-                            Ok(_com) => {
-                                if let Some(w) = worker_for_thread.lock().take() {
-                                    w();
+            let os_thread_cap_reached = self
+                .current_image_os_threads
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= MAX_CURRENT_IMAGE_OS_THREADS;
+            if os_thread_cap_reached {
+                log::debug!(
+                    "[Loader] current-image OS thread cap ({MAX_CURRENT_IMAGE_OS_THREADS}) reached; using pool"
+                );
+                self.pool.spawn(run_worker);
+            } else {
+                self.current_image_os_threads
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let thread_name = format!("img-loader-current-{index}");
+                // Keep the worker in an Arc so a failed OS-thread spawn can fall back to the pool
+                // instead of dropping the closure (which would leave only the 50ms delayed fallback).
+                let worker = Arc::new(Mutex::new(Some(run_worker)));
+                let worker_for_thread = Arc::clone(&worker);
+                let os_threads_live = Arc::clone(&self.current_image_os_threads);
+                let spawn_result = {
+                    #[cfg(target_os = "windows")]
+                    {
+                        std::thread::Builder::new().name(thread_name).spawn(move || {
+                            struct CurrentImageOsThreadGuard(
+                                Arc<std::sync::atomic::AtomicUsize>,
+                            );
+                            impl Drop for CurrentImageOsThreadGuard {
+                                fn drop(&mut self) {
+                                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                                 }
                             }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to initialize COM on current-image loader thread: {e:?}"
-                                );
-                                if let Some(w) = worker_for_thread.lock().take() {
-                                    w();
+                            let _guard = CurrentImageOsThreadGuard(os_threads_live);
+                            match crate::wic::ComGuard::new() {
+                                Ok(_com) => {
+                                    if let Some(w) = worker_for_thread.lock().take() {
+                                        w();
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to initialize COM on current-image loader thread: {e:?}"
+                                    );
+                                    if let Some(w) = worker_for_thread.lock().take() {
+                                        w();
+                                    }
                                 }
                             }
+                        })
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        std::thread::Builder::new().name(thread_name).spawn(move || {
+                            struct CurrentImageOsThreadGuard(
+                                Arc<std::sync::atomic::AtomicUsize>,
+                            );
+                            impl Drop for CurrentImageOsThreadGuard {
+                                fn drop(&mut self) {
+                                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                                }
+                            }
+                            let _guard = CurrentImageOsThreadGuard(os_threads_live);
+                            if let Some(w) = worker_for_thread.lock().take() {
+                                w();
+                            }
+                        })
+                    }
+                };
+                match spawn_result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.current_image_os_threads
+                            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                        log::error!(
+                            "[Loader] Failed to spawn current-image thread: {e}, falling back to pool"
+                        );
+                        if let Some(w) = worker.lock().take() {
+                            self.pool.spawn(w);
                         }
-                    })
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    std::thread::Builder::new().name(thread_name).spawn(move || {
-                        if let Some(w) = worker_for_thread.lock().take() {
-                            w();
-                        }
-                    })
-                }
-            };
-            match spawn_result {
-                Ok(_) => {}
-                Err(e) => {
-                    log::error!(
-                        "[Loader] Failed to spawn current-image thread: {e}, falling back to pool"
-                    );
-                    if let Some(w) = worker.lock().take() {
-                        self.pool.spawn(w);
                     }
                 }
             }

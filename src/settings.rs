@@ -817,7 +817,7 @@ impl Settings {
         ) {
             if let Some(headroom) = monitor
                 .and_then(|selection| selection.current_edr_headroom)
-                .filter(|value| value.is_finite() && *value > 0.0)
+                .filter(|value| value.is_finite() && *value >= 1.0)
             {
                 max_display_nits = self.hdr_sdr_white_nits.max(1.0) * headroom;
             }

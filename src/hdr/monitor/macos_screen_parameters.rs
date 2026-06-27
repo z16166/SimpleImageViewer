@@ -69,10 +69,7 @@ pub(crate) fn test_set_headroom_refresh_pending() {
 }
 
 #[cfg(target_os = "macos")]
-type ObjcId = *mut std::ffi::c_void;
-
-#[cfg(target_os = "macos")]
-type ObjcSel = *mut std::ffi::c_void;
+use super::objc_util::{self, ObjcId, ObjcSel};
 
 #[cfg(target_os = "macos")]
 const OBSERVER_CLASS: &str = "SIVScreenParametersObserver";
@@ -91,38 +88,20 @@ extern "C" fn screen_parameters_changed(
 
 #[cfg(target_os = "macos")]
 unsafe fn install_observer() -> Result<(), String> {
-    #[link(name = "objc")]
-    unsafe extern "C" {
-        fn objc_allocateClassPair(
-            superclass: ObjcId,
-            name: *const std::ffi::c_char,
-            extra_bytes: usize,
-        ) -> ObjcId;
-        fn objc_registerClassPair(cls: ObjcId);
-        fn class_addMethod(
-            cls: ObjcId,
-            name: ObjcSel,
-            imp: *const std::ffi::c_void,
-            types: *const std::ffi::c_char,
-        ) -> bool;
-        #[link_name = "objc_msgSend"]
-        fn objc_msg_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId;
-    }
-
     unsafe {
         let observer_class = {
             let class_name = CString::new(OBSERVER_CLASS).map_err(|err| err.to_string())?;
-            let class = objc_allocateClassPair(
-                objc_get_class("NSObject")?,
+            let class = objc_util::objc_allocate_class_pair(
+                objc_util::objc_class("NSObject")?,
                 class_name.as_ptr(),
                 0,
             );
             if class.is_null() {
-                objc_get_class(OBSERVER_CLASS)?
+                objc_util::objc_class(OBSERVER_CLASS)?
             } else {
-                let changed_sel = objc_sel("screenParametersChanged:")?;
+                let changed_sel = objc_util::objc_sel("screenParametersChanged:")?;
                 let types = CString::new("v@:@").map_err(|err| err.to_string())?;
-                if !class_addMethod(
+                if !objc_util::class_add_method(
                     class,
                     changed_sel,
                     screen_parameters_changed as *const () as *const std::ffi::c_void,
@@ -131,7 +110,7 @@ unsafe fn install_observer() -> Result<(), String> {
                     return Err("class_addMethod(screenParametersChanged:) failed".into());
                 }
                 // Class pairs cannot be deallocated; `INSTALL_ONCE` registers at most once.
-                objc_registerClassPair(class);
+                objc_util::objc_register_class_pair(class);
                 class
             }
         };
@@ -139,80 +118,28 @@ unsafe fn install_observer() -> Result<(), String> {
         // Observer lives for the process lifetime; NSNotificationCenter retains it (MRC).
         // Intentional no-release — `ensure_observer_installed` is Once-guarded.
         let observer = {
-            let allocated = objc_msg_send_id(observer_class, objc_sel("alloc")?);
-            objc_msg_send_id(allocated, objc_sel("init")?)
+            let allocated =
+                objc_util::objc_msg_send_id(observer_class, objc_util::objc_sel("alloc")?);
+            objc_util::objc_msg_send_id(allocated, objc_util::objc_sel("init")?)
         };
         if observer.is_null() {
             return Err("SIVScreenParametersObserver init returned null".into());
         }
 
-        let center = objc_msg_send_id(
-            objc_get_class("NSNotificationCenter")?,
-            objc_sel("defaultCenter")?,
+        let center = objc_util::objc_msg_send_id(
+            objc_util::objc_class("NSNotificationCenter")?,
+            objc_util::objc_sel("defaultCenter")?,
         );
-        let name = nsstring(NOTIFICATION_NAME)?;
-        let changed_sel = objc_sel("screenParametersChanged:")?;
-        let add_observer: unsafe extern "C" fn(ObjcId, ObjcSel, ObjcId, ObjcSel, ObjcId, ObjcId) =
-            std::mem::transmute(objc_msg_send_id as *const ());
-        add_observer(
+        let name = objc_util::nsstring(NOTIFICATION_NAME)?;
+        let changed_sel = objc_util::objc_sel("screenParametersChanged:")?;
+        objc_util::objc_msg_send_add_observer(
             center,
-            objc_sel("addObserver:selector:name:object:")?,
+            objc_util::objc_sel("addObserver:selector:name:object:")?,
             observer,
             changed_sel,
             name,
             std::ptr::null_mut(),
         );
         Ok(())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn objc_sel(name: &str) -> Result<ObjcSel, String> {
-    unsafe extern "C" {
-        fn sel_registerName(name: *const std::ffi::c_char) -> ObjcSel;
-    }
-    let name = CString::new(name).map_err(|err| err.to_string())?;
-    let selector = unsafe { sel_registerName(name.as_ptr()) };
-    if selector.is_null() {
-        Err(format!("Objective-C selector was not found: {name:?}"))
-    } else {
-        Ok(selector)
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn objc_get_class(name: &str) -> Result<ObjcId, String> {
-    unsafe extern "C" {
-        fn objc_getClass(name: *const std::ffi::c_char) -> ObjcId;
-    }
-    let name = CString::new(name).map_err(|err| err.to_string())?;
-    let class = unsafe { objc_getClass(name.as_ptr()) };
-    if class.is_null() {
-        Err(format!("Objective-C class was not found: {name:?}"))
-    } else {
-        Ok(class)
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn nsstring(text: &str) -> Result<ObjcId, String> {
-    unsafe extern "C" {
-        #[link_name = "objc_msgSend"]
-        fn objc_msg_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId;
-    }
-    let utf8 = CString::new(text).map_err(|err| err.to_string())?;
-    let string_with_utf8: unsafe extern "C" fn(ObjcId, ObjcSel, *const std::ffi::c_char) -> ObjcId =
-        unsafe { std::mem::transmute(objc_msg_send_id as *const ()) };
-    let value = unsafe {
-        string_with_utf8(
-            objc_get_class("NSString")?,
-            objc_sel("stringWithUTF8String:")?,
-            utf8.as_ptr(),
-        )
-    };
-    if value.is_null() {
-        Err(format!("NSString allocation failed for {text}"))
-    } else {
-        Ok(value)
     }
 }

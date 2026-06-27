@@ -142,9 +142,15 @@ fn macos_current_edr_reprobes_until_potential_headroom_known() {
     ));
     state.selection.as_mut().unwrap().max_hdr_capacity = None;
 
-    assert!(state.should_probe_for_platform(
+    assert!(!state.should_probe_for_platform(
         signature,
         start + Duration::from_millis(100),
+        true,
+        true
+    ));
+    assert!(state.should_probe_for_platform(
+        signature,
+        start + HDR_MONITOR_PROBE_INTERVAL,
         true,
         true
     ));
