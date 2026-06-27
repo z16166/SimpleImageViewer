@@ -70,6 +70,7 @@ impl ImageViewerApp {
             // However, setup_fonts will have at least loaded CJK as fallback.
         }
 
+        crate::ipc::register_ipc_wake_context(cc.egui_ctx.clone());
         let tray_cmd_rx =
             crate::app::tray_handlers::install_tray_event_handlers(cc.egui_ctx.clone());
 

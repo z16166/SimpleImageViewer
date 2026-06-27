@@ -19,9 +19,30 @@ use interprocess::ConnectWaitMode;
 use interprocess::local_socket::{
     ConnectOptions, GenericNamespaced, ListenerOptions, Stream, prelude::*,
 };
+use parking_lot::Mutex;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
+
+use eframe::egui;
+
+static IPC_WAKE_CTX: OnceLock<Mutex<Option<egui::Context>>> = OnceLock::new();
+
+fn ipc_wake_slot() -> &'static Mutex<Option<egui::Context>> {
+    IPC_WAKE_CTX.get_or_init(|| Mutex::new(None))
+}
+
+/// Register the live egui context so the IPC server thread can wake the event loop.
+pub fn register_ipc_wake_context(ctx: egui::Context) {
+    *ipc_wake_slot().lock() = Some(ctx);
+}
+
+fn wake_ui_from_ipc() {
+    if let Some(ctx) = ipc_wake_slot().lock().as_ref() {
+        ctx.request_repaint();
+    }
+}
 
 pub enum IpcMessage {
     /// Open an image, using the current recursive scan setting.
@@ -241,18 +262,25 @@ fn ipc_server_loop(
                 continue;
             }
 
+            let mut delivered = false;
             if s.starts_with("OPEN_NR:") {
                 let path_str = s.trim_start_matches("OPEN_NR:").trim();
                 if !path_str.is_empty() {
                     let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
+                    delivered = true;
                 }
             } else if s.starts_with("OPEN:") {
                 let path_str = s.trim_start_matches("OPEN:").trim();
                 if !path_str.is_empty() {
                     let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
+                    delivered = true;
                 }
             } else if s == "FOCUS" {
                 let _ = tx.send(IpcMessage::Focus);
+                delivered = true;
+            }
+            if delivered {
+                wake_ui_from_ipc();
             }
         }
         // Connection dropped here; continue accepting next connection
@@ -392,6 +420,36 @@ fn current_process_main_window() -> Option<isize> {
 fn current_process_visible_main_window() -> Option<isize> {
     current_process_main_window_with_options(true)
 }
+
+/// Undo [`hide_main_window`] before egui applies `ViewportCommand::Visible(true)`.
+#[cfg(windows)]
+pub fn unhide_main_window() {
+    type HWND = isize;
+    type BOOL = i32;
+    const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
+
+    unsafe extern "system" {
+        fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+        fn IsIconic(hWnd: HWND) -> BOOL;
+    }
+
+    let Some(hwnd) = current_process_main_window() else {
+        log::warn!("unhide_main_window: could not find current process main window");
+        return;
+    };
+
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        } else {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn unhide_main_window() {}
 
 #[cfg(windows)]
 pub fn hide_main_window() {
