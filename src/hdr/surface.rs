@@ -180,6 +180,8 @@ pub fn initial_monitor_selection_from_environment_probe(
             max_full_frame_luminance_nits: *max_full_frame_luminance_nits,
             max_hdr_capacity: None,
             hdr_capacity_source: Some("spawn DXGI probe"),
+            #[cfg(target_os = "macos")]
+            current_edr_headroom: None,
             native_surface_encoding: Some(
                 crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
             ),
@@ -195,6 +197,8 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_full_frame_luminance_nits: None,
                 max_hdr_capacity: None,
                 hdr_capacity_source: None,
+                #[cfg(target_os = "macos")]
+                current_edr_headroom: None,
                 native_surface_encoding: None,
                 reference_luminance_nits: None,
                 linux_wp_transfer: None,
@@ -361,6 +365,8 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
+            #[cfg(target_os = "macos")]
+            current_edr_headroom: None,
             native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
             reference_luminance_nits: None,
             linux_wp_transfer: None,
@@ -376,6 +382,8 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            #[cfg(target_os = "macos")]
+            current_edr_headroom: None,
             native_surface_encoding: None,
             reference_luminance_nits: None,
             linux_wp_transfer: None,
