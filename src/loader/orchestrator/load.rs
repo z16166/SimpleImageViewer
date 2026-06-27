@@ -40,8 +40,17 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize};
 use std::time::Duration;
+
+/// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
+struct CurrentImageOsThreadGuard(Arc<AtomicUsize>);
+
+impl Drop for CurrentImageOsThreadGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 impl ImageLoader {
     pub fn new() -> Self {
@@ -923,6 +932,9 @@ impl ImageLoader {
             );
         };
         if load_intent == LoadIntent::Current {
+            // Soft cap before fetch_add. Two current-image loads can both pass this read-only
+            // check while the counter is below the limit; both then fetch_add. Benign TOCTOU --
+            // same pattern as the neighbor prefetch gate above.
             let os_thread_cap_reached = self
                 .current_image_os_threads
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -945,14 +957,6 @@ impl ImageLoader {
                     #[cfg(target_os = "windows")]
                     {
                         std::thread::Builder::new().name(thread_name).spawn(move || {
-                            struct CurrentImageOsThreadGuard(
-                                Arc<std::sync::atomic::AtomicUsize>,
-                            );
-                            impl Drop for CurrentImageOsThreadGuard {
-                                fn drop(&mut self) {
-                                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                                }
-                            }
                             let _guard = CurrentImageOsThreadGuard(os_threads_live);
                             match crate::wic::ComGuard::new() {
                                 Ok(_com) => {
@@ -974,14 +978,6 @@ impl ImageLoader {
                     #[cfg(not(target_os = "windows"))]
                     {
                         std::thread::Builder::new().name(thread_name).spawn(move || {
-                            struct CurrentImageOsThreadGuard(
-                                Arc<std::sync::atomic::AtomicUsize>,
-                            );
-                            impl Drop for CurrentImageOsThreadGuard {
-                                fn drop(&mut self) {
-                                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                                }
-                            }
                             let _guard = CurrentImageOsThreadGuard(os_threads_live);
                             if let Some(w) = worker_for_thread.lock().take() {
                                 w();
