@@ -315,16 +315,15 @@ unsafe fn avif_apply_full_reformat_relax(
             };
         }
 
-        if snap_mc == libavif_sys::AVIF_MATRIX_COEFFICIENTS_IDENTITY {
-            if snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV422
-                || snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV420
-            {
-                img.matrixCoefficients = if snap.depth >= 10 {
-                    libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
-                } else {
-                    libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT709
-                };
-            }
+        if snap_mc == libavif_sys::AVIF_MATRIX_COEFFICIENTS_IDENTITY
+            && (snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV422
+                || snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV420)
+        {
+            img.matrixCoefficients = if snap.depth >= 10 {
+                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
+            } else {
+                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT709
+            };
         }
 
         if matches!(
@@ -372,17 +371,17 @@ fn rgb_depth_candidates(
     push(None);
     match orig_matrix {
         libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RE => {
-            if let Some(d) = yuv_depth.checked_sub(2) {
-                if matches!(d, 8 | 10 | 12 | 16) {
-                    push(Some(d));
-                }
+            if let Some(d) = yuv_depth.checked_sub(2)
+                && matches!(d, 8 | 10 | 12 | 16)
+            {
+                push(Some(d));
             }
         }
         libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RO => {
-            if let Some(d) = yuv_depth.checked_sub(1) {
-                if matches!(d, 8 | 10 | 12 | 16) {
-                    push(Some(d));
-                }
+            if let Some(d) = yuv_depth.checked_sub(1)
+                && matches!(d, 8 | 10 | 12 | 16)
+            {
+                push(Some(d));
             }
         }
         _ => {}

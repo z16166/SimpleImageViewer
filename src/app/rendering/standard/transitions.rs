@@ -103,28 +103,28 @@ impl ImageViewerApp {
         rotation: i32,
         angle: f32,
     ) {
-        if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
-            if let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output() {
-                let ppp = ui.ctx().pixels_per_point();
-                self.draw_hdr_image_plane_clipped(
-                    ui,
-                    screen_rect,
-                    p_dest,
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    rotation,
-                    1.0,
-                    Some((
-                        center,
-                        current_radius,
-                        ppp,
-                        crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
-                    )),
-                );
-                return;
-            }
+        if let Some(prev_hdr) = self.prev_hdr_image.as_ref()
+            && let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output()
+        {
+            let ppp = ui.ctx().pixels_per_point();
+            self.draw_hdr_image_plane_clipped(
+                ui,
+                screen_rect,
+                p_dest,
+                Arc::clone(prev_hdr),
+                self.hdr_renderer.tone_map,
+                target_format,
+                hdr_output_mode,
+                rotation,
+                1.0,
+                Some((
+                    center,
+                    current_radius,
+                    ppp,
+                    crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
+                )),
+            );
+            return;
         }
         if let Some(prev) = self.prev_texture.as_ref() {
             crate::app::rendering::transitions::draw_ripple_old_image(

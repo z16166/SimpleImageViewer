@@ -43,14 +43,14 @@ fn is_jxl_extension(path: &Path) -> bool {
 /// Returns `0` when no valid **Orientation** tag (1–8) is found.
 fn read_exif_orientation<R: BufRead + Seek>(reader: &mut R) -> u16 {
     let exifreader = exif::Reader::new();
-    if let Ok(exif_data) = exifreader.read_from_container(reader) {
-        if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-            // Some writers store Orientation as BYTE or LONG; Short is most common.
-            if let Some(o) = field.value.get_uint(0) {
-                let o = o as u16;
-                if (1..=8).contains(&o) {
-                    return o;
-                }
+    if let Ok(exif_data) = exifreader.read_from_container(reader)
+        && let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+    {
+        // Some writers store Orientation as BYTE or LONG; Short is most common.
+        if let Some(o) = field.value.get_uint(0) {
+            let o = o as u16;
+            if (1..=8).contains(&o) {
+                return o;
             }
         }
     }
@@ -88,39 +88,36 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
     }
     #[cfg(feature = "avif-native")]
     {
-        if is_avif_extension(path) {
-            if let Some(o) = crate::hdr::avif::libavif_probe_exif_orientation_from_path(path) {
-                if (1..=8).contains(&o) {
-                    return o;
-                }
-            }
+        if is_avif_extension(path)
+            && let Some(o) = crate::hdr::avif::libavif_probe_exif_orientation_from_path(path)
+            && (1..=8).contains(&o)
+        {
+            return o;
         }
     }
     #[cfg(feature = "heif-native")]
     {
         if is_heif_extension(path) {
-            if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag(path) {
-                if (1..=8).contains(&o) {
-                    return o;
-                }
+            if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag(path)
+                && (1..=8).contains(&o)
+            {
+                return o;
             }
             if let Some(o) =
                 crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path)
+                && (1..=8).contains(&o)
             {
-                if (1..=8).contains(&o) {
-                    return o;
-                }
+                return o;
             }
         }
     }
     #[cfg(feature = "jpegxl")]
     {
-        if is_jxl_extension(path) {
-            if let Some(o) = crate::hdr::jpegxl::libjxl_probe_orientation_from_path(path) {
-                if (1..=8).contains(&o) {
-                    return o;
-                }
-            }
+        if is_jxl_extension(path)
+            && let Some(o) = crate::hdr::jpegxl::libjxl_probe_orientation_from_path(path)
+            && (1..=8).contains(&o)
+        {
+            return o;
         }
     }
     1

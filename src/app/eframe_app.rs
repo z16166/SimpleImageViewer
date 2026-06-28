@@ -94,20 +94,20 @@ impl eframe::App for ImageViewerApp {
         drop(old_context_menu_tx);
 
         // Wait for the saver thread to finish any in-progress I/O
-        if let Some(handle) = self.saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Saver thread panicked: {:?}", e);
         }
-        if let Some(handle) = self.hotkeys_saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.hotkeys_saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
         }
-        if let Some(handle) = self.context_menu_saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.context_menu_saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
         }
         self.background_threads
             .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);
@@ -370,11 +370,9 @@ impl ImageViewerApp {
                 }
             };
 
-        let show_item =
-            tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
-        let settings_item =
-            tray_icon::menu::MenuItem::new(t!("tray.settings").to_string(), true, None);
-        let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
+        let show_item = tray_icon::menu::MenuItem::new(&t!("tray.show_window"), true, None);
+        let settings_item = tray_icon::menu::MenuItem::new(&t!("tray.settings"), true, None);
+        let quit_item = tray_icon::menu::MenuItem::new(&t!("tray.quit"), true, None);
         let show_item_id = show_item.id().clone();
         let settings_item_id = settings_item.id().clone();
         let quit_item_id = quit_item.id().clone();
@@ -390,7 +388,7 @@ impl ImageViewerApp {
         match tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
             .with_menu_on_left_click(false)
-            .with_tooltip(t!("app.name").to_string())
+            .with_tooltip(&t!("app.name"))
             .with_icon(icon)
             .build()
         {
@@ -465,12 +463,14 @@ impl ImageViewerApp {
         ctx: &Context,
         root_close_requested: bool,
     ) {
-        if root_close_requested && !self.explicit_quit {
-            if self.settings.minimize_to_tray_on_close && !Self::is_system_shutting_down() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if !self.hidden_to_tray && !self.pending_hide_to_tray {
-                    self.prepare_hide_to_tray(ctx);
-                }
+        if root_close_requested
+            && !self.explicit_quit
+            && self.settings.minimize_to_tray_on_close
+            && !Self::is_system_shutting_down()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if !self.hidden_to_tray && !self.pending_hide_to_tray {
+                self.prepare_hide_to_tray(ctx);
             }
         }
 

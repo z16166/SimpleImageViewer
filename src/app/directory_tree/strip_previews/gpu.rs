@@ -291,37 +291,36 @@ impl ImageViewerApp {
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
-        if let Some(logical) = logical_size {
-            if self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index)
-                && self
+        if let Some(logical) = logical_size
+            && self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index)
+            && self
+                .directory_tree_strip_cache
+                .is_valid_for_logical(index, logical)
+        {
+            let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
+            let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
+            let cached_dims = self.directory_tree_strip_cache.preview_dimensions(index);
+            let would_upgrade = decide_strip_preview_replace(&StripPreviewReplaceParams {
+                index,
+                source: "cache_directory_tree_strip_thumbnail",
+                cached_tag,
+                cached_stage,
+                cached_logical: self
                     .directory_tree_strip_cache
-                    .is_valid_for_logical(index, logical)
-            {
-                let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
-                let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
-                let cached_dims = self.directory_tree_strip_cache.preview_dimensions(index);
-                let would_upgrade = decide_strip_preview_replace(&StripPreviewReplaceParams {
-                    index,
-                    source: "cache_directory_tree_strip_thumbnail",
-                    cached_tag,
-                    cached_stage,
-                    cached_logical: self
-                        .directory_tree_strip_cache
-                        .logical_sizes()
-                        .get(&index)
-                        .copied(),
-                    cached_preview_w: cached_dims.map(|(w, _)| w),
-                    cached_preview_h: cached_dims.map(|(_, h)| h),
-                    incoming_tag: buffer_tag,
-                    incoming_stage: stage,
-                    incoming_logical: Some(logical),
-                    preview_w: decoded.width,
-                    preview_h: decoded.height,
-                    decoded: Some(decoded),
-                });
-                if !would_upgrade {
-                    return;
-                }
+                    .logical_sizes()
+                    .get(&index)
+                    .copied(),
+                cached_preview_w: cached_dims.map(|(w, _)| w),
+                cached_preview_h: cached_dims.map(|(_, h)| h),
+                incoming_tag: buffer_tag,
+                incoming_stage: stage,
+                incoming_logical: Some(logical),
+                preview_w: decoded.width,
+                preview_h: decoded.height,
+                decoded: Some(decoded),
+            });
+            if !would_upgrade {
+                return;
             }
         }
         if self.directory_tree_nav_is_detached() {

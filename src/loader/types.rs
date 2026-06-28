@@ -391,7 +391,7 @@ impl ImageData {
                     || self.tiled_sdr_source().is_some()
                     || self
                         .hdr_animated_frames()
-                        .is_some_and(|frames| frames.first().is_some())
+                        .is_some_and(|frames| !frames.is_empty())
             }
             PixelPlaneKind::Hdr => {
                 self.static_hdr().is_some()

@@ -182,15 +182,17 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
             img
         };
 
-        let is_opaque = final_img.color().has_alpha() == false;
+        let is_opaque = !final_img.color().has_alpha();
 
         // Fast path for Windows non-alpha non-tiled supported standard format (BMP,PNG,GIF,TIF)
         // Only if it was FullImage (because visible area forces temporary file anyway)
-        if is_windows && job.mode == PrintMode::FullImage && is_opaque {
-            if ["png", "bmp", "tif", "tiff", "gif"].contains(&ext.as_str()) {
-                invoke_system_print(&job.original_path)?;
-                return Ok(());
-            }
+        if is_windows
+            && job.mode == PrintMode::FullImage
+            && is_opaque
+            && ["png", "bmp", "tif", "tiff", "gif"].contains(&ext.as_str())
+        {
+            invoke_system_print(&job.original_path)?;
+            return Ok(());
         }
 
         // If we reach here, we must flatten and save.

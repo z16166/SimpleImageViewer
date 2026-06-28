@@ -228,7 +228,7 @@ impl AudioPlayer {
     }
 
     pub fn get_current_cue_track(&self) -> Option<usize> {
-        self.current_cue_track.try_lock()?.clone()
+        *self.current_cue_track.try_lock()?
     }
 
     pub fn get_cue_markers(&self) -> Vec<u64> {

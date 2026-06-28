@@ -150,10 +150,10 @@ pub fn gate_preview_result(
         return GateDecision::Discard;
     }
     let incoming = preview.preview_bundle.stage();
-    if let Some(existing) = existing_stage {
-        if !preview_stage_should_upgrade(existing, incoming) {
-            return GateDecision::Discard;
-        }
+    if let Some(existing) = existing_stage
+        && !preview_stage_should_upgrade(existing, incoming)
+    {
+        return GateDecision::Discard;
     }
     // Refined HQ previews are expensive to regenerate for large tiled sources (PSB/EXR).
     // Keep them even when the index falls outside the prefetch retention window.

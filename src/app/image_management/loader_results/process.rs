@@ -92,11 +92,11 @@ impl ImageViewerApp {
                     };
 
                     if idx == self.current_index {
-                        if let Some(hdr_frames) = &playback.hdr_frames {
-                            if let Some(hdr) = hdr_frames.first() {
-                                self.current_hdr_image =
-                                    Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
-                            }
+                        if let Some(hdr_frames) = &playback.hdr_frames
+                            && let Some(hdr) = hdr_frames.first()
+                        {
+                            self.current_hdr_image =
+                                Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
                         }
                         self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
@@ -808,10 +808,9 @@ impl ImageViewerApp {
         if let Some(resources) = renderer
             .callback_resources
             .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
+            && !resources.register_preuploaded_binding(image_key, binding, self.current_device_id)
         {
-            if !resources.register_preuploaded_binding(image_key, binding, self.current_device_id) {
-                // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
-            }
+            // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
         }
 
         self.hdr_register_prewarm_repush_counts

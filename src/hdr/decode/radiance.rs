@@ -64,10 +64,11 @@ impl RadianceHeaderParams {
 
     pub(crate) fn apply_header_line(&mut self, line: &str) {
         if let Some(value) = line.strip_prefix("EXPOSURE=") {
-            if let Ok(exposure) = value.trim().parse::<f32>() {
-                if exposure.is_finite() && exposure > 0.0 {
-                    self.exposure *= exposure;
-                }
+            if let Ok(exposure) = value.trim().parse::<f32>()
+                && exposure.is_finite()
+                && exposure > 0.0
+            {
+                self.exposure *= exposure;
             }
         } else if let Some(value) = line.strip_prefix("COLORCORR=") {
             let mut parts = value.split_whitespace();

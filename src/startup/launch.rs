@@ -145,13 +145,19 @@ pub fn run() -> eframe::Result {
         "Settings::load",
     );
 
+    #[cfg(feature = "startup-timing")]
     let init_logging_phases = init_logging();
+    #[cfg(not(feature = "startup-timing"))]
+    init_logging();
     #[cfg(feature = "startup-timing")]
     let init_logging_phase =
         startup_phase_at(&mut prev, startup_t0, "init_logging", Instant::now());
     #[cfg(feature = "startup-timing")]
     startup_log_captured_phases(&startup_prelog_phases);
+    #[cfg(feature = "startup-timing")]
     startup_log_captured_phases(&init_logging_phases);
+    #[cfg(not(feature = "startup-timing"))]
+    startup_log_captured_phases(&());
     #[cfg(feature = "startup-timing")]
     startup_log_captured_phase(&init_logging_phase);
     #[cfg(feature = "startup-timing")]

@@ -890,15 +890,15 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 // ICC has to be read from `TARGET_ORIGINAL` since `TARGET_DATA`
                 // can be overridden by libjxl's color management (and for non-
                 // XYB CMYK sources both happen to be the same CMYK profile).
-                if k_extra_channel_index.is_some() && cmyk_source_icc.is_empty() {
-                    if let Some(icc) = jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
-                    {
-                        log::debug!(
-                            "[JXL] captured {} byte CMYK source ICC for lcms2 transform",
-                            icc.len()
-                        );
-                        cmyk_source_icc = icc;
-                    }
+                if k_extra_channel_index.is_some()
+                    && cmyk_source_icc.is_empty()
+                    && let Some(icc) = jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
+                {
+                    log::debug!(
+                        "[JXL] captured {} byte CMYK source ICC for lcms2 transform",
+                        icc.len()
+                    );
+                    cmyk_source_icc = icc;
                 }
                 metadata = read_jxl_metadata(decoder.0, metadata);
             }
@@ -914,7 +914,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     },
                     "size JPEG XL preview output buffer",
                 )?;
-                if size % std::mem::size_of::<f32>() != 0 {
+                if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl preview buffer size is not float-aligned".to_string());
                 }
                 preview_scratch.resize(size, 0);
@@ -957,7 +957,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     },
                     "size JPEG XL output buffer",
                 )?;
-                if size % std::mem::size_of::<f32>() != 0 {
+                if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl returned a misaligned float output size".to_string());
                 }
                 rgba_f32 = vec![0.0; size / std::mem::size_of::<f32>()];
@@ -982,7 +982,8 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                             idx,
                         )
                     };
-                    if st == libjxl_sys::JXL_DEC_SUCCESS && k_size % std::mem::size_of::<f32>() == 0
+                    if st == libjxl_sys::JXL_DEC_SUCCESS
+                        && k_size.is_multiple_of(std::mem::size_of::<f32>())
                     {
                         k_f32 = vec![0.0; k_size / std::mem::size_of::<f32>()];
                         let set_st = unsafe {

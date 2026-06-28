@@ -222,10 +222,8 @@ impl Iterator for ApeSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.buffer_pos >= self.buffer.len() {
-            if !self.decode_next_blocks() {
-                return None;
-            }
+        if self.buffer_pos >= self.buffer.len() && !self.decode_next_blocks() {
+            return None;
         }
 
         let sample = self.buffer[self.buffer_pos];

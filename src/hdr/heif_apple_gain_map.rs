@@ -230,16 +230,15 @@ pub(crate) fn apple_compute_headroom(hdr_headroom: f32, hdr_gain: f32) -> (f32, 
 }
 
 fn parse_heif_exif_raw(buf: &[u8]) -> Option<exif::Exif> {
-    if buf.len() >= 6 {
-        if let Ok(offset_bytes) = <[u8; 4]>::try_from(&buf[0..4]) {
-            let offset = u32::from_be_bytes(offset_bytes) as usize;
-            if buf.len() >= 4 + offset {
-                if let Some(tiff_tail) = buf.get(4 + offset..) {
-                    if let Ok(e) = exif::Reader::new().read_raw(tiff_tail.to_vec()) {
-                        return Some(e);
-                    }
-                }
-            }
+    if buf.len() >= 6
+        && let Ok(offset_bytes) = <[u8; 4]>::try_from(&buf[0..4])
+    {
+        let offset = u32::from_be_bytes(offset_bytes) as usize;
+        if buf.len() >= 4 + offset
+            && let Some(tiff_tail) = buf.get(4 + offset..)
+            && let Ok(e) = exif::Reader::new().read_raw(tiff_tail.to_vec())
+        {
+            return Some(e);
         }
     }
     exif::Reader::new().read_raw(buf.to_vec()).ok()

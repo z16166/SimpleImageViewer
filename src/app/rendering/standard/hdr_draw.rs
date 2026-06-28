@@ -88,32 +88,32 @@ impl ImageViewerApp {
             (None, None) => self.effective_hdr_display_output(),
             _ => None,
         };
-        if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
-            if let Some((target_format, hdr_output_mode)) = hdr_draw {
-                let p_dest = override_dest
-                    .or(self.prev_transition_rect)
-                    .unwrap_or_else(|| {
-                        let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
-                        self.compute_display_rect(p_size, screen_rect)
-                    });
-                let p_final_dest = Rect::from_center_size(
-                    p_dest.center() + tp.prev_offset,
-                    p_dest.size() * tp.prev_scale,
-                );
-                self.draw_hdr_image_plane_clipped(
-                    ui,
-                    screen_rect,
-                    p_final_dest,
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    rotation,
-                    tp.prev_alpha,
-                    None,
-                );
-                return;
-            }
+        if let Some(prev_hdr) = self.prev_hdr_image.as_ref()
+            && let Some((target_format, hdr_output_mode)) = hdr_draw
+        {
+            let p_dest = override_dest
+                .or(self.prev_transition_rect)
+                .unwrap_or_else(|| {
+                    let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+                    self.compute_display_rect(p_size, screen_rect)
+                });
+            let p_final_dest = Rect::from_center_size(
+                p_dest.center() + tp.prev_offset,
+                p_dest.size() * tp.prev_scale,
+            );
+            self.draw_hdr_image_plane_clipped(
+                ui,
+                screen_rect,
+                p_final_dest,
+                Arc::clone(prev_hdr),
+                self.hdr_renderer.tone_map,
+                target_format,
+                hdr_output_mode,
+                rotation,
+                tp.prev_alpha,
+                None,
+            );
+            return;
         }
 
         if let Some(ref prev) = self.prev_texture {

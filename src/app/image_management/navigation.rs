@@ -19,10 +19,10 @@ use super::*;
 impl ImageViewerApp {
     /// Current animation frame texture when the outgoing index is an animated image.
     fn transition_animation_texture_for_index(&self, index: usize) -> Option<egui::TextureHandle> {
-        if let Some(animation) = self.animation.as_ref() {
-            if animation.image_index == index {
-                return animation.textures.get(animation.current_frame).cloned();
-            }
+        if let Some(animation) = self.animation.as_ref()
+            && animation.image_index == index
+        {
+            return animation.textures.get(animation.current_frame).cloned();
         }
         self.animation_cache
             .get(&index)
@@ -106,7 +106,7 @@ impl ImageViewerApp {
         let has_any_raw = self.image_files.iter().any(|path| {
             path.extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|ext| crate::raw_processor::is_raw_extension(ext))
+                .is_some_and(crate::raw_processor::is_raw_extension)
         });
         if !has_any_raw {
             return;
@@ -402,12 +402,11 @@ impl ImageViewerApp {
                     let cached_max = self
                         .texture_cache
                         .cached_preview_max_side(self.current_index);
-                    if tm.preview_texture.is_none()
-                        || cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
+                    if (tm.preview_texture.is_none()
+                        || cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t)))
+                        && let Some(handle) = self.texture_cache.get(self.current_index)
                     {
-                        if let Some(handle) = self.texture_cache.get(self.current_index) {
-                            tm.preview_texture = Some(handle.clone());
-                        }
+                        tm.preview_texture = Some(handle.clone());
                     }
                 }
 
@@ -504,14 +503,14 @@ impl ImageViewerApp {
             );
             if missing_hdr && self.loader.is_loading(idx) {
                 crate::preload_debug!("[PreloadDebug][RAW] navigate inflight_reuse idx={}", idx);
-                if self.current_image_res.is_none() {
-                    if let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
+                if self.current_image_res.is_none()
+                    && let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
                         self.deferred_sdr_uploads
                             .get(&idx)
                             .map(|d| (d.width, d.height))
-                    }) {
-                        self.set_current_image_resolution(Some((w, h)));
-                    }
+                    })
+                {
+                    self.set_current_image_resolution(Some((w, h)));
                 }
             } else {
                 #[cfg(feature = "preload-debug")]
@@ -648,37 +647,31 @@ impl ImageViewerApp {
         }
 
         // 2. Animated frames
-        if let Some(ref anim) = self.animation {
-            if anim.image_index == self.current_index {
-                if let Some(ref cpu_frames) = anim.cpu_frames {
-                    if let Some(pixels) = cpu_frames.get(anim.current_frame) {
-                        let size = anim.textures[anim.current_frame].size();
-                        self.pixel_data_source =
-                            Some(crate::pixel_inspector::PixelDataSource::Static {
-                                width: size[0] as u32,
-                                height: size[1] as u32,
-                                pixels: std::sync::Arc::clone(pixels),
-                            });
-                        return;
-                    }
-                }
-            }
+        if let Some(ref anim) = self.animation
+            && anim.image_index == self.current_index
+            && let Some(ref cpu_frames) = anim.cpu_frames
+            && let Some(pixels) = cpu_frames.get(anim.current_frame)
+        {
+            let size = anim.textures[anim.current_frame].size();
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: size[0] as u32,
+                height: size[1] as u32,
+                pixels: std::sync::Arc::clone(pixels),
+            });
+            return;
         }
-        if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
-            if let Some(ref cpu_frames) = cached_anim.cpu_frames {
-                if let Some(pixels) = cpu_frames.first() {
-                    if let Some(texture) = cached_anim.textures.first() {
-                        let size = texture.size();
-                        self.pixel_data_source =
-                            Some(crate::pixel_inspector::PixelDataSource::Static {
-                                width: size[0] as u32,
-                                height: size[1] as u32,
-                                pixels: std::sync::Arc::clone(pixels),
-                            });
-                        return;
-                    }
-                }
-            }
+        if let Some(cached_anim) = self.animation_cache.get(&self.current_index)
+            && let Some(ref cpu_frames) = cached_anim.cpu_frames
+            && let Some(pixels) = cpu_frames.first()
+            && let Some(texture) = cached_anim.textures.first()
+        {
+            let size = texture.size();
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: size[0] as u32,
+                height: size[1] as u32,
+                pixels: std::sync::Arc::clone(pixels),
+            });
+            return;
         }
 
         // 3. Deferred SDR upload

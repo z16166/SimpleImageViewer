@@ -128,7 +128,7 @@ impl OpenExrCoreReadContext {
 
         let exr_luma_weights = imf_exr_chromaticities_from_path(path)
             .as_ref()
-            .and_then(|ch| openexr_luminance_weights_from_chromaticities_xy(ch))
+            .and_then(openexr_luminance_weights_from_chromaticities_xy)
             .unwrap_or([0.2126_f32, 0.7152_f32, 0.0722_f32]);
 
         Ok(Self {
@@ -719,7 +719,7 @@ impl OpenExrCoreReadContext {
 
         let (roles, buffers, channel_layouts) = {
             let channels = decode_pipeline_channels(&mut pipeline)?;
-            let roles = assign_channel_roles(&channels);
+            let roles = assign_channel_roles(channels);
             let mut buffers = vec![Vec::<f32>::new(); channels.len()];
             let mut channel_layouts = vec![None; channels.len()];
             for (index, channel) in channels.iter_mut().enumerate() {
@@ -814,13 +814,12 @@ impl OpenExrCoreReadContext {
         let mut can_use_fast_path = !is_yryby;
         if can_use_fast_path {
             for idx_opt in [r_idx, g_idx, b_idx, a_idx] {
-                if let Some(i) = idx_opt {
-                    if let Some(layout) = channel_layouts[i] {
-                        if layout.x_samples != 1 || layout.y_samples != 1 {
-                            can_use_fast_path = false;
-                            break;
-                        }
-                    }
+                if let Some(i) = idx_opt
+                    && let Some(layout) = channel_layouts[i]
+                    && (layout.x_samples != 1 || layout.y_samples != 1)
+                {
+                    can_use_fast_path = false;
+                    break;
                 }
             }
         }

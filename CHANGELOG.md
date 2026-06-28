@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.1] - 2026-06-28
+
+### Fixed
+- **Music playback for M4A/AAC files**: Some audiobooks and speech-heavy M4A files now play at normal voice speed instead of sounding unnaturally fast.
+
 ## [2.8.0] - 2026-06-28
 
 ### Added

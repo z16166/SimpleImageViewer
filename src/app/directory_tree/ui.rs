@@ -813,7 +813,7 @@ fn draw_directory_node(
     let node = node.as_ref();
 
     let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
-    let expandable = directory_tree_node_expandable(&node, path);
+    let expandable = directory_tree_node_expandable(node, path);
     let selected = view
         .selected_namespace_path()
         .is_some_and(|selected| selected.as_os_str() == path.as_os_str());
@@ -917,7 +917,7 @@ fn draw_directory_node(
                 command_tx,
                 root_wake,
                 palette,
-                &child,
+                child,
                 depth + 1,
             );
         }
@@ -1219,7 +1219,7 @@ fn truncate_single_line_text(
     let mut lo = 0usize;
     let mut hi = text.chars().count();
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         let mut candidate = text.chars().take(mid).collect::<String>();
         candidate.push('…');
         if measure(&candidate) <= max_width {
@@ -1438,7 +1438,7 @@ fn draw_image_details_row(
         let modified_column = image_list_modified_column(row_rect, columns, spacing_x);
 
         let name_text =
-            truncate_single_line_text(ui.painter(), &row.name, &body_font, name_column.width());
+            truncate_single_line_text(ui.painter(), &row.name, body_font, name_column.width());
         let name_galley = ui
             .painter()
             .layout_no_wrap(name_text, body_font.clone(), text_color);
@@ -1581,7 +1581,7 @@ fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
         if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
             return Some(PathBuf::from(format!("{}:\\", bytes[0] as char)));
         }
-        return None;
+        None
     }
 
     #[cfg(target_os = "macos")]

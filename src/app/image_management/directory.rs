@@ -393,25 +393,24 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn process_scan_results(&mut self) {
-        if self.scanning {
-            if let Some(since) = self.scan_results_pending_since {
-                if since.elapsed() > SCAN_STALL_TIMEOUT {
-                    log::warn!(
-                        "[Scan] timed out after {}s (gen={}); cancelling",
-                        SCAN_STALL_TIMEOUT.as_secs(),
-                        self.scan_generation
-                    );
-                    if let Some(cancel) = self.scan_cancel.take() {
-                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    self.scan_rx = None;
-                    self.scanning = false;
-                    self.scan_results_pending_since = None;
-                    self.status_message = t!("directory_tree.scan_timeout").to_string();
-                    if self.refresh_scan_in_progress {
-                        self.finish_refresh_scan_state();
-                    }
-                }
+        if self.scanning
+            && let Some(since) = self.scan_results_pending_since
+            && since.elapsed() > SCAN_STALL_TIMEOUT
+        {
+            log::warn!(
+                "[Scan] timed out after {}s (gen={}); cancelling",
+                SCAN_STALL_TIMEOUT.as_secs(),
+                self.scan_generation
+            );
+            if let Some(cancel) = self.scan_cancel.take() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.scan_rx = None;
+            self.scanning = false;
+            self.scan_results_pending_since = None;
+            self.status_message = t!("directory_tree.scan_timeout").to_string();
+            if self.refresh_scan_in_progress {
+                self.finish_refresh_scan_state();
             }
         }
 
@@ -687,12 +686,11 @@ impl ImageViewerApp {
             if !self.scanning {
                 self.initial_image = None;
             }
-        } else if self.settings.resume_last_image {
-            if let Some(last_path) = &self.settings.last_viewed_image {
-                if let Some(pos) = self.find_index_for_path(last_path) {
-                    self.set_current_index(pos);
-                }
-            }
+        } else if self.settings.resume_last_image
+            && let Some(last_path) = &self.settings.last_viewed_image
+            && let Some(pos) = self.find_index_for_path(last_path)
+        {
+            self.set_current_index(pos);
         }
     }
 }

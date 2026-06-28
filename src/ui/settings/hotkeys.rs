@@ -385,14 +385,12 @@ pub(super) fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx:
                     styled_button_widget(t!("hotkeys.set_key"), &app.cached_palette),
                 )
                 .clicked()
+                && let Some((entry_idx, key_idx)) = app.hotkeys_selected_row
+                && let Some(binding) = draft.bindings.get(entry_idx)
+                && let Some(action_id) =
+                    crate::hotkeys::model::action_id_from_str(&binding.action_id)
             {
-                if let Some((entry_idx, key_idx)) = app.hotkeys_selected_row
-                    && let Some(binding) = draft.bindings.get(entry_idx)
-                    && let Some(action_id) =
-                        crate::hotkeys::model::action_id_from_str(&binding.action_id)
-                {
-                    set_key_target = Some((action_id, entry_idx, key_idx));
-                }
+                set_key_target = Some((action_id, entry_idx, key_idx));
             }
 
             if styled_button(ui, t!("hotkeys.restore_defaults"), &app.cached_palette).clicked() {
@@ -561,59 +559,59 @@ pub(super) fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx:
     // Defer capture until the next frame so Set Key / Record Key clicks are not recorded as hotkeys.
     let defer_key_capture = set_key_target.is_some() || add_row_start_capture;
 
-    if let Some((entry_idx, key_idx)) = row_to_delete {
-        if entry_idx < draft.bindings.len() {
-            let action_id = draft.bindings[entry_idx].action_id.clone();
-            let key_count_for_action: usize = draft
-                .bindings
-                .iter()
-                .filter(|it| it.action_id == action_id)
-                .map(|it| it.keys.len().max(1))
-                .sum();
-            if key_count_for_action > 1 {
-                if key_idx < draft.bindings[entry_idx].keys.len() {
-                    draft.bindings[entry_idx].keys.remove(key_idx);
-                }
-                if draft.bindings[entry_idx].keys.is_empty() {
-                    draft.bindings.remove(entry_idx);
-                }
-                app.hotkeys_selected_row = None;
-                should_save = true;
+    if let Some((entry_idx, key_idx)) = row_to_delete
+        && entry_idx < draft.bindings.len()
+    {
+        let action_id = draft.bindings[entry_idx].action_id.clone();
+        let key_count_for_action: usize = draft
+            .bindings
+            .iter()
+            .filter(|it| it.action_id == action_id)
+            .map(|it| it.keys.len().max(1))
+            .sum();
+        if key_count_for_action > 1 {
+            if key_idx < draft.bindings[entry_idx].keys.len() {
+                draft.bindings[entry_idx].keys.remove(key_idx);
             }
+            if draft.bindings[entry_idx].keys.is_empty() {
+                draft.bindings.remove(entry_idx);
+            }
+            app.hotkeys_selected_row = None;
+            should_save = true;
         }
     }
 
-    if app.hotkeys_add_row_capture_active && !defer_key_capture {
-        if let Some(key_text) = poll_hotkey_capture_from_input(ctx) {
-            app.hotkeys_add_row_captured_key = Some(key_text);
-            app.hotkeys_add_row_capture_active = false;
-        }
+    if app.hotkeys_add_row_capture_active
+        && !defer_key_capture
+        && let Some(key_text) = poll_hotkey_capture_from_input(ctx)
+    {
+        app.hotkeys_add_row_captured_key = Some(key_text);
+        app.hotkeys_add_row_capture_active = false;
     }
 
     if let Some((target, entry_idx, key_idx)) = app.hotkeys_capture_target
         && !defer_key_capture
+        && let Some(key_text) = poll_hotkey_capture_from_input(ctx)
     {
-        if let Some(key_text) = poll_hotkey_capture_from_input(ctx) {
-            if entry_idx < draft.bindings.len() {
-                let entry = &mut draft.bindings[entry_idx];
-                entry.action_id = action_id_to_str(target).to_string();
-                while entry.keys.len() <= key_idx {
-                    entry.keys.push(String::new());
-                }
-                entry.keys[key_idx] = key_text;
-            } else {
-                draft
-                    .bindings
-                    .push(crate::hotkeys::model::HotkeyBindingEntry {
-                        action_id: action_id_to_str(target).to_string(),
-                        keys: vec![key_text],
-                        enabled: true,
-                        comment: String::new(),
-                    });
+        if entry_idx < draft.bindings.len() {
+            let entry = &mut draft.bindings[entry_idx];
+            entry.action_id = action_id_to_str(target).to_string();
+            while entry.keys.len() <= key_idx {
+                entry.keys.push(String::new());
             }
-            app.hotkeys_capture_target = None;
-            should_save = true;
+            entry.keys[key_idx] = key_text;
+        } else {
+            draft
+                .bindings
+                .push(crate::hotkeys::model::HotkeyBindingEntry {
+                    action_id: action_id_to_str(target).to_string(),
+                    keys: vec![key_text],
+                    enabled: true,
+                    comment: String::new(),
+                });
         }
+        app.hotkeys_capture_target = None;
+        should_save = true;
     }
     let validated = crate::hotkeys::rebuild_runtime_state(&draft);
     let has_empty_key = validated

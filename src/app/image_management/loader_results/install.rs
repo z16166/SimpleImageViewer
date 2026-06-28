@@ -53,11 +53,11 @@ impl ImageViewerApp {
                 let preserve_hdr_tiled = self.hdr_tiled_source_cache.contains_key(&idx);
                 if !preserve_hdr_tiled {
                     self.remove_hdr_image_index(idx);
-                } else if idx == self.current_index {
-                    if let Some(source) = self.hdr_tiled_source_cache.get(&idx).cloned() {
-                        self.current_hdr_tiled_image =
-                            Some(crate::app::CurrentHdrTiledImage::new(idx, source));
-                    }
+                } else if idx == self.current_index
+                    && let Some(source) = self.hdr_tiled_source_cache.get(&idx).cloned()
+                {
+                    self.current_hdr_tiled_image =
+                        Some(crate::app::CurrentHdrTiledImage::new(idx, source));
                 }
             } else if self.index_uses_tiled_pipeline(idx) {
                 log::warn!(

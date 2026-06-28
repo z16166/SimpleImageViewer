@@ -160,7 +160,7 @@ fn compare_file_names(left: &Path, right: &Path) -> Ordering {
 fn locale_compare_str(left: &str, right: &str) -> Ordering {
     #[cfg(target_os = "windows")]
     {
-        return windows_locale_compare(left, right);
+        windows_locale_compare(left, right)
     }
     #[cfg(target_os = "macos")]
     {

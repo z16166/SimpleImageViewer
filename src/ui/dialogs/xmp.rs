@@ -89,8 +89,7 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if state.data.is_some() {
-                            if styled_button(ui, &t!("xmp.copy_text").to_string(), palette)
-                                .clicked()
+                            if styled_button(ui, t!("xmp.copy_text").to_string(), palette).clicked()
                             {
                                 copy_text = state.data.as_ref().map(|d| {
                                     d.iter()
@@ -100,16 +99,15 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                                 });
                                 result = ModalResult::Dismissed;
                             }
-                            if let Some(xml) = &state.xml {
-                                if styled_button(ui, &t!("xmp.copy_xml").to_string(), palette)
+                            if let Some(xml) = &state.xml
+                                && styled_button(ui, t!("xmp.copy_xml").to_string(), palette)
                                     .clicked()
-                                {
-                                    copy_xml = Some(xml.clone());
-                                    result = ModalResult::Dismissed;
-                                }
+                            {
+                                copy_xml = Some(xml.clone());
+                                result = ModalResult::Dismissed;
                             }
                         }
-                        if styled_button(ui, &t!("btn.close").to_string(), palette).clicked() {
+                        if styled_button(ui, t!("btn.close").to_string(), palette).clicked() {
                             result = ModalResult::Dismissed;
                         }
                     });

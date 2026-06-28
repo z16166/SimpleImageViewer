@@ -47,7 +47,6 @@ pub struct PsbComposite {
 /// Row cache is now handled by moka::sync::Cache in PsbTiledSource.
 /// Provides concurrent access without explicit locking, built-in LRU eviction,
 /// and automatic coalescing of concurrent requests for the same key.
-
 /// A tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 pub struct PsbTiledSource {
     #[allow(dead_code)]
@@ -321,10 +320,10 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
                         dst_row[base] = v;
                         dst_row[base + 1] = v;
                         dst_row[base + 2] = v;
-                        if let Some(a) = a_row {
-                            if col < a.len() {
-                                dst_row[base + 3] = a[col];
-                            }
+                        if let Some(a) = a_row
+                            && col < a.len()
+                        {
+                            dst_row[base + 3] = a[col];
                         }
                     }
                 }
@@ -563,10 +562,10 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                             dst_row[base] = v;
                             dst_row[base + 1] = v;
                             dst_row[base + 2] = v;
-                            if let Some(a_buf) = alpha {
-                                if col < a_buf.len() {
-                                    dst_row[base + 3] = a_buf[col];
-                                }
+                            if let Some(a_buf) = alpha
+                                && col < a_buf.len()
+                            {
+                                dst_row[base + 3] = a_buf[col];
                             }
                         }
                         processed = true;

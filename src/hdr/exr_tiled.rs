@@ -116,8 +116,8 @@ impl ExrTiledImageSource {
             return false;
         }
         let tile_size = crate::tile_cache::get_tile_size();
-        x % tile_size == 0
-            && y % tile_size == 0
+        x.is_multiple_of(tile_size)
+            && y.is_multiple_of(tile_size)
             && width == tile_size.min(self.width.saturating_sub(x))
             && height == tile_size.min(self.height.saturating_sub(y))
             && self.width > width
@@ -193,7 +193,7 @@ impl ExrTiledImageSource {
             band_key,
         };
 
-        let result = (|| -> Result<(), String> {
+        (|| -> Result<(), String> {
             let context = exr_file_context("extract EXR scanline tile band", &self.path);
             let band = catch_exr_panic(&context, || {
                 self.context.extract_scanline_rgba32f_tile(
@@ -248,9 +248,7 @@ impl ExrTiledImageSource {
                 started_at.elapsed().as_secs_f64() * 1000.0
             );
             Ok(())
-        })();
-
-        result
+        })()
     }
 }
 

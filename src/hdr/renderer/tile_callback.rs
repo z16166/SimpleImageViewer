@@ -396,24 +396,24 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 }
             }
         }
-        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
-            if let Some(buffer) = binding.tone_map_buffer.as_ref() {
-                let binding_baked = binding.baked_jpeg_weight_bits;
-                let jpeg_gpu_composed =
-                    iso_deferred_tile && binding_baked == Some(target_capacity_bits);
-                let uniform = hdr_tile_tone_map_uniform(
-                    self.tone_map,
-                    self.rotation_steps,
-                    self.alpha,
-                    self.output_mode,
-                    self.target_format,
-                    &self.tile,
-                    self.uv_rect,
-                    native_display_scale,
-                    jpeg_gpu_composed,
-                );
-                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-            }
+        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key)
+            && let Some(buffer) = binding.tone_map_buffer.as_ref()
+        {
+            let binding_baked = binding.baked_jpeg_weight_bits;
+            let jpeg_gpu_composed =
+                iso_deferred_tile && binding_baked == Some(target_capacity_bits);
+            let uniform = hdr_tile_tone_map_uniform(
+                self.tone_map,
+                self.rotation_steps,
+                self.alpha,
+                self.output_mode,
+                self.target_format,
+                &self.tile,
+                self.uv_rect,
+                native_display_scale,
+                jpeg_gpu_composed,
+            );
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
         }
 
         Vec::new()

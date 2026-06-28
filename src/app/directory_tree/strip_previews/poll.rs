@@ -79,10 +79,10 @@ impl ImageViewerApp {
             .map(|list| list.image_list_generation);
         // If the lock is contended, conservatively rebuild; it's a cheap
         // fallback that guarantees correctness.
-        let stale = current_gen.map_or(true, |generation| {
+        let stale = current_gen.is_none_or(|generation| {
             self.cached_image_strip_path_index
                 .as_ref()
-                .map_or(true, |(g, _)| *g != generation)
+                .is_none_or(|(g, _)| *g != generation)
         });
         if stale {
             let map: HashMap<PathBuf, usize> = self

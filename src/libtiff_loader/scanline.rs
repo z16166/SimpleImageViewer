@@ -331,8 +331,8 @@ pub(crate) unsafe fn manual_decode_scanline(
     let mut r_map: *mut u16 = std::ptr::null_mut();
     let mut g_map: *mut u16 = std::ptr::null_mut();
     let mut b_map: *mut u16 = std::ptr::null_mut();
-    if photo == PHOTO_PALETTE {
-        if unsafe {
+    if photo == PHOTO_PALETTE
+        && unsafe {
             lib::TIFFGetField(
                 tif,
                 lib::TIFFTAG_COLORMAP,
@@ -341,9 +341,8 @@ pub(crate) unsafe fn manual_decode_scanline(
                 &mut b_map,
             )
         } == 0
-        {
-            return Err("Palette image missing colormap".to_string());
-        }
+    {
+        return Err("Palette image missing colormap".to_string());
     }
     let samples_to_process = (spp as usize).min(match photo {
         PHOTO_RGB | PHOTO_SEPARATED => 4, // RGB(A) and CMYK
@@ -454,7 +453,7 @@ pub(crate) unsafe fn manual_decode_scanline(
                     &mut rgba[row_offset..],
                     width,
                     bps,
-                    s as usize,
+                    s,
                     photo,
                     format,
                     swapped,

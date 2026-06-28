@@ -48,7 +48,7 @@ pub const COMPRESSION_SGILOG24: u16 = 34677;
 
 /// libtiff `uv_decode`: map 14-bit chroma index to CIE (u',v').
 fn uv_decode(c: i32) -> Option<(f64, f64)> {
-    if c < 0 || c >= UV_NDIVS {
+    if !(0..UV_NDIVS).contains(&c) {
         return None;
     }
     let mut lower: u32 = 0;

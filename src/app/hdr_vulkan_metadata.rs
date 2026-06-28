@@ -31,9 +31,7 @@ impl ImageViewerApp {
     /// compositor does not keep the previous image's MaxCLL / MaxFALL.
     pub(crate) fn sync_linux_vulkan_hdr_metadata(&mut self) {
         #[cfg(not(target_os = "linux"))]
-        {
-            return;
-        }
+        {}
 
         #[cfg(target_os = "linux")]
         {

@@ -172,7 +172,7 @@ fn render_format_group(
     ui.add_space(2.0);
 
     let cols = 5;
-    let rows = (indices.len() + cols - 1) / cols;
+    let rows = indices.len().div_ceil(cols);
 
     egui::Grid::new(format!("file_assoc_grid_{:?}", group))
         .num_columns(cols)

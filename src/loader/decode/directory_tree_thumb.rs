@@ -77,7 +77,7 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         let exif_logical = (exif.width, exif.height);
         let logical = normalize_logical_size(
             mmap.as_ref()
-                .and_then(|data| probe_still_image_logical_size_from_mmap(data))
+                .and_then(probe_still_image_logical_size_from_mmap)
                 .unwrap_or(exif_logical),
             exif_logical,
         );
@@ -104,10 +104,10 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
-    if let Some(exif) = exif.as_ref() {
-        if let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side) {
-            return Ok(result);
-        }
+    if let Some(exif) = exif.as_ref()
+        && let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side)
+    {
+        return Ok(result);
     }
 
     let decoded = preview_from_image_data(&image_data, max_side)?;
@@ -177,10 +177,10 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-        if let Ok(img) = load_hdr(path, hdr_target_capacity, hdr_tone_map) {
-            return Ok(img);
-        }
+    if crate::hdr::decode::is_hdr_candidate_ext(&ext)
+        && let Ok(img) = load_hdr(path, hdr_target_capacity, hdr_tone_map)
+    {
+        return Ok(img);
     }
 
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
@@ -360,7 +360,7 @@ fn platform_still_image_fallback(
                 );
             }
         }
-        return raw_strip_libraw_fallback(path, opened_processor);
+        raw_strip_libraw_fallback(path, opened_processor)
     }
     #[cfg(target_os = "macos")]
     {

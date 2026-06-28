@@ -352,62 +352,62 @@ impl ImageViewerApp {
                 pixels: fallback.arc_pixels(),
             });
         }
-        if sdr_fallback_is_placeholder && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+        if sdr_fallback_is_placeholder
+            && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+            && !self.hdr_in_flight_fallback_refinements.contains(&idx)
         {
-            if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
-                let source_key = source_key_for_path(&self.image_files[idx]);
-                self.hdr_in_flight_fallback_refinements.insert(idx);
-                self.loader
-                    .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
-            }
+            let source_key = source_key_for_path(&self.image_files[idx]);
+            self.hdr_in_flight_fallback_refinements.insert(idx);
+            self.loader
+                .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
         }
-        if self.should_eager_cache_install_hdr_strip(idx) {
-            if let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
+        if self.should_eager_cache_install_hdr_strip(idx)
+            && let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
                 &hdr,
                 fallback,
                 sdr_fallback_is_placeholder,
-            ) {
-                let strip_stage = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                    && hdr.rgba_f32.is_empty()
-                {
-                    crate::loader::PreviewStage::Initial
-                } else {
-                    crate::loader::PreviewStage::Refined
-                };
-                #[cfg(feature = "preload-debug")]
-                crate::preload_debug!(
-                    "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
-                    idx,
-                    strip_preview.width,
-                    strip_preview.height
-                );
-                let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
-                    hdr.width,
-                    hdr.height,
-                    fallback.width,
-                    fallback.height,
-                    strip_preview.width,
-                    strip_preview.height,
+            )
+        {
+            let strip_stage = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                && hdr.rgba_f32.is_empty()
+            {
+                crate::loader::PreviewStage::Initial
+            } else {
+                crate::loader::PreviewStage::Refined
+            };
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
+                idx,
+                strip_preview.width,
+                strip_preview.height
+            );
+            let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
+                hdr.width,
+                hdr.height,
+                fallback.width,
+                fallback.height,
+                strip_preview.width,
+                strip_preview.height,
+                !hdr.rgba_f32.is_empty(),
+            );
+            let strip_tag =
+                crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
+                    sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
+                    strip_preview.is_sdr_deferred_placeholder(),
+                    strip_stage == crate::loader::PreviewStage::Initial
+                        && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                        && hdr.rgba_f32.is_empty(),
                 );
-                let strip_tag =
-                    crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                        !hdr.rgba_f32.is_empty(),
-                        sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
-                        strip_preview.is_sdr_deferred_placeholder(),
-                        strip_stage == crate::loader::PreviewStage::Initial
-                            && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                            && hdr.rgba_f32.is_empty(),
-                    );
-                self.cache_directory_tree_strip_thumbnail(
-                    idx,
-                    &strip_preview,
-                    strip_stage,
-                    Some(strip_logical),
-                    strip_tag,
-                    ctx,
-                );
-            }
+            self.cache_directory_tree_strip_thumbnail(
+                idx,
+                &strip_preview,
+                strip_stage,
+                Some(strip_logical),
+                strip_tag,
+                ctx,
+            );
         }
     }
 

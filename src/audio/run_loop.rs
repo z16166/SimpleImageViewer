@@ -20,7 +20,6 @@ use super::wasapi::WasapiMonitorGuard;
 #[cfg(windows)]
 use super::wasapi::wasapi_poll_device_lost;
 
-use crossbeam_channel;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,7 +66,9 @@ pub(crate) fn run_audio_loop(
 
         match rx.recv_timeout(timeout) {
             Ok(AudioCommand::Shutdown) => {
-                st.backend_player.take().map(|p| p.stop());
+                if let Some(p) = st.backend_player.take() {
+                    p.stop()
+                }
                 st.backend_sink.take();
                 set_current_track(&slots.track_slot, None);
                 set_metadata(&slots.meta_slot, None);
@@ -104,7 +105,7 @@ pub(crate) fn run_audio_loop(
 
         // FEED: load the next file when the sink runs empty
         if !st.stopped && (!st.base_playlist.is_empty() || !st.injected_playlist.is_empty()) {
-            let player_empty = st.backend_player.as_ref().map_or(false, |p| p.empty());
+            let player_empty = st.backend_player.as_ref().is_some_and(|p| p.empty());
             let player_exists = st.backend_player.is_some();
 
             if player_empty {
@@ -122,7 +123,7 @@ pub(crate) fn run_audio_loop(
             if shutdown_flag.load(Ordering::Relaxed) {
                 return;
             }
-            if st.backend_player.as_ref().map_or(false, |p| !p.empty()) {
+            if st.backend_player.as_ref().is_some_and(|p| !p.empty()) {
                 st.update_cue_track_highlight(&slots);
             }
         }

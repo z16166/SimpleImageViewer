@@ -500,13 +500,15 @@ impl DirectoryTreeRuntime {
             );
         }
 
-        let mut initial_tree = DirectoryTreeTreeState {
+        let initial_tree = DirectoryTreeTreeState {
             workers_available,
+            snapshot_dirty: true,
             ..DirectoryTreeTreeState::default()
         };
-        initial_tree.snapshot_dirty = true;
-        let mut initial_list = DirectoryTreeListState::default();
-        initial_list.snapshot_dirty = true;
+        let initial_list = DirectoryTreeListState {
+            snapshot_dirty: true,
+            ..DirectoryTreeListState::default()
+        };
         let tree_snapshot = Arc::new(ArcSwap::from_pointee(DirectoryTreeTreeSnapshot::default()));
         let list_snapshot = Arc::new(ArcSwap::from_pointee(DirectoryTreeListSnapshot::default()));
         let preview_snapshot = Arc::new(ArcSwap::from_pointee(
@@ -943,17 +945,17 @@ impl DirectoryTreeTreeState {
             );
             return chain.last().cloned().or(Some(entry.namespace_path.clone()));
         }
-        if is_unc_path(dir) {
-            if let Some(share) = unc_share_root(dir) {
-                let share_tree = namespace::network_share_namespace_path(&share);
-                let chain = namespace::namespace_ancestor_chain(
-                    &share_tree,
-                    &share,
-                    dir,
-                    MAX_DIRECTORY_TREE_REVEAL_DEPTH,
-                );
-                return chain.last().cloned().or(Some(share_tree));
-            }
+        if is_unc_path(dir)
+            && let Some(share) = unc_share_root(dir)
+        {
+            let share_tree = namespace::network_share_namespace_path(&share);
+            let chain = namespace::namespace_ancestor_chain(
+                &share_tree,
+                &share,
+                dir,
+                MAX_DIRECTORY_TREE_REVEAL_DEPTH,
+            );
+            return chain.last().cloned().or(Some(share_tree));
         }
         if let Some(mount_root) = self.places_mount_root_for_path(dir) {
             let mount_tree = namespace::drive_mount_namespace_path(&mount_root);
@@ -997,22 +999,22 @@ impl DirectoryTreeTreeState {
         }
         let mut requests = Vec::new();
 
-        if should_expand_this_pc_for_namespace_path(&selected_tree_key, &self.known_folders) {
-            if let Some(node) = self.nodes.get_mut(&this_pc_namespace_path()) {
-                node.expanded = true;
-            }
+        if should_expand_this_pc_for_namespace_path(&selected_tree_key, &self.known_folders)
+            && let Some(node) = self.nodes.get_mut(&this_pc_namespace_path())
+        {
+            node.expanded = true;
         }
 
         let selected_browse = self.selected_fs_path.clone();
-        if let Some(selected) = selected_browse.as_ref() {
-            if is_unc_path(selected) {
-                self.ensure_network_visible();
-                if let Some(share_root) = unc_share_root(selected) {
-                    self.ensure_network_share_mounted(&share_root);
-                }
-                if let Some(node) = self.nodes.get_mut(&network_namespace_path()) {
-                    node.expanded = true;
-                }
+        if let Some(selected) = selected_browse.as_ref()
+            && is_unc_path(selected)
+        {
+            self.ensure_network_visible();
+            if let Some(share_root) = unc_share_root(selected) {
+                self.ensure_network_share_mounted(&share_root);
+            }
+            if let Some(node) = self.nodes.get_mut(&network_namespace_path()) {
+                node.expanded = true;
             }
         }
 
@@ -1108,15 +1110,14 @@ impl DirectoryTreeTreeState {
         let share_path = share_root.to_path_buf();
         let share_tree = namespace::network_share_namespace_path(&share_path);
         self.network_share_roots.insert(share_path.clone());
-        if let Some(network) = self.nodes.get_mut(&network_namespace_path()) {
-            if !network
+        if let Some(network) = self.nodes.get_mut(&network_namespace_path())
+            && !network
                 .children
                 .iter()
                 .any(|child| child.as_os_str() == share_tree.as_os_str())
-            {
-                network.children.push(share_tree.clone());
-                network.children.sort();
-            }
+        {
+            network.children.push(share_tree.clone());
+            network.children.sort();
         }
         self.or_insert_tree_node(share_tree, || {
             directory_tree_node(unc_share_display_name(&share_path), share_path.clone())

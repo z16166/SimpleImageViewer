@@ -177,7 +177,7 @@ impl TiledImageSource for LibTiffTiledSource {
             for tx in 0..pw {
                 let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
                 let tile_col = x / tw;
-                let tiles_across = (self.width + tw - 1) / tw;
+                let tiles_across = self.width.div_ceil(tw);
                 let tile_idx = tile_row * tiles_across + tile_col;
 
                 unsafe {

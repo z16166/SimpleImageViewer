@@ -109,20 +109,19 @@ impl ImageViewerApp {
             self.active_transition,
             tp.is_animating,
             preview_for_transition.is_some(),
-        ) {
-            if let Some(preview) = preview_for_transition {
-                self.draw_complex_transition(
-                    ui,
-                    screen_rect,
-                    &preview,
-                    dest,
-                    unrotated_dest,
-                    rotation,
-                    angle,
-                    tp.alpha,
-                );
-                return;
-            }
+        ) && let Some(preview) = preview_for_transition
+        {
+            self.draw_complex_transition(
+                ui,
+                screen_rect,
+                &preview,
+                dest,
+                unrotated_dest,
+                rotation,
+                angle,
+                tp.alpha,
+            );
+            return;
         }
 
         let (tile_alpha, prev_alpha_eff) = effective_hdr_tiled_alphas(&tp, self.active_transition);
@@ -182,55 +181,53 @@ impl ImageViewerApp {
         let effective_scale = dest.width() / rotated_img_size.x;
 
         let mut hdr_preview_drawn = false;
-        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Hdr) {
-            if let Some(hdr_preview) = self
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Hdr)
+            && let Some(hdr_preview) = self
                 .current_hdr_tiled_preview
                 .as_ref()
                 .and_then(|current| current.image_for_index(self.current_index))
-            {
-                draw_plane(
-                    ui,
-                    screen_rect,
-                    hdr_image_plane_rect(&layout),
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    &layout,
-                    PlaneDrawSource::HdrImage {
-                        image: Arc::clone(hdr_preview),
-                        tone_map: self.hdr_renderer.tone_map,
-                        target_format: render_plan
-                            .target_format
-                            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                        output_mode: render_plan.output_mode,
-                        rotation_steps: rotation as u32,
-                        alpha: tile_alpha,
-                        ripple: None,
-                        keep_resident: self.hdr_plane_keep_resident(),
-                        raw_demosaic_baked_notify: None,
-                    },
-                );
-                hdr_preview_drawn = true;
-            }
+        {
+            draw_plane(
+                ui,
+                screen_rect,
+                hdr_image_plane_rect(&layout),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                &layout,
+                PlaneDrawSource::HdrImage {
+                    image: Arc::clone(hdr_preview),
+                    tone_map: self.hdr_renderer.tone_map,
+                    target_format: render_plan
+                        .target_format
+                        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                    output_mode: render_plan.output_mode,
+                    rotation_steps: rotation as u32,
+                    alpha: tile_alpha,
+                    ripple: None,
+                    keep_resident: self.hdr_plane_keep_resident(),
+                    raw_demosaic_baked_notify: None,
+                },
+            );
+            hdr_preview_drawn = true;
         }
 
         // Draw the preview that matches the active tiled plane backend.
         // Fallback to SDR preview texture if the HDR preview is not yet ready.
-        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
-            || (plane_backend == PlaneBackendKind::Hdr && !hdr_preview_drawn)
+        if (should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
+            || (plane_backend == PlaneBackendKind::Hdr && !hdr_preview_drawn))
+            && let Some(ref preview) = self.tile_manager().preview_texture
         {
-            if let Some(ref preview) = self.tile_manager().preview_texture {
-                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                draw_plane(
-                    ui,
-                    screen_rect,
-                    unrotated_dest,
-                    uv,
-                    &layout,
-                    PlaneDrawSource::SdrTexture {
-                        texture_id: preview.id(),
-                        color: Color32::WHITE,
-                    },
-                );
-            }
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            draw_plane(
+                ui,
+                screen_rect,
+                unrotated_dest,
+                uv,
+                &layout,
+                PlaneDrawSource::SdrTexture {
+                    texture_id: preview.id(),
+                    color: Color32::WHITE,
+                },
+            );
         }
 
         // Log threshold diagnostics once per image load
@@ -384,7 +381,7 @@ impl ImageViewerApp {
                             hdr_source_for_frame.as_ref(),
                             tm,
                             &mut tile_request_budget,
-                            &primary_visible_coords,
+                            primary_visible_coords,
                             tile_visits.len(),
                             idx,
                             *coord,
@@ -401,7 +398,7 @@ impl ImageViewerApp {
 
                     let allow_upload = newly_uploaded < tile_upload_quota;
                     let (status, just_uploaded) =
-                        tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
+                        tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, visible_coords);
 
                     if just_uploaded {
                         newly_uploaded += 1;
@@ -492,11 +489,11 @@ impl ImageViewerApp {
             // request another repaint immediately to keep the pipeline moving.
             let has_more_ready = should_repaint_for_ready_tiles_for_backend(
                 plane_backend,
-                self.tile_manager().has_ready_to_upload(&visible_coords)
+                self.tile_manager().has_ready_to_upload(visible_coords)
                     || has_pending_visible_tiles_for_backend(
                         plane_backend,
                         &self.tile_manager().pending_tiles,
-                        &visible_coords,
+                        visible_coords,
                     ),
             );
             if newly_uploaded > 0 || has_more_ready {

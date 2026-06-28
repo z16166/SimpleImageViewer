@@ -228,33 +228,29 @@ pub fn scan_directory(
                 .follow_links(false)
                 .process_read_dir(|_depth, path, _state, children| {
                     if is_non_browsable_system_directory(path) {
-                        for child in children.iter_mut() {
-                            if let Ok(entry) = child {
-                                entry.read_children_path = None;
-                            }
+                        for entry in children.iter_mut().flatten() {
+                            entry.read_children_path = None;
                         }
                         return;
                     }
-                    for child in children.iter_mut() {
-                        if let Ok(entry) = child {
-                            if !entry.file_type.is_dir() {
-                                continue;
-                            }
-                            let child_path = entry.path();
-                            if is_non_browsable_system_directory(&child_path) {
-                                entry.read_children_path = None;
-                                continue;
-                            }
-                            let skip = if entry.file_type.is_symlink() {
-                                true
-                            } else {
-                                entry.metadata().ok().is_some_and(|meta| {
-                                    is_directory_traversal_boundary_metadata(&child_path, &meta)
-                                })
-                            };
-                            if skip {
-                                entry.read_children_path = None;
-                            }
+                    for entry in children.iter_mut().flatten() {
+                        if !entry.file_type.is_dir() {
+                            continue;
+                        }
+                        let child_path = entry.path();
+                        if is_non_browsable_system_directory(&child_path) {
+                            entry.read_children_path = None;
+                            continue;
+                        }
+                        let skip = if entry.file_type.is_symlink() {
+                            true
+                        } else {
+                            entry.metadata().ok().is_some_and(|meta| {
+                                is_directory_traversal_boundary_metadata(&child_path, &meta)
+                            })
+                        };
+                        if skip {
+                            entry.read_children_path = None;
                         }
                     }
                 })
@@ -304,8 +300,8 @@ pub fn scan_directory(
                                 pair_index_files.push(entry);
                             } else {
                                 pending_batch.push(entry);
-                                if pending_batch.len() >= BATCH_SIZE {
-                                    if !send_scan_batch(
+                                if pending_batch.len() >= BATCH_SIZE
+                                    && !send_scan_batch(
                                         &mut pending_batch,
                                         generation,
                                         &tx,
@@ -314,7 +310,6 @@ pub fn scan_directory(
                                     ) {
                                         return;
                                     }
-                                }
                             }
                         }
                     }
@@ -453,8 +448,8 @@ pub fn scan_directory(
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             let p = e.path();
                             pending_batch.push((p, len, modified_unix));
-                            if pending_batch.len() >= BATCH_SIZE {
-                                if !send_scan_batch(
+                            if pending_batch.len() >= BATCH_SIZE
+                                && !send_scan_batch(
                                     &mut pending_batch,
                                     generation,
                                     &tx,
@@ -463,7 +458,6 @@ pub fn scan_directory(
                                 ) {
                                     return;
                                 }
-                            }
                         }
                     }
                 }
@@ -492,7 +486,7 @@ pub fn scan_directory(
             );
         }
 
-        if !send_scan_message(
+        let _ = send_scan_message(
             &tx,
             ScanMessage::Done {
                 generation,
@@ -500,9 +494,7 @@ pub fn scan_directory(
             },
             &cancel,
             wake_ui.as_ref(),
-        ) {
-            return;
-        }
+        );
         crate::preload_debug!(
             "[PreloadDebug][Scan] thread done sent: dir={} total_ms={}",
             dir.display(),

@@ -201,10 +201,10 @@ pub(crate) fn hdr_callback_resources_readiness(
         return HdrCallbackResourcesReadiness::Ready;
     }
 
-    if let Some(slot) = callback_resources.get::<HdrCallbackResourcesPrewarmSlot>() {
-        if slot.0.is_running(target_format) {
-            return HdrCallbackResourcesReadiness::PrewarmRunning;
-        }
+    if let Some(slot) = callback_resources.get::<HdrCallbackResourcesPrewarmSlot>()
+        && slot.0.is_running(target_format)
+    {
+        return HdrCallbackResourcesReadiness::PrewarmRunning;
     }
 
     HdrCallbackResourcesReadiness::NeedsEnsure

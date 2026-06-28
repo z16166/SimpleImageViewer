@@ -79,7 +79,7 @@ fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scr
     let mut lo = 0usize;
     let mut hi = n;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         scratch.clear();
         for ch in src.chars().take(mid) {
             scratch.push(ch);

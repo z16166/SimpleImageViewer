@@ -75,7 +75,7 @@ impl ImageViewerApp {
         // Minimize-to-tray on close is handled in `raw_input_hook` (see eframe_app.rs):
         // the eframe fork runs `logic` before the frame's RawInput is applied to ctx.
 
-        self.cache_directory_tree_viewport_placement(&ctx);
+        self.cache_directory_tree_viewport_placement(ctx);
 
         if ctx.input(|i| i.pointer.delta().length_sq() > 0.0) {
             self.music_hud_last_activity = Instant::now();
@@ -96,45 +96,45 @@ impl ImageViewerApp {
             }
         }
 
-        if let Some(dropped_file) = ctx.input(|i| i.raw.dropped_files.first().cloned()) {
-            if let Some(path) = dropped_file.path {
-                // Guard: don't re-trigger if we're already scanning from a previous drop
-                if !self.scanning {
-                    if path.is_dir() {
-                        // Dropped a directory — scan it (non-recursive to avoid surprises)
-                        log::info!("Drop: opening directory {:?}", path);
-                        self.settings.browse_mode = crate::settings::BrowseMode::Linear;
-                        self.settings.show_directory_tree_nav = false;
-                        self.settings.tree_nav_selected_dir = None;
-                        self.settings.tree_nav_selected_namespace_path = None;
-                        self.settings.recursive = false;
-                        self.load_directory(path);
-                        self.queue_save();
-                    } else if path.is_file() {
-                        // Dropped a single file — check if it's a supported format
-                        let is_supported = path
-                            .extension()
-                            .map(|ext| crate::scanner::is_supported_extension(ext))
-                            .unwrap_or(false);
+        if let Some(dropped_file) = ctx.input(|i| i.raw.dropped_files.first().cloned())
+            && let Some(path) = dropped_file.path
+        {
+            // Guard: don't re-trigger if we're already scanning from a previous drop
+            if !self.scanning {
+                if path.is_dir() {
+                    // Dropped a directory — scan it (non-recursive to avoid surprises)
+                    log::info!("Drop: opening directory {:?}", path);
+                    self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+                    self.settings.show_directory_tree_nav = false;
+                    self.settings.tree_nav_selected_dir = None;
+                    self.settings.tree_nav_selected_namespace_path = None;
+                    self.settings.recursive = false;
+                    self.load_directory(path);
+                    self.queue_save();
+                } else if path.is_file() {
+                    // Dropped a single file — check if it's a supported format
+                    let is_supported = path
+                        .extension()
+                        .map(crate::scanner::is_supported_extension)
+                        .unwrap_or(false);
 
-                        if is_supported {
-                            log::info!("Drop: opening file {:?}", path);
-                            if let Some(parent) = path.parent() {
-                                self.initial_image = Some(path.clone());
-                                self.settings.browse_mode = crate::settings::BrowseMode::Linear;
-                                self.settings.show_directory_tree_nav = false;
-                                self.settings.tree_nav_selected_dir = None;
-                                self.settings.tree_nav_selected_namespace_path = None;
-                                self.settings.auto_switch = false;
-                                self.load_directory(parent.to_path_buf());
-                                self.queue_save();
-                            }
-                        } else {
-                            log::warn!("Drop: ignored unsupported file format {:?}", path);
+                    if is_supported {
+                        log::info!("Drop: opening file {:?}", path);
+                        if let Some(parent) = path.parent() {
+                            self.initial_image = Some(path.clone());
+                            self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+                            self.settings.show_directory_tree_nav = false;
+                            self.settings.tree_nav_selected_dir = None;
+                            self.settings.tree_nav_selected_namespace_path = None;
+                            self.settings.auto_switch = false;
+                            self.load_directory(parent.to_path_buf());
+                            self.queue_save();
                         }
+                    } else {
+                        log::warn!("Drop: ignored unsupported file format {:?}", path);
                     }
-                    ctx.request_repaint();
                 }
+                ctx.request_repaint();
             }
         }
 
@@ -196,30 +196,30 @@ impl ImageViewerApp {
         }
 
         // Clear persistence error after 5 seconds
-        if let Some((_, start)) = self.last_save_error {
-            if start.elapsed().as_secs() >= 5 {
-                self.last_save_error = None;
-            }
+        if let Some((_, start)) = self.last_save_error
+            && start.elapsed().as_secs() >= 5
+        {
+            self.last_save_error = None;
         }
-        if let Some((_, start)) = self.last_hotkeys_save_error {
-            if start.elapsed().as_secs() >= 5 {
-                self.last_hotkeys_save_error = None;
-            }
+        if let Some((_, start)) = self.last_hotkeys_save_error
+            && start.elapsed().as_secs() >= 5
+        {
+            self.last_hotkeys_save_error = None;
         }
-        if let Some((_, start)) = self.last_context_menu_save_error {
-            if start.elapsed().as_secs() >= 5 {
-                self.last_context_menu_save_error = None;
-            }
+        if let Some((_, start)) = self.last_context_menu_save_error
+            && start.elapsed().as_secs() >= 5
+        {
+            self.last_context_menu_save_error = None;
         }
-        if let Some(start) = self.hotkeys_apply_success_at {
-            if start.elapsed().as_secs() >= 3 {
-                self.hotkeys_apply_success_at = None;
-            }
+        if let Some(start) = self.hotkeys_apply_success_at
+            && start.elapsed().as_secs() >= 3
+        {
+            self.hotkeys_apply_success_at = None;
         }
-        if let Some(start) = self.context_menu_apply_success_at {
-            if start.elapsed().as_secs() >= 3 {
-                self.context_menu_apply_success_at = None;
-            }
+        if let Some(start) = self.context_menu_apply_success_at
+            && start.elapsed().as_secs() >= 3
+        {
+            self.context_menu_apply_success_at = None;
         }
 
         if scanning_at_frame_start != self.scanning {

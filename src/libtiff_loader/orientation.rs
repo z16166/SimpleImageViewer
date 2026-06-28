@@ -23,7 +23,7 @@ pub(crate) fn apply_orientation_buffer_f32(
         return (w, h, pixels);
     }
 
-    let (out_w, out_h) = if orientation >= 5 && orientation <= 8 {
+    let (out_w, out_h) = if (5..=8).contains(&orientation) {
         (h, w)
     } else {
         (w, h)
@@ -61,7 +61,7 @@ pub(crate) fn apply_orientation_buffer(
         return (w, h, pixels);
     }
 
-    let (out_w, out_h) = if orientation >= 5 && orientation <= 8 {
+    let (out_w, out_h) = if (5..=8).contains(&orientation) {
         (h, w)
     } else {
         (w, h)

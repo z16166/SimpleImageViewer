@@ -53,9 +53,7 @@ pub(crate) fn open_raw_processor_with_preview(
     let open_started = std::time::Instant::now();
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    if let Err(e) = processor.open(path) {
-        return Err(e);
-    }
+    processor.open(path)?;
     let open_ms = crate::loader::elapsed_ms_u32(open_started);
 
     let lr_flip = processor.flip();

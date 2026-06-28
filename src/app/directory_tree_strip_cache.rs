@@ -100,6 +100,7 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
+#[derive(Default)]
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
     preview_buffer_tag: HashMap<usize, StripPreviewBufferTag>,
@@ -107,19 +108,6 @@ pub(crate) struct DirectoryTreeStripCache {
     logical_sizes: HashMap<usize, (u32, u32)>,
     lru_order: VecDeque<usize>,
     gpu_revision: u64,
-}
-
-impl Default for DirectoryTreeStripCache {
-    fn default() -> Self {
-        Self {
-            textures: HashMap::new(),
-            preview_buffer_tag: HashMap::new(),
-            preview_stage: HashMap::new(),
-            logical_sizes: HashMap::new(),
-            lru_order: VecDeque::new(),
-            gpu_revision: 0,
-        }
-    }
 }
 
 impl DirectoryTreeStripCache {
@@ -741,7 +729,7 @@ pub(crate) fn should_replace_strip_preview(
     .allows_replace()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn should_replace_strip_texture(
     cached_tag: Option<StripPreviewBufferTag>,
     cached_stage: Option<PreviewStage>,

@@ -70,7 +70,7 @@ pub fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
         probe_backends
     );
     let adapters = pollster::block_on(instance.enumerate_adapters(probe_backends));
-    let enumerate_ms = wgpu_probe_start.elapsed().as_millis() as u128;
+    let enumerate_ms = wgpu_probe_start.elapsed().as_millis();
 
     let has_real_dx12 = adapters.iter().any(|a| {
         let info = a.get_info();
@@ -217,13 +217,13 @@ pub fn spawn_dx12_cache_validate_thread(
 
 /// Join a validate-thread handle (used from [`take_and_join_dx12_cache_validate_thread`] on exit).
 fn join_dx12_cache_validate_thread(jh: Option<std::thread::JoinHandle<()>>) {
-    if let Some(h) = jh {
-        if let Err(e) = h.join() {
-            log::warn!(
-                "[on_exit] wgpu-dx12-cache-validate thread panicked: {:?}",
-                e
-            );
-        }
+    if let Some(h) = jh
+        && let Err(e) = h.join()
+    {
+        log::warn!(
+            "[on_exit] wgpu-dx12-cache-validate thread panicked: {:?}",
+            e
+        );
     }
 }
 

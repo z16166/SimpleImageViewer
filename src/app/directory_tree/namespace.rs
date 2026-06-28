@@ -195,10 +195,10 @@ pub(crate) fn namespace_child_path(
     if child_fs_path.as_os_str().is_empty() {
         return parent_namespace;
     }
-    if let Some(name) = child_fs_path.file_name() {
-        if !name.is_empty() {
-            return namespace_join(&parent_namespace, name);
-        }
+    if let Some(name) = child_fs_path.file_name()
+        && !name.is_empty()
+    {
+        return namespace_join(&parent_namespace, name);
     }
     let mut namespace = parent_namespace;
     for component in child_fs_path.components() {

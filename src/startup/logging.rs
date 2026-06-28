@@ -284,15 +284,15 @@ pub fn log_env_info() -> String {
                 }
 
                 if !edition_id.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&edition_id);
                 }
                 if !display_version.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&display_version);
                 }
                 if !service_pack.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&service_pack);
                 }
 

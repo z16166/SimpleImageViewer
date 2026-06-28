@@ -299,14 +299,12 @@ pub(super) fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui,
                     styled_button_widget(t!("context_menu.modify"), &app.cached_palette),
                 )
                 .clicked()
+                && let Some(idx) = app.context_menu_selected_row
+                && let Some(entry) = draft.items.get(idx)
             {
-                if let Some(idx) = app.context_menu_selected_row
-                    && let Some(entry) = draft.items.get(idx)
-                {
-                    app.context_menu_edit_target = Some(idx);
-                    app.context_menu_edit_draft = editable_context_menu_entry_from_entry(entry);
-                    app.context_menu_edit_dialog_open = true;
-                }
+                app.context_menu_edit_target = Some(idx);
+                app.context_menu_edit_draft = editable_context_menu_entry_from_entry(entry);
+                app.context_menu_edit_dialog_open = true;
             }
             if styled_button(ui, t!("context_menu.restore_defaults"), &app.cached_palette).clicked()
             {

@@ -45,33 +45,33 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
         loop {
             let hr = enumerator.Next(&mut components, Some(&mut _fetched));
             if hr.is_ok() && _fetched > 0 {
-                if let Some(unknown) = components[0].take() {
-                    if let Ok(codec_info) = unknown.cast::<IWICBitmapCodecInfo>() {
-                        let mut ext_buf = [0u16; 512];
-                        let mut ext_len = 0;
-                        if codec_info
-                            .GetFileExtensions(&mut ext_buf, &mut ext_len)
+                if let Some(unknown) = components[0].take()
+                    && let Ok(codec_info) = unknown.cast::<IWICBitmapCodecInfo>()
+                {
+                    let mut ext_buf = [0u16; 512];
+                    let mut ext_len = 0;
+                    if codec_info
+                        .GetFileExtensions(&mut ext_buf, &mut ext_len)
+                        .is_ok()
+                        && ext_len > 1
+                    {
+                        let extensions_str =
+                            String::from_utf16_lossy(&ext_buf[..ext_len as usize - 1]);
+
+                        let mut name_buf = [0u16; 512];
+                        let mut name_len = 0;
+                        let friendly_name = if codec_info
+                            .GetFriendlyName(&mut name_buf, &mut name_len)
                             .is_ok()
-                            && ext_len > 1
+                            && name_len > 1
                         {
-                            let extensions_str =
-                                String::from_utf16_lossy(&ext_buf[..ext_len as usize - 1]);
+                            String::from_utf16_lossy(&name_buf[..name_len as usize - 1])
+                        } else {
+                            "Unknown WIC Codec".to_string()
+                        };
 
-                            let mut name_buf = [0u16; 512];
-                            let mut name_len = 0;
-                            let friendly_name = if codec_info
-                                .GetFriendlyName(&mut name_buf, &mut name_len)
-                                .is_ok()
-                                && name_len > 1
-                            {
-                                String::from_utf16_lossy(&name_buf[..name_len as usize - 1])
-                            } else {
-                                "Unknown WIC Codec".to_string()
-                            };
-
-                            let group = if friendly_name.contains("RAW")
-                                || friendly_name.contains("Camera")
-                            {
+                        let group =
+                            if friendly_name.contains("RAW") || friendly_name.contains("Camera") {
                                 FormatGroup::WicRaw
                             } else if friendly_name.contains("Microsoft")
                                 || friendly_name.contains("Windows")
@@ -81,37 +81,36 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
                                 FormatGroup::Others
                             };
 
-                            let clsid = codec_info.GetCLSID()?;
-                            let mut clsid_bytes = [0u8; 16];
-                            std::ptr::copy_nonoverlapping(
-                                &clsid as *const GUID as *const u8,
-                                clsid_bytes.as_mut_ptr(),
-                                16,
-                            );
+                        let clsid = codec_info.GetCLSID()?;
+                        let mut clsid_bytes = [0u8; 16];
+                        std::ptr::copy_nonoverlapping(
+                            &clsid as *const GUID as *const u8,
+                            clsid_bytes.as_mut_ptr(),
+                            16,
+                        );
 
-                            if let Ok(mut reg) = get_registry().write() {
-                                let mut added_for_codec = false;
-                                for ext in extensions_str.split(|c| c == ',' || c == ';') {
-                                    let normalized_ext = ext
-                                        .trim()
-                                        .trim_start_matches('*')
-                                        .trim_start_matches('.')
-                                        .to_lowercase();
-                                    if !normalized_ext.is_empty() {
-                                        if !reg.extensions.contains(&normalized_ext) {
-                                            reg.add_format(ImageFormat {
-                                                extension: normalized_ext,
-                                                group,
-                                                description: friendly_name.clone(),
-                                                wic_clsid: Some(clsid_bytes),
-                                            });
-                                            added_for_codec = true;
-                                        }
-                                    }
+                        if let Ok(mut reg) = get_registry().write() {
+                            let mut added_for_codec = false;
+                            for ext in extensions_str.split([',', ';']) {
+                                let normalized_ext = ext
+                                    .trim()
+                                    .trim_start_matches('*')
+                                    .trim_start_matches('.')
+                                    .to_lowercase();
+                                if !normalized_ext.is_empty()
+                                    && !reg.extensions.contains(&normalized_ext)
+                                {
+                                    reg.add_format(ImageFormat {
+                                        extension: normalized_ext,
+                                        group,
+                                        description: friendly_name.clone(),
+                                        wic_clsid: Some(clsid_bytes),
+                                    });
+                                    added_for_codec = true;
                                 }
-                                if added_for_codec {
-                                    new_codecs += 1;
-                                }
+                            }
+                            if added_for_codec {
+                                new_codecs += 1;
                             }
                         }
                     }

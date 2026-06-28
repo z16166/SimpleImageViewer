@@ -81,18 +81,18 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                 .show_inside(ui, |ui| {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if state.data.is_some() {
-                            if styled_button(ui, &t!("exif.copy").to_string(), palette).clicked() {
-                                copy_text = state.data.as_ref().map(|d| {
-                                    d.iter()
-                                        .map(|(k, v)| format!("{}: {}", k, v))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                });
-                                result = ModalResult::Dismissed;
-                            }
+                        if state.data.is_some()
+                            && styled_button(ui, t!("exif.copy").to_string(), palette).clicked()
+                        {
+                            copy_text = state.data.as_ref().map(|d| {
+                                d.iter()
+                                    .map(|(k, v)| format!("{}: {}", k, v))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            });
+                            result = ModalResult::Dismissed;
                         }
-                        if styled_button(ui, &t!("btn.close").to_string(), palette).clicked() {
+                        if styled_button(ui, t!("btn.close").to_string(), palette).clicked() {
                             result = ModalResult::Dismissed;
                         }
                     });

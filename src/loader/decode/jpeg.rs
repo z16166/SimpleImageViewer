@@ -51,10 +51,10 @@ pub(crate) fn load_jpeg_from_mapped(
 ) -> Result<ImageData, String> {
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        if let Some(brand) = super::detect::bmff_ftyp_brand(&mmap) {
-            if super::detect::is_motion_video_bmff_brand(&brand) {
-                return Err(super::detect::motion_video_bmff_error(&brand));
-            }
+        if let Some(brand) = super::detect::bmff_ftyp_brand(mmap)
+            && super::detect::is_motion_video_bmff_brand(&brand)
+        {
+            return Err(super::detect::motion_video_bmff_error(&brand));
         }
         return Err(format!(
             "not a JPEG bitstream (header {:02x?}); file extension may not match container",
@@ -69,7 +69,7 @@ pub(crate) fn load_jpeg_from_mapped(
     // looks like a normal landscape before correction; the tag still requests transpose, so the
     // result can differ from viewers that ignore the tag or use heuristics.
     match crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
-        &mmap,
+        mmap,
         decode_capacity,
     ) {
         Ok(hdr) => {
@@ -83,7 +83,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 && (pixel_count >= tiled_limit
                     || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
             if use_tiled_deferred {
-                let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+                let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
                 if orientation > 1 {
                     let oriented =
                         crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
@@ -124,7 +124,7 @@ pub(crate) fn load_jpeg_from_mapped(
             return Ok(make_hdr_image_data(hdr, fallback));
         }
         Err(err) => {
-            if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(&mmap)
+            if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(mmap)
                 .ok()
                 .is_some_and(|info| info.is_ultra_hdr)
             {
@@ -136,7 +136,7 @@ pub(crate) fn load_jpeg_from_mapped(
         }
     }
 
-    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
 
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =

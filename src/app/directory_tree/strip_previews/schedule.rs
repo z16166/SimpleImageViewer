@@ -423,10 +423,8 @@ impl ImageViewerApp {
             ordered.len() >= schedule_budget
         };
 
-        if bootstrap_visible {
-            if try_push(current) {
-                return ordered;
-            }
+        if bootstrap_visible && try_push(current) {
+            return ordered;
         }
 
         if let Some((start, end)) = visible_row_range {
@@ -443,10 +441,8 @@ impl ImageViewerApp {
             }
         }
 
-        if !bootstrap_visible {
-            if try_push(current) {
-                return ordered;
-            }
+        if !bootstrap_visible && try_push(current) {
+            return ordered;
         }
 
         for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {

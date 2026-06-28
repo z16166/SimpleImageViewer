@@ -21,45 +21,45 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 impl ImageViewerApp {
     pub(crate) fn process_music_scan_results(&mut self) {
-        if let Some(ref rx) = self.music_scan_rx {
-            if let Ok(files) = rx.try_recv() {
-                self.scanning_music = false;
-                self.music_scan_rx = None;
-                self.music_scan_cancel = None; // Thread finished or aborted
+        if let Some(ref rx) = self.music_scan_rx
+            && let Ok(files) = rx.try_recv()
+        {
+            self.scanning_music = false;
+            self.music_scan_rx = None;
+            self.music_scan_cancel = None; // Thread finished or aborted
 
-                // If it was aborted (returned empty), don't update count unless it's genuinely empty
-                if !files.is_empty() {
-                    self.cached_music_count = Some(files.len());
+            // If it was aborted (returned empty), don't update count unless it's genuinely empty
+            if !files.is_empty() {
+                self.cached_music_count = Some(files.len());
 
-                    // Try to resume from last played track
-                    let mut start_idx = None;
-                    if let Some(last_path) = &self.settings.last_music_file {
-                        if let Some(idx) = files.iter().position(|p| p == last_path) {
-                            start_idx = Some(idx);
-                        }
-                    }
-
-                    let start_track_idx = if start_idx.is_some() {
-                        self.settings.last_music_cue_track
-                    } else {
-                        None
-                    };
-                    self.audio.start_at(
-                        files,
-                        start_idx,
-                        start_track_idx,
-                        self.settings.music_paused,
-                    );
-                    self.audio.set_volume(self.settings.volume);
-                    // Reset the HUD idle timer so music controls appear immediately —
-                    // scanning a large library can take longer than MUSIC_HUD_IDLE_SECONDS,
-                    // so without this the HUD would remain hidden after a startup resume.
-                    self.music_hud_last_activity = std::time::Instant::now();
-                } else if self.music_scan_path.is_some() {
-                    // Check if truly empty or just aborted
-                    // Actually, if it's aborted, files will be empty.
-                    // We don't want to set cached_music_count to Some(0) if it was an abort.
+                // Try to resume from last played track
+                let mut start_idx = None;
+                if let Some(last_path) = &self.settings.last_music_file
+                    && let Some(idx) = files.iter().position(|p| p == last_path)
+                {
+                    start_idx = Some(idx);
                 }
+
+                let start_track_idx = if start_idx.is_some() {
+                    self.settings.last_music_cue_track
+                } else {
+                    None
+                };
+                self.audio.start_at(
+                    files,
+                    start_idx,
+                    start_track_idx,
+                    self.settings.music_paused,
+                );
+                self.audio.set_volume(self.settings.volume);
+                // Reset the HUD idle timer so music controls appear immediately —
+                // scanning a large library can take longer than MUSIC_HUD_IDLE_SECONDS,
+                // so without this the HUD would remain hidden after a startup resume.
+                self.music_hud_last_activity = std::time::Instant::now();
+            } else if self.music_scan_path.is_some() {
+                // Check if truly empty or just aborted
+                // Actually, if it's aborted, files will be empty.
+                // We don't want to set cached_music_count to Some(0) if it was an abort.
             }
         }
     }

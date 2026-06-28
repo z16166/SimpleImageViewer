@@ -104,13 +104,13 @@ impl ImageViewerApp {
 
         if let Some(cached) = self.animation_cache.get(&idx) {
             if cached.textures.len() > 1 {
-                if let Some(hdr_frames) = &cached.hdr_frames {
-                    if let Some(hdr) = hdr_frames.first() {
-                        self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
-                            idx,
-                            std::sync::Arc::clone(hdr),
-                        ));
-                    }
+                if let Some(hdr_frames) = &cached.hdr_frames
+                    && let Some(hdr) = hdr_frames.first()
+                {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        idx,
+                        std::sync::Arc::clone(hdr),
+                    ));
                 }
                 self.animation = Some(crate::app::AnimationPlayback {
                     image_index: cached.image_index,

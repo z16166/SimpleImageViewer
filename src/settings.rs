@@ -29,8 +29,10 @@ pub const DIRECTORY_TREE_DEFAULT_INNER_HEIGHT: u32 = 640;
 /// How the image is scaled for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ScaleMode {
     /// Fit the image inside the current window, preserving aspect ratio.
+    #[default]
     FitToWindow,
     /// Display at the image's natural pixel size (1 logical unit per pixel).
     OriginalSize,
@@ -47,16 +49,12 @@ impl ScaleMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PairedRawJpegHandling {
+    #[default]
     ShowBoth,
     SkipRaw,
     SkipJpeg,
-}
-
-impl Default for PairedRawJpegHandling {
-    fn default() -> Self {
-        Self::ShowBoth
-    }
 }
 
 impl PairedRawJpegHandling {
@@ -75,28 +73,20 @@ impl PairedRawJpegHandling {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BrowseMode {
+    #[default]
     Linear,
     Tree,
 }
 
-impl Default for BrowseMode {
-    fn default() -> Self {
-        Self::Linear
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DirectoryTreeNavStyle {
+    #[default]
     Embedded,
     Detached,
-}
-
-impl Default for DirectoryTreeNavStyle {
-    fn default() -> Self {
-        Self::Embedded
-    }
 }
 
 impl DirectoryTreeNavStyle {
@@ -150,15 +140,11 @@ impl DirectoryTreeListPreviewSize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RawDemosaicMode {
     Cpu,
+    #[default]
     Gpu,
-}
-
-impl Default for RawDemosaicMode {
-    fn default() -> Self {
-        Self::Gpu
-    }
 }
 
 impl RawDemosaicMode {
@@ -172,15 +158,11 @@ impl RawDemosaicMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RawDemosaicMethod {
     #[serde(alias = "malvar_he_cutler")]
+    #[default]
     Ppg,
-}
-
-impl Default for RawDemosaicMethod {
-    fn default() -> Self {
-        Self::Ppg
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,11 +433,6 @@ fn default_raw_demosaic_mode() -> RawDemosaicMode {
 fn default_raw_demosaic_method() -> RawDemosaicMethod {
     RawDemosaicMethod::Ppg
 }
-impl Default for ScaleMode {
-    fn default() -> Self {
-        Self::FitToWindow
-    }
-}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -725,7 +702,7 @@ fn restore_outer_top_left_for_screen_center_impl(
 pub fn detect_system_language() -> String {
     #[cfg(target_os = "windows")]
     {
-        return get_windows_locale();
+        get_windows_locale()
     }
 
     // On non-Windows platforms, try the LANG / LANGUAGE env var
@@ -852,10 +829,10 @@ impl Settings {
 
     /// Migrate legacy YAML and mirror persisted browse dir into runtime tree selection.
     pub fn normalize_browse_directory_fields(&mut self) {
-        if self.last_image_dir.is_none() {
-            if let Some(dir) = self.tree_nav_selected_dir.clone() {
-                self.last_image_dir = Some(dir);
-            }
+        if self.last_image_dir.is_none()
+            && let Some(dir) = self.tree_nav_selected_dir.clone()
+        {
+            self.last_image_dir = Some(dir);
         }
         self.tree_nav_selected_dir = self.last_image_dir.clone();
     }

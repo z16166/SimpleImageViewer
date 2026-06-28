@@ -757,8 +757,8 @@ fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
     let w = source.width as usize;
     let raw = source.raw_pixels.as_slice();
     let color_at = |col: i32, row: i32| -> u32 {
-        let x = ((col % 2) + 2) % 2;
-        let y = ((row % 2) + 2) % 2;
+        let x = col.rem_euclid(2);
+        let y = row.rem_euclid(2);
         source.bayer_pattern[(y * 2 + x) as usize]
     };
     move |col: i32, row: i32| -> f32 {
@@ -791,8 +791,8 @@ fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
 }
 
 fn cpu_fc(source: &RawGpuSource, col: i32, row: i32) -> u32 {
-    let x = ((col % 2) + 2) % 2;
-    let y = ((row % 2) + 2) % 2;
+    let x = col.rem_euclid(2);
+    let y = row.rem_euclid(2);
     source.bayer_pattern[(y * 2 + x) as usize]
 }
 

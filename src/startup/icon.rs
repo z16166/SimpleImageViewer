@@ -31,11 +31,11 @@ pub fn load_icon() -> egui::IconData {
         log::warn!(
             "Failed to load application icon from PE resources; title bar may show a generic icon"
         );
-        return egui::IconData {
+        egui::IconData {
             rgba: Vec::new(),
             width: 0,
             height: 0,
-        };
+        }
     }
     #[cfg(not(windows))]
     {

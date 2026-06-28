@@ -283,7 +283,7 @@ pub(super) fn publish_directory_tree_domains(
         tree_snapshot: &runtime.tree_snapshot,
         list_snapshot: &runtime.list_snapshot,
         preview_snapshot: &runtime.preview_snapshot,
-        last_list_publish_at: &mut *last_list_publish_at,
+        last_list_publish_at: &mut last_list_publish_at,
         force_list,
         preview_cache_revision,
         preview_textures,

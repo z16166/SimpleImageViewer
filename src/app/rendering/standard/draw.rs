@@ -118,25 +118,25 @@ impl ImageViewerApp {
 
                 if frame_changed || self.pixel_data_source.is_none() {
                     // Update pixel data source with the active frame's pixels
-                    if let Some(ref cpu_frames) = anim.cpu_frames {
-                        if let Some(pixels) = cpu_frames.get(anim.current_frame) {
-                            let size = anim.textures[anim.current_frame].size();
-                            self.pixel_data_source =
-                                Some(crate::pixel_inspector::PixelDataSource::Static {
-                                    width: size[0] as u32,
-                                    height: size[1] as u32,
-                                    pixels: std::sync::Arc::clone(pixels),
-                                });
-                        }
+                    if let Some(ref cpu_frames) = anim.cpu_frames
+                        && let Some(pixels) = cpu_frames.get(anim.current_frame)
+                    {
+                        let size = anim.textures[anim.current_frame].size();
+                        self.pixel_data_source =
+                            Some(crate::pixel_inspector::PixelDataSource::Static {
+                                width: size[0] as u32,
+                                height: size[1] as u32,
+                                pixels: std::sync::Arc::clone(pixels),
+                            });
                     }
                 }
-                if let Some(hdr_frames) = &anim.hdr_frames {
-                    if let Some(hdr) = hdr_frames.get(anim.current_frame) {
-                        self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
-                            anim.image_index,
-                            Arc::clone(hdr),
-                        ));
-                    }
+                if let Some(hdr_frames) = &anim.hdr_frames
+                    && let Some(hdr) = hdr_frames.get(anim.current_frame)
+                {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        anim.image_index,
+                        Arc::clone(hdr),
+                    ));
                 }
                 let remaining =
                     anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed());
@@ -504,7 +504,6 @@ impl ImageViewerApp {
                 _ => unreachable!(),
             }
             ui.ctx().request_repaint();
-            return;
         } else {
             // Standard Fade / ZoomFade / Slide / Push (and no-transition static draw):
 

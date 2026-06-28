@@ -34,7 +34,7 @@ macro_rules! preload_debug {
 pub(crate) fn path_is_raw(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|ext| crate::raw_processor::is_raw_extension(ext))
+        .is_some_and(crate::raw_processor::is_raw_extension)
 }
 
 #[cfg(feature = "preload-debug")]

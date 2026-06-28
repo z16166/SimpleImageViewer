@@ -126,21 +126,20 @@ fn load_via_wic_inner(
 
                 let specific_decoder: Result<IWICBitmapDecoder> =
                     CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
-                if let Ok(sd) = specific_decoder {
-                    if let Ok(stream) = factory.CreateStream() {
-                        // --- Mmap Path ---
-                        if let Ok(mmap) = crate::mmap_util::map_file(path) {
-                            let m_arc = std::sync::Arc::new(mmap);
-                            if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                                if sd
-                                    .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
-                                    .is_ok()
-                                {
-                                    decoder_res = Ok(sd);
-                                    stream_out = Some(stream);
-                                    mmap_out = Some(m_arc);
-                                }
-                            }
+                if let Ok(sd) = specific_decoder
+                    && let Ok(stream) = factory.CreateStream()
+                {
+                    // --- Mmap Path ---
+                    if let Ok(mmap) = crate::mmap_util::map_file(path) {
+                        let m_arc = std::sync::Arc::new(mmap);
+                        if stream.InitializeFromMemory(&m_arc[..]).is_ok()
+                            && sd
+                                .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
+                                .is_ok()
+                        {
+                            decoder_res = Ok(sd);
+                            stream_out = Some(stream);
+                            mmap_out = Some(m_arc);
                         }
                     }
                 }
@@ -158,55 +157,49 @@ fn load_via_wic_inner(
         }
 
         // Attempt 2: Explicit decoder creation
-        if let Err(ref e) = decoder_res {
-            if e.code() == windows::core::HRESULT(0x88982F50u32 as i32) {
-                if let Some(ext) = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.to_lowercase())
+        if let Err(ref e) = decoder_res
+            && e.code() == windows::core::HRESULT(0x88982F50u32 as i32)
+            && let Some(ext) = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+        {
+            let clsid_bytes_opt = if let Ok(reg) = get_registry().read() {
+                reg.formats
+                    .iter()
+                    .find(|f| f.extension == ext)
+                    .and_then(|f| f.wic_clsid)
+            } else {
+                None
+            };
+
+            if let Some(clsid_bytes) = clsid_bytes_opt {
+                let mut clsid = GUID::default();
+                std::ptr::copy_nonoverlapping(
+                    clsid_bytes.as_ptr(),
+                    &mut clsid as *mut GUID as *mut u8,
+                    16,
+                );
+
+                log::info!(
+                    "WIC Sniffer failed for {:?} (COMPONENTNOTFOUND), trying explicit decoder instantiation for CLSID {:?}",
+                    path,
+                    clsid
+                );
+
+                let specific_decoder: windows::core::Result<IWICBitmapDecoder> =
+                    CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
+                if let Ok(sd) = specific_decoder
+                    && let Ok(stream) = factory.CreateStream()
+                    && stream
+                        .InitializeFromFilename(path_ptr, GENERIC_READ.0)
+                        .is_ok()
+                    && sd
+                        .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
+                        .is_ok()
                 {
-                    let clsid_bytes_opt = if let Ok(reg) = get_registry().read() {
-                        reg.formats
-                            .iter()
-                            .find(|f| f.extension == ext)
-                            .and_then(|f| f.wic_clsid.clone())
-                    } else {
-                        None
-                    };
-
-                    if let Some(clsid_bytes) = clsid_bytes_opt {
-                        let mut clsid = GUID::default();
-                        std::ptr::copy_nonoverlapping(
-                            clsid_bytes.as_ptr(),
-                            &mut clsid as *mut GUID as *mut u8,
-                            16,
-                        );
-
-                        log::info!(
-                            "WIC Sniffer failed for {:?} (COMPONENTNOTFOUND), trying explicit decoder instantiation for CLSID {:?}",
-                            path,
-                            clsid
-                        );
-
-                        let specific_decoder: windows::core::Result<IWICBitmapDecoder> =
-                            CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
-                        if let Ok(sd) = specific_decoder {
-                            if let Ok(stream) = factory.CreateStream() {
-                                if stream
-                                    .InitializeFromFilename(path_ptr, GENERIC_READ.0)
-                                    .is_ok()
-                                {
-                                    if sd
-                                        .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
-                                        .is_ok()
-                                    {
-                                        decoder_res = Ok(sd);
-                                        stream_out = Some(stream);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    decoder_res = Ok(sd);
+                    stream_out = Some(stream);
                 }
             }
         }
@@ -252,7 +245,7 @@ fn load_via_wic_inner(
             _ => WICBitmapTransformOptions(0),
         };
 
-        let swap_wh = matches!(orientation, 5 | 6 | 7 | 8);
+        let swap_wh = matches!(orientation, 5..=8);
         let logical_width = if swap_wh { height } else { width };
         let logical_height = if swap_wh { width } else { height };
 
@@ -267,17 +260,14 @@ fn load_via_wic_inner(
 
         let mut final_source = cached_source.clone();
 
-        if transform_options != WICBitmapTransformOptions(0) {
-            if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                if rotator
-                    .Initialize(&cached_source, transform_options)
-                    .is_ok()
-                {
-                    if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
-                        final_source = src;
-                    }
-                }
-            }
+        if transform_options != WICBitmapTransformOptions(0)
+            && let Ok(rotator) = factory.CreateBitmapFlipRotator()
+            && rotator
+                .Initialize(&cached_source, transform_options)
+                .is_ok()
+            && let Ok(src) = rotator.cast::<IWICBitmapSource>()
+        {
+            final_source = src;
         }
 
         let pixel_count = logical_width as u64 * logical_height as u64;
@@ -344,7 +334,7 @@ fn load_via_wic_inner(
                     physical_height: height,
                     transform_options,
                     factory: factory.clone(),
-                    decoder: decoder,
+                    decoder,
                     frame: frame.clone(),
                     source: cached_source,
                     stream: stream_out,

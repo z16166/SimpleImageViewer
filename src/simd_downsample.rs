@@ -67,7 +67,8 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     let mut x1 = vec![0_u32; dst_w_u];
     for dx in 0..dst_w_u {
         x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
-        x1[dx] = (((dx + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64)
+        x1[dx] = ((dx + 1) as u64 * src_w as u64)
+            .div_ceil(dst_w as u64)
             .min(src_w as u64) as u32;
     }
 
@@ -126,12 +127,12 @@ fn downsample_rgba8_box_scalar(
 
     for dst_y in 0..dst_h {
         let src_y0 = (dst_y as u64 * src_h as u64) / dst_h as u64;
-        let src_y1 = ((dst_y + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64;
+        let src_y1 = ((dst_y + 1) as u64 * src_h as u64).div_ceil(dst_h as u64);
         let src_y1 = src_y1.min(src_h as u64);
 
         for dst_x in 0..dst_w {
             let src_x0 = (dst_x as u64 * src_w as u64) / dst_w as u64;
-            let src_x1 = ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
+            let src_x1 = ((dst_x + 1) as u64 * src_w as u64).div_ceil(dst_w as u64);
             let src_x1 = src_x1.min(src_w as u64);
 
             let mut sum_r: u64 = 0;
@@ -188,7 +189,8 @@ unsafe fn downsample_rgba8_box_sse41(
 
         for dy in 0..dst_h as usize {
             let y0 = ((dy as u64 * src_h as u64) / dst_h as u64) as u32;
-            let y1 = (((dy + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64)
+            let y1 = ((dy + 1) as u64 * src_h as u64)
+                .div_ceil(dst_h as u64)
                 .min(src_h as u64) as u32;
 
             for bx in 0..blocks {
@@ -336,7 +338,8 @@ unsafe fn downsample_rgba8_box_avx2(
 
         for dy in 0..dst_h as usize {
             let y0 = ((dy as u64 * src_h as u64) / dst_h as u64) as u32;
-            let y1 = (((dy + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64)
+            let y1 = ((dy + 1) as u64 * src_h as u64)
+                .div_ceil(dst_h as u64)
                 .min(src_h as u64) as u32;
 
             for bx in 0..blocks {

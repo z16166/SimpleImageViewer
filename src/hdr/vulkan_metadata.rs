@@ -98,10 +98,10 @@ pub fn content_peak_nits(
         return Some(max_cll);
     }
 
-    if let Some(buffer) = buffer {
-        if let Some(peak) = estimate_max_cll_nits(buffer) {
-            return validated_st2086_content_luminance(Some(peak));
-        }
+    if let Some(buffer) = buffer
+        && let Some(peak) = estimate_max_cll_nits(buffer)
+    {
+        return validated_st2086_content_luminance(Some(peak));
     }
 
     luminance

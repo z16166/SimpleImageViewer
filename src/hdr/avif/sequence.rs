@@ -38,20 +38,20 @@ fn avif_open_image_sequence_decoder(
         );
     }
 
-    if let Some(major) = avif_ftyp_major_brand(bytes) {
-        if &major == b"avis" {
-            let r = unsafe {
-                libavif_sys::avifDecoderSetSource(
-                    decoder.as_ptr(),
-                    libavif_sys::AVIF_DECODER_SOURCE_TRACKS,
-                )
-            };
-            if r != libavif_sys::AVIF_RESULT_OK {
-                return Err(format!(
-                    "libavif SetSource(TRACKS): {}",
-                    libavif_result_to_string(r)
-                ));
-            }
+    if let Some(major) = avif_ftyp_major_brand(bytes)
+        && &major == b"avis"
+    {
+        let r = unsafe {
+            libavif_sys::avifDecoderSetSource(
+                decoder.as_ptr(),
+                libavif_sys::AVIF_DECODER_SOURCE_TRACKS,
+            )
+        };
+        if r != libavif_sys::AVIF_RESULT_OK {
+            return Err(format!(
+                "libavif SetSource(TRACKS): {}",
+                libavif_result_to_string(r)
+            ));
         }
     }
 

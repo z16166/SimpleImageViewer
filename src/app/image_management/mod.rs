@@ -59,10 +59,10 @@ fn preserve_current_tile_manager_for_navigation(
     tile_manager: &mut Option<TileManager>,
     prefetched_tiles: &mut HashMap<usize, TileManager>,
 ) {
-    if current_index != target_index {
-        if let Some(tm) = tile_manager.take() {
-            prefetched_tiles.insert(current_index, tm);
-        }
+    if current_index != target_index
+        && let Some(tm) = tile_manager.take()
+    {
+        prefetched_tiles.insert(current_index, tm);
     }
 }
 
@@ -91,14 +91,14 @@ fn should_cache_tiled_sdr_preview(
     if !needs_tile_manager {
         return false;
     }
-    cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
+    cached_preview_max_side.is_none_or(|cached_max| preview_max_side > cached_max)
 }
 
 fn should_cache_tiled_hdr_preview(
     cached_preview_max_side: Option<u32>,
     preview_max_side: u32,
 ) -> bool {
-    cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
+    cached_preview_max_side.is_none_or(|cached_max| preview_max_side > cached_max)
 }
 
 fn tiled_existing_preview_stage(
@@ -627,14 +627,14 @@ pub(crate) fn startup_preload_defer_can_release(
     if monitor_hdr_decode_capacity_is_known(selection) {
         return true;
     }
-    if let Some(completed_at) = probe_completed_at {
-        if now.saturating_duration_since(completed_at) >= STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE {
-            log::warn!(
-                "[HDR] HDR decode capacity still unknown {:?} after runtime probe; releasing startup preload defer",
-                STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
-            );
-            return true;
-        }
+    if let Some(completed_at) = probe_completed_at
+        && now.saturating_duration_since(completed_at) >= STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
+    {
+        log::warn!(
+            "[HDR] HDR decode capacity still unknown {:?} after runtime probe; releasing startup preload defer",
+            STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
+        );
+        return true;
     }
     false
 }
@@ -1488,10 +1488,10 @@ fn first_cached_hdr_still_for_index(
     if let Some(image) = hdr_image_cache.get(&index) {
         return Some(Arc::clone(image));
     }
-    if let Some(anim) = animation_cache.get(&index) {
-        if let Some(frame) = anim.hdr_frames.as_ref().and_then(|frames| frames.first()) {
-            return Some(Arc::clone(frame));
-        }
+    if let Some(anim) = animation_cache.get(&index)
+        && let Some(frame) = anim.hdr_frames.as_ref().and_then(|frames| frames.first())
+    {
+        return Some(Arc::clone(frame));
     }
     pending_anim_frames.get(&index).and_then(|pending| {
         pending
@@ -1552,13 +1552,12 @@ fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> 
             .file_name()
             .map(|n| n.to_string_lossy().to_lowercase());
         image_files.iter().position(|p| {
-            if let Some(ref tn) = target_name {
-                if let Some(name) = p.file_name() {
-                    if name.to_string_lossy().to_lowercase() == *tn {
-                        return p.parent() == target.parent()
-                            || p.canonicalize().ok().as_ref() == Some(&target);
-                    }
-                }
+            if let Some(ref tn) = target_name
+                && let Some(name) = p.file_name()
+                && name.to_string_lossy().to_lowercase() == *tn
+            {
+                return p.parent() == target.parent()
+                    || p.canonicalize().ok().as_ref() == Some(&target);
             }
             false
         })

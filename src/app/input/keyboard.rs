@@ -90,7 +90,6 @@ impl ImageViewerApp {
             // Escape always dismisses any modal
             if i.key_pressed(Key::Escape) {
                 self.active_modal = None;
-                return;
             }
         });
     }
@@ -109,10 +108,10 @@ impl ImageViewerApp {
             }
         });
 
-        if let Some(act) = action {
-            if act == AppAction::ToggleSettings {
-                self.dispatch_action(act, ctx);
-            }
+        if let Some(act) = action
+            && act == AppAction::ToggleSettings
+        {
+            self.dispatch_action(act, ctx);
         }
     }
 

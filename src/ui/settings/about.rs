@@ -46,18 +46,18 @@ pub(super) fn draw_about_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 }
 
 fn draw_about_icon(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    if app.about_icon_texture.is_none() {
-        if let Ok(image) = image::load_from_memory(ABOUT_ICON_BYTES) {
-            let rgba = image.into_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            let pixels = rgba.into_raw();
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-            app.about_icon_texture = Some(ui.ctx().load_texture(
-                "settings_about_icon",
-                color_image,
-                egui::TextureOptions::LINEAR,
-            ));
-        }
+    if app.about_icon_texture.is_none()
+        && let Ok(image) = image::load_from_memory(ABOUT_ICON_BYTES)
+    {
+        let rgba = image.into_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let pixels = rgba.into_raw();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+        app.about_icon_texture = Some(ui.ctx().load_texture(
+            "settings_about_icon",
+            color_image,
+            egui::TextureOptions::LINEAR,
+        ));
     }
 
     if let Some(texture) = &app.about_icon_texture {

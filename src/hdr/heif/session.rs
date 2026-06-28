@@ -177,10 +177,10 @@ pub(crate) fn orientation_from_heif_exif_item_blob(buf: &[u8]) -> Option<u16> {
         let offset = u32::from_be_bytes(buf.get(0..4)?.try_into().ok()?) as usize;
         if buf.len() >= 4 + offset {
             let tiff_tail = buf.get(4 + offset..)?.to_vec();
-            if let Ok(exif) = exif::Reader::new().read_raw(tiff_tail) {
-                if let Some(o) = from_exif(&exif) {
-                    return Some(o);
-                }
+            if let Ok(exif) = exif::Reader::new().read_raw(tiff_tail)
+                && let Some(o) = from_exif(&exif)
+            {
+                return Some(o);
             }
         }
     }

@@ -171,24 +171,24 @@ pub fn sample_hover_pixel(
             let row = y / tile_size;
             let coord = TileCoord { col, row };
 
-            if let Some(mut cache) = PIXEL_CACHE.try_lock() {
-                if let Some(tile_pixels) = cache.get(image_index, coord) {
-                    let tile_x = x % tile_size;
-                    let tile_y = y % tile_size;
+            if let Some(mut cache) = PIXEL_CACHE.try_lock()
+                && let Some(tile_pixels) = cache.get(image_index, coord)
+            {
+                let tile_x = x % tile_size;
+                let tile_y = y % tile_size;
 
-                    let tile_w = tile_size.min(width.saturating_sub(col * tile_size));
-                    let tile_h = tile_size.min(height.saturating_sub(row * tile_size));
+                let tile_w = tile_size.min(width.saturating_sub(col * tile_size));
+                let tile_h = tile_size.min(height.saturating_sub(row * tile_size));
 
-                    if tile_x < tile_w && tile_y < tile_h {
-                        let idx = (tile_y * tile_w + tile_x) as usize * 4;
-                        if idx + 3 < tile_pixels.len() {
-                            return Some([
-                                tile_pixels[idx],
-                                tile_pixels[idx + 1],
-                                tile_pixels[idx + 2],
-                                tile_pixels[idx + 3],
-                            ]);
-                        }
+                if tile_x < tile_w && tile_y < tile_h {
+                    let idx = (tile_y * tile_w + tile_x) as usize * 4;
+                    if idx + 3 < tile_pixels.len() {
+                        return Some([
+                            tile_pixels[idx],
+                            tile_pixels[idx + 1],
+                            tile_pixels[idx + 2],
+                            tile_pixels[idx + 3],
+                        ]);
                     }
                 }
             }

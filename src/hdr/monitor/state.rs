@@ -19,7 +19,7 @@ use eframe::egui;
 
 use super::effective::active_monitor_hdr_status;
 use super::types::{HDR_MONITOR_PROBE_INTERVAL, HdrMonitorSelection, HdrMonitorSignature};
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct HdrMonitorState {
     #[cfg(test)]
     pub(crate) last_signature: Option<HdrMonitorSignature>,
@@ -48,19 +48,6 @@ pub struct HdrMonitorState {
     /// consecutive failures (avoid log spam at 1.33 Hz). Cleared the moment
     /// any probe succeeds.
     last_probe_failed: bool,
-}
-
-impl Default for HdrMonitorState {
-    fn default() -> Self {
-        Self {
-            last_signature: None,
-            last_probe_at: None,
-            selection: None,
-            last_probe_failed: false,
-            runtime_probe_completed: false,
-            runtime_probe_completed_at: None,
-        }
-    }
 }
 
 impl HdrMonitorState {

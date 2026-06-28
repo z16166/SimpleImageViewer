@@ -49,10 +49,8 @@ pub(crate) fn auto_switch_step(
     }
 
     let last = image_count - 1;
-    if current_index >= last {
-        if random_order {
-            return AutoSwitchStep::ShuffleToFirst;
-        }
+    if current_index >= last && random_order {
+        return AutoSwitchStep::ShuffleToFirst;
     }
 
     AutoSwitchStep::NavigateTo((current_index + 1) % image_count)

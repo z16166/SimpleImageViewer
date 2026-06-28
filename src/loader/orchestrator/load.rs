@@ -1120,7 +1120,7 @@ impl ImageLoader {
             LoadResult {
                 index,
                 decode_profile: decode_profile.clone(),
-                source_key: source_key_for_path(&path),
+                source_key: source_key_for_path(path),
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,

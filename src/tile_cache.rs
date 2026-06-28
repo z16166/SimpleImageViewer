@@ -142,10 +142,10 @@ impl TilePixelCache {
 
         // Evict if needed
         while !self.lru.is_empty() && self.current_bytes + bytes > max_bytes {
-            if let Some(evicted_key) = self.lru.pop_front() {
-                if let Some(evicted_pixels) = self.entries.remove(&evicted_key) {
-                    self.current_bytes -= evicted_pixels.len();
-                }
+            if let Some(evicted_key) = self.lru.pop_front()
+                && let Some(evicted_pixels) = self.entries.remove(&evicted_key)
+            {
+                self.current_bytes -= evicted_pixels.len();
             }
         }
 
@@ -486,13 +486,12 @@ impl TileManager {
         let cache = PIXEL_CACHE.lock();
 
         for coord in visible {
-            if !self.tiles.contains_key(coord) {
-                if cache
+            if !self.tiles.contains_key(coord)
+                && cache
                     .entries
                     .contains_key(&(self.image_index, coord.col, coord.row))
-                {
-                    return true;
-                }
+            {
+                return true;
             }
         }
         false
@@ -511,13 +510,13 @@ impl TileManager {
     /// Number of tile columns in the grid.
     pub fn cols(&self) -> u32 {
         let ts = get_tile_size();
-        (self.full_width + ts - 1) / ts
+        self.full_width.div_ceil(ts)
     }
 
     /// Number of tile rows in the grid.
     pub fn rows(&self) -> u32 {
         let ts = get_tile_size();
-        (self.full_height + ts - 1) / ts
+        self.full_height.div_ceil(ts)
     }
 
     /// Get or create a tile texture for the given coordinate.
@@ -575,7 +574,7 @@ impl TileManager {
                 let th = ts.min(self.full_height - coord.row * ts);
 
                 let color_image =
-                    egui::ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &**pixels);
+                    egui::ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &pixels);
                 let name = format!("tile_{}_{}_{}", self.image_index, coord.col, coord.row);
                 let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                 self.tiles.insert(coord, handle.clone());

@@ -160,51 +160,50 @@ impl ImageViewerApp {
                     ctx,
                 );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
-                if let Some(cpu_ms) = update.cpu_demosaic_ms {
-                    if self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
-                        && update.index == self.current_index
-                    {
-                        self.osd.sync_events();
-                        ctx.request_repaint();
-                    }
+                if let Some(cpu_ms) = update.cpu_demosaic_ms
+                    && self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
+                    && update.index == self.current_index
+                {
+                    self.osd.sync_events();
+                    ctx.request_repaint();
                 }
                 // 1. Update current TileManager
-                if let Some(ref mut tm) = self.tile_manager {
-                    if refined_preview_applies_to_tile_manager(tm, &update, &display) {
-                        if update.decode_profile != tm.decode_profile {
-                            tm.decode_profile = current_tile_profile.clone();
-                        }
-                        log::debug!(
-                            "[App] HQ preview applied for current index {} ({}x{})",
-                            update.index,
-                            preview.width,
-                            preview.height
-                        );
-                        tm.set_preview(preview.clone(), ctx);
-                        if should_request_repaint_for_asset_update(
-                            AssetUpdateKind::PreviewUpgraded,
-                            true,
-                            false,
-                        ) {
-                            ctx.request_repaint();
-                        }
+                if let Some(ref mut tm) = self.tile_manager
+                    && refined_preview_applies_to_tile_manager(tm, &update, &display)
+                {
+                    if update.decode_profile != tm.decode_profile {
+                        tm.decode_profile = current_tile_profile.clone();
+                    }
+                    log::debug!(
+                        "[App] HQ preview applied for current index {} ({}x{})",
+                        update.index,
+                        preview.width,
+                        preview.height
+                    );
+                    tm.set_preview(preview.clone(), ctx);
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::PreviewUpgraded,
+                        true,
+                        false,
+                    ) {
+                        ctx.request_repaint();
                     }
                 }
 
                 // 2. Update prefetched TileManagers
-                if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                    if refined_preview_applies_to_tile_manager(tm, &update, &display) {
-                        if update.decode_profile != tm.decode_profile {
-                            tm.decode_profile = current_tile_profile.clone();
-                        }
-                        log::debug!(
-                            "[App] HQ preview applied for prefetched index {} ({}x{})",
-                            update.index,
-                            preview.width,
-                            preview.height
-                        );
-                        tm.set_preview(preview.clone(), ctx);
+                if let Some(tm) = self.prefetched_tiles.get_mut(&update.index)
+                    && refined_preview_applies_to_tile_manager(tm, &update, &display)
+                {
+                    if update.decode_profile != tm.decode_profile {
+                        tm.decode_profile = current_tile_profile.clone();
                     }
+                    log::debug!(
+                        "[App] HQ preview applied for prefetched index {} ({}x{})",
+                        update.index,
+                        preview.width,
+                        preview.height
+                    );
+                    tm.set_preview(preview.clone(), ctx);
                 }
                 self.hq_tiled_preview_pending_indices.remove(&update.index);
 
@@ -286,22 +285,20 @@ impl ImageViewerApp {
             });
         let cached_max = self.texture_cache.cached_preview_max_side(idx);
 
-        if cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t)) {
-            if let Some(handle) = self.texture_cache.get(idx) {
-                if let Some(tm) = self
-                    .tile_manager
-                    .as_mut()
-                    .filter(|tm| tm.image_index == idx)
-                {
-                    tm.preview_texture = Some(handle.clone());
-                    if should_request_repaint_for_asset_update(
-                        AssetUpdateKind::PreviewUpgraded,
-                        true,
-                        false,
-                    ) {
-                        ctx.request_repaint();
-                    }
-                }
+        if cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
+            && let Some(handle) = self.texture_cache.get(idx)
+            && let Some(tm) = self
+                .tile_manager
+                .as_mut()
+                .filter(|tm| tm.image_index == idx)
+        {
+            tm.preview_texture = Some(handle.clone());
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::PreviewUpgraded,
+                true,
+                false,
+            ) {
+                ctx.request_repaint();
             }
         }
 
@@ -484,10 +481,10 @@ impl ImageViewerApp {
         tm: &mut TileManager,
         preview: Option<&DecodedImage>,
     ) {
-        if tm.preview_texture.is_none() {
-            if let Some(preview) = preview {
-                self.setup_tile_manager(ctx, idx, tm, preview.clone());
-            }
+        if tm.preview_texture.is_none()
+            && let Some(preview) = preview
+        {
+            self.setup_tile_manager(ctx, idx, tm, preview.clone());
         }
     }
 }

@@ -285,7 +285,7 @@ impl AppTheme {
 fn detect_system_dark_mode() -> bool {
     #[cfg(target_os = "windows")]
     {
-        return windows_is_dark_mode();
+        windows_is_dark_mode()
     }
     #[cfg(target_os = "macos")]
     {

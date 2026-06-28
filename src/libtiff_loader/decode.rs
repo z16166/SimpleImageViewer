@@ -612,10 +612,10 @@ fn resolve_miniswhite_float_white_reference(
     bps: u16,
     buf: &mut Vec<u8>,
 ) -> Result<f32, String> {
-    if let Some(mx) = unsafe { tiff_tag_smax_sample_value_f64(tif) } {
-        if mx > 0.0 {
-            return Ok(mx as f32);
-        }
+    if let Some(mx) = unsafe { tiff_tag_smax_sample_value_f64(tif) }
+        && mx > 0.0
+    {
+        return Ok(mx as f32);
     }
     log::debug!(
         "[libtiff_loader] IEEE MINISWHITE float: SMaxSampleValue unset or non-positive; using image-wide maximum as white reference"

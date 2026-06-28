@@ -138,15 +138,14 @@ impl ImageViewerApp {
                     list_guard.image_list_col_size_w,
                     list_guard.image_list_col_modified_w,
                 )
+                && domains::publish_list_snapshot(list_snapshot, &mut list_guard)
             {
-                if domains::publish_list_snapshot(list_snapshot, &mut list_guard) {
-                    view::assemble_directory_tree_view(
-                        view,
-                        tree_snapshot,
-                        list_snapshot,
-                        preview_snapshot,
-                    );
-                }
+                view::assemble_directory_tree_view(
+                    view,
+                    tree_snapshot,
+                    list_snapshot,
+                    preview_snapshot,
+                );
             }
         }
         let view_data = view.load();
@@ -170,19 +169,19 @@ impl ImageViewerApp {
         );
         let scanning = view_data.scanning();
         drop(chrome_guard);
-        if let (Some(mut tree_guard), Some(mut list_guard)) = (tree.try_lock(), list.try_lock()) {
-            if let Some(chrome_guard) = chrome.try_lock() {
-                chrome_guard.apply_to_domains(&mut tree_guard, &mut list_guard);
-                let tree_published = domains::publish_tree_snapshot(tree_snapshot, &mut tree_guard);
-                let list_published = domains::publish_list_snapshot(list_snapshot, &mut list_guard);
-                if tree_published || list_published {
-                    view::assemble_directory_tree_view(
-                        view,
-                        tree_snapshot,
-                        list_snapshot,
-                        preview_snapshot,
-                    );
-                }
+        if let (Some(mut tree_guard), Some(mut list_guard)) = (tree.try_lock(), list.try_lock())
+            && let Some(chrome_guard) = chrome.try_lock()
+        {
+            chrome_guard.apply_to_domains(&mut tree_guard, &mut list_guard);
+            let tree_published = domains::publish_tree_snapshot(tree_snapshot, &mut tree_guard);
+            let list_published = domains::publish_list_snapshot(list_snapshot, &mut list_guard);
+            if tree_published || list_published {
+                view::assemble_directory_tree_view(
+                    view,
+                    tree_snapshot,
+                    list_snapshot,
+                    preview_snapshot,
+                );
             }
         }
         scanning
@@ -502,12 +501,12 @@ impl ImageViewerApp {
 
         self.permute_image_file_arrays(&order);
         self.permute_index_keyed_caches(&old_to_new);
-        if let Some(path) = current_path {
-            if let Some(index) = self.image_files.iter().position(|entry| entry == &path) {
-                self.current_index = index;
-                self.image_status.set_current_index(self.current_index);
-                self.raw_metadata.set_current_index(self.current_index);
-            }
+        if let Some(path) = current_path
+            && let Some(index) = self.image_files.iter().position(|entry| entry == &path)
+        {
+            self.current_index = index;
+            self.image_status.set_current_index(self.current_index);
+            self.raw_metadata.set_current_index(self.current_index);
         }
         true
     }
@@ -1104,10 +1103,10 @@ impl ImageViewerApp {
         if let Some(width) = self.settings.directory_tree_embedded_panel_width {
             return width.max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH);
         }
-        if let Some(tree) = self.directory_tree.tree.try_lock() {
-            if tree.embedded_nav_panel_width > 0.0 {
-                return tree.embedded_nav_panel_width;
-            }
+        if let Some(tree) = self.directory_tree.tree.try_lock()
+            && tree.embedded_nav_panel_width > 0.0
+        {
+            return tree.embedded_nav_panel_width;
         }
         Self::directory_tree_embedded_panel_default_width(&self.settings)
     }
@@ -1360,21 +1359,20 @@ impl ImageViewerApp {
                 request_viewport_repaint.2,
                 request_viewport_repaint.3,
             )
-        {
-            if let (Some(_tree), Some(mut list)) = (
+            && let (Some(_tree), Some(mut list)) = (
                 self.directory_tree.tree.try_lock(),
                 self.directory_tree.list.try_lock(),
-            ) {
-                if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
-                    metadata_requests.push(request);
-                }
-                list.sync_warning = None;
-                sync_warning_cleared = true;
-                list.image_list_generation = list.image_list_generation.wrapping_add(1);
-                list.current_index = self.current_index;
-                list.image_list_col_widths_dirty = true;
-                list.scroll_image_list_to_current = true;
+            )
+        {
+            if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
+                metadata_requests.push(request);
             }
+            list.sync_warning = None;
+            sync_warning_cleared = true;
+            list.image_list_generation = list.image_list_generation.wrapping_add(1);
+            list.current_index = self.current_index;
+            list.image_list_col_widths_dirty = true;
+            list.scroll_image_list_to_current = true;
         }
 
         for request in metadata_requests {
@@ -1437,10 +1435,8 @@ impl ImageViewerApp {
             self.directory_tree_viewport_title_sent = true;
         }
         let apply_startup_position = !Self::detached_directory_tree_viewport_exists(ctx);
-        if apply_startup_position {
-            if let Some(pos) = outer_position {
-                builder = builder.with_position(pos);
-            }
+        if apply_startup_position && let Some(pos) = outer_position {
+            builder = builder.with_position(pos);
         }
 
         ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
@@ -1463,14 +1459,13 @@ impl ImageViewerApp {
             let app = unsafe { &mut *ptr };
             app.handle_cross_viewport_hotkeys(ui.ctx());
 
-            if startup_maximized {
-                if let Some(mut guard) = app.directory_tree.tree.try_lock()
-                    && !guard.detached_startup_maximize_applied
-                {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-                    guard.detached_startup_maximize_applied = true;
-                }
+            if startup_maximized
+                && let Some(mut guard) = app.directory_tree.tree.try_lock()
+                && !guard.detached_startup_maximize_applied
+            {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                guard.detached_startup_maximize_applied = true;
             }
 
             app.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());

@@ -133,11 +133,11 @@ impl ImageViewerApp {
         }
         self.raw_metadata.relocate_index(from, to);
 
-        if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to) {
-            if let Some(hdr) = self.hdr_image_cache.get(&to) {
-                let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
-                self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, to);
-            }
+        if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to)
+            && let Some(hdr) = self.hdr_image_cache.get(&to)
+        {
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+            self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, to);
         }
         self.hdr_raw_gpu_demosaic_pending_key_index
             .retain(|_, idx| *idx != from);
@@ -155,34 +155,34 @@ impl ImageViewerApp {
             pending.image_index = to;
             self.pending_anim_frames.insert(to, pending);
         }
-        if let Some(ref mut anim) = self.animation {
-            if anim.image_index == from {
-                anim.image_index = to;
-            }
+        if let Some(ref mut anim) = self.animation
+            && anim.image_index == from
+        {
+            anim.image_index = to;
         }
 
         // 6. Current HDR image states
-        if let Some(ref mut curr) = self.current_hdr_image {
-            if curr.index == from {
-                curr.index = to;
-            }
+        if let Some(ref mut curr) = self.current_hdr_image
+            && curr.index == from
+        {
+            curr.index = to;
         }
-        if let Some(ref mut curr) = self.current_hdr_tiled_image {
-            if curr.index == from {
-                curr.index = to;
-            }
+        if let Some(ref mut curr) = self.current_hdr_tiled_image
+            && curr.index == from
+        {
+            curr.index = to;
         }
-        if let Some(ref mut curr) = self.current_hdr_tiled_preview {
-            if curr.index == from {
-                curr.index = to;
-            }
+        if let Some(ref mut curr) = self.current_hdr_tiled_preview
+            && curr.index == from
+        {
+            curr.index = to;
         }
 
         // 7. Tile manager index
-        if let Some(ref mut manager) = self.tile_manager {
-            if manager.image_index == from {
-                manager.image_index = to;
-            }
+        if let Some(ref mut manager) = self.tile_manager
+            && manager.image_index == from
+        {
+            manager.image_index = to;
         }
 
         // 8. Global tile pixel cache
@@ -273,17 +273,17 @@ impl ImageViewerApp {
         self.pending_anim_frames.retain(|&idx, _| idx == except_idx);
 
         // 4. Other states
-        if let Some(ref anim) = self.animation {
-            if anim.image_index != except_idx {
-                self.animation = None;
-            }
+        if let Some(ref anim) = self.animation
+            && anim.image_index != except_idx
+        {
+            self.animation = None;
         }
 
         // Keep self.tile_manager if its index matches except_idx
-        if let Some(ref manager) = self.tile_manager {
-            if manager.image_index != except_idx {
-                self.tile_manager = None;
-            }
+        if let Some(ref manager) = self.tile_manager
+            && manager.image_index != except_idx
+        {
+            self.tile_manager = None;
         }
 
         self.prev_texture = None;
@@ -612,31 +612,31 @@ impl ImageViewerApp {
             }
         }
 
-        if let Some(ref mut anim) = self.animation {
-            if anim.image_index < old_to_new.len() {
-                anim.image_index = old_to_new[anim.image_index];
-            }
+        if let Some(ref mut anim) = self.animation
+            && anim.image_index < old_to_new.len()
+        {
+            anim.image_index = old_to_new[anim.image_index];
         }
 
-        if let Some(ref mut curr) = self.current_hdr_image {
-            if curr.index < old_to_new.len() {
-                curr.index = old_to_new[curr.index];
-            }
+        if let Some(ref mut curr) = self.current_hdr_image
+            && curr.index < old_to_new.len()
+        {
+            curr.index = old_to_new[curr.index];
         }
-        if let Some(ref mut curr) = self.current_hdr_tiled_image {
-            if curr.index < old_to_new.len() {
-                curr.index = old_to_new[curr.index];
-            }
+        if let Some(ref mut curr) = self.current_hdr_tiled_image
+            && curr.index < old_to_new.len()
+        {
+            curr.index = old_to_new[curr.index];
         }
-        if let Some(ref mut curr) = self.current_hdr_tiled_preview {
-            if curr.index < old_to_new.len() {
-                curr.index = old_to_new[curr.index];
-            }
+        if let Some(ref mut curr) = self.current_hdr_tiled_preview
+            && curr.index < old_to_new.len()
+        {
+            curr.index = old_to_new[curr.index];
         }
-        if let Some(ref mut manager) = self.tile_manager {
-            if manager.image_index < old_to_new.len() {
-                manager.image_index = old_to_new[manager.image_index];
-            }
+        if let Some(ref mut manager) = self.tile_manager
+            && manager.image_index < old_to_new.len()
+        {
+            manager.image_index = old_to_new[manager.image_index];
         }
 
         crate::tile_cache::PIXEL_CACHE

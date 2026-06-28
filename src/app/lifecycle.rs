@@ -134,7 +134,7 @@ impl ImageViewerApp {
                 crate::app::background_yaml_saver::run_coalescing_periodic_saver(
                     hotkeys_save_rx,
                     crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    |cfg| crate::hotkeys::io::save_hotkeys_file(cfg),
+                    crate::hotkeys::io::save_hotkeys_file,
                     |e| {
                         let _ = hotkeys_save_error_tx.send(e);
                     },
@@ -168,7 +168,7 @@ impl ImageViewerApp {
                 crate::app::background_yaml_saver::run_coalescing_periodic_saver(
                     context_menu_save_rx,
                     crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    |cfg| crate::context_menu::io::save_context_menu_file(cfg),
+                    crate::context_menu::io::save_context_menu_file,
                     |e| {
                         let _ = context_menu_save_error_tx.send(e);
                     },
