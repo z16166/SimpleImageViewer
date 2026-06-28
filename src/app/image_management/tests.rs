@@ -805,6 +805,8 @@ fn background_preload_schedule_with_force_neighbors() {
     app.current_index = 0;
     app.settings.raw_high_quality = true;
     app.settings.preload = true;
+    app.cached_available_memory_mb = 8192;
+    app.cached_total_memory_mb = 16384;
 
     // Simulate current RAW image has already loaded its HDR plane (e.g. after retain on capacity refine)
     let dummy_hdr = std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
