@@ -1316,7 +1316,7 @@ mod tiled_hq_preview_apply_tests {
             crate::loader::TextureCacheInsert {
                 orig_w: 69_536,
                 orig_h: 22_230,
-                needs_tile_manager: false,
+                needs_tile_manager: true,
                 current_index: 0,
                 total_count: 10,
             },

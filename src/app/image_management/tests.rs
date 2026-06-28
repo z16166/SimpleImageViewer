@@ -2325,7 +2325,9 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
 
     use crate::loader::{LoadResult, LoaderOutput, PreviewBundle, source_key_for_path};
     let source_key = source_key_for_path(&app.image_files[0]);
-    let decode_profile = app.decode_profile_for_index(0);
+    let mut decode_profile = crate::loader::decode_profile_stub();
+    decode_profile.raw_high_quality = app.settings.raw_high_quality;
+    decode_profile.raw_demosaic_mode = app.raw_demosaic_mode_for_index(0);
     app.loader
         .test_send_loader_output(LoaderOutput::Image(Box::new(LoadResult {
             index: 0,

@@ -855,8 +855,7 @@ unsafe fn apply_display_p3_matrix4_neon(
 }
 
 #[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn compose_gain4_neon(
+struct NeonGain4 {
     linear_r: float32x4_t,
     linear_g: float32x4_t,
     linear_b: float32x4_t,
@@ -864,12 +863,26 @@ unsafe fn compose_gain4_neon(
     gain_r: float32x4_t,
     gain_g: float32x4_t,
     gain_b: float32x4_t,
-    headroom_span: f32,
-    weight: f32,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn compose_gain4_neon(
+    inputs: NeonGain4,
+    transform: ComposeRowTransform<'_>,
 ) -> (float32x4_t, float32x4_t, float32x4_t, float32x4_t) {
+    let NeonGain4 {
+        linear_r,
+        linear_g,
+        linear_b,
+        alpha,
+        gain_r,
+        gain_g,
+        gain_b,
+    } = inputs;
     let one = vdupq_n_f32(1.0);
-    let span = vdupq_n_f32(headroom_span);
-    let w = vdupq_n_f32(weight);
+    let span = vdupq_n_f32(transform.headroom_span);
+    let w = vdupq_n_f32(transform.weight);
     let zero = vdupq_n_f32(0.0);
     let scale_r = vaddq_f32(one, vmulq_f32(span, vmulq_f32(gain_r, w)));
     let scale_g = vaddq_f32(one, vmulq_f32(span, vmulq_f32(gain_g, w)));
@@ -913,12 +926,7 @@ pub(crate) unsafe fn compose_row_neon(
     row_out: &mut [f32],
     width: u32,
     gain_rgb: &[f32],
-    path: ComposeFastPath,
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
+    transform: ComposeRowTransform<'_>,
 ) {
     unsafe {
         let in_ptr = row_in.as_ptr();
@@ -928,28 +936,28 @@ pub(crate) unsafe fn compose_row_neon(
         while x + SIMD_PIXELS_PER_STEP <= width {
             let offset = x as usize * 4;
             let (r, g, b, a) = load_rgba_pixel4_neon(in_ptr, offset);
-            let (mut lr, mut lg, mut lb) = apply_transfer4_neon(r, g, b, path);
-            if path_applies_display_p3_matrix(path) {
+            let (mut lr, mut lg, mut lb) = apply_transfer4_neon(r, g, b, transform.path);
+            if path_applies_display_p3_matrix(transform.path) {
                 (lr, lg, lb) = apply_display_p3_matrix4_neon(lr, lg, lb);
             }
             let (gain_r, gain_g, gain_b) = gather_gain_rgb4_neon(gain_ptr, x as usize);
-            let (out_r, out_g, out_b, out_a) =
-                compose_gain4_neon(lr, lg, lb, a, gain_r, gain_g, gain_b, headroom_span, weight);
+            let (out_r, out_g, out_b, out_a) = compose_gain4_neon(
+                NeonGain4 {
+                    linear_r: lr,
+                    linear_g: lg,
+                    linear_b: lb,
+                    alpha: a,
+                    gain_r,
+                    gain_g,
+                    gain_b,
+                },
+                transform,
+            );
             store_rgba_pixel4_neon(out_ptr, offset, out_r, out_g, out_b, out_a);
             x += SIMD_PIXELS_PER_STEP;
         }
         while x < width {
-            compose_pixel_scalar(
-                row_in,
-                row_out,
-                x,
-                gain_rgb,
-                color_space,
-                transfer,
-                metadata,
-                headroom_span,
-                weight,
-            );
+            compose_pixel_scalar(row_in, row_out, x, gain_rgb, transform);
             x += 1;
         }
     }
