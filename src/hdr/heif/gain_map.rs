@@ -230,16 +230,10 @@ pub(crate) fn decode_heif_gain_map(
         );
         return None;
     }
-    let gain_image = RawHeifImage(unsafe {
-        libheif_sys::HeifImageGuard::from_ptr(image_ptr)
-    });
+    let gain_image = RawHeifImage(unsafe { libheif_sys::HeifImageGuard::from_ptr(image_ptr) });
 
-    let width_i = unsafe {
-        libheif_sys::heif_image_get_primary_width(gain_image.as_ptr())
-    };
-    let height_i = unsafe {
-        libheif_sys::heif_image_get_primary_height(gain_image.as_ptr())
-    };
+    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(gain_image.as_ptr()) };
+    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(gain_image.as_ptr()) };
     if width_i <= 0 || height_i <= 0 {
         log::warn!(
             "[HDR] Invalid auxiliary gain map dimensions: {}x{}",

@@ -18,7 +18,6 @@
 
 use std::sync::Arc;
 
-
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPreviewJobResult, StripPreviewBufferTag,
@@ -26,20 +25,19 @@ use crate::app::directory_tree_strip_cache::{
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
     DecodedImage, PreviewStage, downsample_decoded_for_strip,
-    generate_directory_tree_thumb_from_path,
-    preview_aspect_matches_logical,
+    generate_directory_tree_thumb_from_path, preview_aspect_matches_logical,
 };
 
 #[cfg(target_os = "windows")]
 use super::super::workers::ensure_strip_worker_com_initialized;
 use super::{
-    BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS, MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+    BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
+    MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
 };
 
 use super::send_strip_inflight_release;
 
 impl ImageViewerApp {
-
     pub(super) fn try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
         &mut self,
         index: usize,
@@ -106,7 +104,6 @@ impl ImageViewerApp {
         });
         true
     }
-
 
     pub(crate) fn try_schedule_strip_from_hdr_image_cache(&mut self, index: usize) -> bool {
         let Some(hdr) = self.hdr_image_cache.get(&index).cloned() else {
@@ -211,7 +208,6 @@ impl ImageViewerApp {
         true
     }
 
-
     pub(crate) fn try_sync_strip_from_tile_manager_preview(&mut self, index: usize) {
         // Main-window tile previews live on the ROOT egui context; cloning their
         // TextureHandle into the strip cache breaks painting on the detached nav viewport.
@@ -240,14 +236,17 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
-            index,
-            crate::loader::PreviewStage::Refined,
-            StripPreviewBufferTag::MainWindowTiledPreview,
-            Some(logical),
-            preview_w,
-            preview_h,
-        ) {
+        if !self
+            .directory_tree_strip_cache
+            .strip_texture_handle_would_replace(
+                index,
+                crate::loader::PreviewStage::Refined,
+                StripPreviewBufferTag::MainWindowTiledPreview,
+                Some(logical),
+                preview_w,
+                preview_h,
+            )
+        {
             return;
         }
         let _ = self.directory_tree_strip_cache.insert_from_texture_handle(
@@ -261,7 +260,6 @@ impl ImageViewerApp {
             self.image_files.len(),
         );
     }
-
 
     pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize) {
         // Main-window texture_cache handles are ROOT-context textures; the detached
@@ -297,14 +295,17 @@ impl ImageViewerApp {
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
-        if !self.directory_tree_strip_cache.strip_texture_handle_would_replace(
-            index,
-            crate::loader::PreviewStage::Refined,
-            StripPreviewBufferTag::MainWindowTextureCacheSdr,
-            Some(logical),
-            preview_w,
-            preview_h,
-        ) {
+        if !self
+            .directory_tree_strip_cache
+            .strip_texture_handle_would_replace(
+                index,
+                crate::loader::PreviewStage::Refined,
+                StripPreviewBufferTag::MainWindowTextureCacheSdr,
+                Some(logical),
+                preview_w,
+                preview_h,
+            )
+        {
             return;
         }
         if self.directory_tree_strip_cache.insert_from_texture_handle(
@@ -329,7 +330,6 @@ impl ImageViewerApp {
             );
         }
     }
-
 
     pub(crate) fn try_schedule_strip_compose_upgrade(&mut self, index: usize) {
         if !self.strip_needs_compose_upgrade(index) {
@@ -393,7 +393,6 @@ impl ImageViewerApp {
         });
     }
 
-
     pub(super) fn collect_cold_strip_thumbnail_candidates(
         &self,
         visible_row_range: Option<(usize, usize)>,
@@ -409,7 +408,8 @@ impl ImageViewerApp {
             return Vec::new();
         }
         let current = self.current_index.min(total.saturating_sub(1));
-        let mut ordered = Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
+        let mut ordered =
+            Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
         // Per-frame dedup guard: at most MAX_COLD_STRIP_SCHEDULE_PER_FRAME (32) items end up
         // in this Vec — a linear scan is faster than the hash-table allocation + hashing overhead.
         let mut seen = Vec::with_capacity(MAX_COLD_STRIP_SCHEDULE_PER_FRAME);
@@ -460,7 +460,6 @@ impl ImageViewerApp {
 
         ordered
     }
-
 
     pub(crate) fn try_generate_cold_directory_tree_strip_thumbnail(&mut self, index: usize) {
         if !self.strip_index_needs_cold_thumbnail(index) {
@@ -562,7 +561,6 @@ impl ImageViewerApp {
             }
         });
     }
-
 
     pub(crate) fn try_generate_directory_tree_strip_from_tiled_source(&mut self, index: usize) {
         if self.directory_tree_strip_tiled_attempted.contains(&index)
@@ -666,5 +664,4 @@ impl ImageViewerApp {
             }
         });
     }
-
 }

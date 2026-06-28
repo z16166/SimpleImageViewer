@@ -15,5 +15,5 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Library surface for isolated unit tests and shared modules.
-pub mod simd_swizzle;
 pub mod simd_downsample;
+pub mod simd_swizzle;

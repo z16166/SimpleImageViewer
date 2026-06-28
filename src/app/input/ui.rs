@@ -134,8 +134,8 @@ impl ImageViewerApp {
             ModalAction::ConfirmTagged(tag) => match tag {
                 ConfirmTag::EnableRecursiveScan => {
                     self.settings.recursive = true;
-                    if let Some(dir) = self.settings.last_image_dir.clone() {
-                        self.load_directory(dir);
+                    if let Some(dir) = self.current_browse_directory() {
+                        self.reload_current_browse_directory(dir);
                     }
                     self.queue_save();
                 }

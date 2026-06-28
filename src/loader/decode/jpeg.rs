@@ -182,8 +182,12 @@ pub(crate) fn try_decode_jpeg_strip_dct(
     };
 
     if orientation > 1 {
-        let (out_w, out_h, out_pixels) =
-            crate::libtiff_loader::apply_orientation_buffer(pixels, scaled_w, scaled_h, orientation);
+        let (out_w, out_h, out_pixels) = crate::libtiff_loader::apply_orientation_buffer(
+            pixels,
+            scaled_w,
+            scaled_h,
+            orientation,
+        );
         Some(Ok((DecodedImage::new(out_w, out_h, out_pixels), logical)))
     } else {
         Some(Ok((DecodedImage::new(scaled_w, scaled_h, pixels), logical)))

@@ -25,9 +25,9 @@
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::sync::Once;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "macos")]
 static INSTALL_ONCE: Once = Once::new();
@@ -78,11 +78,7 @@ const OBSERVER_CLASS: &str = "SIVScreenParametersObserver";
 const NOTIFICATION_NAME: &str = "NSApplicationDidChangeScreenParametersNotification";
 
 #[cfg(target_os = "macos")]
-extern "C" fn screen_parameters_changed(
-    _this: ObjcId,
-    _sel: ObjcSel,
-    _notification: ObjcId,
-) {
+extern "C" fn screen_parameters_changed(_this: ObjcId, _sel: ObjcSel, _notification: ObjcId) {
     HEADROOM_DIRTY.store(true, Ordering::Release);
 }
 

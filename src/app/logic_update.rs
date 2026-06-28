@@ -440,14 +440,9 @@ impl ImageViewerApp {
         );
         let (output_mode, render_output_mode) = {
             let es = self.frame_effective_hdr_monitor_selection.as_ref();
-            let om = crate::hdr::monitor::effective_capability_output_mode(
-                self.hdr_target_format,
-                es,
-            );
-            let rom = crate::hdr::monitor::effective_render_output_mode(
-                self.hdr_target_format,
-                es,
-            );
+            let om =
+                crate::hdr::monitor::effective_capability_output_mode(self.hdr_target_format, es);
+            let rom = crate::hdr::monitor::effective_render_output_mode(self.hdr_target_format, es);
             (om, rom)
         };
         if matches!(

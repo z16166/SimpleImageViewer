@@ -366,7 +366,9 @@ fn jxl_finish_static_frame(
         strip_baseline_only,
     ) {
         JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
-            return Ok(ImageData::Static(DecodedImage::new(width, height, baseline)));
+            return Ok(ImageData::Static(DecodedImage::new(
+                width, height, baseline,
+            )));
         }
         JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
         | JxlJhgmFrameOutcome::GpuDeferred(hdr)
@@ -458,9 +460,7 @@ fn jxl_build_hdr_animated_image_data(
             false,
         ) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(_) => {
-                return Err(
-                    "JPEG XL animated jhgm strip baseline is not supported".to_string(),
-                );
+                return Err("JPEG XL animated jhgm strip baseline is not supported".to_string());
             }
             JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
             | JxlJhgmFrameOutcome::GpuDeferred(hdr)
@@ -562,11 +562,9 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let tone_map = HdrToneMapSettings::default();
     match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true)? {
-        ImageData::Static(mut decoded) => Ok((
-            decoded.take_rgba_owned(),
-            decoded.width,
-            decoded.height,
-        )),
+        ImageData::Static(mut decoded) => {
+            Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
+        }
         ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_) => {
             Err("JPEG XL strip baseline expected Static image data".to_string())
         }

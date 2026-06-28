@@ -444,7 +444,7 @@ fn probe_netflix_cosmos_raw_decode() {
 #[test]
 fn probe_gain_map_sample_avif_base_hdr_folder() {
     use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
-    use crate::hdr::types::{HdrToneMapSettings, DEFAULT_SDR_WHITE_NITS};
+    use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrToneMapSettings};
     use crate::loader::hdr_has_iso_deferred_gain_map;
 
     let dir = std::path::Path::new(

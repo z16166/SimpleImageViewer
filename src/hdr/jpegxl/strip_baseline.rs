@@ -120,14 +120,10 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(
                 )));
             }
             libjxl_sys::JXL_DEC_ERROR => {
-                return Some(Err(
-                    "libjxl strip preview decode failed".to_string(),
-                ));
+                return Some(Err("libjxl strip preview decode failed".to_string()));
             }
             libjxl_sys::JXL_DEC_NEED_MORE_INPUT => {
-                return Some(Err(
-                    "libjxl strip preview requested more input".to_string(),
-                ));
+                return Some(Err("libjxl strip preview requested more input".to_string()));
             }
             libjxl_sys::JXL_DEC_BASIC_INFO => {
                 let mut info = std::mem::MaybeUninit::<libjxl_sys::JxlBasicInfo>::zeroed();

@@ -131,7 +131,7 @@ pub(crate) fn open_heif_primary_from_bytes(
 
     let context = HeifCtxGuard(
         libheif_sys::HeifContextGuard::new()
-            .ok_or_else(|| "Failed to allocate libheif context".to_string())?
+            .ok_or_else(|| "Failed to allocate libheif context".to_string())?,
     );
 
     ensure_heif_ok_lib(
@@ -148,7 +148,9 @@ pub(crate) fn open_heif_primary_from_bytes(
 
     let mut handle_ptr = std::ptr::null_mut();
     ensure_heif_ok_lib(
-        unsafe { libheif_sys::heif_context_get_primary_image_handle(context.as_ptr(), &mut handle_ptr) },
+        unsafe {
+            libheif_sys::heif_context_get_primary_image_handle(context.as_ptr(), &mut handle_ptr)
+        },
         "get HEIF primary image",
     )?;
     if handle_ptr.is_null() {
@@ -157,9 +159,7 @@ pub(crate) fn open_heif_primary_from_bytes(
 
     Ok((
         context,
-        HeifPrimaryGuard(unsafe {
-            libheif_sys::HeifImageHandleGuard::from_ptr(handle_ptr)
-        }),
+        HeifPrimaryGuard(unsafe { libheif_sys::HeifImageHandleGuard::from_ptr(handle_ptr) }),
     ))
 }
 

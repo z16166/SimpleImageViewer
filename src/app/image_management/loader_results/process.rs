@@ -223,10 +223,7 @@ impl ImageViewerApp {
                                 load_result.source_key,
                             );
                             self.loader.finish_image_request(idx);
-                            if is_current
-                                && !self.has_loaded_asset(idx)
-                                && source_still_valid
-                            {
+                            if is_current && !self.has_loaded_asset(idx) && source_still_valid {
                                 self.sync_loader_preload_plan();
                                 self.schedule_current_image_load_if_needed();
                             }

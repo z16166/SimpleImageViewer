@@ -253,7 +253,9 @@ pub(crate) fn finish_jxl_jhgm_frame(
     let color_space = metadata.color_space_hint();
     if strip_baseline_only {
         return JxlJhgmFrameOutcome::IsoGainMapBaseline(jxl_rgba_f32_to_iso_sdr_baseline(
-            rgba, color_space, metadata,
+            rgba,
+            color_space,
+            metadata,
         ));
     }
     match apply_jxl_jhgm_gain_map_gpu_deferred(

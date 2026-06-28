@@ -40,13 +40,7 @@ use core::arch::aarch64::*;
 /// likewise leave the output pixel at zero.
 ///
 /// Returns an empty `Vec<u8>` if any dimension is zero.
-pub fn downsample_rgba8_box(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> Vec<u8> {
+pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     // Zero dimensions would divide-by-zero in the scalar path and UB in SIMD
     // paths via get_unchecked.  Return empty — all callers guarantee non-zero
     // but this is a public API.
@@ -137,8 +131,7 @@ fn downsample_rgba8_box_scalar(
 
         for dst_x in 0..dst_w {
             let src_x0 = (dst_x as u64 * src_w as u64) / dst_w as u64;
-            let src_x1 =
-                ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
+            let src_x1 = ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
             let src_x1 = src_x1.min(src_w as u64);
 
             let mut sum_r: u64 = 0;
@@ -249,20 +242,10 @@ unsafe fn downsample_rgba8_box_sse41(
                             continue;
                         }
 
-                        let r_v =
-                            _mm_and_si128(_mm_set1_epi32((px & 0xFF) as i32), active);
-                        let g_v = _mm_and_si128(
-                            _mm_set1_epi32(((px >> 8) & 0xFF) as i32),
-                            active,
-                        );
-                        let b_v = _mm_and_si128(
-                            _mm_set1_epi32(((px >> 16) & 0xFF) as i32),
-                            active,
-                        );
-                        let a_v = _mm_and_si128(
-                            _mm_set1_epi32(((px >> 24) & 0xFF) as i32),
-                            active,
-                        );
+                        let r_v = _mm_and_si128(_mm_set1_epi32((px & 0xFF) as i32), active);
+                        let g_v = _mm_and_si128(_mm_set1_epi32(((px >> 8) & 0xFF) as i32), active);
+                        let b_v = _mm_and_si128(_mm_set1_epi32(((px >> 16) & 0xFF) as i32), active);
+                        let a_v = _mm_and_si128(_mm_set1_epi32(((px >> 24) & 0xFF) as i32), active);
 
                         acc_r = _mm_add_epi32(acc_r, r_v);
                         acc_g = _mm_add_epi32(acc_g, g_v);
@@ -368,10 +351,8 @@ unsafe fn downsample_rgba8_box_avx2(
                 let x0_v = _mm256_loadu_si256(x0.as_ptr().add(base_x) as *const __m256i);
                 let x1_v = _mm256_loadu_si256(x1.as_ptr().add(base_x) as *const __m256i);
 
-                let merged_x0 =
-                    (0..8).fold(u32::MAX, |m, i| core::cmp::min(m, x0[base_x + i]));
-                let merged_x1 =
-                    (0..8).fold(0_u32, |m, i| core::cmp::max(m, x1[base_x + i]));
+                let merged_x0 = (0..8).fold(u32::MAX, |m, i| core::cmp::min(m, x0[base_x + i]));
+                let merged_x1 = (0..8).fold(0_u32, |m, i| core::cmp::max(m, x1[base_x + i]));
 
                 for sy in y0..y1 {
                     let row_off = sy as usize * row_stride;
@@ -404,22 +385,13 @@ unsafe fn downsample_rgba8_box_avx2(
                             continue;
                         }
 
-                        let r_v = _mm256_and_si256(
-                            _mm256_set1_epi32((px & 0xFF) as i32),
-                            active,
-                        );
-                        let g_v = _mm256_and_si256(
-                            _mm256_set1_epi32(((px >> 8) & 0xFF) as i32),
-                            active,
-                        );
-                        let b_v = _mm256_and_si256(
-                            _mm256_set1_epi32(((px >> 16) & 0xFF) as i32),
-                            active,
-                        );
-                        let a_v = _mm256_and_si256(
-                            _mm256_set1_epi32(((px >> 24) & 0xFF) as i32),
-                            active,
-                        );
+                        let r_v = _mm256_and_si256(_mm256_set1_epi32((px & 0xFF) as i32), active);
+                        let g_v =
+                            _mm256_and_si256(_mm256_set1_epi32(((px >> 8) & 0xFF) as i32), active);
+                        let b_v =
+                            _mm256_and_si256(_mm256_set1_epi32(((px >> 16) & 0xFF) as i32), active);
+                        let a_v =
+                            _mm256_and_si256(_mm256_set1_epi32(((px >> 24) & 0xFF) as i32), active);
 
                         acc_r = _mm256_add_epi32(acc_r, r_v);
                         acc_g = _mm256_add_epi32(acc_g, g_v);
@@ -555,15 +527,12 @@ unsafe fn downsample_rgba8_box_neon(
                         let active = vandq_u32(mask_ge, mask_lt);
 
                         // Check if any lane is active via horizontal OR reduction.
-                        let or_low_high = vorr_u32(
-                            vget_low_u32(active),
-                            vget_high_u32(active),
-                        );
+                        let or_low_high = vorr_u32(vget_low_u32(active), vget_high_u32(active));
                         let any_active = vget_lane_u32::<0>(vorr_u32(
                             or_low_high,
-                            vreinterpret_u32_u64(vshr_n_u64::<32>(
-                                vreinterpret_u64_u32(or_low_high),
-                            )),
+                            vreinterpret_u32_u64(vshr_n_u64::<32>(vreinterpret_u64_u32(
+                                or_low_high,
+                            ))),
                         )) != 0;
 
                         if !any_active {
@@ -571,12 +540,9 @@ unsafe fn downsample_rgba8_box_neon(
                         }
 
                         let r_v = vandq_u32(vdupq_n_u32(px & 0xFF), active);
-                        let g_v =
-                            vandq_u32(vdupq_n_u32((px >> 8) & 0xFF), active);
-                        let b_v =
-                            vandq_u32(vdupq_n_u32((px >> 16) & 0xFF), active);
-                        let a_v =
-                            vandq_u32(vdupq_n_u32((px >> 24) & 0xFF), active);
+                        let g_v = vandq_u32(vdupq_n_u32((px >> 8) & 0xFF), active);
+                        let b_v = vandq_u32(vdupq_n_u32((px >> 16) & 0xFF), active);
+                        let a_v = vandq_u32(vdupq_n_u32((px >> 24) & 0xFF), active);
 
                         acc_r = vaddq_u32(acc_r, r_v);
                         acc_g = vaddq_u32(acc_g, g_v);
@@ -661,14 +627,12 @@ mod tests {
 
         for dst_y in 0..dst_h {
             let src_y0 = (dst_y as u64 * src_h as u64) / dst_h as u64;
-            let src_y1 =
-                ((dst_y + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64;
+            let src_y1 = ((dst_y + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64;
             let src_y1 = src_y1.min(src_h as u64);
 
             for dst_x in 0..dst_w {
                 let src_x0 = (dst_x as u64 * src_w as u64) / dst_w as u64;
-                let src_x1 =
-                    ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
+                let src_x1 = ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
                 let src_x1 = src_x1.min(src_w as u64);
 
                 let mut sum_r: u64 = 0;
