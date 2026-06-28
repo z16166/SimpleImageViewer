@@ -43,7 +43,7 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
         uploaded_planes: None,
         device_id: None,
     };
-    loader.test_send_loader_output(LoaderOutput::Image(load_result));
+    loader.test_send_loader_output(LoaderOutput::Image(Box::new(load_result)));
 
     let output = loader.poll().expect("polled image result");
     assert!(matches!(output, LoaderOutput::Image(_)));

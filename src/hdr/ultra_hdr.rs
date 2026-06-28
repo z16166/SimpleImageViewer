@@ -44,8 +44,6 @@ use crate::hdr::types::{
 };
 #[cfg(test)]
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
-#[cfg(test)]
-use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
 use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
 
 #[cfg(test)]

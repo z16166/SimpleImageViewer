@@ -228,17 +228,17 @@ mod tests {
         let sdr_rgba = vec![128_u8, 64, 32, 255, 200, 100, 50, 255];
         let gain_rgba = vec![128_u8, 128, 128, 255, 64, 64, 64, 255];
         let capacity = 4.0_f32;
-        let deferred = attach_avif_gain_map_gpu_deferred(
-            1,
-            2,
-            sdr_rgba.clone(),
-            1,
-            2,
-            gain_rgba.clone(),
+        let deferred = attach_avif_gain_map_gpu_deferred(AvifGainMapDeferredInput {
+            width: 1,
+            height: 2,
+            sdr_rgba: sdr_rgba.clone(),
+            gain_width: 1,
+            gain_height: 2,
+            gain_rgba: gain_rgba.clone(),
             gain_metadata,
-            HdrLuminanceMetadata::default(),
-            capacity,
-        )
+            container_luminance: HdrLuminanceMetadata::default(),
+            target_hdr_capacity: capacity,
+        })
         .expect("attach");
         assert!(deferred.rgba_f32.is_empty());
         let iso_deferred = deferred
@@ -277,17 +277,17 @@ mod tests {
             hdr_capacity_max: 4.0,
             backward_direction: true,
         };
-        let err = attach_avif_gain_map_gpu_deferred(
-            1,
-            1,
-            vec![128; 4],
-            1,
-            1,
-            vec![128; 4],
+        let err = attach_avif_gain_map_gpu_deferred(AvifGainMapDeferredInput {
+            width: 1,
+            height: 1,
+            sdr_rgba: vec![128; 4],
+            gain_width: 1,
+            gain_height: 1,
+            gain_rgba: vec![128; 4],
             gain_metadata,
-            HdrLuminanceMetadata::default(),
-            4.0,
-        )
+            container_luminance: HdrLuminanceMetadata::default(),
+            target_hdr_capacity: 4.0,
+        })
         .expect_err("backward");
         assert!(err.contains("backward"));
     }

@@ -1286,7 +1286,17 @@ mod tiled_hq_preview_apply_tests {
         let color_image = ColorImage::from_rgba_unmultiplied([512, 164], &vec![0u8; 512 * 164 * 4]);
         let handle = ctx.load_texture("boot", color_image, TextureOptions::LINEAR);
         let mut cache = crate::loader::TextureCache::new(4);
-        cache.insert(0, handle, 69_536, 22_230, true, 0, 10);
+        cache.insert(
+            0,
+            handle,
+            crate::loader::TextureCacheInsert {
+                orig_w: 69_536,
+                orig_h: 22_230,
+                needs_tile_manager: true,
+                current_index: 0,
+                total_count: 10,
+            },
+        );
         assert_eq!(
             tiled_existing_preview_stage(&cache, 0, true),
             Some(PreviewStage::Initial)
@@ -1300,7 +1310,17 @@ mod tiled_hq_preview_apply_tests {
             ColorImage::from_rgba_unmultiplied([1024, 328], &vec![0u8; 1024 * 328 * 4]);
         let handle = ctx.load_texture("hq", color_image, TextureOptions::LINEAR);
         let mut cache = crate::loader::TextureCache::new(4);
-        cache.insert(0, handle, 69_536, 22_230, true, 0, 10);
+        cache.insert(
+            0,
+            handle,
+            crate::loader::TextureCacheInsert {
+                orig_w: 69_536,
+                orig_h: 22_230,
+                needs_tile_manager: false,
+                current_index: 0,
+                total_count: 10,
+            },
+        );
         assert_eq!(
             tiled_existing_preview_stage(&cache, 0, true),
             Some(PreviewStage::Refined)

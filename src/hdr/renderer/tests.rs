@@ -269,16 +269,20 @@ fn libavif_tone_map_native_display_scale_matches_encode_sdr_peak_scaler() {
 #[test]
 fn tile_tone_map_uniform_carries_rotation() {
     let uniform = tile_tone_map_uniform(
-        HdrToneMapSettings::default(),
-        6,
-        0.5,
-        HdrRenderOutputMode::NativeHdr,
-        wgpu::TextureFormat::Rgba16Float,
-        HdrColorSpace::LinearSrgb,
-        HdrTransferFunction::Linear,
-        HdrReference::Unknown,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
+        ToneMapCommonParams {
+            settings: HdrToneMapSettings::default(),
+            rotation_steps: 6,
+            alpha: 0.5,
+            output_mode: HdrRenderOutputMode::NativeHdr,
+            framebuffer_format: wgpu::TextureFormat::Rgba16Float,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale: 1.0,
+        },
+        ToneMapInputMetadata {
+            color_space: HdrColorSpace::LinearSrgb,
+            transfer_function: HdrTransferFunction::Linear,
+            reference: HdrReference::Unknown,
+        },
     );
 
     assert_eq!(uniform.rotation_steps, 2);
@@ -289,16 +293,23 @@ fn tile_tone_map_uniform_carries_rotation() {
 #[test]
 fn tile_tone_map_uniform_carries_uv_subrect() {
     let uniform = tile_tone_map_uniform(
-        HdrToneMapSettings::default(),
-        0,
-        1.0,
-        HdrRenderOutputMode::NativeHdr,
-        wgpu::TextureFormat::Rgba16Float,
-        HdrColorSpace::LinearSrgb,
-        HdrTransferFunction::Linear,
-        HdrReference::Unknown,
-        egui::Rect::from_min_max(egui::Pos2::new(0.25, 0.5), egui::Pos2::new(0.75, 1.0)),
-        1.0,
+        ToneMapCommonParams {
+            settings: HdrToneMapSettings::default(),
+            rotation_steps: 0,
+            alpha: 1.0,
+            output_mode: HdrRenderOutputMode::NativeHdr,
+            framebuffer_format: wgpu::TextureFormat::Rgba16Float,
+            uv_rect: egui::Rect::from_min_max(
+                egui::Pos2::new(0.25, 0.5),
+                egui::Pos2::new(0.75, 1.0),
+            ),
+            native_display_scale: 1.0,
+        },
+        ToneMapInputMetadata {
+            color_space: HdrColorSpace::LinearSrgb,
+            transfer_function: HdrTransferFunction::Linear,
+            reference: HdrReference::Unknown,
+        },
     );
 
     assert_eq!(uniform.uv_min, [0.25, 0.5]);
@@ -328,27 +339,35 @@ fn image_and_tile_uniforms_share_transform_output_and_color_space_logic() {
 
     let image_uniform = image_tone_map_uniform(
         &image,
-        settings,
-        5,
-        0.75,
-        HdrRenderOutputMode::SdrToneMapped,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
-        false,
-        None,
+        ImageToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings,
+                rotation_steps: 5,
+                alpha: 0.75,
+                output_mode: HdrRenderOutputMode::SdrToneMapped,
+                framebuffer_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                native_display_scale: 1.0,
+            },
+            gpu_composed_scene_linear: false,
+            ripple: None,
+        },
     );
     let tile_uniform = tile_tone_map_uniform(
-        settings,
-        5,
-        0.75,
-        HdrRenderOutputMode::SdrToneMapped,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        HdrColorSpace::Rec2020Linear,
-        HdrTransferFunction::Linear,
-        HdrReference::Unknown,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
+        ToneMapCommonParams {
+            settings,
+            rotation_steps: 5,
+            alpha: 0.75,
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            framebuffer_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale: 1.0,
+        },
+        ToneMapInputMetadata {
+            color_space: HdrColorSpace::Rec2020Linear,
+            transfer_function: HdrTransferFunction::Linear,
+            reference: HdrReference::Unknown,
+        },
     );
 
     assert_eq!(image_uniform.rotation_steps, tile_uniform.rotation_steps);
@@ -387,18 +406,21 @@ fn image_tone_map_uniform_marks_deferred_gpu_compose_as_scene_linear() {
         metadata,
         rgba_f32: Arc::new(Vec::new()),
     };
-    let settings = HdrToneMapSettings::default();
     let uniform = image_tone_map_uniform(
         &image,
-        settings,
-        0,
-        1.0,
-        HdrRenderOutputMode::SdrToneMapped,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
-        true,
-        None,
+        ImageToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: HdrToneMapSettings::default(),
+                rotation_steps: 0,
+                alpha: 1.0,
+                output_mode: HdrRenderOutputMode::SdrToneMapped,
+                framebuffer_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                native_display_scale: 1.0,
+            },
+            gpu_composed_scene_linear: true,
+            ripple: None,
+        },
     );
     assert_eq!(
         uniform.input_transfer_function,
@@ -608,20 +630,24 @@ fn rgba32f_byte_view_does_not_allocate_or_copy() {
 
 #[test]
 fn tone_map_uniform_carries_rotation_and_alpha() {
-    let uniform = ToneMapUniform::from_settings(
-        HdrToneMapSettings::default(),
-        5,
-        0.25,
-        HdrRenderOutputMode::SdrToneMapped,
-        wgpu::TextureFormat::Bgra8Unorm,
-        HdrColorSpace::LinearSrgb,
-        HdrTransferFunction::Linear,
-        HdrReference::Unknown,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
-        None,
-        None,
-    );
+    let uniform = ToneMapUniform::from_settings(ToneMapUniformParams {
+        common: ToneMapCommonParams {
+            settings: HdrToneMapSettings::default(),
+            rotation_steps: 5,
+            alpha: 0.25,
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            framebuffer_format: wgpu::TextureFormat::Bgra8Unorm,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale: 1.0,
+        },
+        input: ToneMapInputMetadata {
+            color_space: HdrColorSpace::LinearSrgb,
+            transfer_function: HdrTransferFunction::Linear,
+            reference: HdrReference::Unknown,
+        },
+        apple: None,
+        ripple: None,
+    });
 
     assert_eq!(uniform.rotation_steps, 1);
     assert_eq!(uniform.alpha, 0.25);
@@ -665,20 +691,24 @@ fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
 
 #[test]
 fn tone_map_uniform_carries_output_mode() {
-    let uniform = ToneMapUniform::from_settings(
-        HdrToneMapSettings::default(),
-        0,
-        1.0,
-        HdrRenderOutputMode::NativeHdr,
-        wgpu::TextureFormat::Bgra8Unorm,
-        HdrColorSpace::Rec2020Linear,
-        HdrTransferFunction::Pq,
-        HdrReference::DisplayReferred,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
-        None,
-        None,
-    );
+    let uniform = ToneMapUniform::from_settings(ToneMapUniformParams {
+        common: ToneMapCommonParams {
+            settings: HdrToneMapSettings::default(),
+            rotation_steps: 0,
+            alpha: 1.0,
+            output_mode: HdrRenderOutputMode::NativeHdr,
+            framebuffer_format: wgpu::TextureFormat::Bgra8Unorm,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale: 1.0,
+        },
+        input: ToneMapInputMetadata {
+            color_space: HdrColorSpace::Rec2020Linear,
+            transfer_function: HdrTransferFunction::Pq,
+            reference: HdrReference::DisplayReferred,
+        },
+        apple: None,
+        ripple: None,
+    });
 
     assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
     assert_eq!(uniform.sdr_manual_srgb_encode, 0);

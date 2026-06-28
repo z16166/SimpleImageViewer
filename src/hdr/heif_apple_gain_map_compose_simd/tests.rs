@@ -14,8 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::core::{ComposeRowTransform, classify_fast_path};
 use super::{
-    GainRowLinear, compose_apple_gain_map_pixels, compose_row_scalar, precompute_gain_row_linear,
+    AppleGainMapComposePixels, GainRowLinear, compose_apple_gain_map_pixels, compose_row_scalar,
+    precompute_gain_row_linear,
 };
 #[cfg(target_arch = "x86_64")]
 use super::{load_rgb_interleaved4_sse41, store_rgb_interleaved4_sse41};
@@ -79,11 +81,14 @@ fn compose_image_legacy_reference(
             &mut out[start..end],
             width,
             &gain_row.rgb,
-            color_space,
-            transfer,
-            metadata,
-            headroom_span,
-            weight,
+            ComposeRowTransform {
+                path: classify_fast_path(color_space, transfer, metadata),
+                color_space,
+                transfer,
+                metadata,
+                headroom_span,
+                weight,
+            },
         );
     }
     out
@@ -148,21 +153,21 @@ fn compose_apple_gain_map_pixels_matches_legacy_reference() {
         weight,
     );
     let mut optimized = vec![0.0_f32; pixel_count];
-    compose_apple_gain_map_pixels(
-        &base_pixels,
-        &mut optimized,
-        W,
-        H,
-        &gain_rgba,
-        GAIN_W,
-        GAIN_H,
-        HdrColorSpace::DisplayP3Linear,
-        HdrTransferFunction::Srgb,
-        &metadata,
+    compose_apple_gain_map_pixels(AppleGainMapComposePixels {
+        base_pixels: &base_pixels,
+        composed_pixels: &mut optimized,
+        width: W,
+        height: H,
+        gain_rgba: &gain_rgba,
+        gain_w: GAIN_W,
+        gain_h: GAIN_H,
+        color_space: HdrColorSpace::DisplayP3Linear,
+        transfer: HdrTransferFunction::Srgb,
+        metadata: &metadata,
         headroom_span,
         weight,
-        false,
-    );
+        force_scalar: false,
+    });
     assert_eq!(legacy, optimized);
 }
 
@@ -218,21 +223,21 @@ fn simd_compose_matches_scalar_for_common_heic_paths() {
             weight,
         );
         let mut optimized = vec![0.0_f32; pixel_count];
-        compose_apple_gain_map_pixels(
-            &base_pixels,
-            &mut optimized,
-            W,
-            H,
-            &gain_rgba,
-            W,
-            H,
+        compose_apple_gain_map_pixels(AppleGainMapComposePixels {
+            base_pixels: &base_pixels,
+            composed_pixels: &mut optimized,
+            width: W,
+            height: H,
+            gain_rgba: &gain_rgba,
+            gain_w: W,
+            gain_h: H,
             color_space,
             transfer,
-            &metadata,
+            metadata: &metadata,
             headroom_span,
             weight,
-            false,
-        );
+            force_scalar: false,
+        });
         assert_eq!(
             reference, optimized,
             "parity failed for {color_space:?} + {transfer:?}"

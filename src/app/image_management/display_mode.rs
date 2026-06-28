@@ -228,7 +228,17 @@ mod tests {
         let ctx = eframe::egui::Context::default();
         let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
         let handle = ctx.load_texture("f0", color_image, eframe::egui::TextureOptions::LINEAR);
-        app.texture_cache.insert(0, handle, 1, 1, false, 0, 1);
+        app.texture_cache.insert(
+            0,
+            handle,
+            crate::loader::TextureCacheInsert {
+                orig_w: 1,
+                orig_h: 1,
+                needs_tile_manager: false,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
         assert!(app.needs_stale_animated_first_frame_reload());
 
         app.record_installed_display_mode(0, RenderShape::Static);

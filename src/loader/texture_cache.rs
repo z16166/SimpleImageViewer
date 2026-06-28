@@ -174,7 +174,17 @@ mod tests {
         let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
 
         let mut cache = TextureCache::new(5);
-        cache.insert(3, handle, 100, 200, true, 3, 10);
+        cache.insert(
+            3,
+            handle,
+            TextureCacheInsert {
+                orig_w: 100,
+                orig_h: 200,
+                needs_tile_manager: true,
+                current_index: 3,
+                total_count: 10,
+            },
+        );
 
         assert!(cache.contains(3));
         assert!(!cache.contains(7));

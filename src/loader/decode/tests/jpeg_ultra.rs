@@ -22,10 +22,10 @@ use crate::hdr::gain_map::gain_map_weight;
 use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::hdr::ultra_hdr::display_to_physical_pixel;
-use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
+use crate::hdr::ultra_hdr_compose::{UltraHdrTileRegionCompose, compose_ultra_hdr_tile_region_cpu};
 use crate::loader::ImageData;
 use crate::loader::decode::jpeg::{load_jpeg, load_jpeg_with_target_capacity};
-use crate::loader::decode::load_image_file;
+use crate::loader::decode::{ImageLoadRequest, load_image_file};
 
 use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 
@@ -226,18 +226,18 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
 
     let (tx, _rx) = crossbeam_channel::unbounded();
     let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
-    let result = load_image_file(
-        1,
-        &path,
-        crate::loader::orchestrator::LoaderOutputSender::new(tx),
+    let result = load_image_file(ImageLoadRequest {
+        index: 1,
+        path: &path,
+        tx: crate::loader::orchestrator::LoaderOutputSender::new(tx),
         refine_tx,
-        crate::loader::decode_profile_stub(),
-        false,
-        crate::settings::RawDemosaicMode::Cpu,
-        HdrToneMapSettings::default().target_hdr_capacity(),
-        HdrToneMapSettings::default(),
-        None,
-    );
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: false,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: HdrToneMapSettings::default().target_hdr_capacity(),
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    });
 
     assert!(
         result.ultra_hdr_capacity_sensitive,
@@ -326,22 +326,22 @@ fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
     );
     let deferred = iso_deferred_from_metadata(&tile.metadata).expect("iso deferred metadata");
     let ctx = tile.iso_deferred_tile.expect("iso deferred tile context");
-    let composed = compose_ultra_hdr_tile_region_cpu(
-        tile.width,
-        tile.height,
-        ctx.origin_x,
-        ctx.origin_y,
-        ctx.physical_width,
-        ctx.physical_height,
-        ctx.orientation,
-        deferred.sdr_rgba.as_slice(),
-        deferred.gain_rgba.as_slice(),
-        deferred.gain_width,
-        deferred.gain_height,
-        deferred.metadata,
-        8.0,
-        display_to_physical_pixel,
-    );
+    let composed = compose_ultra_hdr_tile_region_cpu(UltraHdrTileRegionCompose {
+        tile_width: tile.width,
+        tile_height: tile.height,
+        origin_x: ctx.origin_x,
+        origin_y: ctx.origin_y,
+        physical_width: ctx.physical_width,
+        physical_height: ctx.physical_height,
+        orientation: ctx.orientation,
+        sdr_rgba: deferred.sdr_rgba.as_slice(),
+        gain_rgba: deferred.gain_rgba.as_slice(),
+        gain_width: deferred.gain_width,
+        gain_height: deferred.gain_height,
+        metadata: deferred.metadata,
+        target_hdr_capacity: 8.0,
+        display_to_physical: display_to_physical_pixel,
+    });
     assert!(
         composed
             .chunks_exact(4)

@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
+use crate::hdr::ultra_hdr_compose::{UltraHdrTileRegionCompose, compose_ultra_hdr_tile_region_cpu};
 use std::path::{Path, PathBuf};
 
 fn ultra_hdr_samples_root() -> Option<PathBuf> {
@@ -326,38 +327,38 @@ fn tiled_source_uses_target_hdr_capacity() {
         .expect("open low-capacity Ultra HDR tiled source");
     let high = UltraHdrTiledImageSource::open_with_target_capacity(path, 1, 8.0)
         .expect("open high-capacity Ultra HDR tiled source");
-    let low_rgba = compose_ultra_hdr_tile_region_cpu(
-        64,
-        64,
-        0,
-        0,
-        low.physical_width,
-        low.physical_height,
-        low.orientation,
-        low.sdr_rgba.as_slice(),
-        low.gain_rgba.as_slice(),
-        low.gain_width,
-        low.gain_height,
-        low.metadata,
-        low.target_hdr_capacity,
-        display_to_physical_pixel,
-    );
-    let high_rgba = compose_ultra_hdr_tile_region_cpu(
-        64,
-        64,
-        0,
-        0,
-        high.physical_width,
-        high.physical_height,
-        high.orientation,
-        high.sdr_rgba.as_slice(),
-        high.gain_rgba.as_slice(),
-        high.gain_width,
-        high.gain_height,
-        high.metadata,
-        high.target_hdr_capacity,
-        display_to_physical_pixel,
-    );
+    let low_rgba = compose_ultra_hdr_tile_region_cpu(UltraHdrTileRegionCompose {
+        tile_width: 64,
+        tile_height: 64,
+        origin_x: 0,
+        origin_y: 0,
+        physical_width: low.physical_width,
+        physical_height: low.physical_height,
+        orientation: low.orientation,
+        sdr_rgba: low.sdr_rgba.as_slice(),
+        gain_rgba: low.gain_rgba.as_slice(),
+        gain_width: low.gain_width,
+        gain_height: low.gain_height,
+        metadata: low.metadata,
+        target_hdr_capacity: low.target_hdr_capacity,
+        display_to_physical: display_to_physical_pixel,
+    });
+    let high_rgba = compose_ultra_hdr_tile_region_cpu(UltraHdrTileRegionCompose {
+        tile_width: 64,
+        tile_height: 64,
+        origin_x: 0,
+        origin_y: 0,
+        physical_width: high.physical_width,
+        physical_height: high.physical_height,
+        orientation: high.orientation,
+        sdr_rgba: high.sdr_rgba.as_slice(),
+        gain_rgba: high.gain_rgba.as_slice(),
+        gain_width: high.gain_width,
+        gain_height: high.gain_height,
+        metadata: high.metadata,
+        target_hdr_capacity: high.target_hdr_capacity,
+        display_to_physical: display_to_physical_pixel,
+    });
 
     let low_peak = low_rgba
         .chunks_exact(4)

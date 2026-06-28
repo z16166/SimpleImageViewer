@@ -112,18 +112,18 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
     }
 
     let (refine_tx, refine_rx) = unbounded();
-    let result = load_raw(
-        0,
-        &path,
+    let result = load_raw(RawLoadRequest {
+        index: 0,
+        path: &path,
         refine_tx,
-        dummy_load_tx(),
-        crate::loader::decode_profile_stub(),
-        true,
-        crate::settings::RawDemosaicMode::Cpu,
-        4.0,
-        HdrToneMapSettings::default(),
-        None,
-    )
+        load_tx: dummy_load_tx(),
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: true,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: 4.0,
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    })
     .expect("load_raw hq");
 
     match result.image {
@@ -158,18 +158,18 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
     }
 
     let (refine_tx, _refine_rx) = unbounded();
-    let result = load_raw(
-        0,
-        &path,
+    let result = load_raw(RawLoadRequest {
+        index: 0,
+        path: &path,
         refine_tx,
-        dummy_load_tx(),
-        crate::loader::decode_profile_stub(),
-        false,
-        crate::settings::RawDemosaicMode::Cpu,
-        4.0,
-        HdrToneMapSettings::default(),
-        None,
-    )
+        load_tx: dummy_load_tx(),
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: false,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: 4.0,
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    })
     .expect("load_raw perf");
 
     match result.image {
@@ -196,18 +196,18 @@ fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
     }
 
     let (refine_tx, _refine_rx) = unbounded();
-    let result = load_raw(
-        0,
-        &path,
+    let result = load_raw(RawLoadRequest {
+        index: 0,
+        path: &path,
         refine_tx,
-        dummy_load_tx(),
-        crate::loader::decode_profile_stub(),
-        true,
-        crate::settings::RawDemosaicMode::Cpu,
-        1.0,
-        HdrToneMapSettings::default(),
-        None,
-    )
+        load_tx: dummy_load_tx(),
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: true,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: 1.0,
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    })
     .expect("load_raw hq sdr tone map");
 
     match result.image {
@@ -281,18 +281,18 @@ fn probe_epson_and_fuji_on_local_samples() {
 
         for (label, hq) in [("performance", false), ("high_quality", true)] {
             let (refine_tx, _rx) = crossbeam_channel::unbounded();
-            let result = load_raw(
-                0,
-                &path,
+            let result = load_raw(RawLoadRequest {
+                index: 0,
+                path: &path,
                 refine_tx,
-                dummy_load_tx(),
-                crate::loader::decode_profile_stub(),
-                hq,
-                crate::settings::RawDemosaicMode::Cpu,
-                4.0,
-                HdrToneMapSettings::default(),
-                None,
-            )
+                load_tx: dummy_load_tx(),
+                decode_profile: crate::loader::decode_profile_stub(),
+                high_quality: hq,
+                raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+                hdr_target_capacity: 4.0,
+                hdr_tone_map: HdrToneMapSettings::default(),
+                raw_open_prefetch: None,
+            })
             .expect("load_raw");
             match result.image {
                 ImageData::Static(img) => {
@@ -399,18 +399,18 @@ fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
     }
 
     let (refine_tx, _refine_rx) = unbounded();
-    let result = load_raw(
-        0,
-        &path,
+    let result = load_raw(RawLoadRequest {
+        index: 0,
+        path: &path,
         refine_tx,
-        dummy_load_tx(),
-        crate::loader::decode_profile_stub(),
-        true,
-        crate::settings::RawDemosaicMode::Cpu,
-        4.0,
-        HdrToneMapSettings::default(),
-        None,
-    )
+        load_tx: dummy_load_tx(),
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: true,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: 4.0,
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    })
     .expect("load_raw hq hdr");
 
     match result.image {

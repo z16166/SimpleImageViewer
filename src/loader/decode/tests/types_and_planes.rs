@@ -129,7 +129,7 @@ fn image_data_exposes_render_shape_and_available_planes() {
     };
     let static_sdr = ImageData::Static(sdr.clone());
     let static_hdr = ImageData::Hdr {
-        hdr: hdr.clone(),
+        hdr: Box::new(hdr.clone()),
         fallback: sdr.clone(),
     };
     let tiled_sdr_source: Arc<dyn TiledImageSource> =
