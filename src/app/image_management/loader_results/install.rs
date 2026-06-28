@@ -53,11 +53,11 @@ impl ImageViewerApp {
                 let preserve_hdr_tiled = self.hdr_tiled_source_cache.contains_key(&idx);
                 if !preserve_hdr_tiled {
                     self.remove_hdr_image_index(idx);
-                } else if idx == self.current_index {
-                    if let Some(source) = self.hdr_tiled_source_cache.get(&idx).cloned() {
-                        self.current_hdr_tiled_image =
-                            Some(crate::app::CurrentHdrTiledImage::new(idx, source));
-                    }
+                } else if idx == self.current_index
+                    && let Some(source) = self.hdr_tiled_source_cache.get(&idx).cloned()
+                {
+                    self.current_hdr_tiled_image =
+                        Some(crate::app::CurrentHdrTiledImage::new(idx, source));
                 }
             } else if self.index_uses_tiled_pipeline(idx) {
                 log::warn!(
@@ -148,12 +148,14 @@ impl ImageViewerApp {
             } => {
                 self.install_static_hdr_image(
                     idx,
-                    hdr,
-                    fallback,
-                    load_result.sdr_fallback_is_placeholder,
-                    ultra_hdr_capacity_sensitive,
-                    defer_sdr_upload,
-                    ctx,
+                    crate::app::image_management::image_install::StaticHdrInstall {
+                        hdr,
+                        fallback,
+                        sdr_fallback_is_placeholder: load_result.sdr_fallback_is_placeholder,
+                        ultra_hdr_capacity_sensitive,
+                        defer_sdr_upload,
+                        ctx,
+                    },
                 );
             }
             ImageInstallPlan::Tiled {
@@ -165,15 +167,17 @@ impl ImageViewerApp {
                 ultra_hdr_capacity_sensitive,
             } => {
                 self.install_tiled_image(
-                    idx,
-                    load_result.decode_profile.clone(),
-                    source,
-                    hdr_source,
-                    sdr_preview,
-                    hdr_preview,
-                    hdr_sdr_fallback,
-                    ultra_hdr_capacity_sensitive,
-                    ctx,
+                    crate::app::image_management::image_install::TiledImageInstall {
+                        idx,
+                        decode_profile: load_result.decode_profile.clone(),
+                        source,
+                        hdr_source,
+                        sdr_preview,
+                        hdr_preview,
+                        hdr_sdr_fallback,
+                        ultra_hdr_capacity_sensitive,
+                        ctx,
+                    },
                 );
             }
             ImageInstallPlan::Animated { frames } => {

@@ -109,7 +109,7 @@ impl SymphoniaSource {
             let _ = reader.seek(SeekMode::Accurate, seek_to);
         }
 
-        Some(Self {
+        let mut source = Self {
             reader,
             decoder,
             track_id,
@@ -119,7 +119,13 @@ impl SymphoniaSource {
             channels,
             total_duration,
             shutdown_flag,
-        })
+        };
+
+        if !source.refill_buffer() {
+            return None;
+        }
+
+        Some(source)
     }
 
     fn refill_buffer(&mut self) -> bool {
@@ -143,6 +149,10 @@ impl SymphoniaSource {
                 Ok(decoded) => {
                     self.buffer.clear();
                     self.buffer_pos = 0;
+                    let spec = decoded.spec();
+                    self.sample_rate = spec.rate;
+                    self.channels =
+                        u16::try_from(spec.channels.count()).unwrap_or(DEFAULT_CHANNELS);
 
                     match decoded {
                         AudioBufferRef::F32(ref buf) => {
@@ -339,10 +349,8 @@ impl Iterator for SymphoniaSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.buffer_pos >= self.buffer.len() {
-            if !self.refill_buffer() {
-                return None;
-            }
+        if self.buffer_pos >= self.buffer.len() && !self.refill_buffer() {
+            return None;
         }
         let sample = self.buffer[self.buffer_pos];
         self.buffer_pos += 1;
@@ -426,4 +434,56 @@ pub(crate) fn open_source(
     let file = fs::File::open(path).ok()?;
     let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
     create_source(path, reader, Arc::clone(shutdown_flag), offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_silence_wav() -> Vec<u8> {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&22_050u32.to_le_bytes());
+        wav.extend_from_slice(&44_100u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&0i16.to_le_bytes());
+        wav
+    }
+
+    #[test]
+    fn symphonia_source_preloads_first_decoded_buffer() {
+        let dir = std::env::temp_dir().join(format!(
+            "siv-audio-preload-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("tone.wav");
+        std::fs::write(&path, minimal_silence_wav()).expect("write wav");
+
+        let source = SymphoniaSource::new_with_offset(
+            &path,
+            Arc::new(AtomicBool::new(false)),
+            Duration::ZERO,
+        )
+        .expect("create source");
+
+        assert_eq!(source.sample_rate, 22_050);
+        assert_eq!(source.channels, 1);
+        assert!(!source.buffer.is_empty());
+        assert_eq!(source.buffer_pos, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

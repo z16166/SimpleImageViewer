@@ -96,20 +96,19 @@ impl ImageViewerApp {
 
         if let Some(crate::ui::dialogs::modal_state::ActiveModal::FileCopyCut(state)) =
             self.active_modal.as_mut()
+            && state.browse_folder_requested
         {
-            if state.browse_folder_requested {
-                state.browse_folder_requested = false;
-                let starting = if state.input.trim().is_empty() {
-                    None
-                } else {
-                    Some(std::path::PathBuf::from(state.input.trim()))
-                };
-                self.request_folder_picker(
-                    frame,
-                    crate::app::folder_picker::FolderPickerPurpose::FileCopyCutModal,
-                    starting,
-                );
-            }
+            state.browse_folder_requested = false;
+            let starting = if state.input.trim().is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(state.input.trim()))
+            };
+            self.request_folder_picker(
+                frame,
+                crate::app::folder_picker::FolderPickerPurpose::FileCopyCutModal,
+                starting,
+            );
         }
     }
 
@@ -371,12 +370,11 @@ impl ImageViewerApp {
 
         let menu_rect = area_resp.response.rect;
         let interact_pos = ctx.input(|i| i.pointer.interact_pos());
-        if ctx.input(|i| i.pointer.primary_clicked()) {
-            if let Some(pp) = interact_pos {
-                if !menu_rect.contains(pp) {
-                    self.clear_image_context_menu();
-                }
-            }
+        if ctx.input(|i| i.pointer.primary_clicked())
+            && let Some(pp) = interact_pos
+            && !menu_rect.contains(pp)
+        {
+            self.clear_image_context_menu();
         }
         if area_resp.response.should_close() {
             self.clear_image_context_menu();

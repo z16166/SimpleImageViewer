@@ -464,32 +464,55 @@ pub(super) fn image_list_sorting_available(list: &DirectoryTreeListState) -> boo
     image_list_interaction_enabled(list) && !list.image_rows.is_empty()
 }
 
+pub(super) struct DirectoryTreeDrawParams<'a> {
+    pub(super) view: &'a DirectoryTreeView,
+    pub(super) chrome: &'a mut DirectoryTreeUiChrome,
+    pub(super) command_tx: &'a Sender<DirectoryTreeCommand>,
+    pub(super) root_wake: Option<&'a crate::app::RootRedrawWake>,
+    pub(super) palette: &'a ThemePalette,
+    pub(super) embedded: bool,
+    pub(super) allow_image_context_menu: bool,
+}
+
+struct DirectoryTreeNodeParams<'a> {
+    view: &'a DirectoryTreeView,
+    chrome: &'a mut DirectoryTreeUiChrome,
+    command_tx: &'a Sender<DirectoryTreeCommand>,
+    root_wake: Option<&'a crate::app::RootRedrawWake>,
+    palette: &'a ThemePalette,
+}
+
+struct ImageDetailsRowParams<'a> {
+    row: &'a DirectoryTreeFileRow,
+    row_index: usize,
+    selected: bool,
+    columns: &'a ImageListColumnLayout,
+    body_font: &'a egui::FontId,
+    thumb_px: f32,
+    row_height: f32,
+    texture: Option<&'a egui::TextureHandle>,
+    logical_size: Option<(u32, u32)>,
+    command_tx: &'a Sender<DirectoryTreeCommand>,
+    chrome: &'a mut DirectoryTreeUiChrome,
+    list_enabled: bool,
+    allow_image_context_menu: bool,
+    palette: &'a ThemePalette,
+}
+
 pub(super) fn draw_directory_tree_window(
     ui: &mut egui::Ui,
-    view: &DirectoryTreeView,
-    chrome: &mut DirectoryTreeUiChrome,
-    command_tx: &Sender<DirectoryTreeCommand>,
-    root_wake: Option<&crate::app::RootRedrawWake>,
-    palette: &ThemePalette,
-    embedded: bool,
-    allow_image_context_menu: bool,
+    mut params: DirectoryTreeDrawParams<'_>,
 ) {
     ui.visuals_mut().button_frame = false;
-    ui.visuals_mut().override_text_color = Some(palette.text_normal);
+    ui.visuals_mut().override_text_color = Some(params.palette.text_normal);
     ui.painter()
-        .rect_filled(ui.max_rect(), 0.0, palette.panel_bg);
+        .rect_filled(ui.max_rect(), 0.0, params.palette.panel_bg);
     draw_directory_tree_top_panels(
         ui,
-        view,
-        chrome,
-        command_tx,
-        root_wake,
-        palette,
+        &mut params,
         egui::vec2(ui.available_width(), ui.available_height()),
-        embedded,
-        allow_image_context_menu,
     );
-    if embedded {
+    if params.embedded {
         // Detached nav lives in a separate viewport; its ui.max_rect() is viewport-local
         // (0,0)-based and must not be stored in shared ctx temp data or it falsely blocks
         // main-window wheel zoom/navigation for most pointer positions.
@@ -559,22 +582,23 @@ pub(super) fn directory_tree_panel_layout(
 
 fn draw_directory_tree_top_panels(
     ui: &mut egui::Ui,
-    view: &DirectoryTreeView,
-    chrome: &mut DirectoryTreeUiChrome,
-    command_tx: &Sender<DirectoryTreeCommand>,
-    root_wake: Option<&crate::app::RootRedrawWake>,
-    palette: &ThemePalette,
+    params: &mut DirectoryTreeDrawParams<'_>,
     panel_size: egui::Vec2,
-    embedded: bool,
-    allow_image_context_menu: bool,
 ) {
     let viewport_height = panel_size.y;
     let viewport_width = panel_size.x;
     let (left_w, list_w) = directory_tree_panel_layout(
-        chrome.left_panel_width,
-        view.image_list_panel_width(),
+        params.chrome.left_panel_width,
+        params.view.image_list_panel_width(),
         viewport_width,
     );
+    let view = params.view;
+    let command_tx = params.command_tx;
+    let root_wake = params.root_wake;
+    let palette = params.palette;
+    let embedded = params.embedded;
+    let allow_image_context_menu = params.allow_image_context_menu;
+    let chrome = &mut *params.chrome;
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
     let right_w = list_w;
 
@@ -729,33 +753,39 @@ fn draw_folder_panel(
             for entry in view.known_folders() {
                 draw_directory_node(
                     ui,
-                    view,
-                    chrome,
-                    command_tx,
-                    root_wake,
-                    palette,
+                    DirectoryTreeNodeParams {
+                        view,
+                        chrome: &mut *chrome,
+                        command_tx,
+                        root_wake,
+                        palette,
+                    },
                     &entry.namespace_path,
                     0,
                 );
             }
             draw_directory_node(
                 ui,
-                view,
-                chrome,
-                command_tx,
-                root_wake,
-                palette,
+                DirectoryTreeNodeParams {
+                    view,
+                    chrome: &mut *chrome,
+                    command_tx,
+                    root_wake,
+                    palette,
+                },
                 &this_pc_namespace_path(),
                 0,
             );
             if view.network_visible() {
                 draw_directory_node(
                     ui,
-                    view,
-                    chrome,
-                    command_tx,
-                    root_wake,
-                    palette,
+                    DirectoryTreeNodeParams {
+                        view,
+                        chrome: &mut *chrome,
+                        command_tx,
+                        root_wake,
+                        palette,
+                    },
                     &network_namespace_path(),
                     0,
                 );
@@ -799,21 +829,24 @@ fn draw_folder_panel(
 
 fn draw_directory_node(
     ui: &mut egui::Ui,
-    view: &DirectoryTreeView,
-    chrome: &mut DirectoryTreeUiChrome,
-    command_tx: &Sender<DirectoryTreeCommand>,
-    root_wake: Option<&crate::app::RootRedrawWake>,
-    palette: &ThemePalette,
+    params: DirectoryTreeNodeParams<'_>,
     path: &Path,
     depth: usize,
 ) {
+    let DirectoryTreeNodeParams {
+        view,
+        chrome,
+        command_tx,
+        root_wake,
+        palette,
+    } = params;
     let Some(node) = view.nodes().get(path) else {
         return;
     };
     let node = node.as_ref();
 
     let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
-    let expandable = directory_tree_node_expandable(&node, path);
+    let expandable = directory_tree_node_expandable(node, path);
     let selected = view
         .selected_namespace_path()
         .is_some_and(|selected| selected.as_os_str() == path.as_os_str());
@@ -912,12 +945,14 @@ fn draw_directory_node(
         for child in &node.children {
             draw_directory_node(
                 ui,
-                view,
-                chrome,
-                command_tx,
-                root_wake,
-                palette,
-                &child,
+                DirectoryTreeNodeParams {
+                    view,
+                    chrome: &mut *chrome,
+                    command_tx,
+                    root_wake,
+                    palette,
+                },
+                child,
                 depth + 1,
             );
         }
@@ -1012,20 +1047,22 @@ fn draw_image_file_list(
                 };
                 let clicked = draw_image_details_row(
                     ui,
-                    row,
-                    row_index,
-                    row_index == current_index,
-                    &column_layout,
-                    &body_font,
-                    thumb_px,
-                    row_height,
-                    view.preview_textures().get(&row_index),
-                    view.preview_logical_sizes().get(&row_index).copied(),
-                    command_tx,
-                    chrome,
-                    list_enabled && interaction_enabled,
-                    allow_image_context_menu,
-                    palette,
+                    ImageDetailsRowParams {
+                        row,
+                        row_index,
+                        selected: row_index == current_index,
+                        columns: &column_layout,
+                        body_font: &body_font,
+                        thumb_px,
+                        row_height,
+                        texture: view.preview_textures().get(&row_index),
+                        logical_size: view.preview_logical_sizes().get(&row_index).copied(),
+                        command_tx,
+                        chrome: &mut *chrome,
+                        list_enabled: list_enabled && interaction_enabled,
+                        allow_image_context_menu,
+                        palette,
+                    },
                 );
                 if clicked {
                     chrome.image_list_keyboard_active = true;
@@ -1219,7 +1256,7 @@ fn truncate_single_line_text(
     let mut lo = 0usize;
     let mut hi = text.chars().count();
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         let mut candidate = text.chars().take(mid).collect::<String>();
         candidate.push('…');
         if measure(&candidate) <= max_width {
@@ -1392,23 +1429,23 @@ fn try_handle_image_list_arrow_keys(
     send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(index));
 }
 
-fn draw_image_details_row(
-    ui: &mut egui::Ui,
-    row: &DirectoryTreeFileRow,
-    row_index: usize,
-    selected: bool,
-    columns: &ImageListColumnLayout,
-    body_font: &egui::FontId,
-    thumb_px: f32,
-    row_height: f32,
-    texture: Option<&egui::TextureHandle>,
-    logical_size: Option<(u32, u32)>,
-    command_tx: &Sender<DirectoryTreeCommand>,
-    chrome: &mut DirectoryTreeUiChrome,
-    list_enabled: bool,
-    allow_image_context_menu: bool,
-    palette: &ThemePalette,
-) -> bool {
+fn draw_image_details_row(ui: &mut egui::Ui, params: ImageDetailsRowParams<'_>) -> bool {
+    let ImageDetailsRowParams {
+        row,
+        row_index,
+        selected,
+        columns,
+        body_font,
+        thumb_px,
+        row_height,
+        texture,
+        logical_size,
+        command_tx,
+        chrome,
+        list_enabled,
+        allow_image_context_menu,
+        palette,
+    } = params;
     let row_width = ui.available_width();
     let (row_rect, response) =
         ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::click());
@@ -1438,7 +1475,7 @@ fn draw_image_details_row(
         let modified_column = image_list_modified_column(row_rect, columns, spacing_x);
 
         let name_text =
-            truncate_single_line_text(ui.painter(), &row.name, &body_font, name_column.width());
+            truncate_single_line_text(ui.painter(), &row.name, body_font, name_column.width());
         let name_galley = ui
             .painter()
             .layout_no_wrap(name_text, body_font.clone(), text_color);
@@ -1581,7 +1618,7 @@ fn volume_root_for_path(path: &Path) -> Option<PathBuf> {
         if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
             return Some(PathBuf::from(format!("{}:\\", bytes[0] as char)));
         }
-        return None;
+        None
     }
 
     #[cfg(target_os = "macos")]

@@ -231,13 +231,13 @@ pub fn show(
 
             ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if styled_button(ui, &t!("btn.set_wallpaper").to_string(), palette).clicked() {
+                if styled_button(ui, t!("btn.set_wallpaper").to_string(), palette).clicked() {
                     result = ModalResult::Confirmed(ModalAction::SetWallpaper {
                         mode: state.selected_mode.clone(),
                         target: state.selected_target.clone(),
                     });
                 }
-                if styled_button(ui, &t!("btn.cancel").to_string(), palette).clicked() {
+                if styled_button(ui, t!("btn.cancel").to_string(), palette).clicked() {
                     result = ModalResult::Dismissed;
                 }
             });

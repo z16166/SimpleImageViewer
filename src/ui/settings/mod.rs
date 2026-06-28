@@ -26,7 +26,7 @@ mod viewing;
 
 use crate::app::{ImageViewerApp, SettingsTab};
 use eframe::Frame;
-use eframe::egui::{self, Context, Pos2};
+use eframe::egui::{self, Color32, Context, Pos2, RichText};
 use rust_i18n::t;
 
 const SETTINGS_TAB_SIDEBAR_WIDTH: f32 = 124.0;
@@ -92,11 +92,13 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
                 app,
                 ui,
                 ctx,
-                &mut open_dir,
-                &mut fullscreen_changed,
-                &mut open_music_file,
-                &mut open_music_dir,
-                &mut music_enabled_changed,
+                &mut SettingsDialogActions {
+                    open_dir: &mut open_dir,
+                    fullscreen_changed: &mut fullscreen_changed,
+                    open_music_file: &mut open_music_file,
+                    open_music_dir: &mut open_music_dir,
+                    music_enabled_changed: &mut music_enabled_changed,
+                },
             );
         });
 
@@ -130,15 +132,19 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     }
 }
 
+struct SettingsDialogActions<'a> {
+    open_dir: &'a mut bool,
+    fullscreen_changed: &'a mut bool,
+    open_music_file: &'a mut bool,
+    open_music_dir: &'a mut bool,
+    music_enabled_changed: &'a mut bool,
+}
+
 fn draw_settings_body(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
     ctx: &Context,
-    open_dir: &mut bool,
-    fullscreen_changed: &mut bool,
-    open_music_file: &mut bool,
-    open_music_dir: &mut bool,
-    music_enabled_changed: &mut bool,
+    actions: &mut SettingsDialogActions<'_>,
 ) {
     // Use allocate_exact_size so the Resize widget records exactly (body_w × body_h) as
     // content_size — tab content's min_rect (which may be wider, e.g. Viewing two-column
@@ -194,31 +200,13 @@ fn draw_settings_body(
 
     let sparse_tab = matches!(app.settings_tab, SettingsTab::About | SettingsTab::System);
     if sparse_tab {
-        draw_active_settings_tab(
-            app,
-            &mut content_ui,
-            ctx,
-            open_dir,
-            fullscreen_changed,
-            open_music_file,
-            open_music_dir,
-            music_enabled_changed,
-        );
+        draw_active_settings_tab(app, &mut content_ui, ctx, actions);
     } else {
         egui::ScrollArea::vertical()
             .id_salt(("settings_tab_content", app.settings_tab.label_key()))
             .auto_shrink([false, false])
             .show(&mut content_ui, |ui| {
-                draw_active_settings_tab(
-                    app,
-                    ui,
-                    ctx,
-                    open_dir,
-                    fullscreen_changed,
-                    open_music_file,
-                    open_music_dir,
-                    music_enabled_changed,
-                );
+                draw_active_settings_tab(app, ui, ctx, actions);
             });
     }
 }
@@ -227,12 +215,30 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.vertical(|ui| {
         for tab in SettingsTab::ALL {
             let selected = app.settings_tab == tab;
+            let label = t!(tab.label_key()).to_string();
+            let mut text = RichText::new(label);
+            let mut button =
+                egui::Button::selectable(selected, text.clone()).frame_when_inactive(true);
+            if selected {
+                let palette = &app.cached_palette;
+                let fill = settings_tab_selected_fill(palette);
+                let stroke = if palette.is_dark {
+                    egui::Stroke::new(1.0_f32, palette.accent)
+                } else {
+                    egui::Stroke::new(1.0_f32, palette.widget_border_hover)
+                };
+                text = text.strong().color(if palette.is_dark {
+                    Color32::WHITE
+                } else {
+                    palette.text_normal
+                });
+                button = egui::Button::selectable(true, text)
+                    .frame_when_inactive(true)
+                    .fill(fill)
+                    .stroke(stroke);
+            }
             if ui
-                .add_sized(
-                    [ui.available_width(), SETTINGS_TAB_ITEM_HEIGHT],
-                    egui::Button::selectable(selected, t!(tab.label_key()).to_string())
-                        .frame_when_inactive(true),
-                )
+                .add_sized([ui.available_width(), SETTINGS_TAB_ITEM_HEIGHT], button)
                 .clicked()
             {
                 app.settings_tab = tab;
@@ -240,6 +246,15 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             ui.add_space(2.0);
         }
     });
+}
+
+fn settings_tab_selected_fill(palette: &crate::theme::ThemePalette) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        palette.accent2.r(),
+        palette.accent2.g(),
+        palette.accent2.b(),
+        if palette.is_dark { 40 } else { 30 },
+    )
 }
 
 pub(super) enum SliderTrackMode {
@@ -291,22 +306,18 @@ fn draw_active_settings_tab(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
     ctx: &Context,
-    open_dir: &mut bool,
-    fullscreen_changed: &mut bool,
-    open_music_file: &mut bool,
-    open_music_dir: &mut bool,
-    music_enabled_changed: &mut bool,
+    actions: &mut SettingsDialogActions<'_>,
 ) {
     match app.settings_tab {
-        SettingsTab::Library => library::draw_library_tab(app, ui, open_dir),
-        SettingsTab::Viewing => viewing::draw_viewing_tab(app, ui, fullscreen_changed),
+        SettingsTab::Library => library::draw_library_tab(app, ui, actions.open_dir),
+        SettingsTab::Viewing => viewing::draw_viewing_tab(app, ui, actions.fullscreen_changed),
         SettingsTab::Slideshow => slideshow::draw_slideshow_tab(app, ui),
         SettingsTab::Music => music::draw_music_tab(
             app,
             ui,
-            open_music_file,
-            open_music_dir,
-            music_enabled_changed,
+            actions.open_music_file,
+            actions.open_music_dir,
+            actions.music_enabled_changed,
         ),
         SettingsTab::Appearance => appearance::draw(app, ui, ctx),
         SettingsTab::Hotkeys => hotkeys::draw_hotkeys_tab(app, ui, ctx),

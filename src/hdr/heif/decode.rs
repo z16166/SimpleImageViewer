@@ -412,8 +412,8 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
         ));
     }
 
-    let bit_depth = heif_sample_bit_depth(image, handle)?.min(8).max(1);
-    let scale = ((1_u32 << bit_depth as u32) - 1) as f32;
+    let bit_depth = heif_sample_bit_depth(image, handle)?.clamp(1, 8);
+    let scale = ((1_u32 << bit_depth) - 1) as f32;
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };

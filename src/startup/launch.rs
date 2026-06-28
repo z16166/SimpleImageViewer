@@ -145,13 +145,19 @@ pub fn run() -> eframe::Result {
         "Settings::load",
     );
 
+    #[cfg(feature = "startup-timing")]
     let init_logging_phases = init_logging();
+    #[cfg(not(feature = "startup-timing"))]
+    init_logging();
     #[cfg(feature = "startup-timing")]
     let init_logging_phase =
         startup_phase_at(&mut prev, startup_t0, "init_logging", Instant::now());
     #[cfg(feature = "startup-timing")]
     startup_log_captured_phases(&startup_prelog_phases);
+    #[cfg(feature = "startup-timing")]
     startup_log_captured_phases(&init_logging_phases);
+    #[cfg(not(feature = "startup-timing"))]
+    startup_log_captured_phases(&());
     #[cfg(feature = "startup-timing")]
     startup_log_captured_phase(&init_logging_phase);
     #[cfg(feature = "startup-timing")]
@@ -544,17 +550,19 @@ pub fn run() -> eframe::Result {
         Box::new(move |cc| {
             Ok(Box::new(crate::app::ImageViewerApp::new(
                 cc,
-                settings,
-                initial_image,
-                ipc_rx,
-                requested_target_format,
-                active_target_format,
-                requested_rgb10a2_pq_encode,
-                gamma22_display_scale,
-                vulkan_wsi_hdr_gates,
-                #[cfg(target_os = "linux")]
-                requested_vulkan_hdr_metadata,
-                initial_hdr_monitor_selection.clone(),
+                crate::app::ImageViewerInit {
+                    settings,
+                    initial_image,
+                    ipc_rx,
+                    requested_target_format,
+                    active_target_format,
+                    requested_rgb10a2_pq_encode,
+                    gamma22_display_scale,
+                    vulkan_wsi_hdr_gates,
+                    #[cfg(target_os = "linux")]
+                    requested_vulkan_hdr_metadata,
+                    initial_hdr_monitor_selection: initial_hdr_monitor_selection.clone(),
+                },
             )) as Box<dyn eframe::App>)
         }),
     );

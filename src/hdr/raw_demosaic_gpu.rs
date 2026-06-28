@@ -661,20 +661,38 @@ pub(super) fn create_raw_demosaic_compute_resources(
     )
 }
 
+pub(crate) struct RawDemosaicComputePass<'a> {
+    pub(crate) device: &'a wgpu::Device,
+    pub(crate) queue: &'a wgpu::Queue,
+    pub(crate) green_bind_group_layout: &'a wgpu::BindGroupLayout,
+    pub(crate) rgb_bind_group_layout: &'a wgpu::BindGroupLayout,
+    pub(crate) green_pipeline: &'a wgpu::ComputePipeline,
+    pub(crate) rgb_pipeline: &'a wgpu::ComputePipeline,
+    pub(crate) source: &'a RawGpuSource,
+    pub(crate) raw_pixels_view: &'a wgpu::TextureView,
+    pub(crate) green_plane_write_view: &'a wgpu::TextureView,
+    pub(crate) green_plane_read_view: &'a wgpu::TextureView,
+    pub(crate) output_view: &'a wgpu::TextureView,
+    pub(crate) uniform_buffer: &'a wgpu::Buffer,
+}
+
 pub(crate) fn encode_raw_demosaic_compute_pass(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    green_bind_group_layout: &wgpu::BindGroupLayout,
-    rgb_bind_group_layout: &wgpu::BindGroupLayout,
-    green_pipeline: &wgpu::ComputePipeline,
-    rgb_pipeline: &wgpu::ComputePipeline,
-    source: &RawGpuSource,
-    raw_pixels_view: &wgpu::TextureView,
-    green_plane_write_view: &wgpu::TextureView,
-    green_plane_read_view: &wgpu::TextureView,
-    output_view: &wgpu::TextureView,
-    uniform_buffer: &wgpu::Buffer,
+    pass_params: RawDemosaicComputePass<'_>,
 ) -> wgpu::CommandBuffer {
+    let RawDemosaicComputePass {
+        device,
+        queue,
+        green_bind_group_layout,
+        rgb_bind_group_layout,
+        green_pipeline,
+        rgb_pipeline,
+        source,
+        raw_pixels_view,
+        green_plane_write_view,
+        green_plane_read_view,
+        output_view,
+        uniform_buffer,
+    } = pass_params;
     // `uniform_buffer` is shared across HDR callback resources; egui-wgpu prepare is single-threaded.
     let uniform = RawDemosaicUniform::new(source);
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -757,8 +775,8 @@ fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
     let w = source.width as usize;
     let raw = source.raw_pixels.as_slice();
     let color_at = |col: i32, row: i32| -> u32 {
-        let x = ((col % 2) + 2) % 2;
-        let y = ((row % 2) + 2) % 2;
+        let x = col.rem_euclid(2);
+        let y = row.rem_euclid(2);
         source.bayer_pattern[(y * 2 + x) as usize]
     };
     move |col: i32, row: i32| -> f32 {
@@ -791,8 +809,8 @@ fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
 }
 
 fn cpu_fc(source: &RawGpuSource, col: i32, row: i32) -> u32 {
-    let x = ((col % 2) + 2) % 2;
-    let y = ((row % 2) + 2) % 2;
+    let x = col.rem_euclid(2);
+    let y = row.rem_euclid(2);
     source.bayer_pattern[(y * 2 + x) as usize]
 }
 
@@ -961,16 +979,27 @@ fn cpu_ppg_green_site_rgb(
     rgb
 }
 
+#[derive(Clone, Copy)]
+struct PpgChromaSample {
+    col: i32,
+    row: i32,
+    fc: u32,
+    green: f32,
+}
+
 fn cpu_ppg_chroma_at_rb(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
     green_plane: &[f32],
     rb_plane: &[(f32, f32)],
-    col: i32,
-    row: i32,
-    fc: u32,
-    green: f32,
+    sample: PpgChromaSample,
 ) -> f32 {
+    let PpgChromaSample {
+        col,
+        row,
+        fc,
+        green,
+    } = sample;
     let c = 2 - fc;
     let nd_c =
         cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col - 1, row - 1, c);
@@ -1017,11 +1046,33 @@ fn cpu_ppg_camera_rgb_at(
         [
             read_cfa(col, row),
             green,
-            cpu_ppg_chroma_at_rb(source, read_cfa, green_plane, rb_plane, col, row, fc, green),
+            cpu_ppg_chroma_at_rb(
+                source,
+                read_cfa,
+                green_plane,
+                rb_plane,
+                PpgChromaSample {
+                    col,
+                    row,
+                    fc,
+                    green,
+                },
+            ),
         ]
     } else if fc == 2 {
         [
-            cpu_ppg_chroma_at_rb(source, read_cfa, green_plane, rb_plane, col, row, fc, green),
+            cpu_ppg_chroma_at_rb(
+                source,
+                read_cfa,
+                green_plane,
+                rb_plane,
+                PpgChromaSample {
+                    col,
+                    row,
+                    fc,
+                    green,
+                },
+            ),
             green,
             read_cfa(col, row),
         ]

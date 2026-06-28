@@ -51,7 +51,10 @@ pub(crate) fn load_heif_hdr(
         )
     };
 
-    Ok(crate::loader::ImageData::Hdr { hdr, fallback })
+    Ok(crate::loader::ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    })
 }
 
 #[cfg(feature = "heif-native")]

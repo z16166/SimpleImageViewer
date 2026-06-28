@@ -290,7 +290,18 @@ pub(crate) fn sample_gain_map_rgb(
 
     let (x0, x1, y0, y1, tx, ty) =
         gain_map_bilinear_coords(x, y, width, height, gain_width, gain_height);
-    sample_gain_map_rgb_bilinear(gain_rgba, gain_width, x0, x1, y0, y1, tx, ty)
+    sample_gain_map_rgb_bilinear(
+        gain_rgba,
+        gain_width,
+        GainMapBilinearTaps {
+            x0,
+            x1,
+            y0,
+            y1,
+            tx,
+            ty,
+        },
+    )
 }
 
 fn format_rgb_triplet(values: [f32; 3]) -> String {
@@ -496,16 +507,28 @@ pub(crate) fn gain_map_bilinear_coords(
 }
 
 /// Bilinear sample from precomputed tap coordinates (encoded 0–1, not yet BT.709-linear).
+pub(crate) struct GainMapBilinearTaps {
+    pub(crate) x0: u32,
+    pub(crate) x1: u32,
+    pub(crate) y0: u32,
+    pub(crate) y1: u32,
+    pub(crate) tx: f32,
+    pub(crate) ty: f32,
+}
+
 pub(crate) fn sample_gain_map_rgb_bilinear(
     gain_rgba: &[u8],
     gain_width: u32,
-    x0: u32,
-    x1: u32,
-    y0: u32,
-    y1: u32,
-    tx: f32,
-    ty: f32,
+    taps: GainMapBilinearTaps,
 ) -> [f32; 3] {
+    let GainMapBilinearTaps {
+        x0,
+        x1,
+        y0,
+        y1,
+        tx,
+        ty,
+    } = taps;
     let mut out = [0.0; 3];
     for (channel_index, channel) in out.iter_mut().enumerate() {
         let top = lerp(

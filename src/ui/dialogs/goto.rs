@@ -84,7 +84,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                 if styled_button(ui, t!("btn.go"), palette).clicked() {
                     result = try_confirm(&state.input, state.total);
                 }
-                if styled_button(ui, &t!("btn.cancel").to_string(), palette).clicked() {
+                if styled_button(ui, t!("btn.cancel").to_string(), palette).clicked() {
                     result = ModalResult::Dismissed;
                 }
             });

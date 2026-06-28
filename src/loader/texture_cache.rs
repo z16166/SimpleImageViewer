@@ -28,6 +28,14 @@ fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
     }
 }
 
+pub struct TextureCacheInsert {
+    pub orig_w: u32,
+    pub orig_h: u32,
+    pub needs_tile_manager: bool,
+    pub current_index: usize,
+    pub total_count: usize,
+}
+
 pub struct TextureCache {
     pub textures: HashMap<usize, egui::TextureHandle>,
     /// Original image dimensions (may differ from texture size for tiled previews).
@@ -51,16 +59,14 @@ impl TextureCache {
         &mut self,
         index: usize,
         handle: egui::TextureHandle,
-        orig_w: u32,
-        orig_h: u32,
-        needs_tile_manager: bool,
-        current_index: usize,
-        total_count: usize,
+        params: TextureCacheInsert,
     ) -> Option<usize> {
         self.textures.insert(index, handle);
-        self.original_res.insert(index, (orig_w, orig_h));
-        self.needs_tile_manager.insert(index, needs_tile_manager);
-        self.evict(current_index, total_count)
+        self.original_res
+            .insert(index, (params.orig_w, params.orig_h));
+        self.needs_tile_manager
+            .insert(index, params.needs_tile_manager);
+        self.evict(params.current_index, params.total_count)
     }
 
     pub fn get_original_res(&self, index: usize) -> Option<(u32, u32)> {
@@ -168,7 +174,17 @@ mod tests {
         let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
 
         let mut cache = TextureCache::new(5);
-        cache.insert(3, handle, 100, 200, true, 3, 10);
+        cache.insert(
+            3,
+            handle,
+            TextureCacheInsert {
+                orig_w: 100,
+                orig_h: 200,
+                needs_tile_manager: true,
+                current_index: 3,
+                total_count: 10,
+            },
+        );
 
         assert!(cache.contains(3));
         assert!(!cache.contains(7));

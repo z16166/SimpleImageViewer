@@ -25,7 +25,7 @@ pub use windows::Win32::System::Com::*;
 pub use windows::core::*;
 
 thread_local! {
-    static WIC_FACTORY: RefCell<Option<IWICImagingFactory>> = RefCell::new(None);
+    static WIC_FACTORY: RefCell<Option<IWICImagingFactory>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
@@ -39,6 +39,6 @@ pub(crate) fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
         factory
             .as_ref()
             .cloned()
-            .ok_or_else(|| windows::core::Error::from_win32())
+            .ok_or_else(windows::core::Error::from_win32)
     })
 }

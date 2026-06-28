@@ -23,18 +23,31 @@ use crate::hdr::gain_map::{
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
+pub(crate) struct UltraHdrComposeInput<'a> {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: &'a [u8],
+    pub(crate) gain_rgba: &'a [u8],
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) image_metadata: HdrImageMetadata,
+    pub(crate) target_hdr_capacity: f32,
+}
+
 #[allow(dead_code)] // tests and tiled preview reference path
-pub(crate) fn compose_ultra_hdr_cpu(
-    width: u32,
-    height: u32,
-    sdr_rgba: &[u8],
-    gain_rgba: &[u8],
-    gain_width: u32,
-    gain_height: u32,
-    metadata: GainMapMetadata,
-    image_metadata: HdrImageMetadata,
-    target_hdr_capacity: f32,
-) -> HdrImageBuffer {
+pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImageBuffer {
+    let UltraHdrComposeInput {
+        width,
+        height,
+        sdr_rgba,
+        gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        image_metadata,
+        target_hdr_capacity,
+    } = input;
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
         for x in 0..width {
@@ -61,23 +74,46 @@ pub(crate) fn compose_ultra_hdr_cpu(
     }
 }
 
+pub(crate) struct UltraHdrTileRegionCompose<'a, F> {
+    pub(crate) tile_width: u32,
+    pub(crate) tile_height: u32,
+    pub(crate) origin_x: u32,
+    pub(crate) origin_y: u32,
+    pub(crate) physical_width: u32,
+    pub(crate) physical_height: u32,
+    pub(crate) orientation: u16,
+    pub(crate) sdr_rgba: &'a [u8],
+    pub(crate) gain_rgba: &'a [u8],
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) target_hdr_capacity: f32,
+    pub(crate) display_to_physical: F,
+}
+
 #[allow(dead_code)] // loader/ultra_hdr tests and tiled preview reference path
-pub(crate) fn compose_ultra_hdr_tile_region_cpu(
-    tile_width: u32,
-    tile_height: u32,
-    origin_x: u32,
-    origin_y: u32,
-    physical_width: u32,
-    physical_height: u32,
-    orientation: u16,
-    sdr_rgba: &[u8],
-    gain_rgba: &[u8],
-    gain_width: u32,
-    gain_height: u32,
-    metadata: GainMapMetadata,
-    target_hdr_capacity: f32,
-    display_to_physical: impl Fn(u32, u32, u32, u32, u16) -> (u32, u32),
-) -> Vec<f32> {
+pub(crate) fn compose_ultra_hdr_tile_region_cpu<F>(
+    input: UltraHdrTileRegionCompose<'_, F>,
+) -> Vec<f32>
+where
+    F: Fn(u32, u32, u32, u32, u16) -> (u32, u32),
+{
+    let UltraHdrTileRegionCompose {
+        tile_width,
+        tile_height,
+        origin_x,
+        origin_y,
+        physical_width,
+        physical_height,
+        orientation,
+        sdr_rgba,
+        gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        target_hdr_capacity,
+        display_to_physical,
+    } = input;
     let mut rgba_f32 = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
     for dy in 0..tile_height {
         for dx in 0..tile_width {

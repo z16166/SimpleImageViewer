@@ -119,11 +119,10 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
 ) -> Result<crate::loader::DecodedImage, String> {
     use crate::loader::downsample_decoded_for_strip;
 
-    if !hdr.rgba_f32.is_empty() {
-        if let Ok((width, height, pixels)) = hdr_directory_tree_strip_sdr_at_max_side(hdr, max_side)
-        {
-            return Ok(crate::loader::DecodedImage::new(width, height, pixels));
-        }
+    if !hdr.rgba_f32.is_empty()
+        && let Ok((width, height, pixels)) = hdr_directory_tree_strip_sdr_at_max_side(hdr, max_side)
+    {
+        return Ok(crate::loader::DecodedImage::new(width, height, pixels));
     }
 
     if !fallback.is_sdr_deferred_placeholder() {
@@ -360,9 +359,7 @@ fn static_hdr_plane_preload_needs_upload(has_sdr_fallback: bool, hdr_target_capa
     };
     // Mirrors [`crate::app::rendering::plan::select_render_backend`] for static preload:
     // `has_hdr_plane` and `has_hdr_target` are true once the callback target format is active.
-    if output_mode.is_native_hdr() {
-        true
-    } else if !has_sdr_fallback {
+    if output_mode.is_native_hdr() || !has_sdr_fallback {
         true
     } else {
         output_mode == HdrRenderOutputMode::SdrToneMapped

@@ -24,6 +24,10 @@ use std::time::Instant;
 
 use openexr_core_sys as sys;
 
+type ScanlinePreviewChunkJob = (i32, sys::ExrChunkInfo, (u32, u32), (u32, u32));
+type ScanlinePreviewRowsByChunk =
+    std::collections::BTreeMap<i32, (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>)>;
+
 use super::channels::{
     DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming,
     OpenExrCoreDecodedChunkFetch, OpenExrCoreTileGrid, assign_channel_roles,
@@ -128,7 +132,7 @@ impl OpenExrCoreReadContext {
 
         let exr_luma_weights = imf_exr_chromaticities_from_path(path)
             .as_ref()
-            .and_then(|ch| openexr_luminance_weights_from_chromaticities_xy(ch))
+            .and_then(openexr_luminance_weights_from_chromaticities_xy)
             .unwrap_or([0.2126_f32, 0.7152_f32, 0.0722_f32]);
 
         Ok(Self {
@@ -274,8 +278,9 @@ impl OpenExrCoreReadContext {
                     .collect::<Result<Vec<_>, String>>()?;
 
                 let tile_rect = (x, y, width, height);
-                for i in 0..fetched.len() {
-                    let fetch = &fetched[i];
+                for (i, fetch) in fetched.iter().enumerate() {
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = i;
                     let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {
@@ -422,48 +427,55 @@ impl OpenExrCoreReadContext {
         use rayon::prelude::*;
         let chunk_jobs = (0..height)
             .into_par_iter()
-            .map(|preview_y| -> Result<Option<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))>, String> {
-                let source_y = budgeted_scanline_preview_source_y(
-                    preview_y,
-                    height,
-                    part.height,
-                    source_row_budget,
-                );
-                let mut chunk = sys::ExrChunkInfo::default();
-                let res = unsafe {
-                    sys::exr_read_scanline_chunk_info(
-                        self.raw.cast_const(),
-                        part_index,
-                        i32::try_from(source_y)
-                            .map_err(|_| "EXR scanline y exceeds i32".to_string())?
-                            + part.data_window_min.1,
-                        &mut chunk,
-                    )
-                };
-                if res != 0 {
-                    return Err(format!("OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"));
-                }
-                if chunk.height <= 0 || chunk.width <= 0 {
-                    return Ok(None);
-                }
+            .map(
+                |preview_y| -> Result<Option<ScanlinePreviewChunkJob>, String> {
+                    let source_y = budgeted_scanline_preview_source_y(
+                        preview_y,
+                        height,
+                        part.height,
+                        source_row_budget,
+                    );
+                    let mut chunk = sys::ExrChunkInfo::default();
+                    let res = unsafe {
+                        sys::exr_read_scanline_chunk_info(
+                            self.raw.cast_const(),
+                            part_index,
+                            i32::try_from(source_y)
+                                .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                                + part.data_window_min.1,
+                            &mut chunk,
+                        )
+                    };
+                    if res != 0 {
+                        return Err(format!(
+                            "OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"
+                        ));
+                    }
+                    if chunk.height <= 0 || chunk.width <= 0 {
+                        return Ok(None);
+                    }
 
-                let chunk_origin = (
-                    u32::try_from(chunk.start_x - part.data_window_min.0)
-                        .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
-                    u32::try_from(chunk.start_y - part.data_window_min.1)
-                        .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
-                );
-                Ok(Some((chunk.start_y, chunk, chunk_origin, (preview_y, source_y))))
-            })
+                    let chunk_origin = (
+                        u32::try_from(chunk.start_x - part.data_window_min.0).map_err(|_| {
+                            "OpenEXRCore chunk start_x is outside data window".to_string()
+                        })?,
+                        u32::try_from(chunk.start_y - part.data_window_min.1).map_err(|_| {
+                            "OpenEXRCore chunk start_y is outside data window".to_string()
+                        })?,
+                    );
+                    Ok(Some((
+                        chunk.start_y,
+                        chunk,
+                        chunk_origin,
+                        (preview_y, source_y),
+                    )))
+                },
+            )
             .collect::<Result<Vec<_>, String>>()?;
 
-        let chunk_jobs: Vec<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))> =
-            chunk_jobs.into_iter().flatten().collect();
+        let chunk_jobs: Vec<ScanlinePreviewChunkJob> = chunk_jobs.into_iter().flatten().collect();
 
-        let mut rows_by_chunk = std::collections::BTreeMap::<
-            i32,
-            (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
-        >::new();
+        let mut rows_by_chunk = ScanlinePreviewRowsByChunk::new();
         for (start_y, chunk, chunk_origin, row) in chunk_jobs {
             let entry = rows_by_chunk
                 .entry(start_y)
@@ -719,7 +731,7 @@ impl OpenExrCoreReadContext {
 
         let (roles, buffers, channel_layouts) = {
             let channels = decode_pipeline_channels(&mut pipeline)?;
-            let roles = assign_channel_roles(&channels);
+            let roles = assign_channel_roles(channels);
             let mut buffers = vec![Vec::<f32>::new(); channels.len()];
             let mut channel_layouts = vec![None; channels.len()];
             for (index, channel) in channels.iter_mut().enumerate() {
@@ -814,13 +826,12 @@ impl OpenExrCoreReadContext {
         let mut can_use_fast_path = !is_yryby;
         if can_use_fast_path {
             for idx_opt in [r_idx, g_idx, b_idx, a_idx] {
-                if let Some(i) = idx_opt {
-                    if let Some(layout) = channel_layouts[i] {
-                        if layout.x_samples != 1 || layout.y_samples != 1 {
-                            can_use_fast_path = false;
-                            break;
-                        }
-                    }
+                if let Some(i) = idx_opt
+                    && let Some(layout) = channel_layouts[i]
+                    && (layout.x_samples != 1 || layout.y_samples != 1)
+                {
+                    can_use_fast_path = false;
+                    break;
                 }
             }
         }

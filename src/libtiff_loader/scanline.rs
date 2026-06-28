@@ -25,7 +25,10 @@ use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::decode::{get_raw_value, process_scanline_contig, process_scanline_separate};
+use super::decode::{
+    TiffPaletteMaps, TiffSampleDecodeParams, get_raw_value, process_scanline_contig,
+    process_scanline_separate,
+};
 use super::handle::create_tiff_handle;
 use super::thumbnail::extract_embedded_thumbnail;
 
@@ -331,8 +334,8 @@ pub(crate) unsafe fn manual_decode_scanline(
     let mut r_map: *mut u16 = std::ptr::null_mut();
     let mut g_map: *mut u16 = std::ptr::null_mut();
     let mut b_map: *mut u16 = std::ptr::null_mut();
-    if photo == PHOTO_PALETTE {
-        if unsafe {
+    if photo == PHOTO_PALETTE
+        && unsafe {
             lib::TIFFGetField(
                 tif,
                 lib::TIFFTAG_COLORMAP,
@@ -341,9 +344,8 @@ pub(crate) unsafe fn manual_decode_scanline(
                 &mut b_map,
             )
         } == 0
-        {
-            return Err("Palette image missing colormap".to_string());
-        }
+    {
+        return Err("Palette image missing colormap".to_string());
     }
     let samples_to_process = (spp as usize).min(match photo {
         PHOTO_RGB | PHOTO_SEPARATED => 4, // RGB(A) and CMYK
@@ -426,16 +428,20 @@ pub(crate) unsafe fn manual_decode_scanline(
                 &buf,
                 &mut rgba[row_offset..],
                 width,
-                bps,
                 spp,
-                photo,
-                format,
-                swapped,
-                smin,
-                smax,
-                r_map,
-                g_map,
-                b_map,
+                TiffSampleDecodeParams {
+                    bps,
+                    photo,
+                    format,
+                    swapped,
+                    smin,
+                    smax,
+                },
+                TiffPaletteMaps {
+                    r_map,
+                    g_map,
+                    b_map,
+                },
             );
         }
     } else {
@@ -453,13 +459,15 @@ pub(crate) unsafe fn manual_decode_scanline(
                     &buf,
                     &mut rgba[row_offset..],
                     width,
-                    bps,
-                    s as usize,
-                    photo,
-                    format,
-                    swapped,
-                    smin,
-                    smax,
+                    s,
+                    TiffSampleDecodeParams {
+                        bps,
+                        photo,
+                        format,
+                        swapped,
+                        smin,
+                        smax,
+                    },
                 );
             }
         }

@@ -195,7 +195,7 @@ impl HdrImageMetadata {
             || self
                 .gain_map
                 .as_ref()
-                .map_or(false, |gm| gm.gpu_compose_pending())
+                .is_some_and(|gm| gm.gpu_compose_pending())
     }
 
     pub fn from_color_space(color_space: HdrColorSpace) -> Self {

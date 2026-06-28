@@ -266,11 +266,11 @@ impl ImageViewerApp {
         ctx: &egui::Context,
         frame: Option<&eframe::Frame>,
     ) {
-        if let Some(frame) = frame {
-            if self.tick_raw_gpu_demosaic_completion(ctx, Some(frame)) {
-                ctx.request_repaint();
-                self.wake_root_for_logic();
-            }
+        if let Some(frame) = frame
+            && self.tick_raw_gpu_demosaic_completion(ctx, Some(frame))
+        {
+            ctx.request_repaint();
+            self.wake_root_for_logic();
         }
         self.flush_deferred_sdr_upload_for_current(ctx);
         self.process_pending_animation_uploads(ctx);

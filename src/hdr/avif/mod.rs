@@ -99,9 +99,9 @@ pub(crate) fn avif_image_to_hdr_buffer(
     }
 
     let metadata = avif_cicp_to_metadata(
-        image_ref.colorPrimaries as u16,
-        image_ref.transferCharacteristics as u16,
-        image_ref.matrixCoefficients as u16,
+        image_ref.colorPrimaries,
+        image_ref.transferCharacteristics,
+        image_ref.matrixCoefficients,
         image_ref.yuvRange == libavif_sys::AVIF_RANGE_FULL,
     )
     .with_clli(image_ref.clli.maxCLL, image_ref.clli.maxPALL);
@@ -153,17 +153,19 @@ pub(crate) fn avif_image_to_hdr_buffer(
                 &metadata,
                 color_space,
             );
-            return Ok(attach_avif_gain_map_gpu_deferred(
-                image_ref.width,
-                image_ref.height,
-                sdr_rgba,
-                gain_width,
-                gain_height,
-                gain_rgba,
-                gain_metadata,
-                metadata.luminance,
-                target_hdr_capacity,
-            )?);
+            return attach_avif_gain_map_gpu_deferred(
+                crate::hdr::avif_gain_map_deferred::AvifGainMapDeferredInput {
+                    width: image_ref.width,
+                    height: image_ref.height,
+                    sdr_rgba,
+                    gain_width,
+                    gain_height,
+                    gain_rgba,
+                    gain_metadata,
+                    container_luminance: metadata.luminance,
+                    target_hdr_capacity,
+                },
+            );
         }
     }
 

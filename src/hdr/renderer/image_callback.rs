@@ -18,7 +18,6 @@ use super::*;
 
 /// GPU bindings for static HDR image planes (AVIF/JXL ISO gain-map, etc.).
 /// Page-flip transitions need prev + current + several preloaded neighbors resident at once.
-
 pub(crate) struct HdrImagePlaneCallback {
     pub(super) image: Arc<HdrImageBuffer>,
     pub(super) tone_map: HdrToneMapSettings,
@@ -138,57 +137,56 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let needs_apple_compose = false;
 
         let mut compose_command_buffers = Vec::new();
-        if needs_raw_demosaic {
-            if let Some(source) = raw_source {
-                if let (
-                    Some(green_layout),
-                    Some(rgb_layout),
-                    Some(green_pipeline),
-                    Some(rgb_pipeline),
-                    Some(uniform_buf),
-                ) = (
-                    resources.raw_demosaic_green_bind_group_layout.as_ref(),
-                    resources.raw_demosaic_rgb_bind_group_layout.as_ref(),
-                    resources.raw_demosaic_green_pipeline.as_ref(),
-                    resources.raw_demosaic_rgb_pipeline.as_ref(),
-                    resources.raw_demosaic_uniform_buffer.as_ref(),
-                ) {
-                    let demosaic_started =
-                        gpu_demosaic_started.unwrap_or_else(std::time::Instant::now);
-                    log::debug!(
-                        "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
-                        self.image.width,
-                        self.image.height,
-                        source.demosaic_method
-                    );
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] demosaic bake {}x{} first={}",
-                        self.image.width,
-                        self.image.height,
-                        binding.baked_raw_demosaic_key != Some(image_key)
-                    );
-                    let raw_pixels_view = binding
-                        .uploaded_raw_pixels_view
-                        .as_ref()
-                        .expect("raw pixels view");
-                    let green_plane_write_view = binding
-                        .uploaded_raw_green_plane_write_view
-                        .as_ref()
-                        .expect("raw green plane write view");
-                    let green_plane_read_view = binding
-                        .uploaded_raw_green_plane_read_view
-                        .as_ref()
-                        .expect("raw green plane read view");
-                    let output_view = binding
-                        .uploaded_display_storage_view
-                        .as_ref()
-                        .expect("display storage view");
-                    compose_command_buffers.push(
-                        crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
+        if needs_raw_demosaic && let Some(source) = raw_source {
+            if let (
+                Some(green_layout),
+                Some(rgb_layout),
+                Some(green_pipeline),
+                Some(rgb_pipeline),
+                Some(uniform_buf),
+            ) = (
+                resources.raw_demosaic_green_bind_group_layout.as_ref(),
+                resources.raw_demosaic_rgb_bind_group_layout.as_ref(),
+                resources.raw_demosaic_green_pipeline.as_ref(),
+                resources.raw_demosaic_rgb_pipeline.as_ref(),
+                resources.raw_demosaic_uniform_buffer.as_ref(),
+            ) {
+                let demosaic_started = gpu_demosaic_started.unwrap_or_else(std::time::Instant::now);
+                log::debug!(
+                    "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
+                    self.image.width,
+                    self.image.height,
+                    source.demosaic_method
+                );
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW-GPU] demosaic bake {}x{} first={}",
+                    self.image.width,
+                    self.image.height,
+                    binding.baked_raw_demosaic_key != Some(image_key)
+                );
+                let raw_pixels_view = binding
+                    .uploaded_raw_pixels_view
+                    .as_ref()
+                    .expect("raw pixels view");
+                let green_plane_write_view = binding
+                    .uploaded_raw_green_plane_write_view
+                    .as_ref()
+                    .expect("raw green plane write view");
+                let green_plane_read_view = binding
+                    .uploaded_raw_green_plane_read_view
+                    .as_ref()
+                    .expect("raw green plane read view");
+                let output_view = binding
+                    .uploaded_display_storage_view
+                    .as_ref()
+                    .expect("display storage view");
+                compose_command_buffers.push(
+                    crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
+                        crate::hdr::raw_demosaic_gpu::RawDemosaicComputePass {
                             device,
                             queue,
-                            green_layout,
-                            rgb_layout,
+                            green_bind_group_layout: green_layout,
+                            rgb_bind_group_layout: rgb_layout,
                             green_pipeline,
                             rgb_pipeline,
                             source,
@@ -196,239 +194,239 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             green_plane_write_view,
                             green_plane_read_view,
                             output_view,
-                            uniform_buf,
-                        ),
-                    );
-                    binding.baked_raw_demosaic_key = Some(image_key);
-                    binding.baked_raw_demosaic_method = Some(source.demosaic_method);
-                    let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
-                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
-                        notify.lock().push(RawGpuDemosaicBakedNotice {
-                            key: image_key,
-                            demosaic_ms,
-                        });
-                    }
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] demosaic notice queued key={image_key:?} ms={demosaic_ms}"
-                    );
-                    #[cfg(feature = "preload-debug")]
-                    {
-                        crate::preload_debug!(
-                            "[PreloadDebug][RAW-GPU] demosaic upload+encode {}x{} {}ms",
-                            self.image.width,
-                            self.image.height,
-                            demosaic_ms
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "[HDR] GPU RAW demosaicing unavailable; falling back to CPU tiled develop"
-                    );
-                    resources.failed_raw_demosaic.insert(image_key);
-                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
-                        notify.lock().push(RawGpuDemosaicBakedNotice {
-                            key: image_key,
-                            demosaic_ms: u32::MAX,
-                        });
-                    }
-                    return Vec::new();
+                            uniform_buffer: uniform_buf,
+                        },
+                    ),
+                );
+                binding.baked_raw_demosaic_key = Some(image_key);
+                binding.baked_raw_demosaic_method = Some(source.demosaic_method);
+                let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
+                if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                    notify.lock().push(RawGpuDemosaicBakedNotice {
+                        key: image_key,
+                        demosaic_ms,
+                    });
                 }
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW-GPU] demosaic notice queued key={image_key:?} ms={demosaic_ms}"
+                );
+                #[cfg(feature = "preload-debug")]
+                {
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] demosaic upload+encode {}x{} {}ms",
+                        self.image.width,
+                        self.image.height,
+                        demosaic_ms
+                    );
+                }
+            } else {
+                log::warn!(
+                    "[HDR] GPU RAW demosaicing unavailable; falling back to CPU tiled develop"
+                );
+                resources.failed_raw_demosaic.insert(image_key);
+                if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                    notify.lock().push(RawGpuDemosaicBakedNotice {
+                        key: image_key,
+                        demosaic_ms: u32::MAX,
+                    });
+                }
+                return Vec::new();
             }
         }
-        if needs_jpeg_compose {
-            if let Some(deferred) = iso_deferred {
-                if let (Some(compose_layout), Some(compose_pipeline)) = (
-                    resources.jpeg_compose_bind_group_layout.as_ref(),
-                    resources.jpeg_compose_pipeline.as_ref(),
-                ) {
-                    log::debug!(
-                        "[HDR] ISO gain-map compose path=GPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
-                        self.image.width,
-                        self.image.height,
-                        deferred.gain_width,
-                        deferred.gain_height,
-                        self.tone_map.target_hdr_capacity(),
-                        crate::hdr::gain_map::gain_map_weight(
-                            deferred.metadata,
-                            self.tone_map.target_hdr_capacity()
-                        )
-                    );
-                    let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-                    let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
-                    let display_storage = binding
-                        .uploaded_display_storage_view
-                        .as_ref()
-                        .expect("jpeg display storage view");
-                    let uniform_buf = binding
-                        .jpeg_compose_uniform_buffer
-                        .as_ref()
-                        .expect("jpeg compose uniform buffer");
-                    compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
+        if needs_jpeg_compose && let Some(deferred) = iso_deferred {
+            if let (Some(compose_layout), Some(compose_pipeline)) = (
+                resources.jpeg_compose_bind_group_layout.as_ref(),
+                resources.jpeg_compose_pipeline.as_ref(),
+            ) {
+                log::debug!(
+                    "[HDR] ISO gain-map compose path=GPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
+                    self.image.width,
+                    self.image.height,
+                    deferred.gain_width,
+                    deferred.gain_height,
+                    self.tone_map.target_hdr_capacity(),
+                    crate::hdr::gain_map::gain_map_weight(
+                        deferred.metadata,
+                        self.tone_map.target_hdr_capacity()
+                    )
+                );
+                let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
+                let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
+                let display_storage = binding
+                    .uploaded_display_storage_view
+                    .as_ref()
+                    .expect("jpeg display storage view");
+                let uniform_buf = binding
+                    .jpeg_compose_uniform_buffer
+                    .as_ref()
+                    .expect("jpeg compose uniform buffer");
+                compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
+                    jpeg_compose_gpu::JpegComposePass {
                         device,
                         queue,
-                        compose_layout,
-                        compose_pipeline,
-                        &self.image,
+                        bind_group_layout: compose_layout,
+                        pipeline: compose_pipeline,
+                        image: &self.image,
                         deferred,
-                        &self.tone_map,
+                        tone_map: &self.tone_map,
                         sdr_view,
                         gain_view,
-                        display_storage,
-                        uniform_buf,
-                    ));
-                    binding.baked_jpeg_image_key = Some(image_key);
-                    binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                } else {
-                    log::debug!(
-                        "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
-                        self.image.width,
-                        self.image.height,
-                        deferred.gain_width,
-                        deferred.gain_height,
-                        self.tone_map.target_hdr_capacity(),
-                        crate::hdr::gain_map::gain_map_weight(
-                            deferred.metadata,
-                            self.tone_map.target_hdr_capacity()
-                        )
-                    );
-                    // CPU fallback composes synchronously in the render callback; large images can
-                    // stall a frame. Move this work to a background task if it becomes user-visible.
-                    match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
-                        self.image.width,
-                        self.image.height,
-                        deferred,
-                        self.tone_map.target_hdr_capacity(),
-                    ) {
-                        Ok(composed) => {
-                            if let Err(err) = write_rgba32f_to_texture(
-                                queue,
-                                &binding.uploaded_texture,
-                                self.image.width,
-                                self.image.height,
-                                &composed,
-                            ) {
-                                log::warn!("[HDR] ISO CPU compose upload failed: {err}");
-                                resources
-                                    .failed_jpeg_image_compose
-                                    .insert((image_key, target_capacity_bits));
-                                resources.image_bindings.remove(&image_key);
-                                return Vec::new();
-                            } else {
-                                binding.baked_jpeg_image_key = Some(image_key);
-                                binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("[HDR] ISO CPU compose failed: {err}");
+                        display_storage_view: display_storage,
+                        uniform_buffer: uniform_buf,
+                    },
+                ));
+                binding.baked_jpeg_image_key = Some(image_key);
+                binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+            } else {
+                log::debug!(
+                    "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
+                    self.image.width,
+                    self.image.height,
+                    deferred.gain_width,
+                    deferred.gain_height,
+                    self.tone_map.target_hdr_capacity(),
+                    crate::hdr::gain_map::gain_map_weight(
+                        deferred.metadata,
+                        self.tone_map.target_hdr_capacity()
+                    )
+                );
+                // CPU fallback composes synchronously in the render callback; large images can
+                // stall a frame. Move this work to a background task if it becomes user-visible.
+                match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+                    self.image.width,
+                    self.image.height,
+                    deferred,
+                    self.tone_map.target_hdr_capacity(),
+                ) {
+                    Ok(composed) => {
+                        if let Err(err) = write_rgba32f_to_texture(
+                            queue,
+                            &binding.uploaded_texture,
+                            self.image.width,
+                            self.image.height,
+                            &composed,
+                        ) {
+                            log::warn!("[HDR] ISO CPU compose upload failed: {err}");
                             resources
                                 .failed_jpeg_image_compose
                                 .insert((image_key, target_capacity_bits));
                             resources.image_bindings.remove(&image_key);
                             return Vec::new();
+                        } else {
+                            binding.baked_jpeg_image_key = Some(image_key);
+                            binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
                         }
+                    }
+                    Err(err) => {
+                        log::warn!("[HDR] ISO CPU compose failed: {err}");
+                        resources
+                            .failed_jpeg_image_compose
+                            .insert((image_key, target_capacity_bits));
+                        resources.image_bindings.remove(&image_key);
+                        return Vec::new();
                     }
                 }
             }
         }
 
         #[cfg(feature = "heif-native")]
-        if needs_apple_compose {
-            if let Some(deferred) = apple_deferred {
-                let gpu_compose_pipeline = resources
-                    .compose_bind_group_layout
-                    .as_ref()
-                    .zip(resources.compose_pipeline.as_ref());
-                let mut apple_compose_used_cpu = gpu_compose_pipeline.is_none();
+        if needs_apple_compose && let Some(deferred) = apple_deferred {
+            let gpu_compose_pipeline = resources
+                .compose_bind_group_layout
+                .as_ref()
+                .zip(resources.compose_pipeline.as_ref());
+            let mut apple_compose_used_cpu = gpu_compose_pipeline.is_none();
 
-                if let Some((compose_layout, compose_pipeline)) = gpu_compose_pipeline {
-                    let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
-                    let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
-                    match apple_compose_gpu::ensure_encoded_primary_buffer(
-                        device,
-                        binding,
-                        self.image.width,
-                        self.image.height,
-                    ) {
-                        Err(err) => {
-                            log::warn!(
-                                "[HDR] Apple GPU compose primary buffer allocation failed: {err}; using CPU fallback"
-                            );
-                            apple_compose_used_cpu = true;
-                        }
-                        Ok(()) => {
-                            let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
-                            let display_storage = binding
-                                .uploaded_display_storage_view
-                                .as_ref()
-                                .expect("display storage view");
-                            let encoded_primary_buffer = binding
-                                .encoded_primary_buffer
-                                .as_ref()
-                                .expect("encoded primary buffer");
-                            let compose_tone_map_buf = binding
-                                .compose_tone_map_buffer
-                                .as_ref()
-                                .expect("apple compose tone map buffer");
-                            compose_command_buffers.push(
-                                apple_compose_gpu::encode_compose_compute_pass(
+            if let Some((compose_layout, compose_pipeline)) = gpu_compose_pipeline {
+                let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
+                let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
+                match apple_compose_gpu::ensure_encoded_primary_buffer(
+                    device,
+                    binding,
+                    self.image.width,
+                    self.image.height,
+                ) {
+                    Err(err) => {
+                        log::warn!(
+                            "[HDR] Apple GPU compose primary buffer allocation failed: {err}; using CPU fallback"
+                        );
+                        apple_compose_used_cpu = true;
+                    }
+                    Ok(()) => {
+                        let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                        let display_storage = binding
+                            .uploaded_display_storage_view
+                            .as_ref()
+                            .expect("display storage view");
+                        let encoded_primary_buffer = binding
+                            .encoded_primary_buffer
+                            .as_ref()
+                            .expect("encoded primary buffer");
+                        let compose_tone_map_buf = binding
+                            .compose_tone_map_buffer
+                            .as_ref()
+                            .expect("apple compose tone map buffer");
+                        compose_command_buffers.push(
+                            apple_compose_gpu::encode_compose_compute_pass(
+                                apple_compose_gpu::AppleComposePass {
                                     device,
                                     queue,
-                                    compose_layout,
-                                    compose_pipeline,
-                                    &self.image,
+                                    bind_group_layout: compose_layout,
+                                    pipeline: compose_pipeline,
+                                    image: &self.image,
                                     deferred,
-                                    &self.tone_map,
+                                    tone_map: &self.tone_map,
                                     encoded_primary_buffer,
                                     gain_view,
-                                    display_storage,
+                                    display_storage_view: display_storage,
                                     upload_primary,
-                                    compose_tone_map_buf,
-                                ),
-                            );
-                            binding.baked_apple_image_key = Some(image_key);
-                            binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                            // CommandBuffer retains the buffer until GPU execution; drop strip RAM now.
-                            binding.encoded_primary_buffer = None;
-                            binding.encoded_primary_buffer_bytes = 0;
-                            binding.encoded_primary_source_ptr = None;
-                        }
+                                    compose_tone_map_buffer: compose_tone_map_buf,
+                                },
+                            ),
+                        );
+                        binding.baked_apple_image_key = Some(image_key);
+                        binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                        // CommandBuffer retains the buffer until GPU execution; drop strip RAM now.
+                        binding.encoded_primary_buffer = None;
+                        binding.encoded_primary_buffer_bytes = 0;
+                        binding.encoded_primary_source_ptr = None;
                     }
                 }
+            }
 
-                if apple_compose_used_cpu {
-                    // CPU fallback composes synchronously in the render callback; large images can
-                    // stall a frame. Move this work to a background task if it becomes user-visible.
-                    match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
-                        &self.image,
-                        self.tone_map.target_hdr_capacity(),
-                    ) {
-                        Ok(composed) => {
-                            if let Err(err) = write_rgba32f_to_texture(
-                                queue,
-                                &binding.uploaded_texture,
-                                self.image.width,
-                                self.image.height,
-                                &composed,
-                            ) {
-                                log::warn!("[HDR] Apple CPU compose upload failed: {err}");
-                                resources
-                                    .failed_apple_image_compose
-                                    .insert((image_key, target_capacity_bits));
-                                resources.image_bindings.remove(&image_key);
-                                return Vec::new();
-                            } else {
-                                binding.baked_apple_image_key = Some(image_key);
-                                binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("[HDR] Apple CPU compose failed: {err}");
+            if apple_compose_used_cpu {
+                // CPU fallback composes synchronously in the render callback; large images can
+                // stall a frame. Move this work to a background task if it becomes user-visible.
+                match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
+                    &self.image,
+                    self.tone_map.target_hdr_capacity(),
+                ) {
+                    Ok(composed) => {
+                        if let Err(err) = write_rgba32f_to_texture(
+                            queue,
+                            &binding.uploaded_texture,
+                            self.image.width,
+                            self.image.height,
+                            &composed,
+                        ) {
+                            log::warn!("[HDR] Apple CPU compose upload failed: {err}");
                             resources
                                 .failed_apple_image_compose
                                 .insert((image_key, target_capacity_bits));
                             resources.image_bindings.remove(&image_key);
                             return Vec::new();
+                        } else {
+                            binding.baked_apple_image_key = Some(image_key);
+                            binding.baked_apple_weight_bits = Some(target_capacity_bits);
                         }
+                    }
+                    Err(err) => {
+                        log::warn!("[HDR] Apple CPU compose failed: {err}");
+                        resources
+                            .failed_apple_image_compose
+                            .insert((image_key, target_capacity_bits));
+                        resources.image_bindings.remove(&image_key);
+                        return Vec::new();
                     }
                 }
             }
@@ -447,15 +445,26 @@ impl CallbackTrait for HdrImagePlaneCallback {
 
         let uniform = image_tone_map_uniform(
             &self.image,
-            self.tone_map,
-            self.rotation_steps,
-            self.alpha,
-            self.output_mode,
-            self.target_format,
-            self.uv_rect,
-            native_display_scale,
-            deferred_gpu_composed,
-            self.ripple,
+            ImageToneMapUniformParams {
+                common: ToneMapCommonParams {
+                    settings: self.tone_map,
+                    rotation_steps: self.rotation_steps,
+                    alpha: self.alpha,
+                    output_mode: self.output_mode,
+                    framebuffer_format: self.target_format,
+                    uv_rect: self.uv_rect,
+                    native_display_scale,
+                },
+                gpu_composed_scene_linear: deferred_gpu_composed,
+                ripple: self.ripple.map(|(center, radius, pixels_per_point, mode)| {
+                    RippleToneMapParams {
+                        center,
+                        radius,
+                        pixels_per_point,
+                        mode,
+                    }
+                }),
+            },
         );
         queue.write_buffer(&binding.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 

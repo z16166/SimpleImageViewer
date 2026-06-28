@@ -116,7 +116,7 @@ fn save_to_path(path: &Path, data: &[u8]) -> std::io::Result<()> {
     }
     let temp = path.with_extension("tmp");
     std::fs::write(&temp, data)?;
-    std::fs::rename(temp, &path)?;
+    std::fs::rename(temp, path)?;
     log::info!(
         "[HDR] saved wgpu pipeline cache {} ({} bytes)",
         path.display(),

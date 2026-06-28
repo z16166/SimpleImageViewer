@@ -58,11 +58,11 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
     let cell_font_size = base_font_size * 0.65625;
 
     // Poll the background channel receiver for loaded pixels
-    if let Some(ref rx) = state.load_rx {
-        if let Ok(pixels) = rx.try_recv() {
-            state.pixels = Some(pixels);
-            state.load_rx = None;
-        }
+    if let Some(ref rx) = state.load_rx
+        && let Ok(pixels) = rx.try_recv()
+    {
+        state.pixels = Some(pixels);
+        state.load_rx = None;
     }
 
     let mut result = ModalResult::Pending;

@@ -19,14 +19,17 @@
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{DecodedImage, ImageData};
 use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::assemble::{make_hdr_image_data, make_image_data};
 use crate::loader::tiled_sources::MemoryImageSource;
 
+type JpegStripWithLogicalSize = (DecodedImage, (u32, u32));
+type OptionalJpegStripResult = Option<Result<JpegStripWithLogicalSize, String>>;
+
 #[cfg(test)]
-pub(crate) fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
+pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
     load_jpeg_with_target_capacity(
         path,
         HdrToneMapSettings::default().target_hdr_capacity(),
@@ -35,7 +38,7 @@ pub(crate) fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 pub(crate) fn load_jpeg_with_target_capacity(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -44,17 +47,17 @@ pub(crate) fn load_jpeg_with_target_capacity(
 }
 
 pub(crate) fn load_jpeg_from_mapped(
-    path: &PathBuf,
+    path: &Path,
     mmap: &memmap2::Mmap,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        if let Some(brand) = super::detect::bmff_ftyp_brand(&mmap) {
-            if super::detect::is_motion_video_bmff_brand(&brand) {
-                return Err(super::detect::motion_video_bmff_error(&brand));
-            }
+        if let Some(brand) = super::detect::bmff_ftyp_brand(mmap)
+            && super::detect::is_motion_video_bmff_brand(&brand)
+        {
+            return Err(super::detect::motion_video_bmff_error(&brand));
         }
         return Err(format!(
             "not a JPEG bitstream (header {:02x?}); file extension may not match container",
@@ -69,7 +72,7 @@ pub(crate) fn load_jpeg_from_mapped(
     // looks like a normal landscape before correction; the tag still requests transpose, so the
     // result can differ from viewers that ignore the tag or use heuristics.
     match crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
-        &mmap,
+        mmap,
         decode_capacity,
     ) {
         Ok(hdr) => {
@@ -83,7 +86,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 && (pixel_count >= tiled_limit
                     || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
             if use_tiled_deferred {
-                let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+                let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
                 if orientation > 1 {
                     let oriented =
                         crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
@@ -93,7 +96,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 }
                 if let Ok(hdr_source) =
                     crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
-                        path.clone(),
+                        path.to_path_buf(),
                         orientation,
                         decode_capacity,
                     )
@@ -124,7 +127,7 @@ pub(crate) fn load_jpeg_from_mapped(
             return Ok(make_hdr_image_data(hdr, fallback));
         }
         Err(err) => {
-            if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(&mmap)
+            if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(mmap)
                 .ok()
                 .is_some_and(|info| info.is_ultra_hdr)
             {
@@ -136,7 +139,7 @@ pub(crate) fn load_jpeg_from_mapped(
         }
     }
 
-    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
 
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =
@@ -157,7 +160,7 @@ pub(crate) fn load_jpeg_from_mapped(
 pub(crate) fn try_decode_jpeg_strip_dct(
     jpeg_data: &[u8],
     max_side: u32,
-) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+) -> OptionalJpegStripResult {
     // Ultra HDR / JPEG_R images must go through the full HDR-aware decode path.
     if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(jpeg_data)
         .ok()

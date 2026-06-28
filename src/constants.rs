@@ -132,7 +132,7 @@ pub const CRASH_DIALOG_FALLBACK_MSG: &str = "An unexpected error occurred.\n\nDi
 
 /// Default position for the settings window.
 /// Golden ratio φ — default settings window uses width / height = φ (landscape).
-pub const GOLDEN_RATIO: f32 = 1.618_033_988_7;
+pub const GOLDEN_RATIO: f32 = 1.618_034;
 /// Minimum width for the settings window.
 pub const SETTINGS_WINDOW_MIN_WIDTH: f32 = 550.0;
 /// Default width for the settings window.

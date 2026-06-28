@@ -22,6 +22,33 @@ use super::helpers::resolve_transition_prev_layout;
 use crate::app::ImageViewerApp;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
+pub(crate) struct OutgoingFrameClippedParams {
+    pub(crate) clip: Rect,
+    pub(crate) dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) alpha: f32,
+    pub(crate) hdr_output: Option<(wgpu::TextureFormat, HdrRenderOutputMode)>,
+}
+
+pub(crate) struct OutgoingFrameRippleParams {
+    pub(crate) screen_rect: Rect,
+    pub(crate) dest: Rect,
+    pub(crate) center: Pos2,
+    pub(crate) current_radius: f32,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+}
+
+pub(crate) struct PageFlipTransitionDraw<'a> {
+    pub(crate) screen_rect: Rect,
+    pub(crate) texture: &'a egui::TextureHandle,
+    pub(crate) final_dest: Rect,
+    pub(crate) unrotated_final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+    pub(crate) alpha: f32,
+}
+
 impl ImageViewerApp {
     pub(crate) fn transition_normalized_t(&self) -> f32 {
         let elapsed = self
@@ -58,27 +85,31 @@ impl ImageViewerApp {
     pub(crate) fn draw_outgoing_transition_frame_clipped(
         &self,
         ui: &mut egui::Ui,
-        _screen_rect: Rect,
-        clip: Rect,
-        p_dest: Rect,
-        rotation: i32,
-        alpha: f32,
-        hdr_output: Option<(wgpu::TextureFormat, HdrRenderOutputMode)>,
+        params: OutgoingFrameClippedParams,
     ) {
+        let OutgoingFrameClippedParams {
+            clip,
+            dest: p_dest,
+            rotation,
+            alpha,
+            hdr_output,
+        } = params;
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
             let hdr_draw = hdr_output.or_else(|| self.effective_hdr_display_output());
             if let Some((target_format, hdr_output_mode)) = hdr_draw {
                 self.draw_hdr_image_plane_clipped(
                     ui,
-                    clip,
-                    p_dest,
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    rotation,
-                    alpha,
-                    None,
+                    crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                        clip,
+                        rect: p_dest,
+                        hdr_image: Arc::clone(prev_hdr),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format,
+                        hdr_output_mode,
+                        rotation,
+                        alpha,
+                        ripple: None,
+                    },
                 );
                 return;
             }
@@ -96,35 +127,40 @@ impl ImageViewerApp {
     pub(crate) fn draw_outgoing_transition_frame_ripple(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        p_dest: Rect,
-        center: Pos2,
-        current_radius: f32,
-        rotation: i32,
-        angle: f32,
+        params: OutgoingFrameRippleParams,
     ) {
-        if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
-            if let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output() {
-                let ppp = ui.ctx().pixels_per_point();
-                self.draw_hdr_image_plane_clipped(
-                    ui,
-                    screen_rect,
-                    p_dest,
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
+        let OutgoingFrameRippleParams {
+            screen_rect,
+            dest: p_dest,
+            center,
+            current_radius,
+            rotation,
+            angle,
+        } = params;
+        if let Some(prev_hdr) = self.prev_hdr_image.as_ref()
+            && let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output()
+        {
+            let ppp = ui.ctx().pixels_per_point();
+            self.draw_hdr_image_plane_clipped(
+                ui,
+                crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                    clip: screen_rect,
+                    rect: p_dest,
+                    hdr_image: Arc::clone(prev_hdr),
+                    tone_map: self.hdr_renderer.tone_map,
                     target_format,
                     hdr_output_mode,
                     rotation,
-                    1.0,
-                    Some((
+                    alpha: 1.0,
+                    ripple: Some((
                         center,
                         current_radius,
                         ppp,
                         crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
                     )),
-                );
-                return;
-            }
+                },
+            );
+            return;
         }
         if let Some(prev) = self.prev_texture.as_ref() {
             crate::app::rendering::transitions::draw_ripple_old_image(
@@ -178,19 +214,20 @@ impl ImageViewerApp {
         ui.painter().add(egui::Shape::mesh(rm));
     }
 
-    /// Page-flip transition for SDR destination textures.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_page_flip_transition(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        texture: &egui::TextureHandle,
-        final_dest: Rect,
-        unrotated_final_dest: Rect,
-        rotation: i32,
-        angle: f32,
-        alpha: f32,
+        draw: PageFlipTransitionDraw<'_>,
     ) {
+        let PageFlipTransitionDraw {
+            screen_rect,
+            texture,
+            final_dest,
+            unrotated_final_dest,
+            rotation,
+            angle,
+            alpha,
+        } = draw;
         let (p_dest, union_rect, has_prev) = self.transition_prev_layout(screen_rect, final_dest);
         let ease_in_out = {
             let t = self.transition_normalized_t();
@@ -219,12 +256,13 @@ impl ImageViewerApp {
             }
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                old_clip,
-                p_dest,
-                rotation,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: old_clip,
+                    dest: p_dest,
+                    rotation,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
         }
 
@@ -317,21 +355,23 @@ impl ImageViewerApp {
             );
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                left_clip,
-                p_dest.translate(Vec2::new(-shift, 0.0)),
-                0,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: left_clip,
+                    dest: p_dest.translate(Vec2::new(-shift, 0.0)),
+                    rotation: 0,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                right_clip,
-                p_dest.translate(Vec2::new(shift, 0.0)),
-                0,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: right_clip,
+                    dest: p_dest.translate(Vec2::new(shift, 0.0)),
+                    rotation: 0,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
             Self::draw_curtain_split_shadows(ui, union_rect, center_x, shift, ease);
         }
@@ -367,18 +407,22 @@ impl ImageViewerApp {
         if has_prev {
             self.draw_outgoing_transition_frame_ripple(
                 ui,
-                screen_rect,
-                p_dest,
-                center,
-                current_radius,
-                rotation,
-                angle,
+                OutgoingFrameRippleParams {
+                    screen_rect,
+                    dest: p_dest,
+                    center,
+                    current_radius,
+                    rotation,
+                    angle,
+                },
             );
         }
 
         let segments = crate::app::rendering::transitions::RIPPLE_SEGMENTS;
-        let mut mesh = egui::Mesh::default();
-        mesh.texture_id = texture.id();
+        let mut mesh = egui::Mesh {
+            texture_id: texture.id(),
+            ..Default::default()
+        };
 
         let center_uv = Pos2::new(
             (center.x - final_dest.min.x) / final_dest.width(),

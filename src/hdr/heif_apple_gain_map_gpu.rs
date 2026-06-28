@@ -72,19 +72,21 @@ pub(crate) fn compose_apple_heic_deferred_cpu_pixels(
     let pixel_count = image.width as usize * image.height as usize * 4;
     let mut composed = vec![0.0_f32; pixel_count];
     compose_apple_gain_map_pixels(
-        image.rgba_f32.as_slice(),
-        &mut composed,
-        image.width,
-        image.height,
-        deferred.gain_rgba.as_slice(),
-        deferred.gain_width,
-        deferred.gain_height,
-        image.color_space,
-        image.metadata.transfer_function,
-        &image.metadata,
-        deferred.headroom_span,
-        weight,
-        false,
+        crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+            base_pixels: image.rgba_f32.as_slice(),
+            composed_pixels: &mut composed,
+            width: image.width,
+            height: image.height,
+            gain_rgba: deferred.gain_rgba.as_slice(),
+            gain_w: deferred.gain_width,
+            gain_h: deferred.gain_height,
+            color_space: image.color_space,
+            transfer: image.metadata.transfer_function,
+            metadata: &image.metadata,
+            headroom_span: deferred.headroom_span,
+            weight,
+            force_scalar: false,
+        },
     );
     Ok(composed)
 }
@@ -485,19 +487,21 @@ mod tests {
         // CPU SIMD path
         let mut cpu_out = vec![0.0_f32; PW as usize * PH as usize * 4];
         compose_apple_gain_map_pixels(
-            &primary,
-            &mut cpu_out,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            color_space,
-            transfer,
-            &metadata,
-            headroom_span,
-            weight,
-            false,
+            crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+                base_pixels: &primary,
+                composed_pixels: &mut cpu_out,
+                width: PW,
+                height: PH,
+                gain_rgba: &gain,
+                gain_w: GW,
+                gain_h: GH,
+                color_space,
+                transfer,
+                metadata: &metadata,
+                headroom_span,
+                weight,
+                force_scalar: false,
+            },
         );
 
         // GPU shader simulation
@@ -557,19 +561,21 @@ mod tests {
 
         let mut cpu_out = vec![0.0_f32; PW as usize * PH as usize * 4];
         compose_apple_gain_map_pixels(
-            &primary,
-            &mut cpu_out,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            HdrColorSpace::LinearSrgb,
-            HdrTransferFunction::Linear,
-            &metadata,
-            headroom_span,
-            weight,
-            false,
+            crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+                base_pixels: &primary,
+                composed_pixels: &mut cpu_out,
+                width: PW,
+                height: PH,
+                gain_rgba: &gain,
+                gain_w: GW,
+                gain_h: GH,
+                color_space: HdrColorSpace::LinearSrgb,
+                transfer: HdrTransferFunction::Linear,
+                metadata: &metadata,
+                headroom_span,
+                weight,
+                force_scalar: false,
+            },
         );
 
         let gpu_out = wgsl_compose_apple_gain(
@@ -617,19 +623,21 @@ mod tests {
 
         let mut cpu_out = vec![0.0_f32; N as usize * N as usize * 4];
         compose_apple_gain_map_pixels(
-            &primary,
-            &mut cpu_out,
-            N,
-            N,
-            &gain,
-            N,
-            N,
-            HdrColorSpace::DisplayP3Linear,
-            HdrTransferFunction::Srgb,
-            &metadata,
-            headroom_span,
-            weight,
-            false,
+            crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+                base_pixels: &primary,
+                composed_pixels: &mut cpu_out,
+                width: N,
+                height: N,
+                gain_rgba: &gain,
+                gain_w: N,
+                gain_h: N,
+                color_space: HdrColorSpace::DisplayP3Linear,
+                transfer: HdrTransferFunction::Srgb,
+                metadata: &metadata,
+                headroom_span,
+                weight,
+                force_scalar: false,
+            },
         );
 
         let gpu_out = wgsl_compose_apple_gain(

@@ -371,7 +371,7 @@ fn build_version_resource(
 
     // 2. Attempt to get Git Commit ID (short hash)
     let git_hash = std::process::Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
         .and_then(|output| {
@@ -394,7 +394,7 @@ fn build_version_resource(
         .split('.')
         .map(|s| s.parse::<u64>().unwrap_or(0))
         .collect();
-    let major = *parts.get(0).unwrap_or(&0);
+    let major = *parts.first().unwrap_or(&0);
     let minor = *parts.get(1).unwrap_or(&0);
     let patch = *parts.get(2).unwrap_or(&0);
     let build = *parts.get(3).unwrap_or(&0);

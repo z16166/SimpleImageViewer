@@ -38,7 +38,7 @@ pub fn is_remote_path(path: &Path) -> bool {
 
     #[cfg(windows)]
     {
-        return windows::is_mapped_remote_drive(path);
+        windows::is_mapped_remote_drive(path)
     }
 
     #[cfg(not(windows))]

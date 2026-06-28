@@ -26,7 +26,7 @@
 use crate::loader::DecodedImage;
 use crate::loader::preview_caps::hq_preview_max_side;
 use crate::raw_processor::RawProcessor;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// True when an embedded preview is large enough to substitute for a full demosaic.
 pub(crate) fn raw_embedded_preview_covers_sensor(
@@ -113,7 +113,7 @@ fn apply_orientation_to_embedded_preview(
 
 pub(crate) fn extract_embedded_preview(
     processor: &mut RawProcessor,
-    path: &PathBuf,
+    path: &Path,
     final_orientation: u16,
 ) -> Option<DecodedImage> {
     let mut preview = processor.unpack_thumb().ok()?;

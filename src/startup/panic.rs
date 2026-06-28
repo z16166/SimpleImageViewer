@@ -128,10 +128,10 @@ pub fn setup_panic_hook() {
         }
 
         let mut msg = format!(
-            "{}\n\n{}\n\n{}",
+            "{}\n\nLocation: {}\n\nError: {}",
             rust_i18n::t!("dialog.crash_msg"),
-            format!("Location: {}", location),
-            format!("Error: {}", message)
+            location,
+            message
         );
         if msg.contains("dialog.crash_msg") {
             msg = format!(

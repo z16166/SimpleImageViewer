@@ -79,7 +79,7 @@ fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scr
     let mut lo = 0usize;
     let mut hi = n;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         scratch.clear();
         for ch in src.chars().take(mid) {
             scratch.push(ch);
@@ -204,8 +204,8 @@ impl OsdEvent {
         Self::ImageMode(*value)
     }
 
-    pub fn file_name(value: &String) -> Self {
-        Self::FileName(Arc::from(value.as_str()))
+    pub fn file_name(value: &str) -> Self {
+        Self::FileName(Arc::from(value))
     }
 
     pub fn raw_sensor_size(value: &(u32, u32)) -> Self {
@@ -324,16 +324,16 @@ impl Default for SupplementalOsdInputs {
 impl SupplementalOsdInputs {
     fn hdr_line(hdr: &HdrOsdFrame<'_>) -> Option<String> {
         let render_path = hdr.render_path?;
-        crate::hdr::status::hdr_osd_tag_from_parts(
-            true,
+        crate::hdr::status::hdr_osd_tag_from_parts(crate::hdr::status::HdrOsdTagParts {
+            is_hdr_source: true,
             render_path,
-            hdr.color_space,
-            hdr.output_mode,
-            hdr.native_presentation_enabled,
-            hdr.ultra_hdr_decode_capacity,
-            hdr.monitor_label,
-            hdr.exposure_ev,
-        )
+            color_space: hdr.color_space,
+            output_mode: hdr.output_mode,
+            native_presentation_enabled: hdr.native_presentation_enabled,
+            ultra_hdr_decode_capacity: hdr.ultra_hdr_decode_capacity,
+            monitor_label: hdr.monitor_label,
+            exposure_ev: hdr.exposure_ev,
+        })
     }
 
     fn hdr_line_from_state(&self) -> Option<String> {

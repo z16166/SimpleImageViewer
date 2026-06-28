@@ -18,7 +18,7 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::ImageData;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::hdr_formats::{load_detected_exr, load_hdr};
 use super::jpeg::load_jpeg_with_target_capacity;
@@ -65,7 +65,7 @@ pub(crate) fn primary_decode_failure_is_final(primary_err: &str) -> bool {
 }
 
 fn load_bmff_ftyp_container(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     brand: &[u8],
@@ -84,18 +84,16 @@ fn load_bmff_ftyp_container(
     );
 
     #[cfg(target_os = "windows")]
-    if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path.as_path(), true, None) {
+    if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path, true, None) {
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path.as_path(),
-            image,
+            path, image,
         ));
     }
 
     #[cfg(target_os = "macos")]
-    if let Ok(image) = crate::macos_image_io::load_via_image_io(path.as_path(), true, None) {
+    if let Ok(image) = crate::macos_image_io::load_via_image_io(path, true, None) {
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path.as_path(),
-            image,
+            path, image,
         ));
     }
 
@@ -107,7 +105,7 @@ fn load_bmff_ftyp_container(
 }
 
 pub(crate) fn read_detection_header(
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<([u8; DETECTION_BUFFER_SIZE], usize), String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -121,7 +119,7 @@ pub(crate) fn read_detection_header(
 
 /// After extension-first decode fails: platform decoder (WIC/ImageIO), then magic-byte routing.
 pub(crate) fn recover_via_platform_and_content_detection(
-    path: &PathBuf,
+    path: &Path,
     file_name: &str,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
@@ -143,8 +141,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
             file_name
         );
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path.as_path(),
-            image,
+            path, image,
         ));
     }
     #[cfg(target_os = "macos")]
@@ -154,8 +151,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
             file_name
         );
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path.as_path(),
-            image,
+            path, image,
         ));
     }
 
@@ -180,7 +176,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
 
 /// Run the extension-matched loader first; only mislabeled or mismatched files pay sniffing cost.
 pub(crate) fn load_primary_with_detection_fallback(
-    path: &PathBuf,
+    path: &Path,
     file_name: &str,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
@@ -208,7 +204,7 @@ pub(crate) fn load_primary_with_detection_fallback(
 
 pub(crate) fn load_by_image_format(
     format: image::ImageFormat,
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -245,7 +241,7 @@ pub(crate) fn load_by_image_format(
 }
 
 pub(crate) fn load_via_content_detection(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {

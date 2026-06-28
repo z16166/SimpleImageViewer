@@ -159,8 +159,8 @@ pub(super) fn directory_tree_metadata_worker_loop(
                             batch_paths.push(path.clone());
                             batch_modified.push(read_file_modified_unix(&path));
 
-                            if batch_paths.len() >= METADATA_BATCH_SIZE {
-                                if !send_worker_result(
+                            if batch_paths.len() >= METADATA_BATCH_SIZE
+                                && !send_worker_result(
                                     &metadata_result_tx,
                                     FileMetadataResult {
                                         generation: request.generation,
@@ -168,9 +168,9 @@ pub(super) fn directory_tree_metadata_worker_loop(
                                         modified_unix: std::mem::take(&mut batch_modified),
                                     },
                                     &shutdown,
-                                ) {
-                                    return;
-                                }
+                                )
+                            {
+                                return;
                             }
                         }
 

@@ -20,7 +20,7 @@
 //! registered extensions and RAW fallbacks. Linux uses the same LibRaw embedded preview path,
 //! then half-size LibRaw develop when no embedded thumbnail exists.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
@@ -43,6 +43,9 @@ use super::modern::{
 };
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
+
+type StripWithLogicalSize = (DecodedImage, (u32, u32));
+type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
 
 /// Directory-tree list previews are always SDR thumbnails, independent of main-window HDR output.
 const DIRECTORY_TREE_THUMB_HDR_CAPACITY: f32 = 1.0;
@@ -77,7 +80,7 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
         let exif_logical = (exif.width, exif.height);
         let logical = normalize_logical_size(
             mmap.as_ref()
-                .and_then(|data| probe_still_image_logical_size_from_mmap(data))
+                .and_then(probe_still_image_logical_size_from_mmap)
                 .unwrap_or(exif_logical),
             exif_logical,
         );
@@ -104,10 +107,10 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
-    if let Some(exif) = exif.as_ref() {
-        if let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side) {
-            return Ok(result);
-        }
+    if let Some(exif) = exif.as_ref()
+        && let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side)
+    {
+        return Ok(result);
     }
 
     let decoded = preview_from_image_data(&image_data, max_side)?;
@@ -154,14 +157,14 @@ fn path_extension_ascii_lower(path: &Path) -> Option<String> {
 }
 
 fn open_image_data_for_directory_tree_thumb(
-    path: &PathBuf,
+    path: &Path,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string());
-    let ext = path_extension_ascii_lower(path.as_path()).unwrap_or_default();
+    let ext = path_extension_ascii_lower(path).unwrap_or_default();
     let hdr_target_capacity = DIRECTORY_TREE_THUMB_HDR_CAPACITY;
     let hdr_tone_map = crate::loader::hdr_tone_map_settings_for_directory_tree_strip();
     let high_quality = false;
@@ -177,10 +180,10 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-        if let Ok(img) = load_hdr(path, hdr_target_capacity, hdr_tone_map) {
-            return Ok(img);
-        }
+    if crate::hdr::decode::is_hdr_candidate_ext(&ext)
+        && let Ok(img) = load_hdr(path, hdr_target_capacity, hdr_tone_map)
+    {
+        return Ok(img);
     }
 
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
@@ -272,11 +275,11 @@ fn open_image_data_for_directory_tree_thumb(
     {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+            return Ok(apply_exif_orientation_to_image_data(path, img));
         }
         #[cfg(target_os = "macos")]
         if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+            return Ok(apply_exif_orientation_to_image_data(path, img));
         }
     }
 
@@ -294,7 +297,7 @@ fn open_image_data_for_directory_tree_thumb(
     })
 }
 
-fn open_raw_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageData, String> {
+fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData, String> {
     match open_raw_processor_with_preview(path) {
         Ok((processor, preview_opt, _, _)) => {
             if let Some(preview) = preview_opt {
@@ -322,7 +325,7 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &PathBuf) -> Result<ImageD
 }
 
 fn raw_strip_libraw_fallback(
-    path: &PathBuf,
+    path: &Path,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
 ) -> Result<ImageData, String> {
     use super::raw::develop_half_size_sdr_strip_preview;
@@ -338,20 +341,20 @@ fn raw_strip_libraw_fallback(
             processor
         }
     };
-    develop_half_size_sdr_strip_preview(&mut processor, path.as_path())
+    develop_half_size_sdr_strip_preview(&mut processor, path)
         .map(make_image_data)
         .ok_or_else(|| "no LibRaw strip preview available for RAW".to_string())
 }
 
 fn platform_still_image_fallback(
-    path: &PathBuf,
+    path: &Path,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
 ) -> Result<ImageData, String> {
     #[cfg(target_os = "windows")]
     {
         match crate::wic::load_via_wic(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+                return Ok(apply_exif_orientation_to_image_data(path, img));
             }
             Err(wic_err) => {
                 log::debug!(
@@ -360,13 +363,13 @@ fn platform_still_image_fallback(
                 );
             }
         }
-        return raw_strip_libraw_fallback(path, opened_processor);
+        raw_strip_libraw_fallback(path, opened_processor)
     }
     #[cfg(target_os = "macos")]
     {
         match crate::macos_image_io::load_via_image_io(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path.as_path(), img));
+                return Ok(apply_exif_orientation_to_image_data(path, img));
             }
             Err(io_err) => {
                 log::debug!(
@@ -476,7 +479,7 @@ fn try_jpeg_dct_strip_fast_path(
     path: &Path,
     mmap: Option<&memmap2::Mmap>,
     max_side: u32,
-) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+) -> OptionalStripResult {
     if !path_has_extension(path, "jpg") && !path_has_extension(path, "jpeg") {
         return None;
     }

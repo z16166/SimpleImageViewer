@@ -33,10 +33,11 @@ use crate::hdr::types::{
 pub(crate) const STRIP_PREVIEW_NITS_PIN_EPSILON: f32 = 0.5;
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {
     let mut tone = HdrToneMapSettings::default();
-    if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
-        if max.is_finite() && max > tone.sdr_white_nits {
-            tone.max_display_nits = max;
-        }
+    if let Some(max) = buffer.metadata.luminance.mastering_max_nits
+        && max.is_finite()
+        && max > tone.sdr_white_nits
+    {
+        tone.max_display_nits = max;
     }
     hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, &tone)
 }
@@ -78,12 +79,12 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     // raise from mastering metadata or PQ thumbnails crush to ~20% luminance.
     let strip_preview_pinned =
         tone.max_display_nits <= tone.sdr_white_nits + STRIP_PREVIEW_NITS_PIN_EPSILON;
-    if !strip_preview_pinned {
-        if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
-            if max.is_finite() && max > tone.sdr_white_nits {
-                tone.max_display_nits = tone.max_display_nits.max(max);
-            }
-        }
+    if !strip_preview_pinned
+        && let Some(max) = buffer.metadata.luminance.mastering_max_nits
+        && max.is_finite()
+        && max > tone.sdr_white_nits
+    {
+        tone.max_display_nits = tone.max_display_nits.max(max);
     }
 
     let tf = buffer.metadata.transfer_function;
@@ -214,6 +215,7 @@ pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> 
 pub(crate) fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
     let a = 0.17883277_f32;
     let b = 0.28466892_f32;
+    #[allow(clippy::excessive_precision)]
     let c = 0.55991073_f32;
     if e_prime <= 0.5 {
         (e_prime * e_prime) / 3.0

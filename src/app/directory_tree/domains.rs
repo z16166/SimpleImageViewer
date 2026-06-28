@@ -207,6 +207,7 @@ pub(crate) struct DirectoryTreeListSnapshot {
     pub(super) list_preview_thumb_px: f32,
 }
 
+#[derive(Default)]
 pub(crate) struct DirectoryTreePreviewSnapshot {
     pub(super) revision: u64,
     pub(super) list_publish_generation: u64,
@@ -252,17 +253,6 @@ impl Default for DirectoryTreeListSnapshot {
             image_list_reordering: false,
             show_list_previews: true,
             list_preview_thumb_px: crate::settings::DirectoryTreeListPreviewSize::Small.thumb_px(),
-        }
-    }
-}
-
-impl Default for DirectoryTreePreviewSnapshot {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            list_publish_generation: 0,
-            textures: HashMap::new(),
-            logical_sizes: HashMap::new(),
         }
     }
 }
@@ -438,17 +428,15 @@ pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>
         ctx.preview_cache_revision,
         ctx.preview_textures,
         ctx.preview_logical_sizes,
+    ) && publish_preview_snapshot(
+        ctx.preview_snapshot,
+        ctx.list.publish_generation,
+        ctx.list.image_rows.len(),
+        revision,
+        textures,
+        logical_sizes,
     ) {
-        if publish_preview_snapshot(
-            ctx.preview_snapshot,
-            ctx.list.publish_generation,
-            ctx.list.image_rows.len(),
-            revision,
-            textures,
-            logical_sizes,
-        ) {
-            changed = true;
-        }
+        changed = true;
     }
 
     changed

@@ -94,20 +94,20 @@ impl eframe::App for ImageViewerApp {
         drop(old_context_menu_tx);
 
         // Wait for the saver thread to finish any in-progress I/O
-        if let Some(handle) = self.saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Saver thread panicked: {:?}", e);
         }
-        if let Some(handle) = self.hotkeys_saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.hotkeys_saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
         }
-        if let Some(handle) = self.context_menu_saver_handle.take() {
-            if let Err(e) = handle.join() {
-                log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.context_menu_saver_handle.take()
+            && let Err(e) = handle.join()
+        {
+            log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
         }
         self.background_threads
             .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);
@@ -315,7 +315,6 @@ impl ImageViewerApp {
     /// System-theme trailing detection and DPI-driven style refresh. Must run from the ROOT
     /// `ui()` pass only (see comment in `ui()`).
     fn sync_theme_and_visuals(&mut self, ctx: &Context) {
-        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
         let mut style_changed = false;
 
         if let Some(new_palette) = self
@@ -334,7 +333,12 @@ impl ImageViewerApp {
         }
 
         if style_changed {
-            setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+            setup_visuals_with_font_size(
+                ctx,
+                &self.settings,
+                &self.cached_palette,
+                self.settings.font_size,
+            );
             self.sync_directory_tree_theme_snapshot();
             self.mark_directory_tree_repaint_pending();
             self.request_directory_tree_viewport_repaint(ctx);
@@ -343,7 +347,6 @@ impl ImageViewerApp {
 
     /// Re-apply theme palette, egui visuals/fonts, and repaint auxiliary viewports.
     pub(crate) fn refresh_global_ui_style(&mut self, ctx: &Context) {
-        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
         if let Some(new_palette) = self
             .settings
             .theme
@@ -351,7 +354,12 @@ impl ImageViewerApp {
         {
             self.cached_palette = new_palette;
         }
-        setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+        setup_visuals_with_font_size(
+            ctx,
+            &self.settings,
+            &self.cached_palette,
+            self.settings.font_size,
+        );
         self.sync_directory_tree_theme_snapshot();
         ctx.request_repaint();
         self.mark_directory_tree_repaint_pending();
@@ -370,11 +378,9 @@ impl ImageViewerApp {
                 }
             };
 
-        let show_item =
-            tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
-        let settings_item =
-            tray_icon::menu::MenuItem::new(t!("tray.settings").to_string(), true, None);
-        let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
+        let show_item = tray_icon::menu::MenuItem::new(&t!("tray.show_window"), true, None);
+        let settings_item = tray_icon::menu::MenuItem::new(&t!("tray.settings"), true, None);
+        let quit_item = tray_icon::menu::MenuItem::new(&t!("tray.quit"), true, None);
         let show_item_id = show_item.id().clone();
         let settings_item_id = settings_item.id().clone();
         let quit_item_id = quit_item.id().clone();
@@ -390,7 +396,7 @@ impl ImageViewerApp {
         match tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
             .with_menu_on_left_click(false)
-            .with_tooltip(t!("app.name").to_string())
+            .with_tooltip(&t!("app.name"))
             .with_icon(icon)
             .build()
         {
@@ -465,12 +471,14 @@ impl ImageViewerApp {
         ctx: &Context,
         root_close_requested: bool,
     ) {
-        if root_close_requested && !self.explicit_quit {
-            if self.settings.minimize_to_tray_on_close && !Self::is_system_shutting_down() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if !self.hidden_to_tray && !self.pending_hide_to_tray {
-                    self.prepare_hide_to_tray(ctx);
-                }
+        if root_close_requested
+            && !self.explicit_quit
+            && self.settings.minimize_to_tray_on_close
+            && !Self::is_system_shutting_down()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if !self.hidden_to_tray && !self.pending_hide_to_tray {
+                self.prepare_hide_to_tray(ctx);
             }
         }
 

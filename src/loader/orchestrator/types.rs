@@ -32,11 +32,14 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use super::preload_plan::PreloadPlanSnapshot;
 
+type RootWakeCallback = Arc<dyn Fn() + Send + Sync>;
+type SharedRootWake = Arc<parking_lot::Mutex<Option<RootWakeCallback>>>;
+
 /// Crossbeam sender that wakes the root window when a decode worker posts a result.
 #[derive(Clone)]
 pub(crate) struct LoaderOutputSender {
     inner: Sender<LoaderOutput>,
-    root_wake: Arc<parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    root_wake: SharedRootWake,
 }
 
 impl LoaderOutputSender {
@@ -51,11 +54,8 @@ impl LoaderOutputSender {
         *self.root_wake.lock() = Some(wake);
     }
 
-    pub(crate) fn send(
-        &self,
-        output: LoaderOutput,
-    ) -> Result<(), crossbeam_channel::SendError<LoaderOutput>> {
-        let result = self.inner.send(output);
+    pub(crate) fn send(&self, output: LoaderOutput) -> Result<(), ()> {
+        let result = self.inner.send(output).map_err(|_| ());
         if result.is_ok()
             && let Some(wake) = self.root_wake.lock().as_ref()
         {

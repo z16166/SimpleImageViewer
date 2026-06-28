@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.8.0"
+version = "2.8.1"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -107,6 +107,8 @@ avif-native = ["dep:libavif-sys"]
 heif-native = ["dep:libheif-sys"]
 jpegxl = ["dep:libjxl-sys"]
 hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
+
+[lints.clippy]
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }

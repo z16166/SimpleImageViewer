@@ -268,25 +268,25 @@ pub fn setup_fonts(ctx: &Context, settings: &Settings) -> bool {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
     ];
     for path in candidates {
-        if let Ok(data) = std::fs::read(&path) {
-            if is_font_safe(&data) {
-                fonts.font_data.insert(
-                    "CJK".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(data)),
-                );
-                fonts
-                    .families
-                    .entry(egui::FontFamily::Proportional)
-                    .or_default()
-                    .push("CJK".to_owned());
-                fonts
-                    .families
-                    .entry(egui::FontFamily::Monospace)
-                    .or_default()
-                    .push("CJK".to_owned());
-                font_loaded = true;
-                break;
-            }
+        if let Ok(data) = std::fs::read(&path)
+            && is_font_safe(&data)
+        {
+            fonts.font_data.insert(
+                "CJK".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(data)),
+            );
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push("CJK".to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push("CJK".to_owned());
+            font_loaded = true;
+            break;
         }
     }
 

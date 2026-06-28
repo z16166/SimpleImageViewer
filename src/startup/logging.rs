@@ -176,6 +176,7 @@ pub fn log_env_info() -> String {
 
         #[repr(C)]
         #[allow(non_snake_case)]
+        #[allow(clippy::upper_case_acronyms)]
         struct OSVERSIONINFOEXW {
             dwOSVersionInfoSize: u32,
             dwMajorVersion: u32,
@@ -192,7 +193,7 @@ pub fn log_env_info() -> String {
 
         unsafe fn get_win_env(memory_gb: f64) -> Option<String> {
             let h_ntdll = unsafe { GetModuleHandleW(windows::core::w!("ntdll.dll")).ok()? };
-            let proc = unsafe { GetProcAddress(h_ntdll, PCSTR(b"RtlGetVersion\0".as_ptr()))? };
+            let proc = unsafe { GetProcAddress(h_ntdll, PCSTR(c"RtlGetVersion".as_ptr().cast()))? };
             let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 =
                 unsafe { std::mem::transmute(proc) };
 
@@ -284,15 +285,15 @@ pub fn log_env_info() -> String {
                 }
 
                 if !edition_id.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&edition_id);
                 }
                 if !display_version.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&display_version);
                 }
                 if !service_pack.is_empty() {
-                    display_name.push_str(" ");
+                    display_name.push(' ');
                     display_name.push_str(&service_pack);
                 }
 

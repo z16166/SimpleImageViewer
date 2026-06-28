@@ -31,26 +31,40 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+pub struct ImageViewerInit {
+    pub settings: Settings,
+    pub initial_image: Option<PathBuf>,
+    pub ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
+    pub requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
+    pub active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+    pub requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
+    pub gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
+    pub vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
+    #[cfg(target_os = "linux")]
+    pub requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
+    pub initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
+}
+
 impl ImageViewerApp {
     pub fn refresh_audio_devices(&mut self) {
         log::info!("[Audio] Refreshing audio device list...");
         self.cached_audio_devices = self.audio.list_devices();
     }
 
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        settings: Settings,
-        initial_image: Option<PathBuf>,
-        ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
-        requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
-        active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
-        requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
-        gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
-        vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
-        #[cfg(target_os = "linux")]
-        requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
-        initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
-    ) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, init: ImageViewerInit) -> Self {
+        let ImageViewerInit {
+            settings,
+            initial_image,
+            ipc_rx,
+            requested_target_format,
+            active_target_format,
+            requested_rgb10a2_pq_encode,
+            gamma22_display_scale,
+            vulkan_wsi_hdr_gates,
+            #[cfg(target_os = "linux")]
+            requested_vulkan_hdr_metadata,
+            initial_hdr_monitor_selection,
+        } = init;
         if settings.fullscreen {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
@@ -134,7 +148,7 @@ impl ImageViewerApp {
                 crate::app::background_yaml_saver::run_coalescing_periodic_saver(
                     hotkeys_save_rx,
                     crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    |cfg| crate::hotkeys::io::save_hotkeys_file(cfg),
+                    crate::hotkeys::io::save_hotkeys_file,
                     |e| {
                         let _ = hotkeys_save_error_tx.send(e);
                     },
@@ -168,7 +182,7 @@ impl ImageViewerApp {
                 crate::app::background_yaml_saver::run_coalescing_periodic_saver(
                     context_menu_save_rx,
                     crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    |cfg| crate::context_menu::io::save_context_menu_file(cfg),
+                    crate::context_menu::io::save_context_menu_file,
                     |e| {
                         let _ = context_menu_save_error_tx.send(e);
                     },
@@ -573,7 +587,6 @@ impl ImageViewerApp {
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
-            temp_font_size: None,
 
             cached_music_count: None,
             cached_pixels_per_point: 1.0,

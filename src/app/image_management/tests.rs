@@ -805,6 +805,8 @@ fn background_preload_schedule_with_force_neighbors() {
     app.current_index = 0;
     app.settings.raw_high_quality = true;
     app.settings.preload = true;
+    app.cached_available_memory_mb = 8192;
+    app.cached_total_memory_mb = 16384;
 
     // Simulate current RAW image has already loaded its HDR plane (e.g. after retain on capacity refine)
     let dummy_hdr = std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
@@ -1261,14 +1263,14 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
-            hdr: crate::hdr::types::HdrImageBuffer {
+            hdr: Box::new(crate::hdr::types::HdrImageBuffer {
                 width: 1,
                 height: 1,
                 format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                 color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
                 metadata: crate::hdr::types::HdrImageMetadata::default(),
                 rgba_f32: Arc::new(vec![0.0; 4]),
-            },
+            }),
             fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
         }),
         preview_bundle: PreviewBundle::initial(),
@@ -1290,14 +1292,14 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
-            hdr: crate::hdr::types::HdrImageBuffer {
+            hdr: Box::new(crate::hdr::types::HdrImageBuffer {
                 width: 1,
                 height: 1,
                 format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                 color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
                 metadata: crate::hdr::types::HdrImageMetadata::default(),
                 rgba_f32: Arc::new(vec![0.0; 4]),
-            },
+            }),
             fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
         }),
         preview_bundle: PreviewBundle::initial(),
@@ -1318,14 +1320,14 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
         result: Ok(crate::loader::ImageData::Hdr {
-            hdr: crate::hdr::types::HdrImageBuffer {
+            hdr: Box::new(crate::hdr::types::HdrImageBuffer {
                 width: 1,
                 height: 1,
                 format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                 color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
                 metadata: crate::hdr::types::HdrImageMetadata::default(),
                 rgba_f32: Arc::new(vec![0.0; 4]),
-            },
+            }),
             fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
         }),
         preview_bundle: PreviewBundle::initial(),
@@ -1603,7 +1605,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
-        temp_font_size: None,
         cached_music_count: None,
         cached_pixels_per_point: 1.0,
         active_modal: None,
@@ -1870,15 +1871,17 @@ fn install_current_tiled_hdr_image_refreshes_hdr_osd_line() {
     let ctx = eframe::egui::Context::default();
 
     app.install_tiled_image(
-        0,
-        crate::loader::decode_profile_stub(),
-        Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
-        Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
-        None,
-        None,
-        true,
-        false,
-        &ctx,
+        crate::app::image_management::image_install::TiledImageInstall {
+            idx: 0,
+            decode_profile: crate::loader::decode_profile_stub(),
+            source: Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
+            hdr_source: Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
+            sdr_preview: None,
+            hdr_preview: None,
+            hdr_sdr_fallback: true,
+            ultra_hdr_capacity_sensitive: false,
+            ctx: &ctx,
+        },
     );
 
     assert!(app.osd.has_hdr_line());
@@ -1993,7 +1996,17 @@ fn evict_distant_prefetch_caches_evicts_all_distant_prefetched_tiled_and_hdr_res
     let ctx = egui::Context::default();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
     let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
-    app.texture_cache.insert(3, handle, 1024, 768, true, 0, 7);
+    app.texture_cache.insert(
+        3,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: 1024,
+            orig_h: 768,
+            needs_tile_manager: true,
+            current_index: 0,
+            total_count: 7,
+        },
+    );
 
     assert!(app.prefetched_tiles.contains_key(&3));
     assert!(app.hdr_tiled_source_cache.contains_key(&3));
@@ -2032,8 +2045,28 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
         egui::TextureOptions::LINEAR,
     );
     let nearby = ctx.load_texture("nearby_tex", color_image, egui::TextureOptions::LINEAR);
-    app.texture_cache.insert(3, stale, 1024, 768, false, 0, 7);
-    app.texture_cache.insert(1, nearby, 1024, 768, false, 0, 7);
+    app.texture_cache.insert(
+        3,
+        stale,
+        crate::loader::TextureCacheInsert {
+            orig_w: 1024,
+            orig_h: 768,
+            needs_tile_manager: false,
+            current_index: 0,
+            total_count: 7,
+        },
+    );
+    app.texture_cache.insert(
+        1,
+        nearby,
+        crate::loader::TextureCacheInsert {
+            orig_w: 1024,
+            orig_h: 768,
+            needs_tile_manager: false,
+            current_index: 0,
+            total_count: 7,
+        },
+    );
 
     app.evict_distant_prefetch_caches();
 
@@ -2060,7 +2093,17 @@ fn evict_distant_prefetch_caches_retains_outside_window_while_loading() {
     let ctx = egui::Context::default();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
     let handle = ctx.load_texture("distant_loading", color_image, egui::TextureOptions::LINEAR);
-    app.texture_cache.insert(5, handle, 1024, 768, false, 0, 7);
+    app.texture_cache.insert(
+        5,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: 1024,
+            orig_h: 768,
+            needs_tile_manager: false,
+            current_index: 0,
+            total_count: 7,
+        },
+    );
 
     // Simulate in-flight neighbor preload at idx 5 (outside window distance 2).
     app.loader.test_register_inflight(5);
@@ -2113,7 +2156,17 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     let ctx = egui::Context::default();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
     let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
-    app.texture_cache.insert(1, handle, 2048, 1536, true, 0, 2);
+    app.texture_cache.insert(
+        1,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: 2048,
+            orig_h: 1536,
+            needs_tile_manager: true,
+            current_index: 0,
+            total_count: 2,
+        },
+    );
     app.record_installed_display_mode(1, RenderShape::Tiled);
 
     assert!(app.texture_cache.contains(1));
@@ -2272,10 +2325,13 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
 
     use crate::loader::{LoadResult, LoaderOutput, PreviewBundle, source_key_for_path};
     let source_key = source_key_for_path(&app.image_files[0]);
+    let mut decode_profile = crate::loader::decode_profile_stub();
+    decode_profile.raw_high_quality = app.settings.raw_high_quality;
+    decode_profile.raw_demosaic_mode = app.raw_demosaic_mode_for_index(0);
     app.loader
-        .test_send_loader_output(LoaderOutput::Image(LoadResult {
+        .test_send_loader_output(LoaderOutput::Image(Box::new(LoadResult {
             index: 0,
-            decode_profile: crate::loader::decode_profile_stub(),
+            decode_profile,
             source_key,
             result: Err("synthetic cpu fallback complete".to_string()),
             preview_bundle: PreviewBundle::initial(),
@@ -2285,7 +2341,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
-        }));
+        })));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0));
 }
@@ -2337,12 +2393,12 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
 
     // Stale device epoch: registration is skipped and pre-uploaded planes are dropped.
     app.loader
-        .test_send_loader_output(LoaderOutput::Image(LoadResult {
+        .test_send_loader_output(LoaderOutput::Image(Box::new(LoadResult {
             index: 0,
             decode_profile: crate::loader::decode_profile_stub(),
             source_key,
             result: Ok(crate::loader::ImageData::Hdr {
-                hdr,
+                hdr: Box::new(hdr),
                 fallback: DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
             }),
             preview_bundle: PreviewBundle::initial(),
@@ -2352,7 +2408,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             raw_osd: None,
             uploaded_planes: Some(uploaded),
             device_id: Some(999),
-        }));
+        })));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0));
     assert!(app.loader.poll().is_none());
@@ -2376,12 +2432,12 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         .expect("background plane upload");
     app.loader.test_register_inflight(0);
     app.loader
-        .test_send_loader_output(LoaderOutput::Image(LoadResult {
+        .test_send_loader_output(LoaderOutput::Image(Box::new(LoadResult {
             index: 0,
             decode_profile: crate::loader::decode_profile_stub(),
             source_key,
             result: Ok(crate::loader::ImageData::Hdr {
-                hdr,
+                hdr: Box::new(hdr),
                 fallback: DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
             }),
             preview_bundle: PreviewBundle::initial(),
@@ -2391,7 +2447,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             raw_osd: None,
             uploaded_planes: Some(uploaded),
             device_id: Some(app.current_device_id),
-        }));
+        })));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0));
     assert!(app.loader.poll().is_none());
@@ -2880,14 +2936,15 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
         app.directory_tree_strip_cache.upsert_from_decoded(
             index,
             &decoded,
-            crate::loader::PreviewStage::Refined,
-            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-            None,
-            &paths[index],
-            &ctx,
-            0,
-            3,
-            128,
+            crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+                stage: crate::loader::PreviewStage::Refined,
+                buffer_tag:
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: None,
+                path: &paths[index],
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
     }
 
@@ -2915,14 +2972,15 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
     app.directory_tree_strip_cache.upsert_from_decoded(
         0,
         &decoded,
-        crate::loader::PreviewStage::Refined,
-        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-        None,
-        &old_files[0],
-        &ctx,
-        0,
-        1,
-        128,
+        crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+            stage: crate::loader::PreviewStage::Refined,
+            buffer_tag:
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+            logical_size: None,
+            path: &old_files[0],
+            ctx: &ctx,
+            strip_max_side: 128,
+        },
     );
 
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);

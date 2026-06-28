@@ -24,23 +24,25 @@ pub enum HdrRenderPath {
     SdrFallback,
 }
 
-pub fn hdr_osd_tag_from_parts(
-    is_hdr_source: bool,
-    render_path: HdrRenderPath,
-    color_space: Option<HdrColorSpace>,
-    output_mode: HdrOutputMode,
-    native_presentation_enabled: bool,
-    ultra_hdr_decode_capacity: Option<f32>,
-    monitor_label: Option<&str>,
-    exposure_ev: f32,
-) -> Option<String> {
-    if !is_hdr_source {
+pub struct HdrOsdTagParts<'a> {
+    pub is_hdr_source: bool,
+    pub render_path: HdrRenderPath,
+    pub color_space: Option<HdrColorSpace>,
+    pub output_mode: HdrOutputMode,
+    pub native_presentation_enabled: bool,
+    pub ultra_hdr_decode_capacity: Option<f32>,
+    pub monitor_label: Option<&'a str>,
+    pub exposure_ev: f32,
+}
+
+pub fn hdr_osd_tag_from_parts(input: HdrOsdTagParts<'_>) -> Option<String> {
+    if !input.is_hdr_source {
         return None;
     }
 
-    let render = hdr_render_path_label(render_path);
-    let color = color_space.map(hdr_color_space_label);
-    let output = hdr_output_label_from_parts(output_mode, native_presentation_enabled);
+    let render = hdr_render_path_label(input.render_path);
+    let color = input.color_space.map(hdr_color_space_label);
+    let output = hdr_output_label_from_parts(input.output_mode, input.native_presentation_enabled);
 
     let mut parts = match color {
         Some(color) => t!(
@@ -57,16 +59,16 @@ pub fn hdr_osd_tag_from_parts(
         )
         .to_string(),
     };
-    if let Some(capacity) = ultra_hdr_decode_capacity {
+    if let Some(capacity) = input.ultra_hdr_decode_capacity {
         let capacity = format!("{capacity:.2}");
         parts.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = capacity));
     }
-    if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
+    if let Some(label) = input.monitor_label.filter(|label| !label.is_empty()) {
         parts.push_str(" | ");
         parts.push_str(label);
     }
     parts.push_str(" · ");
-    parts.push_str(&format_hdr_osd_exposure_ev(exposure_ev));
+    parts.push_str(&format_hdr_osd_exposure_ev(input.exposure_ev));
     Some(parts)
 }
 
@@ -113,7 +115,7 @@ fn hdr_color_space_label(color_space: HdrColorSpace) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag_from_parts};
+    use crate::hdr::status::{HdrOsdTagParts, HdrRenderPath, hdr_osd_tag_from_parts};
     use crate::hdr::types::{HdrColorSpace, HdrOutputMode};
     use rust_i18n::t;
 
@@ -129,16 +131,16 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatImagePlane,
-            None,
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            0.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatImagePlane,
+            color_space: None,
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
@@ -155,16 +157,16 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatTilePlane,
-            None,
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            0.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatTilePlane,
+            color_space: None,
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
@@ -183,16 +185,16 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatTilePlane,
-            Some(HdrColorSpace::Rec2020Linear),
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            0.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatTilePlane,
+            color_space: Some(HdrColorSpace::Rec2020Linear),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
@@ -212,16 +214,16 @@ mod tests {
         .to_string();
         expected.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = "5.50"));
         expected.push_str(" | DISPLAY1 · +0.0 EV");
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatImagePlane,
-            Some(HdrColorSpace::Rec2020Linear),
-            HdrOutputMode::SdrToneMapped,
-            false,
-            Some(5.5),
-            Some("DISPLAY1"),
-            0.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatImagePlane,
+            color_space: Some(HdrColorSpace::Rec2020Linear),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: Some(5.5),
+            monitor_label: Some("DISPLAY1"),
+            exposure_ev: 0.0,
+        });
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
@@ -240,32 +242,32 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatImagePlane,
-            Some(HdrColorSpace::Unknown),
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            0.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatImagePlane,
+            color_space: Some(HdrColorSpace::Unknown),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_formats_exposure_suffix() {
-        let tag = hdr_osd_tag_from_parts(
-            true,
-            HdrRenderPath::FloatImagePlane,
-            None,
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            3.0,
-        )
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::FloatImagePlane,
+            color_space: None,
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 3.0,
+        })
         .expect("HDR tag Some");
         assert!(tag.ends_with(" · +3.0 EV"));
     }
@@ -273,16 +275,16 @@ mod tests {
     #[test]
     fn hdr_osd_tag_is_hidden_for_non_hdr_images() {
         rust_i18n::set_locale("en");
-        let tag = hdr_osd_tag_from_parts(
-            false,
-            HdrRenderPath::SdrFallback,
-            Some(HdrColorSpace::LinearSrgb),
-            HdrOutputMode::SdrToneMapped,
-            false,
-            None,
-            None,
-            99.0,
-        );
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: false,
+            render_path: HdrRenderPath::SdrFallback,
+            color_space: Some(HdrColorSpace::LinearSrgb),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 99.0,
+        });
 
         assert_eq!(tag, None);
     }

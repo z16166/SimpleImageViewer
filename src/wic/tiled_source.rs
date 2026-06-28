@@ -392,8 +392,8 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         };
 
         unsafe {
-            if let Ok(converter) = self.factory.CreateFormatConverter() {
-                if converter
+            if let Ok(converter) = self.factory.CreateFormatConverter()
+                && converter
                     .Initialize(
                         &self.source,
                         &GUID_WICPixelFormat32bppRGBA,
@@ -403,16 +403,15 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                         WICBitmapPaletteTypeCustom,
                     )
                     .is_ok()
-                {
-                    let rect = WICRect {
-                        X: x as i32,
-                        Y: y as i32,
-                        Width: w as i32,
-                        Height: h as i32,
-                    };
-                    if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
-                        log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
-                    }
+            {
+                let rect = WICRect {
+                    X: x as i32,
+                    Y: y as i32,
+                    Width: w as i32,
+                    Height: h as i32,
+                };
+                if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
+                    log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
                 }
             }
         }

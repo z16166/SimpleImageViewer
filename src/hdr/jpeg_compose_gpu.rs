@@ -402,19 +402,34 @@ fn compose_tile_uniform(
     uniform
 }
 
-pub(super) fn encode_compose_compute_pass(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    pipeline: &wgpu::ComputePipeline,
-    image: &HdrImageBuffer,
-    deferred: &IsoGainMapGpuSource,
-    tone_map: &HdrToneMapSettings,
-    sdr_view: &wgpu::TextureView,
-    gain_view: &wgpu::TextureView,
-    display_storage_view: &wgpu::TextureView,
-    uniform_buffer: &wgpu::Buffer,
-) -> wgpu::CommandBuffer {
+pub(super) struct JpegComposePass<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) bind_group_layout: &'a wgpu::BindGroupLayout,
+    pub(super) pipeline: &'a wgpu::ComputePipeline,
+    pub(super) image: &'a HdrImageBuffer,
+    pub(super) deferred: &'a IsoGainMapGpuSource,
+    pub(super) tone_map: &'a HdrToneMapSettings,
+    pub(super) sdr_view: &'a wgpu::TextureView,
+    pub(super) gain_view: &'a wgpu::TextureView,
+    pub(super) display_storage_view: &'a wgpu::TextureView,
+    pub(super) uniform_buffer: &'a wgpu::Buffer,
+}
+
+pub(super) fn encode_compose_compute_pass(pass_params: JpegComposePass<'_>) -> wgpu::CommandBuffer {
+    let JpegComposePass {
+        device,
+        queue,
+        bind_group_layout,
+        pipeline,
+        image,
+        deferred,
+        tone_map,
+        sdr_view,
+        gain_view,
+        display_storage_view,
+        uniform_buffer,
+    } = pass_params;
     let uniform = compose_uniform(deferred, image, tone_map.target_hdr_capacity());
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -460,19 +475,36 @@ pub(super) fn encode_compose_compute_pass(
     encoder.finish()
 }
 
+pub(super) struct JpegTileComposePass<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) resources: &'a HdrCallbackResources,
+    pub(super) deferred: &'a IsoGainMapGpuSource,
+    pub(super) tile_ctx: &'a IsoDeferredTileContext,
+    pub(super) tile_width: u32,
+    pub(super) tile_height: u32,
+    pub(super) tone_map: &'a HdrToneMapSettings,
+    pub(super) sdr_view: &'a wgpu::TextureView,
+    pub(super) gain_view: &'a wgpu::TextureView,
+    pub(super) display_storage_view: &'a wgpu::TextureView,
+}
+
 pub(super) fn encode_tile_compose_compute_pass(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    resources: &HdrCallbackResources,
-    deferred: &IsoGainMapGpuSource,
-    tile_ctx: &IsoDeferredTileContext,
-    tile_width: u32,
-    tile_height: u32,
-    tone_map: &HdrToneMapSettings,
-    sdr_view: &wgpu::TextureView,
-    gain_view: &wgpu::TextureView,
-    display_storage_view: &wgpu::TextureView,
+    pass_params: JpegTileComposePass<'_>,
 ) -> wgpu::CommandBuffer {
+    let JpegTileComposePass {
+        device,
+        queue,
+        resources,
+        deferred,
+        tile_ctx,
+        tile_width,
+        tile_height,
+        tone_map,
+        sdr_view,
+        gain_view,
+        display_storage_view,
+    } = pass_params;
     let bind_group_layout = resources
         .jpeg_compose_bind_group_layout
         .as_ref()

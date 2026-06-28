@@ -143,16 +143,16 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
     }
 
     // 2. Pattern replacement (e.g. (APE).ape -> (CUE).cue)
-    if let Some(filename) = audio_path.file_name().and_then(|n| n.to_str()) {
-        if filename.contains("(APE)") {
-            let new_filename = filename.replace("(APE)", "(CUE)");
-            let alt_cue_path = audio_path
-                .with_file_name(new_filename)
-                .with_extension("cue");
-            if alt_cue_path.exists() {
-                log::debug!("Found CUE by pattern replacement: {:?}", alt_cue_path);
-                return parse_cue_file(&alt_cue_path);
-            }
+    if let Some(filename) = audio_path.file_name().and_then(|n| n.to_str())
+        && filename.contains("(APE)")
+    {
+        let new_filename = filename.replace("(APE)", "(CUE)");
+        let alt_cue_path = audio_path
+            .with_file_name(new_filename)
+            .with_extension("cue");
+        if alt_cue_path.exists() {
+            log::debug!("Found CUE by pattern replacement: {:?}", alt_cue_path);
+            return parse_cue_file(&alt_cue_path);
         }
     }
 
@@ -161,64 +161,64 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
     }
 
     // 3. Directory scan and fuzzy matching
-    if let Some(parent) = audio_path.parent() {
-        if let Ok(entries) = fs::read_dir(parent) {
-            let mut cue_files = Vec::new();
-            for entry in entries.flatten() {
+    if let Some(parent) = audio_path.parent()
+        && let Ok(entries) = fs::read_dir(parent)
+    {
+        let mut cue_files = Vec::new();
+        for entry in entries.flatten() {
+            if shutdown_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+            let p = entry.path();
+            if p.is_file()
+                && p.extension()
+                    .map(|e| e.to_string_lossy().to_lowercase() == "cue")
+                    .unwrap_or(false)
+            {
+                cue_files.push(p);
+            }
+        }
+
+        if cue_files.len() == 1 {
+            log::debug!("Using the only CUE file in directory: {:?}", cue_files[0]);
+            return parse_cue_file(&cue_files[0]);
+        }
+
+        if !cue_files.is_empty() {
+            let audio_stem = audio_path
+                .file_stem()
+                .and_then(|s| s.to_str())?
+                .to_lowercase();
+            // Remove common suffixes to increase matching success rate
+            let clean_audio = audio_stem
+                .replace("(ape)", "")
+                .replace("(cue)", "")
+                .replace(" ", "")
+                .replace(".", "")
+                .replace("-", "");
+
+            for cue_p in cue_files {
                 if shutdown_flag.load(Ordering::Relaxed) {
                     return None;
                 }
-                let p = entry.path();
-                if p.is_file()
-                    && p.extension()
-                        .map(|e| e.to_string_lossy().to_lowercase() == "cue")
-                        .unwrap_or(false)
-                {
-                    cue_files.push(p);
-                }
-            }
-
-            if cue_files.len() == 1 {
-                log::debug!("Using the only CUE file in directory: {:?}", cue_files[0]);
-                return parse_cue_file(&cue_files[0]);
-            }
-
-            if !cue_files.is_empty() {
-                let audio_stem = audio_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())?
-                    .to_lowercase();
-                // Remove common suffixes to increase matching success rate
-                let clean_audio = audio_stem
-                    .replace("(ape)", "")
-                    .replace("(cue)", "")
-                    .replace(" ", "")
-                    .replace(".", "")
-                    .replace("-", "");
-
-                for cue_p in cue_files {
-                    if shutdown_flag.load(Ordering::Relaxed) {
-                        return None;
-                    }
-                    if let Some(cue_stem) = cue_p.file_stem().and_then(|s| s.to_str()) {
-                        let cue_stem_lower = cue_stem.to_lowercase();
-                        let clean_cue = cue_stem_lower
-                            .replace("(ape)", "")
-                            .replace("(cue)", "")
-                            .replace(" ", "")
-                            .replace(".", "")
-                            .replace("-", "");
-                        if clean_audio == clean_cue
-                            || clean_audio.contains(&clean_cue)
-                            || clean_cue.contains(&clean_audio)
-                        {
-                            log::debug!(
-                                "Found CUE by fuzzy match: {:?} -> {:?}",
-                                audio_path.file_name(),
-                                cue_p.file_name()
-                            );
-                            return parse_cue_file(&cue_p);
-                        }
+                if let Some(cue_stem) = cue_p.file_stem().and_then(|s| s.to_str()) {
+                    let cue_stem_lower = cue_stem.to_lowercase();
+                    let clean_cue = cue_stem_lower
+                        .replace("(ape)", "")
+                        .replace("(cue)", "")
+                        .replace(" ", "")
+                        .replace(".", "")
+                        .replace("-", "");
+                    if clean_audio == clean_cue
+                        || clean_audio.contains(&clean_cue)
+                        || clean_cue.contains(&clean_audio)
+                    {
+                        log::debug!(
+                            "Found CUE by fuzzy match: {:?} -> {:?}",
+                            audio_path.file_name(),
+                            cue_p.file_name()
+                        );
+                        return parse_cue_file(&cue_p);
                     }
                 }
             }

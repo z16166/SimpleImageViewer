@@ -224,7 +224,7 @@ pub(super) fn draw_music_tab(
                         let diff = (cur_ms as i64 - target_ms as i64).abs();
                         let timed_out = app
                             .music_seek_timeout
-                            .map_or(false, |t| t.elapsed().as_secs() >= 30);
+                            .is_some_and(|t| t.elapsed().as_secs() >= 30);
                         if diff < 2000 || timed_out {
                             app.music_seeking_target_ms = None;
                             app.music_seek_timeout = None;

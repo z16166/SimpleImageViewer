@@ -173,40 +173,40 @@ impl ImageViewerApp {
         let painter = ui.painter();
 
         // Case 1: First point selected, drawing preview rectangle to current pointer
-        if self.active_modal.is_none() {
-            if let Some((x0, y0)) = self.pixel_region_first_point {
-                let p0 = crate::pixel_inspector::image_to_screen_coord(
-                    (x0, y0),
-                    display_rect,
-                    self.current_rotation,
-                    res.0,
-                    res.1,
+        if self.active_modal.is_none()
+            && let Some((x0, y0)) = self.pixel_region_first_point
+        {
+            let p0 = crate::pixel_inspector::image_to_screen_coord(
+                (x0, y0),
+                display_rect,
+                self.current_rotation,
+                res.0,
+                res.1,
+            );
+
+            // Draw first point marker
+            painter.circle_stroke(p0, 4.0_f32, egui::Stroke::new(1.5_f32, Color32::WHITE));
+            painter.circle_stroke(p0, 2.0_f32, egui::Stroke::new(1.0_f32, Color32::BLACK));
+
+            // Draw preview rectangle to hover position
+            if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos())
+                && display_rect.contains(pointer_pos)
+            {
+                let rect = Rect::from_two_pos(p0, pointer_pos);
+
+                // Contrast strokes
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(1.5_f32, Color32::WHITE),
+                    egui::StrokeKind::Outside,
                 );
-
-                // Draw first point marker
-                painter.circle_stroke(p0, 4.0_f32, egui::Stroke::new(1.5_f32, Color32::WHITE));
-                painter.circle_stroke(p0, 2.0_f32, egui::Stroke::new(1.0_f32, Color32::BLACK));
-
-                // Draw preview rectangle to hover position
-                if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                    if display_rect.contains(pointer_pos) {
-                        let rect = Rect::from_two_pos(p0, pointer_pos);
-
-                        // Contrast strokes
-                        painter.rect_stroke(
-                            rect,
-                            egui::CornerRadius::ZERO,
-                            egui::Stroke::new(1.5_f32, Color32::WHITE),
-                            egui::StrokeKind::Outside,
-                        );
-                        painter.rect_stroke(
-                            rect.expand(1.0_f32),
-                            egui::CornerRadius::ZERO,
-                            egui::Stroke::new(1.0_f32, Color32::BLACK),
-                            egui::StrokeKind::Outside,
-                        );
-                    }
-                }
+                painter.rect_stroke(
+                    rect.expand(1.0_f32),
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(1.0_f32, Color32::BLACK),
+                    egui::StrokeKind::Outside,
+                );
             }
         }
 

@@ -55,7 +55,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
 
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    attach_jpeg_gain_map_gpu_deferred(
+    attach_jpeg_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::JpegGainMapDeferredInput {
         width,
         height,
         sdr_rgba,
@@ -63,6 +63,6 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
         gain_height,
         gain_rgba,
         metadata,
-        target_hdr_capacity,
-    )
+        hdr_target_capacity: target_hdr_capacity,
+    })
 }

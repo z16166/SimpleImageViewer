@@ -343,17 +343,31 @@ fn jxl_build_hdr_fallback(
 }
 
 #[cfg(feature = "jpegxl")]
-fn jxl_finish_static_frame(
+struct JxlStaticFrameFinish<'a> {
     rgba: Vec<f32>,
     metadata: HdrImageMetadata,
     width: u32,
     height: u32,
-    jhgm_box: Option<&[u8]>,
+    jhgm_box: Option<&'a [u8]>,
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
+    tone_map: &'a HdrToneMapSettings,
     strip_baseline_only: bool,
-) -> Result<ImageData, String> {
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData, String> {
+    let JxlStaticFrameFinish {
+        rgba,
+        metadata,
+        width,
+        height,
+        jhgm_box,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        strip_baseline_only,
+    } = input;
     use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
     let hdr = match finish_jxl_jhgm_frame(
@@ -389,7 +403,10 @@ fn jxl_finish_static_frame(
         }
     };
     let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
-    Ok(ImageData::Hdr { hdr, fallback })
+    Ok(ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    })
 }
 
 /// SDR-grade JXL float buffers hold **display-referred sRGB codes** (0–1), not scene-linear.
@@ -524,7 +541,7 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
         target_hdr_capacity,
         crate::hdr::types::HdrToneMapSettings::default(),
     )? {
-        ImageData::Hdr { hdr, .. } => Ok(hdr),
+        ImageData::Hdr { hdr, .. } => Ok(*hdr),
         ImageData::HdrAnimated(_) | ImageData::Animated(_) => Err(
             "JPEG XL has multiple animation frames; use the image loader or decode_jxl_bytes_to_image_data"
                 .to_string(),
@@ -582,7 +599,7 @@ fn decode_jxl_bytes_to_image_data_impl(
     tone_map: HdrToneMapSettings,
     strip_baseline_only: bool,
 ) -> Result<ImageData, String> {
-    let probe_len = bytes.len().min(16).max(2);
+    let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
         return Err(
             "Input is not a valid JPEG XL codestream or BMFF container (wrong signature). \
@@ -810,17 +827,17 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 jxl_sanitize_straight_alpha(&mut rgba);
                 jxl_tag_display_referred_when_sdr_grade(&mut metadata);
-                return jxl_finish_static_frame(
+                return jxl_finish_static_frame(JxlStaticFrameFinish {
                     rgba,
                     metadata,
-                    info.xsize,
-                    info.ysize,
-                    jhgm_box.as_deref(),
+                    width: info.xsize,
+                    height: info.ysize,
+                    jhgm_box: jhgm_box.as_deref(),
                     decode_target_hdr_capacity,
                     display_hdr_target_capacity,
-                    &tone_map,
+                    tone_map: &tone_map,
                     strip_baseline_only,
-                );
+                });
             }
             libjxl_sys::JXL_DEC_ERROR => {
                 return Err(
@@ -890,15 +907,15 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 // ICC has to be read from `TARGET_ORIGINAL` since `TARGET_DATA`
                 // can be overridden by libjxl's color management (and for non-
                 // XYB CMYK sources both happen to be the same CMYK profile).
-                if k_extra_channel_index.is_some() && cmyk_source_icc.is_empty() {
-                    if let Some(icc) = jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
-                    {
-                        log::debug!(
-                            "[JXL] captured {} byte CMYK source ICC for lcms2 transform",
-                            icc.len()
-                        );
-                        cmyk_source_icc = icc;
-                    }
+                if k_extra_channel_index.is_some()
+                    && cmyk_source_icc.is_empty()
+                    && let Some(icc) = jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
+                {
+                    log::debug!(
+                        "[JXL] captured {} byte CMYK source ICC for lcms2 transform",
+                        icc.len()
+                    );
+                    cmyk_source_icc = icc;
                 }
                 metadata = read_jxl_metadata(decoder.0, metadata);
             }
@@ -914,7 +931,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     },
                     "size JPEG XL preview output buffer",
                 )?;
-                if size % std::mem::size_of::<f32>() != 0 {
+                if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl preview buffer size is not float-aligned".to_string());
                 }
                 preview_scratch.resize(size, 0);
@@ -957,7 +974,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     },
                     "size JPEG XL output buffer",
                 )?;
-                if size % std::mem::size_of::<f32>() != 0 {
+                if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl returned a misaligned float output size".to_string());
                 }
                 rgba_f32 = vec![0.0; size / std::mem::size_of::<f32>()];
@@ -982,7 +999,8 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                             idx,
                         )
                     };
-                    if st == libjxl_sys::JXL_DEC_SUCCESS && k_size % std::mem::size_of::<f32>() == 0
+                    if st == libjxl_sys::JXL_DEC_SUCCESS
+                        && k_size.is_multiple_of(std::mem::size_of::<f32>())
                     {
                         k_f32 = vec![0.0; k_size / std::mem::size_of::<f32>()];
                         let set_st = unsafe {

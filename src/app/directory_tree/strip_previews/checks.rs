@@ -50,20 +50,19 @@ impl ImageViewerApp {
         &self,
         index: usize,
     ) -> Option<(u32, u32, std::sync::Arc<Vec<u8>>)> {
-        if let Some(hdr) = self.hdr_image_cache.get(&index) {
-            if let Some(iso) = hdr
+        if let Some(hdr) = self.hdr_image_cache.get(&index)
+            && let Some(iso) = hdr
                 .metadata
                 .gain_map
                 .as_ref()
                 .and_then(|gain_map| gain_map.iso_deferred.as_ref())
-            {
-                return Some((hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba)));
-            }
+        {
+            return Some((hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba)));
         }
-        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
-            if !decoded.is_sdr_deferred_placeholder() {
-                return Some((decoded.width, decoded.height, decoded.arc_pixels()));
-            }
+        if let Some(decoded) = self.deferred_sdr_uploads.get(&index)
+            && !decoded.is_sdr_deferred_placeholder()
+        {
+            return Some((decoded.width, decoded.height, decoded.arc_pixels()));
         }
         None
     }
@@ -116,10 +115,10 @@ impl ImageViewerApp {
         {
             return DecodedImage::from_arc(width, height, baseline);
         }
-        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
-            if !decoded.is_sdr_deferred_placeholder() {
-                return decoded.clone();
-            }
+        if let Some(decoded) = self.deferred_sdr_uploads.get(&index)
+            && !decoded.is_sdr_deferred_placeholder()
+        {
+            return decoded.clone();
         }
         if let Some(preview) = crate::loader::hdr_raw_gpu_bootstrap_fallback_decoded(hdr) {
             return preview;

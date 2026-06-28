@@ -343,19 +343,34 @@ pub(crate) struct RawImageSource {
     hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
 }
 
+pub(crate) struct RawImageSourceParams {
+    pub(crate) raw_width: u32,
+    pub(crate) raw_height: u32,
+    pub(crate) refine_tx: Sender<RefinementRequest>,
+    pub(crate) orientation_override: i32,
+    pub(crate) needs_refinement: bool,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
+    pub(crate) hdr_developed_image:
+        Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
+}
+
 impl RawImageSource {
     pub(crate) fn new(
         path: PathBuf,
         preview: DecodedImage,
-        raw_width: u32,
-        raw_height: u32,
-        refine_tx: Sender<RefinementRequest>,
-        orientation_override: i32,
-        needs_refinement: bool,
-        hdr_target_capacity: f32,
-        hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
-        hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
+        params: RawImageSourceParams,
     ) -> Result<Self, String> {
+        let RawImageSourceParams {
+            raw_width,
+            raw_height,
+            refine_tx,
+            orientation_override,
+            needs_refinement,
+            hdr_target_capacity,
+            hdr_tone_map,
+            hdr_developed_image,
+        } = params;
         // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
         // Previously this called resize_exact(raw_width, raw_height) which allocated
         // ~400MB per image (e.g. 11648×8736×4). With rapid switching and prefetching,

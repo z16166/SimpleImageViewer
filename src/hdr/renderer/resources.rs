@@ -169,15 +169,19 @@ impl HdrImageBinding {
             libavif_tone_map_native_display_scale(&image.metadata, image.color_space, &tone_map);
         let uniform = image_tone_map_uniform(
             image,
-            tone_map,
-            0,
-            1.0,
-            output_mode,
-            target_format,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-            native_display_scale,
-            false,
-            None,
+            ImageToneMapUniformParams {
+                common: ToneMapCommonParams {
+                    settings: tone_map,
+                    rotation_steps: 0,
+                    alpha: 1.0,
+                    output_mode,
+                    framebuffer_format: target_format,
+                    uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                    native_display_scale,
+                },
+                gpu_composed_scene_linear: false,
+                ripple: None,
+            },
         );
         let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),

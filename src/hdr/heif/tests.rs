@@ -266,7 +266,7 @@ fn gradient_gain_rgba(width: u32, height: u32) -> Vec<u8> {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -275,11 +275,13 @@ fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display() {
         gain,
         width,
         height,
-        4032,
-        3024,
-        3024,
-        4032,
-        Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        AppleGainMapAlignment {
+            primary_ispe_w: 4032,
+            primary_ispe_h: 3024,
+            primary_disp_w: 3024,
+            primary_disp_h: 4032,
+            orientation: Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        },
     );
     assert_eq!((out_w, out_h), (height, width));
     let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
@@ -295,7 +297,7 @@ fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display_ccw() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -304,11 +306,13 @@ fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display_ccw() {
         gain,
         width,
         height,
-        4032,
-        3024,
-        3024,
-        4032,
-        Some(EXIF_ORIENTATION_ROTATE_90_CCW),
+        AppleGainMapAlignment {
+            primary_ispe_w: 4032,
+            primary_ispe_h: 3024,
+            primary_disp_w: 3024,
+            primary_disp_h: 4032,
+            orientation: Some(EXIF_ORIENTATION_ROTATE_90_CCW),
+        },
     );
     assert_eq!((out_w, out_h), (height, width));
     let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
@@ -322,7 +326,7 @@ fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display_ccw() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_rotates_180() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -331,11 +335,13 @@ fn align_apple_gain_map_rotates_180() {
         gain,
         width,
         height,
-        4032,
-        3024,
-        4032,
-        3024,
-        Some(EXIF_ORIENTATION_ROTATE_180),
+        AppleGainMapAlignment {
+            primary_ispe_w: 4032,
+            primary_ispe_h: 3024,
+            primary_disp_w: 4032,
+            primary_disp_h: 3024,
+            orientation: Some(EXIF_ORIENTATION_ROTATE_180),
+        },
     );
     assert_eq!((out_w, out_h), (width, height));
     let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
@@ -349,7 +355,7 @@ fn align_apple_gain_map_rotates_180() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_skips_rotation_when_orientations_match() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -358,11 +364,13 @@ fn align_apple_gain_map_skips_rotation_when_orientations_match() {
         gain.clone(),
         width,
         height,
-        width,
-        height,
-        width,
-        height,
-        None,
+        AppleGainMapAlignment {
+            primary_ispe_w: width,
+            primary_ispe_h: height,
+            primary_disp_w: width,
+            primary_disp_h: height,
+            orientation: None,
+        },
     );
     assert_eq!((out_w, out_h), (width, height));
     assert_eq!(out, gain);
@@ -371,7 +379,7 @@ fn align_apple_gain_map_skips_rotation_when_orientations_match() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_falls_back_to_ispe_heuristic_when_exif_normal() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -380,11 +388,13 @@ fn align_apple_gain_map_falls_back_to_ispe_heuristic_when_exif_normal() {
         gain,
         width,
         height,
-        4032,
-        3024,
-        3024,
-        4032,
-        Some(EXIF_ORIENTATION_NORMAL),
+        AppleGainMapAlignment {
+            primary_ispe_w: 4032,
+            primary_ispe_h: 3024,
+            primary_disp_w: 3024,
+            primary_disp_h: 4032,
+            orientation: Some(EXIF_ORIENTATION_NORMAL),
+        },
     );
     assert_eq!((out_w, out_h), (height, width));
     let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
@@ -397,7 +407,7 @@ fn align_apple_gain_map_falls_back_to_ispe_heuristic_when_exif_normal() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_heuristic_skips_when_gain_matches_ispe_dimensions() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4032_u32;
     let height = 3024_u32;
@@ -406,11 +416,13 @@ fn align_apple_gain_map_heuristic_skips_when_gain_matches_ispe_dimensions() {
         gain.clone(),
         width,
         height,
-        width,
-        height,
-        3024,
-        4032,
-        None,
+        AppleGainMapAlignment {
+            primary_ispe_w: width,
+            primary_ispe_h: height,
+            primary_disp_w: 3024,
+            primary_disp_h: 4032,
+            orientation: None,
+        },
     );
     assert_eq!((out_w, out_h), (width, height));
     assert_eq!(out, gain);
@@ -419,7 +431,7 @@ fn align_apple_gain_map_heuristic_skips_when_gain_matches_ispe_dimensions() {
 #[cfg(feature = "heif-native")]
 #[test]
 fn align_apple_gain_map_exif_rotates_even_when_gain_matches_ispe_dimensions() {
-    use super::align_apple_gain_map_to_primary_display_orientation;
+    use super::{AppleGainMapAlignment, align_apple_gain_map_to_primary_display_orientation};
 
     let width = 4_u32;
     let height = 3_u32;
@@ -428,11 +440,13 @@ fn align_apple_gain_map_exif_rotates_even_when_gain_matches_ispe_dimensions() {
         gain,
         width,
         height,
-        width,
-        height,
-        height,
-        width,
-        Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        AppleGainMapAlignment {
+            primary_ispe_w: width,
+            primary_ispe_h: height,
+            primary_disp_w: height,
+            primary_disp_h: width,
+            orientation: Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        },
     );
     assert_eq!((out_w, out_h), (height, width));
 }

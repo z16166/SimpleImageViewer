@@ -17,7 +17,8 @@
 use super::header::{build_radiance_scanline_offsets, read_radiance_header};
 use super::layout::RadianceRasterLayout;
 use super::tile_decode::{
-    decode_radiance_hdr_preview, decode_radiance_sdr_preview, decode_radiance_tile_window,
+    RadiancePreviewRequest, RadianceTileWindow, decode_radiance_hdr_preview,
+    decode_radiance_sdr_preview, decode_radiance_tile_window,
 };
 
 use parking_lot::Mutex;
@@ -96,29 +97,29 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
-        decode_radiance_hdr_preview(
-            &self.mmap,
-            self.width,
-            self.height,
-            self.raster,
-            self.params,
-            &self.scanline_offsets,
+        decode_radiance_hdr_preview(RadiancePreviewRequest {
+            mmap: &self.mmap,
+            logical_width: self.width,
+            logical_height: self.height,
+            raster: self.raster,
+            params: self.params,
+            scanline_offsets: &self.scanline_offsets,
             max_w,
             max_h,
-        )
+        })
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        decode_radiance_sdr_preview(
-            &self.mmap,
-            self.width,
-            self.height,
-            self.raster,
-            self.params,
-            &self.scanline_offsets,
+        decode_radiance_sdr_preview(RadiancePreviewRequest {
+            mmap: &self.mmap,
+            logical_width: self.width,
+            logical_height: self.height,
+            raster: self.raster,
+            params: self.params,
+            scanline_offsets: &self.scanline_offsets,
             max_w,
             max_h,
-        )
+        })
     }
 
     fn cached_tile_rgba32f_arc(
@@ -158,10 +159,12 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             self.raster,
             self.params,
             &self.scanline_offsets,
-            x,
-            y,
-            width,
-            height,
+            RadianceTileWindow {
+                tile_x: x,
+                tile_y: y,
+                tile_w: width,
+                tile_h: height,
+            },
         )?;
 
         let tile = Arc::new(HdrTileBuffer::new_with_metadata(

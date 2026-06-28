@@ -102,10 +102,10 @@ impl ImageViewerApp {
         });
 
         let mut tiled_indices: Vec<usize> = self.prefetched_tiles.keys().copied().collect();
-        if let Some(tm) = &self.tile_manager {
-            if !tiled_indices.contains(&tm.image_index) {
-                tiled_indices.push(tm.image_index);
-            }
+        if let Some(tm) = &self.tile_manager
+            && !tiled_indices.contains(&tm.image_index)
+        {
+            tiled_indices.push(tm.image_index);
         }
         let current = self.current_index;
         let file_count = self.image_files.len();
@@ -150,16 +150,14 @@ impl ImageViewerApp {
                 max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut hdr_sync_scheduled = 0usize;
             for index in 0..preload_sync_cap {
-                if iso_sync_scheduled < iso_sync_budget {
-                    if let Some((width, height, baseline)) =
+                if iso_sync_scheduled < iso_sync_budget
+                    && let Some((width, height, baseline)) =
                         self.iso_deferred_baseline_pixels_for_strip(index)
-                    {
-                        if self.try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
-                            index, width, height, baseline,
-                        ) {
-                            iso_sync_scheduled += 1;
-                        }
-                    }
+                    && self.try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
+                        index, width, height, baseline,
+                    )
+                {
+                    iso_sync_scheduled += 1;
                 }
                 if hdr_sync_scheduled < hdr_sync_budget
                     && self.try_schedule_strip_from_hdr_image_cache(index)
@@ -435,7 +433,7 @@ impl ImageViewerApp {
             }
             old_to_new[old_idx] = new_idx;
         }
-        if old_to_new.iter().any(|&idx| idx == usize::MAX) {
+        if old_to_new.contains(&usize::MAX) {
             self.apply_partial_directory_tree_strip_reorder(old_files, new_files);
             return;
         }

@@ -235,6 +235,16 @@ impl Default for TransitionParams {
     }
 }
 
+pub(crate) struct ComplexTransitionDraw<'a> {
+    pub(crate) screen_rect: Rect,
+    pub(crate) texture: &'a egui::TextureHandle,
+    pub(crate) final_dest: Rect,
+    pub(crate) unrotated_final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+    pub(crate) alpha: f32,
+}
+
 pub(crate) const RIPPLE_SEGMENTS: u32 = 128;
 
 impl ImageViewerApp {
@@ -343,25 +353,30 @@ impl ImageViewerApp {
     pub(crate) fn draw_complex_transition(
         &mut self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        texture: &egui::TextureHandle,
-        final_dest: Rect,
-        unrotated_final_dest: Rect,
-        rotation: i32,
-        angle: f32,
-        alpha: f32,
+        params: ComplexTransitionDraw<'_>,
     ) {
+        let ComplexTransitionDraw {
+            screen_rect,
+            texture,
+            final_dest,
+            unrotated_final_dest,
+            rotation,
+            angle,
+            alpha,
+        } = params;
         match self.active_transition {
             TransitionStyle::PageFlip => {
                 self.draw_page_flip_transition(
                     ui,
-                    screen_rect,
-                    texture,
-                    final_dest,
-                    unrotated_final_dest,
-                    rotation,
-                    angle,
-                    alpha,
+                    crate::app::rendering::standard::PageFlipTransitionDraw {
+                        screen_rect,
+                        texture,
+                        final_dest,
+                        unrotated_final_dest,
+                        rotation,
+                        angle,
+                        alpha,
+                    },
                 );
             }
             TransitionStyle::Ripple => {

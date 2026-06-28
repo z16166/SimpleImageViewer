@@ -36,7 +36,7 @@ mod unix;
 pub fn load() -> DirectoryTreePlaces {
     #[cfg(windows)]
     {
-        return windows::load();
+        windows::load()
     }
 
     #[cfg(unix)]

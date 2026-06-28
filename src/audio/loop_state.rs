@@ -151,7 +151,7 @@ impl AudioLoopState {
         }
         let can_retry = self
             .last_backend_attempt
-            .map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
+            .is_none_or(|l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
         if !can_retry {
             return false;
         }
@@ -185,7 +185,7 @@ impl AudioLoopState {
                     })
                 })
                 .map(|d| rodio::DeviceSinkBuilder::from_device(d).and_then(|b| b.open_stream()))
-                .unwrap_or_else(|| Ok(rodio::DeviceSinkBuilder::open_default_sink()?))
+                .unwrap_or_else(rodio::DeviceSinkBuilder::open_default_sink)
         } else {
             rodio::DeviceSinkBuilder::open_default_sink()
         };
@@ -262,29 +262,29 @@ impl AudioLoopState {
             };
             self.current_file_path = Some(path.clone());
             self.current_from_injected = from_injected;
-            if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
-                if self.ensure_backend(slots) {
-                    let resumed = if let Some(p) = self.backend_player.as_mut() {
-                        slots.dur_ms.store(
-                            source
-                                .total_duration()
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0),
-                            Ordering::Relaxed,
-                        );
-                        p.append(source);
-                        self.sink_base_pos = p.get_pos();
-                        self.last_seek_offset = resume_pos;
-                        p.play();
-                        self.current_track_idx += 1;
-                        self.last_hw_pos = Duration::ZERO;
-                        true
-                    } else {
-                        false
-                    };
-                    if resumed {
-                        self.reanchor_playback_clock_for_new_segment();
-                    }
+            if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag)
+                && self.ensure_backend(slots)
+            {
+                let resumed = if let Some(p) = self.backend_player.as_mut() {
+                    slots.dur_ms.store(
+                        source
+                            .total_duration()
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        Ordering::Relaxed,
+                    );
+                    p.append(source);
+                    self.sink_base_pos = p.get_pos();
+                    self.last_seek_offset = resume_pos;
+                    p.play();
+                    self.current_track_idx += 1;
+                    self.last_hw_pos = Duration::ZERO;
+                    true
+                } else {
+                    false
+                };
+                if resumed {
+                    self.reanchor_playback_clock_for_new_segment();
                 }
             }
         } else if let Some(ref p) = self.backend_player {
@@ -342,31 +342,31 @@ impl AudioLoopState {
             return;
         }
         let path = self.current_file_path.clone().unwrap_or_default();
-        if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
-            if self.ensure_backend(slots) {
-                let switched = if let Some(p) = self.backend_player.as_mut() {
-                    p.append(source);
-                    self.sink_base_pos = p.get_pos();
-                    self.last_seek_offset = resume_pos;
-                    self.last_hw_pos = Duration::ZERO;
-                    true
-                } else {
-                    false
-                };
-                if switched {
-                    self.reanchor_playback_clock_for_new_segment();
-                    if let Some(p) = self.backend_player.as_ref() {
-                        if !self.paused {
-                            p.play();
-                        } else {
-                            p.pause();
-                        }
+        if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag)
+            && self.ensure_backend(slots)
+        {
+            let switched = if let Some(p) = self.backend_player.as_mut() {
+                p.append(source);
+                self.sink_base_pos = p.get_pos();
+                self.last_seek_offset = resume_pos;
+                self.last_hw_pos = Duration::ZERO;
+                true
+            } else {
+                false
+            };
+            if switched {
+                self.reanchor_playback_clock_for_new_segment();
+                if let Some(p) = self.backend_player.as_ref() {
+                    if !self.paused {
+                        p.play();
+                    } else {
+                        p.pause();
                     }
-                    log::info!(
-                        "[AUDIO] Device switched, playback resumed at {}ms",
-                        resume_pos.as_millis()
-                    );
                 }
+                log::info!(
+                    "[AUDIO] Device switched, playback resumed at {}ms",
+                    resume_pos.as_millis()
+                );
             }
         }
     }
@@ -444,35 +444,34 @@ impl AudioLoopState {
             Some(p) => p,
             None => return,
         };
-        if let Some(source) = open_source(&path, next_t.start, &self.shutdown_flag) {
-            if self.ensure_backend(slots) {
-                let next_track_ok = if let Some(ref p) = self.backend_player {
-                    p.clear();
-                    self.sink_base_pos = p.get_pos();
-                    p.append(source);
-                    self.last_seek_offset = next_t.start;
-                    self.last_hw_pos = Duration::ZERO;
-                    true
-                } else {
-                    false
-                };
-                if next_track_ok {
-                    self.reanchor_playback_clock_for_new_segment();
-                    if let Some(p) = self.backend_player.as_ref() {
-                        if !self.paused {
-                            p.play();
-                        } else {
-                            p.pause();
-                        }
+        if let Some(source) = open_source(&path, next_t.start, &self.shutdown_flag)
+            && self.ensure_backend(slots)
+        {
+            let next_track_ok = if let Some(ref p) = self.backend_player {
+                p.clear();
+                self.sink_base_pos = p.get_pos();
+                p.append(source);
+                self.last_seek_offset = next_t.start;
+                self.last_hw_pos = Duration::ZERO;
+                true
+            } else {
+                false
+            };
+            if next_track_ok {
+                self.reanchor_playback_clock_for_new_segment();
+                if let Some(p) = self.backend_player.as_ref() {
+                    if !self.paused {
+                        p.play();
+                    } else {
+                        p.pause();
                     }
-                    slots
-                        .pos_ms
-                        .store(next_t.start.as_millis() as u64, Ordering::Relaxed);
-                    let meta =
-                        format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
-                    set_metadata(&slots.meta_slot, Some(meta));
-                    set_cue_track(&slots.cue_track_slot, Some(current_idx + 1));
                 }
+                slots
+                    .pos_ms
+                    .store(next_t.start.as_millis() as u64, Ordering::Relaxed);
+                let meta = format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
+                set_metadata(&slots.meta_slot, Some(meta));
+                set_cue_track(&slots.cue_track_slot, Some(current_idx + 1));
             }
         }
     }
@@ -500,34 +499,34 @@ impl AudioLoopState {
             Some(p) => p,
             None => return,
         };
-        if let Some(source) = open_source(&path, target_t.start, &self.shutdown_flag) {
-            if self.ensure_backend(slots) {
-                let prev_track_ok = if let Some(ref p) = self.backend_player {
-                    p.clear();
-                    self.sink_base_pos = p.get_pos();
-                    p.append(source);
-                    self.last_seek_offset = target_t.start;
-                    self.last_hw_pos = Duration::ZERO;
-                    true
-                } else {
-                    false
-                };
-                if prev_track_ok {
-                    self.reanchor_playback_clock_for_new_segment();
-                    if let Some(p) = self.backend_player.as_ref() {
-                        if !self.paused {
-                            p.play();
-                        } else {
-                            p.pause();
-                        }
+        if let Some(source) = open_source(&path, target_t.start, &self.shutdown_flag)
+            && self.ensure_backend(slots)
+        {
+            let prev_track_ok = if let Some(ref p) = self.backend_player {
+                p.clear();
+                self.sink_base_pos = p.get_pos();
+                p.append(source);
+                self.last_seek_offset = target_t.start;
+                self.last_hw_pos = Duration::ZERO;
+                true
+            } else {
+                false
+            };
+            if prev_track_ok {
+                self.reanchor_playback_clock_for_new_segment();
+                if let Some(p) = self.backend_player.as_ref() {
+                    if !self.paused {
+                        p.play();
+                    } else {
+                        p.pause();
                     }
-                    let meta = format!(
-                        "{}. {} - {}",
-                        target_t.number, target_t.title, target_t.performer
-                    );
-                    set_metadata(&slots.meta_slot, Some(meta));
-                    set_cue_track(&slots.cue_track_slot, Some(target_idx));
                 }
+                let meta = format!(
+                    "{}. {} - {}",
+                    target_t.number, target_t.title, target_t.performer
+                );
+                set_metadata(&slots.meta_slot, Some(meta));
+                set_cue_track(&slots.cue_track_slot, Some(target_idx));
             }
         }
     }
@@ -644,28 +643,26 @@ impl AudioLoopState {
 
         // Seek to a saved CUE track if resuming from saved state.
         if let (Some(track_idx), Some(cue)) = (self.pending_start_track_idx.take(), &self.cue_sheet)
+            && track_idx < cue.tracks.len()
         {
-            if track_idx < cue.tracks.len() {
-                let t = cue.tracks[track_idx].clone();
-                if t.start > Duration::ZERO {
-                    if let Some(s2) = open_source(&path, t.start, &self.shutdown_flag) {
-                        if self.ensure_backend(slots) {
-                            let cue_seek_ok = if let Some(p) = self.backend_player.as_mut() {
-                                p.clear();
-                                p.append(s2);
-                                self.last_seek_offset = t.start;
-                                true
-                            } else {
-                                false
-                            };
-                            if cue_seek_ok {
-                                self.reanchor_playback_clock_for_new_segment();
-                                let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
-                                set_metadata(&slots.meta_slot, Some(meta));
-                                set_cue_track(&slots.cue_track_slot, Some(track_idx));
-                            }
-                        }
-                    }
+            let t = cue.tracks[track_idx].clone();
+            if t.start > Duration::ZERO
+                && let Some(s2) = open_source(&path, t.start, &self.shutdown_flag)
+                && self.ensure_backend(slots)
+            {
+                let cue_seek_ok = if let Some(p) = self.backend_player.as_mut() {
+                    p.clear();
+                    p.append(s2);
+                    self.last_seek_offset = t.start;
+                    true
+                } else {
+                    false
+                };
+                if cue_seek_ok {
+                    self.reanchor_playback_clock_for_new_segment();
+                    let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
+                    set_metadata(&slots.meta_slot, Some(meta));
+                    set_cue_track(&slots.cue_track_slot, Some(track_idx));
                 }
             }
         }
@@ -844,11 +841,11 @@ impl AudioLoopState {
                     "{}. {} - {}",
                     current_t.number, current_t.title, current_t.performer
                 );
-                if let Some(mut g) = slots.meta_slot.try_lock() {
-                    if g.as_ref() != Some(&meta) {
-                        *g = Some(meta);
-                        set_cue_track(&slots.cue_track_slot, Some(idx));
-                    }
+                if let Some(mut g) = slots.meta_slot.try_lock()
+                    && g.as_ref() != Some(&meta)
+                {
+                    *g = Some(meta);
+                    set_cue_track(&slots.cue_track_slot, Some(idx));
                 }
             }
         } else {

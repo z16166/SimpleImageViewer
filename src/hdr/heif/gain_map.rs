@@ -104,16 +104,30 @@ pub(crate) fn rotate_gain_rgba_180(
 
 /// Rotate an Apple HDR gain map from sensor (ispe) orientation into primary display orientation.
 #[cfg(feature = "heif-native")]
+#[derive(Clone, Copy)]
+pub(crate) struct AppleGainMapAlignment {
+    pub(crate) primary_ispe_w: u32,
+    pub(crate) primary_ispe_h: u32,
+    pub(crate) primary_disp_w: u32,
+    pub(crate) primary_disp_h: u32,
+    pub(crate) orientation: Option<u16>,
+}
+
+/// Rotate an Apple HDR gain map from sensor (ispe) orientation into primary display orientation.
+#[cfg(feature = "heif-native")]
 pub(crate) fn align_apple_gain_map_to_primary_display_orientation(
     gain_rgba: Vec<u8>,
     gain_width: u32,
     gain_height: u32,
-    primary_ispe_w: u32,
-    primary_ispe_h: u32,
-    primary_disp_w: u32,
-    primary_disp_h: u32,
-    orientation: Option<u16>,
+    alignment: AppleGainMapAlignment,
 ) -> (u32, u32, Vec<u8>) {
+    let AppleGainMapAlignment {
+        primary_ispe_w,
+        primary_ispe_h,
+        primary_disp_w,
+        primary_disp_h,
+        orientation,
+    } = alignment;
     let ispe_swapped = primary_ispe_w == primary_disp_h && primary_ispe_h == primary_disp_w;
     let ispe_rotated = ispe_swapped && primary_ispe_w != primary_ispe_h;
     let gain_in_sensor = gain_map_stored_in_sensor_orientation(
@@ -291,11 +305,13 @@ pub(crate) fn decode_heif_gain_map(
         gain_rgba,
         width,
         height,
-        primary_ispe_w,
-        primary_ispe_h,
-        primary_disp_w,
-        primary_disp_h,
-        orientation,
+        AppleGainMapAlignment {
+            primary_ispe_w,
+            primary_ispe_h,
+            primary_disp_w,
+            primary_disp_h,
+            orientation,
+        },
     );
     if (out_w, out_h) != (width, height) {
         log::debug!(

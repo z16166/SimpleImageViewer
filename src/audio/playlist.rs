@@ -47,10 +47,10 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
             .flatten()
         {
             // Check cancellation
-            if let Some(ref c) = cancel {
-                if !c.load(Ordering::Relaxed) {
-                    return Vec::new(); // Abort
-                }
+            if let Some(ref c) = cancel
+                && !c.load(Ordering::Relaxed)
+            {
+                return Vec::new(); // Abort
             }
 
             let p = entry.path();

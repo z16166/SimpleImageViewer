@@ -45,6 +45,7 @@ mod preload_memory;
 mod tray_handlers;
 mod types;
 
+pub use lifecycle::ImageViewerInit;
 pub use types::{FileOpResult, HardwareTier, ImageViewerApp};
 
 pub(crate) use types::{

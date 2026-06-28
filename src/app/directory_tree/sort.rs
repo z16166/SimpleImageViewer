@@ -54,15 +54,17 @@ pub(super) fn image_list_sort_order(
         let ordering = compare_image_list_sort_keys_with_cache(
             left,
             right,
-            column,
-            paths,
-            sizes,
-            modified,
-            name_keys.as_deref(),
-            #[cfg(target_os = "windows")]
-            windows_name_keys.as_deref(),
-            #[cfg(target_os = "macos")]
-            macos_name_keys.as_deref(),
+            ImageListSortKeyCache {
+                column,
+                paths,
+                sizes,
+                modified,
+                name_keys: name_keys.as_deref(),
+                #[cfg(target_os = "windows")]
+                windows_name_keys: windows_name_keys.as_deref(),
+                #[cfg(target_os = "macos")]
+                macos_name_keys: macos_name_keys.as_deref(),
+            },
         );
         let primary = if ascending {
             ordering
@@ -80,17 +82,34 @@ pub(super) fn image_list_sort_order(
     order
 }
 
+struct ImageListSortKeyCache<'a> {
+    column: ImageListSortColumn,
+    paths: &'a [PathBuf],
+    sizes: &'a [u64],
+    modified: &'a [Option<i64>],
+    name_keys: Option<&'a [String]>,
+    #[cfg(target_os = "windows")]
+    windows_name_keys: Option<&'a [Vec<u16>]>,
+    #[cfg(target_os = "macos")]
+    macos_name_keys: Option<&'a [core_foundation::string::CFString]>,
+}
+
 fn compare_image_list_sort_keys_with_cache(
     left: usize,
     right: usize,
-    column: ImageListSortColumn,
-    paths: &[PathBuf],
-    sizes: &[u64],
-    modified: &[Option<i64>],
-    name_keys: Option<&[String]>,
-    #[cfg(target_os = "windows")] windows_name_keys: Option<&[Vec<u16>]>,
-    #[cfg(target_os = "macos")] macos_name_keys: Option<&[core_foundation::string::CFString]>,
+    cache: ImageListSortKeyCache<'_>,
 ) -> Ordering {
+    let ImageListSortKeyCache {
+        column,
+        paths,
+        sizes,
+        modified,
+        name_keys,
+        #[cfg(target_os = "windows")]
+        windows_name_keys,
+        #[cfg(target_os = "macos")]
+        macos_name_keys,
+    } = cache;
     debug_assert!(left < paths.len() && right < paths.len());
     match column {
         ImageListSortColumn::Name => {
@@ -160,7 +179,7 @@ fn compare_file_names(left: &Path, right: &Path) -> Ordering {
 fn locale_compare_str(left: &str, right: &str) -> Ordering {
     #[cfg(target_os = "windows")]
     {
-        return windows_locale_compare(left, right);
+        windows_locale_compare(left, right)
     }
     #[cfg(target_os = "macos")]
     {

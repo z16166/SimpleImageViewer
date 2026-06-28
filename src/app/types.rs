@@ -523,8 +523,6 @@ pub struct ImageViewerApp {
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
     pub(crate) font_families_rx: Option<Receiver<Vec<String>>>,
-    pub(crate) temp_font_size: Option<f32>,
-
     // Cached state
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,

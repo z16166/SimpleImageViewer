@@ -23,10 +23,10 @@ use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
 const SLIDER_VALUE_WIDTH: f32 = 70.0;
+const FONT_SIZE_SLIDER_DRAFT_ID: &str = "appearance_font_size_slider_draft";
 
 #[derive(Debug, Clone)]
 enum AppearanceMsg {
-    FontSizePreview(f32),
     FontSizeCommit(f32),
     FontFamilyChanged(String),
     LanguageChanged(String),
@@ -41,13 +41,8 @@ pub(super) fn draw(app: &mut ImageViewerApp, ui: &mut egui::Ui, egui_ctx: &Conte
 
 fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
     match msg {
-        AppearanceMsg::FontSizePreview(size) => {
-            app.temp_font_size = Some(size);
-            app.refresh_global_ui_style(egui_ctx);
-        }
         AppearanceMsg::FontSizeCommit(size) => {
             app.settings.font_size = size;
-            app.temp_font_size = None;
             app.refresh_global_ui_style(egui_ctx);
             app.queue_save();
         }
@@ -161,7 +156,11 @@ fn view_form_grid(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg>
 
 fn view_font_size_slider(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg> {
     let mut out = Vec::new();
-    let mut current = app.temp_font_size.unwrap_or(app.settings.font_size);
+    let draft_id = egui::Id::new(FONT_SIZE_SLIDER_DRAFT_ID);
+    let mut current = ui
+        .ctx()
+        .data(|data| data.get_temp::<f32>(draft_id))
+        .unwrap_or(app.settings.font_size);
     let resp = super::add_slider(
         ui,
         SLIDER_VALUE_WIDTH,
@@ -169,8 +168,10 @@ fn view_font_size_slider(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<Appeara
         super::SliderTrackMode::Elastic,
     );
     if resp.dragged() {
-        out.push(AppearanceMsg::FontSizePreview(current));
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(draft_id, current));
     } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        ui.ctx().data_mut(|data| data.remove::<f32>(draft_id));
         out.push(AppearanceMsg::FontSizeCommit(current));
     }
     out

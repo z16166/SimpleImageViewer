@@ -57,8 +57,11 @@ pub(crate) fn hdr_gain_map_decode_capacity(
 pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData) -> ImageData {
     match data {
         ImageData::Hdr { hdr, fallback } => {
-            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
-            ImageData::Hdr { hdr, fallback }
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, *hdr, fallback);
+            ImageData::Hdr {
+                hdr: Box::new(hdr),
+                fallback,
+            }
         }
         ImageData::Static(mut img) => {
             let o = crate::metadata_utils::get_exif_orientation(path);

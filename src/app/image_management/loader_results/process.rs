@@ -92,11 +92,11 @@ impl ImageViewerApp {
                     };
 
                     if idx == self.current_index {
-                        if let Some(hdr_frames) = &playback.hdr_frames {
-                            if let Some(hdr) = hdr_frames.first() {
-                                self.current_hdr_image =
-                                    Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
-                            }
+                        if let Some(hdr_frames) = &playback.hdr_frames
+                            && let Some(hdr) = hdr_frames.first()
+                        {
+                            self.current_hdr_image =
+                                Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
                         }
                         self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
@@ -805,6 +805,7 @@ impl ImageViewerApp {
             upload_device_id,
         );
         let mut renderer = wgpu_state.renderer.write();
+        #[allow(clippy::collapsible_if)]
         if let Some(resources) = renderer
             .callback_resources
             .get_mut::<crate::hdr::renderer::HdrCallbackResources>()

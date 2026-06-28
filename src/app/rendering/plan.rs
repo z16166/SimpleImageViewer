@@ -185,11 +185,12 @@ pub(crate) fn select_render_backend(
     if force_hdr_plane_after_raw_demosaic && has_hdr_plane && has_hdr_target {
         return PlaneBackendKind::Hdr;
     }
-    if has_hdr_plane && has_hdr_target && output_mode.is_native_hdr() {
-        PlaneBackendKind::Hdr
-    } else if has_hdr_plane && !has_sdr_fallback {
-        PlaneBackendKind::Hdr
-    } else if has_hdr_plane && has_hdr_target && output_mode == HdrRenderOutputMode::SdrToneMapped {
+    if has_hdr_plane
+        && ((!has_sdr_fallback)
+            || (has_hdr_target
+                && (output_mode.is_native_hdr()
+                    || output_mode == HdrRenderOutputMode::SdrToneMapped)))
+    {
         PlaneBackendKind::Hdr
     } else {
         PlaneBackendKind::Sdr

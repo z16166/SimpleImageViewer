@@ -60,17 +60,19 @@ impl CallbackTrait for HdrTilePlaneCallback {
         let needs_compose = iso_deferred_tile && binding_baked != Some(target_capacity_bits);
         let jpeg_gpu_composed =
             iso_deferred_tile && (needs_compose || binding_baked == Some(target_capacity_bits));
-        let uniform = hdr_tile_tone_map_uniform(
-            self.tone_map,
-            self.rotation_steps,
-            self.alpha,
-            self.output_mode,
-            self.target_format,
-            &self.tile,
-            self.uv_rect,
-            native_display_scale,
+        let uniform = hdr_tile_tone_map_uniform(HdrTileToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: self.tone_map,
+                rotation_steps: self.rotation_steps,
+                alpha: self.alpha,
+                output_mode: self.output_mode,
+                framebuffer_format: self.target_format,
+                uv_rect: self.uv_rect,
+                native_display_scale,
+            },
+            tile: &self.tile,
             jpeg_gpu_composed,
-        );
+        });
 
         if let (Some(deferred), Some(ctx)) = (iso_deferred, tile_ctx) {
             let upload_key = JpegTiledUploadKey {
@@ -134,17 +136,19 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             return Vec::new();
                         };
                         let compose_command = jpeg_compose_gpu::encode_tile_compose_compute_pass(
-                            device,
-                            queue,
-                            resources,
-                            deferred,
-                            &ctx,
-                            self.tile.width,
-                            self.tile.height,
-                            &self.tone_map,
-                            sdr_view,
-                            gain_view,
-                            &display_storage,
+                            jpeg_compose_gpu::JpegTileComposePass {
+                                device,
+                                queue,
+                                resources,
+                                deferred,
+                                tile_ctx: &ctx,
+                                tile_width: self.tile.width,
+                                tile_height: self.tile.height,
+                                tone_map: &self.tone_map,
+                                sdr_view,
+                                gain_view,
+                                display_storage_view: &display_storage,
+                            },
                         );
                         if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
                             binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
@@ -212,17 +216,19 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             };
                             let compose_command =
                                 jpeg_compose_gpu::encode_tile_compose_compute_pass(
-                                    device,
-                                    queue,
-                                    resources,
-                                    deferred,
-                                    &ctx,
-                                    self.tile.width,
-                                    self.tile.height,
-                                    &self.tone_map,
-                                    sdr_view,
-                                    gain_view,
-                                    display_storage,
+                                    jpeg_compose_gpu::JpegTileComposePass {
+                                        device,
+                                        queue,
+                                        resources,
+                                        deferred,
+                                        tile_ctx: &ctx,
+                                        tile_width: self.tile.width,
+                                        tile_height: self.tile.height,
+                                        tone_map: &self.tone_map,
+                                        sdr_view,
+                                        gain_view,
+                                        display_storage_view: display_storage,
+                                    },
                                 );
                             if !resources.image_bindings.is_empty() {
                                 resources.image_bindings.clear();
@@ -260,12 +266,14 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             });
                             resources.tile_bindings.insert(
                                 tile_key,
-                                uploaded.texture,
-                                uploaded.view,
-                                uploaded.storage_view,
-                                tone_map_buffer,
-                                bind_group,
-                                Some(target_capacity_bits),
+                                HdrTileInsert {
+                                    texture: uploaded.texture,
+                                    view: uploaded.view,
+                                    compose_storage_view: uploaded.storage_view,
+                                    tone_map_buffer,
+                                    bind_group,
+                                    baked_jpeg_weight_bits: Some(target_capacity_bits),
+                                },
                             );
                             return vec![compose_command];
                         }
@@ -328,12 +336,14 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         });
                         resources.tile_bindings.insert(
                             tile_key,
-                            uploaded.texture,
-                            uploaded.view,
-                            uploaded.storage_view,
-                            tone_map_buffer,
-                            bind_group,
-                            Some(target_capacity_bits),
+                            HdrTileInsert {
+                                texture: uploaded.texture,
+                                view: uploaded.view,
+                                compose_storage_view: uploaded.storage_view,
+                                tone_map_buffer,
+                                bind_group,
+                                baked_jpeg_weight_bits: Some(target_capacity_bits),
+                            },
                         );
                         return Vec::new();
                     }
@@ -382,12 +392,14 @@ impl CallbackTrait for HdrTilePlaneCallback {
                     });
                     resources.tile_bindings.insert(
                         tile_key,
-                        uploaded.texture,
-                        uploaded.view,
-                        None,
-                        tone_map_buffer,
-                        bind_group,
-                        None,
+                        HdrTileInsert {
+                            texture: uploaded.texture,
+                            view: uploaded.view,
+                            compose_storage_view: None,
+                            tone_map_buffer,
+                            bind_group,
+                            baked_jpeg_weight_bits: None,
+                        },
                     );
                 }
                 Err(err) => {
@@ -396,24 +408,26 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 }
             }
         }
-        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
-            if let Some(buffer) = binding.tone_map_buffer.as_ref() {
-                let binding_baked = binding.baked_jpeg_weight_bits;
-                let jpeg_gpu_composed =
-                    iso_deferred_tile && binding_baked == Some(target_capacity_bits);
-                let uniform = hdr_tile_tone_map_uniform(
-                    self.tone_map,
-                    self.rotation_steps,
-                    self.alpha,
-                    self.output_mode,
-                    self.target_format,
-                    &self.tile,
-                    self.uv_rect,
+        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key)
+            && let Some(buffer) = binding.tone_map_buffer.as_ref()
+        {
+            let binding_baked = binding.baked_jpeg_weight_bits;
+            let jpeg_gpu_composed =
+                iso_deferred_tile && binding_baked == Some(target_capacity_bits);
+            let uniform = hdr_tile_tone_map_uniform(HdrTileToneMapUniformParams {
+                common: ToneMapCommonParams {
+                    settings: self.tone_map,
+                    rotation_steps: self.rotation_steps,
+                    alpha: self.alpha,
+                    output_mode: self.output_mode,
+                    framebuffer_format: self.target_format,
+                    uv_rect: self.uv_rect,
                     native_display_scale,
-                    jpeg_gpu_composed,
-                );
-                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-            }
+                },
+                tile: &self.tile,
+                jpeg_gpu_composed,
+            });
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
         }
 
         Vec::new()

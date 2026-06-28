@@ -28,14 +28,14 @@ use crate::loader::preview_caps::finalize_raw_hq_hdr_buffer;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::{RawDemosaicBackend, RawOsdContext};
-use crate::loader::tiled_sources::RawImageSource;
+use crate::loader::tiled_sources::{RawImageSource, RawImageSourceParams};
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
     hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
@@ -49,20 +49,35 @@ pub(crate) fn develop_scene_linear_hdr_timed(
 }
 
 /// Demosaic at full sensor resolution (only when no embedded preview exists).
+pub(crate) struct FullResolutionRawDevelopRequest<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) area: u64,
+    pub(crate) threshold: u64,
+    pub(crate) refine_tx: Sender<RefinementRequest>,
+    pub(crate) final_lr_flip: i32,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) hdr_tone_map: HdrToneMapSettings,
+    pub(crate) osd_ctx: &'a RawOsdContext,
+}
+
 pub(crate) fn develop_full_resolution(
     processor: &mut RawProcessor,
-    path: &PathBuf,
-    width: u32,
-    height: u32,
-    area: u64,
-    threshold: u64,
-    refine_tx: Sender<RefinementRequest>,
-    final_lr_flip: i32,
-    _raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    osd_ctx: &RawOsdContext,
+    request: FullResolutionRawDevelopRequest<'_>,
 ) -> Result<RawLoadOutput, String> {
+    let FullResolutionRawDevelopRequest {
+        path,
+        width,
+        height,
+        area,
+        threshold,
+        refine_tx,
+        final_lr_flip,
+        hdr_target_capacity,
+        hdr_tone_map,
+        osd_ctx,
+    } = request;
     if area < threshold
         && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
         && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
@@ -144,16 +159,18 @@ pub(crate) fn develop_full_resolution(
     let preview = processor.develop()?.to_rgba8().into();
     // Performance mode only (`load_raw` with `!high_quality`). Never queue HQ refinement.
     let source = Arc::new(RawImageSource::new(
-        path.clone(),
+        path.to_path_buf(),
         preview,
-        width,
-        height,
-        refine_tx,
-        final_lr_flip,
-        false,
-        hdr_target_capacity,
-        hdr_tone_map,
-        None,
+        RawImageSourceParams {
+            raw_width: width,
+            raw_height: height,
+            refine_tx,
+            orientation_override: final_lr_flip,
+            needs_refinement: false,
+            hdr_target_capacity,
+            hdr_tone_map,
+            hdr_developed_image: None,
+        },
     )?);
 
     log::info!(
@@ -177,7 +194,7 @@ pub(crate) fn develop_full_resolution(
 /// when an embedded thumb exists.
 pub(crate) fn develop_hq_preview(
     processor: &mut RawProcessor,
-    _path: &PathBuf,
+    _path: &Path,
     _raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,

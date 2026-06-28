@@ -104,13 +104,13 @@ impl ImageViewerApp {
 
         if let Some(cached) = self.animation_cache.get(&idx) {
             if cached.textures.len() > 1 {
-                if let Some(hdr_frames) = &cached.hdr_frames {
-                    if let Some(hdr) = hdr_frames.first() {
-                        self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
-                            idx,
-                            std::sync::Arc::clone(hdr),
-                        ));
-                    }
+                if let Some(hdr_frames) = &cached.hdr_frames
+                    && let Some(hdr) = hdr_frames.first()
+                {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        idx,
+                        std::sync::Arc::clone(hdr),
+                    ));
                 }
                 self.animation = Some(crate::app::AnimationPlayback {
                     image_index: cached.image_index,
@@ -228,7 +228,17 @@ mod tests {
         let ctx = eframe::egui::Context::default();
         let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
         let handle = ctx.load_texture("f0", color_image, eframe::egui::TextureOptions::LINEAR);
-        app.texture_cache.insert(0, handle, 1, 1, false, 0, 1);
+        app.texture_cache.insert(
+            0,
+            handle,
+            crate::loader::TextureCacheInsert {
+                orig_w: 1,
+                orig_h: 1,
+                needs_tile_manager: false,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
         assert!(app.needs_stale_animated_first_frame_reload());
 
         app.record_installed_display_mode(0, RenderShape::Static);

@@ -46,8 +46,9 @@ pub(crate) use orientation::{
 pub(crate) use brand::heif_nclx_to_metadata;
 #[cfg(all(test, feature = "heif-native"))]
 pub(crate) use gain_map::{
-    EXIF_ORIENTATION_NORMAL, EXIF_ORIENTATION_ROTATE_90_CCW, EXIF_ORIENTATION_ROTATE_90_CW,
-    EXIF_ORIENTATION_ROTATE_180, align_apple_gain_map_to_primary_display_orientation,
+    AppleGainMapAlignment, EXIF_ORIENTATION_NORMAL, EXIF_ORIENTATION_ROTATE_90_CCW,
+    EXIF_ORIENTATION_ROTATE_90_CW, EXIF_ORIENTATION_ROTATE_180,
+    align_apple_gain_map_to_primary_display_orientation,
 };
 #[cfg(all(test, feature = "heif-native"))]
 pub(crate) use metadata::{

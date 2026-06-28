@@ -256,8 +256,6 @@ impl ImageViewerApp {
             StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
             &self.image_files[index],
-            self.current_index,
-            self.image_files.len(),
         );
     }
 
@@ -315,8 +313,6 @@ impl ImageViewerApp {
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some(logical),
             &self.image_files[index],
-            self.current_index,
-            self.image_files.len(),
         ) {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
@@ -423,10 +419,8 @@ impl ImageViewerApp {
             ordered.len() >= schedule_budget
         };
 
-        if bootstrap_visible {
-            if try_push(current) {
-                return ordered;
-            }
+        if bootstrap_visible && try_push(current) {
+            return ordered;
         }
 
         if let Some((start, end)) = visible_row_range {
@@ -443,10 +437,8 @@ impl ImageViewerApp {
             }
         }
 
-        if !bootstrap_visible {
-            if try_push(current) {
-                return ordered;
-            }
+        if !bootstrap_visible && try_push(current) {
+            return ordered;
         }
 
         for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {

@@ -92,13 +92,13 @@ impl ImageViewerApp {
                 };
                 if let Some(action) = pointer_hotkey_action {
                     if action == crate::app::input::AppAction::SelectPixelRegion {
-                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                            if let Some(res) = self.current_image_res {
-                                let img_size = Vec2::new(res.0 as f32, res.1 as f32);
-                                let display_rect =
-                                    self.compute_plane_layout(img_size, screen_rect).dest;
-                                self.handle_pixel_region_click(pos, display_rect);
-                            }
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+                            && let Some(res) = self.current_image_res
+                        {
+                            let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                            let display_rect =
+                                self.compute_plane_layout(img_size, screen_rect).dest;
+                            self.handle_pixel_region_click(pos, display_rect);
                         }
                     } else {
                         self.dispatch_action(action, ui.ctx());
@@ -227,7 +227,7 @@ impl ImageViewerApp {
                     let image_frame = self.current_image_frame_status(zoom_pct);
                     let res_w = image_frame.as_ref().map_or(0, |frame| frame.res.0);
                     if let Some(frame) = image_frame.as_ref() {
-                        self.update_view_status_for_paint(&frame);
+                        self.update_view_status_for_paint(frame);
                         self.osd.render_image(
                             ui,
                             screen_rect,

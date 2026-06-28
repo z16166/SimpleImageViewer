@@ -40,7 +40,7 @@ pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{
     DecodedImage, ImageData, LoadResult, PreviewBundle, PreviewStage, RefinementRequest,
@@ -59,18 +59,32 @@ use modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_
 use raster::{load_gif, load_png, load_psd, load_static, load_webp};
 use raw::load_raw;
 
-pub(crate) fn load_image_file(
-    index: usize,
-    path: &PathBuf,
-    tx: crate::loader::orchestrator::LoaderOutputSender,
-    refine_tx: Sender<RefinementRequest>,
-    decode_profile: crate::loader::DecodeProfile,
-    high_quality: bool,
-    raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    raw_open_prefetch: Option<&crate::loader::orchestrator::RawOpenPrefetch>,
-) -> LoadResult {
+pub(crate) struct ImageLoadRequest<'a> {
+    pub(crate) index: usize,
+    pub(crate) path: &'a Path,
+    pub(crate) tx: crate::loader::orchestrator::LoaderOutputSender,
+    pub(crate) refine_tx: Sender<RefinementRequest>,
+    pub(crate) decode_profile: crate::loader::DecodeProfile,
+    pub(crate) high_quality: bool,
+    pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) hdr_tone_map: HdrToneMapSettings,
+    pub(crate) raw_open_prefetch: Option<&'a crate::loader::orchestrator::RawOpenPrefetch>,
+}
+
+pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
+    let ImageLoadRequest {
+        index,
+        path,
+        tx,
+        refine_tx,
+        decode_profile,
+        high_quality,
+        raw_demosaic_mode,
+        hdr_target_capacity,
+        hdr_tone_map,
+        raw_open_prefetch,
+    } = request;
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -122,18 +136,18 @@ pub(crate) fn load_image_file(
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
 
         if is_raw {
-            let out = load_raw(
+            let out = load_raw(raw::RawLoadRequest {
                 index,
                 path,
-                refine_tx.clone(),
-                tx.clone(),
-                decode_profile.clone(),
+                refine_tx: refine_tx.clone(),
+                load_tx: tx.clone(),
+                decode_profile: decode_profile.clone(),
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch,
-            )?;
+            })?;
             if out.osd.sensor_size.0 > 0 {
                 raw_osd_info = Some(out.osd);
             }
@@ -158,18 +172,18 @@ pub(crate) fn load_image_file(
                     "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
                     file_name
                 );
-                return load_raw(
+                return load_raw(raw::RawLoadRequest {
                     index,
                     path,
-                    refine_tx.clone(),
-                    tx.clone(),
-                    decode_profile.clone(),
+                    refine_tx: refine_tx.clone(),
+                    load_tx: tx.clone(),
+                    decode_profile: decode_profile.clone(),
                     high_quality,
                     raw_demosaic_mode,
                     hdr_target_capacity,
                     hdr_tone_map,
                     raw_open_prefetch,
-                )
+                })
                 .map(|out| {
                     if out.osd.sensor_size.0 > 0 {
                         raw_osd_info = Some(out.osd);
@@ -385,7 +399,7 @@ pub(crate) fn load_image_file(
             Ok(ImageData::HdrTiled { hdr, fallback })
         }
         Ok(ImageData::Static(decoded)) => Ok(make_image_data(decoded)),
-        Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(hdr, fallback)),
+        Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(*hdr, fallback)),
         Ok(ImageData::Animated(frames)) => {
             if let Some(first) = frames.first() {
                 let width = first.width;

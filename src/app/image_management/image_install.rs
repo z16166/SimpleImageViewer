@@ -27,6 +27,27 @@ pub(super) fn hdr_sdr_fallback_texture_name(idx: usize) -> String {
     format!("{HDR_SDR_FALLBACK_TEXTURE_PREFIX}{idx}")
 }
 
+pub(super) struct StaticHdrInstall<'a> {
+    pub(super) hdr: Arc<crate::hdr::types::HdrImageBuffer>,
+    pub(super) fallback: &'a DecodedImage,
+    pub(super) sdr_fallback_is_placeholder: bool,
+    pub(super) ultra_hdr_capacity_sensitive: bool,
+    pub(super) defer_sdr_upload: bool,
+    pub(super) ctx: &'a egui::Context,
+}
+
+pub(super) struct TiledImageInstall<'a> {
+    pub(super) idx: usize,
+    pub(super) decode_profile: crate::loader::DecodeProfile,
+    pub(super) source: Arc<dyn crate::loader::TiledImageSource>,
+    pub(super) hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+    pub(super) sdr_preview: Option<&'a DecodedImage>,
+    pub(super) hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(super) hdr_sdr_fallback: bool,
+    pub(super) ultra_hdr_capacity_sensitive: bool,
+    pub(super) ctx: &'a egui::Context,
+}
+
 impl ImageViewerApp {
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
         index == self.current_index
@@ -111,11 +132,13 @@ impl ImageViewerApp {
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
-            decoded.width,
-            decoded.height,
-            false,
-            self.current_index,
-            self.image_files.len(),
+            crate::loader::TextureCacheInsert {
+                orig_w: decoded.width,
+                orig_h: decoded.height,
+                needs_tile_manager: false,
+                current_index: self.current_index,
+                total_count: self.image_files.len(),
+            },
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
@@ -270,16 +293,15 @@ impl ImageViewerApp {
         );
     }
 
-    pub(super) fn install_static_hdr_image(
-        &mut self,
-        idx: usize,
-        hdr: Arc<crate::hdr::types::HdrImageBuffer>,
-        fallback: &DecodedImage,
-        sdr_fallback_is_placeholder: bool,
-        ultra_hdr_capacity_sensitive: bool,
-        defer_sdr_upload: bool,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn install_static_hdr_image(&mut self, idx: usize, install: StaticHdrInstall<'_>) {
+        let StaticHdrInstall {
+            hdr,
+            fallback,
+            sdr_fallback_is_placeholder,
+            ultra_hdr_capacity_sensitive,
+            defer_sdr_upload,
+            ctx,
+        } = install;
         let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);
@@ -352,62 +374,62 @@ impl ImageViewerApp {
                 pixels: fallback.arc_pixels(),
             });
         }
-        if sdr_fallback_is_placeholder && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+        if sdr_fallback_is_placeholder
+            && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+            && !self.hdr_in_flight_fallback_refinements.contains(&idx)
         {
-            if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
-                let source_key = source_key_for_path(&self.image_files[idx]);
-                self.hdr_in_flight_fallback_refinements.insert(idx);
-                self.loader
-                    .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
-            }
+            let source_key = source_key_for_path(&self.image_files[idx]);
+            self.hdr_in_flight_fallback_refinements.insert(idx);
+            self.loader
+                .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
         }
-        if self.should_eager_cache_install_hdr_strip(idx) {
-            if let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
+        if self.should_eager_cache_install_hdr_strip(idx)
+            && let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
                 &hdr,
                 fallback,
                 sdr_fallback_is_placeholder,
-            ) {
-                let strip_stage = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                    && hdr.rgba_f32.is_empty()
-                {
-                    crate::loader::PreviewStage::Initial
-                } else {
-                    crate::loader::PreviewStage::Refined
-                };
-                #[cfg(feature = "preload-debug")]
-                crate::preload_debug!(
-                    "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
-                    idx,
-                    strip_preview.width,
-                    strip_preview.height
-                );
-                let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
-                    hdr.width,
-                    hdr.height,
-                    fallback.width,
-                    fallback.height,
-                    strip_preview.width,
-                    strip_preview.height,
+            )
+        {
+            let strip_stage = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                && hdr.rgba_f32.is_empty()
+            {
+                crate::loader::PreviewStage::Initial
+            } else {
+                crate::loader::PreviewStage::Refined
+            };
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
+                idx,
+                strip_preview.width,
+                strip_preview.height
+            );
+            let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
+                hdr.width,
+                hdr.height,
+                fallback.width,
+                fallback.height,
+                strip_preview.width,
+                strip_preview.height,
+                !hdr.rgba_f32.is_empty(),
+            );
+            let strip_tag =
+                crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
+                    sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
+                    strip_preview.is_sdr_deferred_placeholder(),
+                    strip_stage == crate::loader::PreviewStage::Initial
+                        && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                        && hdr.rgba_f32.is_empty(),
                 );
-                let strip_tag =
-                    crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                        !hdr.rgba_f32.is_empty(),
-                        sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
-                        strip_preview.is_sdr_deferred_placeholder(),
-                        strip_stage == crate::loader::PreviewStage::Initial
-                            && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                            && hdr.rgba_f32.is_empty(),
-                    );
-                self.cache_directory_tree_strip_thumbnail(
-                    idx,
-                    &strip_preview,
-                    strip_stage,
-                    Some(strip_logical),
-                    strip_tag,
-                    ctx,
-                );
-            }
+            self.cache_directory_tree_strip_thumbnail(
+                idx,
+                &strip_preview,
+                strip_stage,
+                Some(strip_logical),
+                strip_tag,
+                ctx,
+            );
         }
     }
 
@@ -474,19 +496,18 @@ impl ImageViewerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn install_tiled_image(
-        &mut self,
-        idx: usize,
-        decode_profile: crate::loader::DecodeProfile,
-        source: Arc<dyn crate::loader::TiledImageSource>,
-        hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
-        sdr_preview: Option<&DecodedImage>,
-        hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
-        hdr_sdr_fallback: bool,
-        ultra_hdr_capacity_sensitive: bool,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn install_tiled_image(&mut self, install: TiledImageInstall<'_>) {
+        let TiledImageInstall {
+            idx,
+            decode_profile,
+            source,
+            hdr_source,
+            sdr_preview,
+            hdr_preview,
+            hdr_sdr_fallback,
+            ultra_hdr_capacity_sensitive,
+            ctx,
+        } = install;
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Tiled);
         self.remove_hdr_image_resources(idx);
         if let Some(hdr_source) = hdr_source.as_ref() {

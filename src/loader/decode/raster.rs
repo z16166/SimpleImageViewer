@@ -23,14 +23,14 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
     AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_image_data,
 };
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use super::assemble::make_image_data;
 use super::hdr_formats::{is_exr_path, load_hdr};
 
 pub(crate) fn load_static_from_mmap(
-    path: &PathBuf,
+    path: &Path,
     mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
@@ -58,13 +58,13 @@ pub(crate) fn load_static_from_mmap(
     let pixels = rgba.into_raw();
 
     Ok(apply_exif_orientation_to_image_data(
-        path.as_path(),
+        path,
         make_image_data(DecodedImage::new(width, height, pixels)),
     ))
 }
 
 pub(crate) fn load_static(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -76,7 +76,7 @@ pub(crate) fn load_static(
 }
 pub(crate) fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
-    path: &PathBuf,
+    path: &Path,
     mmap: Option<&[u8]>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
@@ -92,11 +92,9 @@ pub(crate) fn process_animation_frames(
         .into_iter()
         .map(|frame| {
             let (numer, denom) = frame.delay().numer_denom_ms();
-            let delay_ms = if denom == 0 {
-                DEFAULT_ANIMATION_DELAY_MS
-            } else {
-                numer / denom
-            };
+            let delay_ms = numer
+                .checked_div(denom)
+                .unwrap_or(DEFAULT_ANIMATION_DELAY_MS);
             // Standard browser behavior: delays <= 10ms are treated as 100ms
             let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS {
                 DEFAULT_ANIMATION_DELAY_MS
@@ -115,13 +113,13 @@ pub(crate) fn process_animation_frames(
         .collect();
 
     Ok(apply_exif_orientation_to_image_data(
-        path.as_path(),
+        path,
         ImageData::Animated(frames),
     ))
 }
 
 pub(crate) fn load_gif(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -147,7 +145,7 @@ pub(crate) fn load_gif(
 }
 
 pub(crate) fn load_png(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -184,7 +182,7 @@ pub(crate) fn load_png(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn load_webp(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -213,7 +211,7 @@ pub(crate) fn load_webp(
 // PSD / PSB (Photoshop Document / Large Document)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
+pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
     // Step 1: Map the file once standardly
     let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
 
@@ -278,7 +276,7 @@ pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
             Ok(Ok((w, h, pixels))) => {
                 let img = DecodedImage::new(w, h, pixels);
                 Ok(apply_exif_orientation_to_image_data(
-                    path.as_path(),
+                    path,
                     make_image_data(img),
                 ))
             }
