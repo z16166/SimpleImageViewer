@@ -1871,15 +1871,17 @@ fn install_current_tiled_hdr_image_refreshes_hdr_osd_line() {
     let ctx = eframe::egui::Context::default();
 
     app.install_tiled_image(
-        0,
-        crate::loader::decode_profile_stub(),
-        Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
-        Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
-        None,
-        None,
-        true,
-        false,
-        &ctx,
+        crate::app::image_management::image_install::TiledImageInstall {
+            idx: 0,
+            decode_profile: crate::loader::decode_profile_stub(),
+            source: Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
+            hdr_source: Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
+            sdr_preview: None,
+            hdr_preview: None,
+            hdr_sdr_fallback: true,
+            ultra_hdr_capacity_sensitive: false,
+            ctx: &ctx,
+        },
     );
 
     assert!(app.osd.has_hdr_line());

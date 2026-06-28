@@ -35,6 +35,55 @@ pub(crate) struct PrevImageUnderneathParams<'a> {
     pub(crate) override_dest: Option<Rect>,
 }
 
+pub(crate) struct HdrImagePlaneClippedDraw {
+    pub(crate) clip: Rect,
+    pub(crate) rect: Rect,
+    pub(crate) hdr_image: Arc<HdrImageBuffer>,
+    pub(crate) tone_map: HdrToneMapSettings,
+    pub(crate) target_format: wgpu::TextureFormat,
+    pub(crate) hdr_output_mode: HdrRenderOutputMode,
+    pub(crate) rotation: i32,
+    pub(crate) alpha: f32,
+    pub(crate) ripple: Option<(egui::Pos2, f32, f32, u32)>,
+}
+
+pub(crate) struct HdrRectangularTransitionDraw {
+    pub(crate) screen_rect: Rect,
+    pub(crate) final_dest: Rect,
+    pub(crate) unrotated_final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+    pub(crate) hdr_image: Arc<HdrImageBuffer>,
+    pub(crate) tone_map: HdrToneMapSettings,
+    pub(crate) target_format: wgpu::TextureFormat,
+    pub(crate) hdr_output_mode: HdrRenderOutputMode,
+    pub(crate) alpha: f32,
+}
+
+pub(crate) struct PageFlipHdrTransitionDraw {
+    pub(crate) screen_rect: Rect,
+    pub(crate) final_dest: Rect,
+    pub(crate) unrotated_final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+    pub(crate) hdr_image: Arc<HdrImageBuffer>,
+    pub(crate) tone_map: HdrToneMapSettings,
+    pub(crate) target_format: wgpu::TextureFormat,
+    pub(crate) hdr_output_mode: HdrRenderOutputMode,
+    pub(crate) alpha: f32,
+}
+
+pub(crate) struct CurtainHdrTransitionDraw {
+    pub(crate) screen_rect: Rect,
+    pub(crate) final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) hdr_image: Arc<HdrImageBuffer>,
+    pub(crate) tone_map: HdrToneMapSettings,
+    pub(crate) target_format: wgpu::TextureFormat,
+    pub(crate) hdr_output_mode: HdrRenderOutputMode,
+    pub(crate) alpha: f32,
+}
+
 impl ImageViewerApp {
     /// GPU RAW demosaic runs inside [`HdrImagePlaneCallback::prepare`]. While bootstrap
     /// preview is shown the render plan keeps the visible backend on SDR, which would
@@ -69,15 +118,17 @@ impl ImageViewerApp {
         };
         self.draw_hdr_image_plane_clipped(
             ui,
-            clip,
-            hdr_image_plane_rect(layout),
-            Arc::clone(hdr_image),
-            self.hdr_renderer.tone_map,
-            target_format,
-            render_plan.output_mode,
-            rotation,
-            0.0,
-            None,
+            HdrImagePlaneClippedDraw {
+                clip,
+                rect: hdr_image_plane_rect(layout),
+                hdr_image: Arc::clone(hdr_image),
+                tone_map: self.hdr_renderer.tone_map,
+                target_format,
+                hdr_output_mode: render_plan.output_mode,
+                rotation,
+                alpha: 0.0,
+                ripple: None,
+            },
         );
         ui.ctx().request_repaint();
     }
@@ -115,15 +166,17 @@ impl ImageViewerApp {
             );
             self.draw_hdr_image_plane_clipped(
                 ui,
-                screen_rect,
-                p_final_dest,
-                Arc::clone(prev_hdr),
-                self.hdr_renderer.tone_map,
-                target_format,
-                hdr_output_mode,
-                rotation,
-                tp.prev_alpha,
-                None,
+                HdrImagePlaneClippedDraw {
+                    clip: screen_rect,
+                    rect: p_final_dest,
+                    hdr_image: Arc::clone(prev_hdr),
+                    tone_map: self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation,
+                    alpha: tp.prev_alpha,
+                    ripple: None,
+                },
             );
             return;
         }
@@ -148,64 +201,72 @@ impl ImageViewerApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_rectangular_hdr_transition(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        final_dest: Rect,
-        unrotated_final_dest: Rect,
-        rotation: i32,
-        angle: f32,
-        hdr_image: Arc<HdrImageBuffer>,
-        tone_map: HdrToneMapSettings,
-        target_format: wgpu::TextureFormat,
-        hdr_output_mode: HdrRenderOutputMode,
-        alpha: f32,
+        draw: HdrRectangularTransitionDraw,
     ) {
+        let HdrRectangularTransitionDraw {
+            screen_rect,
+            final_dest,
+            unrotated_final_dest,
+            rotation,
+            angle,
+            hdr_image,
+            tone_map,
+            target_format,
+            hdr_output_mode,
+            alpha,
+        } = draw;
         match self.active_transition {
             TransitionStyle::PageFlip => self.draw_page_flip_hdr_new_image(
                 ui,
-                screen_rect,
-                final_dest,
-                unrotated_final_dest,
-                rotation,
-                angle,
-                hdr_image,
-                tone_map,
-                target_format,
-                hdr_output_mode,
-                alpha,
+                PageFlipHdrTransitionDraw {
+                    screen_rect,
+                    final_dest,
+                    unrotated_final_dest,
+                    rotation,
+                    angle,
+                    hdr_image,
+                    tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    alpha,
+                },
             ),
             TransitionStyle::Curtain => self.draw_curtain_hdr_new_image(
                 ui,
-                screen_rect,
-                final_dest,
-                rotation,
-                hdr_image,
-                tone_map,
-                target_format,
-                hdr_output_mode,
-                alpha,
+                CurtainHdrTransitionDraw {
+                    screen_rect,
+                    final_dest,
+                    rotation,
+                    hdr_image,
+                    tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    alpha,
+                },
             ),
             _ => {}
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_hdr_image_plane_clipped(
         &self,
         ui: &mut egui::Ui,
-        clip: Rect,
-        rect: Rect,
-        hdr_image: Arc<HdrImageBuffer>,
-        tone_map: HdrToneMapSettings,
-        target_format: wgpu::TextureFormat,
-        hdr_output_mode: HdrRenderOutputMode,
-        rotation: i32,
-        alpha: f32,
-        ripple: Option<(egui::Pos2, f32, f32, u32)>,
+        draw: HdrImagePlaneClippedDraw,
     ) {
+        let HdrImagePlaneClippedDraw {
+            clip,
+            rect,
+            hdr_image,
+            tone_map,
+            target_format,
+            hdr_output_mode,
+            rotation,
+            alpha,
+            ripple,
+        } = draw;
         let layout = PlaneLayout::from_dest(Vec2::new(rect.width(), rect.height()), rotation, rect);
         draw_plane(
             ui,
@@ -227,21 +288,23 @@ impl ImageViewerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_page_flip_hdr_new_image(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        final_dest: Rect,
-        _unrotated_final_dest: Rect,
-        rotation: i32,
-        _angle: f32,
-        hdr_image: Arc<HdrImageBuffer>,
-        tone_map: HdrToneMapSettings,
-        target_format: wgpu::TextureFormat,
-        hdr_output_mode: HdrRenderOutputMode,
-        alpha: f32,
+        draw: PageFlipHdrTransitionDraw,
     ) {
+        let PageFlipHdrTransitionDraw {
+            screen_rect,
+            final_dest,
+            unrotated_final_dest: _unrotated_final_dest,
+            rotation,
+            angle: _angle,
+            hdr_image,
+            tone_map,
+            target_format,
+            hdr_output_mode,
+            alpha,
+        } = draw;
         let (p_dest, union_rect, has_prev) = self.transition_prev_layout(screen_rect, final_dest);
         let ease_in_out = {
             let t = self.transition_normalized_t();
@@ -284,15 +347,17 @@ impl ImageViewerApp {
 
         self.draw_hdr_image_plane_clipped(
             ui,
-            new_clip,
-            final_dest,
-            hdr_image,
-            tone_map,
-            target_format,
-            hdr_output_mode,
-            rotation,
-            alpha,
-            None,
+            HdrImagePlaneClippedDraw {
+                clip: new_clip,
+                rect: final_dest,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                rotation,
+                alpha,
+                ripple: None,
+            },
         );
 
         if has_prev {
@@ -328,19 +393,21 @@ impl ImageViewerApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_curtain_hdr_new_image(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        final_dest: Rect,
-        rotation: i32,
-        hdr_image: Arc<HdrImageBuffer>,
-        tone_map: HdrToneMapSettings,
-        target_format: wgpu::TextureFormat,
-        hdr_output_mode: HdrRenderOutputMode,
-        alpha: f32,
+        draw: CurtainHdrTransitionDraw,
     ) {
+        let CurtainHdrTransitionDraw {
+            screen_rect,
+            final_dest,
+            rotation,
+            hdr_image,
+            tone_map,
+            target_format,
+            hdr_output_mode,
+            alpha,
+        } = draw;
         if self.prev_texture.is_some() || self.prev_hdr_image.is_some() {
             let p_size = self
                 .prev_hdr_image
@@ -371,15 +438,17 @@ impl ImageViewerApp {
             );
             self.draw_hdr_image_plane_clipped(
                 ui,
-                new_clip,
-                final_dest,
-                hdr_image,
-                tone_map,
-                target_format,
-                hdr_output_mode,
-                curtain_hdr_transition_rotation(rotation),
-                alpha,
-                None,
+                HdrImagePlaneClippedDraw {
+                    clip: new_clip,
+                    rect: final_dest,
+                    hdr_image,
+                    tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation: curtain_hdr_transition_rotation(rotation),
+                    alpha,
+                    ripple: None,
+                },
             );
 
             let left_clip = Rect::from_min_max(
@@ -394,27 +463,31 @@ impl ImageViewerApp {
             if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
                 self.draw_hdr_image_plane_clipped(
                     ui,
-                    left_clip,
-                    p_dest.translate(Vec2::new(-shift, 0.0)),
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    curtain_hdr_transition_rotation(rotation),
-                    alpha,
-                    None,
+                    HdrImagePlaneClippedDraw {
+                        clip: left_clip,
+                        rect: p_dest.translate(Vec2::new(-shift, 0.0)),
+                        hdr_image: Arc::clone(prev_hdr),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format,
+                        hdr_output_mode,
+                        rotation: curtain_hdr_transition_rotation(rotation),
+                        alpha,
+                        ripple: None,
+                    },
                 );
                 self.draw_hdr_image_plane_clipped(
                     ui,
-                    right_clip,
-                    p_dest.translate(Vec2::new(shift, 0.0)),
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    curtain_hdr_transition_rotation(rotation),
-                    alpha,
-                    None,
+                    HdrImagePlaneClippedDraw {
+                        clip: right_clip,
+                        rect: p_dest.translate(Vec2::new(shift, 0.0)),
+                        hdr_image: Arc::clone(prev_hdr),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format,
+                        hdr_output_mode,
+                        rotation: curtain_hdr_transition_rotation(rotation),
+                        alpha,
+                        ripple: None,
+                    },
                 );
             } else if let Some(prev) = self.prev_texture.as_ref() {
                 ui.painter().with_clip_rect(left_clip).image(

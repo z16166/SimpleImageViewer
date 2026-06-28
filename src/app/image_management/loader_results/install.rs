@@ -167,15 +167,17 @@ impl ImageViewerApp {
                 ultra_hdr_capacity_sensitive,
             } => {
                 self.install_tiled_image(
-                    idx,
-                    load_result.decode_profile.clone(),
-                    source,
-                    hdr_source,
-                    sdr_preview,
-                    hdr_preview,
-                    hdr_sdr_fallback,
-                    ultra_hdr_capacity_sensitive,
-                    ctx,
+                    crate::app::image_management::image_install::TiledImageInstall {
+                        idx,
+                        decode_profile: load_result.decode_profile.clone(),
+                        source,
+                        hdr_source,
+                        sdr_preview,
+                        hdr_preview,
+                        hdr_sdr_fallback,
+                        ultra_hdr_capacity_sensitive,
+                        ctx,
+                    },
                 );
             }
             ImageInstallPlan::Animated { frames } => {

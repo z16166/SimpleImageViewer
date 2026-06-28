@@ -36,6 +36,18 @@ pub(super) struct StaticHdrInstall<'a> {
     pub(super) ctx: &'a egui::Context,
 }
 
+pub(super) struct TiledImageInstall<'a> {
+    pub(super) idx: usize,
+    pub(super) decode_profile: crate::loader::DecodeProfile,
+    pub(super) source: Arc<dyn crate::loader::TiledImageSource>,
+    pub(super) hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+    pub(super) sdr_preview: Option<&'a DecodedImage>,
+    pub(super) hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(super) hdr_sdr_fallback: bool,
+    pub(super) ultra_hdr_capacity_sensitive: bool,
+    pub(super) ctx: &'a egui::Context,
+}
+
 impl ImageViewerApp {
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
         index == self.current_index
@@ -484,19 +496,18 @@ impl ImageViewerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn install_tiled_image(
-        &mut self,
-        idx: usize,
-        decode_profile: crate::loader::DecodeProfile,
-        source: Arc<dyn crate::loader::TiledImageSource>,
-        hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
-        sdr_preview: Option<&DecodedImage>,
-        hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
-        hdr_sdr_fallback: bool,
-        ultra_hdr_capacity_sensitive: bool,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn install_tiled_image(&mut self, install: TiledImageInstall<'_>) {
+        let TiledImageInstall {
+            idx,
+            decode_profile,
+            source,
+            hdr_source,
+            sdr_preview,
+            hdr_preview,
+            hdr_sdr_fallback,
+            ultra_hdr_capacity_sensitive,
+            ctx,
+        } = install;
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Tiled);
         self.remove_hdr_image_resources(idx);
         if let Some(hdr_source) = hdr_source.as_ref() {

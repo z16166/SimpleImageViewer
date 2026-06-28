@@ -368,13 +368,15 @@ impl ImageViewerApp {
             TransitionStyle::PageFlip => {
                 self.draw_page_flip_transition(
                     ui,
-                    screen_rect,
-                    texture,
-                    final_dest,
-                    unrotated_final_dest,
-                    rotation,
-                    angle,
-                    alpha,
+                    crate::app::rendering::standard::PageFlipTransitionDraw {
+                        screen_rect,
+                        texture,
+                        final_dest,
+                        unrotated_final_dest,
+                        rotation,
+                        angle,
+                        alpha,
+                    },
                 );
             }
             TransitionStyle::Ripple => {

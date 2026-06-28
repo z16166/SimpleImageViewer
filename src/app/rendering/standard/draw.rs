@@ -307,20 +307,22 @@ impl ImageViewerApp {
                     let ppp = ui.ctx().pixels_per_point();
                     self.draw_hdr_image_plane_clipped(
                         ui,
-                        screen_rect,
-                        hdr_image_plane_rect(&final_layout),
-                        hdr_image,
-                        self.hdr_renderer.tone_map,
-                        target_format,
-                        render_plan.output_mode,
-                        rotation,
-                        tp.alpha,
-                        Some((
-                            center,
-                            current_radius,
-                            ppp,
-                            crate::hdr::renderer::RIPPLE_CLIP_INSIDE,
-                        )),
+                        crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                            clip: screen_rect,
+                            rect: hdr_image_plane_rect(&final_layout),
+                            hdr_image,
+                            tone_map: self.hdr_renderer.tone_map,
+                            target_format,
+                            hdr_output_mode: render_plan.output_mode,
+                            rotation,
+                            alpha: tp.alpha,
+                            ripple: Some((
+                                center,
+                                current_radius,
+                                ppp,
+                                crate::hdr::renderer::RIPPLE_CLIP_INSIDE,
+                            )),
+                        },
                     );
 
                     // 4. Water ripple rings at the expanding edge
@@ -334,16 +336,18 @@ impl ImageViewerApp {
                 } else {
                     self.draw_rectangular_hdr_transition(
                         ui,
-                        screen_rect,
-                        hdr_image_plane_rect(&final_layout),
-                        unrotated_final_dest,
-                        rotation,
-                        angle,
-                        hdr_image,
-                        self.hdr_renderer.tone_map,
-                        target_format,
-                        render_plan.output_mode,
-                        tp.alpha,
+                        crate::app::rendering::standard::HdrRectangularTransitionDraw {
+                            screen_rect,
+                            final_dest: hdr_image_plane_rect(&final_layout),
+                            unrotated_final_dest,
+                            rotation,
+                            angle,
+                            hdr_image,
+                            tone_map: self.hdr_renderer.tone_map,
+                            target_format,
+                            hdr_output_mode: render_plan.output_mode,
+                            alpha: tp.alpha,
+                        },
                     );
                     ui.ctx().request_repaint();
                     return;
@@ -398,28 +402,32 @@ impl ImageViewerApp {
                     ui.ctx().request_repaint();
                     self.draw_hdr_image_plane_clipped(
                         ui,
-                        screen_rect,
-                        hdr_image_plane_rect(&final_layout),
-                        hdr_image,
-                        self.hdr_renderer.tone_map,
-                        target_format,
-                        render_plan.output_mode,
-                        rotation,
-                        tp.alpha,
-                        None,
+                        crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                            clip: screen_rect,
+                            rect: hdr_image_plane_rect(&final_layout),
+                            hdr_image,
+                            tone_map: self.hdr_renderer.tone_map,
+                            target_format,
+                            hdr_output_mode: render_plan.output_mode,
+                            rotation,
+                            alpha: tp.alpha,
+                            ripple: None,
+                        },
                     );
                 } else {
                     self.draw_hdr_image_plane_clipped(
                         ui,
-                        screen_rect,
-                        hdr_image_plane_rect(&final_layout),
-                        hdr_image,
-                        self.hdr_renderer.tone_map,
-                        target_format,
-                        render_plan.output_mode,
-                        rotation,
-                        tp.alpha,
-                        None,
+                        crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                            clip: screen_rect,
+                            rect: hdr_image_plane_rect(&final_layout),
+                            hdr_image,
+                            tone_map: self.hdr_renderer.tone_map,
+                            target_format,
+                            hdr_output_mode: render_plan.output_mode,
+                            rotation,
+                            alpha: tp.alpha,
+                            ripple: None,
+                        },
                     );
                 }
                 return;
@@ -446,15 +454,17 @@ impl ImageViewerApp {
             if let (Some(hdr_image), Some(target_format)) = (hdr_for_sync, hdr_target_format) {
                 self.draw_hdr_image_plane_clipped(
                     ui,
-                    screen_rect,
-                    hdr_image_plane_rect(&final_layout),
-                    hdr_image,
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    render_plan.output_mode,
-                    rotation,
-                    tp.alpha,
-                    None,
+                    crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                        clip: screen_rect,
+                        rect: hdr_image_plane_rect(&final_layout),
+                        hdr_image,
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format,
+                        hdr_output_mode: render_plan.output_mode,
+                        rotation,
+                        alpha: tp.alpha,
+                        ripple: None,
+                    },
                 );
                 self.raw_gpu_demosaic_await_hdr_present = false;
                 self.hdr_raw_gpu_demosaic_baked_indices
@@ -487,13 +497,15 @@ impl ImageViewerApp {
             match self.active_transition {
                 TransitionStyle::PageFlip => self.draw_page_flip_transition(
                     ui,
-                    screen_rect,
-                    texture,
-                    final_dest,
-                    unrotated_final_dest,
-                    rotation,
-                    angle,
-                    tp.alpha,
+                    crate::app::rendering::standard::PageFlipTransitionDraw {
+                        screen_rect,
+                        texture,
+                        final_dest,
+                        unrotated_final_dest,
+                        rotation,
+                        angle,
+                        alpha: tp.alpha,
+                    },
                 ),
                 TransitionStyle::Curtain => {
                     self.draw_curtain_transition(ui, screen_rect, texture, final_dest, tp.alpha)

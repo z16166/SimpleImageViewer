@@ -39,6 +39,16 @@ pub(crate) struct OutgoingFrameRippleParams {
     pub(crate) angle: f32,
 }
 
+pub(crate) struct PageFlipTransitionDraw<'a> {
+    pub(crate) screen_rect: Rect,
+    pub(crate) texture: &'a egui::TextureHandle,
+    pub(crate) final_dest: Rect,
+    pub(crate) unrotated_final_dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+    pub(crate) alpha: f32,
+}
+
 impl ImageViewerApp {
     pub(crate) fn transition_normalized_t(&self) -> f32 {
         let elapsed = self
@@ -89,15 +99,17 @@ impl ImageViewerApp {
             if let Some((target_format, hdr_output_mode)) = hdr_draw {
                 self.draw_hdr_image_plane_clipped(
                     ui,
-                    clip,
-                    p_dest,
-                    Arc::clone(prev_hdr),
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    hdr_output_mode,
-                    rotation,
-                    alpha,
-                    None,
+                    crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                        clip,
+                        rect: p_dest,
+                        hdr_image: Arc::clone(prev_hdr),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format,
+                        hdr_output_mode,
+                        rotation,
+                        alpha,
+                        ripple: None,
+                    },
                 );
                 return;
             }
@@ -131,20 +143,22 @@ impl ImageViewerApp {
             let ppp = ui.ctx().pixels_per_point();
             self.draw_hdr_image_plane_clipped(
                 ui,
-                screen_rect,
-                p_dest,
-                Arc::clone(prev_hdr),
-                self.hdr_renderer.tone_map,
-                target_format,
-                hdr_output_mode,
-                rotation,
-                1.0,
-                Some((
-                    center,
-                    current_radius,
-                    ppp,
-                    crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
-                )),
+                crate::app::rendering::standard::HdrImagePlaneClippedDraw {
+                    clip: screen_rect,
+                    rect: p_dest,
+                    hdr_image: Arc::clone(prev_hdr),
+                    tone_map: self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation,
+                    alpha: 1.0,
+                    ripple: Some((
+                        center,
+                        current_radius,
+                        ppp,
+                        crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
+                    )),
+                },
             );
             return;
         }
@@ -200,19 +214,20 @@ impl ImageViewerApp {
         ui.painter().add(egui::Shape::mesh(rm));
     }
 
-    /// Page-flip transition for SDR destination textures.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_page_flip_transition(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        texture: &egui::TextureHandle,
-        final_dest: Rect,
-        unrotated_final_dest: Rect,
-        rotation: i32,
-        angle: f32,
-        alpha: f32,
+        draw: PageFlipTransitionDraw<'_>,
     ) {
+        let PageFlipTransitionDraw {
+            screen_rect,
+            texture,
+            final_dest,
+            unrotated_final_dest,
+            rotation,
+            angle,
+            alpha,
+        } = draw;
         let (p_dest, union_rect, has_prev) = self.transition_prev_layout(screen_rect, final_dest);
         let ease_in_out = {
             let t = self.transition_normalized_t();
