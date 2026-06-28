@@ -49,6 +49,7 @@ impl ImageViewerApp {
                 break;
             };
             dropped_indices.push(item.index);
+            still_need -= 1;
         }
 
         let dropped = dropped_indices.len();
