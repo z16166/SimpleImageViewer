@@ -1756,6 +1756,20 @@ fn load_directory_preserves_tree_nav_selected_namespace_path() {
 }
 
 #[test]
+fn hidden_tree_nav_uses_last_image_dir_for_cold_start_open() {
+    let mut app = make_test_app();
+    let old_tree_dir = PathBuf::from(r"D:\photos");
+    let cli_image_dir = PathBuf::from(r"E:\photos");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = false;
+    app.settings.tree_nav_selected_dir = Some(old_tree_dir);
+    app.settings.last_image_dir = Some(cli_image_dir.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(cli_image_dir));
+}
+
+#[test]
 fn load_directory_clears_in_progress_refresh_scan_state() {
     let mut app = make_test_app();
     app.refresh_scan_in_progress = true;
@@ -2742,6 +2756,31 @@ fn ipc_double_click_can_keep_saved_gallery_directory() {
     assert_eq!(app.settings.last_image_dir, Some(saved));
     assert_eq!(app.initial_image, Some(image));
     assert!(!app.settings.recursive);
+}
+
+#[test]
+fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let saved = std::env::temp_dir().join("siv_saved_gallery_save_queued");
+    let opened = std::env::temp_dir().join("siv_opened_gallery_save_queued");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.last_image_dir = Some(saved.clone());
+    app.settings.keep_gallery_dir_on_double_click = true;
+    app.settings.recursive = true;
+    app.settings.auto_switch = true;
+
+    app.handle_ipc_open_image(image, &ctx, true);
+
+    let queued = save_rx.try_iter().last().expect("settings save queued");
+    assert_eq!(queued.last_image_dir, Some(saved));
+    assert!(!queued.recursive);
+    assert!(!queued.auto_switch);
 }
 
 #[test]

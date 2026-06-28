@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.0] - 2026-06-28
+
+### Added
+- **Library folder preference**: Added an option to keep your saved gallery folder unchanged when opening an image by double-click, while still browsing that image's folder for the current session.
+
+### Fixed
+- **Opening images with navigation hidden**: Double-clicking an image from another drive now opens the selected image instead of returning to the previous hidden navigation folder.
+
 ## [2.7.9] - 2026-06-27
 
 ### Added
