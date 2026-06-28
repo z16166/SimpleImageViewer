@@ -1756,6 +1756,20 @@ fn load_directory_preserves_tree_nav_selected_namespace_path() {
 }
 
 #[test]
+fn hidden_tree_nav_uses_last_image_dir_for_cold_start_open() {
+    let mut app = make_test_app();
+    let old_tree_dir = PathBuf::from(r"D:\photos");
+    let cli_image_dir = PathBuf::from(r"E:\photos");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = false;
+    app.settings.tree_nav_selected_dir = Some(old_tree_dir);
+    app.settings.last_image_dir = Some(cli_image_dir.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(cli_image_dir));
+}
+
+#[test]
 fn load_directory_clears_in_progress_refresh_scan_state() {
     let mut app = make_test_app();
     app.refresh_scan_in_progress = true;

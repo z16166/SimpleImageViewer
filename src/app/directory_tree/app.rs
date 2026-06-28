@@ -252,12 +252,12 @@ impl ImageViewerApp {
 
     pub(crate) fn current_browse_directory(&self) -> Option<PathBuf> {
         match self.settings.browse_mode {
-            BrowseMode::Tree => self
+            BrowseMode::Tree if self.settings.show_directory_tree_nav => self
                 .settings
                 .tree_nav_selected_dir
                 .clone()
                 .or_else(|| self.settings.last_image_dir.clone()),
-            BrowseMode::Linear => self
+            BrowseMode::Tree | BrowseMode::Linear => self
                 .settings
                 .transient_image_dir
                 .clone()
