@@ -315,7 +315,6 @@ impl ImageViewerApp {
     /// System-theme trailing detection and DPI-driven style refresh. Must run from the ROOT
     /// `ui()` pass only (see comment in `ui()`).
     fn sync_theme_and_visuals(&mut self, ctx: &Context) {
-        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
         let mut style_changed = false;
 
         if let Some(new_palette) = self
@@ -334,7 +333,12 @@ impl ImageViewerApp {
         }
 
         if style_changed {
-            setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+            setup_visuals_with_font_size(
+                ctx,
+                &self.settings,
+                &self.cached_palette,
+                self.settings.font_size,
+            );
             self.sync_directory_tree_theme_snapshot();
             self.mark_directory_tree_repaint_pending();
             self.request_directory_tree_viewport_repaint(ctx);
@@ -343,7 +347,6 @@ impl ImageViewerApp {
 
     /// Re-apply theme palette, egui visuals/fonts, and repaint auxiliary viewports.
     pub(crate) fn refresh_global_ui_style(&mut self, ctx: &Context) {
-        let font_size = self.temp_font_size.unwrap_or(self.settings.font_size);
         if let Some(new_palette) = self
             .settings
             .theme
@@ -351,7 +354,12 @@ impl ImageViewerApp {
         {
             self.cached_palette = new_palette;
         }
-        setup_visuals_with_font_size(ctx, &self.settings, &self.cached_palette, font_size);
+        setup_visuals_with_font_size(
+            ctx,
+            &self.settings,
+            &self.cached_palette,
+            self.settings.font_size,
+        );
         self.sync_directory_tree_theme_snapshot();
         ctx.request_repaint();
         self.mark_directory_tree_repaint_pending();

@@ -26,7 +26,7 @@ mod viewing;
 
 use crate::app::{ImageViewerApp, SettingsTab};
 use eframe::Frame;
-use eframe::egui::{self, Context, Pos2};
+use eframe::egui::{self, Color32, Context, Pos2, RichText};
 use rust_i18n::t;
 
 const SETTINGS_TAB_SIDEBAR_WIDTH: f32 = 124.0;
@@ -227,12 +227,30 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.vertical(|ui| {
         for tab in SettingsTab::ALL {
             let selected = app.settings_tab == tab;
+            let label = t!(tab.label_key()).to_string();
+            let mut text = RichText::new(label);
+            let mut button =
+                egui::Button::selectable(selected, text.clone()).frame_when_inactive(true);
+            if selected {
+                let palette = &app.cached_palette;
+                let fill = settings_tab_selected_fill(palette);
+                let stroke = if palette.is_dark {
+                    egui::Stroke::new(1.0_f32, palette.accent)
+                } else {
+                    egui::Stroke::new(1.0_f32, palette.widget_border_hover)
+                };
+                text = text.strong().color(if palette.is_dark {
+                    Color32::WHITE
+                } else {
+                    palette.text_normal
+                });
+                button = egui::Button::selectable(true, text)
+                    .frame_when_inactive(true)
+                    .fill(fill)
+                    .stroke(stroke);
+            }
             if ui
-                .add_sized(
-                    [ui.available_width(), SETTINGS_TAB_ITEM_HEIGHT],
-                    egui::Button::selectable(selected, t!(tab.label_key()).to_string())
-                        .frame_when_inactive(true),
-                )
+                .add_sized([ui.available_width(), SETTINGS_TAB_ITEM_HEIGHT], button)
                 .clicked()
             {
                 app.settings_tab = tab;
@@ -240,6 +258,15 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             ui.add_space(2.0);
         }
     });
+}
+
+fn settings_tab_selected_fill(palette: &crate::theme::ThemePalette) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        palette.accent2.r(),
+        palette.accent2.g(),
+        palette.accent2.b(),
+        if palette.is_dark { 40 } else { 30 },
+    )
 }
 
 pub(super) enum SliderTrackMode {

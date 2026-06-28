@@ -1603,7 +1603,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
-        temp_font_size: None,
         cached_music_count: None,
         cached_pixels_per_point: 1.0,
         active_modal: None,

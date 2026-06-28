@@ -573,7 +573,6 @@ impl ImageViewerApp {
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
-            temp_font_size: None,
 
             cached_music_count: None,
             cached_pixels_per_point: 1.0,
