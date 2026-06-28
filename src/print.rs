@@ -128,8 +128,9 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
         let rgba_img = RgbaImage::from_raw(pw, ph, preview_rgba)
             .ok_or_else(|| rust_i18n::t!("print.err_buffer").to_string())?;
 
-        if job.mode == PrintMode::VisibleArea && job.crop_rect_pixels.is_some() {
-            let [cx, cy, cw, ch] = job.crop_rect_pixels.unwrap();
+        if let (PrintMode::VisibleArea, Some([cx, cy, cw, ch])) =
+            (job.mode, job.crop_rect_pixels)
+        {
             // Scale crop rect from original-image coordinates to preview coordinates
             let scale_x = pw as f32 / job.tile_full_width as f32;
             let scale_y = ph as f32 / job.tile_full_height as f32;
@@ -153,8 +154,7 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
         let rgba_img = RgbaImage::from_raw(hdr.width, hdr.height, pixels)
             .ok_or_else(|| rust_i18n::t!("print.err_buffer").to_string())?;
 
-        if job.mode == PrintMode::VisibleArea && job.crop_rect_pixels.is_some() {
-            let [x, y, w, h] = job.crop_rect_pixels.unwrap();
+        if let (PrintMode::VisibleArea, Some([x, y, w, h])) = (job.mode, job.crop_rect_pixels) {
             let (iw, ih) = rgba_img.dimensions();
             let x = x.min(iw.saturating_sub(1));
             let y = y.min(ih.saturating_sub(1));
@@ -169,8 +169,9 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
         // Standard (non-tiled) load
         let img = image::open(&job.original_path).map_err(|e| e.to_string())?;
 
-        let final_img = if job.mode == PrintMode::VisibleArea && job.crop_rect_pixels.is_some() {
-            let [x, y, w, h] = job.crop_rect_pixels.unwrap();
+        let final_img = if let (PrintMode::VisibleArea, Some([x, y, w, h])) =
+            (job.mode, job.crop_rect_pixels)
+        {
             // Clamp to image bounds to prevent panic
             let (iw, ih) = (img.width(), img.height());
             let x = x.min(iw.saturating_sub(1));

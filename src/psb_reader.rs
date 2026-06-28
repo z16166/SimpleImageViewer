@@ -643,8 +643,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 let row_data = self.get_row(ch_idx, src_y);
                 let row_len = row_data.len();
 
-                for out_x in 0..out_w as usize {
-                    let src_x = x_map[out_x];
+                for (out_x, &src_x) in x_map.iter().enumerate().take(out_w as usize) {
                     if src_x < row_len {
                         let val = row_data[src_x];
                         let dst_off = (row_start_idx + out_x) * 4;

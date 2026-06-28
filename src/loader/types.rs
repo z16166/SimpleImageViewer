@@ -312,7 +312,7 @@ pub enum ImageData {
     Static(DecodedImage),
     /// HDR image with its original float buffer plus an SDR fallback texture for compatibility.
     Hdr {
-        hdr: crate::hdr::types::HdrImageBuffer,
+        hdr: Box<crate::hdr::types::HdrImageBuffer>,
         fallback: DecodedImage,
     },
     /// Large HDR image that keeps its float source for future native HDR tiled rendering,
@@ -638,7 +638,7 @@ impl PreviewResult {
 }
 
 pub enum LoaderOutput {
-    Image(LoadResult),
+    Image(Box<LoadResult>),
     Tile(TileResult),
     Preview(PreviewResult),
     /// Tone-mapped SDR fallback for static HDR (after native-HDR placeholder load).

@@ -26,36 +26,39 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+pub(crate) struct AudioLoopConfig {
+    pub(crate) shutdown_flag: Arc<AtomicBool>,
+    pub(crate) err_slot: AudioError,
+    pub(crate) track_slot: Arc<Mutex<Option<String>>>,
+    pub(crate) path_slot: Arc<Mutex<Option<PathBuf>>>,
+    pub(crate) meta_slot: Arc<Mutex<Option<String>>>,
+    pub(crate) tracks_flag: Arc<AtomicBool>,
+    pub(crate) cue_track_slot: Arc<Mutex<Option<usize>>>,
+    pub(crate) cue_markers_slot: Arc<Mutex<Vec<u64>>>,
+    pub(crate) pos_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) dur_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) device_slot: Arc<Mutex<Option<String>>>,
+}
+
 pub(crate) fn run_audio_loop(
     rx: crossbeam_channel::Receiver<AudioCommand>,
-    shutdown_flag: Arc<AtomicBool>,
-    err_slot: AudioError,
-    track_slot: Arc<Mutex<Option<String>>>,
-    path_slot: Arc<Mutex<Option<PathBuf>>>,
-    meta_slot: Arc<Mutex<Option<String>>>,
-    tracks_flag: Arc<AtomicBool>,
-    cue_track_slot: Arc<Mutex<Option<usize>>>,
-    _needs_restart: Arc<AtomicBool>,
-    cue_markers_slot: Arc<Mutex<Vec<u64>>>,
-    pos_ms: Arc<std::sync::atomic::AtomicU64>,
-    dur_ms: Arc<std::sync::atomic::AtomicU64>,
-    device_slot: Arc<Mutex<Option<String>>>,
+    config: AudioLoopConfig,
 ) {
     let _wasapi_guard = WasapiMonitorGuard::new();
 
     let slots = AudioSlots {
-        err_slot,
-        track_slot,
-        path_slot,
-        meta_slot,
-        tracks_flag,
-        cue_track_slot,
-        cue_markers_slot,
-        pos_ms,
-        dur_ms,
-        device_slot,
+        err_slot: config.err_slot,
+        track_slot: config.track_slot,
+        path_slot: config.path_slot,
+        meta_slot: config.meta_slot,
+        tracks_flag: config.tracks_flag,
+        cue_track_slot: config.cue_track_slot,
+        cue_markers_slot: config.cue_markers_slot,
+        pos_ms: config.pos_ms,
+        dur_ms: config.dur_ms,
+        device_slot: config.device_slot,
     };
-    let mut st = AudioLoopState::new(Arc::clone(&shutdown_flag));
+    let mut st = AudioLoopState::new(Arc::clone(&config.shutdown_flag));
 
     loop {
         let timeout = if !st.stopped && !st.paused {
@@ -120,7 +123,7 @@ pub(crate) fn run_audio_loop(
 
         // CUE track highlight update
         if !st.stopped && !st.paused {
-            if shutdown_flag.load(Ordering::Relaxed) {
+            if config.shutdown_flag.load(Ordering::Relaxed) {
                 return;
             }
             if st.backend_player.as_ref().is_some_and(|p| !p.empty()) {

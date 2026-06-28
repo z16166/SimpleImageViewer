@@ -102,6 +102,9 @@ pub(crate) fn make_hdr_image_data_for_limit(
             }
         }
     } else {
-        ImageData::Hdr { hdr, fallback }
+        ImageData::Hdr {
+            hdr: Box::new(hdr),
+            fallback,
+        }
     }
 }

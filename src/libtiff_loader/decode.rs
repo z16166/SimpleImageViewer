@@ -75,8 +75,8 @@ pub(crate) fn process_scanline_contig(
         let src_sample_offset = x * spp as usize;
 
         let mut samples = [0u32; 4];
-        for s in 0..(spp as usize).min(4) {
-            samples[s] = get_sample_value(
+        for (s, sample) in samples.iter_mut().enumerate().take((spp as usize).min(4)) {
+            *sample = get_sample_value(
                 buf,
                 src_sample_offset + s,
                 bps,
@@ -537,7 +537,10 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
             tone_map,
         )?,
     );
-    Ok(Some(ImageData::Hdr { hdr, fallback }))
+    Ok(Some(ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    }))
 }
 
 #[inline]
@@ -610,7 +613,7 @@ fn resolve_miniswhite_float_white_reference(
     width: u32,
     height: u32,
     bps: u16,
-    buf: &mut Vec<u8>,
+    buf: &mut [u8],
 ) -> Result<f32, String> {
     if let Some(mx) = unsafe { tiff_tag_smax_sample_value_f64(tif) }
         && mx > 0.0

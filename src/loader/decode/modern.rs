@@ -22,7 +22,7 @@ use crate::loader::{
     apply_exif_orientation_to_image_data, hdr_gain_map_decode_capacity,
     hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::assemble::make_hdr_image_data;
 
@@ -56,7 +56,7 @@ pub(crate) fn is_hdr_capable_modern_format_path(path: &Path) -> bool {
 }
 
 pub(crate) fn load_avif_with_target_capacity(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -96,7 +96,7 @@ pub(crate) fn load_avif_with_target_capacity(
                     path.display()
                 );
                 return Ok(apply_exif_orientation_to_image_data(
-                    path.as_path(),
+                    path,
                     ImageData::HdrAnimated(frames),
                 ));
             }
@@ -124,7 +124,7 @@ pub(crate) fn load_avif_with_target_capacity(
                     )?,
                 );
                 let (hdr, fallback) =
-                    apply_exif_orientation_to_hdr_pair(path.as_path(), hdr, fallback);
+                    apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))
             }
             Err(err) => {
@@ -164,7 +164,7 @@ pub(crate) fn load_avif_with_target_capacity(
 }
 
 pub(crate) fn load_jxl_with_target_capacity(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -177,7 +177,7 @@ pub(crate) fn load_jxl_with_target_capacity(
             hdr_target_capacity,
             hdr_tone_map,
         )?;
-        Ok(apply_exif_orientation_to_image_data(path.as_path(), data))
+        Ok(apply_exif_orientation_to_image_data(path, data))
     }
 
     #[cfg(not(feature = "jpegxl"))]
@@ -188,14 +188,14 @@ pub(crate) fn load_jxl_with_target_capacity(
 }
 
 pub(crate) fn load_heif_hdr_aware(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
         match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map) {
-            Ok(image) => Ok(apply_exif_orientation_to_image_data(path.as_path(), image)),
+            Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
             Err(err) => {
                 log::warn!(
                     "[Loader] libheif decode failed for {}: {err}",

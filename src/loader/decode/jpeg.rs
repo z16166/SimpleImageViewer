@@ -19,14 +19,17 @@
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{DecodedImage, ImageData};
 use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::assemble::{make_hdr_image_data, make_image_data};
 use crate::loader::tiled_sources::MemoryImageSource;
 
+type JpegStripWithLogicalSize = (DecodedImage, (u32, u32));
+type OptionalJpegStripResult = Option<Result<JpegStripWithLogicalSize, String>>;
+
 #[cfg(test)]
-pub(crate) fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
+pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
     load_jpeg_with_target_capacity(
         path,
         HdrToneMapSettings::default().target_hdr_capacity(),
@@ -35,7 +38,7 @@ pub(crate) fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 pub(crate) fn load_jpeg_with_target_capacity(
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -44,7 +47,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
 }
 
 pub(crate) fn load_jpeg_from_mapped(
-    path: &PathBuf,
+    path: &Path,
     mmap: &memmap2::Mmap,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
@@ -93,7 +96,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 }
                 if let Ok(hdr_source) =
                     crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
-                        path.clone(),
+                        path.to_path_buf(),
                         orientation,
                         decode_capacity,
                     )
@@ -157,7 +160,7 @@ pub(crate) fn load_jpeg_from_mapped(
 pub(crate) fn try_decode_jpeg_strip_dct(
     jpeg_data: &[u8],
     max_side: u32,
-) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+) -> OptionalJpegStripResult {
     // Ultra HDR / JPEG_R images must go through the full HDR-aware decode path.
     if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(jpeg_data)
         .ok()

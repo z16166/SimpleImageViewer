@@ -41,14 +41,14 @@ use crate::loader::{
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
 use crate::loader::orchestrator::{RawOpenPhaseTimings, RawOpenPrefetch};
 
 pub(crate) fn open_raw_processor_with_preview(
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<(RawProcessor, Option<DecodedImage>, RawOpenPhaseTimings, i32), String> {
     let open_started = std::time::Instant::now();
     let mut processor =
@@ -96,7 +96,7 @@ pub(crate) fn open_raw_processor_with_preview(
 
 fn load_raw_hq_static_hdr(
     processor: &mut RawProcessor,
-    path: &PathBuf,
+    path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: &HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
@@ -151,13 +151,13 @@ fn load_raw_with_embedded_bootstrap(
 ) -> Result<RawLoadOutput, String> {
     // High-quality RAW preview always uses the scene-linear HDR pipeline
     // to support exposure adjustments and tone mapping consistently.
-    let hdr_buffer_slot = Some(Arc::new(PLRwLock::new(None)));
+    let hdr_buffer_slot = Arc::new(PLRwLock::new(None));
 
     let bootstrap_w = preview.width;
     let bootstrap_h = preview.height;
 
     let source = Arc::new(RawImageSource::new(
-        path.clone(),
+            path.to_path_buf(),
         preview,
         width,
         height,
@@ -166,7 +166,7 @@ fn load_raw_with_embedded_bootstrap(
         true,
         hdr_target_capacity,
         hdr_tone_map,
-        hdr_buffer_slot.clone(),
+        Some(Arc::clone(&hdr_buffer_slot)),
     )?);
 
     crate::preload_debug!(
@@ -176,8 +176,7 @@ fn load_raw_with_embedded_bootstrap(
         hdr_target_capacity
     );
 
-    let hdr_slot = hdr_buffer_slot.expect("hdr slot when use_hdr");
-    let hdr_source = Arc::new(RawHdrRefiningSource::new(hdr_slot, width, height))
+    let hdr_source = Arc::new(RawHdrRefiningSource::new(hdr_buffer_slot, width, height))
         as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
     Ok(RawLoadOutput {
         image: ImageData::HdrTiled {
@@ -193,7 +192,7 @@ pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
 fn emit_raw_hq_bootstrap_preview(
     load_tx: &crate::loader::orchestrator::LoaderOutputSender,
     index: usize,
-    path: &PathBuf,
+    path: &Path,
     preview: &DecodedImage,
     decode_profile: DecodeProfile,
     raw_bootstrap_osd: Option<RawOsdInfo>,
@@ -220,7 +219,7 @@ fn emit_raw_hq_bootstrap_preview(
 
 pub(crate) fn load_raw(
     index: usize,
-    path: &PathBuf,
+    path: &Path,
     refine_tx: Sender<RefinementRequest>,
     load_tx: crate::loader::orchestrator::LoaderOutputSender,
     decode_profile: DecodeProfile,
@@ -431,8 +430,9 @@ pub(crate) fn load_raw(
                     )
                 };
 
-                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
-                    let p = preview_opt.as_ref().expect("preview");
+                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW
+                    && let Some(p) = preview_opt.as_ref()
+                {
                     osd_ctx.gpu_bootstrap_dims(p.width, p.height)
                 } else {
                     osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
@@ -506,7 +506,7 @@ pub(crate) fn load_raw(
     // HQ mode needs demosaic. Bootstrap with embedded preview when available.
     if let Some(p) = preview_opt {
         return load_raw_with_embedded_bootstrap(
-            path.clone(),
+            path.to_path_buf(),
             p,
             width,
             height,

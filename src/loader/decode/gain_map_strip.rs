@@ -21,13 +21,16 @@ use std::path::Path;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
+type StripWithLogicalSize = (DecodedImage, (u32, u32));
+type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
+
 fn finish_gain_map_strip(
     baseline: Vec<u8>,
     width: u32,
     height: u32,
     max_side: u32,
     path: &Path,
-) -> Result<(DecodedImage, (u32, u32)), String> {
+) -> Result<StripWithLogicalSize, String> {
     if width == 0 || height == 0 {
         return Err(format!(
             "gain-map strip baseline decode returned zero size for {}",
@@ -54,7 +57,7 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
     path: &Path,
     file_bytes: Option<&[u8]>,
     max_side: u32,
-) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+) -> OptionalStripResult {
     let ext = path
         .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())

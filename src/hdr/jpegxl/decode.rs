@@ -389,7 +389,10 @@ fn jxl_finish_static_frame(
         }
     };
     let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
-    Ok(ImageData::Hdr { hdr, fallback })
+    Ok(ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    })
 }
 
 /// SDR-grade JXL float buffers hold **display-referred sRGB codes** (0–1), not scene-linear.
@@ -524,7 +527,7 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
         target_hdr_capacity,
         crate::hdr::types::HdrToneMapSettings::default(),
     )? {
-        ImageData::Hdr { hdr, .. } => Ok(hdr),
+        ImageData::Hdr { hdr, .. } => Ok(*hdr),
         ImageData::HdrAnimated(_) | ImageData::Animated(_) => Err(
             "JPEG XL has multiple animation frames; use the image loader or decode_jxl_bytes_to_image_data"
                 .to_string(),
@@ -582,7 +585,7 @@ fn decode_jxl_bytes_to_image_data_impl(
     tone_map: HdrToneMapSettings,
     strip_baseline_only: bool,
 ) -> Result<ImageData, String> {
-    let probe_len = bytes.len().min(16).max(2);
+    let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
         return Err(
             "Input is not a valid JPEG XL codestream or BMFF container (wrong signature). \

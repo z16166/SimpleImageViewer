@@ -24,23 +24,25 @@ pub enum HdrRenderPath {
     SdrFallback,
 }
 
-pub fn hdr_osd_tag_from_parts(
-    is_hdr_source: bool,
-    render_path: HdrRenderPath,
-    color_space: Option<HdrColorSpace>,
-    output_mode: HdrOutputMode,
-    native_presentation_enabled: bool,
-    ultra_hdr_decode_capacity: Option<f32>,
-    monitor_label: Option<&str>,
-    exposure_ev: f32,
-) -> Option<String> {
-    if !is_hdr_source {
+pub struct HdrOsdTagParts<'a> {
+    pub is_hdr_source: bool,
+    pub render_path: HdrRenderPath,
+    pub color_space: Option<HdrColorSpace>,
+    pub output_mode: HdrOutputMode,
+    pub native_presentation_enabled: bool,
+    pub ultra_hdr_decode_capacity: Option<f32>,
+    pub monitor_label: Option<&'a str>,
+    pub exposure_ev: f32,
+}
+
+pub fn hdr_osd_tag_from_parts(input: HdrOsdTagParts<'_>) -> Option<String> {
+    if !input.is_hdr_source {
         return None;
     }
 
-    let render = hdr_render_path_label(render_path);
-    let color = color_space.map(hdr_color_space_label);
-    let output = hdr_output_label_from_parts(output_mode, native_presentation_enabled);
+    let render = hdr_render_path_label(input.render_path);
+    let color = input.color_space.map(hdr_color_space_label);
+    let output = hdr_output_label_from_parts(input.output_mode, input.native_presentation_enabled);
 
     let mut parts = match color {
         Some(color) => t!(
@@ -57,16 +59,16 @@ pub fn hdr_osd_tag_from_parts(
         )
         .to_string(),
     };
-    if let Some(capacity) = ultra_hdr_decode_capacity {
+    if let Some(capacity) = input.ultra_hdr_decode_capacity {
         let capacity = format!("{capacity:.2}");
         parts.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = capacity));
     }
-    if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
+    if let Some(label) = input.monitor_label.filter(|label| !label.is_empty()) {
         parts.push_str(" | ");
         parts.push_str(label);
     }
     parts.push_str(" · ");
-    parts.push_str(&format_hdr_osd_exposure_ev(exposure_ev));
+    parts.push_str(&format_hdr_osd_exposure_ev(input.exposure_ev));
     Some(parts)
 }
 

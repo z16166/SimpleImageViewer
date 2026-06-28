@@ -476,9 +476,8 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             )
             && render_plan.backend == PlaneBackendKind::Sdr
-            && texture.is_some()
+            && let Some(texture) = texture.as_ref()
         {
-            let texture = texture.as_ref().expect("checked above");
             match self.active_transition {
                 TransitionStyle::PageFlip => self.draw_page_flip_transition(
                     ui,

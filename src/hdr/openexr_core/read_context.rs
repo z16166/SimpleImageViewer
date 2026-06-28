@@ -24,6 +24,10 @@ use std::time::Instant;
 
 use openexr_core_sys as sys;
 
+type ScanlinePreviewChunkJob = (i32, sys::ExrChunkInfo, (u32, u32), (u32, u32));
+type ScanlinePreviewRowsByChunk =
+    std::collections::BTreeMap<i32, (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>)>;
+
 use super::channels::{
     DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming,
     OpenExrCoreDecodedChunkFetch, OpenExrCoreTileGrid, assign_channel_roles,
@@ -274,8 +278,9 @@ impl OpenExrCoreReadContext {
                     .collect::<Result<Vec<_>, String>>()?;
 
                 let tile_rect = (x, y, width, height);
-                for i in 0..fetched.len() {
-                    let fetch = &fetched[i];
+                for (i, fetch) in fetched.iter().enumerate() {
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = i;
                     let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {
@@ -422,7 +427,7 @@ impl OpenExrCoreReadContext {
         use rayon::prelude::*;
         let chunk_jobs = (0..height)
             .into_par_iter()
-            .map(|preview_y| -> Result<Option<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))>, String> {
+            .map(|preview_y| -> Result<Option<ScanlinePreviewChunkJob>, String> {
                 let source_y = budgeted_scanline_preview_source_y(
                     preview_y,
                     height,
@@ -457,13 +462,9 @@ impl OpenExrCoreReadContext {
             })
             .collect::<Result<Vec<_>, String>>()?;
 
-        let chunk_jobs: Vec<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))> =
-            chunk_jobs.into_iter().flatten().collect();
+        let chunk_jobs: Vec<ScanlinePreviewChunkJob> = chunk_jobs.into_iter().flatten().collect();
 
-        let mut rows_by_chunk = std::collections::BTreeMap::<
-            i32,
-            (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
-        >::new();
+        let mut rows_by_chunk = ScanlinePreviewRowsByChunk::new();
         for (start_y, chunk, chunk_origin, row) in chunk_jobs {
             let entry = rows_by_chunk
                 .entry(start_y)

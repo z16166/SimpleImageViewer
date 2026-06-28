@@ -109,26 +109,6 @@ jpegxl = ["dep:libjxl-sys"]
 hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 
 [lints.clippy]
-# The viewer has several performance-sensitive paths and UI plumbing functions where
-# compact call signatures or large enums would require broader architectural changes.
-enum_variant_names = "allow"
-field_reassign_with_default = "allow"
-format_in_format_args = "allow"
-if_same_then_else = "allow"
-large_enum_variant = "allow"
-manual_c_str_literals = "allow"
-manual_checked_ops = "allow"
-manual_clamp = "allow"
-needless_range_loop = "allow"
-ptr_arg = "allow"
-result_large_err = "allow"
-too_many_arguments = "allow"
-type_complexity = "allow"
-unnecessary_literal_unwrap = "allow"
-unnecessary_operation = "allow"
-unnecessary_unwrap = "allow"
-upper_case_acronyms = "allow"
-while_let_loop = "allow"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }

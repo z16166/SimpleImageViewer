@@ -237,11 +237,13 @@ impl ImageViewerApp {
                     if let Some(evicted_idx) = self.texture_cache.insert(
                         update.index,
                         handle,
-                        orig_w,
-                        orig_h,
-                        true, // is_tiled
-                        self.current_index,
-                        self.image_files.len(),
+                        crate::loader::TextureCacheInsert {
+                            orig_w,
+                            orig_h,
+                            needs_tile_manager: true,
+                            current_index: self.current_index,
+                            total_count: self.image_files.len(),
+                        },
                     ) {
                         self.handle_texture_cache_eviction(evicted_idx);
                     }
@@ -436,11 +438,13 @@ impl ImageViewerApp {
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
-            full_width,
-            full_height,
-            true,
-            self.current_index,
-            self.image_files.len(),
+            crate::loader::TextureCacheInsert {
+                orig_w: full_width,
+                orig_h: full_height,
+                needs_tile_manager: true,
+                current_index: self.current_index,
+                total_count: self.image_files.len(),
+            },
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }

@@ -1383,7 +1383,7 @@ impl ImageLoader {
                     if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
                         return;
                     }
-                    let _ = tx.send(LoaderOutput::Image(load_result));
+                    let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
                     return;
                 }
             }
@@ -1392,7 +1392,7 @@ impl ImageLoader {
         if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
             return;
         }
-        let _ = tx.send(LoaderOutput::Image(load_result));
+        let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
     }
 
     /// Regenerate an HQ SDR preview for a tiled source when bootstrap-only remains in cache.

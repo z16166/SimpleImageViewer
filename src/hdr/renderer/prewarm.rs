@@ -29,7 +29,7 @@ enum PrewarmState {
     },
     Ready {
         format: wgpu::TextureFormat,
-        resources: HdrCallbackResources,
+        resources: Box<HdrCallbackResources>,
     },
     /// Resources were injected into the live renderer; do not compile again.
     Installed {
@@ -76,7 +76,10 @@ impl HdrCallbackResourcesPrewarm {
                 let mut guard = this.state.lock();
                 match &*guard {
                     PrewarmState::Running { format: wanted } if *wanted == format => {
-                        *guard = PrewarmState::Ready { format, resources };
+                        *guard = PrewarmState::Ready {
+                            format,
+                            resources: Box::new(resources),
+                        };
                     }
                     _ => {
                         log::debug!(
@@ -120,7 +123,7 @@ impl HdrCallbackResourcesPrewarm {
             PrewarmState::Ready {
                 format: _,
                 resources,
-            } => Some(resources),
+            } => Some(*resources),
             _ => None,
         }
     }

@@ -111,11 +111,13 @@ impl ImageViewerApp {
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
-            decoded.width,
-            decoded.height,
-            false,
-            self.current_index,
-            self.image_files.len(),
+            crate::loader::TextureCacheInsert {
+                orig_w: decoded.width,
+                orig_h: decoded.height,
+                needs_tile_manager: false,
+                current_index: self.current_index,
+                total_count: self.image_files.len(),
+            },
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }

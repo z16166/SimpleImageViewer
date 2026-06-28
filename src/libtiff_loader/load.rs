@@ -220,7 +220,10 @@ pub fn load_via_libtiff(
                                 )?,
                             )
                         };
-                    return Ok(ImageData::Hdr { hdr, fallback });
+                    return Ok(ImageData::Hdr {
+                        hdr: Box::new(hdr),
+                        fallback,
+                    });
                 }
                 Err(err) => {
                     log::debug!(
@@ -273,7 +276,10 @@ pub fn load_via_libtiff(
                             &tone_map,
                         )?,
                     );
-                    return Ok(ImageData::Hdr { hdr, fallback });
+                    return Ok(ImageData::Hdr {
+                        hdr: Box::new(hdr),
+                        fallback,
+                    });
                 }
                 Err(err) => {
                     log::debug!(
@@ -340,7 +346,10 @@ pub fn load_via_libtiff(
                                 )?,
                             )
                         };
-                    return Ok(ImageData::Hdr { hdr, fallback });
+                    return Ok(ImageData::Hdr {
+                        hdr: Box::new(hdr),
+                        fallback,
+                    });
                 }
                 Err(err) => {
                     log::debug!(
@@ -402,8 +411,9 @@ pub fn load_via_libtiff(
                 }
 
                 let strip_bytes = width as usize * rps as usize * 4;
-                let max_cached = if strip_bytes > 0 {
-                    (256 * 1024 * 1024 / strip_bytes).max(16)
+                let max_cached = if let Some(strip_bytes) = std::num::NonZeroUsize::new(strip_bytes)
+                {
+                    (256 * 1024 * 1024 / strip_bytes.get()).max(16)
                 } else {
                     64
                 };

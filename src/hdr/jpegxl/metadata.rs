@@ -46,7 +46,7 @@ pub(crate) fn ensure_jxl_success(
 pub(crate) fn capture_jxl_box(
     decoder: *mut libjxl_sys::JxlDecoder,
     box_type: [u8; 4],
-    buffer: &mut Vec<u8>,
+    buffer: &mut [u8],
     buffer_pos: usize,
     jhgm_box: &mut Option<Vec<u8>>,
 ) {

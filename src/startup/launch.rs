@@ -550,6 +550,7 @@ pub fn run() -> eframe::Result {
         Box::new(move |cc| {
             Ok(Box::new(crate::app::ImageViewerApp::new(
                 cc,
+                crate::app::ImageViewerInit {
                 settings,
                 initial_image,
                 ipc_rx,
@@ -560,7 +561,8 @@ pub fn run() -> eframe::Result {
                 vulkan_wsi_hdr_gates,
                 #[cfg(target_os = "linux")]
                 requested_vulkan_hdr_metadata,
-                initial_hdr_monitor_selection.clone(),
+                initial_hdr_monitor_selection: initial_hdr_monitor_selection.clone(),
+                },
             )) as Box<dyn eframe::App>)
         }),
     );

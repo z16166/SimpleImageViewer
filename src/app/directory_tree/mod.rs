@@ -1212,8 +1212,7 @@ impl DirectoryTreeListState {
                 if images.len() > self.image_rows.len() {
                     let start = self.image_rows.len();
                     let mut paths_needing_meta = Vec::new();
-                    for index in start..images.len() {
-                        let path = &images[index];
+                    for (index, path) in images.iter().enumerate().skip(start) {
                         let mtime = modified.get(index).copied().flatten();
                         if mtime.is_none() {
                             paths_needing_meta.push(path.clone());

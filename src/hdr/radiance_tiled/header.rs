@@ -168,8 +168,8 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
             file_reader.set_position(scanline_offsets[ly as usize] as u64);
             read_scanline(&mut file_reader, &mut scanline)?;
             let row_off = ly as usize * width as usize * 4;
-            for lx in 0..width as usize {
-                let rgb = scanline[lx].to_rgb_f32();
+            for (lx, pixel) in scanline.iter().enumerate().take(width as usize) {
+                let rgb = pixel.to_rgb_f32();
                 let o = row_off + lx * 4;
                 rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
             }
@@ -184,8 +184,8 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 read_scanline(&mut file_reader, &mut scanline)?;
                 let mut x = plan.x_start;
                 let row_off = y as usize * w * 4;
-                for inner_i in 0..plan.inner_len as usize {
-                    let rgb = scanline[inner_i].to_rgb_f32();
+                for pixel in scanline.iter().take(plan.inner_len as usize) {
+                    let rgb = pixel.to_rgb_f32();
                     let o = row_off + (x as usize) * 4;
                     rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                     x += plan.x_step;
@@ -199,8 +199,8 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 read_scanline(&mut file_reader, &mut scanline)?;
                 let xu = x as usize;
                 let mut y = plan.y_start;
-                for inner_i in 0..plan.inner_len as usize {
-                    let rgb = scanline[inner_i].to_rgb_f32();
+                for pixel in scanline.iter().take(plan.inner_len as usize) {
+                    let rgb = pixel.to_rgb_f32();
                     let o = ((y as usize) * w + xu) * 4;
                     rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                     y += plan.y_step;

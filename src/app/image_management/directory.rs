@@ -21,9 +21,9 @@ const SCAN_RESULT_CHANNEL_BOUND: usize = 64;
 
 /// Sort parallel image-list rows by path in place. Returns `old_to_new` when order changed.
 pub(crate) fn sort_image_file_rows_in_place(
-    paths: &mut Vec<PathBuf>,
-    sizes: &mut Vec<u64>,
-    modified: &mut Vec<Option<i64>>,
+    paths: &mut [PathBuf],
+    sizes: &mut [u64],
+    modified: &mut [Option<i64>],
 ) -> Option<Vec<usize>> {
     let n = paths.len();
     debug_assert_eq!(n, sizes.len());
@@ -439,10 +439,7 @@ impl ImageViewerApp {
 
         // Drain all available messages this frame (non-blocking). Keep `scan_rx` in place
         // until Done/disconnect so we never lose the receiver while `scanning` is true.
-        loop {
-            let Some(rx) = self.scan_rx.as_ref() else {
-                break;
-            };
+        while let Some(rx) = self.scan_rx.as_ref() {
             let msg = match rx.try_recv() {
                 Ok(msg) => msg,
                 Err(crossbeam_channel::TryRecvError::Empty) => break,

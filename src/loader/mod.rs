@@ -50,7 +50,7 @@ pub use preview_caps::{
 };
 pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
-pub use texture_cache::TextureCache;
+pub use texture_cache::{TextureCache, TextureCacheInsert};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;

@@ -29,13 +29,18 @@ use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
+#[cfg(feature = "avif-native")]
+type StripWithLogicalSize = (DecodedImage, (u32, u32));
+#[cfg(feature = "avif-native")]
+type OptionalStripResult<T> = Option<Result<T, String>>;
+
 /// Directory-tree strip via embedded EXIF thumbnail + parse-only logical size (no HDR pixel decode).
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_exif_thumbnail(
     bytes: &[u8],
     path: &Path,
     max_side: u32,
-) -> Option<Result<(DecodedImage, (u32, u32)), String>> {
+) -> OptionalStripResult<StripWithLogicalSize> {
     let exif = crate::loader::extract_exif_thumbnail_from_bytes(bytes, path)?;
     let (logical_w, logical_h) = super::orientation::libavif_probe_logical_size_from_bytes(bytes)?;
     if !preview_aspect_matches_logical(exif.width, exif.height, logical_w, logical_h) {
@@ -62,7 +67,7 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
 pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     bytes: &[u8],
     path: &Path,
-) -> Option<Result<(Vec<u8>, u32, u32), String>> {
+) -> OptionalStripResult<(Vec<u8>, u32, u32)> {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
         Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_iso: {err}"))),
@@ -125,7 +130,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
     bytes: &[u8],
     path: &Path,
     max_side: u32,
-) -> Option<Result<(crate::loader::DecodedImage, (u32, u32)), String>> {
+) -> OptionalStripResult<StripWithLogicalSize> {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
         Err(err) => {

@@ -26,7 +26,7 @@ pub(crate) fn is_jxl_header(header: &[u8]) -> bool {
 /// once re-orientation is applied). Values match EXIF Orientation 1–8 (`jxl/codestream_header.h`).
 #[cfg(feature = "jpegxl")]
 pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
-    let probe_len = bytes.len().min(16).max(2);
+    let probe_len = bytes.len().clamp(2, 16);
     if bytes.len() < 2 || !is_jxl_header(&bytes[..probe_len]) {
         return None;
     }

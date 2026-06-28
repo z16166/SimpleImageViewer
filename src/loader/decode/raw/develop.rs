@@ -35,7 +35,7 @@ use crate::loader::{
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
@@ -51,7 +51,7 @@ pub(crate) fn develop_scene_linear_hdr_timed(
 /// Demosaic at full sensor resolution (only when no embedded preview exists).
 pub(crate) fn develop_full_resolution(
     processor: &mut RawProcessor,
-    path: &PathBuf,
+    path: &Path,
     width: u32,
     height: u32,
     area: u64,
@@ -144,7 +144,7 @@ pub(crate) fn develop_full_resolution(
     let preview = processor.develop()?.to_rgba8().into();
     // Performance mode only (`load_raw` with `!high_quality`). Never queue HQ refinement.
     let source = Arc::new(RawImageSource::new(
-        path.clone(),
+        path.to_path_buf(),
         preview,
         width,
         height,
@@ -177,7 +177,7 @@ pub(crate) fn develop_full_resolution(
 /// when an embedded thumb exists.
 pub(crate) fn develop_hq_preview(
     processor: &mut RawProcessor,
-    _path: &PathBuf,
+    _path: &Path,
     _raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,

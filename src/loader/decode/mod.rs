@@ -40,7 +40,7 @@ pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{
     DecodedImage, ImageData, LoadResult, PreviewBundle, PreviewStage, RefinementRequest,
@@ -61,7 +61,7 @@ use raw::load_raw;
 
 pub(crate) fn load_image_file(
     index: usize,
-    path: &PathBuf,
+    path: &Path,
     tx: crate::loader::orchestrator::LoaderOutputSender,
     refine_tx: Sender<RefinementRequest>,
     decode_profile: crate::loader::DecodeProfile,
@@ -385,7 +385,7 @@ pub(crate) fn load_image_file(
             Ok(ImageData::HdrTiled { hdr, fallback })
         }
         Ok(ImageData::Static(decoded)) => Ok(make_image_data(decoded)),
-        Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(hdr, fallback)),
+        Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(*hdr, fallback)),
         Ok(ImageData::Animated(frames)) => {
             if let Some(first) = frames.first() {
                 let width = first.width;

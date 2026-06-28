@@ -24,6 +24,19 @@ use core::arch::x86_64::*;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
+use std::num::NonZeroU64;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+struct DownsampleSimdParams<'a> {
+    src: &'a [u8],
+    src_w: u32,
+    src_h: u32,
+    dst: &'a mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    x0: &'a [u32],
+    x1: &'a [u32],
+}
 
 /// Box-filter (area-averaging) RGBA8 downsample.
 ///
@@ -77,14 +90,32 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_avx2(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
+                downsample_rgba8_box_avx2(DownsampleSimdParams {
+                    src,
+                    src_w,
+                    src_h,
+                    dst: &mut dst,
+                    dst_w,
+                    dst_h,
+                    x0: &x0,
+                    x1: &x1,
+                });
             }
             return dst;
         }
         if is_x86_feature_detected!("sse4.1") {
             // SAFETY: SSE4.1 detected via runtime feature check.
             unsafe {
-                downsample_rgba8_box_sse41(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
+                downsample_rgba8_box_sse41(DownsampleSimdParams {
+                    src,
+                    src_w,
+                    src_h,
+                    dst: &mut dst,
+                    dst_w,
+                    dst_h,
+                    x0: &x0,
+                    x1: &x1,
+                });
             }
             return dst;
         }
@@ -94,7 +125,16 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     {
         // SAFETY: NEON is always available on aarch64.
         unsafe {
-            downsample_rgba8_box_neon(src, src_w, src_h, &mut dst, dst_w, dst_h, &x0, &x1);
+            downsample_rgba8_box_neon(DownsampleSimdParams {
+                src,
+                src_w,
+                src_h,
+                dst: &mut dst,
+                dst_w,
+                dst_h,
+                x0: &x0,
+                x1: &x1,
+            });
         }
         // Fall through to `dst` — no early return here (unlike the x86_64
         // blocks above which use runtime feature detection and may or may not
@@ -154,7 +194,8 @@ fn downsample_rgba8_box_scalar(
             }
 
             let di = (dst_y as usize * dst_w as usize + dst_x as usize) * 4;
-            if count > 0 {
+            if let Some(count) = NonZeroU64::new(count) {
+                let count = count.get();
                 dst[di] = (sum_r / count) as u8;
                 dst[di + 1] = (sum_g / count) as u8;
                 dst[di + 2] = (sum_b / count) as u8;
@@ -168,18 +209,19 @@ fn downsample_rgba8_box_scalar(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn downsample_rgba8_box_sse41(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-    x0: &[u32],
-    x1: &[u32],
-) {
+unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
     // SAFETY: SSE4.1 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
+        let DownsampleSimdParams {
+            src,
+            src_w,
+            src_h,
+            dst,
+            dst_w,
+            dst_h,
+            x0,
+            x1,
+        } = params;
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
@@ -270,7 +312,8 @@ unsafe fn downsample_rgba8_box_sse41(
                 };
                 for i in 0..simd_w {
                     let cnt = extract(acc_cnt, i);
-                    if cnt > 0 {
+                    if let Some(cnt) = NonZeroU64::new(cnt as u64) {
+                        let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
                         *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
                         *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
@@ -302,7 +345,8 @@ unsafe fn downsample_rgba8_box_sse41(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                if count > 0 {
+                if let Some(count) = NonZeroU64::new(count) {
+                    let count = count.get();
                     *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
                     *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
                     *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
@@ -317,18 +361,19 @@ unsafe fn downsample_rgba8_box_sse41(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn downsample_rgba8_box_avx2(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-    x0: &[u32],
-    x1: &[u32],
-) {
+unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
     // SAFETY: AVX2 enabled via #[target_feature]. Caller must ensure support.
     unsafe {
+        let DownsampleSimdParams {
+            src,
+            src_w,
+            src_h,
+            dst,
+            dst_w,
+            dst_h,
+            x0,
+            x1,
+        } = params;
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
@@ -419,7 +464,8 @@ unsafe fn downsample_rgba8_box_avx2(
                 };
                 for i in 0..simd_w {
                     let cnt = extract(acc_cnt, i);
-                    if cnt > 0 {
+                    if let Some(cnt) = NonZeroU64::new(cnt as u64) {
+                        let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
                         *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
                         *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
@@ -451,7 +497,8 @@ unsafe fn downsample_rgba8_box_avx2(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                if count > 0 {
+                if let Some(count) = NonZeroU64::new(count) {
+                    let count = count.get();
                     *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
                     *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
                     *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
@@ -466,18 +513,19 @@ unsafe fn downsample_rgba8_box_avx2(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn downsample_rgba8_box_neon(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-    x0: &[u32],
-    x1: &[u32],
-) {
+unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
     // SAFETY: NEON enabled via #[target_feature]. Caller must ensure support.
     unsafe {
+        let DownsampleSimdParams {
+            src,
+            src_w,
+            src_h,
+            dst,
+            dst_w,
+            dst_h,
+            x0,
+            x1,
+        } = params;
         let src_w_u = src_w as usize;
         let dst_w_u = dst_w as usize;
         let row_stride = src_w_u * 4;
@@ -568,7 +616,8 @@ unsafe fn downsample_rgba8_box_neon(
                 };
                 for i in 0..simd_w {
                     let cnt = extract(acc_cnt, i);
-                    if cnt > 0 {
+                    if let Some(cnt) = NonZeroU64::new(cnt as u64) {
+                        let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
                         *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
                         *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
@@ -600,7 +649,8 @@ unsafe fn downsample_rgba8_box_neon(
                     }
                 }
                 let di = (dy * dst_w_u + dx) * 4;
-                if count > 0 {
+                if let Some(count) = NonZeroU64::new(count) {
+                    let count = count.get();
                     *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
                     *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
                     *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;

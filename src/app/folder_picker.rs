@@ -42,9 +42,9 @@ pub(crate) enum FolderPickerPurpose {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AsyncRfdMode {
-    PickFolder,
-    PickMusicFile,
-    PickExecutableFile,
+    Folder,
+    MusicFile,
+    ExecutableFile,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +99,7 @@ impl ImageViewerApp {
         purpose: FolderPickerPurpose,
         starting_directory: Option<PathBuf>,
     ) {
-        self.begin_async_rfd_dialog(frame, purpose, AsyncRfdMode::PickFolder, starting_directory);
+        self.begin_async_rfd_dialog(frame, purpose, AsyncRfdMode::Folder, starting_directory);
     }
 
     pub(crate) fn request_music_file_picker(&mut self, frame: &eframe::Frame) {
@@ -113,7 +113,7 @@ impl ImageViewerApp {
         self.begin_async_rfd_dialog(
             frame,
             FolderPickerPurpose::MusicFile,
-            AsyncRfdMode::PickMusicFile,
+            AsyncRfdMode::MusicFile,
             starting_directory,
         );
     }
@@ -132,7 +132,7 @@ impl ImageViewerApp {
         self.begin_async_rfd_dialog(
             frame,
             FolderPickerPurpose::ContextMenuExecutable,
-            AsyncRfdMode::PickExecutableFile,
+            AsyncRfdMode::ExecutableFile,
             starting_directory,
         );
     }
@@ -157,13 +157,13 @@ impl ImageViewerApp {
         if let Some(dir) = starting_directory {
             dialog = dialog.set_directory(dir);
         }
-        if matches!(mode, AsyncRfdMode::PickMusicFile) {
+        if matches!(mode, AsyncRfdMode::MusicFile) {
             dialog = dialog.add_filter(
                 t!("folder_picker.filter_music").to_string(),
                 crate::constants::MUSIC_SUPPORTED_EXTENSIONS,
             );
         }
-        if matches!(mode, AsyncRfdMode::PickExecutableFile) {
+        if matches!(mode, AsyncRfdMode::ExecutableFile) {
             dialog = apply_executable_file_filter(dialog);
         }
 
@@ -180,15 +180,15 @@ impl ImageViewerApp {
             .spawn("siv-folder-picker".to_string(), move || {
                 let path = pollster::block_on(async move {
                     match mode {
-                        AsyncRfdMode::PickFolder => dialog
+                        AsyncRfdMode::Folder => dialog
                             .pick_folder()
                             .await
                             .map(|handle| handle.path().to_path_buf()),
-                        AsyncRfdMode::PickMusicFile => dialog
+                        AsyncRfdMode::MusicFile => dialog
                             .pick_file()
                             .await
                             .map(|handle| handle.path().to_path_buf()),
-                        AsyncRfdMode::PickExecutableFile => dialog
+                        AsyncRfdMode::ExecutableFile => dialog
                             .pick_file()
                             .await
                             .map(|handle| handle.path().to_path_buf()),

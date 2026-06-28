@@ -377,8 +377,10 @@ impl ImageViewerApp {
         }
 
         let segments = crate::app::rendering::transitions::RIPPLE_SEGMENTS;
-        let mut mesh = egui::Mesh::default();
-        mesh.texture_id = texture.id();
+        let mut mesh = egui::Mesh {
+            texture_id: texture.id(),
+            ..Default::default()
+        };
 
         let center_uv = Pos2::new(
             (center.x - final_dest.min.x) / final_dest.width(),

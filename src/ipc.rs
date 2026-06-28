@@ -324,9 +324,13 @@ fn cleanup_stale_socket() {
 /// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
 #[cfg(windows)]
 fn current_process_main_window_with_options(visible_only: bool) -> Option<isize> {
+    #[allow(clippy::upper_case_acronyms)]
     type HWND = isize;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
     type LPARAM = isize;
 
     const GA_ROOT: u32 = 2;
@@ -334,6 +338,7 @@ fn current_process_main_window_with_options(visible_only: bool) -> Option<isize>
 
     #[repr(C)]
     #[derive(Default)]
+    #[allow(clippy::upper_case_acronyms)]
     struct RECT {
         left: i32,
         top: i32,
@@ -424,7 +429,9 @@ fn current_process_visible_main_window() -> Option<isize> {
 /// Undo [`hide_main_window`] before egui applies `ViewportCommand::Visible(true)`.
 #[cfg(windows)]
 pub fn unhide_main_window() {
+    #[allow(clippy::upper_case_acronyms)]
     type HWND = isize;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     const SW_RESTORE: i32 = 9;
     const SW_SHOW: i32 = 5;
@@ -453,7 +460,9 @@ pub fn unhide_main_window() {}
 
 #[cfg(windows)]
 pub fn hide_main_window() {
+    #[allow(clippy::upper_case_acronyms)]
     type HWND = isize;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     const SW_HIDE: i32 = 0;
 
@@ -490,9 +499,13 @@ pub fn force_foreground_if_visible() {}
 
 #[cfg(windows)]
 fn force_foreground_hwnd(hwnd: isize) {
+    #[allow(clippy::upper_case_acronyms)]
     type HWND = isize;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
     type UINT = u32;
     const SW_RESTORE: i32 = 9;
     const SW_SHOW: i32 = 5;

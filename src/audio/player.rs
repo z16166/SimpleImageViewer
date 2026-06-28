@@ -13,7 +13,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::run_loop::run_audio_loop;
+use super::run_loop::{AudioLoopConfig, run_audio_loop};
 
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
@@ -190,18 +190,19 @@ impl AudioPlayer {
                 .spawn(move || {
                     run_audio_loop(
                         rx,
-                        shutdown_flag,
-                        err_slot,
-                        track_slot,
-                        path_slot,
-                        meta_slot,
-                        tracks_flag,
-                        cue_track_slot,
-                        needs_restart,
-                        cue_markers_slot,
-                        pos_ms,
-                        dur_ms,
-                        dev_slot,
+                        AudioLoopConfig {
+                            shutdown_flag,
+                            err_slot,
+                            track_slot,
+                            path_slot,
+                            meta_slot,
+                            tracks_flag,
+                            cue_track_slot,
+                            cue_markers_slot,
+                            pos_ms,
+                            dur_ms,
+                            device_slot: dev_slot,
+                        },
                     )
                 });
             match res {

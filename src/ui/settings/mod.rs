@@ -92,11 +92,13 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
                 app,
                 ui,
                 ctx,
-                &mut open_dir,
-                &mut fullscreen_changed,
-                &mut open_music_file,
-                &mut open_music_dir,
-                &mut music_enabled_changed,
+                &mut SettingsDialogActions {
+                    open_dir: &mut open_dir,
+                    fullscreen_changed: &mut fullscreen_changed,
+                    open_music_file: &mut open_music_file,
+                    open_music_dir: &mut open_music_dir,
+                    music_enabled_changed: &mut music_enabled_changed,
+                },
             );
         });
 
@@ -130,15 +132,19 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     }
 }
 
+struct SettingsDialogActions<'a> {
+    open_dir: &'a mut bool,
+    fullscreen_changed: &'a mut bool,
+    open_music_file: &'a mut bool,
+    open_music_dir: &'a mut bool,
+    music_enabled_changed: &'a mut bool,
+}
+
 fn draw_settings_body(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
     ctx: &Context,
-    open_dir: &mut bool,
-    fullscreen_changed: &mut bool,
-    open_music_file: &mut bool,
-    open_music_dir: &mut bool,
-    music_enabled_changed: &mut bool,
+    actions: &mut SettingsDialogActions<'_>,
 ) {
     // Use allocate_exact_size so the Resize widget records exactly (body_w × body_h) as
     // content_size — tab content's min_rect (which may be wider, e.g. Viewing two-column
@@ -198,11 +204,7 @@ fn draw_settings_body(
             app,
             &mut content_ui,
             ctx,
-            open_dir,
-            fullscreen_changed,
-            open_music_file,
-            open_music_dir,
-            music_enabled_changed,
+            actions,
         );
     } else {
         egui::ScrollArea::vertical()
@@ -213,11 +215,7 @@ fn draw_settings_body(
                     app,
                     ui,
                     ctx,
-                    open_dir,
-                    fullscreen_changed,
-                    open_music_file,
-                    open_music_dir,
-                    music_enabled_changed,
+                    actions,
                 );
             });
     }
@@ -318,22 +316,18 @@ fn draw_active_settings_tab(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
     ctx: &Context,
-    open_dir: &mut bool,
-    fullscreen_changed: &mut bool,
-    open_music_file: &mut bool,
-    open_music_dir: &mut bool,
-    music_enabled_changed: &mut bool,
+    actions: &mut SettingsDialogActions<'_>,
 ) {
     match app.settings_tab {
-        SettingsTab::Library => library::draw_library_tab(app, ui, open_dir),
-        SettingsTab::Viewing => viewing::draw_viewing_tab(app, ui, fullscreen_changed),
+        SettingsTab::Library => library::draw_library_tab(app, ui, actions.open_dir),
+        SettingsTab::Viewing => viewing::draw_viewing_tab(app, ui, actions.fullscreen_changed),
         SettingsTab::Slideshow => slideshow::draw_slideshow_tab(app, ui),
         SettingsTab::Music => music::draw_music_tab(
             app,
             ui,
-            open_music_file,
-            open_music_dir,
-            music_enabled_changed,
+            actions.open_music_file,
+            actions.open_music_dir,
+            actions.music_enabled_changed,
         ),
         SettingsTab::Appearance => appearance::draw(app, ui, ctx),
         SettingsTab::Hotkeys => hotkeys::draw_hotkeys_tab(app, ui, ctx),

@@ -46,7 +46,9 @@ impl ImageViewStatus {
             image_resolution: TrackedParam::new((0, 0), tx.clone(), OsdEvent::image_resolution),
             file_size_bytes: TrackedParam::new(0, tx.clone(), OsdEvent::file_size_bytes),
             image_mode: TrackedParam::new(ImageOsdMode::Static, tx.clone(), OsdEvent::image_mode),
-            file_name: TrackedParam::new(String::new(), tx.clone(), OsdEvent::file_name),
+            file_name: TrackedParam::new(String::new(), tx.clone(), |value| {
+                OsdEvent::file_name(value)
+            }),
             hdr_render_path: TrackedParam::new(None, tx.clone(), OsdEvent::hdr_render_path),
             hdr_color_space: TrackedParam::new(None, tx.clone(), OsdEvent::hdr_color_space),
             hdr_output_mode: TrackedParam::new(

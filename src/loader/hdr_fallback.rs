@@ -359,9 +359,7 @@ fn static_hdr_plane_preload_needs_upload(has_sdr_fallback: bool, hdr_target_capa
     };
     // Mirrors [`crate::app::rendering::plan::select_render_backend`] for static preload:
     // `has_hdr_plane` and `has_hdr_target` are true once the callback target format is active.
-    if output_mode.is_native_hdr() {
-        true
-    } else if !has_sdr_fallback {
+    if output_mode.is_native_hdr() || !has_sdr_fallback {
         true
     } else {
         output_mode == HdrRenderOutputMode::SdrToneMapped
