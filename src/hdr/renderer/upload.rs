@@ -27,22 +27,26 @@ pub(crate) fn upload_jpeg_tiled_source_textures(
     let sdr = upload_rgba8_texture(
         device,
         queue,
-        "simple-image-viewer-hdr-tile-jpeg-sdr-texture",
-        physical_width,
-        physical_height,
-        deferred.sdr_rgba.as_slice(),
-        HDR_APPLE_GAIN_TEXTURE_FORMAT,
-        max_texture_dimension_2d,
+        Rgba8TextureUpload {
+            label: "simple-image-viewer-hdr-tile-jpeg-sdr-texture",
+            width: physical_width,
+            height: physical_height,
+            rgba: deferred.sdr_rgba.as_slice(),
+            format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+            max_texture_dimension_2d,
+        },
     )?;
     let gain = upload_rgba8_texture(
         device,
         queue,
-        "simple-image-viewer-hdr-tile-jpeg-gain-texture",
-        deferred.gain_width,
-        deferred.gain_height,
-        deferred.gain_rgba.as_slice(),
-        HDR_APPLE_GAIN_TEXTURE_FORMAT,
-        max_texture_dimension_2d,
+        Rgba8TextureUpload {
+            label: "simple-image-viewer-hdr-tile-jpeg-gain-texture",
+            width: deferred.gain_width,
+            height: deferred.gain_height,
+            rgba: deferred.gain_rgba.as_slice(),
+            format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+            max_texture_dimension_2d,
+        },
     )?;
     Ok((sdr, gain))
 }
@@ -221,16 +225,28 @@ pub(crate) fn pack_rows_for_texture_copy<'a>(
     Ok((Cow::Owned(padded), bytes_per_row))
 }
 
+pub(crate) struct Rgba8TextureUpload<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: &'a [u8],
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) max_texture_dimension_2d: u32,
+}
+
 pub(crate) fn upload_rgba8_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    label: &str,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    format: wgpu::TextureFormat,
-    max_texture_dimension_2d: u32,
+    upload: Rgba8TextureUpload<'_>,
 ) -> Result<CallbackUpload, String> {
+    let Rgba8TextureUpload {
+        label,
+        width,
+        height,
+        rgba,
+        format,
+        max_texture_dimension_2d,
+    } = upload;
     let layout =
         validate_rgba8_upload_layout(width, height, rgba.len(), max_texture_dimension_2d, label)?;
     let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(rgba, width, height, 4)
@@ -387,22 +403,26 @@ pub(crate) fn upload_image_plane(
         let sdr = upload_rgba8_texture(
             device,
             queue,
-            "simple-image-viewer-hdr-image-plane-jpeg-sdr-texture",
-            image.width,
-            image.height,
-            deferred.sdr_rgba.as_slice(),
-            HDR_APPLE_GAIN_TEXTURE_FORMAT,
-            device.limits().max_texture_dimension_2d,
+            Rgba8TextureUpload {
+                label: "simple-image-viewer-hdr-image-plane-jpeg-sdr-texture",
+                width: image.width,
+                height: image.height,
+                rgba: deferred.sdr_rgba.as_slice(),
+                format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+                max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
+            },
         )?;
         let gain = upload_rgba8_texture(
             device,
             queue,
-            "simple-image-viewer-hdr-image-plane-jpeg-gain-texture",
-            deferred.gain_width,
-            deferred.gain_height,
-            deferred.gain_rgba.as_slice(),
-            HDR_APPLE_GAIN_TEXTURE_FORMAT,
-            device.limits().max_texture_dimension_2d,
+            Rgba8TextureUpload {
+                label: "simple-image-viewer-hdr-image-plane-jpeg-gain-texture",
+                width: deferred.gain_width,
+                height: deferred.gain_height,
+                rgba: deferred.gain_rgba.as_slice(),
+                format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+                max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
+            },
         )?;
         return Ok(ImagePlaneUpload {
             base,
@@ -419,12 +439,14 @@ pub(crate) fn upload_image_plane(
         let gain = upload_rgba8_texture(
             device,
             queue,
-            "simple-image-viewer-hdr-image-plane-apple-gain-texture",
-            deferred.gain_width,
-            deferred.gain_height,
-            deferred.gain_rgba.as_slice(),
-            HDR_APPLE_GAIN_TEXTURE_FORMAT,
-            device.limits().max_texture_dimension_2d,
+            Rgba8TextureUpload {
+                label: "simple-image-viewer-hdr-image-plane-apple-gain-texture",
+                width: deferred.gain_width,
+                height: deferred.gain_height,
+                rgba: deferred.gain_rgba.as_slice(),
+                format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+                max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
+            },
         )?;
         return Ok(ImagePlaneUpload {
             base,

@@ -154,15 +154,17 @@ pub(crate) fn avif_image_to_hdr_buffer(
                 color_space,
             );
             return attach_avif_gain_map_gpu_deferred(
-                image_ref.width,
-                image_ref.height,
-                sdr_rgba,
-                gain_width,
-                gain_height,
-                gain_rgba,
-                gain_metadata,
-                metadata.luminance,
-                target_hdr_capacity,
+                crate::hdr::avif_gain_map_deferred::AvifGainMapDeferredInput {
+                    width: image_ref.width,
+                    height: image_ref.height,
+                    sdr_rgba,
+                    gain_width,
+                    gain_height,
+                    gain_rgba,
+                    gain_metadata,
+                    container_luminance: metadata.luminance,
+                    target_hdr_capacity,
+                },
             );
         }
     }

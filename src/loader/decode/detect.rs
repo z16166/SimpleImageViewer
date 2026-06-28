@@ -86,16 +86,14 @@ fn load_bmff_ftyp_container(
     #[cfg(target_os = "windows")]
     if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path, true, None) {
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path,
-            image,
+            path, image,
         ));
     }
 
     #[cfg(target_os = "macos")]
     if let Ok(image) = crate::macos_image_io::load_via_image_io(path, true, None) {
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path,
-            image,
+            path, image,
         ));
     }
 
@@ -143,8 +141,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
             file_name
         );
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path,
-            image,
+            path, image,
         ));
     }
     #[cfg(target_os = "macos")]
@@ -154,8 +151,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
             file_name
         );
         return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path,
-            image,
+            path, image,
         ));
     }
 

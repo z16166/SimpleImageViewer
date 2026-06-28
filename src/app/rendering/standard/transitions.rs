@@ -22,6 +22,23 @@ use super::helpers::resolve_transition_prev_layout;
 use crate::app::ImageViewerApp;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
+pub(crate) struct OutgoingFrameClippedParams {
+    pub(crate) clip: Rect,
+    pub(crate) dest: Rect,
+    pub(crate) rotation: i32,
+    pub(crate) alpha: f32,
+    pub(crate) hdr_output: Option<(wgpu::TextureFormat, HdrRenderOutputMode)>,
+}
+
+pub(crate) struct OutgoingFrameRippleParams {
+    pub(crate) screen_rect: Rect,
+    pub(crate) dest: Rect,
+    pub(crate) center: Pos2,
+    pub(crate) current_radius: f32,
+    pub(crate) rotation: i32,
+    pub(crate) angle: f32,
+}
+
 impl ImageViewerApp {
     pub(crate) fn transition_normalized_t(&self) -> f32 {
         let elapsed = self
@@ -58,13 +75,15 @@ impl ImageViewerApp {
     pub(crate) fn draw_outgoing_transition_frame_clipped(
         &self,
         ui: &mut egui::Ui,
-        _screen_rect: Rect,
-        clip: Rect,
-        p_dest: Rect,
-        rotation: i32,
-        alpha: f32,
-        hdr_output: Option<(wgpu::TextureFormat, HdrRenderOutputMode)>,
+        params: OutgoingFrameClippedParams,
     ) {
+        let OutgoingFrameClippedParams {
+            clip,
+            dest: p_dest,
+            rotation,
+            alpha,
+            hdr_output,
+        } = params;
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
             let hdr_draw = hdr_output.or_else(|| self.effective_hdr_display_output());
             if let Some((target_format, hdr_output_mode)) = hdr_draw {
@@ -96,13 +115,16 @@ impl ImageViewerApp {
     pub(crate) fn draw_outgoing_transition_frame_ripple(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        p_dest: Rect,
-        center: Pos2,
-        current_radius: f32,
-        rotation: i32,
-        angle: f32,
+        params: OutgoingFrameRippleParams,
     ) {
+        let OutgoingFrameRippleParams {
+            screen_rect,
+            dest: p_dest,
+            center,
+            current_radius,
+            rotation,
+            angle,
+        } = params;
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref()
             && let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output()
         {
@@ -219,12 +241,13 @@ impl ImageViewerApp {
             }
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                old_clip,
-                p_dest,
-                rotation,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: old_clip,
+                    dest: p_dest,
+                    rotation,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
         }
 
@@ -317,21 +340,23 @@ impl ImageViewerApp {
             );
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                left_clip,
-                p_dest.translate(Vec2::new(-shift, 0.0)),
-                0,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: left_clip,
+                    dest: p_dest.translate(Vec2::new(-shift, 0.0)),
+                    rotation: 0,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                right_clip,
-                p_dest.translate(Vec2::new(shift, 0.0)),
-                0,
-                1.0,
-                None,
+                OutgoingFrameClippedParams {
+                    clip: right_clip,
+                    dest: p_dest.translate(Vec2::new(shift, 0.0)),
+                    rotation: 0,
+                    alpha: 1.0,
+                    hdr_output: None,
+                },
             );
             Self::draw_curtain_split_shadows(ui, union_rect, center_x, shift, ease);
         }
@@ -367,12 +392,14 @@ impl ImageViewerApp {
         if has_prev {
             self.draw_outgoing_transition_frame_ripple(
                 ui,
-                screen_rect,
-                p_dest,
-                center,
-                current_radius,
-                rotation,
-                angle,
+                OutgoingFrameRippleParams {
+                    screen_rect,
+                    dest: p_dest,
+                    center,
+                    current_radius,
+                    rotation,
+                    angle,
+                },
             );
         }
 

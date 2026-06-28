@@ -26,6 +26,15 @@ use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
+pub(crate) struct PrevImageUnderneathParams<'a> {
+    pub(crate) screen_rect: Rect,
+    pub(crate) transition: &'a crate::app::rendering::transitions::TransitionParams,
+    pub(crate) rotation: i32,
+    pub(crate) target_format: Option<wgpu::TextureFormat>,
+    pub(crate) hdr_output_mode: Option<HdrRenderOutputMode>,
+    pub(crate) override_dest: Option<Rect>,
+}
+
 impl ImageViewerApp {
     /// GPU RAW demosaic runs inside [`HdrImagePlaneCallback::prepare`]. While bootstrap
     /// preview is shown the render plan keeps the visible backend on SDR, which would
@@ -76,13 +85,16 @@ impl ImageViewerApp {
     pub(crate) fn draw_prev_image_underneath(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
-        tp: &crate::app::rendering::transitions::TransitionParams,
-        rotation: i32,
-        target_format: Option<wgpu::TextureFormat>,
-        hdr_output_mode: Option<HdrRenderOutputMode>,
-        override_dest: Option<Rect>,
+        params: PrevImageUnderneathParams<'_>,
     ) {
+        let PrevImageUnderneathParams {
+            screen_rect,
+            transition: tp,
+            rotation,
+            target_format,
+            hdr_output_mode,
+            override_dest,
+        } = params;
         let hdr_draw = match (target_format, hdr_output_mode) {
             (Some(format), Some(mode)) => Some((format, mode)),
             (None, None) => self.effective_hdr_display_output(),
@@ -260,12 +272,13 @@ impl ImageViewerApp {
             }
             self.draw_outgoing_transition_frame_clipped(
                 ui,
-                screen_rect,
-                old_clip,
-                p_dest,
-                rotation,
-                1.0,
-                Some((target_format, hdr_output_mode)),
+                crate::app::rendering::standard::OutgoingFrameClippedParams {
+                    clip: old_clip,
+                    dest: p_dest,
+                    rotation,
+                    alpha: 1.0,
+                    hdr_output: Some((target_format, hdr_output_mode)),
+                },
             );
         }
 

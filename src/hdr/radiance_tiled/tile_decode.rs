@@ -27,16 +27,27 @@ use std::sync::Arc;
 use crate::hdr::tiled::validate_tile_bounds;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
+#[derive(Clone, Copy)]
+pub(crate) struct RadianceTileWindow {
+    pub(crate) tile_x: u32,
+    pub(crate) tile_y: u32,
+    pub(crate) tile_w: u32,
+    pub(crate) tile_h: u32,
+}
+
 pub(crate) fn decode_radiance_tile_window(
     mmap: &[u8],
     raster: RadianceRasterLayout,
     params: crate::hdr::decode::RadianceHeaderParams,
     scanline_offsets: &[usize],
-    tile_x: u32,
-    tile_y: u32,
-    tile_w: u32,
-    tile_h: u32,
+    window: RadianceTileWindow,
 ) -> Result<Vec<f32>, String> {
+    let RadianceTileWindow {
+        tile_x,
+        tile_y,
+        tile_w,
+        tile_h,
+    } = window;
     validate_tile_bounds(raster.width, raster.height, tile_x, tile_y, tile_w, tile_h)?;
     validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
     let mut reader = Cursor::new(mmap);
@@ -129,17 +140,30 @@ pub(crate) fn decode_radiance_tile_window(
     Ok(rgba)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RadiancePreviewRequest<'a> {
+    pub(crate) mmap: &'a [u8],
+    pub(crate) logical_width: u32,
+    pub(crate) logical_height: u32,
+    pub(crate) raster: RadianceRasterLayout,
+    pub(crate) params: crate::hdr::decode::RadianceHeaderParams,
+    pub(crate) scanline_offsets: &'a [usize],
+    pub(crate) max_w: u32,
+    pub(crate) max_h: u32,
+}
+
 pub(crate) fn decode_radiance_sdr_preview(
-    mmap: &[u8],
-    logical_width: u32,
-    logical_height: u32,
-    raster: RadianceRasterLayout,
-    params: crate::hdr::decode::RadianceHeaderParams,
-    scanline_offsets: &[usize],
-    max_w: u32,
-    max_h: u32,
+    request: RadiancePreviewRequest<'_>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let preview = decode_radiance_hdr_preview(
+    let preview = decode_radiance_hdr_preview(request)?;
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
+    Ok((preview.width, preview.height, pixels))
+}
+
+pub(crate) fn decode_radiance_hdr_preview(
+    request: RadiancePreviewRequest<'_>,
+) -> Result<HdrImageBuffer, String> {
+    let RadiancePreviewRequest {
         mmap,
         logical_width,
         logical_height,
@@ -148,21 +172,7 @@ pub(crate) fn decode_radiance_sdr_preview(
         scanline_offsets,
         max_w,
         max_h,
-    )?;
-    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
-    Ok((preview.width, preview.height, pixels))
-}
-
-pub(crate) fn decode_radiance_hdr_preview(
-    mmap: &[u8],
-    logical_width: u32,
-    logical_height: u32,
-    raster: RadianceRasterLayout,
-    params: crate::hdr::decode::RadianceHeaderParams,
-    scanline_offsets: &[usize],
-    max_w: u32,
-    max_h: u32,
-) -> Result<HdrImageBuffer, String> {
+    } = request;
     let (preview_width, preview_height) =
         preview_dimensions(logical_width, logical_height, max_w, max_h);
     if preview_width == 0 || preview_height == 0 {

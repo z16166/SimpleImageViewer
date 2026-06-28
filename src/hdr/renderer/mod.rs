@@ -31,7 +31,9 @@ use shader_source::HDR_IMAGE_PLANE_SHADER;
 
 mod tone_map_uniform;
 use self::tone_map_uniform::{
-    ToneMapUniform, hdr_tile_tone_map_uniform, image_tone_map_uniform,
+    AppleToneMapCompose, HdrTileToneMapUniformParams, ImageToneMapUniformParams,
+    RippleToneMapParams, ToneMapCommonParams, ToneMapInputMetadata, ToneMapUniform,
+    ToneMapUniformParams, hdr_tile_tone_map_uniform, image_tone_map_uniform,
     libavif_tone_map_native_display_scale,
 };
 
@@ -56,7 +58,9 @@ pub(crate) use self::prewarm::{
 };
 
 pub(super) mod tile_cache;
-pub(super) use self::tile_cache::{HdrTileBindings, iso_deferred_tile_compose_views_reusable};
+pub(super) use self::tile_cache::{
+    HdrTileBindings, HdrTileInsert, iso_deferred_tile_compose_views_reusable,
+};
 
 pub(super) mod upload;
 #[cfg(test)]
@@ -210,32 +214,50 @@ pub fn hdr_image_plane_callback(
 ) -> egui::Shape {
     hdr_image_plane_callback_with_uv(
         rect,
+        HdrImagePlaneCallbackParams {
+            image,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps,
+            alpha,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            ripple: None,
+            keep_resident: false,
+            raw_demosaic_baked_notify: None,
+        },
+    )
+}
+
+pub struct HdrImagePlaneCallbackParams {
+    pub image: Arc<HdrImageBuffer>,
+    pub tone_map: HdrToneMapSettings,
+    pub target_format: wgpu::TextureFormat,
+    pub output_mode: HdrRenderOutputMode,
+    pub rotation_steps: u32,
+    pub alpha: f32,
+    pub uv_rect: egui::Rect,
+    pub ripple: Option<(egui::Pos2, f32, f32, u32)>,
+    pub keep_resident: bool,
+    pub raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
+}
+
+pub fn hdr_image_plane_callback_with_uv(
+    rect: egui::Rect,
+    params: HdrImagePlaneCallbackParams,
+) -> egui::Shape {
+    let HdrImagePlaneCallbackParams {
         image,
         tone_map,
         target_format,
         output_mode,
         rotation_steps,
         alpha,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        None,
-        false,
-        None,
-    )
-}
-
-pub fn hdr_image_plane_callback_with_uv(
-    rect: egui::Rect,
-    image: Arc<HdrImageBuffer>,
-    tone_map: HdrToneMapSettings,
-    target_format: wgpu::TextureFormat,
-    output_mode: HdrRenderOutputMode,
-    rotation_steps: u32,
-    alpha: f32,
-    uv_rect: egui::Rect,
-    ripple: Option<(egui::Pos2, f32, f32, u32)>,
-    keep_resident: bool,
-    raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
-) -> egui::Shape {
+        uv_rect,
+        ripple,
+        keep_resident,
+        raw_demosaic_baked_notify,
+    } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
         HdrImagePlaneCallback {
@@ -265,27 +287,42 @@ pub fn hdr_tile_plane_callback(
 ) -> egui::Shape {
     hdr_tile_plane_callback_with_uv(
         rect,
+        HdrTilePlaneCallbackParams {
+            tile,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps,
+            alpha,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        },
+    )
+}
+
+#[allow(dead_code)]
+pub struct HdrTilePlaneCallbackParams {
+    pub tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    pub tone_map: HdrToneMapSettings,
+    pub target_format: wgpu::TextureFormat,
+    pub output_mode: HdrRenderOutputMode,
+    pub rotation_steps: u32,
+    pub alpha: f32,
+    pub uv_rect: egui::Rect,
+}
+
+pub fn hdr_tile_plane_callback_with_uv(
+    rect: egui::Rect,
+    params: HdrTilePlaneCallbackParams,
+) -> egui::Shape {
+    let HdrTilePlaneCallbackParams {
         tile,
         tone_map,
         target_format,
         output_mode,
         rotation_steps,
         alpha,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-    )
-}
-
-#[allow(dead_code)]
-pub fn hdr_tile_plane_callback_with_uv(
-    rect: egui::Rect,
-    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
-    tone_map: HdrToneMapSettings,
-    target_format: wgpu::TextureFormat,
-    output_mode: HdrRenderOutputMode,
-    rotation_steps: u32,
-    alpha: f32,
-    uv_rect: egui::Rect,
-) -> egui::Shape {
+        uv_rect,
+    } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
         HdrTilePlaneCallback {

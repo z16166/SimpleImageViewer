@@ -256,8 +256,6 @@ impl ImageViewerApp {
             StripPreviewBufferTag::MainWindowTiledPreview,
             Some(logical),
             &self.image_files[index],
-            self.current_index,
-            self.image_files.len(),
         );
     }
 
@@ -315,8 +313,6 @@ impl ImageViewerApp {
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some(logical),
             &self.image_files[index],
-            self.current_index,
-            self.image_files.len(),
         ) {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(

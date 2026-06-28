@@ -28,9 +28,7 @@ type JxlStripPreviewResult = Option<Result<(Vec<u8>, u32, u32, u32, u32), String
 ///
 /// Returns `None` when the codestream has no preview or the file is not JPEG XL.
 #[cfg(feature = "jpegxl")]
-pub(crate) fn decode_jxl_strip_preview_rgba8(
-    bytes: &[u8],
-) -> JxlStripPreviewResult {
+pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewResult {
     let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
         return None;

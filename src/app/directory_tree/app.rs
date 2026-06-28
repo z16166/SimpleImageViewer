@@ -46,6 +46,21 @@ use super::{
     FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_namespace_path, view,
 };
 
+struct DirectoryTreePanelRefs<'a> {
+    view: &'a Arc<ArcSwap<view::DirectoryTreeView>>,
+    chrome: &'a Arc<Mutex<view::DirectoryTreeUiChrome>>,
+    tree: &'a Arc<Mutex<DirectoryTreeTreeState>>,
+    list: &'a Arc<Mutex<DirectoryTreeListState>>,
+    tree_snapshot: &'a Arc<ArcSwap<DirectoryTreeTreeSnapshot>>,
+    list_snapshot: &'a Arc<ArcSwap<DirectoryTreeListSnapshot>>,
+    preview_snapshot: &'a Arc<ArcSwap<DirectoryTreePreviewSnapshot>>,
+    command_tx: &'a crossbeam_channel::Sender<DirectoryTreeCommand>,
+    root_wake: Option<&'a crate::app::RootRedrawWake>,
+    theme: &'a Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
+    embedded: bool,
+    allow_image_context_menu: bool,
+}
+
 impl ImageViewerApp {
     pub(crate) fn directory_tree_nav_blocks_main_window_wheel(&self, ctx: &egui::Context) -> bool {
         if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
@@ -111,21 +126,21 @@ impl ImageViewerApp {
     }
 
     /// Paint from RCU view + frame chrome; no clone and no structural state lock during draw.
-    fn paint_directory_tree_panel(
-        ui: &mut egui::Ui,
-        view: &Arc<ArcSwap<view::DirectoryTreeView>>,
-        chrome: &Arc<Mutex<view::DirectoryTreeUiChrome>>,
-        tree: &Arc<Mutex<DirectoryTreeTreeState>>,
-        list: &Arc<Mutex<DirectoryTreeListState>>,
-        tree_snapshot: &Arc<ArcSwap<DirectoryTreeTreeSnapshot>>,
-        list_snapshot: &Arc<ArcSwap<DirectoryTreeListSnapshot>>,
-        preview_snapshot: &Arc<ArcSwap<DirectoryTreePreviewSnapshot>>,
-        command_tx: &crossbeam_channel::Sender<DirectoryTreeCommand>,
-        root_wake: Option<&crate::app::RootRedrawWake>,
-        theme: &Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
-        embedded: bool,
-        allow_image_context_menu: bool,
-    ) -> bool {
+    fn paint_directory_tree_panel(ui: &mut egui::Ui, refs: DirectoryTreePanelRefs<'_>) -> bool {
+        let DirectoryTreePanelRefs {
+            view,
+            chrome,
+            tree,
+            list,
+            tree_snapshot,
+            list_snapshot,
+            preview_snapshot,
+            command_tx,
+            root_wake,
+            theme,
+            embedded,
+            allow_image_context_menu,
+        } = refs;
         let palette = theme.lock().clone();
         if let Some(mut list_guard) = list.try_lock() {
             let cols_before = (
@@ -159,13 +174,15 @@ impl ImageViewerApp {
         chrome_guard.begin_paint_frame(&view_data, list_keyboard_active);
         draw_directory_tree_window(
             ui,
-            &view_data,
-            &mut chrome_guard,
-            command_tx,
-            root_wake,
-            &palette,
-            embedded,
-            allow_image_context_menu,
+            super::ui::DirectoryTreeDrawParams {
+                view: &view_data,
+                chrome: &mut chrome_guard,
+                command_tx,
+                root_wake,
+                palette: &palette,
+                embedded,
+                allow_image_context_menu,
+            },
         );
         let scanning = view_data.scanning();
         drop(chrome_guard);
@@ -1473,18 +1490,20 @@ impl ImageViewerApp {
                 app.active_modal.is_none() && !app.image_files.is_empty();
             let scanning = Self::paint_directory_tree_panel(
                 ui,
-                &app.directory_tree.view,
-                &app.directory_tree.chrome,
-                &app.directory_tree.tree,
-                &app.directory_tree.list,
-                &app.directory_tree.tree_snapshot,
-                &app.directory_tree.list_snapshot,
-                &app.directory_tree.preview_snapshot,
-                &app.directory_tree.command_tx,
-                app.root_redraw_wake_handle().as_ref(),
-                &app.directory_tree_theme,
-                false,
-                allow_image_context_menu,
+                DirectoryTreePanelRefs {
+                    view: &app.directory_tree.view,
+                    chrome: &app.directory_tree.chrome,
+                    tree: &app.directory_tree.tree,
+                    list: &app.directory_tree.list,
+                    tree_snapshot: &app.directory_tree.tree_snapshot,
+                    list_snapshot: &app.directory_tree.list_snapshot,
+                    preview_snapshot: &app.directory_tree.preview_snapshot,
+                    command_tx: &app.directory_tree.command_tx,
+                    root_wake: app.root_redraw_wake_handle().as_ref(),
+                    theme: &app.directory_tree_theme,
+                    embedded: false,
+                    allow_image_context_menu,
+                },
             );
             app.finish_directory_tree_image_list_context_menu(ui.ctx(), false);
             if scanning {
@@ -1527,18 +1546,20 @@ impl ImageViewerApp {
                     self.active_modal.is_none() && !self.image_files.is_empty();
                 if Self::paint_directory_tree_panel(
                     ui,
-                    &self.directory_tree.view,
-                    &self.directory_tree.chrome,
-                    &self.directory_tree.tree,
-                    &self.directory_tree.list,
-                    &self.directory_tree.tree_snapshot,
-                    &self.directory_tree.list_snapshot,
-                    &self.directory_tree.preview_snapshot,
-                    &self.directory_tree.command_tx,
-                    self.root_redraw_wake_handle().as_ref(),
-                    &self.directory_tree_theme,
-                    true,
-                    allow_image_context_menu,
+                    DirectoryTreePanelRefs {
+                        view: &self.directory_tree.view,
+                        chrome: &self.directory_tree.chrome,
+                        tree: &self.directory_tree.tree,
+                        list: &self.directory_tree.list,
+                        tree_snapshot: &self.directory_tree.tree_snapshot,
+                        list_snapshot: &self.directory_tree.list_snapshot,
+                        preview_snapshot: &self.directory_tree.preview_snapshot,
+                        command_tx: &self.directory_tree.command_tx,
+                        root_wake: self.root_redraw_wake_handle().as_ref(),
+                        theme: &self.directory_tree_theme,
+                        embedded: true,
+                        allow_image_context_menu,
+                    },
                 ) && self.directory_tree.view.load().scanning()
                 {
                     ui.ctx().request_repaint();

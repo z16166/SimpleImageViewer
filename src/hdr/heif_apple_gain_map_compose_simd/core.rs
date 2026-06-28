@@ -52,6 +52,16 @@ use core::arch::x86_64::*;
 /// Minimum row width before the SIMD kernel runs (scalar tail handles the remainder).
 pub(crate) const SIMD_PIXELS_PER_STEP: u32 = 4;
 
+#[derive(Clone, Copy)]
+pub(crate) struct ComposeRowTransform<'a> {
+    pub(crate) path: ComposeFastPath,
+    pub(crate) color_space: HdrColorSpace,
+    pub(crate) transfer: HdrTransferFunction,
+    pub(crate) metadata: &'a HdrImageMetadata,
+    pub(crate) headroom_span: f32,
+    pub(crate) weight: f32,
+}
+
 const SRGB_LINEAR_SEGMENT_END: f32 = 0.04045;
 const SRGB_DIVISOR: f32 = 12.92;
 const SRGB_OFFSET: f32 = 0.055;
@@ -266,11 +276,7 @@ fn compose_pixel_scalar(
     row_out: &mut [f32],
     x: u32,
     gain_rgb: &[f32],
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
+    transform: ComposeRowTransform<'_>,
 ) {
     let idx = x as usize * 4;
     let r_code = row_in[idx];
@@ -280,10 +286,14 @@ fn compose_pixel_scalar(
 
     let rgb_display_linear = decode_transfer_to_display_linear(
         [r_code, g_code, b_code],
-        transfer,
+        transform.transfer,
         crate::hdr::types::DEFAULT_SDR_WHITE_NITS,
     );
-    let rgb_linear_srgb = linear_primary_to_linear_srgb(rgb_display_linear, color_space, metadata);
+    let rgb_linear_srgb = linear_primary_to_linear_srgb(
+        rgb_display_linear,
+        transform.color_space,
+        transform.metadata,
+    );
 
     let gain_base = x as usize * 3;
     let gain_linear = [
@@ -292,11 +302,15 @@ fn compose_pixel_scalar(
         gain_rgb[gain_base + 2],
     ];
 
-    row_out[idx] = (rgb_linear_srgb[0] * (1.0 + headroom_span * gain_linear[0] * weight)).max(0.0);
-    row_out[idx + 1] =
-        (rgb_linear_srgb[1] * (1.0 + headroom_span * gain_linear[1] * weight)).max(0.0);
-    row_out[idx + 2] =
-        (rgb_linear_srgb[2] * (1.0 + headroom_span * gain_linear[2] * weight)).max(0.0);
+    row_out[idx] = (rgb_linear_srgb[0]
+        * (1.0 + transform.headroom_span * gain_linear[0] * transform.weight))
+        .max(0.0);
+    row_out[idx + 1] = (rgb_linear_srgb[1]
+        * (1.0 + transform.headroom_span * gain_linear[1] * transform.weight))
+        .max(0.0);
+    row_out[idx + 2] = (rgb_linear_srgb[2]
+        * (1.0 + transform.headroom_span * gain_linear[2] * transform.weight))
+        .max(0.0);
     row_out[idx + 3] = a;
 }
 
@@ -305,24 +319,10 @@ pub(crate) fn compose_row_scalar(
     row_out: &mut [f32],
     width: u32,
     gain_rgb: &[f32],
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
+    transform: ComposeRowTransform<'_>,
 ) {
     for x in 0..width {
-        compose_pixel_scalar(
-            row_in,
-            row_out,
-            x,
-            gain_rgb,
-            color_space,
-            transfer,
-            metadata,
-            headroom_span,
-            weight,
-        );
+        compose_pixel_scalar(row_in, row_out, x, gain_rgb, transform);
     }
 }
 
@@ -550,8 +550,7 @@ unsafe fn apply_display_p3_matrix4_sse41(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn compose_gain4_sse41(
+struct Sse41Gain4 {
     linear_r: __m128,
     linear_g: __m128,
     linear_b: __m128,
@@ -559,12 +558,26 @@ unsafe fn compose_gain4_sse41(
     gain_r: __m128,
     gain_g: __m128,
     gain_b: __m128,
-    headroom_span: f32,
-    weight: f32,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn compose_gain4_sse41(
+    inputs: Sse41Gain4,
+    transform: ComposeRowTransform<'_>,
 ) -> (__m128, __m128, __m128, __m128) {
+    let Sse41Gain4 {
+        linear_r,
+        linear_g,
+        linear_b,
+        alpha,
+        gain_r,
+        gain_g,
+        gain_b,
+    } = inputs;
     let one = _mm_set1_ps(1.0);
-    let span = _mm_set1_ps(headroom_span);
-    let w = _mm_set1_ps(weight);
+    let span = _mm_set1_ps(transform.headroom_span);
+    let w = _mm_set1_ps(transform.weight);
     let zero = _mm_setzero_ps();
     let scale_r = _mm_add_ps(one, _mm_mul_ps(span, _mm_mul_ps(gain_r, w)));
     let scale_g = _mm_add_ps(one, _mm_mul_ps(span, _mm_mul_ps(gain_g, w)));
@@ -608,12 +621,7 @@ pub(crate) unsafe fn compose_row_sse41(
     row_out: &mut [f32],
     width: u32,
     gain_rgb: &[f32],
-    path: ComposeFastPath,
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
+    transform: ComposeRowTransform<'_>,
 ) {
     unsafe {
         let in_ptr = row_in.as_ptr();
@@ -623,28 +631,28 @@ pub(crate) unsafe fn compose_row_sse41(
         while x + SIMD_PIXELS_PER_STEP <= width {
             let offset = x as usize * 4;
             let (r, g, b, a) = load_rgba_pixel4_sse41(in_ptr, offset);
-            let (mut lr, mut lg, mut lb) = apply_transfer4_sse41(r, g, b, path);
-            if path_applies_display_p3_matrix(path) {
+            let (mut lr, mut lg, mut lb) = apply_transfer4_sse41(r, g, b, transform.path);
+            if path_applies_display_p3_matrix(transform.path) {
                 (lr, lg, lb) = apply_display_p3_matrix4_sse41(lr, lg, lb);
             }
             let (gain_r, gain_g, gain_b) = gather_gain_rgb4_sse41(gain_ptr, x as usize);
-            let (out_r, out_g, out_b, out_a) =
-                compose_gain4_sse41(lr, lg, lb, a, gain_r, gain_g, gain_b, headroom_span, weight);
+            let (out_r, out_g, out_b, out_a) = compose_gain4_sse41(
+                Sse41Gain4 {
+                    linear_r: lr,
+                    linear_g: lg,
+                    linear_b: lb,
+                    alpha: a,
+                    gain_r,
+                    gain_g,
+                    gain_b,
+                },
+                transform,
+            );
             store_rgba_pixel4_sse41(out_ptr, offset, out_r, out_g, out_b, out_a);
             x += SIMD_PIXELS_PER_STEP;
         }
         while x < width {
-            compose_pixel_scalar(
-                row_in,
-                row_out,
-                x,
-                gain_rgb,
-                color_space,
-                transfer,
-                metadata,
-                headroom_span,
-                weight,
-            );
+            compose_pixel_scalar(row_in, row_out, x, gain_rgb, transform);
             x += 1;
         }
     }

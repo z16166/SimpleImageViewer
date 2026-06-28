@@ -123,8 +123,7 @@ pub(crate) fn load_avif_with_target_capacity(
                         &hdr_tone_map,
                     )?,
                 );
-                let (hdr, fallback) =
-                    apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+                let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))
             }
             Err(err) => {

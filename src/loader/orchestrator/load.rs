@@ -20,7 +20,7 @@ use super::types::{
 
 use crate::hdr::types::HdrOutputMode;
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::decode::load_image_file;
+use crate::loader::decode::{ImageLoadRequest, load_image_file};
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
@@ -49,6 +49,26 @@ impl Drop for CurrentImageOsThreadGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
+}
+
+struct LoadWorkerInput {
+    index: usize,
+    path: PathBuf,
+    tx: super::types::LoaderOutputSender,
+    refine_tx: Sender<RefinementRequest>,
+    loading_ref: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+    decode_profile: DecodeProfile,
+    high_quality: bool,
+    raw_demosaic_mode: crate::settings::RawDemosaicMode,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    wgpu_device: Option<wgpu::Device>,
+    wgpu_queue: Option<wgpu::Queue>,
+    wgpu_device_id_at_spawn: u64,
+    wgpu_is_opengl: bool,
+    wgpu_device_id_live: Arc<AtomicU64>,
+    hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ImageLoader {
@@ -168,25 +188,27 @@ impl ImageLoader {
                         #[cfg(target_os = "windows")]
                         let _com = crate::wic::ComGuard::new();
 
-                        Self::do_load(
-                            job.index,
-                            &job.path,
-                            job.tx.clone(),
-                            job.refine_tx.clone(),
-                            job.loading.clone(),
-                            job.decode_profile.clone(),
-                            job.high_quality,
-                            job.raw_demosaic_mode,
-                            job.hdr_target_capacity,
-                            job.hdr_tone_map,
-                            Arc::clone(&job.raw_open_prefetch),
-                            job.wgpu_device.clone(),
-                            job.wgpu_queue.clone(),
-                            job.wgpu_device_id_at_spawn,
-                            job.wgpu_is_opengl,
-                            Arc::clone(&job.wgpu_device_id_live),
-                            Arc::clone(&job.hdr_callback_upload_active_live),
-                        );
+                        Self::do_load(LoadWorkerInput {
+                            index: job.index,
+                            path: job.path.clone(),
+                            tx: job.tx.clone(),
+                            refine_tx: job.refine_tx.clone(),
+                            loading_ref: job.loading.clone(),
+                            decode_profile: job.decode_profile.clone(),
+                            high_quality: job.high_quality,
+                            raw_demosaic_mode: job.raw_demosaic_mode,
+                            hdr_target_capacity: job.hdr_target_capacity,
+                            hdr_tone_map: job.hdr_tone_map,
+                            raw_open_prefetch: Arc::clone(&job.raw_open_prefetch),
+                            wgpu_device: job.wgpu_device.clone(),
+                            wgpu_queue: job.wgpu_queue.clone(),
+                            wgpu_device_id_at_spawn: job.wgpu_device_id_at_spawn,
+                            wgpu_is_opengl: job.wgpu_is_opengl,
+                            wgpu_device_id_live: Arc::clone(&job.wgpu_device_id_live),
+                            hdr_callback_upload_active_live: Arc::clone(
+                                &job.hdr_callback_upload_active_live,
+                            ),
+                        });
                     }
                 });
         }
@@ -910,25 +932,25 @@ impl ImageLoader {
             {
                 return;
             }
-            Self::do_load(
+            Self::do_load(LoadWorkerInput {
                 index,
-                &path1,
-                tx1,
-                rtx1,
-                loading1,
-                decode_profile_spawn,
+                path: path1,
+                tx: tx1,
+                refine_tx: rtx1,
+                loading_ref: loading1,
+                decode_profile: decode_profile_spawn,
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
-                raw_open_prefetch_spawn,
-                wgpu_device_spawn,
-                wgpu_queue_spawn,
+                raw_open_prefetch: raw_open_prefetch_spawn,
+                wgpu_device: wgpu_device_spawn,
+                wgpu_queue: wgpu_queue_spawn,
                 wgpu_device_id_at_spawn,
                 wgpu_is_opengl,
-                wgpu_device_id_live_spawn,
-                hdr_callback_upload_active_live_spawn,
-            );
+                wgpu_device_id_live: wgpu_device_id_live_spawn,
+                hdr_callback_upload_active_live: hdr_callback_upload_active_live_spawn,
+            });
         };
         if load_intent == LoadIntent::Current {
             // Soft cap before fetch_add. Two current-image loads can both pass this read-only
@@ -1061,25 +1083,26 @@ impl ImageLoader {
         })
     }
 
-    fn do_load(
-        index: usize,
-        path: &PathBuf,
-        tx: super::types::LoaderOutputSender,
-        refine_tx: Sender<RefinementRequest>,
-        loading_ref: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
-        decode_profile: DecodeProfile,
-        high_quality: bool,
-        raw_demosaic_mode: crate::settings::RawDemosaicMode,
-        hdr_target_capacity: f32,
-        hdr_tone_map: HdrToneMapSettings,
-        raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
-        wgpu_device: Option<wgpu::Device>,
-        wgpu_queue: Option<wgpu::Queue>,
-        wgpu_device_id_at_spawn: u64,
-        wgpu_is_opengl: bool,
-        wgpu_device_id_live: Arc<AtomicU64>,
-        hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
-    ) {
+    fn do_load(input: LoadWorkerInput) {
+        let LoadWorkerInput {
+            index,
+            path,
+            tx,
+            refine_tx,
+            loading_ref,
+            decode_profile,
+            high_quality,
+            raw_demosaic_mode,
+            hdr_target_capacity,
+            hdr_tone_map,
+            raw_open_prefetch,
+            wgpu_device,
+            wgpu_queue,
+            wgpu_device_id_at_spawn,
+            wgpu_is_opengl,
+            wgpu_device_id_live,
+            hdr_callback_upload_active_live,
+        } = input;
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
         {
@@ -1091,18 +1114,18 @@ impl ImageLoader {
 
         let decode_profile_for_load = decode_profile.clone();
         let mut load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_image_file(
+            load_image_file(ImageLoadRequest {
                 index,
-                path,
-                tx.clone(),
-                refine_tx.clone(),
-                decode_profile_for_load,
+                path: &path,
+                tx: tx.clone(),
+                refine_tx: refine_tx.clone(),
+                decode_profile: decode_profile_for_load,
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
-                Some(raw_open_prefetch.as_ref()),
-            )
+                raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
+            })
         }))
         .unwrap_or_else(|e| {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -1120,7 +1143,7 @@ impl ImageLoader {
             LoadResult {
                 index,
                 decode_profile: decode_profile.clone(),
-                source_key: source_key_for_path(path),
+                source_key: source_key_for_path(&path),
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,

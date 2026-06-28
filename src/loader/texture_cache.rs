@@ -62,7 +62,8 @@ impl TextureCache {
         params: TextureCacheInsert,
     ) -> Option<usize> {
         self.textures.insert(index, handle);
-        self.original_res.insert(index, (params.orig_w, params.orig_h));
+        self.original_res
+            .insert(index, (params.orig_w, params.orig_h));
         self.needs_tile_manager
             .insert(index, params.needs_tile_manager);
         self.evict(params.current_index, params.total_count)

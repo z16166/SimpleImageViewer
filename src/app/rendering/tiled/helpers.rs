@@ -424,18 +424,30 @@ pub(crate) fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> boo
     effective_scale >= threshold
 }
 
+pub(crate) struct HdrTileDecodeRequest<'a> {
+    pub(crate) plane_backend: PlaneBackendKind,
+    pub(crate) coord: TileCoord,
+    pub(crate) visit_idx: usize,
+    pub(crate) tile_visits_len: usize,
+    pub(crate) is_primary_visible: bool,
+    pub(crate) hdr_source: &'a Arc<dyn HdrTiledSource>,
+}
+
 pub(crate) fn enqueue_hdr_plane_tile_decode(
     loader: &mut crate::loader::ImageLoader,
     current_index: usize,
     tm: &mut TileManager,
     budget: &mut TileRequestBudget,
-    plane_backend: PlaneBackendKind,
-    coord: TileCoord,
-    visit_idx: usize,
-    tile_visits_len: usize,
-    is_primary_visible: bool,
-    hdr_source: &Arc<dyn HdrTiledSource>,
+    request: HdrTileDecodeRequest<'_>,
 ) {
+    let HdrTileDecodeRequest {
+        plane_backend,
+        coord,
+        visit_idx,
+        tile_visits_len,
+        is_primary_visible,
+        hdr_source,
+    } = request;
     if !budget.try_mark_pending(
         &mut tm.pending_tiles,
         tile_pending_key_for_backend(coord, plane_backend),
@@ -457,27 +469,49 @@ pub(crate) fn enqueue_hdr_plane_tile_decode(
 }
 
 /// HDR tiled plane: enqueue decode on cache miss, otherwise draw cached RGBA32F.
-pub(crate) fn draw_hdr_plane_tile_visit(
-    ui: &mut egui::Ui,
-    screen_rect: Rect,
-    layout: &PlaneLayout,
-    render_plan: &RenderPlan,
-    plane_backend: PlaneBackendKind,
-    hdr_source_for_frame: Option<&Arc<dyn HdrTiledSource>>,
-    tm: &mut TileManager,
-    budget: &mut TileRequestBudget,
-    primary_visible_coords: &HashSet<TileCoord>,
-    tile_visits_len: usize,
-    visit_idx: usize,
-    coord: TileCoord,
-    tile_screen_rect: Rect,
-    rotation_steps: i32,
-    loader: &mut crate::loader::ImageLoader,
-    current_index: usize,
-    tone_map: crate::hdr::types::HdrToneMapSettings,
-    alpha: f32,
-    #[cfg_attr(not(feature = "tile-debug"), allow(unused_variables))] show_tile_debug_osd: bool,
-) {
+pub(crate) struct HdrPlaneTileVisit<'a> {
+    pub(crate) screen_rect: Rect,
+    pub(crate) layout: &'a PlaneLayout,
+    pub(crate) render_plan: &'a RenderPlan,
+    pub(crate) plane_backend: PlaneBackendKind,
+    pub(crate) hdr_source_for_frame: Option<&'a Arc<dyn HdrTiledSource>>,
+    pub(crate) tm: &'a mut TileManager,
+    pub(crate) budget: &'a mut TileRequestBudget,
+    pub(crate) primary_visible_coords: &'a HashSet<TileCoord>,
+    pub(crate) tile_visits_len: usize,
+    pub(crate) visit_idx: usize,
+    pub(crate) coord: TileCoord,
+    pub(crate) tile_screen_rect: Rect,
+    pub(crate) rotation_steps: i32,
+    pub(crate) loader: &'a mut crate::loader::ImageLoader,
+    pub(crate) current_index: usize,
+    pub(crate) tone_map: crate::hdr::types::HdrToneMapSettings,
+    pub(crate) alpha: f32,
+    pub(crate) show_tile_debug_osd: bool,
+}
+
+pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVisit<'_>) {
+    let HdrPlaneTileVisit {
+        screen_rect,
+        layout,
+        render_plan,
+        plane_backend,
+        hdr_source_for_frame,
+        tm,
+        budget,
+        primary_visible_coords,
+        tile_visits_len,
+        visit_idx,
+        coord,
+        tile_screen_rect,
+        rotation_steps,
+        loader,
+        current_index,
+        tone_map,
+        alpha,
+        #[cfg_attr(not(feature = "tile-debug"), allow(unused_variables))]
+        show_tile_debug_osd,
+    } = visit;
     let Some(hdr_source) = hdr_source_for_frame else {
         return;
     };
@@ -490,12 +524,14 @@ pub(crate) fn draw_hdr_plane_tile_visit(
             current_index,
             tm,
             budget,
-            plane_backend,
-            coord,
-            visit_idx,
-            tile_visits_len,
-            is_primary_visible,
-            hdr_source,
+            HdrTileDecodeRequest {
+                plane_backend,
+                coord,
+                visit_idx,
+                tile_visits_len,
+                is_primary_visible,
+                hdr_source,
+            },
         );
         return;
     };

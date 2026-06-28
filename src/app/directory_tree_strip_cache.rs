@@ -110,6 +110,15 @@ pub(crate) struct DirectoryTreeStripCache {
     gpu_revision: u64,
 }
 
+pub(crate) struct StripDecodedUpsert<'a> {
+    pub(crate) stage: PreviewStage,
+    pub(crate) buffer_tag: StripPreviewBufferTag,
+    pub(crate) logical_size: Option<(u32, u32)>,
+    pub(crate) path: &'a std::path::Path,
+    pub(crate) ctx: &'a egui::Context,
+    pub(crate) strip_max_side: u32,
+}
+
 impl DirectoryTreeStripCache {
     pub(crate) fn contains(&self, index: usize) -> bool {
         self.textures.contains_key(&index)
@@ -275,8 +284,6 @@ impl DirectoryTreeStripCache {
         buffer_tag: StripPreviewBufferTag,
         logical: Option<(u32, u32)>,
         path: &std::path::Path,
-        _current_index: usize,
-        _total_count: usize,
     ) -> bool {
         let size = texture.size();
         let preview_w = size[0] as u32;
@@ -309,15 +316,16 @@ impl DirectoryTreeStripCache {
         &mut self,
         index: usize,
         decoded: &DecodedImage,
-        stage: PreviewStage,
-        buffer_tag: StripPreviewBufferTag,
-        logical_size: Option<(u32, u32)>,
-        path: &std::path::Path,
-        ctx: &egui::Context,
-        _current_index: usize,
-        _total_count: usize,
-        strip_max_side: u32,
+        upsert: StripDecodedUpsert<'_>,
     ) {
+        let StripDecodedUpsert {
+            stage,
+            buffer_tag,
+            logical_size,
+            path,
+            ctx,
+            strip_max_side,
+        } = upsert;
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
         let cached_dims = self.preview_dimensions(index);
@@ -826,14 +834,14 @@ mod tests {
             cache.upsert_from_decoded(
                 index,
                 &decoded,
-                PreviewStage::Refined,
-                StripPreviewBufferTag::StripDecodedPixels,
-                None,
-                Path::new("/test/strip.jpg"),
-                &ctx,
-                0,
-                total,
-                128,
+                StripDecodedUpsert {
+                    stage: PreviewStage::Refined,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    logical_size: None,
+                    path: Path::new("/test/strip.jpg"),
+                    ctx: &ctx,
+                    strip_max_side: 128,
+                },
             );
         }
         assert_eq!(cache.textures().len(), DIRECTORY_TREE_STRIP_CACHE_MAX);
@@ -883,28 +891,28 @@ mod tests {
         cache.upsert_from_decoded(
             0,
             &good,
-            PreviewStage::Initial,
-            StripPreviewBufferTag::StripDecodedPixels,
-            Some((512, 256)),
-            Path::new("/test/strip.jpg"),
-            &ctx,
-            0,
-            1,
-            128,
+            StripDecodedUpsert {
+                stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: Some((512, 256)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
         assert!(cache.contains(0));
         let black = DecodedImage::new_sdr_deferred_placeholder(512, 256, vec![0; 512 * 256 * 4]);
         cache.upsert_from_decoded(
             0,
             &black,
-            PreviewStage::Refined,
-            StripPreviewBufferTag::SdrDeferredPlaceholder,
-            Some((512, 256)),
-            Path::new("/test/strip.jpg"),
-            &ctx,
-            0,
-            1,
-            128,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::SdrDeferredPlaceholder,
+                logical_size: Some((512, 256)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
         assert!(cache.contains(0));
         assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
@@ -1026,14 +1034,14 @@ mod tests {
         cache.upsert_from_decoded(
             0,
             &decoded,
-            PreviewStage::Refined,
-            StripPreviewBufferTag::StripDecodedPixels,
-            Some((640, 320)),
-            Path::new("/test/strip.jpg"),
-            &ctx,
-            0,
-            1,
-            128,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: Some((640, 320)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
         assert!(cache.contains(0));
         cache.clear_gpu_textures();
@@ -1059,8 +1067,6 @@ mod tests {
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
             Some((80, 80)),
             Path::new("/test/strip.jpg"),
-            0,
-            1,
         );
         assert!(cache.contains(0));
         assert_eq!(cache.gpu_revision(), 1);
@@ -1076,14 +1082,14 @@ mod tests {
             cache.upsert_from_decoded(
                 index,
                 &decoded,
-                PreviewStage::Refined,
-                StripPreviewBufferTag::StripDecodedPixels,
-                None,
-                Path::new("/test/strip.jpg"),
-                &ctx,
-                0,
-                3,
-                128,
+                StripDecodedUpsert {
+                    stage: PreviewStage::Refined,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    logical_size: None,
+                    path: Path::new("/test/strip.jpg"),
+                    ctx: &ctx,
+                    strip_max_side: 128,
+                },
             );
         }
         // Swap indices 1 and 2.
@@ -1102,14 +1108,14 @@ mod tests {
         cache.upsert_from_decoded(
             0,
             &decoded,
-            PreviewStage::Refined,
-            StripPreviewBufferTag::StripDecodedPixels,
-            None,
-            Path::new("/test/strip.jpg"),
-            &ctx,
-            0,
-            1,
-            128,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: None,
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
         cache.relocate(0, 5);
         assert!(cache.contains(5));

@@ -343,17 +343,31 @@ fn jxl_build_hdr_fallback(
 }
 
 #[cfg(feature = "jpegxl")]
-fn jxl_finish_static_frame(
+struct JxlStaticFrameFinish<'a> {
     rgba: Vec<f32>,
     metadata: HdrImageMetadata,
     width: u32,
     height: u32,
-    jhgm_box: Option<&[u8]>,
+    jhgm_box: Option<&'a [u8]>,
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
+    tone_map: &'a HdrToneMapSettings,
     strip_baseline_only: bool,
-) -> Result<ImageData, String> {
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData, String> {
+    let JxlStaticFrameFinish {
+        rgba,
+        metadata,
+        width,
+        height,
+        jhgm_box,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        strip_baseline_only,
+    } = input;
     use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
     let hdr = match finish_jxl_jhgm_frame(
@@ -813,17 +827,17 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 jxl_sanitize_straight_alpha(&mut rgba);
                 jxl_tag_display_referred_when_sdr_grade(&mut metadata);
-                return jxl_finish_static_frame(
+                return jxl_finish_static_frame(JxlStaticFrameFinish {
                     rgba,
                     metadata,
-                    info.xsize,
-                    info.ysize,
-                    jhgm_box.as_deref(),
+                    width: info.xsize,
+                    height: info.ysize,
+                    jhgm_box: jhgm_box.as_deref(),
                     decode_target_hdr_capacity,
                     display_hdr_target_capacity,
-                    &tone_map,
+                    tone_map: &tone_map,
                     strip_baseline_only,
-                );
+                });
             }
             libjxl_sys::JXL_DEC_ERROR => {
                 return Err(

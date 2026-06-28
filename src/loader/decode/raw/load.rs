@@ -22,7 +22,10 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
-use super::develop::{develop_full_resolution, develop_hq_preview, develop_scene_linear_hdr_timed};
+use super::develop::{
+    FullResolutionRawDevelopRequest, develop_full_resolution, develop_hq_preview,
+    develop_scene_linear_hdr_timed,
+};
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
 
 use crate::hdr::types::HdrToneMapSettings;
@@ -33,7 +36,7 @@ use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::RawDemosaicBackend;
 use crate::loader::raw_osd::RawOsdContext;
 
-use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
+use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource, RawImageSourceParams};
 use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult,
     RawLoadOutput, RefinementRequest, source_key_for_path,
@@ -138,7 +141,7 @@ fn load_raw_hq_static_hdr(
     }
 }
 
-fn load_raw_with_embedded_bootstrap(
+struct EmbeddedBootstrapRawLoadRequest<'a> {
     path: PathBuf,
     preview: DecodedImage,
     width: u32,
@@ -147,8 +150,23 @@ fn load_raw_with_embedded_bootstrap(
     final_lr_flip: i32,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-    osd_ctx: &RawOsdContext,
+    osd_ctx: &'a RawOsdContext,
+}
+
+fn load_raw_with_embedded_bootstrap(
+    request: EmbeddedBootstrapRawLoadRequest<'_>,
 ) -> Result<RawLoadOutput, String> {
+    let EmbeddedBootstrapRawLoadRequest {
+        path,
+        preview,
+        width,
+        height,
+        refine_tx,
+        final_lr_flip,
+        hdr_target_capacity,
+        hdr_tone_map,
+        osd_ctx,
+    } = request;
     // High-quality RAW preview always uses the scene-linear HDR pipeline
     // to support exposure adjustments and tone mapping consistently.
     let hdr_buffer_slot = Arc::new(PLRwLock::new(None));
@@ -157,16 +175,18 @@ fn load_raw_with_embedded_bootstrap(
     let bootstrap_h = preview.height;
 
     let source = Arc::new(RawImageSource::new(
-            path.to_path_buf(),
+        path,
         preview,
-        width,
-        height,
-        refine_tx,
-        final_lr_flip,
-        true,
-        hdr_target_capacity,
-        hdr_tone_map,
-        Some(Arc::clone(&hdr_buffer_slot)),
+        RawImageSourceParams {
+            raw_width: width,
+            raw_height: height,
+            refine_tx,
+            orientation_override: final_lr_flip,
+            needs_refinement: true,
+            hdr_target_capacity,
+            hdr_tone_map,
+            hdr_developed_image: Some(Arc::clone(&hdr_buffer_slot)),
+        },
     )?);
 
     crate::preload_debug!(
@@ -188,6 +208,19 @@ fn load_raw_with_embedded_bootstrap(
 }
 
 pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
+
+pub(crate) struct RawLoadRequest<'a> {
+    pub(crate) index: usize,
+    pub(crate) path: &'a Path,
+    pub(crate) refine_tx: Sender<RefinementRequest>,
+    pub(crate) load_tx: crate::loader::orchestrator::LoaderOutputSender,
+    pub(crate) decode_profile: DecodeProfile,
+    pub(crate) high_quality: bool,
+    pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) hdr_tone_map: HdrToneMapSettings,
+    pub(crate) raw_open_prefetch: Option<&'a RawOpenPrefetch>,
+}
 
 fn emit_raw_hq_bootstrap_preview(
     load_tx: &crate::loader::orchestrator::LoaderOutputSender,
@@ -217,18 +250,19 @@ fn emit_raw_hq_bootstrap_preview(
     }));
 }
 
-pub(crate) fn load_raw(
-    index: usize,
-    path: &Path,
-    refine_tx: Sender<RefinementRequest>,
-    load_tx: crate::loader::orchestrator::LoaderOutputSender,
-    decode_profile: DecodeProfile,
-    high_quality: bool,
-    raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    raw_open_prefetch: Option<&RawOpenPrefetch>,
-) -> Result<RawLoadOutput, String> {
+pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, String> {
+    let RawLoadRequest {
+        index,
+        path,
+        refine_tx,
+        load_tx,
+        decode_profile,
+        high_quality,
+        raw_demosaic_mode,
+        hdr_target_capacity,
+        hdr_tone_map,
+        raw_open_prefetch,
+    } = request;
     let (mut processor, preview_opt, open_timings, final_lr_flip, prefetched) = if let Some(
         session,
     ) =
@@ -337,17 +371,18 @@ pub(crate) fn load_raw(
         );
         return develop_full_resolution(
             &mut processor,
-            path,
-            width,
-            height,
-            area,
-            threshold,
-            refine_tx,
-            final_lr_flip,
-            raw_demosaic_mode,
-            hdr_target_capacity,
-            hdr_tone_map,
-            &osd_ctx,
+            FullResolutionRawDevelopRequest {
+                path,
+                width,
+                height,
+                area,
+                threshold,
+                refine_tx,
+                final_lr_flip,
+                hdr_target_capacity,
+                hdr_tone_map,
+                osd_ctx: &osd_ctx,
+            },
         );
     }
 
@@ -430,9 +465,7 @@ pub(crate) fn load_raw(
                     )
                 };
 
-                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW
-                    && let Some(p) = preview_opt.as_ref()
-                {
+                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(p) = preview_opt.as_ref() {
                     osd_ctx.gpu_bootstrap_dims(p.width, p.height)
                 } else {
                     osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
@@ -505,17 +538,17 @@ pub(crate) fn load_raw(
 
     // HQ mode needs demosaic. Bootstrap with embedded preview when available.
     if let Some(p) = preview_opt {
-        return load_raw_with_embedded_bootstrap(
-            path.to_path_buf(),
-            p,
+        return load_raw_with_embedded_bootstrap(EmbeddedBootstrapRawLoadRequest {
+            path: path.to_path_buf(),
+            preview: p,
             width,
             height,
             refine_tx,
             final_lr_flip,
             hdr_target_capacity,
             hdr_tone_map,
-            &osd_ctx,
-        );
+            osd_ctx: &osd_ctx,
+        });
     }
 
     crate::preload_debug!(

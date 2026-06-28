@@ -128,19 +128,21 @@ pub(crate) fn apply_apple_gain_map_composition(
     let headroom_span = linear_headroom - 1.0;
 
     compose_apple_gain_map_pixels(
-        base_pixels,
-        &mut composed_pixels,
-        hdr.width,
-        hdr.height,
-        gain_rgba,
-        gain_w,
-        gain_h,
-        color_space,
-        tf,
-        &hdr.metadata,
-        headroom_span,
-        weight,
-        false,
+        crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+            base_pixels,
+            composed_pixels: &mut composed_pixels,
+            width: hdr.width,
+            height: hdr.height,
+            gain_rgba,
+            gain_w,
+            gain_h,
+            color_space,
+            transfer: tf,
+            metadata: &hdr.metadata,
+            headroom_span,
+            weight,
+            force_scalar: false,
+        },
     );
 
     let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
@@ -435,19 +437,21 @@ mod tests {
         let weight = apple_gain_map_display_weight(4.0, headroom.stops);
         let mut out = vec![0.0_f32; pixel_count];
         compose_apple_gain_map_pixels(
-            &base_pixels,
-            &mut out,
-            W,
-            H,
-            &gain_rgba,
-            W,
-            H,
-            HdrColorSpace::LinearSrgb,
-            metadata.transfer_function,
-            &metadata,
-            headroom_span,
-            weight,
-            false,
+            crate::hdr::heif_apple_gain_map_compose_simd::AppleGainMapComposePixels {
+                base_pixels: &base_pixels,
+                composed_pixels: &mut out,
+                width: W,
+                height: H,
+                gain_rgba: &gain_rgba,
+                gain_w: W,
+                gain_h: H,
+                color_space: HdrColorSpace::LinearSrgb,
+                transfer: metadata.transfer_function,
+                metadata: &metadata,
+                headroom_span,
+                weight,
+                force_scalar: false,
+            },
         );
         assert_eq!(out[3], 0.25);
         assert_eq!(out[pixel_count - 1], 0.75);

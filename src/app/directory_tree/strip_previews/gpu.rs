@@ -336,14 +336,14 @@ impl ImageViewerApp {
         self.directory_tree_strip_cache.upsert_from_decoded(
             index,
             decoded,
-            stage,
-            buffer_tag,
-            logical_size,
-            &self.image_files[index],
-            ctx,
-            self.current_index,
-            self.image_files.len(),
-            strip_max_side,
+            crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+                stage,
+                buffer_tag,
+                logical_size,
+                path: &self.image_files[index],
+                ctx,
+                strip_max_side,
+            },
         );
     }
 }

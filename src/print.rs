@@ -128,9 +128,7 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
         let rgba_img = RgbaImage::from_raw(pw, ph, preview_rgba)
             .ok_or_else(|| rust_i18n::t!("print.err_buffer").to_string())?;
 
-        if let (PrintMode::VisibleArea, Some([cx, cy, cw, ch])) =
-            (job.mode, job.crop_rect_pixels)
-        {
+        if let (PrintMode::VisibleArea, Some([cx, cy, cw, ch])) = (job.mode, job.crop_rect_pixels) {
             // Scale crop rect from original-image coordinates to preview coordinates
             let scale_x = pw as f32 / job.tile_full_width as f32;
             let scale_y = ph as f32 / job.tile_full_height as f32;

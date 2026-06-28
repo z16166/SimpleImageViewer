@@ -16,7 +16,10 @@
 
 //! GPU compute path for deferred Apple HEIC gain-map composition.
 
-use super::{HdrImageBinding, HdrRenderOutputMode, ToneMapUniform};
+use super::{
+    AppleToneMapCompose, HdrImageBinding, HdrRenderOutputMode, ToneMapCommonParams,
+    ToneMapInputMetadata, ToneMapUniform, ToneMapUniformParams,
+};
 use crate::hdr::heif_apple_gain_map_gpu::apple_heic_compose_effective_color_space;
 use crate::hdr::types::{AppleHeicGainMapGpuSource, HdrImageBuffer, HdrToneMapSettings};
 use eframe::egui;
@@ -374,20 +377,24 @@ pub(super) fn create_compose_compute_resources(
     });
     let compose_tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),
-        contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
-            HdrToneMapSettings::default(),
-            0,
-            1.0,
-            HdrRenderOutputMode::SdrToneMapped,
-            wgpu::TextureFormat::Rgba8Unorm,
-            crate::hdr::types::HdrColorSpace::LinearSrgb,
-            crate::hdr::types::HdrTransferFunction::Linear,
-            crate::hdr::types::HdrReference::Unknown,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-            1.0,
-            None,
-            None,
-        )),
+        contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(ToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: HdrToneMapSettings::default(),
+                rotation_steps: 0,
+                alpha: 1.0,
+                output_mode: HdrRenderOutputMode::SdrToneMapped,
+                framebuffer_format: wgpu::TextureFormat::Rgba8Unorm,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                native_display_scale: 1.0,
+            },
+            input: ToneMapInputMetadata {
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                transfer_function: crate::hdr::types::HdrTransferFunction::Linear,
+                reference: crate::hdr::types::HdrReference::Unknown,
+            },
+            apple: None,
+            ripple: None,
+        })),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     (
@@ -439,43 +446,65 @@ fn compose_tone_map_uniform(
 ) -> ToneMapUniform {
     let compose_color_space =
         apple_heic_compose_effective_color_space(image.color_space, &image.metadata);
-    let mut uniform = ToneMapUniform::from_settings(
-        tone_map,
-        0,
-        1.0,
-        HdrRenderOutputMode::SdrToneMapped,
-        wgpu::TextureFormat::Rgba8Unorm,
-        compose_color_space,
-        image.metadata.transfer_function,
-        image.metadata.reference,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-        1.0,
-        Some((
+    let mut uniform = ToneMapUniform::from_settings(ToneMapUniformParams {
+        common: ToneMapCommonParams {
+            settings: tone_map,
+            rotation_steps: 0,
+            alpha: 1.0,
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            framebuffer_format: wgpu::TextureFormat::Rgba8Unorm,
+            uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale: 1.0,
+        },
+        input: ToneMapInputMetadata {
+            color_space: compose_color_space,
+            transfer_function: image.metadata.transfer_function,
+            reference: image.metadata.reference,
+        },
+        apple: Some(AppleToneMapCompose {
             deferred,
-            image.width,
-            image.height,
-            tone_map.target_hdr_capacity(),
-        )),
-        None,
-    );
+            primary_w: image.width,
+            primary_h: image.height,
+            target_capacity: tone_map.target_hdr_capacity(),
+        }),
+        ripple: None,
+    });
     uniform._apple_pad = compose_row_offset;
     uniform
 }
 
+pub(super) struct AppleComposePass<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) bind_group_layout: &'a wgpu::BindGroupLayout,
+    pub(super) pipeline: &'a wgpu::ComputePipeline,
+    pub(super) image: &'a HdrImageBuffer,
+    pub(super) deferred: &'a AppleHeicGainMapGpuSource,
+    pub(super) tone_map: &'a HdrToneMapSettings,
+    pub(super) encoded_primary_buffer: &'a wgpu::Buffer,
+    pub(super) gain_view: &'a wgpu::TextureView,
+    pub(super) display_storage_view: &'a wgpu::TextureView,
+    pub(super) upload_primary: bool,
+    pub(super) compose_tone_map_buffer: &'a wgpu::Buffer,
+}
+
 pub(super) fn encode_compose_compute_pass(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    pipeline: &wgpu::ComputePipeline,
-    image: &HdrImageBuffer,
-    deferred: &AppleHeicGainMapGpuSource,
-    tone_map: &HdrToneMapSettings,
-    encoded_primary_buffer: &wgpu::Buffer,
-    gain_view: &wgpu::TextureView,
-    display_storage_view: &wgpu::TextureView,
-    upload_primary: bool,
-    compose_tone_map_buffer: &wgpu::Buffer,
+    pass_params: AppleComposePass<'_>,
 ) -> wgpu::CommandBuffer {
+    let AppleComposePass {
+        device,
+        queue,
+        bind_group_layout,
+        pipeline,
+        image,
+        deferred,
+        tone_map,
+        encoded_primary_buffer,
+        gain_view,
+        display_storage_view,
+        upload_primary,
+        compose_tone_map_buffer,
+    } = pass_params;
     let limits = device.limits();
     let chunk_rows = encoded_primary_chunk_rows(image.width, image.height, &limits);
     let row_stride_floats = image.width as usize * 4;

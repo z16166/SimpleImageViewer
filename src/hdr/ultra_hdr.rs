@@ -147,15 +147,17 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
     Ok(compose_ultra_hdr_cpu(
-        width,
-        height,
-        &sdr_rgba,
-        &gain_rgba,
-        gain_width,
-        gain_height,
-        metadata,
-        hdr_metadata_for_ultra_hdr_gain_map(metadata),
-        target_hdr_capacity,
+        crate::hdr::ultra_hdr_compose::UltraHdrComposeInput {
+            width,
+            height,
+            sdr_rgba: &sdr_rgba,
+            gain_rgba: &gain_rgba,
+            gain_width,
+            gain_height,
+            metadata,
+            image_metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
+            target_hdr_capacity,
+        },
     ))
 }
 
@@ -397,15 +399,17 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         }
 
         let metadata = attach_iso_deferred_tile_metadata(
-            "JPEG_R",
-            Arc::clone(&self.sdr_rgba),
-            Arc::clone(&self.gain_rgba),
-            self.gain_width,
-            self.gain_height,
-            self.metadata,
-            self.target_hdr_capacity,
-            self.physical_width,
-            self.physical_height,
+            crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
+                source: "JPEG_R",
+                sdr_rgba: Arc::clone(&self.sdr_rgba),
+                gain_rgba: Arc::clone(&self.gain_rgba),
+                gain_width: self.gain_width,
+                gain_height: self.gain_height,
+                metadata: self.metadata,
+                hdr_target_capacity: self.target_hdr_capacity,
+                physical_width: self.physical_width,
+                physical_height: self.physical_height,
+            },
         );
         let tile = Arc::new(HdrTileBuffer::new_iso_deferred_tile(
             width,

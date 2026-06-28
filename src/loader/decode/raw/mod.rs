@@ -31,7 +31,7 @@ mod preview;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use load::{load_raw, open_raw_processor_with_preview};
+pub(crate) use load::{RawLoadRequest, load_raw, open_raw_processor_with_preview};
 
 #[cfg(test)]
 pub(crate) use crate::loader::preview_caps::hq_preview_max_side;

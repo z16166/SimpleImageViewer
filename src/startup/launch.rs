@@ -551,17 +551,17 @@ pub fn run() -> eframe::Result {
             Ok(Box::new(crate::app::ImageViewerApp::new(
                 cc,
                 crate::app::ImageViewerInit {
-                settings,
-                initial_image,
-                ipc_rx,
-                requested_target_format,
-                active_target_format,
-                requested_rgb10a2_pq_encode,
-                gamma22_display_scale,
-                vulkan_wsi_hdr_gates,
-                #[cfg(target_os = "linux")]
-                requested_vulkan_hdr_metadata,
-                initial_hdr_monitor_selection: initial_hdr_monitor_selection.clone(),
+                    settings,
+                    initial_image,
+                    ipc_rx,
+                    requested_target_format,
+                    active_target_format,
+                    requested_rgb10a2_pq_encode,
+                    gamma22_display_scale,
+                    vulkan_wsi_hdr_gates,
+                    #[cfg(target_os = "linux")]
+                    requested_vulkan_hdr_metadata,
+                    initial_hdr_monitor_selection: initial_hdr_monitor_selection.clone(),
                 },
             )) as Box<dyn eframe::App>)
         }),

@@ -200,23 +200,13 @@ fn draw_settings_body(
 
     let sparse_tab = matches!(app.settings_tab, SettingsTab::About | SettingsTab::System);
     if sparse_tab {
-        draw_active_settings_tab(
-            app,
-            &mut content_ui,
-            ctx,
-            actions,
-        );
+        draw_active_settings_tab(app, &mut content_ui, ctx, actions);
     } else {
         egui::ScrollArea::vertical()
             .id_salt(("settings_tab_content", app.settings_tab.label_key()))
             .auto_shrink([false, false])
             .show(&mut content_ui, |ui| {
-                draw_active_settings_tab(
-                    app,
-                    ui,
-                    ctx,
-                    actions,
-                );
+                draw_active_settings_tab(app, ui, ctx, actions);
             });
     }
 }

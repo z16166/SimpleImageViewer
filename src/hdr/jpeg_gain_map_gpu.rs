@@ -27,17 +27,32 @@ use crate::hdr::types::{
     HdrReference, HdrTransferFunction, IsoGainMapGpuSource,
 };
 
+pub(crate) struct IsoGainMapDeferredInput {
+    pub(crate) source: &'static str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: Vec<u8>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) gain_rgba: Vec<u8>,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) hdr_target_capacity: f32,
+}
+
 pub(crate) fn attach_iso_gain_map_gpu_deferred(
-    source: &'static str,
-    width: u32,
-    height: u32,
-    sdr_rgba: Vec<u8>,
-    gain_width: u32,
-    gain_height: u32,
-    gain_rgba: Vec<u8>,
-    metadata: GainMapMetadata,
-    hdr_target_capacity: f32,
+    input: IsoGainMapDeferredInput,
 ) -> Result<HdrImageBuffer, String> {
+    let IsoGainMapDeferredInput {
+        source,
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        metadata,
+        hdr_target_capacity,
+    } = input;
     validate_iso_deferred_planes(
         width,
         height,
@@ -141,18 +156,21 @@ pub(crate) fn attach_iso_gain_map_hdr_base_from_primary_rgba8(
     })
 }
 
+pub(crate) struct JpegGainMapDeferredInput {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: Vec<u8>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) gain_rgba: Vec<u8>,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) hdr_target_capacity: f32,
+}
+
 pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
-    width: u32,
-    height: u32,
-    sdr_rgba: Vec<u8>,
-    gain_width: u32,
-    gain_height: u32,
-    gain_rgba: Vec<u8>,
-    metadata: GainMapMetadata,
-    hdr_target_capacity: f32,
+    input: JpegGainMapDeferredInput,
 ) -> Result<HdrImageBuffer, String> {
-    attach_iso_gain_map_gpu_deferred(
-        "JPEG_R",
+    let JpegGainMapDeferredInput {
         width,
         height,
         sdr_rgba,
@@ -161,7 +179,18 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
         gain_rgba,
         metadata,
         hdr_target_capacity,
-    )
+    } = input;
+    attach_iso_gain_map_gpu_deferred(IsoGainMapDeferredInput {
+        source: "JPEG_R",
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        metadata,
+        hdr_target_capacity,
+    })
 }
 
 fn steal_arc_vec(slot: &mut Arc<Vec<u8>>) -> Vec<u8> {
@@ -221,17 +250,32 @@ pub(crate) fn iso_deferred_from_metadata(
         .and_then(|gain_map| gain_map.iso_deferred.as_ref())
 }
 
+pub(crate) struct IsoDeferredTileMetadataInput {
+    pub(crate) source: &'static str,
+    pub(crate) sdr_rgba: Arc<Vec<u8>>,
+    pub(crate) gain_rgba: Arc<Vec<u8>>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) physical_width: u32,
+    pub(crate) physical_height: u32,
+}
+
 pub(crate) fn attach_iso_deferred_tile_metadata(
-    source: &'static str,
-    sdr_rgba: Arc<Vec<u8>>,
-    gain_rgba: Arc<Vec<u8>>,
-    gain_width: u32,
-    gain_height: u32,
-    metadata: GainMapMetadata,
-    hdr_target_capacity: f32,
-    physical_width: u32,
-    physical_height: u32,
+    input: IsoDeferredTileMetadataInput,
 ) -> HdrImageMetadata {
+    let IsoDeferredTileMetadataInput {
+        source,
+        sdr_rgba,
+        gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        hdr_target_capacity,
+        physical_width,
+        physical_height,
+    } = input;
     let weight = gain_map_weight(metadata, hdr_target_capacity);
     let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
     image_metadata.transfer_function = HdrTransferFunction::Srgb;
@@ -330,20 +374,22 @@ pub(crate) fn compose_iso_deferred_tile_cpu_pixels(
     )?;
     Ok(
         crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
-            tile_width,
-            tile_height,
-            tile_ctx.origin_x,
-            tile_ctx.origin_y,
-            tile_ctx.physical_width,
-            tile_ctx.physical_height,
-            tile_ctx.orientation,
-            deferred.sdr_rgba.as_slice(),
-            deferred.gain_rgba.as_slice(),
-            deferred.gain_width,
-            deferred.gain_height,
-            deferred.metadata,
-            target_hdr_capacity,
-            crate::hdr::ultra_hdr::display_to_physical_pixel,
+            crate::hdr::ultra_hdr_compose::UltraHdrTileRegionCompose {
+                tile_width,
+                tile_height,
+                origin_x: tile_ctx.origin_x,
+                origin_y: tile_ctx.origin_y,
+                physical_width: tile_ctx.physical_width,
+                physical_height: tile_ctx.physical_height,
+                orientation: tile_ctx.orientation,
+                sdr_rgba: deferred.sdr_rgba.as_slice(),
+                gain_rgba: deferred.gain_rgba.as_slice(),
+                gain_width: deferred.gain_width,
+                gain_height: deferred.gain_height,
+                metadata: deferred.metadata,
+                target_hdr_capacity,
+                display_to_physical: crate::hdr::ultra_hdr::display_to_physical_pixel,
+            },
         ),
     )
 }

@@ -148,12 +148,14 @@ impl ImageViewerApp {
             } => {
                 self.install_static_hdr_image(
                     idx,
-                    hdr,
-                    fallback,
-                    load_result.sdr_fallback_is_placeholder,
-                    ultra_hdr_capacity_sensitive,
-                    defer_sdr_upload,
-                    ctx,
+                    crate::app::image_management::image_install::StaticHdrInstall {
+                        hdr,
+                        fallback,
+                        sdr_fallback_is_placeholder: load_result.sdr_fallback_is_placeholder,
+                        ultra_hdr_capacity_sensitive,
+                        defer_sdr_upload,
+                        ctx,
+                    },
                 );
             }
             ImageInstallPlan::Tiled {

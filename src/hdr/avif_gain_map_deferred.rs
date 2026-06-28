@@ -57,17 +57,32 @@ pub(crate) fn avif_build_iso_sdr_baseline_rgba8(
     sdr_rgba
 }
 
+pub(crate) struct AvifGainMapDeferredInput {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: Vec<u8>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) gain_rgba: Vec<u8>,
+    pub(crate) gain_metadata: GainMapMetadata,
+    pub(crate) container_luminance: HdrLuminanceMetadata,
+    pub(crate) target_hdr_capacity: f32,
+}
+
 pub(crate) fn attach_avif_gain_map_gpu_deferred(
-    width: u32,
-    height: u32,
-    sdr_rgba: Vec<u8>,
-    gain_width: u32,
-    gain_height: u32,
-    gain_rgba: Vec<u8>,
-    gain_metadata: GainMapMetadata,
-    container_luminance: HdrLuminanceMetadata,
-    target_hdr_capacity: f32,
+    input: AvifGainMapDeferredInput,
 ) -> Result<HdrImageBuffer, String> {
+    let AvifGainMapDeferredInput {
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        gain_metadata,
+        container_luminance,
+        target_hdr_capacity,
+    } = input;
     if gain_metadata.backward_direction {
         return Err(
             "AVIF ISO gain map has backward direction; deferred forward compose is invalid"
@@ -78,17 +93,18 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred(
         "[HDR][AVIF] ISO gain map deferred metadata: {}",
         gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity)
     );
-    let mut buffer = attach_iso_gain_map_gpu_deferred(
-        "AVIF",
-        width,
-        height,
-        sdr_rgba,
-        gain_width,
-        gain_height,
-        gain_rgba,
-        gain_metadata,
-        target_hdr_capacity,
-    )?;
+    let mut buffer =
+        attach_iso_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::IsoGainMapDeferredInput {
+            source: "AVIF",
+            width,
+            height,
+            sdr_rgba,
+            gain_width,
+            gain_height,
+            gain_rgba,
+            metadata: gain_metadata,
+            hdr_target_capacity: target_hdr_capacity,
+        })?;
     merge_avif_container_luminance(&mut buffer, container_luminance);
     Ok(buffer)
 }

@@ -27,6 +27,15 @@ pub(super) fn hdr_sdr_fallback_texture_name(idx: usize) -> String {
     format!("{HDR_SDR_FALLBACK_TEXTURE_PREFIX}{idx}")
 }
 
+pub(super) struct StaticHdrInstall<'a> {
+    pub(super) hdr: Arc<crate::hdr::types::HdrImageBuffer>,
+    pub(super) fallback: &'a DecodedImage,
+    pub(super) sdr_fallback_is_placeholder: bool,
+    pub(super) ultra_hdr_capacity_sensitive: bool,
+    pub(super) defer_sdr_upload: bool,
+    pub(super) ctx: &'a egui::Context,
+}
+
 impl ImageViewerApp {
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
         index == self.current_index
@@ -272,16 +281,15 @@ impl ImageViewerApp {
         );
     }
 
-    pub(super) fn install_static_hdr_image(
-        &mut self,
-        idx: usize,
-        hdr: Arc<crate::hdr::types::HdrImageBuffer>,
-        fallback: &DecodedImage,
-        sdr_fallback_is_placeholder: bool,
-        ultra_hdr_capacity_sensitive: bool,
-        defer_sdr_upload: bool,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn install_static_hdr_image(&mut self, idx: usize, install: StaticHdrInstall<'_>) {
+        let StaticHdrInstall {
+            hdr,
+            fallback,
+            sdr_fallback_is_placeholder,
+            ultra_hdr_capacity_sensitive,
+            defer_sdr_upload,
+            ctx,
+        } = install;
         let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);

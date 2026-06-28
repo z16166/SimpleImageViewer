@@ -25,7 +25,10 @@ use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::decode::{get_raw_value, process_scanline_contig, process_scanline_separate};
+use super::decode::{
+    TiffPaletteMaps, TiffSampleDecodeParams, get_raw_value, process_scanline_contig,
+    process_scanline_separate,
+};
 use super::handle::create_tiff_handle;
 use super::thumbnail::extract_embedded_thumbnail;
 
@@ -425,16 +428,20 @@ pub(crate) unsafe fn manual_decode_scanline(
                 &buf,
                 &mut rgba[row_offset..],
                 width,
-                bps,
                 spp,
-                photo,
-                format,
-                swapped,
-                smin,
-                smax,
-                r_map,
-                g_map,
-                b_map,
+                TiffSampleDecodeParams {
+                    bps,
+                    photo,
+                    format,
+                    swapped,
+                    smin,
+                    smax,
+                },
+                TiffPaletteMaps {
+                    r_map,
+                    g_map,
+                    b_map,
+                },
             );
         }
     } else {
@@ -452,13 +459,15 @@ pub(crate) unsafe fn manual_decode_scanline(
                     &buf,
                     &mut rgba[row_offset..],
                     width,
-                    bps,
                     s,
-                    photo,
-                    format,
-                    swapped,
-                    smin,
-                    smax,
+                    TiffSampleDecodeParams {
+                        bps,
+                        photo,
+                        format,
+                        swapped,
+                        smin,
+                        smax,
+                    },
                 );
             }
         }

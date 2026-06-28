@@ -47,27 +47,27 @@ pub(crate) fn extract_embedded_thumbnail(
                 && ((dim >= target_size && (best_pixels.is_none() || dim < best_dim))
                     || (best_pixels.is_none() && dim > best_dim))
             {
-                    best_dim = dim;
-                    best_index = dir_idx;
+                best_dim = dim;
+                best_index = dir_idx;
 
-                    let mut raster = vec![0u32; (tw * th) as usize];
-                    if lib::TIFFReadRGBAImageOriented(
-                        tif,
-                        tw,
-                        th,
-                        raster.as_mut_ptr(),
-                        lib::ORIENTATION_TOPLEFT,
-                        0,
-                    ) != 0
-                    {
-                        let mut pixels = vec![0u8; (tw * th * 4) as usize];
-                        std::ptr::copy_nonoverlapping(
-                            raster.as_ptr() as *const u8,
-                            pixels.as_mut_ptr(),
-                            pixels.len(),
-                        );
-                        best_pixels = Some((tw as u32, th as u32, pixels));
-                    }
+                let mut raster = vec![0u32; (tw * th) as usize];
+                if lib::TIFFReadRGBAImageOriented(
+                    tif,
+                    tw,
+                    th,
+                    raster.as_mut_ptr(),
+                    lib::ORIENTATION_TOPLEFT,
+                    0,
+                ) != 0
+                {
+                    let mut pixels = vec![0u8; (tw * th * 4) as usize];
+                    std::ptr::copy_nonoverlapping(
+                        raster.as_ptr() as *const u8,
+                        pixels.as_mut_ptr(),
+                        pixels.len(),
+                    );
+                    best_pixels = Some((tw as u32, th as u32, pixels));
+                }
             }
             dir_idx += 1;
         }

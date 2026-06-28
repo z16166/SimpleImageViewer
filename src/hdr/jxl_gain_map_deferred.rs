@@ -135,17 +135,17 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
     let (gain_metadata, gain_width, gain_height, gain_rgba) =
         decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
     let sdr_rgba = jxl_rgba_f32_to_iso_sdr_baseline(base_rgba_f32, color_space, metadata);
-    attach_iso_gain_map_gpu_deferred(
-        "JPEG XL",
+    attach_iso_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::IsoGainMapDeferredInput {
+        source: "JPEG XL",
         width,
         height,
         sdr_rgba,
         gain_width,
         gain_height,
         gain_rgba,
-        gain_metadata,
-        target_hdr_capacity,
-    )
+        metadata: gain_metadata,
+        hdr_target_capacity: target_hdr_capacity,
+    })
 }
 
 fn jxl_hdr_buffer_from_rgba(

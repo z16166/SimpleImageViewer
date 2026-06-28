@@ -427,39 +427,50 @@ impl OpenExrCoreReadContext {
         use rayon::prelude::*;
         let chunk_jobs = (0..height)
             .into_par_iter()
-            .map(|preview_y| -> Result<Option<ScanlinePreviewChunkJob>, String> {
-                let source_y = budgeted_scanline_preview_source_y(
-                    preview_y,
-                    height,
-                    part.height,
-                    source_row_budget,
-                );
-                let mut chunk = sys::ExrChunkInfo::default();
-                let res = unsafe {
-                    sys::exr_read_scanline_chunk_info(
-                        self.raw.cast_const(),
-                        part_index,
-                        i32::try_from(source_y)
-                            .map_err(|_| "EXR scanline y exceeds i32".to_string())?
-                            + part.data_window_min.1,
-                        &mut chunk,
-                    )
-                };
-                if res != 0 {
-                    return Err(format!("OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"));
-                }
-                if chunk.height <= 0 || chunk.width <= 0 {
-                    return Ok(None);
-                }
+            .map(
+                |preview_y| -> Result<Option<ScanlinePreviewChunkJob>, String> {
+                    let source_y = budgeted_scanline_preview_source_y(
+                        preview_y,
+                        height,
+                        part.height,
+                        source_row_budget,
+                    );
+                    let mut chunk = sys::ExrChunkInfo::default();
+                    let res = unsafe {
+                        sys::exr_read_scanline_chunk_info(
+                            self.raw.cast_const(),
+                            part_index,
+                            i32::try_from(source_y)
+                                .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                                + part.data_window_min.1,
+                            &mut chunk,
+                        )
+                    };
+                    if res != 0 {
+                        return Err(format!(
+                            "OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"
+                        ));
+                    }
+                    if chunk.height <= 0 || chunk.width <= 0 {
+                        return Ok(None);
+                    }
 
-                let chunk_origin = (
-                    u32::try_from(chunk.start_x - part.data_window_min.0)
-                        .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
-                    u32::try_from(chunk.start_y - part.data_window_min.1)
-                        .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
-                );
-                Ok(Some((chunk.start_y, chunk, chunk_origin, (preview_y, source_y))))
-            })
+                    let chunk_origin = (
+                        u32::try_from(chunk.start_x - part.data_window_min.0).map_err(|_| {
+                            "OpenEXRCore chunk start_x is outside data window".to_string()
+                        })?,
+                        u32::try_from(chunk.start_y - part.data_window_min.1).map_err(|_| {
+                            "OpenEXRCore chunk start_y is outside data window".to_string()
+                        })?,
+                    );
+                    Ok(Some((
+                        chunk.start_y,
+                        chunk,
+                        chunk_origin,
+                        (preview_y, source_y),
+                    )))
+                },
+            )
             .collect::<Result<Vec<_>, String>>()?;
 
         let chunk_jobs: Vec<ScanlinePreviewChunkJob> = chunk_jobs.into_iter().flatten().collect();

@@ -92,7 +92,9 @@ pub(crate) fn process_animation_frames(
         .into_iter()
         .map(|frame| {
             let (numer, denom) = frame.delay().numer_denom_ms();
-            let delay_ms = numer.checked_div(denom).unwrap_or(DEFAULT_ANIMATION_DELAY_MS);
+            let delay_ms = numer
+                .checked_div(denom)
+                .unwrap_or(DEFAULT_ANIMATION_DELAY_MS);
             // Standard browser behavior: delays <= 10ms are treated as 100ms
             let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS {
                 DEFAULT_ANIMATION_DELAY_MS

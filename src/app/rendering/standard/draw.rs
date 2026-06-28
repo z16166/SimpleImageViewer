@@ -63,12 +63,14 @@ impl ImageViewerApp {
         let hold_dest = self.prev_navigation_hold_dest(screen_rect);
         self.draw_prev_image_underneath(
             ui,
-            screen_rect,
-            &tp,
-            self.current_rotation,
-            None,
-            None,
-            hold_dest,
+            crate::app::rendering::standard::PrevImageUnderneathParams {
+                screen_rect,
+                transition: &tp,
+                rotation: self.current_rotation,
+                target_format: None,
+                hdr_output_mode: None,
+                override_dest: hold_dest,
+            },
         );
     }
 
@@ -290,12 +292,14 @@ impl ImageViewerApp {
                     if has_prev {
                         self.draw_outgoing_transition_frame_ripple(
                             ui,
-                            screen_rect,
-                            p_dest,
-                            center,
-                            current_radius,
-                            rotation,
-                            angle,
+                            crate::app::rendering::standard::OutgoingFrameRippleParams {
+                                screen_rect,
+                                dest: p_dest,
+                                center,
+                                current_radius,
+                                rotation,
+                                angle,
+                            },
                         );
                     }
 
@@ -382,12 +386,14 @@ impl ImageViewerApp {
                 } else if tp.is_animating {
                     self.draw_prev_image_underneath(
                         ui,
-                        screen_rect,
-                        &tp,
-                        rotation,
-                        Some(target_format),
-                        Some(render_plan.output_mode),
-                        None,
+                        crate::app::rendering::standard::PrevImageUnderneathParams {
+                            screen_rect,
+                            transition: &tp,
+                            rotation,
+                            target_format: Some(target_format),
+                            hdr_output_mode: Some(render_plan.output_mode),
+                            override_dest: None,
+                        },
                     );
                     ui.ctx().request_repaint();
                     self.draw_hdr_image_plane_clipped(
@@ -508,7 +514,17 @@ impl ImageViewerApp {
 
             // 1. Draw OLD image (underneath or fading out)
             if tp.is_animating {
-                self.draw_prev_image_underneath(ui, screen_rect, &tp, rotation, None, None, None);
+                self.draw_prev_image_underneath(
+                    ui,
+                    crate::app::rendering::standard::PrevImageUnderneathParams {
+                        screen_rect,
+                        transition: &tp,
+                        rotation,
+                        target_format: None,
+                        hdr_output_mode: None,
+                        override_dest: None,
+                    },
+                );
                 ui.ctx().request_repaint();
             }
 

@@ -25,6 +25,15 @@ pub(crate) struct HdrTileBindings {
     pub(super) max_bytes: usize,
 }
 
+pub(crate) struct HdrTileInsert {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) compose_storage_view: Option<wgpu::TextureView>,
+    pub(crate) tone_map_buffer: wgpu::Buffer,
+    pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) baked_jpeg_weight_bits: Option<u32>,
+}
+
 pub(super) const HDR_TILE_BINDING_RECENT_PROTECTION_COUNT: usize = 512;
 
 impl Default for HdrTileBindings {
@@ -60,16 +69,15 @@ impl HdrTileBindings {
         self.entries.len()
     }
 
-    pub(crate) fn insert(
-        &mut self,
-        key: HdrTileKey,
-        texture: wgpu::Texture,
-        view: wgpu::TextureView,
-        compose_storage_view: Option<wgpu::TextureView>,
-        tone_map_buffer: wgpu::Buffer,
-        bind_group: wgpu::BindGroup,
-        baked_jpeg_weight_bits: Option<u32>,
-    ) {
+    pub(crate) fn insert(&mut self, key: HdrTileKey, tile: HdrTileInsert) {
+        let HdrTileInsert {
+            texture,
+            view,
+            compose_storage_view,
+            tone_map_buffer,
+            bind_group,
+            baked_jpeg_weight_bits,
+        } = tile;
         self.protect_recent(key);
         self.insert_binding(
             key,

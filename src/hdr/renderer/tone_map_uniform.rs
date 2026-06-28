@@ -57,21 +57,64 @@ unsafe impl bytemuck::Pod for ToneMapUniform {}
 
 const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 128);
 
+#[derive(Clone, Copy)]
+pub(super) struct ToneMapCommonParams {
+    pub(super) settings: HdrToneMapSettings,
+    pub(super) rotation_steps: u32,
+    pub(super) alpha: f32,
+    pub(super) output_mode: HdrRenderOutputMode,
+    pub(super) framebuffer_format: wgpu::TextureFormat,
+    pub(super) uv_rect: egui::Rect,
+    pub(super) native_display_scale: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ToneMapInputMetadata {
+    pub(super) color_space: HdrColorSpace,
+    pub(super) transfer_function: HdrTransferFunction,
+    pub(super) reference: HdrReference,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct AppleToneMapCompose<'a> {
+    pub(super) deferred: &'a crate::hdr::types::AppleHeicGainMapGpuSource,
+    pub(super) primary_w: u32,
+    pub(super) primary_h: u32,
+    pub(super) target_capacity: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RippleToneMapParams {
+    pub(super) center: egui::Pos2,
+    pub(super) radius: f32,
+    pub(super) pixels_per_point: f32,
+    pub(super) mode: u32,
+}
+
+pub(super) struct ToneMapUniformParams<'a> {
+    pub(super) common: ToneMapCommonParams,
+    pub(super) input: ToneMapInputMetadata,
+    pub(super) apple: Option<AppleToneMapCompose<'a>>,
+    pub(super) ripple: Option<RippleToneMapParams>,
+}
+
 impl ToneMapUniform {
-    pub(super) fn from_settings(
-        settings: HdrToneMapSettings,
-        rotation_steps: u32,
-        alpha: f32,
-        output_mode: HdrRenderOutputMode,
-        framebuffer_format: wgpu::TextureFormat,
-        input_color_space: HdrColorSpace,
-        input_transfer_function: HdrTransferFunction,
-        input_reference: HdrReference,
-        uv_rect: egui::Rect,
-        native_display_scale: f32,
-        apple: Option<(&crate::hdr::types::AppleHeicGainMapGpuSource, u32, u32, f32)>,
-        ripple: Option<(egui::Pos2, f32, f32, u32)>,
-    ) -> Self {
+    pub(super) fn from_settings(params: ToneMapUniformParams<'_>) -> Self {
+        let ToneMapUniformParams {
+            common,
+            input,
+            apple,
+            ripple,
+        } = params;
+        let ToneMapCommonParams {
+            settings,
+            rotation_steps,
+            alpha,
+            output_mode,
+            framebuffer_format,
+            uv_rect,
+            native_display_scale,
+        } = common;
         let manual_srgb = output_mode == HdrRenderOutputMode::SdrToneMapped
             && hdr_sdr_framebuffer_needs_manual_srgb_oetf(framebuffer_format);
         let (
@@ -82,25 +125,30 @@ impl ToneMapUniform {
             gain_height,
             primary_width,
             primary_height,
-        ) = if let Some((deferred, primary_w, primary_h, target_capacity)) = apple {
+        ) = if let Some(apple) = apple {
             (
                 1,
-                deferred.headroom_span,
+                apple.deferred.headroom_span,
                 #[cfg(feature = "heif-native")]
-                apple_gain_map_display_weight(target_capacity, deferred.stops),
+                apple_gain_map_display_weight(apple.target_capacity, apple.deferred.stops),
                 #[cfg(not(feature = "heif-native"))]
                 0.0_f32,
-                deferred.gain_width,
-                deferred.gain_height,
-                primary_w,
-                primary_h,
+                apple.deferred.gain_width,
+                apple.deferred.gain_height,
+                apple.primary_w,
+                apple.primary_h,
             )
         } else {
             (0, 0.0, 0.0, 0, 0, 0, 0)
         };
         let (ripple_center, ripple_radius, ripple_enabled, pixels_per_point) =
-            if let Some((center, radius, ppp, mode)) = ripple {
-                ([center.x, center.y], radius, mode, ppp)
+            if let Some(ripple) = ripple {
+                (
+                    [ripple.center.x, ripple.center.y],
+                    ripple.radius,
+                    ripple.mode,
+                    ripple.pixels_per_point,
+                )
             } else {
                 ([0.0, 0.0], 0.0, 0u32, 1.0)
             };
@@ -112,9 +160,9 @@ impl ToneMapUniform {
             rotation_steps: rotation_steps % 4,
             alpha: alpha.clamp(0.0, 1.0),
             output_mode: output_mode as u32,
-            input_color_space: input_color_space as u32,
-            input_transfer_function: input_transfer_function as u32,
-            input_reference: input_reference as u32,
+            input_color_space: input.color_space as u32,
+            input_transfer_function: input.transfer_function as u32,
+            input_reference: input.reference as u32,
             sdr_manual_srgb_encode: manual_srgb as u32,
             _wgsl_pad_before_uv: 0,
             uv_min: [uv_rect.min.x, uv_rect.min.y],
@@ -160,115 +208,87 @@ pub(super) fn libavif_tone_map_native_display_scale(
     tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits)
 }
 
-pub(super) fn hdr_tile_tone_map_uniform(
-    settings: HdrToneMapSettings,
-    rotation_steps: u32,
-    alpha: f32,
-    output_mode: HdrRenderOutputMode,
-    framebuffer_format: wgpu::TextureFormat,
-    tile: &crate::hdr::tiled::HdrTileBuffer,
-    uv_rect: egui::Rect,
-    native_display_scale: f32,
-    jpeg_gpu_composed: bool,
-) -> ToneMapUniform {
+pub(super) struct HdrTileToneMapUniformParams<'a> {
+    pub(super) common: ToneMapCommonParams,
+    pub(super) tile: &'a crate::hdr::tiled::HdrTileBuffer,
+    pub(super) jpeg_gpu_composed: bool,
+}
+
+pub(super) fn hdr_tile_tone_map_uniform(params: HdrTileToneMapUniformParams<'_>) -> ToneMapUniform {
+    let HdrTileToneMapUniformParams {
+        common,
+        tile,
+        jpeg_gpu_composed,
+    } = params;
     if jpeg_gpu_composed {
         return tile_tone_map_uniform(
-            settings,
-            rotation_steps,
-            alpha,
-            output_mode,
-            framebuffer_format,
-            HdrColorSpace::LinearSrgb,
-            HdrTransferFunction::Linear,
-            HdrReference::Unknown,
-            uv_rect,
-            native_display_scale,
+            common,
+            ToneMapInputMetadata {
+                color_space: HdrColorSpace::LinearSrgb,
+                transfer_function: HdrTransferFunction::Linear,
+                reference: HdrReference::Unknown,
+            },
         );
     }
 
     tile_tone_map_uniform(
-        settings,
-        rotation_steps,
-        alpha,
-        output_mode,
-        framebuffer_format,
-        tile.metadata.color_space_hint(),
-        tile.metadata.transfer_function,
-        tile.metadata.reference,
-        uv_rect,
-        native_display_scale,
+        common,
+        ToneMapInputMetadata {
+            color_space: tile.metadata.color_space_hint(),
+            transfer_function: tile.metadata.transfer_function,
+            reference: tile.metadata.reference,
+        },
     )
 }
 
 pub(super) fn tile_tone_map_uniform(
-    settings: HdrToneMapSettings,
-    rotation_steps: u32,
-    alpha: f32,
-    output_mode: HdrRenderOutputMode,
-    framebuffer_format: wgpu::TextureFormat,
-    input_color_space: HdrColorSpace,
-    input_transfer_function: HdrTransferFunction,
-    input_reference: HdrReference,
-    uv_rect: egui::Rect,
-    native_display_scale: f32,
+    common: ToneMapCommonParams,
+    input: ToneMapInputMetadata,
 ) -> ToneMapUniform {
-    ToneMapUniform::from_settings(
-        settings,
-        rotation_steps,
-        alpha,
-        output_mode,
-        framebuffer_format,
-        input_color_space,
-        input_transfer_function,
-        input_reference,
-        uv_rect,
-        native_display_scale,
-        None,
-        None,
-    )
+    ToneMapUniform::from_settings(ToneMapUniformParams {
+        common,
+        input,
+        apple: None,
+        ripple: None,
+    })
+}
+
+pub(super) struct ImageToneMapUniformParams {
+    pub(super) common: ToneMapCommonParams,
+    pub(super) gpu_composed_scene_linear: bool,
+    pub(super) ripple: Option<RippleToneMapParams>,
 }
 
 pub(super) fn image_tone_map_uniform(
     image: &HdrImageBuffer,
-    settings: HdrToneMapSettings,
-    rotation_steps: u32,
-    alpha: f32,
-    output_mode: HdrRenderOutputMode,
-    framebuffer_format: wgpu::TextureFormat,
-    uv_rect: egui::Rect,
-    native_display_scale: f32,
-    gpu_composed_scene_linear: bool,
-    ripple: Option<(egui::Pos2, f32, f32, u32)>,
+    params: ImageToneMapUniformParams,
 ) -> ToneMapUniform {
+    let ImageToneMapUniformParams {
+        common,
+        gpu_composed_scene_linear,
+        ripple,
+    } = params;
     if gpu_composed_scene_linear {
-        return ToneMapUniform::from_settings(
-            settings,
-            rotation_steps,
-            alpha,
-            output_mode,
-            framebuffer_format,
-            HdrColorSpace::LinearSrgb,
-            HdrTransferFunction::Linear,
-            HdrReference::Unknown,
-            uv_rect,
-            native_display_scale,
-            None,
+        return ToneMapUniform::from_settings(ToneMapUniformParams {
+            common,
+            input: ToneMapInputMetadata {
+                color_space: HdrColorSpace::LinearSrgb,
+                transfer_function: HdrTransferFunction::Linear,
+                reference: HdrReference::Unknown,
+            },
+            apple: None,
             ripple,
-        );
+        });
     }
 
-    ToneMapUniform::from_settings(
-        settings,
-        rotation_steps,
-        alpha,
-        output_mode,
-        framebuffer_format,
-        image.metadata.color_space_hint(),
-        image.metadata.transfer_function,
-        image.metadata.reference,
-        uv_rect,
-        native_display_scale,
-        None,
+    ToneMapUniform::from_settings(ToneMapUniformParams {
+        common,
+        input: ToneMapInputMetadata {
+            color_space: image.metadata.color_space_hint(),
+            transfer_function: image.metadata.transfer_function,
+            reference: image.metadata.reference,
+        },
+        apple: None,
         ripple,
-    )
+    })
 }

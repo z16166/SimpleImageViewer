@@ -54,21 +54,32 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct TiffSampleDecodeParams {
+    pub(crate) bps: u16,
+    pub(crate) photo: u16,
+    pub(crate) format: u16,
+    pub(crate) swapped: bool,
+    pub(crate) smin: f64,
+    pub(crate) smax: f64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TiffPaletteMaps {
+    pub(crate) r_map: *mut u16,
+    pub(crate) g_map: *mut u16,
+    pub(crate) b_map: *mut u16,
+}
+
 pub(crate) fn process_scanline_contig(
     buf: &[u8],
     rgba_row: &mut [u8],
     width: u32,
-    bps: u16,
     spp: u16,
-    photo: u16,
-    format: u16,
-    swapped: bool,
-    smin: f64,
-    smax: f64,
-    r_map: *mut u16,
-    g_map: *mut u16,
-    b_map: *mut u16,
+    params: TiffSampleDecodeParams,
+    palette: TiffPaletteMaps,
 ) {
+    let TiffSampleDecodeParams { photo, .. } = params;
     let is_palette = photo == PHOTO_PALETTE;
     for x in 0..width as usize {
         let dst_idx = x * 4;
@@ -76,17 +87,7 @@ pub(crate) fn process_scanline_contig(
 
         let mut samples = [0u32; 4];
         for (s, sample) in samples.iter_mut().enumerate().take((spp as usize).min(4)) {
-            *sample = get_sample_value(
-                buf,
-                src_sample_offset + s,
-                bps,
-                format,
-                swapped,
-                smin,
-                smax,
-                is_palette,
-                photo,
-            );
+            *sample = get_sample_value(buf, src_sample_offset + s, params, is_palette);
         }
 
         match photo {
@@ -120,12 +121,11 @@ pub(crate) fn process_scanline_contig(
                 rgba_row[dst_idx + 3] = 255;
             }
             PHOTO_PALETTE => {
-                let idx = get_sample_value(buf, x, bps, format, swapped, smin, smax, true, photo)
-                    as usize;
+                let idx = get_sample_value(buf, x, params, true) as usize;
                 unsafe {
-                    let r_ptr = r_map.add(idx);
-                    let g_ptr = g_map.add(idx);
-                    let b_ptr = b_map.add(idx);
+                    let r_ptr = palette.r_map.add(idx);
+                    let g_ptr = palette.g_map.add(idx);
+                    let b_ptr = palette.b_map.add(idx);
                     rgba_row[dst_idx] = (*r_ptr >> 8) as u8;
                     rgba_row[dst_idx + 1] = (*g_ptr >> 8) as u8;
                     rgba_row[dst_idx + 2] = (*b_ptr >> 8) as u8;
@@ -141,18 +141,14 @@ pub(crate) fn process_scanline_separate(
     buf: &[u8],
     rgba_row: &mut [u8],
     width: u32,
-    bps: u16,
     sample_idx: usize,
-    photo: u16,
-    format: u16,
-    swapped: bool,
-    smin: f64,
-    smax: f64,
+    params: TiffSampleDecodeParams,
 ) {
+    let TiffSampleDecodeParams { photo, .. } = params;
     let is_palette = photo == PHOTO_PALETTE;
     for x in 0..width as usize {
         let dst_idx = x * 4;
-        let val = get_sample_value(buf, x, bps, format, swapped, smin, smax, is_palette, photo);
+        let val = get_sample_value(buf, x, params, is_palette);
 
         match photo {
             PHOTO_MINISWHITE | PHOTO_MINISBLACK => {
@@ -215,14 +211,17 @@ pub(crate) fn process_scanline_separate(
 fn get_sample_value(
     buf: &[u8],
     idx: usize,
-    bps: u16,
-    format: u16,
-    _swapped: bool,
-    smin: f64,
-    smax: f64,
+    params: TiffSampleDecodeParams,
     is_palette: bool,
-    photo: u16,
 ) -> u32 {
+    let TiffSampleDecodeParams {
+        bps,
+        photo,
+        format,
+        swapped: _swapped,
+        smin,
+        smax,
+    } = params;
     let range = smax - smin;
 
     // Handle packed bitstreams (1, 2, 4, 6, 10, 12, 14)
@@ -509,16 +508,30 @@ fn rgba8_to_scene_linear_hdr_buffer(
     })
 }
 
+pub(crate) struct CameraTiffHdrUpgrade<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) hdr_target_capacity: f32,
+    pub(crate) tone_map: &'a HdrToneMapSettings,
+    pub(crate) photo: u16,
+    pub(crate) bps: u16,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: &'a [u8],
+}
+
 pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
-    path: &Path,
-    hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
-    photo: u16,
-    bps: u16,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
+    input: CameraTiffHdrUpgrade<'_>,
 ) -> Result<Option<ImageData>, String> {
+    let CameraTiffHdrUpgrade {
+        path,
+        hdr_target_capacity,
+        tone_map,
+        photo,
+        bps,
+        width,
+        height,
+        pixels,
+    } = input;
     if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         || photo != PHOTO_RGB
         || bps != 8
@@ -807,16 +820,30 @@ pub(crate) fn tiff_logl_logluv_hdr_eligible(photo: u16, planar: u16) -> bool {
     matches!(photo, PHOTO_LOGL | PHOTO_LOGLUV) && planar == CONFIG_CONTIG
 }
 
+pub(crate) struct LogLuvDecodeParams {
+    pub(crate) tif: *mut lib::TIFF,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) photo: u16,
+    pub(crate) compression: u16,
+    pub(crate) bps: u16,
+    pub(crate) spp: u16,
+    pub(crate) sample_format: u16,
+}
+
 pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
-    tif: *mut lib::TIFF,
-    width: u32,
-    height: u32,
-    photo: u16,
-    compression: u16,
-    bps: u16,
-    spp: u16,
-    sample_format: u16,
+    params: LogLuvDecodeParams,
 ) -> Result<Vec<f32>, String> {
+    let LogLuvDecodeParams {
+        tif,
+        width,
+        height,
+        photo,
+        compression,
+        bps,
+        spp,
+        sample_format,
+    } = params;
     let mut out = vec![0.0_f32; width as usize * height as usize * 4];
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {

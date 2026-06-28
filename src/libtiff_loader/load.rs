@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::{
-    decode_ieee_scene_linear_rgba32f, decode_logl_logluv_scene_linear_rgba32f,
-    decode_uint16_rgb_scene_linear_rgba32f, tiff_ieee_scene_linear_eligible,
-    tiff_logl_logluv_hdr_eligible, tiff_uint16_rgb_scene_linear_eligible,
-    try_camera_tiff_rgb8_hdr_upgrade,
+    CameraTiffHdrUpgrade, LogLuvDecodeParams, decode_ieee_scene_linear_rgba32f,
+    decode_logl_logluv_scene_linear_rgba32f, decode_uint16_rgb_scene_linear_rgba32f,
+    tiff_ieee_scene_linear_eligible, tiff_logl_logluv_hdr_eligible,
+    tiff_uint16_rgb_scene_linear_eligible, try_camera_tiff_rgb8_hdr_upgrade,
 };
 use super::scanline::{LibTiffScanlineSource, manual_decode_scanline};
 use super::tiled::LibTiffTiledSource;
@@ -293,8 +293,8 @@ pub fn load_via_libtiff(
         if tiff_logl_logluv_hdr_eligible(photo, planar_config)
             && pixel_count_pre <= 256 * 1024 * 1024
         {
-            match decode_logl_logluv_scene_linear_rgba32f(
-                handle.as_ptr(),
+            match decode_logl_logluv_scene_linear_rgba32f(LogLuvDecodeParams {
+                tif: handle.as_ptr(),
                 width,
                 height,
                 photo,
@@ -302,7 +302,7 @@ pub fn load_via_libtiff(
                 bps,
                 spp,
                 sample_format,
-            ) {
+            }) {
                 Ok(mut rgba_f32) => {
                     let mut w = width;
                     let mut h = height;
@@ -479,16 +479,16 @@ pub fn load_via_libtiff(
             pixels = out_pixels;
         }
 
-        if let Some(hdr) = try_camera_tiff_rgb8_hdr_upgrade(
+        if let Some(hdr) = try_camera_tiff_rgb8_hdr_upgrade(CameraTiffHdrUpgrade {
             path,
             hdr_target_capacity,
-            &tone_map,
+            tone_map: &tone_map,
             photo,
             bps,
             width,
             height,
-            &pixels,
-        )? {
+            pixels: &pixels,
+        })? {
             return Ok(hdr);
         }
 

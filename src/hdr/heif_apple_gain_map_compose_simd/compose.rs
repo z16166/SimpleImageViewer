@@ -21,8 +21,8 @@ use super::core::compose_row_neon;
 #[cfg(target_arch = "x86_64")]
 use super::core::compose_row_sse41;
 use super::core::{
-    ComposeFastPath, GainRowLinear, SIMD_PIXELS_PER_STEP, classify_fast_path, compose_row_scalar,
-    precompute_gain_row_linear,
+    ComposeFastPath, ComposeRowTransform, GainRowLinear, SIMD_PIXELS_PER_STEP, classify_fast_path,
+    compose_row_scalar, precompute_gain_row_linear,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 use rayon::prelude::*;
@@ -32,25 +32,11 @@ fn compose_row(
     row_out: &mut [f32],
     width: u32,
     gain_rgb: &[f32],
-    path: ComposeFastPath,
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
+    transform: ComposeRowTransform<'_>,
 ) {
+    let path = transform.path;
     if path == ComposeFastPath::Scalar || width < SIMD_PIXELS_PER_STEP {
-        compose_row_scalar(
-            row_in,
-            row_out,
-            width,
-            gain_rgb,
-            color_space,
-            transfer,
-            metadata,
-            headroom_span,
-            weight,
-        );
+        compose_row_scalar(row_in, row_out, width, gain_rgb, transform);
         return;
     }
 
@@ -58,18 +44,7 @@ fn compose_row(
     {
         if std::arch::is_x86_feature_detected!("sse4.1") {
             unsafe {
-                compose_row_sse41(
-                    row_in,
-                    row_out,
-                    width,
-                    gain_rgb,
-                    path,
-                    color_space,
-                    transfer,
-                    metadata,
-                    headroom_span,
-                    weight,
-                );
+                compose_row_sse41(row_in, row_out, width, gain_rgb, transform);
             }
             return;
         }
@@ -78,51 +53,47 @@ fn compose_row(
     #[cfg(target_arch = "aarch64")]
     {
         unsafe {
-            compose_row_neon(
-                row_in,
-                row_out,
-                width,
-                gain_rgb,
-                path,
-                color_space,
-                transfer,
-                metadata,
-                headroom_span,
-                weight,
-            );
+            compose_row_neon(row_in, row_out, width, gain_rgb, transform);
         }
         return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    compose_row_scalar(
-        row_in,
-        row_out,
+    compose_row_scalar(row_in, row_out, width, gain_rgb, transform);
+}
+
+pub(crate) struct AppleGainMapComposePixels<'a> {
+    pub(crate) base_pixels: &'a [f32],
+    pub(crate) composed_pixels: &'a mut [f32],
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) gain_rgba: &'a [u8],
+    pub(crate) gain_w: u32,
+    pub(crate) gain_h: u32,
+    pub(crate) color_space: HdrColorSpace,
+    pub(crate) transfer: HdrTransferFunction,
+    pub(crate) metadata: &'a HdrImageMetadata,
+    pub(crate) headroom_span: f32,
+    pub(crate) weight: f32,
+    pub(crate) force_scalar: bool,
+}
+
+pub(crate) fn compose_apple_gain_map_pixels(input: AppleGainMapComposePixels<'_>) {
+    let AppleGainMapComposePixels {
+        base_pixels,
+        composed_pixels,
         width,
-        gain_rgb,
+        height,
+        gain_rgba,
+        gain_w,
+        gain_h,
         color_space,
         transfer,
         metadata,
         headroom_span,
         weight,
-    );
-}
-
-pub(crate) fn compose_apple_gain_map_pixels(
-    base_pixels: &[f32],
-    composed_pixels: &mut [f32],
-    width: u32,
-    height: u32,
-    gain_rgba: &[u8],
-    gain_w: u32,
-    gain_h: u32,
-    color_space: HdrColorSpace,
-    transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
-    headroom_span: f32,
-    weight: f32,
-    force_scalar: bool,
-) {
+        force_scalar,
+    } = input;
     if width == 0 || height == 0 {
         return;
     }
@@ -157,12 +128,14 @@ pub(crate) fn compose_apple_gain_map_pixels(
                 row_out,
                 width,
                 &gain_row.rgb,
-                path,
-                color_space,
-                transfer,
-                metadata,
-                headroom_span,
-                weight,
+                ComposeRowTransform {
+                    path,
+                    color_space,
+                    transfer,
+                    metadata,
+                    headroom_span,
+                    weight,
+                },
             );
         });
 }

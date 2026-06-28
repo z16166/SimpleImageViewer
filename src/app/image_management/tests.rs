@@ -2879,14 +2879,15 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
         app.directory_tree_strip_cache.upsert_from_decoded(
             index,
             &decoded,
-            crate::loader::PreviewStage::Refined,
-            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-            None,
-            &paths[index],
-            &ctx,
-            0,
-            3,
-            128,
+            crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+                stage: crate::loader::PreviewStage::Refined,
+                buffer_tag:
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: None,
+                path: &paths[index],
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
         );
     }
 
@@ -2914,14 +2915,15 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
     app.directory_tree_strip_cache.upsert_from_decoded(
         0,
         &decoded,
-        crate::loader::PreviewStage::Refined,
-        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-        None,
-        &old_files[0],
-        &ctx,
-        0,
-        1,
-        128,
+        crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+            stage: crate::loader::PreviewStage::Refined,
+            buffer_tag:
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+            logical_size: None,
+            path: &old_files[0],
+            ctx: &ctx,
+            strip_max_side: 128,
+        },
     );
 
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);

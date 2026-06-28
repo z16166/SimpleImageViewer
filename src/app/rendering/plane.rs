@@ -107,16 +107,18 @@ pub(crate) fn draw_plane(
             ui.painter()
                 .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
                     clipped_rect,
-                    image,
-                    tone_map,
-                    target_format,
-                    output_mode,
-                    rotation_steps,
-                    alpha,
-                    uv_subrect(uv, uv_rect),
-                    ripple,
-                    keep_resident,
-                    raw_demosaic_baked_notify,
+                    crate::hdr::renderer::HdrImagePlaneCallbackParams {
+                        image,
+                        tone_map,
+                        target_format,
+                        output_mode,
+                        rotation_steps,
+                        alpha,
+                        uv_rect: uv_subrect(uv, uv_rect),
+                        ripple,
+                        keep_resident,
+                        raw_demosaic_baked_notify,
+                    },
                 ));
         }
         PlaneDrawSource::HdrTile {
@@ -133,13 +135,15 @@ pub(crate) fn draw_plane(
             ui.painter()
                 .add(crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
                     clipped_rect,
-                    tile,
-                    tone_map,
-                    target_format,
-                    output_mode,
-                    rotation_steps,
-                    alpha,
-                    uv_subrect(uv, uv_rect),
+                    crate::hdr::renderer::HdrTilePlaneCallbackParams {
+                        tile,
+                        tone_map,
+                        target_format,
+                        output_mode,
+                        rotation_steps,
+                        alpha,
+                        uv_rect: uv_subrect(uv, uv_rect),
+                    },
                 ));
         }
     }

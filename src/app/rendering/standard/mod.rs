@@ -23,6 +23,9 @@ mod hdr_draw;
 mod helpers;
 mod transitions;
 
+pub(crate) use self::hdr_draw::PrevImageUnderneathParams;
+pub(crate) use self::transitions::{OutgoingFrameClippedParams, OutgoingFrameRippleParams};
+
 #[cfg(test)]
 mod tests;
 
