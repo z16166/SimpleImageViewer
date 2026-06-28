@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Library folder preference**: Added an option to keep the saved gallery folder unchanged when opening an image by double-click, while still browsing that image’s folder for the current session.
 
+### Fixed
+- **Opening images from the system tray**: When the app is minimized to the tray, double-clicking an image in Explorer now restores the window and opens the image reliably.
+
 ## [2.7.8] - 2026-06-26
 
 ### Fixed
