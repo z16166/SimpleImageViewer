@@ -33,8 +33,7 @@ pub(crate) fn read_heif_metadata(
     let nclx_status =
         unsafe { libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr) };
     if nclx_status.code == libheif_sys::heif_error_Ok && !nclx_ptr.is_null() {
-        let nclx_guard =
-            unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
+        let nclx_guard = unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
         let nclx = nclx_guard.as_ref();
         let metadata = heif_nclx_to_metadata(
             nclx.color_primaries as u16,
@@ -260,15 +259,18 @@ pub(crate) fn list_heif_auxiliary_evidence(
             libheif_sys::HeifImageHandleGuard::from_ptr(aux_handle)
         });
         let mut aux_type_ptr = std::ptr::null();
-        let type_status =
-            unsafe { libheif_sys::heif_image_handle_get_auxiliary_type(aux.as_ptr(), &mut aux_type_ptr) };
+        let type_status = unsafe {
+            libheif_sys::heif_image_handle_get_auxiliary_type(aux.as_ptr(), &mut aux_type_ptr)
+        };
         if type_status.code != libheif_sys::heif_error_Ok || aux_type_ptr.is_null() {
             continue;
         }
         let aux_type = unsafe { CStr::from_ptr(aux_type_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { libheif_sys::heif_image_handle_release_auxiliary_type(aux.as_ptr(), &mut aux_type_ptr) };
+        unsafe {
+            libheif_sys::heif_image_handle_release_auxiliary_type(aux.as_ptr(), &mut aux_type_ptr)
+        };
         evidence.push(HeifAuxiliaryEvidence {
             item_id: id,
             classification: classify_heif_auxiliary_type(&aux_type),

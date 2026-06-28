@@ -25,26 +25,20 @@ use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPreviewJobResult, decoded_rgba_size_valid,
 };
-use crate::loader::{
-    preview_aspect_matches_logical,
-};
-
+use crate::loader::preview_aspect_matches_logical;
 
 impl ImageViewerApp {
-
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
         self.directory_tree_strip_cold_attempted.remove(&index);
     }
 
-
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
     fn finish_strip_preview_job(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
     }
-
 
     fn strip_preview_failure_is_permanent(result: &DirectoryTreeStripPreviewJobResult) -> bool {
         result.decoded.width == 0
@@ -59,13 +53,11 @@ impl ImageViewerApp {
             )
     }
 
-
     fn abandon_strip_preview_attempt_after_failure(&mut self, index: usize) {
         self.finish_strip_preview_job(index);
         // Keep `cold_attempted` so undecodable files (e.g. motion-video JPG) do not monopolize
         // the limited cold-generate budget and block thumbnails for neighboring rows.
     }
-
 
     fn strip_preview_result_matches_index(
         &self,
@@ -73,7 +65,6 @@ impl ImageViewerApp {
     ) -> bool {
         self.image_files.get(result.index) == Some(&result.path)
     }
-
 
     fn image_strip_path_index(&mut self) -> &HashMap<PathBuf, usize> {
         // Use the existing image_list_generation counter (bumped at every
@@ -112,7 +103,6 @@ impl ImageViewerApp {
             .1
     }
 
-
     fn try_apply_relocated_strip_preview_result(
         &mut self,
         result: DirectoryTreeStripPreviewJobResult,
@@ -149,7 +139,6 @@ impl ImageViewerApp {
         ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
         true
     }
-
 
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
         while let Ok(index) = self.directory_tree_strip_inflight_release_rx.try_recv() {
@@ -280,5 +269,4 @@ impl ImageViewerApp {
             }
         }
     }
-
 }

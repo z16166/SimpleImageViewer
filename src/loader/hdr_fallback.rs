@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use crate::hdr::types::{
-    HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings, HdrTransferFunction,
-    DEFAULT_SDR_WHITE_NITS,
+    DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings,
+    HdrTransferFunction,
 };
 use crate::loader::DecodedImage;
 
@@ -106,11 +106,7 @@ pub(crate) fn hdr_directory_tree_strip_sdr_at_max_side(
             buffer.width, buffer.height
         ));
     }
-    let preview = crate::hdr::tiled::downsample_hdr_image_nearest(
-        buffer,
-        max_side,
-        max_side,
-    )?;
+    let preview = crate::hdr::tiled::downsample_hdr_image_nearest(buffer, max_side, max_side)?;
     let pixels = hdr_to_directory_tree_strip_sdr_rgba8(&preview)?;
     Ok((preview.width, preview.height, pixels))
 }
@@ -515,8 +511,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let fallback = DecodedImage::new(4, 4, vec![200_u8; 4 * 4 * 4]);
-        let strip =
-            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        let strip = directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
         assert_eq!(strip.width, 4);
         assert_eq!(strip.height, 4);
         assert_eq!(strip.rgba()[0], 200);
@@ -524,8 +519,8 @@ mod tests {
 
     #[test]
     fn directory_tree_strip_iso_deferred_prefers_fallback_baseline() {
-        use crate::loader::DecodedImage;
         use crate::hdr::types::IsoGainMapGpuSource;
+        use crate::loader::DecodedImage;
 
         let iso_sdr = Arc::new(vec![180_u8; 4 * 4 * 4]);
         let mut metadata = HdrImageMetadata::default();
@@ -561,8 +556,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let fallback = DecodedImage::new(4, 4, iso_sdr.to_vec());
-        let strip =
-            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        let strip = directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
         assert_eq!(strip.rgba()[0], 180);
     }
 
@@ -805,29 +799,15 @@ mod tests {
 
     #[test]
     fn strip_logical_prefers_bootstrap_aspect_before_hdr_float_ready() {
-        let logical = super::directory_tree_strip_logical_for_preview(
-            4040,
-            3029,
-            4000,
-            2248,
-            128,
-            72,
-            false,
-        );
+        let logical =
+            super::directory_tree_strip_logical_for_preview(4040, 3029, 4000, 2248, 128, 72, false);
         assert_eq!(logical, (4000, 2248));
     }
 
     #[test]
     fn strip_logical_uses_hdr_when_float_pixels_match() {
-        let logical = super::directory_tree_strip_logical_for_preview(
-            4040,
-            3029,
-            4000,
-            2248,
-            128,
-            96,
-            true,
-        );
+        let logical =
+            super::directory_tree_strip_logical_for_preview(4040, 3029, 4000, 2248, 128, 96, true);
         assert_eq!(logical, (4040, 3029));
     }
 

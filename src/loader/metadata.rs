@@ -37,10 +37,7 @@ pub(crate) fn extract_exif_thumbnail_from_mmap(
     extract_exif_thumbnail_from_reader(&mut reader, path)
 }
 
-pub(crate) fn extract_exif_thumbnail_from_bytes(
-    bytes: &[u8],
-    path: &Path,
-) -> Option<DecodedImage> {
+pub(crate) fn extract_exif_thumbnail_from_bytes(bytes: &[u8], path: &Path) -> Option<DecodedImage> {
     use std::io::Cursor;
     let mut reader = Cursor::new(bytes);
     extract_exif_thumbnail_from_reader(&mut reader, path)

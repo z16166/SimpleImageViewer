@@ -16,20 +16,15 @@
 
 //! Directory-tree strip GPU upload pipeline and cache write-through.
 
-
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPendingGpuUpload,
-    MAX_STRIP_GPU_UPLOADS_PER_PAINT, MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag,
-    StripPreviewReplaceParams, decide_strip_preview_replace,
+    DirectoryTreeStripPendingGpuUpload, MAX_STRIP_GPU_UPLOADS_PER_PAINT,
+    MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag, StripPreviewReplaceParams,
+    decide_strip_preview_replace,
 };
-use crate::loader::{
-    DecodedImage, PreviewStage,
-    hdr_has_iso_deferred_gain_map,
-};
-
+use crate::loader::{DecodedImage, PreviewStage, hdr_has_iso_deferred_gain_map};
 
 impl ImageViewerApp {
     fn evict_strip_pending_gpu_uploads(&mut self, need: usize) -> usize {
@@ -69,7 +64,6 @@ impl ImageViewerApp {
         }
         dropped
     }
-
 
     pub(super) fn queue_directory_tree_strip_gpu_upload(
         &mut self,
@@ -130,7 +124,6 @@ impl ImageViewerApp {
         }
     }
 
-
     /// Request repaints after a strip GPU flush batch. More uploads still queued uses the
     /// existing per-batch repaint; a final install that bumps cache revision gets one coalesced
     /// directory-tree viewport refresh (and a root logic wake when detached).
@@ -158,7 +151,6 @@ impl ImageViewerApp {
         // platforms repaint without waiting for pointer input).
         self.wake_root_for_logic();
     }
-
 
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
@@ -249,7 +241,6 @@ impl ImageViewerApp {
         }
     }
 
-
     fn strip_texture_cache_sdr_is_dark_deferred_baseline(&self, index: usize) -> bool {
         if self
             .deferred_sdr_uploads
@@ -268,11 +259,12 @@ impl ImageViewerApp {
             && !crate::loader::hdr_display_requests_sdr_preview(self.ultra_hdr_decode_capacity)
     }
 
-
-    pub(super) fn strip_skip_texture_cache_sync_for_deferred_black_sdr(&self, index: usize) -> bool {
+    pub(super) fn strip_skip_texture_cache_sync_for_deferred_black_sdr(
+        &self,
+        index: usize,
+    ) -> bool {
         self.strip_texture_cache_sdr_is_dark_deferred_baseline(index)
     }
-
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
         &mut self,
@@ -354,5 +346,4 @@ impl ImageViewerApp {
             strip_max_side,
         );
     }
-
 }

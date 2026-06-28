@@ -18,23 +18,18 @@
 
 use std::sync::Arc;
 
-
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
-use crate::loader::{
-    DecodedImage, PreviewStage, TiledImageSource,
-};
+use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
-
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
         self.pending_anim_frames
             .get(&index)
             .is_some_and(|pending| pending.hdr_frames.is_some())
     }
-
 
     pub(crate) fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {
         if self.hdr_placeholder_fallback_indices.contains(&index) {
@@ -50,7 +45,6 @@ impl ImageViewerApp {
             .get(&index)
             .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
     }
-
 
     pub(super) fn iso_deferred_baseline_pixels_for_strip(
         &self,
@@ -74,8 +68,11 @@ impl ImageViewerApp {
         None
     }
 
-
-    pub(super) fn strip_needs_iso_baseline_sync_inner(&self, index: usize, has_baseline: bool) -> bool {
+    pub(super) fn strip_needs_iso_baseline_sync_inner(
+        &self,
+        index: usize,
+        has_baseline: bool,
+    ) -> bool {
         if index >= self.image_files.len() {
             return false;
         }
@@ -95,7 +92,8 @@ impl ImageViewerApp {
                 .cached_preview_stage(index)
                 .unwrap_or(PreviewStage::Initial);
             let cached_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-                cached_tag, cached_stage,
+                cached_tag,
+                cached_stage,
             );
             if cached_rank >= target_rank {
                 if let Some(logical) = self.directory_tree_strip_logical_size(index) {
@@ -108,7 +106,6 @@ impl ImageViewerApp {
         }
         true
     }
-
 
     pub(super) fn strip_fallback_for_hdr_cache_sync(
         &self,
@@ -133,7 +130,6 @@ impl ImageViewerApp {
         placeholder.mark_sdr_deferred_placeholder();
         placeholder
     }
-
 
     /// Predicate version of [`strip_fallback_for_hdr_cache_sync`] — only determines whether
     /// the fallback would be a deferred placeholder, without constructing a [`DecodedImage`].
@@ -173,13 +169,12 @@ impl ImageViewerApp {
         };
         let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
         // ISO-deferred empty-float entries use the baseline sync path (early return above).
-        let target_tag =
-            crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                !hdr.rgba_f32.is_empty(),
-                self.strip_fallback_is_deferred_placeholder(index, hdr),
-                false,
-                false,
-            );
+        let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+            !hdr.rgba_f32.is_empty(),
+            self.strip_fallback_is_deferred_placeholder(index, hdr),
+            false,
+            false,
+        );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
             return false;
         }
@@ -206,7 +201,6 @@ impl ImageViewerApp {
         true
     }
 
-
     pub(crate) fn directory_tree_strip_logical_size(&self, index: usize) -> Option<(u32, u32)> {
         if let Some((width, height)) = self.texture_cache.get_original_res(index) {
             return Some((width, height));
@@ -228,8 +222,10 @@ impl ImageViewerApp {
         None
     }
 
-
-    pub(super) fn tiled_sdr_source_for_index(&self, index: usize) -> Option<Arc<dyn TiledImageSource>> {
+    pub(super) fn tiled_sdr_source_for_index(
+        &self,
+        index: usize,
+    ) -> Option<Arc<dyn TiledImageSource>> {
         if let Some(tm) = self.prefetched_tiles.get(&index) {
             return Some(tm.get_source());
         }
@@ -240,7 +236,6 @@ impl ImageViewerApp {
         }
         None
     }
-
 
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
@@ -292,7 +287,6 @@ impl ImageViewerApp {
         true
     }
 
-
     pub(super) fn strip_needs_compose_upgrade(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
@@ -312,7 +306,8 @@ impl ImageViewerApp {
             .cached_preview_stage(index)
             .unwrap_or(PreviewStage::Initial);
         if crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-            cached_tag, cached_stage,
+            cached_tag,
+            cached_stage,
         ) >= compose_rank
         {
             return false;
@@ -321,7 +316,6 @@ impl ImageViewerApp {
             .get(&index)
             .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
     }
-
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).
     #[cfg(test)]
@@ -345,5 +339,4 @@ impl ImageViewerApp {
         }
         Vec::new()
     }
-
 }

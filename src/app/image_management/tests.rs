@@ -2704,6 +2704,128 @@ fn apply_picked_image_directory_keeps_tree_settings_when_nav_hidden() {
 }
 
 #[test]
+fn ipc_double_click_updates_saved_gallery_directory_by_default() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_default");
+    let opened = std::env::temp_dir().join("siv_opened_gallery_default");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.last_image_dir = Some(saved);
+
+    app.handle_ipc_open_image(image.clone(), &ctx, true);
+
+    assert_eq!(app.current_browse_directory(), Some(opened.clone()));
+    assert_eq!(app.settings.last_image_dir, Some(opened));
+    assert_eq!(app.initial_image, Some(image));
+    assert!(!app.settings.recursive);
+}
+
+#[test]
+fn ipc_double_click_can_keep_saved_gallery_directory() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_kept");
+    let opened = std::env::temp_dir().join("siv_opened_gallery_kept");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.last_image_dir = Some(saved.clone());
+    app.settings.keep_gallery_dir_on_double_click = true;
+
+    app.handle_ipc_open_image(image.clone(), &ctx, true);
+
+    assert_eq!(app.current_browse_directory(), Some(opened));
+    assert_eq!(app.settings.last_image_dir, Some(saved));
+    assert_eq!(app.initial_image, Some(image));
+    assert!(!app.settings.recursive);
+}
+
+#[test]
+fn ipc_double_click_in_current_directory_disables_recursive_scan() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let opened = std::env::temp_dir().join("siv_opened_gallery_same_dir");
+    std::fs::create_dir_all(&opened).unwrap();
+    let first = opened.join("first.jpg");
+    let second = opened.join("second.jpg");
+
+    app.settings.last_image_dir = Some(opened);
+    app.settings.recursive = true;
+    app.image_files = vec![first, second.clone()];
+    app.file_byte_len_by_index = vec![0; app.image_files.len()];
+    app.file_modified_unix_by_index = vec![None; app.image_files.len()];
+
+    app.handle_ipc_open_image(second, &ctx, true);
+
+    assert_eq!(app.current_index, 1);
+    assert!(!app.settings.recursive);
+}
+
+#[test]
+fn picked_directory_replaces_transient_double_click_directory() {
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_before_pick");
+    let transient = std::env::temp_dir().join("siv_transient_gallery_before_pick");
+    let picked = std::env::temp_dir().join("siv_picked_gallery_after_transient");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&transient).unwrap();
+    std::fs::create_dir_all(&picked).unwrap();
+
+    app.settings.last_image_dir = Some(saved);
+    app.load_directory_for_transient_gallery(transient);
+
+    app.apply_picked_image_directory(picked.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(picked.clone()));
+    assert_eq!(app.settings.last_image_dir, Some(picked));
+    assert!(app.settings.transient_image_dir.is_none());
+}
+
+#[test]
+fn reloading_current_transient_directory_keeps_saved_gallery_directory() {
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_before_reload");
+    let transient = std::env::temp_dir().join("siv_transient_gallery_reload");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&transient).unwrap();
+
+    app.settings.last_image_dir = Some(saved.clone());
+    app.load_directory_for_transient_gallery(transient.clone());
+
+    app.reload_current_browse_directory(transient.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(transient.clone()));
+    assert_eq!(app.settings.transient_image_dir, Some(transient));
+    assert_eq!(app.settings.last_image_dir, Some(saved));
+}
+
+#[test]
+fn picked_directory_with_tree_nav_replaces_transient_double_click_directory() {
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_before_tree_pick");
+    let transient = std::env::temp_dir().join("siv_transient_gallery_before_tree_pick");
+    let picked = std::env::temp_dir().join("siv_tree_picked_gallery_after_transient");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&transient).unwrap();
+    std::fs::create_dir_all(&picked).unwrap();
+
+    app.settings.last_image_dir = Some(saved);
+    app.load_directory_for_transient_gallery(transient);
+    app.settings.show_directory_tree_nav = true;
+
+    app.apply_picked_image_directory(picked.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(picked.clone()));
+    assert_eq!(app.settings.tree_nav_selected_dir, Some(picked.clone()));
+    assert_eq!(app.settings.last_image_dir, Some(picked));
+    assert!(app.settings.transient_image_dir.is_none());
+}
+
+#[test]
 fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();

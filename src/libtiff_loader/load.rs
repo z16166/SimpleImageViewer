@@ -149,11 +149,19 @@ pub fn load_via_libtiff(
         lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ORIENTATION, &mut orientation);
 
         let mut sample_format: u16 = lib::SAMPLEFORMAT_UINT;
-        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_SAMPLEFORMAT, &mut sample_format);
+        lib::TIFFGetField(
+            handle.as_ptr(),
+            lib::TIFFTAG_SAMPLEFORMAT,
+            &mut sample_format,
+        );
         let mut spp: u16 = 0;
         lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
         let mut planar_config: u16 = CONFIG_CONTIG;
-        lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_PLANARCONFIG, &mut planar_config);
+        lib::TIFFGetField(
+            handle.as_ptr(),
+            lib::TIFFTAG_PLANARCONFIG,
+            &mut planar_config,
+        );
 
         let pixel_count_pre = width as u64 * height as u64;
         if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp)
@@ -429,8 +437,14 @@ pub fn load_via_libtiff(
         // Try RGBA interface first ONLY if not forced static
         if !force_static {
             let mut raster: Vec<lib::uint32> = vec![0; total_pixels];
-            if lib::TIFFReadRGBAImageOriented(handle.as_ptr(), width, height, raster.as_mut_ptr(), 1, 0)
-                != 0
+            if lib::TIFFReadRGBAImageOriented(
+                handle.as_ptr(),
+                width,
+                height,
+                raster.as_mut_ptr(),
+                1,
+                0,
+            ) != 0
             {
                 pixels = vec![0u8; total_pixels * 4];
                 std::ptr::copy_nonoverlapping(

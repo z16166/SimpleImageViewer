@@ -68,9 +68,7 @@ pub(crate) fn decode_avif_hdr_with_target_capacity(
 }
 
 #[cfg(feature = "avif-native")]
-pub(crate) fn read_avif_decoder_image(
-    bytes: &[u8],
-) -> Result<libavif_sys::AvifImageOwned, String> {
+pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifImageOwned, String> {
     let strict_flags = libavif_sys::AVIF_STRICT_DISABLED;
     let content_flag_attempts: [(u32, &'static str); 2] = [
         (libavif_sys::AVIF_IMAGE_CONTENT_ALL, "color+alpha+gainmap"),

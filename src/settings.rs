@@ -250,6 +250,12 @@ pub struct Settings {
     pub fullscreen: bool,
     #[serde(default)]
     pub last_image_dir: Option<PathBuf>,
+    /// Runtime-only browse directory used for Explorer double-click opens when
+    /// the saved gallery directory should remain unchanged.
+    #[serde(skip)]
+    pub transient_image_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub keep_gallery_dir_on_double_click: bool,
     #[serde(default = "default_true")]
     pub preload: bool,
     #[serde(default)]
@@ -462,6 +468,8 @@ impl Default for Settings {
             tree_nav_selected_namespace_path: None,
             fullscreen: false,
             last_image_dir: None,
+            transient_image_dir: None,
+            keep_gallery_dir_on_double_click: false,
             auto_switch: false,
             auto_switch_interval: default_interval(),
             random_slideshow_order: false,
@@ -531,6 +539,15 @@ impl Settings {
             false
         } else {
             self.recursive
+        }
+    }
+
+    pub(crate) fn set_current_browse_directory(&mut self, dir: PathBuf, persist_gallery_dir: bool) {
+        if persist_gallery_dir {
+            self.transient_image_dir = None;
+            self.last_image_dir = Some(dir);
+        } else {
+            self.transient_image_dir = Some(dir);
         }
     }
 
@@ -1213,6 +1230,25 @@ directory_tree_window_maximized_screen_center: [960, 540]
         );
         assert!(again.tree_nav_selected_namespace_path.is_some());
         assert!(again.tree_nav_selected_dir.is_none());
+    }
+
+    #[test]
+    fn transient_image_dir_yaml_is_runtime_only() {
+        let mut settings = Settings::default();
+        settings.last_image_dir = Some(PathBuf::from("/gallery/saved"));
+        settings.transient_image_dir = Some(PathBuf::from("/gallery/double-clicked"));
+        settings.keep_gallery_dir_on_double_click = true;
+
+        let yaml = serde_yaml::to_string(&settings).expect("serialize settings");
+        assert!(yaml.contains("keep_gallery_dir_on_double_click: true"));
+        assert!(yaml.contains("last_image_dir:"));
+        assert!(!yaml.contains("transient_image_dir:"));
+        assert!(!yaml.contains("/gallery/double-clicked"));
+
+        let again: Settings = serde_yaml::from_str(&yaml).expect("roundtrip");
+        assert_eq!(again.last_image_dir, Some(PathBuf::from("/gallery/saved")));
+        assert!(again.transient_image_dir.is_none());
+        assert!(again.keep_gallery_dir_on_double_click);
     }
 
     #[test]

@@ -384,8 +384,7 @@ fn strip_pinned_max_display_nits_not_raised_by_mastering_peak() {
     };
     let bright =
         hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &strip_tone).expect("strip tone");
-    let dark =
-        hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &crushed).expect("crushed tone");
+    let dark = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &crushed).expect("crushed tone");
     let sum_bright: u32 = bright[..3].iter().map(|&b| b as u32).sum();
     let sum_dark: u32 = dark[..3].iter().map(|&b| b as u32).sum();
     assert!(

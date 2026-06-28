@@ -70,6 +70,7 @@ impl ImageViewerApp {
             // However, setup_fonts will have at least loaded CJK as fallback.
         }
 
+        crate::ipc::register_ipc_wake_context(cc.egui_ctx.clone());
         let tray_cmd_rx =
             crate::app::tray_handlers::install_tray_event_handlers(cc.egui_ctx.clone());
 
@@ -544,7 +545,8 @@ impl ImageViewerApp {
             slideshow_paused: false,
             random_slideshow_order_ready: false,
             audio: AudioPlayer::new(),
-            show_settings: settings.last_image_dir.is_none(),
+            show_settings: settings.last_image_dir.is_none()
+                && settings.transient_image_dir.is_none(),
             settings_tab: crate::app::SettingsTab::Library,
             about_icon_texture: None,
             images_ever_loaded: false,
@@ -642,7 +644,8 @@ impl ImageViewerApp {
             music_seek_timeout: None,
             music_hud_last_activity: Instant::now(),
             cached_audio_devices: Vec::new(),
-            last_show_settings: settings.last_image_dir.is_none(),
+            last_show_settings: settings.last_image_dir.is_none()
+                && settings.transient_image_dir.is_none(),
             music_hud_drag_offset: Vec2::ZERO,
             hotkeys_runtime,
             hotkeys_draft_config,
@@ -737,7 +740,7 @@ impl ImageViewerApp {
         }
 
         if let Some(dir) = app.current_browse_directory() {
-            app.load_directory(dir);
+            app.reload_current_browse_directory(dir);
         }
         if app.settings.play_music {
             app.settings.music_paused = true; // Always start paused to avoid start-up noise

@@ -94,6 +94,19 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
+        self.load_directory_with_gallery_persistence(dir, true);
+    }
+
+    pub(crate) fn load_directory_for_transient_gallery(&mut self, dir: PathBuf) {
+        self.load_directory_with_gallery_persistence(dir, false);
+    }
+
+    pub(crate) fn reload_current_browse_directory(&mut self, dir: PathBuf) {
+        let persist_gallery_dir = self.settings.transient_image_dir.as_ref() != Some(&dir);
+        self.load_directory_with_gallery_persistence(dir, persist_gallery_dir);
+    }
+
+    fn load_directory_with_gallery_persistence(&mut self, dir: PathBuf, persist_gallery_dir: bool) {
         #[cfg(feature = "preload-debug")]
         let load_started = std::time::Instant::now();
         // Abandon an in-progress F5 refresh before starting a new directory scan; otherwise
@@ -115,7 +128,8 @@ impl ImageViewerApp {
             // Tree selection and startup rescan must preserve tree_nav_selected_namespace_path.
         }
         // Keep Settings folder path and folder-picker default in sync even in tree mode.
-        self.settings.last_image_dir = Some(dir.clone());
+        self.settings
+            .set_current_browse_directory(dir.clone(), persist_gallery_dir);
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
@@ -219,7 +233,7 @@ impl ImageViewerApp {
         // If the list is empty there is no "current file" to anchor to; fall back
         // to a regular directory load so the UI behaves like the first open.
         if self.image_files.is_empty() {
-            self.load_directory(dir);
+            self.reload_current_browse_directory(dir);
             return;
         }
 

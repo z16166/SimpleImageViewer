@@ -18,10 +18,12 @@
 
 use std::path::Path;
 
-use super::decode::{decode_avif_image_rgba_u16, libavif_result_to_string, read_avif_decoder_image};
+use super::avif_cicp_to_metadata;
+use super::decode::{
+    decode_avif_image_rgba_u16, libavif_result_to_string, read_avif_decoder_image,
+};
 use super::gain_map::avif_gain_map_to_metadata;
 use super::metadata::{AvifMetadataExt, avif_yuv_to_rgb_output_metadata};
-use super::{avif_cicp_to_metadata};
 use crate::hdr::avif_gain_map_deferred::avif_build_iso_sdr_baseline_rgba8;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::loader::downsample_decoded_for_strip;
@@ -81,9 +83,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     let width = image_ref.width;
     let height = image_ref.height;
     if width == 0 || height == 0 {
-        return Some(Err(format!(
-            "{path:?}: libavif decoded zero-sized image"
-        )));
+        return Some(Err(format!("{path:?}: libavif decoded zero-sized image")));
     }
 
     let metadata = avif_cicp_to_metadata(
@@ -96,14 +96,15 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     let metadata = avif_yuv_to_rgb_output_metadata(&metadata, image_ref);
     let color_space = metadata.color_space_hint();
 
-    let (rgba_u16, rgb_out_depth) = match decode_avif_image_rgba_u16(
-        image.as_ptr(),
-        image_ref,
-        &libavif_result_to_string,
-    ) {
-        Ok(ok) => ok,
-        Err(err) => return Some(Err(format!("{path:?}: decode ISO gain-map RGBA u16: {err}"))),
-    };
+    let (rgba_u16, rgb_out_depth) =
+        match decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string) {
+            Ok(ok) => ok,
+            Err(err) => {
+                return Some(Err(format!(
+                    "{path:?}: decode ISO gain-map RGBA u16: {err}"
+                )));
+            }
+        };
 
     let baseline = avif_build_iso_sdr_baseline_rgba8(
         &rgba_u16,
@@ -127,7 +128,11 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
 ) -> Option<Result<(crate::loader::DecodedImage, (u32, u32)), String>> {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
-        Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_precomposed: {err}"))),
+        Err(err) => {
+            return Some(Err(format!(
+                "{path:?}: decode_avif_strip_precomposed: {err}"
+            )));
+        }
     };
     let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.gainMap.is_null() {

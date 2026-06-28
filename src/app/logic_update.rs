@@ -46,7 +46,9 @@ impl ImageViewerApp {
         }
 
         // Process IPC messages (needs to happen before minimized check to wake up immediately)
+        let mut ipc_handled = false;
         while let Ok(msg) = self.ipc_rx.try_recv() {
+            ipc_handled = true;
             if self.hidden_to_tray {
                 self.show_main_window_from_tray(ctx);
             }
@@ -64,6 +66,10 @@ impl ImageViewerApp {
                     Self::focus_and_unminimize_window(ctx);
                 }
             }
+        }
+        if ipc_handled {
+            ctx.request_repaint();
+            self.wake_root_for_logic();
         }
 
         // Minimize-to-tray on close is handled in `raw_input_hook` (see eframe_app.rs):
@@ -434,14 +440,9 @@ impl ImageViewerApp {
         );
         let (output_mode, render_output_mode) = {
             let es = self.frame_effective_hdr_monitor_selection.as_ref();
-            let om = crate::hdr::monitor::effective_capability_output_mode(
-                self.hdr_target_format,
-                es,
-            );
-            let rom = crate::hdr::monitor::effective_render_output_mode(
-                self.hdr_target_format,
-                es,
-            );
+            let om =
+                crate::hdr::monitor::effective_capability_output_mode(self.hdr_target_format, es);
+            let rom = crate::hdr::monitor::effective_render_output_mode(self.hdr_target_format, es);
             (om, rom)
         };
         if matches!(

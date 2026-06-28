@@ -31,9 +31,9 @@ pub(crate) use decode::{
     jxl_tag_display_referred_when_sdr_grade,
 };
 #[cfg(feature = "jpegxl")]
-pub(crate) use decode::{decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity, srgb_unit_to_u8};
-#[cfg(feature = "jpegxl")]
-pub(crate) use strip_baseline::decode_jxl_strip_preview_rgba8;
+pub(crate) use decode::{
+    decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
+};
 #[cfg(feature = "jpegxl")]
 pub(crate) use metadata::{
     JxlGainMapBundleRef, decode_jxl_gain_map_from_bundle, read_jxl_gain_map_bundle,
@@ -46,3 +46,5 @@ pub(crate) use probe::{
     JXL_TRANSFER_FUNCTION_SRGB, jxl_color_encoding_to_metadata,
 };
 pub(crate) use probe::{is_jxl_header, libjxl_probe_orientation_from_path};
+#[cfg(feature = "jpegxl")]
+pub(crate) use strip_baseline::decode_jxl_strip_preview_rgba8;

@@ -21,9 +21,7 @@ use eframe::egui;
 use crate::app::ImageViewerApp;
 use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
-use crate::loader::{
-    DecodedImage, PreviewStage,
-};
+use crate::loader::{DecodedImage, PreviewStage};
 
 use super::{
     BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
@@ -39,22 +37,22 @@ mod gpu;
 mod poll;
 mod schedule;
 
-pub(super) fn send_strip_inflight_release(release_tx: &crossbeam_channel::Sender<usize>, index: usize) {
+pub(super) fn send_strip_inflight_release(
+    release_tx: &crossbeam_channel::Sender<usize>,
+    index: usize,
+) {
     if let Err(err) = release_tx.try_send(index) {
         log::warn!("[DirectoryTree] Strip inflight release dropped for index {index}: {err}");
     }
 }
 
-
 impl ImageViewerApp {
-
     pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
         self.directory_tree_strip_cache.remove_index(index);
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
     }
-
 
     pub(crate) fn ensure_directory_tree_strip_thumbnails(&mut self, ctx: &egui::Context) {
         if !self.directory_tree_list_previews_active() {
@@ -145,11 +143,11 @@ impl ImageViewerApp {
 
         if file_count > 0 {
             let preload_sync_cap = file_count.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
-            let hdr_sync_budget = max_inflight
-                .saturating_sub(self.directory_tree_strip_generate_inflight.len());
+            let hdr_sync_budget =
+                max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut iso_sync_scheduled = 0usize;
-            let iso_sync_budget = max_inflight
-                .saturating_sub(self.directory_tree_strip_generate_inflight.len());
+            let iso_sync_budget =
+                max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
             let mut hdr_sync_scheduled = 0usize;
             for index in 0..preload_sync_cap {
                 if iso_sync_scheduled < iso_sync_budget {
@@ -157,10 +155,7 @@ impl ImageViewerApp {
                         self.iso_deferred_baseline_pixels_for_strip(index)
                     {
                         if self.try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
-                            index,
-                            width,
-                            height,
-                            baseline,
+                            index, width, height, baseline,
                         ) {
                             iso_sync_scheduled += 1;
                         }
@@ -361,7 +356,6 @@ impl ImageViewerApp {
         }
     }
 
-
     fn permute_strip_index_set(set: &mut std::collections::HashSet<usize>, old_to_new: &[usize]) {
         let previous: Vec<usize> = set.iter().copied().collect();
         set.clear();
@@ -374,7 +368,6 @@ impl ImageViewerApp {
             }
         }
     }
-
 
     fn permute_directory_tree_strip_pending_gpu(&mut self, old_to_new: &[usize]) {
         let permute_deque = |deque: &mut std::collections::VecDeque<
@@ -395,7 +388,6 @@ impl ImageViewerApp {
         permute_deque(&mut self.directory_tree_strip_pending_gpu_initial);
         permute_deque(&mut self.directory_tree_strip_pending_gpu_refined);
     }
-
 
     pub(crate) fn permute_directory_tree_strip_after_image_list_reorder(
         &mut self,
@@ -449,7 +441,6 @@ impl ImageViewerApp {
         }
         self.permute_directory_tree_strip_after_image_list_reorder(&old_to_new);
     }
-
 
     fn apply_partial_directory_tree_strip_reorder(
         &mut self,
@@ -515,7 +506,6 @@ impl ImageViewerApp {
         );
     }
 
-
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
         self.directory_tree_strip_generate_inflight.clear();
@@ -537,7 +527,6 @@ impl ImageViewerApp {
         );
     }
 
-
     /// Drop stale navigation list rows and strip previews before a new directory scan.
     pub(crate) fn reset_directory_tree_file_list_for_scan(&mut self) {
         if self.settings.browse_mode != crate::settings::BrowseMode::Tree {
@@ -553,18 +542,15 @@ impl ImageViewerApp {
         list.mark_snapshot_dirty();
     }
 
-
     pub(crate) fn invalidate_directory_tree_strip_gpu_textures(&mut self) {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
     }
 
-
     pub(crate) fn directory_tree_list_previews_active(&self) -> bool {
         self.directory_tree_settings_active() && self.settings.directory_tree_show_list_previews
     }
-
 
     pub(crate) fn on_directory_tree_list_preview_settings_changed(&mut self, ctx: &egui::Context) {
         self.invalidate_directory_tree_strip_gpu_textures();
@@ -581,7 +567,6 @@ impl ImageViewerApp {
         ctx.request_repaint();
         self.queue_save();
     }
-
 }
 
 #[cfg(test)]

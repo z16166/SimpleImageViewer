@@ -257,7 +257,11 @@ impl ImageViewerApp {
                 .tree_nav_selected_dir
                 .clone()
                 .or_else(|| self.settings.last_image_dir.clone()),
-            BrowseMode::Linear => self.settings.last_image_dir.clone(),
+            BrowseMode::Linear => self
+                .settings
+                .transient_image_dir
+                .clone()
+                .or_else(|| self.settings.last_image_dir.clone()),
         }
     }
 
@@ -512,7 +516,8 @@ impl ImageViewerApp {
         self.activate_directory_tree_nav();
         self.settings.tree_nav_selected_dir = Some(root.clone());
         self.settings.tree_nav_selected_namespace_path = None;
-        self.settings.last_image_dir = Some(root.clone());
+        self.settings
+            .set_current_browse_directory(root.clone(), true);
 
         self.ensure_directory_tree_places_loaded();
         let runtime = &self.directory_tree;

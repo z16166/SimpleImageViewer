@@ -215,7 +215,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                 ));
             } else if old_recursive && !app.settings.recursive {
                 if let Some(dir) = app.current_browse_directory() {
-                    app.load_directory(dir);
+                    app.reload_current_browse_directory(dir);
                 }
                 app.queue_save();
             }
@@ -225,6 +225,17 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             ui,
             &mut app.settings.preload,
             t!("label.enable_preload"),
+            &palette,
+        )
+        .changed()
+        {
+            app.queue_save();
+        }
+
+        if themed_labeled_toggle(
+            ui,
+            &mut app.settings.keep_gallery_dir_on_double_click,
+            t!("label.keep_gallery_dir_on_double_click"),
             &palette,
         )
         .changed()
@@ -264,7 +275,7 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         });
         if old_pair_handling != app.settings.paired_raw_jpeg_handling {
             if let Some(dir) = app.current_browse_directory() {
-                app.load_directory(dir);
+                app.reload_current_browse_directory(dir);
             }
             app.queue_save();
         }

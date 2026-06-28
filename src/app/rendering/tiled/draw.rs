@@ -166,8 +166,7 @@ impl ImageViewerApp {
         // preview_scale: ratio of preview texture resolution to the ORIGINAL image resolution.
         // This tells us at what display scale the preview's native pixels would be 1:1.
         // Above this scale, tiles provide higher quality than the preview.
-        let preview_scale = if let Some(ref p) = self.tile_manager().preview_texture
-        {
+        let preview_scale = if let Some(ref p) = self.tile_manager().preview_texture {
             p.size()[0] as f32 / rotated_img_size.x.max(1.0)
         } else {
             FALLBACK_PREVIEW_SCALE // Fallback
@@ -297,14 +296,12 @@ impl ImageViewerApp {
             } else {
                 screen_rect
             };
-            let visible = self.tile_manager().visible_tiles(
-                unrotated_dest,
-                tile_clip,
-                padding,
-            );
-            let primary_visible =
-                self.tile_manager()
-                    .visible_tiles(unrotated_dest, tile_clip, 0.0);
+            let visible = self
+                .tile_manager()
+                .visible_tiles(unrotated_dest, tile_clip, padding);
+            let primary_visible = self
+                .tile_manager()
+                .visible_tiles(unrotated_dest, tile_clip, 0.0);
             let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
             self.tiled_primary_visible_scratch.clear();
             self.tiled_primary_visible_scratch
@@ -371,7 +368,10 @@ impl ImageViewerApp {
                     None
                 };
 
-                let tm = self.tile_manager.as_mut().expect("tile_manager accessed without active tiled source");
+                let tm = self
+                    .tile_manager
+                    .as_mut()
+                    .expect("tile_manager accessed without active tiled source");
 
                 for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
                     if tile_plane_kind_for_backend(plane_backend) == TiledPlaneKind::Hdr {
@@ -466,8 +466,7 @@ impl ImageViewerApp {
             if self.settings.show_osd {
                 let (vis_gpu, vis_ready, vis_pending) =
                     self.tile_manager().stats_for_visible(&visible_coords);
-                let (total_gpu, total_mem, _total_pnd) =
-                    self.tile_manager().tiles_and_pending();
+                let (total_gpu, total_mem, _total_pnd) = self.tile_manager().tiles_and_pending();
 
                 let debug_text = format!(
                     "VIS: {} (GPU:{} RDY:{} PND:{}) | ALL: (GPU:{} MEM:{}) | SCALE: {:.3}",
@@ -493,8 +492,7 @@ impl ImageViewerApp {
             // request another repaint immediately to keep the pipeline moving.
             let has_more_ready = should_repaint_for_ready_tiles_for_backend(
                 plane_backend,
-                self.tile_manager()
-                    .has_ready_to_upload(&visible_coords)
+                self.tile_manager().has_ready_to_upload(&visible_coords)
                     || has_pending_visible_tiles_for_backend(
                         plane_backend,
                         &self.tile_manager().pending_tiles,

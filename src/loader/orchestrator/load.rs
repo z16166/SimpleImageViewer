@@ -25,8 +25,7 @@ use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
     LoadResult, LoaderOutput, MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle,
-    PreviewResult,
-    RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
+    PreviewResult, RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
     hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
     hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
     in_flight_profile_supersedes_load_result, source_key_for_path,
@@ -977,12 +976,14 @@ impl ImageLoader {
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
-                        std::thread::Builder::new().name(thread_name).spawn(move || {
-                            let _guard = CurrentImageOsThreadGuard(os_threads_live);
-                            if let Some(w) = worker_for_thread.lock().take() {
-                                w();
-                            }
-                        })
+                        std::thread::Builder::new()
+                            .name(thread_name)
+                            .spawn(move || {
+                                let _guard = CurrentImageOsThreadGuard(os_threads_live);
+                                if let Some(w) = worker_for_thread.lock().take() {
+                                    w();
+                                }
+                            })
                     }
                 };
                 match spawn_result {

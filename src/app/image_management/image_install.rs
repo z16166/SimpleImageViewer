@@ -367,21 +367,20 @@ impl ImageViewerApp {
                 fallback,
                 sdr_fallback_is_placeholder,
             ) {
-                let strip_stage =
-                    if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                        && hdr.rgba_f32.is_empty()
-                    {
-                        crate::loader::PreviewStage::Initial
-                    } else {
-                        crate::loader::PreviewStage::Refined
-                    };
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
-                idx,
-                strip_preview.width,
-                strip_preview.height
-            );
+                let strip_stage = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
+                    && hdr.rgba_f32.is_empty()
+                {
+                    crate::loader::PreviewStage::Initial
+                } else {
+                    crate::loader::PreviewStage::Refined
+                };
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][Strip] install cache idx={} stage={strip_stage:?} decoded={}x{}",
+                    idx,
+                    strip_preview.width,
+                    strip_preview.height
+                );
                 let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
                     hdr.width,
                     hdr.height,
@@ -400,14 +399,14 @@ impl ImageViewerApp {
                             && crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
                             && hdr.rgba_f32.is_empty(),
                     );
-            self.cache_directory_tree_strip_thumbnail(
-                idx,
-                &strip_preview,
-                strip_stage,
-                Some(strip_logical),
-                strip_tag,
-                ctx,
-            );
+                self.cache_directory_tree_strip_thumbnail(
+                    idx,
+                    &strip_preview,
+                    strip_stage,
+                    Some(strip_logical),
+                    strip_tag,
+                    ctx,
+                );
             }
         }
     }
@@ -443,7 +442,11 @@ impl ImageViewerApp {
             .hdr_image_cache
             .get(&idx)
             .and_then(|hdr| {
-                self.installed_hdr_directory_tree_strip_preview(hdr.as_ref(), &fallback_image, false)
+                self.installed_hdr_directory_tree_strip_preview(
+                    hdr.as_ref(),
+                    &fallback_image,
+                    false,
+                )
             })
             .unwrap_or_else(|| fallback_image.clone());
         if active_hdr_plane_displays_current {

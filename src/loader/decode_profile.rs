@@ -294,7 +294,9 @@ mod tests {
     #[test]
     fn equal_in_flight_profile_does_not_supersede_load_result() {
         let profile = base_profile();
-        assert!(!in_flight_profile_supersedes_load_result(&profile, &profile));
+        assert!(!in_flight_profile_supersedes_load_result(
+            &profile, &profile
+        ));
     }
 
     #[test]
@@ -309,7 +311,9 @@ mod tests {
             profile_epoch: 1,
             ..base_profile()
         };
-        assert!(in_flight_profile_supersedes_load_result(&worker, &in_flight));
+        assert!(in_flight_profile_supersedes_load_result(
+            &worker, &in_flight
+        ));
     }
 
     #[test]

@@ -969,12 +969,11 @@ impl ImageViewerApp {
     }
 
     pub(super) fn sync_loader_preload_plan(&mut self) {
-        self.loader
-            .sync_preload_plan(
-                self.current_index,
-                self.image_files.len(),
-                self.prefetch_window_max_distance,
-            );
+        self.loader.sync_preload_plan(
+            self.current_index,
+            self.image_files.len(),
+            self.prefetch_window_max_distance,
+        );
         self.loader
             .set_output_mode(self.hdr_capabilities.output_mode);
     }

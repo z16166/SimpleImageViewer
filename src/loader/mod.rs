@@ -30,13 +30,11 @@ mod tiled_sources;
 mod types;
 
 pub use decode_profile::{
-    DecodeProfile, DisplayRequirements, InFlightLoad, LoadIntent, ProfileSpawnRelation,
-    DEFAULT_PREFETCH_WINDOW_DISTANCE, HDR_CAPACITY_MATCH_EPSILON, MAX_CURRENT_IMAGE_OS_THREADS,
-    MAX_IMG_LOADER_THREADS,
-    decode_profile_stub,
-    decode_profile_with_epoch, in_flight_profile_supersedes_hq_refinement,
-    in_flight_profile_supersedes_load_result, output_mode_is_hdr, profile_satisfies_display,
-    profile_spawn_relation,
+    DEFAULT_PREFETCH_WINDOW_DISTANCE, DecodeProfile, DisplayRequirements,
+    HDR_CAPACITY_MATCH_EPSILON, InFlightLoad, LoadIntent, MAX_CURRENT_IMAGE_OS_THREADS,
+    MAX_IMG_LOADER_THREADS, ProfileSpawnRelation, decode_profile_stub, decode_profile_with_epoch,
+    in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
+    output_mode_is_hdr, profile_satisfies_display, profile_spawn_relation,
 };
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
@@ -58,17 +56,15 @@ pub use types::*;
 pub(crate) use decode::downsample_decoded_for_strip;
 pub(crate) use decode::generate_directory_tree_thumb_from_path;
 pub(crate) use hdr_fallback::{
-    cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
-    hdr_has_iso_deferred_gain_map, hdr_raw_gpu_demosaic_pending,
-    hdr_raw_gpu_refinement_is_pointless, hdr_sdr_fallback_is_placeholder_for_load,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder,     directory_tree_strip_composed_from_iso_deferred,
-    directory_tree_strip_from_hdr_or_fallback,
-    directory_tree_strip_logical_for_preview,
-    hdr_directory_tree_strip_sdr_at_max_side,
-    hdr_raw_gpu_bootstrap_fallback_decoded,
-    hdr_tone_map_settings_for_directory_tree_strip,
-    hdr_to_sdr_with_user_tone, libraw_scene_linear_needs_eager_sdr_fallback,
-    raw_gpu_source_has_bootstrap_preview, static_hdr_background_plane_upload_eligible,
+    cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_composed_from_iso_deferred,
+    directory_tree_strip_from_hdr_or_fallback, directory_tree_strip_logical_for_preview,
+    hdr_directory_tree_strip_sdr_at_max_side, hdr_display_requests_sdr_preview,
+    hdr_has_iso_deferred_gain_map, hdr_raw_gpu_bootstrap_fallback_decoded,
+    hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
+    hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_to_sdr_with_user_tone, hdr_tone_map_settings_for_directory_tree_strip,
+    libraw_scene_linear_needs_eager_sdr_fallback, raw_gpu_source_has_bootstrap_preview,
+    static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
     extract_exif_thumbnail, extract_exif_thumbnail_from_bytes, extract_exif_thumbnail_from_mmap,

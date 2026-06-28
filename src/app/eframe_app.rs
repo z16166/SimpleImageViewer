@@ -413,6 +413,7 @@ impl ImageViewerApp {
     }
 
     fn show_main_window_from_tray_viewport(ctx: &Context, was_maximized: bool) {
+        crate::ipc::unhide_main_window();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         if was_maximized {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
@@ -523,15 +524,18 @@ impl ImageViewerApp {
 
     pub(crate) fn show_main_window_from_tray(&mut self, ctx: &Context) {
         self.explicit_quit = false; // Reset explicit quit flag when restoring
-        if let Some(state) = &self.tray_state {
-            if self.hidden_to_tray || self.pending_hide_to_tray {
-                self.hidden_to_tray = false;
-                self.pending_hide_to_tray = false;
-                Self::show_main_window_from_tray_viewport(ctx, state.was_maximized);
-                self.show_detached_directory_tree_viewport_if_active(ctx);
-            } else {
-                Self::focus_main_window(ctx);
-            }
+        let was_maximized = self
+            .tray_state
+            .as_ref()
+            .map(|state| state.was_maximized)
+            .unwrap_or(false);
+        if self.hidden_to_tray || self.pending_hide_to_tray {
+            self.hidden_to_tray = false;
+            self.pending_hide_to_tray = false;
+            Self::show_main_window_from_tray_viewport(ctx, was_maximized);
+            self.show_detached_directory_tree_viewport_if_active(ctx);
+        } else if self.tray_state.is_some() {
+            Self::focus_main_window(ctx);
         }
     }
 

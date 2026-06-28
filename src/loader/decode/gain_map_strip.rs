@@ -35,8 +35,7 @@ fn finish_gain_map_strip(
         ));
     }
     let decoded = DecodedImage::new(width, height, baseline);
-    let strip = downsample_decoded_for_strip(&decoded, max_side)
-        .map_err(|err| err.to_string())?;
+    let strip = downsample_decoded_for_strip(&decoded, max_side).map_err(|err| err.to_string())?;
     if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
         return Err(format!(
             "gain-map strip aspect mismatch: {}x{} vs {width}x{height}",
@@ -106,7 +105,9 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
             }
             match crate::hdr::jpegxl::decode_jxl_strip_iso_gain_map_baseline(bytes) {
                 Ok((baseline, width, height)) => {
-                    return Some(finish_gain_map_strip(baseline, width, height, max_side, path));
+                    return Some(finish_gain_map_strip(
+                        baseline, width, height, max_side, path,
+                    ));
                 }
                 Err(err) => {
                     if err.contains("strip baseline") || err.contains("jhgm") {
@@ -128,7 +129,8 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
             {
                 return Some(result);
             }
-            if let Some(result) = crate::hdr::avif::decode_avif_strip_precomposed_hdr(bytes, path, max_side)
+            if let Some(result) =
+                crate::hdr::avif::decode_avif_strip_precomposed_hdr(bytes, path, max_side)
             {
                 return Some(result);
             }

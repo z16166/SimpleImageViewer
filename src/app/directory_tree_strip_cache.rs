@@ -509,10 +509,7 @@ pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
     decoded.rgba().len() == decoded.width as usize * decoded.height as usize * 4
 }
 
-pub(crate) fn strip_preview_quality_rank(
-    tag: StripPreviewBufferTag,
-    stage: PreviewStage,
-) -> u16 {
+pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: PreviewStage) -> u16 {
     tag.quality_rank(stage)
 }
 
@@ -563,20 +560,23 @@ pub(crate) struct StripPreviewReplaceParams<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StripPreviewReplaceOutcome {
     AllowEmptySlot,
-    AllowHigherRank { cached_rank: u16, incoming_rank: u16 },
+    AllowHigherRank {
+        cached_rank: u16,
+        incoming_rank: u16,
+    },
     RejectDeferredPlaceholder,
     RejectBlackPlaceholderTag,
     RejectInvalidRgba,
     RejectAspectMismatch,
-    RejectRankNotHigher { cached_rank: u16, incoming_rank: u16 },
+    RejectRankNotHigher {
+        cached_rank: u16,
+        incoming_rank: u16,
+    },
 }
 
 impl StripPreviewReplaceOutcome {
     fn allows_replace(self) -> bool {
-        matches!(
-            self,
-            Self::AllowEmptySlot | Self::AllowHigherRank { .. }
-        )
+        matches!(self, Self::AllowEmptySlot | Self::AllowHigherRank { .. })
     }
 
     #[cfg(feature = "preload-debug")]
@@ -608,12 +608,7 @@ fn evaluate_strip_preview_replace(
         }
     }
     if let Some((logical_w, logical_h)) = params.incoming_logical
-        && !preview_aspect_matches_logical(
-            params.preview_w,
-            params.preview_h,
-            logical_w,
-            logical_h,
-        )
+        && !preview_aspect_matches_logical(params.preview_w, params.preview_h, logical_w, logical_h)
     {
         return StripPreviewReplaceOutcome::RejectAspectMismatch;
     }
@@ -670,8 +665,7 @@ fn log_strip_preview_replace_decision(
     } else {
         "reject"
     };
-    let incoming_rank =
-        strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
+    let incoming_rank = strip_preview_quality_rank(params.incoming_tag, params.incoming_stage);
     let cached_rank = params.cached_tag.map(|tag| {
         strip_preview_quality_rank(tag, params.cached_stage.unwrap_or(PreviewStage::Initial))
     });
@@ -683,9 +677,7 @@ fn log_strip_preview_replace_decision(
         params.cached_preview_h,
         params.cached_logical,
     ) {
-        (Some(cw), Some(ch), Some((lw, lh))) => {
-            preview_aspect_matches_logical(cw, ch, lw, lh)
-        }
+        (Some(cw), Some(ch), Some((lw, lh))) => preview_aspect_matches_logical(cw, ch, lw, lh),
         _ => false,
     };
     let pixel_hint = params

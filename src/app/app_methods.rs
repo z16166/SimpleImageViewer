@@ -231,16 +231,19 @@ impl ImageViewerApp {
         self.settings.show_directory_tree_nav = false;
         self.settings.tree_nav_selected_dir = None;
         self.settings.tree_nav_selected_namespace_path = None;
+        let persist_gallery_dir = !(no_recursive && self.settings.keep_gallery_dir_on_double_click);
 
         let same_dir = self
-            .settings
-            .last_image_dir
+            .current_browse_directory()
             .as_ref()
             .map(|d| d == &parent.to_path_buf())
             .unwrap_or(false);
 
         if same_dir && !self.image_files.is_empty() {
             if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                if no_recursive {
+                    self.settings.recursive = false;
+                }
                 if self.settings.auto_switch {
                     self.settings.auto_switch = false;
                 }
@@ -253,19 +256,26 @@ impl ImageViewerApp {
                 if self.settings.auto_switch {
                     self.settings.auto_switch = false;
                 }
-                self.load_directory(parent.to_path_buf());
+                if persist_gallery_dir {
+                    self.load_directory(parent.to_path_buf());
+                } else {
+                    self.load_directory_for_transient_gallery(parent.to_path_buf());
+                }
             }
         } else {
-            self.settings.last_image_dir = Some(parent.to_path_buf());
             if no_recursive {
                 self.settings.recursive = false;
             }
-            self.queue_save();
             self.initial_image = Some(path.clone());
             if self.settings.auto_switch {
                 self.settings.auto_switch = false;
             }
-            self.load_directory(parent.to_path_buf());
+            if persist_gallery_dir {
+                self.load_directory(parent.to_path_buf());
+                self.queue_save();
+            } else {
+                self.load_directory_for_transient_gallery(parent.to_path_buf());
+            }
         }
 
         Self::focus_and_unminimize_window(ctx);

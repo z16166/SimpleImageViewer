@@ -226,7 +226,14 @@ pub fn run() -> eframe::Result {
     // Apply command-line overrides to settings
     if let Some(ref path) = initial_image {
         if let Some(parent) = path.parent() {
-            settings.last_image_dir = Some(parent.to_path_buf());
+            settings.browse_mode = crate::settings::BrowseMode::Linear;
+            settings.show_directory_tree_nav = false;
+            settings.tree_nav_selected_dir = None;
+            settings.tree_nav_selected_namespace_path = None;
+            settings.set_current_browse_directory(
+                parent.to_path_buf(),
+                !settings.keep_gallery_dir_on_double_click,
+            );
         }
         settings.auto_switch = false;
         settings.recursive = false;

@@ -156,13 +156,6 @@ pub(crate) unsafe fn objc_msg_send_add_observer(
     object: ObjcId,
 ) {
     unsafe {
-        objc_msg_send_add_observer_raw(
-            receiver,
-            selector,
-            observer,
-            observer_sel,
-            name,
-            object,
-        );
+        objc_msg_send_add_observer_raw(receiver, selector, observer, observer_sel, name, object);
     }
 }
