@@ -215,7 +215,8 @@ pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> 
 pub(crate) fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
     let a = 0.17883277_f32;
     let b = 0.28466892_f32;
-    let c = 0.559_910_7_f32;
+    #[allow(clippy::excessive_precision)]
+    let c = 0.55991073_f32;
     if e_prime <= 0.5 {
         (e_prime * e_prime) / 3.0
     } else {
