@@ -272,12 +272,12 @@ impl ImageViewerApp {
             }
             if persist_gallery_dir {
                 self.load_directory(parent.to_path_buf());
-                self.queue_save();
             } else {
                 self.load_directory_for_transient_gallery(parent.to_path_buf());
             }
         }
 
+        self.queue_save();
         Self::focus_and_unminimize_window(ctx);
     }
 }

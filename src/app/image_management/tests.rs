@@ -2745,6 +2745,31 @@ fn ipc_double_click_can_keep_saved_gallery_directory() {
 }
 
 #[test]
+fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let saved = std::env::temp_dir().join("siv_saved_gallery_save_queued");
+    let opened = std::env::temp_dir().join("siv_opened_gallery_save_queued");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.last_image_dir = Some(saved.clone());
+    app.settings.keep_gallery_dir_on_double_click = true;
+    app.settings.recursive = true;
+    app.settings.auto_switch = true;
+
+    app.handle_ipc_open_image(image, &ctx, true);
+
+    let queued = save_rx.try_iter().last().expect("settings save queued");
+    assert_eq!(queued.last_image_dir, Some(saved));
+    assert!(!queued.recursive);
+    assert!(!queued.auto_switch);
+}
+
+#[test]
 fn ipc_double_click_in_current_directory_disables_recursive_scan() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
