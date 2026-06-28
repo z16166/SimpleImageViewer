@@ -805,12 +805,14 @@ impl ImageViewerApp {
             upload_device_id,
         );
         let mut renderer = wgpu_state.renderer.write();
+        #[allow(clippy::collapsible_if)]
         if let Some(resources) = renderer
             .callback_resources
             .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
-            && !resources.register_preuploaded_binding(image_key, binding, self.current_device_id)
         {
-            // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
+            if !resources.register_preuploaded_binding(image_key, binding, self.current_device_id) {
+                // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
+            }
         }
 
         self.hdr_register_prewarm_repush_counts
