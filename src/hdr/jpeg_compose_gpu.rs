@@ -57,11 +57,11 @@ struct JpegGainMapComposeSettings {
 @group(0) @binding(2) var<uniform> settings: JpegGainMapComposeSettings;
 @group(0) @binding(3) var compose_output: texture_storage_2d<rgba32float, write>;
 
-fn srgb_to_linear(channel: f32) -> f32 {
-    let c = clamp(channel, 0.0, 1.0);
-    let low = c / 12.92;
-    let high = pow((c + 0.055) / 1.055, 2.4);
-    return select(high, low, c <= 0.04045);
+fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
+    let c = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let low = c / vec3<f32>(12.92);
+    let high = pow((c + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
 }
 
 fn sample_gain_map_rgb(px: i32, py: i32) -> vec3<f32> {
@@ -89,33 +89,21 @@ fn sample_gain_map_rgb(px: i32, py: i32) -> vec3<f32> {
     return mix(mix_x0, mix_x1, t.y);
 }
 
-fn recover_hdr_channel(
-    sdr_channel: f32,
-    gain_value: f32,
-    channel_index: u32,
-) -> f32 {
-    var gain_map_min = settings.gain_map_min;
-    var gain_map_max = settings.gain_map_max;
-    var gamma = settings.gamma;
-    var offset_sdr = settings.offset_sdr;
-    var offset_hdr = settings.offset_hdr;
-    let gi = min(channel_index, 2u);
-    let g = max(gamma[gi], 1e-20);
-    let log_boost = gain_map_min[gi]
-        + (gain_map_max[gi] - gain_map_min[gi]) * pow(gain_value, 1.0 / g) * settings.gain_weight;
-    let boost = pow(2.0, log_boost);
-    let linear_sdr = srgb_to_linear(sdr_channel);
-    return max((linear_sdr + offset_sdr[gi]) * boost - offset_hdr[gi], 0.0);
+fn recover_hdr_rgb(sdr_rgb: vec3<f32>, gain_rgb: vec3<f32>) -> vec3<f32> {
+    let gamma = max(settings.gamma, vec3<f32>(1e-20));
+    let log_boost = settings.gain_map_min
+        + (settings.gain_map_max - settings.gain_map_min)
+            * pow(gain_rgb, vec3<f32>(1.0) / gamma)
+            * settings.gain_weight;
+    let boost = pow(vec3<f32>(2.0), log_boost);
+    let linear_sdr = srgb_to_linear(sdr_rgb);
+    return max((linear_sdr + settings.offset_sdr) * boost - settings.offset_hdr, vec3<f32>(0.0));
 }
 
 fn compose_at_primary_pixel(px: i32, py: i32) -> vec4<f32> {
     let sdr = textureLoad(sdr_texture, vec2<i32>(px, py), 0);
     let gain = sample_gain_map_rgb(px, py);
-    let rgb = vec3<f32>(
-        recover_hdr_channel(sdr.r, gain.r, 0u),
-        recover_hdr_channel(sdr.g, gain.g, 1u),
-        recover_hdr_channel(sdr.b, gain.b, 2u),
-    );
+    let rgb = recover_hdr_rgb(sdr.rgb, gain);
     return vec4<f32>(rgb, sdr.a);
 }
 
@@ -574,7 +562,8 @@ mod tests {
 
     #[test]
     fn jpeg_compose_shader_matches_iso_gain_map_steps() {
-        assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn recover_hdr_channel"));
+        assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn recover_hdr_rgb"));
+        assert!(!JPEG_GAIN_COMPOSE_SHADER.contains("fn recover_hdr_channel"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn sample_gain_map_rgb"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn cs_compose_jpeg_gain"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn cs_compose_jpeg_gain_tile"));
@@ -582,6 +571,12 @@ mod tests {
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn srgb_to_linear"));
         assert!(!JPEG_GAIN_COMPOSE_SHADER.contains("srgb_u8_to_linear"));
         assert!(!JPEG_GAIN_COMPOSE_SHADER.contains("/ 255.0"));
+    }
+
+    #[test]
+    fn jpeg_gain_compose_shader_parses_as_wgsl() {
+        naga::front::wgsl::parse_str(JPEG_GAIN_COMPOSE_SHADER)
+            .expect("JPEG gain compose shader must parse before runtime pipeline creation");
     }
 
     #[test]

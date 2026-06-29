@@ -38,9 +38,10 @@ use std::time::Duration;
 #[cfg(feature = "jpegxl")]
 #[allow(dead_code)]
 pub(crate) fn load_jxl_hdr(path: &std::path::Path) -> Result<ImageData, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
+    let bytes =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_bytes_to_image_data(
-        &bytes,
+        bytes.as_ref(),
         crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
         crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
         crate::hdr::types::HdrToneMapSettings::default(),
@@ -50,8 +51,9 @@ pub(crate) fn load_jxl_hdr(path: &std::path::Path) -> Result<ImageData, String> 
 #[cfg(feature = "jpegxl")]
 #[allow(dead_code)]
 pub(crate) fn decode_jxl_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
-    decode_jxl_hdr_bytes(&bytes)
+    let bytes =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
+    decode_jxl_hdr_bytes(bytes.as_ref())
 }
 
 #[cfg(feature = "jpegxl")]
@@ -69,9 +71,10 @@ pub(crate) fn load_jxl_hdr_with_target_capacity(
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
+    let bytes =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_bytes_to_image_data(
-        &bytes,
+        bytes.as_ref(),
         decode_target_hdr_capacity,
         display_hdr_target_capacity,
         tone_map,
@@ -84,8 +87,9 @@ pub(crate) fn decode_jxl_hdr_with_target_capacity(
     path: &std::path::Path,
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
-    decode_jxl_hdr_bytes_with_target_capacity(&bytes, target_hdr_capacity)
+    let bytes =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
+    decode_jxl_hdr_bytes_with_target_capacity(bytes.as_ref(), target_hdr_capacity)
 }
 
 #[cfg(feature = "jpegxl")]
@@ -1112,7 +1116,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     ));
                 }
                 jxl_sanitize_straight_alpha(&mut rgba_f32);
-                captured_frames.push((rgba_f32.clone(), pending_duration_ticks));
+                captured_frames.push((std::mem::take(&mut rgba_f32), pending_duration_ticks));
                 // Animations emit multiple FULL_IMAGE events; keep calling ProcessInput until SUCCESS.
                 continue;
             }

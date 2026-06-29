@@ -36,21 +36,17 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     }
 
     let mmap = crate::mmap_util::map_file(path)?;
-    let (width, height) = ImageReader::new(std::io::Cursor::new(&mmap[..]))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?
-        .into_dimensions()
-        .map_err(|e| e.to_string())?;
-    super::tone_map::validate_hdr_fallback_budget(width, height)?;
-
     let mut decoder = ImageReader::new(std::io::Cursor::new(&mmap[..]))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
+
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
     decoder.limits(limits);
 
     let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
+    let (width, height) = rgba.dimensions();
+    super::tone_map::validate_hdr_fallback_budget(width, height)?;
 
     Ok(HdrImageBuffer {
         width,
