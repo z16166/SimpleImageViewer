@@ -106,6 +106,17 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_ref(), max_side) {
         return result;
     }
+    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_ref(), max_side) {
+        match result {
+            Ok(strip) => return Ok(strip),
+            Err(err) => {
+                log::debug!(
+                    "[DirectoryTree] static raster strip fast path failed for {:?}: {err}; falling back to regular decode",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
+    }
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
@@ -491,9 +502,99 @@ fn try_jpeg_dct_strip_fast_path(
     super::jpeg::try_decode_jpeg_strip_dct(data, max_side)
 }
 
+fn try_static_raster_strip_fast_path(
+    path: &Path,
+    mmap: Option<&memmap2::Mmap>,
+    max_side: u32,
+) -> OptionalStripResult {
+    let ext = path_extension_ascii_lower(path)?;
+    if !matches!(
+        ext.as_str(),
+        "png" | "apng" | "webp" | "gif" | "bmp" | "tga" | "ico" | "pnm" | "qoi"
+    ) {
+        return None;
+    }
+    let data = mmap?;
+    Some(decode_static_raster_strip_from_bytes(
+        data.as_ref(),
+        max_side,
+    ))
+}
+
+fn decode_static_raster_strip_from_bytes(
+    bytes: &[u8],
+    max_side: u32,
+) -> Result<StripWithLogicalSize, String> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    if max_side == 0 {
+        return Err("static raster strip max_side must be non-zero".to_string());
+    }
+
+    let mut dimensions_reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    dimensions_reader.no_limits();
+    let mut logical = dimensions_reader
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+
+    let mut decode_reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    decode_reader.no_limits();
+    let rgba = decode_reader
+        .decode()
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut decoded = DecodedImage::new(width, height, rgba.into_raw());
+
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes);
+    if orientation > 4 {
+        logical = (logical.1, logical.0);
+    }
+
+    decoded = downsample_decoded_to_max_side(decoded, max_side)?;
+
+    if orientation > 1 {
+        let (width, height, pixels) = crate::libtiff_loader::apply_orientation_buffer(
+            decoded.rgba().to_vec(),
+            decoded.width,
+            decoded.height,
+            orientation,
+        );
+        decoded = DecodedImage::new(width, height, pixels);
+    }
+
+    Ok((decoded, logical))
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalize_logical_size;
+    use crate::loader::preview_aspect_matches_logical;
+    use image::ImageEncoder;
+
+    fn encode_test_png(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                pixels.extend_from_slice(&[
+                    (x % 251) as u8,
+                    (y % 241) as u8,
+                    ((x + y) % 239) as u8,
+                    255,
+                ]);
+            }
+        }
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&pixels, width, height, image::ColorType::Rgba8.into())
+            .expect("encode test PNG");
+        encoded
+    }
 
     #[test]
     fn zero_logical_falls_back_to_exif() {
@@ -514,5 +615,23 @@ mod tests {
             normalize_logical_size((4000, 3000), (1920, 1080)),
             (4000, 3000)
         );
+    }
+
+    #[test]
+    fn static_raster_strip_from_mmap_downsamples_png_to_max_side() {
+        let encoded = encode_test_png(120, 60);
+        let (decoded, logical) =
+            super::decode_static_raster_strip_from_bytes(&encoded, 30).expect("decode PNG strip");
+
+        assert_eq!(logical, (120, 60));
+        assert_eq!(decoded.width, 30);
+        assert_eq!(decoded.height, 15);
+        assert!(preview_aspect_matches_logical(
+            decoded.width,
+            decoded.height,
+            logical.0,
+            logical.1
+        ));
+        assert_eq!(decoded.rgba().len(), 30 * 15 * 4);
     }
 }
