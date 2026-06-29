@@ -152,23 +152,14 @@ pub(crate) fn load_jpeg_from_mapped(
     Ok(make_image_data(DecodedImage::new(w, h, pixels)))
 }
 
-/// Strip preview fast path: decode a baseline JPEG with DCT-domain scaling.
+/// Strip preview fast path: decode the baseline SDR JPEG with DCT-domain scaling.
 ///
-/// Returns `None` when this is an Ultra HDR / JPEG_R image that must go through the
-/// full HDR-aware decode path.  Otherwise returns the DCT-scaled thumbnail plus the
-/// original (logical) image dimensions.
+/// Ultra HDR / JPEG_R strip thumbnails intentionally ignore the gain map here; the
+/// directory strip needs a fast SDR preview, not a full HDR composition.
 pub(crate) fn try_decode_jpeg_strip_dct(
     jpeg_data: &[u8],
     max_side: u32,
 ) -> OptionalJpegStripResult {
-    // Ultra HDR / JPEG_R images must go through the full HDR-aware decode path.
-    if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(jpeg_data)
-        .ok()
-        .is_some_and(|info| info.is_ultra_hdr)
-    {
-        return None;
-    }
-
     // Use the bytes variant to avoid re-opening the already mmap'd file
     // (checklist #29 — "avoid opening the same file multiple times").
     let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(jpeg_data);
@@ -199,9 +190,43 @@ pub(crate) fn try_decode_jpeg_strip_dct(
 
 #[cfg(test)]
 mod tests {
-    use super::load_jpeg_with_target_capacity;
+    use super::{load_jpeg_with_target_capacity, try_decode_jpeg_strip_dct};
     use crate::hdr::types::HdrToneMapSettings;
     use std::path::PathBuf;
+
+    fn jpeg_with_ultra_hdr_xmp(width: u32, height: u32) -> Vec<u8> {
+        let mut rgb = image::RgbImage::new(width, height);
+        for (x, y, pixel) in rgb.enumerate_pixels_mut() {
+            *pixel = image::Rgb([
+                ((x * 255) / width.max(1)) as u8,
+                ((y * 255) / height.max(1)) as u8,
+                96,
+            ]);
+        }
+
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+            .encode_image(&rgb)
+            .expect("encode baseline test JPEG");
+
+        let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<rdf:RDF>
+<rdf:Description xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" hdrgm:Version="1.0"/>
+<Container:Directory>
+<Container:Item Item:Mime="image/jpeg" Item:Semantic="GainMap" Item:Length="1"/>
+</Container:Directory>
+</rdf:RDF>
+</x:xmpmeta>"#;
+        let payload = format!("http://ns.adobe.com/xap/1.0/\0{xmp}");
+        let len = u16::try_from(payload.len() + 2).expect("test XMP fits in JPEG segment");
+        let mut out = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        out.extend_from_slice(&jpeg[..2]);
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(payload.as_bytes());
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
 
     #[test]
     fn mislabeled_quicktime_jpg_errors_on_first_mmap_pass() {
@@ -220,5 +245,25 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(crate::loader::decode::detect::primary_decode_failure_is_final(&err));
+    }
+
+    #[test]
+    fn ultra_hdr_strip_dct_decodes_baseline_sdr_preview() {
+        let jpeg = jpeg_with_ultra_hdr_xmp(64, 48);
+        let info = crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(&jpeg)
+            .expect("inspect generated Ultra HDR-like JPEG");
+        assert!(info.is_ultra_hdr);
+
+        let (decoded, logical) = try_decode_jpeg_strip_dct(&jpeg, 16)
+            .expect("Ultra HDR strip preview should use baseline SDR DCT scaling")
+            .expect("decode baseline SDR preview");
+
+        assert_eq!(logical, (64, 48));
+        assert!(decoded.width > 0);
+        assert!(decoded.height > 0);
+        assert_eq!(
+            decoded.rgba().len(),
+            decoded.width as usize * decoded.height as usize * 4
+        );
     }
 }

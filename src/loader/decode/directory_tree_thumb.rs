@@ -97,10 +97,12 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
     ) {
         return fast;
     }
-    // DCT-scaled baseline-JPEG fast path: when no EXIF thumbnail exists and the file
-    // is not Ultra HDR / JPEG_R, decode directly at the scaled output size.  For a
-    // 4000×3000 → 256px strip this is ~10× faster and 64× less peak memory than a
-    // full-resolution decode followed by a software downsample.
+    // DCT-scaled baseline-JPEG fast path: when no EXIF thumbnail exists, decode
+    // directly at the scaled output size.  Ultra HDR / JPEG_R images also take
+    // this path; the gain map is intentionally ignored because the strip only
+    // needs a fast SDR preview.  For a 4000×3000 → 256px strip this is ~10×
+    // faster and 64× less peak memory than a full-resolution decode followed
+    // by a software downsample.
     if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_ref(), max_side) {
         return result;
     }
@@ -472,9 +474,11 @@ fn downsample_decoded_to_max_side(
 
 /// Try to produce a strip thumbnail from a baseline JPEG using DCT-domain scaling.
 ///
-/// Returns `None` when the file is not a `.jpg`/`.jpeg`, no mmap data is available,
-/// or the JPEG is Ultra HDR / JPEG_R.  On success the aspect ratio is guaranteed to
-/// match the logical size because DCT scaling applies the same ratio to both axes.
+/// Returns `None` when the file is not a `.jpg`/`.jpeg` or no mmap data is
+/// available.  Ultra HDR / JPEG_R images are also handled here; the gain map is
+/// intentionally ignored because the strip only needs a fast SDR preview.  On
+/// success the aspect ratio is guaranteed to match the logical size because DCT
+/// scaling applies the same ratio to both axes.
 fn try_jpeg_dct_strip_fast_path(
     path: &Path,
     mmap: Option<&memmap2::Mmap>,
