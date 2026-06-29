@@ -220,30 +220,29 @@ fn read_green_plane_wg(c: i32, r: i32) -> f32 {
 
 fn ppg_green_at_wg(col: i32, row: i32, c: u32) -> f32 {
     let x = read_cfa_wg(col, row);
-    let h_guess = (read_green_plane_wg(col - 1, row) + x + read_green_plane_wg(col + 1, row)) * 2.0
-        - read_cfa_wg(col - 2, row) - read_cfa_wg(col + 2, row);
-    let h_diff = (abs_f(read_cfa_wg(col - 2, row) - x) + abs_f(read_cfa_wg(col + 2, row) - x)
-        + abs_f(read_green_plane_wg(col - 1, row) - read_green_plane_wg(col + 1, row))) * 3.0
-        + (abs_f(read_green_plane_wg(col + 3, row) - read_green_plane_wg(col + 1, row))
-        + abs_f(read_green_plane_wg(col - 3, row) - read_green_plane_wg(col - 1, row))) * 2.0;
-    let v_guess = (read_green_plane_wg(col, row - 1) + x + read_green_plane_wg(col, row + 1)) * 2.0
-        - read_cfa_wg(col, row - 2) - read_cfa_wg(col, row + 2);
-    let v_diff = (abs_f(read_cfa_wg(col, row - 2) - x) + abs_f(read_cfa_wg(col, row + 2) - x)
-        + abs_f(read_green_plane_wg(col, row - 1) - read_green_plane_wg(col, row + 1))) * 3.0
-        + (abs_f(read_green_plane_wg(col, row + 3) - read_green_plane_wg(col, row + 1))
-        + abs_f(read_green_plane_wg(col, row - 3) - read_green_plane_wg(col, row - 1))) * 2.0;
+    let g_l1 = read_green_plane_wg(col - 1, row);
+    let g_r1 = read_green_plane_wg(col + 1, row);
+    let g_l3 = read_green_plane_wg(col - 3, row);
+    let g_r3 = read_green_plane_wg(col + 3, row);
+    let c_l2 = read_cfa_wg(col - 2, row);
+    let c_r2 = read_cfa_wg(col + 2, row);
+    let g_u1 = read_green_plane_wg(col, row - 1);
+    let g_d1 = read_green_plane_wg(col, row + 1);
+    let g_u3 = read_green_plane_wg(col, row - 3);
+    let g_d3 = read_green_plane_wg(col, row + 3);
+    let c_u2 = read_cfa_wg(col, row - 2);
+    let c_d2 = read_cfa_wg(col, row + 2);
+
+    let h_guess = (g_l1 + x + g_r1) * 2.0 - c_l2 - c_r2;
+    let h_diff = (abs_f(c_l2 - x) + abs_f(c_r2 - x) + abs_f(g_l1 - g_r1)) * 3.0
+        + (abs_f(g_r3 - g_r1) + abs_f(g_l3 - g_l1)) * 2.0;
+    let v_guess = (g_u1 + x + g_d1) * 2.0 - c_u2 - c_d2;
+    let v_diff = (abs_f(c_u2 - x) + abs_f(c_d2 - x) + abs_f(g_u1 - g_d1)) * 3.0
+        + (abs_f(g_d3 - g_d1) + abs_f(g_u3 - g_u1)) * 2.0;
 
     let use_vertical = h_diff > v_diff;
-    let v_result = ulim(
-        v_guess / 4.0,
-        read_green_plane_wg(col, row + 1),
-        read_green_plane_wg(col, row - 1),
-    );
-    let h_result = ulim(
-        h_guess / 4.0,
-        read_green_plane_wg(col + 1, row),
-        read_green_plane_wg(col - 1, row),
-    );
+    let v_result = ulim(v_guess / 4.0, g_d1, g_u1);
+    let h_result = ulim(h_guess / 4.0, g_r1, g_l1);
     return select(h_result, v_result, use_vertical);
 }
 

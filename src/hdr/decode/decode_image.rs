@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::{ImageReader, Limits};
+use image::{GenericImageView, ImageReader, Limits};
 
 use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
@@ -44,9 +44,10 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
     decoder.limits(limits);
 
-    let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
-    let (width, height) = rgba.dimensions();
+    let image = decoder.decode().map_err(|e| e.to_string())?;
+    let (width, height) = image.dimensions();
     super::tone_map::validate_hdr_fallback_budget(width, height)?;
+    let rgba = image.into_rgba32f();
 
     Ok(HdrImageBuffer {
         width,
@@ -56,4 +57,24 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
         rgba_f32: Arc::new(rgba.into_raw()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hdr_fallback_validates_dimensions_before_rgba32f_conversion() {
+        let source = include_str!("decode_image.rs");
+        let decode_pos = source
+            .find("let image = decoder.decode()")
+            .expect("decode_hdr_image should decode into a DynamicImage first");
+        let validate_pos = source
+            .find("validate_hdr_fallback_budget(width, height)")
+            .expect("decode_hdr_image should validate HDR fallback dimensions");
+        let convert_pos = source
+            .find("let rgba = image.into_rgba32f()")
+            .expect("decode_hdr_image should convert after validation");
+
+        assert!(decode_pos < validate_pos);
+        assert!(validate_pos < convert_pos);
+    }
 }

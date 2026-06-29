@@ -58,4 +58,5 @@ pub mod ultra_hdr;
 pub(crate) mod ultra_hdr_compose;
 pub(crate) mod ultra_hdr_deferred;
 pub mod vulkan_metadata;
+pub(crate) mod wgsl_color;
 pub mod wsi_probe;

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.2] - 2026-06-29
+
+### Improved
+- **Faster HDR and RAW image display**: Optimized several HDR, RAW, HEIF, JPEG XL, and gain-map processing paths so large photos load and render more smoothly.
+- **Smoother navigation thumbnails**: Reduced extra CPU and GPU work while updating file-list thumbnails, improving browsing responsiveness in large image folders.
+- **Lower memory overhead for modern HDR formats**: JPEG XL and HEIF decoding now avoid some unnecessary full-buffer copies during preview and image preparation.
+
 ## [2.8.1] - 2026-06-28
 
 ### Fixed
