@@ -27,6 +27,27 @@ use crate::app::directory_tree_strip_cache::{
 };
 use crate::loader::preview_aspect_matches_logical;
 
+fn strip_full_decode_reuse_allowed(
+    index: usize,
+    current_index: usize,
+    image_count: usize,
+    max_preload_distance: usize,
+    preload_enabled: bool,
+) -> bool {
+    if image_count == 0 || index >= image_count || current_index >= image_count {
+        return false;
+    }
+    if index == current_index {
+        return true;
+    }
+    if !preload_enabled {
+        return false;
+    }
+    let forward = (index + image_count - current_index) % image_count;
+    let backward = (current_index + image_count - index) % image_count;
+    forward.min(backward) <= max_preload_distance
+}
+
 impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
@@ -105,7 +126,7 @@ impl ImageViewerApp {
 
     fn try_apply_relocated_strip_preview_result(
         &mut self,
-        result: DirectoryTreeStripPreviewJobResult,
+        mut result: DirectoryTreeStripPreviewJobResult,
         ctx: &egui::Context,
     ) -> bool {
         self.clear_strip_preview_attempt_state(result.index);
@@ -121,6 +142,11 @@ impl ImageViewerApp {
             return false;
         }
 
+        self.cache_reusable_strip_full_decode(
+            new_index,
+            result.logical,
+            result.reusable_full_decoded.take(),
+        );
         self.queue_directory_tree_strip_gpu_upload(
             new_index,
             result.decoded,
@@ -138,6 +164,38 @@ impl ImageViewerApp {
         ctx.request_repaint();
         ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
         true
+    }
+
+    fn cache_reusable_strip_full_decode(
+        &mut self,
+        index: usize,
+        logical: (u32, u32),
+        reusable_full: Option<crate::loader::DecodedImage>,
+    ) {
+        let Some(full) = reusable_full else {
+            return;
+        };
+        if full.is_sdr_deferred_placeholder() || (full.width, full.height) != logical {
+            return;
+        }
+        if !strip_full_decode_reuse_allowed(
+            index,
+            self.current_index,
+            self.image_files.len(),
+            self.prefetch_window_max_distance,
+            self.settings.preload,
+        ) {
+            return;
+        }
+        if self.texture_cache.contains(index)
+            || self.hdr_image_cache.contains_key(&index)
+            || self.hdr_tiled_source_cache.contains_key(&index)
+            || self.animation_cache.contains_key(&index)
+            || self.deferred_sdr_uploads.contains_key(&index)
+        {
+            return;
+        }
+        self.insert_deferred_sdr_upload(index, full);
     }
 
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
@@ -217,6 +275,7 @@ impl ImageViewerApp {
                 self.abandon_strip_preview_attempt_after_failure(result.index);
                 continue;
             }
+            let reusable_full = result.reusable_full_decoded;
             #[cfg(feature = "preload-debug")]
             let decoded_w = result.decoded.width;
             #[cfg(feature = "preload-debug")]
@@ -228,6 +287,7 @@ impl ImageViewerApp {
                 Some(result.logical),
                 result.buffer_tag,
             );
+            self.cache_reusable_strip_full_decode(result.index, result.logical, reusable_full);
             let cache_valid = self
                 .directory_tree_strip_cache
                 .is_valid_for_logical(result.index, result.logical);
@@ -268,5 +328,30 @@ impl ImageViewerApp {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_full_decode_reuse_allowed;
+
+    #[test]
+    fn strip_full_decode_reuse_keeps_current_even_when_preload_disabled() {
+        assert!(strip_full_decode_reuse_allowed(5, 5, 20, 2, false));
+    }
+
+    #[test]
+    fn strip_full_decode_reuse_requires_preload_window_for_neighbors() {
+        assert!(strip_full_decode_reuse_allowed(7, 5, 20, 2, true));
+        assert!(strip_full_decode_reuse_allowed(3, 5, 20, 2, true));
+        assert!(!strip_full_decode_reuse_allowed(8, 5, 20, 2, true));
+        assert!(!strip_full_decode_reuse_allowed(7, 5, 20, 2, false));
+    }
+
+    #[test]
+    fn strip_full_decode_reuse_uses_circular_preload_distance() {
+        assert!(strip_full_decode_reuse_allowed(19, 0, 20, 1, true));
+        assert!(strip_full_decode_reuse_allowed(0, 19, 20, 1, true));
+        assert!(!strip_full_decode_reuse_allowed(17, 0, 20, 1, true));
     }
 }

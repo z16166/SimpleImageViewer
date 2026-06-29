@@ -91,7 +91,7 @@ impl ImageViewerApp {
             <= crate::app::directory_tree::DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS
     }
 
-    pub(super) fn insert_deferred_sdr_upload(
+    pub(crate) fn insert_deferred_sdr_upload(
         &mut self,
         idx: usize,
         decoded: crate::loader::DecodedImage,

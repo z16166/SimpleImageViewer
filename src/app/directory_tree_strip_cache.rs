@@ -79,6 +79,10 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub path: PathBuf,
     pub image_list_generation: u64,
     pub decoded: DecodedImage,
+    /// Full static SDR decode produced while generating a cold strip thumbnail.
+    /// When present, the app can reuse it as a preloaded main image instead of
+    /// decoding the same file again.
+    pub reusable_full_decoded: Option<DecodedImage>,
     pub logical: (u32, u32),
     pub stage: PreviewStage,
     pub buffer_tag: StripPreviewBufferTag,

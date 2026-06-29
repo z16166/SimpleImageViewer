@@ -54,7 +54,7 @@ pub use texture_cache::{TextureCache, TextureCacheInsert};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;
-pub(crate) use decode::generate_directory_tree_thumb_from_path;
+pub(crate) use decode::generate_directory_tree_thumb_decode_from_path;
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_composed_from_iso_deferred,
     directory_tree_strip_from_hdr_or_fallback, directory_tree_strip_logical_for_preview,

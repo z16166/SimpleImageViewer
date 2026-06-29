@@ -25,7 +25,7 @@ use crate::app::directory_tree_strip_cache::{
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
     DecodedImage, PreviewStage, downsample_decoded_for_strip,
-    generate_directory_tree_thumb_from_path, preview_aspect_matches_logical,
+    generate_directory_tree_thumb_decode_from_path, preview_aspect_matches_logical,
 };
 
 #[cfg(target_os = "windows")]
@@ -90,6 +90,7 @@ impl ImageViewerApp {
                 path,
                 image_list_generation: list_generation,
                 decoded: strip,
+                reusable_full_decoded: None,
                 logical: (width, height),
                 stage: PreviewStage::Initial,
                 buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
@@ -193,6 +194,7 @@ impl ImageViewerApp {
                 path,
                 image_list_generation: list_generation,
                 decoded,
+                reusable_full_decoded: None,
                 logical,
                 stage,
                 buffer_tag,
@@ -375,6 +377,7 @@ impl ImageViewerApp {
                 path,
                 image_list_generation: list_generation,
                 decoded,
+                reusable_full_decoded: None,
                 logical,
                 stage: crate::loader::PreviewStage::Refined,
                 buffer_tag: StripPreviewBufferTag::HdrComposedStrip,
@@ -457,6 +460,9 @@ impl ImageViewerApp {
         if !self.strip_index_needs_cold_thumbnail(index) {
             return;
         }
+        if self.loader.is_loading(index) {
+            return;
+        }
         let path = self.image_files[index].clone();
         let Some(list) = self.directory_tree.list.try_lock() else {
             return;
@@ -497,12 +503,14 @@ impl ImageViewerApp {
             let com_ok = true;
 
             let mut decoded = DecodedImage::new(0, 0, Vec::new());
+            let mut reusable_full_decoded = None;
             let mut logical = (0u32, 0u32);
             if com_ok {
-                match generate_directory_tree_thumb_from_path(&path, max_side) {
-                    Ok((preview, logical_size)) => {
-                        decoded = preview;
-                        logical = logical_size;
+                match generate_directory_tree_thumb_decode_from_path(&path, max_side) {
+                    Ok(strip_decode) => {
+                        decoded = strip_decode.preview;
+                        logical = strip_decode.logical_size;
+                        reusable_full_decoded = strip_decode.reusable_full;
                     }
                     Err(err) => {
                         log::warn!(
@@ -536,6 +544,7 @@ impl ImageViewerApp {
                 path,
                 image_list_generation: list_generation,
                 decoded,
+                reusable_full_decoded,
                 logical,
                 stage: PreviewStage::Initial,
                 buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
@@ -641,6 +650,7 @@ impl ImageViewerApp {
                 path,
                 image_list_generation: list_generation,
                 decoded,
+                reusable_full_decoded: None,
                 logical,
                 stage: PreviewStage::Refined,
                 buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
