@@ -40,8 +40,15 @@ const INPUT_TRANSFER_HLG: u32 = 3u;
 const INPUT_TRANSFER_BT709: u32 = 6u;
 // Must stay aligned with `HdrReference` discriminants pushed into ToneMapUniform.
 const INPUT_REFERENCE_SCENE_LINEAR: u32 = 0u;
-const HDR_DOWNSCALE_SAMPLE_GRID: u32 = 4u;
+const HDR_DOWNSCALE_LIGHT_SAMPLE_GRID: u32 = 2u;
+const HDR_DOWNSCALE_HEAVY_SAMPLE_GRID: u32 = 4u;
+const HDR_DOWNSCALE_HEAVY_FOOTPRINT: f32 = 2.25;
 const HDR_DOWNSCALE_MAX_FOOTPRINT: f32 = 8.0;
+const PQ_M1: f32 = 2610.0 / 16384.0;
+const PQ_M2: f32 = 2523.0 / 32.0;
+const PQ_C1: f32 = 3424.0 / 4096.0;
+const PQ_C2: f32 = 2413.0 / 128.0;
+const PQ_C3: f32 = 2392.0 / 128.0;
 
 struct ToneMapSettings {
     exposure_ev: f32,
@@ -164,15 +171,10 @@ fn bt709_nonlinear_to_linear(rgb: vec3<f32>) -> vec3<f32> {
 }
 
 fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    let m1 = 2610.0 / 16384.0;
-    let m2 = 2523.0 / 32.0;
-    let c1 = 3424.0 / 4096.0;
-    let c2 = 2413.0 / 128.0;
-    let c3 = 2392.0 / 128.0;
-    let code = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / m2));
-    let numerator = max(code - vec3<f32>(c1), vec3<f32>(0.0));
-    let denominator = max(vec3<f32>(c2) - vec3<f32>(c3) * code, vec3<f32>(0.000001));
-    let absolute_nits = vec3<f32>(10000.0) * pow(numerator / denominator, vec3<f32>(1.0 / m1));
+    let code = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / PQ_M2));
+    let numerator = max(code - vec3<f32>(PQ_C1), vec3<f32>(0.0));
+    let denominator = max(vec3<f32>(PQ_C2) - vec3<f32>(PQ_C3) * code, vec3<f32>(0.000001));
+    let absolute_nits = vec3<f32>(10000.0) * pow(numerator / denominator, vec3<f32>(1.0 / PQ_M1));
     return absolute_nits / max(settings.sdr_white_nits, 1.0);
 }
 
@@ -270,6 +272,24 @@ fn bilinear_load_hdr(uv: vec2<f32>, texture_size_i: vec2<i32>) -> vec4<f32> {
     return unpremultiply_hdr_rgba(mix(top, bot, frac.y));
 }
 
+fn downsample_grid_hdr(
+    uv: vec2<f32>,
+    texture_size: vec2<f32>,
+    texture_size_i: vec2<i32>,
+    footprint: vec2<f32>,
+    sample_grid: u32,
+) -> vec4<f32> {
+    var sum = vec4<f32>(0.0);
+    for (var y = 0u; y < sample_grid; y = y + 1u) {
+        for (var x = 0u; x < sample_grid; x = x + 1u) {
+            let sample_uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(sample_grid);
+            let offset = (sample_uv - vec2<f32>(0.5)) * footprint;
+            sum += premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(uv * texture_size + offset), texture_size_i));
+        }
+    }
+    return unpremultiply_hdr_rgba(sum / f32(sample_grid * sample_grid));
+}
+
 fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
     let texture_size_u = textureDimensions(hdr_texture);
     let texture_size = vec2<f32>(texture_size_u);
@@ -286,15 +306,10 @@ fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
         return bilinear_load_hdr(uv, texture_size_i);
     }
 
-    var sum = vec4<f32>(0.0);
-    for (var y = 0u; y < HDR_DOWNSCALE_SAMPLE_GRID; y = y + 1u) {
-        for (var x = 0u; x < HDR_DOWNSCALE_SAMPLE_GRID; x = x + 1u) {
-            let sample_uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(HDR_DOWNSCALE_SAMPLE_GRID);
-            let offset = (sample_uv - vec2<f32>(0.5)) * footprint;
-            sum += premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(uv * texture_size + offset), texture_size_i));
-        }
+    if max(footprint.x, footprint.y) <= HDR_DOWNSCALE_HEAVY_FOOTPRINT {
+        return downsample_grid_hdr(uv, texture_size, texture_size_i, footprint, HDR_DOWNSCALE_LIGHT_SAMPLE_GRID);
     }
-    return unpremultiply_hdr_rgba(sum / f32(HDR_DOWNSCALE_SAMPLE_GRID * HDR_DOWNSCALE_SAMPLE_GRID));
+    return downsample_grid_hdr(uv, texture_size, texture_size_i, footprint, HDR_DOWNSCALE_HEAVY_SAMPLE_GRID);
 }
 
 // IEC 61966-2-1 sRGB opto-electronic transfer function (scalar, output 0..1).
@@ -350,17 +365,12 @@ fn sanitize_scalar_for_linear_srgb_encode(value: f32) -> f32 {
 }
 
 fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    let m1 = 2610.0 / 16384.0;
-    let m2 = 2523.0 / 32.0;
-    let c1 = 3424.0 / 4096.0;
-    let c2 = 2413.0 / 128.0;
-    let c3 = 2392.0 / 128.0;
     let nits = max(rgb * settings.sdr_white_nits, vec3<f32>(0.0));
     let normalized = nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS);
-    let lm1 = pow(normalized, vec3<f32>(m1));
-    let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
-    let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
-    return pow(num / den, vec3<f32>(m2));
+    let lm1 = pow(normalized, vec3<f32>(PQ_M1));
+    let num = vec3<f32>(PQ_C1) + vec3<f32>(PQ_C2) * lm1;
+    let den = vec3<f32>(1.0) + vec3<f32>(PQ_C3) * lm1;
+    return pow(num / den, vec3<f32>(PQ_M2));
 }
 
 // Scene-referred linear → display-referred before KWin gamma 2.2 OETF (same Reinhard as encode_sdr).
@@ -483,3 +493,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(rgb, a_out * tone_map.alpha);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_image_plane_shader_parses_as_wgsl() {
+        naga::front::wgsl::parse_str(HDR_IMAGE_PLANE_SHADER)
+            .expect("HDR image plane shader must parse before runtime pipeline creation");
+    }
+
+    #[test]
+    fn hdr_downscale_shader_has_light_and_heavy_sampling_paths() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_LIGHT_SAMPLE_GRID"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_HEAVY_SAMPLE_GRID"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_HEAVY_FOOTPRINT"));
+    }
+
+    #[test]
+    fn pq_constants_are_declared_once_at_module_scope() {
+        assert_eq!(HDR_IMAGE_PLANE_SHADER.matches("const PQ_M1").count(), 1);
+        assert_eq!(HDR_IMAGE_PLANE_SHADER.matches("const PQ_M2").count(), 1);
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("let m1 = 2610.0 / 16384.0"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("let m2 = 2523.0 / 32.0"));
+    }
+}

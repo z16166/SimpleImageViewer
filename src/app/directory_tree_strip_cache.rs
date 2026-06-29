@@ -243,6 +243,42 @@ impl DirectoryTreeStripCache {
         );
     }
 
+    fn commit_existing_strip_texture_update(
+        &mut self,
+        index: usize,
+        buffer_tag: StripPreviewBufferTag,
+        stage: PreviewStage,
+        logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
+    ) {
+        let _ = path; // used by preload-debug logging below
+        if let Some(logical) = logical_size {
+            self.logical_sizes.insert(index, logical);
+        }
+        self.preview_buffer_tag.insert(index, buffer_tag);
+        self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
+        self.bump_gpu_revision();
+
+        #[cfg(feature = "preload-debug")]
+        {
+            let tex_size = self
+                .textures
+                .get(&index)
+                .map(|texture| texture.size())
+                .unwrap_or([0, 0]);
+            crate::preload_debug!(
+                "[PreloadDebug][StripCache] update-existing idx={} path={} tag={buffer_tag:?} \
+                 stage={stage:?} tex={}x{} logical={logical_size:?} rev={}",
+                index,
+                path.display(),
+                tex_size[0],
+                tex_size[1],
+                self.gpu_revision
+            );
+        }
+    }
+
     /// Insert a strip texture from the main-window texture cache.
     /// Whether a main-window texture clone would upgrade the strip entry (no logging).
     pub(crate) fn strip_texture_handle_would_replace(
@@ -364,6 +400,18 @@ impl DirectoryTreeStripCache {
             [thumb.width as usize, thumb.height as usize],
             thumb.rgba(),
         );
+        let thumb_size = [thumb.width as usize, thumb.height as usize];
+        if self
+            .textures
+            .get(&index)
+            .is_some_and(|handle| handle.size() == thumb_size)
+        {
+            if let Some(handle) = self.textures.get_mut(&index) {
+                handle.set(color_image, TextureOptions::LINEAR);
+            }
+            self.commit_existing_strip_texture_update(index, buffer_tag, stage, logical_size, path);
+            return;
+        }
         let handle = ctx.load_texture(
             format!("dir_tree_strip_{index}"),
             color_image,
@@ -916,6 +964,43 @@ mod tests {
         );
         assert!(cache.contains(0));
         assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
+    }
+
+    #[test]
+    fn strip_cache_reuses_texture_for_same_size_quality_upgrade() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        let initial = DecodedImage::new(64, 64, vec![120; 64 * 64 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &initial,
+            StripDecodedUpsert {
+                stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+                logical_size: Some((64, 64)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
+        );
+        let first_id = cache.textures().get(&0).expect("initial texture").id();
+
+        let refined = DecodedImage::new(64, 64, vec![220; 64 * 64 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &refined,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: Some((64, 64)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
+        );
+
+        let second_id = cache.textures().get(&0).expect("refined texture").id();
+        assert_eq!(first_id, second_id);
     }
 
     #[test]

@@ -216,13 +216,29 @@ pub(crate) fn pack_rows_for_texture_copy<'a>(
     }
 
     let mut padded = vec![0u8; (bytes_per_row * height) as usize];
-    for y in 0..height as usize {
-        let src_start = y * unpadded_bytes_per_row as usize;
-        let dst_start = y * bytes_per_row as usize;
-        padded[dst_start..dst_start + unpadded_bytes_per_row as usize]
-            .copy_from_slice(&tight[src_start..src_start + unpadded_bytes_per_row as usize]);
-    }
+    copy_padded_rows(
+        tight,
+        &mut padded,
+        unpadded_bytes_per_row as usize,
+        bytes_per_row as usize,
+    );
     Ok((Cow::Owned(padded), bytes_per_row))
+}
+
+fn copy_padded_rows(
+    tight: &[u8],
+    padded: &mut [u8],
+    unpadded_bytes_per_row: usize,
+    bytes_per_row: usize,
+) {
+    use rayon::prelude::*;
+
+    padded
+        .par_chunks_mut(bytes_per_row)
+        .zip(tight.par_chunks(unpadded_bytes_per_row))
+        .for_each(|(dst_row, src_row)| {
+            dst_row[..unpadded_bytes_per_row].copy_from_slice(src_row);
+        });
 }
 
 pub(crate) struct Rgba8TextureUpload<'a> {
@@ -740,4 +756,35 @@ pub(crate) fn validate_rgba8_upload_layout(
 
 pub(crate) fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
     bytemuck::cast_slice(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_padded_rows_preserves_tight_rows_and_zero_padding() {
+        let unpadded_bytes_per_row = 5_usize;
+        let bytes_per_row = 8_usize;
+        let height = 3_usize;
+        let tight: Vec<u8> = (0..unpadded_bytes_per_row * height)
+            .map(|value| value as u8)
+            .collect();
+        let mut padded = vec![0_u8; bytes_per_row * height];
+
+        copy_padded_rows(&tight, &mut padded, unpadded_bytes_per_row, bytes_per_row);
+
+        for y in 0..height {
+            let src = y * unpadded_bytes_per_row;
+            let dst = y * bytes_per_row;
+            assert_eq!(
+                &padded[dst..dst + unpadded_bytes_per_row],
+                &tight[src..src + unpadded_bytes_per_row],
+            );
+            assert_eq!(
+                &padded[dst + unpadded_bytes_per_row..dst + bytes_per_row],
+                &[0, 0, 0]
+            );
+        }
+    }
 }
