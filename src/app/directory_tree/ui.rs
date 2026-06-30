@@ -149,7 +149,7 @@ fn maybe_log_directory_tree_panel_layout(
         .map_or(true, |last| now.saturating_duration_since(last) >= interval);
 
     if interval_elapsed && (splitter_dragged || width_changed || left_clamped) {
-        log::debug!(
+        log::info!(
             "[DirectoryTree][PanelDiag] embedded_w={:.1} d_w={:+.1} layout_left={:.1} d_left={:+.1} \
              layout_list={:.1} d_list={:+.1} stored_left={:.1}->{:.1} dragged={} drag_dx={:+.1} clamped={}",
             viewport_width,
