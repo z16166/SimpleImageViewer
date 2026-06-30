@@ -151,7 +151,9 @@ unsafe extern "C" fn openexr_error_handler_silent(
         let message = if text.is_null() {
             "unknown OpenEXRCore error".to_string()
         } else {
-            unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned()
+            unsafe { CStr::from_ptr(text) }
+                .to_string_lossy()
+                .into_owned()
         };
         log::trace!("OpenEXRCore error {code}: {message}");
     }
