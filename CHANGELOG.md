@@ -2,10 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.8.2] - 2026-06-29
+## [2.8.2] - 2026-06-30
 
 ### Fixed
 - **Linux HDR display selection**: KDE Wayland systems now keep HDR photos on the correct HDR presentation path for HDR TVs while avoiding false HDR activation on SDR displays.
+- **Navigation panel layout**: Embedded navigation panels keep their intended width and visibility state more reliably while browsing.
+- **GPU startup compatibility**: The viewer avoids reusing incompatible GPU pipeline caches after graphics backend changes, improving launch reliability after upgrades.
 
 ### Improved
 - **Faster HDR and RAW image display**: Optimized several HDR, RAW, HEIF, JPEG XL, and gain-map processing paths so large photos load and render more smoothly.
