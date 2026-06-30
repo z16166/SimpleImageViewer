@@ -322,8 +322,12 @@ fn run_kscreen_doctor_outputs(timeout: std::time::Duration) -> Result<String, St
                 .map_err(|err| format!("kscreen-doctor wait failed: {err}"))?
             {
                 Some(status) => {
-                    let stdout = stdout_handle.map(|handle| handle.join()).unwrap_or_default();
-                    let stderr = stderr_handle.map(|handle| handle.join()).unwrap_or_default();
+                    let stdout = stdout_handle
+                        .map(|handle| handle.join().unwrap_or_else(|_| String::new()))
+                        .unwrap_or_default();
+                    let stderr = stderr_handle
+                        .map(|handle| handle.join().unwrap_or_else(|_| String::new()))
+                        .unwrap_or_default();
                     if status.success() {
                         return Ok(stdout);
                     }

@@ -41,6 +41,8 @@ pub use state::HdrMonitorState;
 pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 #[cfg(any(target_os = "linux", test))]
 pub use types::{LinuxExplicitHdrState, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
+#[cfg(target_os = "linux")]
+pub(crate) use kde::refresh_linux_explicit_hdr_state_from_kscreen;
 
 #[cfg(test)]
 pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;
