@@ -25,6 +25,7 @@ const KSCREEN_DOCTOR_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 const KSCREEN_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(750);
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn parse_kscreen_hdr_state_for_output(
     outputs: &str,
     output_label: &str,

@@ -41,7 +41,7 @@ use super::chromaticities::{
     hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path,
     openexr_luminance_weights_from_chromaticities_xy,
 };
-use super::mmap::{ExrMmapCookieGuard, openexr_memory_map_initializer};
+use super::mmap::{ExrMmapCookieGuard, openexr_file_initializer, openexr_memory_map_initializer};
 use super::types::{
     ChannelRole, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache, OpenExrCorePartInfo,
     OpenExrCoreRgbaTile,
@@ -106,8 +106,9 @@ impl OpenExrCoreReadContext {
                     map_err,
                     path.display()
                 );
+                let ctxt_init = openexr_file_initializer();
                 exr_result(unsafe {
-                    sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null())
+                    sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init)
                 })?;
                 if raw.is_null() {
                     return Err(format!(

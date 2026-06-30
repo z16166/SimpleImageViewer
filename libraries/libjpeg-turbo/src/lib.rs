@@ -160,6 +160,10 @@ impl Decompressor {
         height: i32,
         pf: TJPF,
     ) -> Result<Vec<u8>, String> {
+        if width <= 0 || height <= 0 {
+            return Err(format!("Invalid JPEG output dimensions: {width}x{height}"));
+        }
+
         let pixel_size = match pf {
             TJPF::RGB | TJPF::BGR => 3,
             TJPF::GRAY => 1,
@@ -167,7 +171,16 @@ impl Decompressor {
             _ => 4,
         };
 
-        let mut dst_buf = vec![0u8; (width * height * pixel_size) as usize];
+        let buf_len = (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|pixels| pixels.checked_mul(pixel_size as u64))
+            .ok_or_else(|| format!("JPEG output buffer size overflow: {width}x{height}"))?;
+        if buf_len > isize::MAX as u64 {
+            return Err(format!("JPEG output buffer size overflow: {width}x{height}"));
+        }
+        let buf_len = buf_len as usize;
+
+        let mut dst_buf = vec![0u8; buf_len];
 
         let res = unsafe {
             tjDecompress2(
@@ -215,6 +228,9 @@ pub fn decode_jpeg_dimensions(jpeg_data: &[u8]) -> Result<(u32, u32), String> {
 pub fn decode_to_rgba(jpeg_data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let decompressor = Decompressor::new()?;
     let (w, h, _) = decompressor.decompress_header(jpeg_data)?;
+    if w <= 0 || h <= 0 {
+        return Err(format!("Invalid JPEG dimensions: {w}x{h}"));
+    }
     let pixels = decompressor.decompress(jpeg_data, w, h, TJPF::RGBA)?;
     Ok((w as u32, h as u32, pixels))
 }
@@ -294,6 +310,9 @@ pub fn decode_to_rgba_with_max_side(
     // a "decode without re-parse" fast path.
     let decompressor = Decompressor::new()?;
     let (orig_w, orig_h, _) = decompressor.decompress_header(jpeg_data)?;
+    if orig_w <= 0 || orig_h <= 0 {
+        return Err(format!("Invalid JPEG dimensions: {orig_w}x{orig_h}"));
+    }
     let orig_w_u = orig_w as u32;
     let orig_h_u = orig_h as u32;
 
@@ -310,4 +329,29 @@ pub fn decode_to_rgba_with_max_side(
     let (out_w, out_h) = best_dct_scaled_dims(orig_w_u, orig_h_u, max_side);
     let pixels = decompressor.decompress(jpeg_data, out_w, out_h, TJPF::RGBA)?;
     Ok((orig_w_u, orig_h_u, out_w as u32, out_h as u32, pixels))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Decompressor;
+    use super::TJPF;
+
+    #[test]
+    fn decompress_rejects_dimensions_that_overflow_buffer_size() {
+        let decompressor = Decompressor::new().expect("decompressor");
+        let err = decompressor
+            .decompress(&[], i32::MAX, i32::MAX, TJPF::RGBA)
+            .expect_err("overflow dimensions must fail before allocation");
+        assert!(
+            err.contains("overflow"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn decompress_i32_overflow_prone_dimensions_do_not_panic() {
+        let decompressor = Decompressor::new().expect("decompressor");
+        // 23171² × 4 exceeds i32::MAX — previously panicked in debug builds.
+        let _ = decompressor.decompress(&[], 23_171, 23_171, TJPF::RGBA);
+    }
 }
