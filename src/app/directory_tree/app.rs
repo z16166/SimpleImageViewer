@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -59,6 +59,89 @@ struct DirectoryTreePanelRefs<'a> {
     theme: &'a Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
     embedded: bool,
     allow_image_context_menu: bool,
+}
+
+#[derive(Default)]
+struct EmbeddedSidePanelLayoutDiag {
+    last_available_before: Option<f32>,
+    last_panel_width: Option<f32>,
+    last_chrome_embedded_width: Option<f32>,
+    last_log_at: Option<Instant>,
+}
+
+static EMBEDDED_SIDE_PANEL_LAYOUT_DIAG: OnceLock<Mutex<EmbeddedSidePanelLayoutDiag>> =
+    OnceLock::new();
+
+fn maybe_log_embedded_side_panel_layout(
+    available_before: f32,
+    available_after: f32,
+    max_rect_width_before: f32,
+    panel_width: f32,
+    panel_left: f32,
+    panel_right: f32,
+    default_width: f32,
+    min_width: f32,
+    tree_embedded_width_before: f32,
+    chrome_embedded_width_after: Option<f32>,
+) {
+    const WIDTH_CHANGE_EPS: f32 = 2.0;
+    const LOG_INTERVAL: Duration = Duration::from_millis(1000);
+
+    let diag = EMBEDDED_SIDE_PANEL_LAYOUT_DIAG
+        .get_or_init(|| Mutex::new(EmbeddedSidePanelLayoutDiag::default()));
+    let mut diag = diag.lock();
+
+    let now = Instant::now();
+    let available_delta = diag
+        .last_available_before
+        .map(|prev| available_before - prev)
+        .unwrap_or(0.0);
+    let panel_delta = diag
+        .last_panel_width
+        .map(|prev| panel_width - prev)
+        .unwrap_or(0.0);
+    let chrome_embedded_delta = diag
+        .last_chrome_embedded_width
+        .zip(chrome_embedded_width_after)
+        .map(|(prev, now)| now - prev)
+        .unwrap_or(0.0);
+    let first_sample = diag.last_panel_width.is_none();
+    let interval_elapsed = diag.last_log_at.map_or(true, |last| {
+        now.saturating_duration_since(last) >= LOG_INTERVAL
+    });
+    let changed = first_sample
+        || available_delta.abs() >= WIDTH_CHANGE_EPS
+        || panel_delta.abs() >= WIDTH_CHANGE_EPS
+        || chrome_embedded_delta.abs() >= WIDTH_CHANGE_EPS;
+
+    if interval_elapsed && changed {
+        log::info!(
+            "[DirectoryTree][OuterPanelDiag] avail_before={:.1} d_avail={:+.1} avail_after={:.1} \
+             max_rect_before={:.1} panel_w={:.1} d_panel={:+.1} panel_x={:.1}->{:.1} \
+             default={:.1} min={:.1} tree_embedded_before={:.1} chrome_embedded_after={:?} \
+             d_chrome_embedded={:+.1}",
+            available_before,
+            available_delta,
+            available_after,
+            max_rect_width_before,
+            panel_width,
+            panel_delta,
+            panel_left,
+            panel_right,
+            default_width,
+            min_width,
+            tree_embedded_width_before,
+            chrome_embedded_width_after,
+            chrome_embedded_delta,
+        );
+        diag.last_log_at = Some(now);
+    }
+
+    diag.last_available_before = Some(available_before);
+    diag.last_panel_width = Some(panel_width);
+    if let Some(width) = chrome_embedded_width_after {
+        diag.last_chrome_embedded_width = Some(width);
+    }
 }
 
 impl ImageViewerApp {
@@ -1537,7 +1620,15 @@ impl ImageViewerApp {
             return;
         }
 
-        egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+        let available_before = ui.available_width();
+        let max_rect_width_before = ui.max_rect().width();
+        let tree_embedded_width_before = self
+            .directory_tree
+            .tree
+            .try_lock()
+            .map(|tree| tree.embedded_nav_panel_width)
+            .unwrap_or(0.0);
+        let panel_response = egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
             .resizable(true)
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
@@ -1566,6 +1657,24 @@ impl ImageViewerApp {
                 }
                 self.finish_directory_tree_image_list_context_menu(ui.ctx(), true);
             });
+        let panel_rect = panel_response.response.rect;
+        let chrome_embedded_width_after = self
+            .directory_tree
+            .chrome
+            .try_lock()
+            .and_then(|chrome| chrome.embedded_nav_panel_width);
+        maybe_log_embedded_side_panel_layout(
+            available_before,
+            ui.available_width(),
+            max_rect_width_before,
+            panel_rect.width(),
+            panel_rect.left(),
+            panel_rect.right(),
+            default_width,
+            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+            tree_embedded_width_before,
+            chrome_embedded_width_after,
+        );
     }
 
     /// Apply a directory-tree list selection queued in `process_directory_tree_events`.
