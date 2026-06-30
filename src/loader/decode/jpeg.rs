@@ -175,17 +175,22 @@ pub(crate) fn try_decode_jpeg_strip_dct(
         (orig_w, orig_h)
     };
 
-    if orientation > 1 {
+    let decoded = if orientation > 1 {
         let (out_w, out_h, out_pixels) = crate::libtiff_loader::apply_orientation_buffer(
             pixels,
             scaled_w,
             scaled_h,
             orientation,
         );
-        Some(Ok((DecodedImage::new(out_w, out_h, out_pixels), logical)))
+        DecodedImage::new(out_w, out_h, out_pixels)
     } else {
-        Some(Ok((DecodedImage::new(scaled_w, scaled_h, pixels), logical)))
-    }
+        DecodedImage::new(scaled_w, scaled_h, pixels)
+    };
+    let decoded = match crate::loader::downsample_decoded_for_strip(&decoded, max_side) {
+        Ok(decoded) => decoded,
+        Err(err) => return Some(Err(err)),
+    };
+    Some(Ok((decoded, logical)))
 }
 
 #[cfg(test)]
@@ -261,6 +266,7 @@ mod tests {
         assert_eq!(logical, (64, 48));
         assert!(decoded.width > 0);
         assert!(decoded.height > 0);
+        assert!(decoded.width.max(decoded.height) <= 16);
         assert_eq!(
             decoded.rgba().len(),
             decoded.width as usize * decoded.height as usize * 4

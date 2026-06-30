@@ -18,6 +18,9 @@
 use super::types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 
 #[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(target_os = "windows")]
 pub(crate) fn monitor_device_name(name: &[u16; 32]) -> String {
     let len = name
         .iter()
@@ -137,6 +140,70 @@ pub(crate) fn outer_top_left_to_physical_screen_px(
     ]
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActiveMonitorProbeLogKey {
+    logical: [i32; 2],
+    physical: [i32; 2],
+    native_pixels_per_point_bits: Option<u32>,
+    probe_point: [i32; 2],
+    monitor_handle: usize,
+}
+
+#[cfg(target_os = "windows")]
+static LAST_ACTIVE_MONITOR_PROBE_LOG: OnceLock<Mutex<Option<ActiveMonitorProbeLogKey>>> =
+    OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn active_monitor_probe_log_should_emit(
+    last: &mut Option<ActiveMonitorProbeLogKey>,
+    logical: [i32; 2],
+    physical: [i32; 2],
+    native_pixels_per_point: Option<f32>,
+    probe_point: [i32; 2],
+    monitor_handle: usize,
+) -> bool {
+    let key = ActiveMonitorProbeLogKey {
+        logical,
+        physical,
+        native_pixels_per_point_bits: native_pixels_per_point.map(f32::to_bits),
+        probe_point,
+        monitor_handle,
+    };
+    if last.as_ref() == Some(&key) {
+        return false;
+    }
+    *last = Some(key);
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn active_monitor_probe_log_gate_should_emit(
+    logical: [i32; 2],
+    physical: [i32; 2],
+    native_pixels_per_point: Option<f32>,
+    probe_point: [i32; 2],
+    monitor_handle: usize,
+) -> bool {
+    let gate = LAST_ACTIVE_MONITOR_PROBE_LOG.get_or_init(|| Mutex::new(None));
+    let Ok(mut last) = gate.lock() else {
+        return true;
+    };
+    active_monitor_probe_log_should_emit(
+        &mut last,
+        logical,
+        physical,
+        native_pixels_per_point,
+        probe_point,
+        monitor_handle,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn monitor_handle_log_id(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> usize {
+    monitor.0 as usize
+}
+
 /// Same monitor lookup as [`super::probe::spawn_monitor_hdr_status`]: bias ~20px inside
 /// the ROOT outer top-left in **physical screen pixels** so boundary pixels do not flip to
 /// a neighbour display. egui reports outer rects in UI points; spawn-time probing uses the
@@ -158,17 +225,25 @@ fn dxgi_selection_for_outer_top_left(
     if monitor.is_invalid() {
         return Err("active window monitor was not found".to_string());
     }
-    log::info!(
-        "[HDR] active-monitor probe: origin=cached_outer_top_left logical=({}, {}) \
-         physical=({}, {}) npp={native_pixels_per_point:?} probe_point=({}, {}) \
-         monitor_handle={monitor:?}",
-        top_left[0],
-        top_left[1],
-        physical[0],
-        physical[1],
-        point.x,
-        point.y,
-    );
+    if active_monitor_probe_log_gate_should_emit(
+        top_left,
+        physical,
+        native_pixels_per_point,
+        [point.x, point.y],
+        monitor_handle_log_id(monitor),
+    ) {
+        log::info!(
+            "[HDR] active-monitor probe: origin=cached_outer_top_left logical=({}, {}) \
+             physical=({}, {}) npp={native_pixels_per_point:?} probe_point=({}, {}) \
+             monitor_handle={monitor:?}",
+            top_left[0],
+            top_left[1],
+            physical[0],
+            physical[1],
+            point.x,
+            point.y,
+        );
+    }
     dxgi_hdr_selection_for_monitor_handle(monitor)
 }
 
@@ -214,8 +289,8 @@ pub(crate) fn plausible_main_viewport_outer_rect(
 #[cfg(all(test, target_os = "windows"))]
 mod viewport_probe_tests {
     use super::{
-        outer_top_left_to_physical_screen_px, plausible_main_viewport_outer_rect,
-        windows_active_monitor_hdr_status,
+        active_monitor_probe_log_should_emit, outer_top_left_to_physical_screen_px,
+        plausible_main_viewport_outer_rect, windows_active_monitor_hdr_status,
     };
 
     #[test]
@@ -251,6 +326,36 @@ mod viewport_probe_tests {
     fn active_monitor_probe_fails_closed_without_plausible_main_outer_rect() {
         assert!(windows_active_monitor_hdr_status(None, None, None, None).is_err());
         assert!(windows_active_monitor_hdr_status(Some([0, 0, 10, 10]), None, None, None).is_err());
+    }
+
+    #[test]
+    fn active_monitor_probe_log_skips_unchanged_parameters() {
+        let mut last = None;
+
+        assert!(active_monitor_probe_log_should_emit(
+            &mut last,
+            [1914, 170],
+            [3828, 340],
+            Some(2.0),
+            [3848, 360],
+            0x10001,
+        ));
+        assert!(!active_monitor_probe_log_should_emit(
+            &mut last,
+            [1914, 170],
+            [3828, 340],
+            Some(2.0),
+            [3848, 360],
+            0x10001,
+        ));
+        assert!(active_monitor_probe_log_should_emit(
+            &mut last,
+            [1915, 170],
+            [3830, 340],
+            Some(2.0),
+            [3850, 360],
+            0x10001,
+        ));
     }
 }
 

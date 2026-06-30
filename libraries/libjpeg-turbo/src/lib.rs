@@ -176,7 +176,9 @@ impl Decompressor {
             .and_then(|pixels| pixels.checked_mul(pixel_size as u64))
             .ok_or_else(|| format!("JPEG output buffer size overflow: {width}x{height}"))?;
         if buf_len > isize::MAX as u64 {
-            return Err(format!("JPEG output buffer size overflow: {width}x{height}"));
+            return Err(format!(
+                "JPEG output buffer size overflow: {width}x{height}"
+            ));
         }
         let buf_len = buf_len as usize;
 
@@ -256,27 +258,38 @@ fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
 
     let factors = unsafe { std::slice::from_raw_parts(factors_ptr, num_factors as usize) };
 
-    // Factors are sorted ascending by ratio; the first entry is the smallest
-    // (e.g. 1/8).  Initialize to the smallest factor as a safe fallback for
-    // large images where no factor satisfies max_side.
-    let mut best_num = factors[0].num;
-    let mut best_denom = factors[0].denom;
+    let mut fallback: Option<(c_int, c_int)> = None;
+    let mut best_fit: Option<(c_int, c_int)> = None;
 
     for f in factors {
-        let scaled = (dominant as u64 * f.num as u64) / f.denom as u64;
+        if f.num <= 0 || f.denom <= 0 {
+            continue;
+        }
+        match fallback {
+            Some((num, denom)) => {
+                if (f.num as i64 * denom as i64) < (num as i64 * f.denom as i64) {
+                    fallback = Some((f.num, f.denom));
+                }
+            }
+            None => fallback = Some((f.num, f.denom)),
+        }
+
+        let scaled = dct_scaled_dim(dominant, f.num, f.denom);
         if scaled <= max_side as u64 {
             // Prefer the factor with the LEAST reduction (largest ratio) so the
             // decoded output is as close to max_side as possible.
+            let Some((best_num, best_denom)) = best_fit else {
+                best_fit = Some((f.num, f.denom));
+                continue;
+            };
             match (f.num as i64 * best_denom as i64).cmp(&(best_num as i64 * f.denom as i64)) {
                 Ordering::Greater => {
-                    best_num = f.num;
-                    best_denom = f.denom;
+                    best_fit = Some((f.num, f.denom));
                 }
                 Ordering::Equal => {
                     // When ratios tie, prefer the smaller denominator (larger absolute dimensions).
                     if f.denom < best_denom {
-                        best_num = f.num;
-                        best_denom = f.denom;
+                        best_fit = Some((f.num, f.denom));
                     }
                 }
                 Ordering::Less => {}
@@ -284,9 +297,15 @@ fn best_dct_scaled_dims(orig_w: u32, orig_h: u32, max_side: u32) -> (i32, i32) {
         }
     }
 
-    let out_w = ((orig_w as u64 * best_num as u64) / best_denom as u64).max(1) as i32;
-    let out_h = ((orig_h as u64 * best_num as u64) / best_denom as u64).max(1) as i32;
+    let (best_num, best_denom) = best_fit.or(fallback).unwrap_or((1, 1));
+    let out_w = dct_scaled_dim(orig_w, best_num, best_denom).max(1) as i32;
+    let out_h = dct_scaled_dim(orig_h, best_num, best_denom).max(1) as i32;
     (out_w, out_h)
+}
+
+fn dct_scaled_dim(dim: u32, num: c_int, denom: c_int) -> u64 {
+    let numerator = dim as u64 * num as u64;
+    numerator.div_ceil(denom as u64)
 }
 
 /// Decode a JPEG to RGBA8 with DCT-domain scaling.
@@ -317,12 +336,8 @@ pub fn decode_to_rgba_with_max_side(
     let orig_h_u = orig_h as u32;
 
     if orig_w_u.max(orig_h_u) <= max_side {
-        let pixels = decompressor.decompress(
-            jpeg_data,
-            orig_w_u as i32,
-            orig_h_u as i32,
-            TJPF::RGBA,
-        )?;
+        let pixels =
+            decompressor.decompress(jpeg_data, orig_w_u as i32, orig_h_u as i32, TJPF::RGBA)?;
         return Ok((orig_w_u, orig_h_u, orig_w_u, orig_h_u, pixels));
     }
 
@@ -333,6 +348,7 @@ pub fn decode_to_rgba_with_max_side(
 
 #[cfg(test)]
 mod tests {
+    use super::best_dct_scaled_dims;
     use super::Decompressor;
     use super::TJPF;
 
@@ -342,10 +358,7 @@ mod tests {
         let err = decompressor
             .decompress(&[], i32::MAX, i32::MAX, TJPF::RGBA)
             .expect_err("overflow dimensions must fail before allocation");
-        assert!(
-            err.contains("overflow"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("overflow"), "unexpected error: {err}");
     }
 
     #[test]
@@ -353,5 +366,16 @@ mod tests {
         let decompressor = Decompressor::new().expect("decompressor");
         // 23171² × 4 exceeds i32::MAX — previously panicked in debug builds.
         let _ = decompressor.decompress(&[], 23_171, 23_171, TJPF::RGBA);
+    }
+
+    #[test]
+    fn dct_scaled_dims_never_upscale_large_strip_sources() {
+        let (out_w, out_h) = best_dct_scaled_dims(20_000, 15_059, 128);
+
+        assert_eq!((out_w, out_h), (2_500, 1_883));
+        assert!(
+            out_w <= 20_000 && out_h <= 15_059,
+            "DCT strip scaling must not upscale large sources: {out_w}x{out_h}"
+        );
     }
 }
