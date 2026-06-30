@@ -114,6 +114,47 @@ pub(crate) struct DirectoryTreeStripCache {
     gpu_revision: u64,
 }
 
+/// Per-index result cache for container-only ISO gain-map compose probes.
+#[derive(Default)]
+pub(crate) struct DirectoryTreeStripComposeProbeCache {
+    needs_compose_by_index: HashMap<usize, bool>,
+}
+
+impl DirectoryTreeStripComposeProbeCache {
+    pub(crate) fn needs_compose_upgrade(
+        &mut self,
+        index: usize,
+        probe: impl FnOnce() -> bool,
+    ) -> bool {
+        if let Some(cached) = self.needs_compose_by_index.get(&index) {
+            return *cached;
+        }
+        let needs_compose = probe();
+        self.needs_compose_by_index.insert(index, needs_compose);
+        needs_compose
+    }
+
+    pub(crate) fn remove_index(&mut self, index: usize) {
+        self.needs_compose_by_index.remove(&index);
+    }
+
+    pub(crate) fn retain_len(&mut self, len: usize) {
+        self.needs_compose_by_index.retain(|index, _| *index < len);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.needs_compose_by_index.clear();
+    }
+
+    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
+        remap_partial_hashmap(&mut self.needs_compose_by_index, old_to_new);
+    }
+
+    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
+        permute_usize_hashmap(&mut self.needs_compose_by_index, old_to_new);
+    }
+}
+
 pub(crate) struct StripDecodedUpsert<'a> {
     pub(crate) stage: PreviewStage,
     pub(crate) buffer_tag: StripPreviewBufferTag,
@@ -861,6 +902,26 @@ mod tests {
             strip_buffer_tag_for_hdr_preview(true, false, false, false),
             StripPreviewBufferTag::HdrToneMappedStrip
         );
+    }
+
+    #[test]
+    fn compose_probe_cache_reuses_result_until_invalidated() {
+        use std::cell::Cell;
+
+        let mut cache = DirectoryTreeStripComposeProbeCache::default();
+        let probes = Cell::new(0usize);
+        let probe = || {
+            probes.set(probes.get() + 1);
+            true
+        };
+
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert_eq!(probes.get(), 1);
+
+        cache.remove_index(7);
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert_eq!(probes.get(), 2);
     }
 
     #[test]

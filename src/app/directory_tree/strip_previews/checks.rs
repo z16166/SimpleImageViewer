@@ -293,7 +293,7 @@ impl ImageViewerApp {
         true
     }
 
-    pub(super) fn strip_needs_compose_upgrade(&self, index: usize) -> bool {
+    pub(super) fn strip_needs_compose_upgrade(&mut self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
         }
@@ -325,7 +325,11 @@ impl ImageViewerApp {
         {
             return true;
         }
-        crate::loader::path_needs_directory_tree_strip_compose_upgrade(&self.image_files[index])
+        let path = self.image_files[index].clone();
+        self.directory_tree_strip_compose_probe_cache
+            .needs_compose_upgrade(index, || {
+                crate::loader::path_needs_directory_tree_strip_compose_upgrade(&path)
+            })
     }
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).

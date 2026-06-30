@@ -495,6 +495,8 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree: DirectoryTreeRuntime,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
+    pub(crate) directory_tree_strip_compose_probe_cache:
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
     pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,

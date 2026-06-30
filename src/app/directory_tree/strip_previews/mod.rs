@@ -49,6 +49,8 @@ pub(super) fn send_strip_inflight_release(
 impl ImageViewerApp {
     pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
         self.directory_tree_strip_cache.remove_index(index);
+        self.directory_tree_strip_compose_probe_cache
+            .remove_index(index);
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
@@ -372,6 +374,8 @@ impl ImageViewerApp {
             self.strip_stale_retain_last_generation = current_gen;
             self.directory_tree_strip_cache
                 .retain(|index| index < self.image_files.len());
+            self.directory_tree_strip_compose_probe_cache
+                .retain_len(self.image_files.len());
             self.directory_tree_strip_tiled_attempted
                 .retain(|index| *index < self.image_files.len());
             self.directory_tree_strip_generate_inflight
@@ -419,6 +423,8 @@ impl ImageViewerApp {
         old_to_new: &[usize],
     ) {
         self.directory_tree_strip_cache.permute(old_to_new);
+        self.directory_tree_strip_compose_probe_cache
+            .permute(old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
@@ -478,6 +484,8 @@ impl ImageViewerApp {
         for (old_idx, path) in old_files.iter().enumerate() {
             if !new_path_set.contains(path) {
                 self.directory_tree_strip_cache.remove_index(old_idx);
+                self.directory_tree_strip_compose_probe_cache
+                    .remove_index(old_idx);
             }
         }
 
@@ -510,6 +518,8 @@ impl ImageViewerApp {
 
         log::debug!("[DirectoryTree] Partial strip cache reorder retaining mapped entries");
         self.directory_tree_strip_cache.partial_remap(&old_to_new);
+        self.directory_tree_strip_compose_probe_cache
+            .partial_remap(&old_to_new);
         Self::permute_strip_index_set(
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
@@ -533,6 +543,7 @@ impl ImageViewerApp {
 
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
+        self.directory_tree_strip_compose_probe_cache.clear();
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
