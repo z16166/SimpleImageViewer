@@ -62,6 +62,8 @@ pub const AVIF_PIXEL_FORMAT_YUV420: avifPixelFormat = 3;
 pub const AVIF_PIXEL_FORMAT_YUV400: avifPixelFormat = 4;
 
 pub const AVIF_CHROMA_UPSAMPLING_NEAREST: avifChromaUpsampling = 3;
+pub const AVIF_PLANES_YUV: avifPlanesFlags = 1 << 0;
+pub const AVIF_PLANES_A: avifPlanesFlags = 1 << 1;
 pub const AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA: u32 = (1 << 0) | (1 << 1);
 pub const AVIF_IMAGE_CONTENT_GAIN_MAP: u32 = 1 << 2;
 pub const AVIF_IMAGE_CONTENT_ALL: u32 =
@@ -78,6 +80,7 @@ pub const AVIF_STRICT_ENABLED: u32 =
 pub const AVIF_RGB_FORMAT_RGBA: avifRGBFormat = 1;
 pub const AVIF_COLOR_PRIMARIES_BT709: avifColorPrimaries = 1;
 pub const AVIF_TRANSFER_CHARACTERISTICS_LINEAR: avifTransferCharacteristics = 8;
+pub const AVIF_TRANSFER_CHARACTERISTICS_SRGB: avifTransferCharacteristics = 13;
 /// SMPTE ST 2084 (PQ). libavif's `linearToGamma` for PQ encodes "extended SDR" linear
 /// (1.0 = SDR white = 203 nits) into [0,1] without the `LINEAR` clamp — preserves HDR.
 pub const AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084: avifTransferCharacteristics = 16;
@@ -263,6 +266,11 @@ unsafe extern "C" {
     pub fn avifVersion() -> *const libc::c_char;
     pub fn avifResultToString(result: avifResult) -> *const libc::c_char;
     pub fn avifImageCreateEmpty() -> *mut avifImage;
+    pub fn avifImageCopy(
+        dstImage: *mut avifImage,
+        srcImage: *const avifImage,
+        planes: avifPlanesFlags,
+    ) -> avifResult;
     pub fn avifImageDestroy(image: *mut avifImage);
     pub fn avifDecoderCreate() -> *mut avifDecoder;
     pub fn avifDecoderDestroy(decoder: *mut avifDecoder);
@@ -292,6 +300,13 @@ unsafe extern "C" {
         outputTransferCharacteristics: avifTransferCharacteristics,
         toneMappedImage: *mut avifRGBImage,
         clli: *mut avifContentLightLevelInformationBox,
+        diag: *mut avifDiagnostics,
+    ) -> avifResult;
+    /// `diag` must be non-null: libavif 1.4.x calls `avifDiagnosticsClearError(diag)` without a null check.
+    pub fn avifImageScale(
+        image: *mut avifImage,
+        dstWidth: u32,
+        dstHeight: u32,
         diag: *mut avifDiagnostics,
     ) -> avifResult;
     pub fn siv_avif_decoder_decode_all_content(decoder: *mut avifDecoder);

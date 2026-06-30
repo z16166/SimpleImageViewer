@@ -151,3 +151,24 @@ pub(crate) fn preview_sample_coord(
     ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
         as u32
 }
+
+/// Nearest-neighbor downsample of RGBA8 pixels using the same sampling grid as HDR previews.
+pub(crate) fn downsample_rgba8_nearest(
+    pixels: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> Vec<u8> {
+    let mut out = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+    for y in 0..dst_h {
+        let src_y = preview_sample_coord(y, dst_h, src_h);
+        for x in 0..dst_w {
+            let src_x = preview_sample_coord(x, dst_w, src_w);
+            let src_i = (src_y as usize * src_w as usize + src_x as usize) * 4;
+            let dst_i = (y as usize * dst_w as usize + x as usize) * 4;
+            out[dst_i..dst_i + 4].copy_from_slice(&pixels[src_i..src_i + 4]);
+        }
+    }
+    out
+}

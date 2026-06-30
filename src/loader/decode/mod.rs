@@ -30,12 +30,12 @@ mod modern;
 mod raster;
 mod raw;
 pub(crate) use raw::open_raw_processor_with_preview;
+mod strip_compose_probe;
 mod strip_downsample;
 mod tiff_raw_sniff;
 
 pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_decode_from_path;
-#[cfg(feature = "preload-debug")]
-pub(crate) use modern::path_may_have_gain_map_embedded_sdr_preview;
+pub(crate) use strip_compose_probe::path_needs_directory_tree_strip_compose_upgrade;
 pub(crate) use raster::is_maybe_animated;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;

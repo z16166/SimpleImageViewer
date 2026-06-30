@@ -25,6 +25,13 @@ use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
+    /// Gain-map compose capacity for directory-tree strip thumbnails (matches main HDR display).
+    pub(crate) fn directory_tree_strip_gain_map_compose_capacity(&self) -> f32 {
+        crate::loader::directory_tree_strip_gain_map_compose_capacity(
+            &self.effective_hdr_tone_map_settings(),
+        )
+    }
+
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
         self.pending_anim_frames
             .get(&index)
@@ -311,9 +318,14 @@ impl ImageViewerApp {
         {
             return false;
         }
-        self.hdr_image_cache
+        if self
+            .hdr_image_cache
             .get(&index)
             .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
+        {
+            return true;
+        }
+        crate::loader::path_needs_directory_tree_strip_compose_upgrade(&self.image_files[index])
     }
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).

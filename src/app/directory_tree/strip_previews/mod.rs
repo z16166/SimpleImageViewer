@@ -303,13 +303,36 @@ impl ImageViewerApp {
                     if compose_scheduled >= compose_room {
                         break;
                     }
-                    if self.strip_needs_compose_upgrade(index) {
-                        self.try_schedule_strip_compose_upgrade(index);
+                    if self.strip_needs_compose_upgrade(index)
+                        && self.try_schedule_strip_compose_upgrade(index)
+                    {
                         compose_scheduled += 1;
                     }
                 }
-            } else if self.strip_needs_compose_upgrade(self.current_index) {
-                self.try_schedule_strip_compose_upgrade(self.current_index);
+            } else if self.strip_needs_compose_upgrade(self.current_index)
+                && self.try_schedule_strip_compose_upgrade(self.current_index)
+            {
+                compose_scheduled += 1;
+            }
+            if compose_scheduled < compose_room {
+                let compose_targets = if let Some((start, end)) = visible_row_range {
+                    (start..end.min(file_count)).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                for index in compose_targets {
+                    if compose_scheduled >= compose_room {
+                        break;
+                    }
+                    if index == self.current_index {
+                        continue;
+                    }
+                    if self.strip_needs_compose_upgrade(index)
+                        && self.try_schedule_strip_compose_upgrade(index)
+                    {
+                        compose_scheduled += 1;
+                    }
+                }
             }
         }
 

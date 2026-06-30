@@ -96,6 +96,117 @@ pub(crate) fn libjxl_probe_orientation_from_path(path: &std::path::Path) -> Opti
     libjxl_probe_orientation_from_bytes(&mmap[..])
 }
 
+/// True when the container carries an ISO forward (non-precomposed) `jhgm` gain map.
+#[cfg(feature = "jpegxl")]
+pub(crate) fn jxl_probe_forward_iso_gain_map(bytes: &[u8]) -> bool {
+    let probe_len = bytes.len().clamp(2, 16);
+    if bytes.len() < 2 || !is_jxl_header(&bytes[..probe_len]) {
+        return false;
+    }
+    let Some(jhgm) = extract_jhgm_box_payload(bytes) else {
+        return false;
+    };
+    let Ok(parsed) = crate::hdr::jxl_gain_map_deferred::parse_jxl_jhgm_box(&jhgm) else {
+        return false;
+    };
+    !parsed.skips_forward_compose
+}
+
+#[cfg(feature = "jpegxl")]
+fn extract_jhgm_box_payload(bytes: &[u8]) -> Option<Vec<u8>> {
+    let scan_limit = bytes.len().min(4 * 1024 * 1024);
+    let mut offset = 0usize;
+    while offset + 8 <= scan_limit {
+        let size = u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);
+        if size < 8 {
+            break;
+        }
+        let end = offset.checked_add(size as usize)?;
+        if end > scan_limit {
+            break;
+        }
+        if &bytes[offset + 4..offset + 8] == b"jhgm" {
+            return Some(bytes[offset + 8..end].to_vec());
+        }
+        offset = end;
+    }
+    None
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_display_dimensions(info: &libjxl_sys::JxlBasicInfo) -> (u32, u32) {
+    let w = info.xsize;
+    let h = info.ysize;
+    if w == 0 || h == 0 {
+        return (0, 0);
+    }
+    match info.orientation {
+        5..=8 => (h, w),
+        _ => (w, h),
+    }
+}
+
+/// Logical display size from codestream header only (no full-frame decode).
+#[cfg(feature = "jpegxl")]
+pub(crate) fn libjxl_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+    let probe_len = bytes.len().clamp(2, 16);
+    if bytes.len() < 2 || !is_jxl_header(&bytes[..probe_len]) {
+        return None;
+    }
+    struct DecoderPtr(*mut libjxl_sys::JxlDecoder);
+    impl Drop for DecoderPtr {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { libjxl_sys::JxlDecoderDestroy(self.0) };
+                self.0 = std::ptr::null_mut();
+            }
+        }
+    }
+    unsafe {
+        let raw = libjxl_sys::JxlDecoderCreate(std::ptr::null());
+        if raw.is_null() {
+            return None;
+        }
+        let decoder = DecoderPtr(raw);
+        if libjxl_sys::JxlDecoderSubscribeEvents(
+            decoder.0,
+            libjxl_sys::JXL_DEC_BASIC_INFO as std::os::raw::c_int,
+        ) != libjxl_sys::JXL_DEC_SUCCESS
+        {
+            return None;
+        }
+        if libjxl_sys::JxlDecoderSetInput(decoder.0, bytes.as_ptr(), bytes.len())
+            != libjxl_sys::JXL_DEC_SUCCESS
+        {
+            return None;
+        }
+        libjxl_sys::JxlDecoderCloseInput(decoder.0);
+
+        for _ in 0..JXL_PROBE_ITERATION_CAP {
+            match libjxl_sys::JxlDecoderProcessInput(decoder.0) {
+                libjxl_sys::JXL_DEC_BASIC_INFO => {
+                    let mut info = std::mem::MaybeUninit::<libjxl_sys::JxlBasicInfo>::uninit();
+                    if libjxl_sys::JxlDecoderGetBasicInfo(decoder.0.cast_const(), info.as_mut_ptr())
+                        != libjxl_sys::JXL_DEC_SUCCESS
+                    {
+                        return None;
+                    }
+                    let info = info.assume_init();
+                    let (w, h) = jxl_display_dimensions(&info);
+                    return (w > 0 && h > 0).then_some((w, h));
+                }
+                libjxl_sys::JXL_DEC_SUCCESS
+                | libjxl_sys::JXL_DEC_ERROR
+                | libjxl_sys::JXL_DEC_NEED_MORE_INPUT => {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
 // JPEG XL colour / container behaviour (normative references for this module):
 //
 // - **ISO/IEC 18181-1** — JPEG XL codestream (image data, colour description in bitstream).

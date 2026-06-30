@@ -191,6 +191,9 @@ pub(crate) fn probe_heif_strip_thumbnail(bytes: &[u8], max_side: u32) -> HeifStr
 }
 
 fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, u32) {
+    if handle.is_null() {
+        return (0, 0);
+    }
     let ispe_w = unsafe { libheif_sys::heif_image_handle_get_ispe_width(handle) };
     let ispe_h = unsafe { libheif_sys::heif_image_handle_get_ispe_height(handle) };
     if ispe_w > 0 && ispe_h > 0 {
@@ -199,6 +202,21 @@ fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, 
     let w = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as u32;
     let h = unsafe { libheif_sys::heif_image_handle_get_height(handle) }.max(0) as u32;
     (w, h)
+}
+
+/// Primary image logical size from container header only (no pixel decode).
+pub(crate) fn libheif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes).ok()?;
+    let logical = primary_logical_size(primary.as_ptr());
+    (logical.0 > 0 && logical.1 > 0).then_some(logical)
+}
+
+/// True when the primary image has an Apple ISO forward gain-map auxiliary (header only).
+pub(crate) fn heif_probe_forward_iso_gain_map(bytes: &[u8]) -> bool {
+    let Ok((_ctx, primary)) = open_heif_primary_from_bytes(bytes) else {
+        return false;
+    };
+    super::gain_map::heif_has_apple_hdr_gain_map_auxiliary(primary.as_ptr())
 }
 
 fn decode_heif_handle_to_rgba8(

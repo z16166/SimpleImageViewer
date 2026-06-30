@@ -36,7 +36,7 @@ use crate::hdr::types::{
 pub(crate) struct JxlJhgmParsed<'a> {
     bundle: JxlGainMapBundleRef<'a>,
     metadata: GainMapMetadata,
-    skips_forward_compose: bool,
+    pub(crate) skips_forward_compose: bool,
 }
 
 pub(crate) fn parse_jxl_jhgm_box(jhgm_box: &[u8]) -> Result<JxlJhgmParsed<'_>, String> {
