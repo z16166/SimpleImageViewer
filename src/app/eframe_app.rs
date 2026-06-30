@@ -61,7 +61,7 @@ impl eframe::App for ImageViewerApp {
                 self.settings.window_maximized_inner_size = None;
             }
         }
-        self.persist_directory_tree_layout_to_settings();
+        self.persist_directory_tree_layout_to_settings(true);
         #[cfg(feature = "preload-debug")]
         log::info!(
             "[PreloadDebug][Panel] on_exit save folder={:?} list={:?} embedded={:?}",

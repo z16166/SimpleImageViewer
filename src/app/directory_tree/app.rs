@@ -938,7 +938,10 @@ impl ImageViewerApp {
         );
     }
 
-    pub(crate) fn persist_directory_tree_layout_to_settings(&mut self) {
+    pub(crate) fn persist_directory_tree_layout_to_settings(
+        &mut self,
+        persist_embedded_width: bool,
+    ) {
         let tree = self.directory_tree.tree.lock();
         let list = self.directory_tree.list.lock();
         #[cfg(feature = "preload-debug")]
@@ -953,7 +956,10 @@ impl ImageViewerApp {
         if list.image_list_panel_width > 0.0 {
             self.settings.directory_tree_image_list_panel_width = Some(list.image_list_panel_width);
         }
-        if self.directory_tree_nav_is_embedded() && tree.embedded_nav_panel_width > 0.0 {
+        if persist_embedded_width
+            && self.directory_tree_nav_is_embedded()
+            && tree.embedded_nav_panel_width > 0.0
+        {
             self.settings.directory_tree_embedded_panel_width = Some(
                 tree.embedded_nav_panel_width
                     .max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
@@ -1049,7 +1055,7 @@ impl ImageViewerApp {
             dirty
         };
         if dirty {
-            self.persist_directory_tree_layout_to_settings();
+            self.persist_directory_tree_layout_to_settings(false);
             self.queue_save();
         }
     }
