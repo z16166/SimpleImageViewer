@@ -18,6 +18,8 @@
 
 use std::path::{Path, PathBuf};
 
+const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 2;
+
 pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
     adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
 }
@@ -39,7 +41,10 @@ pub fn cache_path_for_adapter_info(info: &wgpu::AdapterInfo) -> PathBuf {
             info.backend, info.vendor, info.device
         )
     });
-    let stem = format!("{stem}_drv{:016x}", driver_cache_hash(info));
+    let stem = format!(
+        "{stem}_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_drv{:016x}",
+        driver_cache_hash(info)
+    );
     cache_dir().join(format!("{stem}.bin"))
 }
 
@@ -102,10 +107,6 @@ pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     if let Err(error) = save_to_path(&cache_path_for_adapter_info(info), &data) {
         log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
     }
-}
-
-pub(crate) fn runtime_prewarm_persist_enabled(backend: wgpu::Backend) -> bool {
-    backend != wgpu::Backend::Metal
 }
 
 #[cfg(target_os = "windows")]
@@ -196,9 +197,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_prewarm_persist_is_disabled_for_metal() {
-        assert!(!runtime_prewarm_persist_enabled(wgpu::Backend::Metal));
-        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Dx12));
-        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Vulkan));
+    fn cache_path_includes_schema_version() {
+        let path = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
+        let file_name = path.file_name().unwrap().to_string_lossy();
+
+        assert!(file_name.contains("_pcv2_"));
     }
 }
