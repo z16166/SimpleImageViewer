@@ -8,10 +8,13 @@ All notable changes to this project will be documented in this file.
 - **Linux HDR display selection**: KDE Wayland systems now keep HDR photos on the correct HDR presentation path for HDR TVs while avoiding false HDR activation on SDR displays.
 - **Navigation panel layout**: Embedded navigation panels keep their intended width and visibility state more reliably while browsing.
 - **GPU startup compatibility**: The viewer avoids reusing incompatible GPU pipeline caches after graphics backend changes, improving launch reliability after upgrades.
+- **Double-click and navigation panel setting**: Double-clicking an image no longer turns off “show navigation panel” in your saved settings; the panel can stay hidden for that session while your preference stays on.
 
 ### Improved
+- **Current image first when changing folders**: Switching folders now loads and shows the image you are on before preloading nearby files in the background.
+- **Faster opening from the file list**: Thumbnail generation and full-size viewing share work more often, so opening an image you already saw in the list is typically quicker.
 - **Faster HDR and RAW image display**: Optimized several HDR, RAW, HEIF, JPEG XL, and gain-map processing paths so large photos load and render more smoothly.
-- **Smoother navigation thumbnails**: Reduced extra CPU and GPU work while updating file-list thumbnails, improving browsing responsiveness in large image folders.
+- **Smoother navigation thumbnails**: File-list thumbnails are built with less redundant decoding and processing, improving browsing responsiveness in large image folders.
 - **Lower memory overhead for modern HDR formats**: JPEG XL and HEIF decoding now avoid some unnecessary full-buffer copies during preview and image preparation.
 
 ## [2.8.1] - 2026-06-28
