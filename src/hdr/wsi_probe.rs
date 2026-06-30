@@ -53,6 +53,8 @@ pub fn linux_effective_monitor_selection(
         reference_luminance_nits: wp.reference_luminance_nits,
         linux_wp_transfer: wp.linux_wp_transfer,
         linux_wp_primaries: wp.linux_wp_primaries,
+        linux_explicit_hdr_state: wp.linux_explicit_hdr_state,
+        linux_explicit_hdr_state_source: wp.linux_explicit_hdr_state_source,
     })
 }
 
@@ -84,6 +86,8 @@ mod tests {
             reference_luminance_nits: Some(203.0),
             linux_wp_transfer: Some(LinuxWaylandTransferFunction::Gamma22),
             linux_wp_primaries: Some(LinuxWaylandColorPrimaries::Wide),
+            linux_explicit_hdr_state: Some(super::super::monitor::LinuxExplicitHdrState::Enabled),
+            linux_explicit_hdr_state_source: Some("KDE KScreen"),
         }
     }
 
@@ -99,11 +103,13 @@ mod tests {
             reference_luminance_nits: Some(200.0),
             linux_wp_transfer: Some(LinuxWaylandTransferFunction::Gamma22),
             linux_wp_primaries: Some(LinuxWaylandColorPrimaries::Narrow),
+            linux_explicit_hdr_state: Some(super::super::monitor::LinuxExplicitHdrState::Incapable),
+            linux_explicit_hdr_state_source: Some("KDE KScreen"),
         }
     }
 
     #[test]
-    fn merge_admits_kwin_gamma22_when_wp_and_wsi_agree() {
+    fn merge_prefers_pq_for_kde_enabled_output_when_st2084_pair_exists() {
         let merged = linux_effective_monitor_selection(
             Some(&wp_gamma22_tv()),
             WsiHdrSurfaceGates {
@@ -118,11 +124,11 @@ mod tests {
         assert!(merged.hdr_supported);
         assert_eq!(
             merged.native_surface_encoding,
-            Some(HdrNativeSurfaceEncoding::Gamma22Electrical)
+            Some(HdrNativeSurfaceEncoding::PqHdr10)
         );
         assert_eq!(
             merged.hdr_capacity_source,
-            Some("Wayland wp + Vulkan WSI gamma22")
+            Some("Wayland wp + Vulkan WSI PQ")
         );
     }
 

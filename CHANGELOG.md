@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [2.8.2] - 2026-06-29
 
+### Fixed
+- **Linux HDR display selection**: KDE Wayland systems now keep HDR photos on the correct HDR presentation path for HDR TVs while avoiding false HDR activation on SDR displays.
+
 ### Improved
 - **Faster HDR and RAW image display**: Optimized several HDR, RAW, HEIF, JPEG XL, and gain-map processing paths so large photos load and render more smoothly.
 - **Smoother navigation thumbnails**: Reduced extra CPU and GPU work while updating file-list thumbnails, improving browsing responsiveness in large image folders.

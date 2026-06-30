@@ -138,6 +138,19 @@ pub(crate) fn wayland_output_selection(
         reference_luminance_nits,
         linux_wp_transfer: Some(map_wayland_transfer_function(tf)),
         linux_wp_primaries: Some(map_wayland_primaries(primaries)),
+        linux_explicit_hdr_state: None,
+        linux_explicit_hdr_state_source: None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_hdr_supported(selection: &HdrMonitorSelection) -> bool {
+    match selection.linux_explicit_hdr_state {
+        Some(super::LinuxExplicitHdrState::Enabled) => true,
+        Some(super::LinuxExplicitHdrState::Disabled | super::LinuxExplicitHdrState::Incapable) => {
+            false
+        }
+        None => selection.hdr_supported,
     }
 }
 
@@ -420,13 +433,23 @@ impl ProbeState {
             .image_state
             .transfer_function
             .unwrap_or(WaylandTransferFunction::Unknown);
-        let selection = wayland_output_selection(
+        let mut selection = wayland_output_selection(
             self.selected_output_label.clone(),
             tf,
             self.image_state.max_luminance_nits,
             self.image_state.reference_luminance_nits,
             self.image_state.primaries,
         );
+        let explicit_state = if self.spawn_probe {
+            super::kde::explicit_hdr_state_for_output_blocking(&selection.label)
+        } else {
+            super::kde::explicit_hdr_state_for_output(&selection.label)
+        };
+        if let Some(state) = explicit_state {
+            selection.linux_explicit_hdr_state = Some(state);
+            selection.linux_explicit_hdr_state_source =
+                Some(super::kde::KDE_KSCREEN_HDR_STATE_SOURCE);
+        }
 
         log::debug!(
             "[HDR] Wayland image description: tf={tf:?} primaries={:?} \
@@ -450,7 +473,7 @@ impl ProbeState {
 
         if self.spawn_probe {
             self.spawn_result = Some(Ok(SpawnMonitorHdrProbe {
-                hdr_supported: selection.hdr_supported,
+                hdr_supported: spawn_hdr_supported(&selection),
                 label: selection.label,
                 origin: self.probe_origin,
                 max_luminance_nits: selection.max_luminance_nits,
@@ -865,6 +888,36 @@ mod tests {
         );
         assert!(!sdr.hdr_supported);
         assert_eq!(sdr.hdr_capacity_source, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_hdr_supported_uses_explicit_kde_enabled_state() {
+        let mut selection = wayland_output_selection(
+            "HDMI-A-1".to_string(),
+            WaylandTransferFunction::Gamma22,
+            Some(1800.0),
+            Some(203.0),
+            None,
+        );
+        assert!(!selection.hdr_supported);
+        selection.linux_explicit_hdr_state = Some(super::LinuxExplicitHdrState::Enabled);
+        assert!(spawn_hdr_supported(&selection));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_hdr_supported_uses_explicit_kde_disabled_veto() {
+        let mut selection = wayland_output_selection(
+            "HDMI-A-1".to_string(),
+            WaylandTransferFunction::St2084,
+            Some(1000.0),
+            Some(203.0),
+            None,
+        );
+        assert!(selection.hdr_supported);
+        selection.linux_explicit_hdr_state = Some(super::LinuxExplicitHdrState::Disabled);
+        assert!(!spawn_hdr_supported(&selection));
     }
 
     #[test]

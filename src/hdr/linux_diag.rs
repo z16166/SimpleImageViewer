@@ -22,8 +22,8 @@
 
 use super::linux_admission::{self, LinuxHdrAdmission};
 use super::monitor::{
-    HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
-    LinuxWaylandTransferFunction,
+    HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxExplicitHdrState,
+    LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction,
 };
 use super::types::HdrOutputMode;
 use super::wsi_probe::WsiHdrSurfaceGates;
@@ -35,6 +35,8 @@ pub(crate) struct LinuxHdrRuntimeDiagSnapshot {
     wp_hdr_supported: Option<bool>,
     wp_transfer: Option<LinuxWaylandTransferFunction>,
     wp_primaries: Option<LinuxWaylandColorPrimaries>,
+    explicit_hdr_state: Option<LinuxExplicitHdrState>,
+    explicit_hdr_state_source: Option<String>,
     wp_max_luminance_nits: Option<u32>,
     wp_reference_luminance_nits: Option<u32>,
     wsi_probed: bool,
@@ -88,6 +90,10 @@ fn snapshot_from_input(input: LinuxHdrRuntimeDiagInput<'_>) -> LinuxHdrRuntimeDi
         wp_hdr_supported: wp.as_ref().map(|s| s.hdr_supported),
         wp_transfer: wp.as_ref().and_then(|s| s.linux_wp_transfer),
         wp_primaries: wp.as_ref().and_then(|s| s.linux_wp_primaries),
+        explicit_hdr_state: wp.as_ref().and_then(|s| s.linux_explicit_hdr_state),
+        explicit_hdr_state_source: wp
+            .as_ref()
+            .and_then(|s| s.linux_explicit_hdr_state_source.map(str::to_string)),
         wp_max_luminance_nits: finite_f32_key(wp.as_ref().and_then(|s| s.max_luminance_nits)),
         wp_reference_luminance_nits: finite_f32_key(
             wp.as_ref().and_then(|s| s.reference_luminance_nits),
@@ -129,11 +135,14 @@ pub(crate) fn log_runtime_if_changed(
     if snapshot.wp_present {
         log::info!(
             "[HDR] display: output={} wp_hdr={} transfer={:?} primaries={:?} \
-             max_luminance_nits={:?} reference_luminance_nits={:?}",
+             explicit_hdr_state={:?} explicit_hdr_source={:?} max_luminance_nits={:?} \
+             reference_luminance_nits={:?}",
             snapshot.wp_label.as_deref().unwrap_or("(unknown)"),
             snapshot.wp_hdr_supported.unwrap_or(false),
             snapshot.wp_transfer,
             snapshot.wp_primaries,
+            snapshot.explicit_hdr_state,
+            snapshot.explicit_hdr_state_source.as_deref(),
             f32_from_key(snapshot.wp_max_luminance_nits),
             f32_from_key(snapshot.wp_reference_luminance_nits),
         );
@@ -225,6 +234,8 @@ mod tests {
             reference_luminance_nits: Some(210.0),
             linux_wp_transfer: Some(LinuxWaylandTransferFunction::Gamma22),
             linux_wp_primaries: Some(LinuxWaylandColorPrimaries::Wide),
+            linux_explicit_hdr_state: Some(LinuxExplicitHdrState::Enabled),
+            linux_explicit_hdr_state_source: Some("KDE KScreen"),
         };
         let wsi = WsiHdrSurfaceGates {
             hdr10_st2084_rgb10a2: true,

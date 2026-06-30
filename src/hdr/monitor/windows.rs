@@ -108,6 +108,8 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         reference_luminance_nits: None,
                         linux_wp_transfer: None,
                         linux_wp_primaries: None,
+                        linux_explicit_hdr_state: None,
+                        linux_explicit_hdr_state_source: None,
                     });
                 }
             }
