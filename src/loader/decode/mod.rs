@@ -24,6 +24,7 @@ mod detect;
 mod directory_tree_thumb;
 mod gain_map_strip;
 mod hdr_formats;
+mod hdr_strip_fast;
 mod jpeg;
 mod modern;
 mod raster;

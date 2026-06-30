@@ -296,6 +296,20 @@ impl HdrTiledSource for ExrTiledImageSource {
                     rgba_f32: Arc::new(preview.rgba),
                 });
             }
+            if self.storage == openexr_core_sys::EXR_STORAGE_TILED
+                && let Ok(preview) =
+                    self.context
+                        .extract_tiled_mip_rgba32f_preview(self.part_index, max_w, max_h)
+            {
+                return Ok(HdrImageBuffer {
+                    width: preview.width,
+                    height: preview.height,
+                    format: HdrPixelFormat::Rgba32Float,
+                    color_space: self.color_space,
+                    metadata: HdrImageMetadata::from_color_space(self.color_space),
+                    rgba_f32: Arc::new(preview.rgba),
+                });
+            }
             hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
         })
     }
@@ -311,6 +325,21 @@ impl HdrTiledSource for ExrTiledImageSource {
                     max_w,
                     max_h,
                 )?;
+                let hdr = HdrImageBuffer {
+                    width: preview.width,
+                    height: preview.height,
+                    format: HdrPixelFormat::Rgba32Float,
+                    color_space: self.color_space,
+                    metadata: HdrImageMetadata::from_color_space(self.color_space),
+                    rgba_f32: Arc::new(preview.rgba),
+                };
+                return sdr_preview_from_hdr_preview(&hdr);
+            }
+            if self.storage == openexr_core_sys::EXR_STORAGE_TILED
+                && let Ok(preview) =
+                    self.context
+                        .extract_tiled_mip_rgba32f_preview(self.part_index, max_w, max_h)
+            {
                 let hdr = HdrImageBuffer {
                     width: preview.width,
                     height: preview.height,

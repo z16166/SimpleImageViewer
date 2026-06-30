@@ -25,7 +25,7 @@ use std::path::Path;
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
     HeifThumbProbe, HeifThumbProbeDetail, probe_heif_strip_thumbnail,
-    probe_heif_strip_thumbnail_from_path,
+    probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
@@ -57,8 +57,9 @@ pub(crate) struct DirectoryTreeThumbDecode {
     pub(crate) preview: DecodedImage,
     pub(crate) logical_size: (u32, u32),
     pub(crate) reusable_full: Option<DecodedImage>,
-    /// Embedded EXIF or container (e.g. libheif) SDR preview: low-rank strip placeholder on
-    /// gain-map-capable modern formats until a refined strip arrives.
+    /// Gain-map modern-format placeholder only (AVIF/HEIF/JXL via EXIF, container thumb, or
+    /// primary-SDR fast paths). Schedules a later refined strip upgrade; not set for other
+    /// fast paths (`hdr_float_preview`, `iso_gain_map_baseline`, `jpeg_dct`, etc.).
     pub(crate) from_embedded_sdr_preview: bool,
 }
 
@@ -294,9 +295,40 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
                 "phase=initial_rejected reason=aspect_or_downsample",
             );
         }
+
+        // Initial strip mmap failed (rare); one retry here avoids a second open in the common path.
+        if let Some(result) = match mmap.as_ref() {
+            Some(data) => try_heif_strip_primary_sdr(data.as_ref(), max_side),
+            None => crate::mmap_util::map_file(path)
+                .ok()
+                .and_then(|owned| try_heif_strip_primary_sdr(owned.as_ref(), max_side)),
+        } {
+            return result.map(|(preview, logical)| {
+                log_strip_decode_path(
+                    path,
+                    "heif_primary_sdr",
+                    logical,
+                    preview.width,
+                    preview.height,
+                );
+                DirectoryTreeThumbDecode::new(preview, logical, None, placeholder_if_fast_path)
+            });
+        }
     }
 
-    let path_buf = path.to_path_buf();
+    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, max_side) {
+        return fast.map(|(preview, logical_size)| {
+            log_strip_decode_path(
+                path,
+                "hdr_float_preview",
+                logical_size,
+                preview.width,
+                preview.height,
+            );
+            // Float HDR has no gain map; strip is final (no PreloadSdrFallback upgrade).
+            DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
+        });
+    }
     if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
         path,
         mmap.as_ref().map(|data| data.as_ref()),
@@ -357,6 +389,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             }
         }
     }
+    let path_buf = path.to_path_buf();
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 

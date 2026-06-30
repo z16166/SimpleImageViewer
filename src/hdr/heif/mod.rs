@@ -57,7 +57,7 @@ pub(crate) use orientation::{
 #[cfg(feature = "heif-native")]
 pub(crate) use thumbnail::{
     HeifThumbProbe, HeifThumbProbeDetail, probe_heif_strip_thumbnail,
-    probe_heif_strip_thumbnail_from_path,
+    probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
 };
 
 #[cfg(all(test, feature = "heif-native"))]

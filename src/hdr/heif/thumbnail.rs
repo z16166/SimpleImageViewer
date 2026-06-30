@@ -21,6 +21,7 @@ use std::path::Path;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
 use super::decode::heif_try_decode_into;
+use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
 use super::session::open_heif_primary_from_bytes;
 use super::ycbcr::{HeifYcbcrMatrix, ycbcr_linear_to_rgb};
 
@@ -166,11 +167,11 @@ pub(crate) fn probe_heif_strip_thumbnail(bytes: &[u8], max_side: u32) -> HeifStr
         None => return (None, HeifThumbProbe::DecodeFailed, detail),
     };
 
-    let decoded =
-        match decode_thumbnail_handle_to_rgba8(thumb_handle.as_ptr(), decode_options.as_ptr()) {
-            Ok(image) => image,
-            Err(_) => return (None, HeifThumbProbe::DecodeFailed, detail),
-        };
+    let decoded = match decode_heif_handle_to_rgba8(thumb_handle.as_ptr(), decode_options.as_ptr())
+    {
+        Ok(image) => image,
+        Err(_) => return (None, HeifThumbProbe::DecodeFailed, detail),
+    };
 
     if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
         return (None, HeifThumbProbe::AspectRejected, detail);
@@ -200,7 +201,7 @@ fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, 
     (w, h)
 }
 
-fn decode_thumbnail_handle_to_rgba8(
+fn decode_heif_handle_to_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<DecodedImage, String> {
@@ -238,9 +239,11 @@ fn decode_thumbnail_handle_to_rgba8(
         "strip-thumb-ycbcr",
     ) {
         Ok(raw) => ycbcr420_image_to_rgba8(raw.as_ptr()),
-        Err(err) => Err(super::decode::heif_err_to_plain(err)),
+        Err(err) => Err(format!(
+            "YCbCr420 decode failed ({}); interleaved attempts: {last_err}",
+            super::decode::heif_err_to_plain(err)
+        )),
     }
-    .or(Err(last_err))
 }
 
 fn interleaved_image_to_rgba8(
@@ -292,6 +295,64 @@ fn interleaved_image_to_rgba8(
         }
     }
     Ok(DecodedImage::new(width, height, rgba))
+}
+
+type HeifPrimaryStripResult = Option<Result<(DecodedImage, (u32, u32)), String>>;
+
+/// Decode the primary HEIF item to 8-bit SDR RGBA for directory-tree strips (no gain map auxiliary).
+///
+/// Opens the container independently of [`probe_heif_strip_thumbnail`] (header parse only when
+/// the thumb path already ran); avoids sharing lifetimes between strip fast paths.
+pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPrimaryStripResult {
+    #[cfg(feature = "preload-debug")]
+    let decode_start = std::time::Instant::now();
+
+    let (_ctx, primary) = match open_heif_primary_from_bytes(bytes) {
+        Ok(opened) => opened,
+        Err(err) => return Some(Err(err)),
+    };
+    let handle = primary.as_ptr();
+    let logical = primary_logical_size(handle);
+    if logical.0 == 0 || logical.1 == 0 {
+        return Some(Err("HEIF primary has zero logical size".to_string()));
+    }
+
+    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
+    let decode_opts_ptr = decode_geo_holder
+        .as_ref()
+        .map(|g| g.as_ptr())
+        .unwrap_or(std::ptr::null());
+
+    let decoded = match decode_heif_handle_to_rgba8(handle, decode_opts_ptr) {
+        Ok(image) => image,
+        Err(err) => return Some(Err(err)),
+    };
+    if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
+        return Some(Err(format!(
+            "HEIF primary SDR aspect mismatch: {}x{} vs logical {}x{}",
+            decoded.width, decoded.height, logical.0, logical.1
+        )));
+    }
+    let strip = match crate::loader::downsample_decoded_for_strip(&decoded, max_side) {
+        Ok(image) => image,
+        Err(err) => return Some(Err(err.to_string())),
+    };
+    // Post-downsample mismatch: fall through (None) so the strip chain tries the next method.
+    if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
+        return None;
+    }
+
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][Strip] heif_primary_sdr logical={}x{} out={}x{} decode_ms={}",
+        logical.0,
+        logical.1,
+        strip.width,
+        strip.height,
+        crate::preload_debug::elapsed_ms(decode_start)
+    );
+
+    Some(Ok((strip, logical)))
 }
 
 fn ycbcr420_image_to_rgba8(image: *const libheif_sys::heif_image) -> Result<DecodedImage, String> {

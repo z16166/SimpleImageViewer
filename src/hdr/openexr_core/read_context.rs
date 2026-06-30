@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#![allow(dead_code)]
-
 use parking_lot::{Condvar, Mutex};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -160,6 +158,7 @@ impl OpenExrCoreReadContext {
         self.part_count
     }
 
+    #[cfg_attr(not(feature = "tile-debug"), allow(dead_code))]
     fn source_name(&self) -> String {
         self.path
             .file_name()
@@ -606,14 +605,23 @@ impl OpenExrCoreReadContext {
     }
 
     fn tile_grid(&self, part_index: i32) -> Result<OpenExrCoreTileGrid, String> {
+        self.tile_grid_at_level(part_index, 0, 0)
+    }
+
+    pub(crate) fn tile_grid_at_level(
+        &self,
+        part_index: i32,
+        level_x: i32,
+        level_y: i32,
+    ) -> Result<OpenExrCoreTileGrid, String> {
         let mut tile_width = 0_i32;
         let mut tile_height = 0_i32;
         exr_result(unsafe {
             sys::exr_get_tile_sizes(
                 self.raw.cast_const(),
                 part_index,
-                0,
-                0,
+                level_x,
+                level_y,
                 &mut tile_width,
                 &mut tile_height,
             )
@@ -624,8 +632,8 @@ impl OpenExrCoreReadContext {
             sys::exr_get_tile_counts(
                 self.raw.cast_const(),
                 part_index,
-                0,
-                0,
+                level_x,
+                level_y,
                 &mut count_x,
                 &mut count_y,
             )
@@ -640,6 +648,120 @@ impl OpenExrCoreReadContext {
                 .map_err(|_| "OpenEXRCore tile count x is invalid".to_string())?,
             count_y: u32::try_from(count_y)
                 .map_err(|_| "OpenEXRCore tile count y is invalid".to_string())?,
+        })
+    }
+
+    /// Decode a tiled OpenEXR part at the best mip/ripmap level for `max_w` x `max_h`.
+    pub(crate) fn extract_tiled_mip_rgba32f_preview(
+        &self,
+        part_index: usize,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<OpenExrCoreRgbaTile, String> {
+        use super::mip_preview::{
+            exr_mip_level_dimensions, exr_mip_level_tile_grid_valid, probe_exr_max_mipmap_level,
+            probe_exr_max_ripmap_levels, select_exr_mip_level_for_max_side,
+        };
+
+        let part = self.part(part_index)?;
+        if part.storage != sys::EXR_STORAGE_TILED {
+            return Err("OpenEXRCore mip preview requires tiled storage".to_string());
+        }
+        let part_index_i32 =
+            i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
+
+        let max_mipmap = probe_exr_max_mipmap_level(self, part_index_i32);
+        let (max_rip_x, max_rip_y) = probe_exr_max_ripmap_levels(self, part_index_i32);
+        if max_mipmap == 0 && max_rip_x == 0 && max_rip_y == 0 {
+            return Err("OpenEXRCore file has no mip levels above 0".to_string());
+        }
+
+        let max_side = max_w.max(max_h);
+        let selection = select_exr_mip_level_for_max_side(
+            part.width,
+            part.height,
+            max_side,
+            max_mipmap,
+            max_rip_x,
+            max_rip_y,
+            |level_x, level_y| {
+                exr_mip_level_tile_grid_valid(self, part_index_i32, level_x as i32, level_y as i32)
+            },
+        );
+        if selection.level_x == 0 && selection.level_y == 0 {
+            return Err("OpenEXRCore mip preview selected level 0".to_string());
+        }
+
+        let (level_width, level_height) = exr_mip_level_dimensions(
+            part.width,
+            part.height,
+            selection.level_x as u32,
+            selection.level_y as u32,
+        );
+        let tile_grid =
+            self.tile_grid_at_level(part_index_i32, selection.level_x, selection.level_y)?;
+        let width = (tile_grid.count_x * tile_grid.tile_width).min(level_width);
+        let height = (tile_grid.count_y * tile_grid.tile_height).min(level_height);
+        if width == 0 || height == 0 {
+            return Err("OpenEXRCore mip level dimensions are zero".to_string());
+        }
+
+        let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+        let tile_rect = (0, 0, width, height);
+        for tile_y_index in 0..tile_grid.count_y {
+            for tile_x_index in 0..tile_grid.count_x {
+                let mut chunk = sys::ExrChunkInfo::default();
+                exr_result(unsafe {
+                    sys::exr_read_tile_chunk_info(
+                        self.raw.cast_const(),
+                        part_index_i32,
+                        i32::try_from(tile_x_index)
+                            .map_err(|_| "EXR tile x index exceeds i32".to_string())?,
+                        i32::try_from(tile_y_index)
+                            .map_err(|_| "EXR tile y index exceeds i32".to_string())?,
+                        selection.level_x,
+                        selection.level_y,
+                        &mut chunk,
+                    )
+                })?;
+                if chunk.height <= 0 || chunk.width <= 0 {
+                    continue;
+                }
+                let chunk_origin = (
+                    tile_x_index * tile_grid.tile_width,
+                    tile_y_index * tile_grid.tile_height,
+                );
+                let fetched = self.fetch_decoded_chunk(part_index_i32, &chunk, chunk_origin)?;
+                copy_decoded_chunk_to_tile(&fetched.decoded, tile_rect, &mut rgba)?;
+            }
+        }
+
+        let (out_w, out_h) = crate::hdr::tiled::preview_dimensions(width, height, max_w, max_h);
+        if out_w == width && out_h == height {
+            return Ok(OpenExrCoreRgbaTile {
+                width,
+                height,
+                rgba,
+            });
+        }
+
+        let mut preview = vec![0.0_f32; out_w as usize * out_h as usize * 4];
+        for preview_y in 0..out_h {
+            let source_y =
+                crate::hdr::tiled::preview_sample_coord(preview_y, out_h, height) as usize;
+            for preview_x in 0..out_w {
+                let source_x =
+                    crate::hdr::tiled::preview_sample_coord(preview_x, out_w, width) as usize;
+                let src = (source_y * width as usize + source_x) * 4;
+                let dst = (preview_y as usize * out_w as usize + preview_x as usize) * 4;
+                preview[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+            }
+        }
+
+        Ok(OpenExrCoreRgbaTile {
+            width: out_w,
+            height: out_h,
+            rgba: preview,
         })
     }
 
