@@ -133,7 +133,7 @@ impl eframe::App for ImageViewerApp {
             self.wgpu_adapter_info.as_ref(),
             self.wgpu_pipeline_cache.as_deref(),
         ) {
-            crate::wgpu_pipeline_cache::persist(info, cache);
+            crate::wgpu_pipeline_cache::persist_async(info, cache);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.

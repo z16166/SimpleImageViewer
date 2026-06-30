@@ -673,6 +673,8 @@ pub(crate) fn prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
 
 /// Hold neighbor main-image preloads and neighbor strip work while the current index's
 /// main-window load is in flight (`is_loading` and no drawable asset yet).
+/// Intentionally ignores low-quality placeholders: a visible bootstrap preview still
+/// allows neighbor work so the list can fill while refined decode completes.
 pub(crate) fn should_defer_neighbor_work_for_current_main(
     current_has_asset: bool,
     current_is_loading: bool,

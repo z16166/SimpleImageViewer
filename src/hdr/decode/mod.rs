@@ -42,3 +42,4 @@ pub(crate) use tone_map::{
 
 #[cfg(test)]
 pub(crate) use constants::MAX_HDR_FALLBACK_PIXELS;
+pub(crate) use constants::MAX_HDR_FALLBACK_DECODE_BYTES;

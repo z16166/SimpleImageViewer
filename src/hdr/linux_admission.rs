@@ -68,7 +68,9 @@ impl LinuxHdrAdmission {
     }
 }
 
-fn wp_explicit_pq_output(selection: &HdrMonitorSelection) -> bool {
+/// True when Wayland `wp_color_management` reports ST2084/PQ transfer on the output.
+/// This reflects compositor metadata, not the final Vulkan WSI swapchain encoding.
+fn wp_reports_st2084_transfer(selection: &HdrMonitorSelection) -> bool {
     matches!(
         selection.linux_wp_transfer,
         Some(LinuxWaylandTransferFunction::St2084)
@@ -128,7 +130,7 @@ pub fn classify_linux_hdr_admission(
         };
     }
 
-    let native_hdr_admitted = wp_explicit_pq_output(wp) || explicit_desktop_hdr_enabled(wp);
+    let native_hdr_admitted = wp_reports_st2084_transfer(wp) || explicit_desktop_hdr_enabled(wp);
     if !native_hdr_admitted {
         return LinuxHdrAdmission::Sdr;
     }
@@ -159,10 +161,20 @@ mod tests {
         max_nits: Option<f32>,
         reference_nits: Option<f32>,
     ) -> HdrMonitorSelection {
+        wp_selection_for_label("test-output", transfer, primaries, max_nits, reference_nits)
+    }
+
+    fn wp_selection_for_label(
+        label: impl Into<String>,
+        transfer: LinuxWaylandTransferFunction,
+        primaries: LinuxWaylandColorPrimaries,
+        max_nits: Option<f32>,
+        reference_nits: Option<f32>,
+    ) -> HdrMonitorSelection {
         let hdr_supported = matches!(transfer, LinuxWaylandTransferFunction::St2084);
         HdrMonitorSelection {
             hdr_supported,
-            label: "test-output".to_string(),
+            label: label.into(),
             max_luminance_nits: max_nits,
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,

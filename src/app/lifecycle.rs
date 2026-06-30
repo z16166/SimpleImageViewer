@@ -753,7 +753,7 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
 
         // Restore last session state
-        if app.settings.show_directory_tree_nav && !app.auto_hidden_directory_tree_nav {
+        if app.directory_tree_settings_active() {
             app.settings.browse_mode = BrowseMode::Tree;
             app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();

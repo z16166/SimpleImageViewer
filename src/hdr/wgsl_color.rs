@@ -14,6 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! Shared HDR color-space and transfer-function WGSL snippets.
+//!
+//! Implemented as a `macro_rules!` (not a `const` or `fn`) so callers can `concat!` the
+//! helpers into larger shader sources at compile time.
+
 macro_rules! hdr_wgsl_color_helpers {
     () => {
         r#"

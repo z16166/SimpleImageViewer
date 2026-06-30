@@ -40,31 +40,12 @@ pub(crate) fn libavif_result_to_string(result: libavif_sys::avifResult) -> Strin
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn decode_avif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes(&mmap[..])
-}
-
-#[cfg(feature = "avif-native")]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn decode_avif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
     decode_avif_hdr_bytes_with_target_capacity(
         bytes,
         crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
     )
-}
-
-#[cfg(feature = "avif-native")]
-#[allow(dead_code)]
-pub(crate) fn decode_avif_hdr_with_target_capacity(
-    path: &std::path::Path,
-    target_hdr_capacity: f32,
-) -> Result<HdrImageBuffer, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes_with_target_capacity(&mmap[..], target_hdr_capacity)
 }
 
 #[cfg(feature = "avif-native")]

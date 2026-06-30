@@ -489,20 +489,18 @@ impl ImageViewerApp {
                     false,
                 )
             });
-        let strip_preview = composed_strip_preview
-            .clone()
-            .unwrap_or_else(|| fallback_image.clone());
         let strip_tag = hdr_fallback_directory_tree_strip_tag(
             self.hdr_image_cache.get(&idx).map(|hdr| hdr.as_ref()),
             composed_strip_preview.is_some(),
         );
+        let strip_for_cache = composed_strip_preview.as_ref().unwrap_or(&fallback_image);
         if active_hdr_plane_displays_current {
             // The float HDR plane is the displayed source; applying the refined SDR fallback here
             // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
             self.insert_deferred_sdr_upload(idx, fallback_image.clone());
             self.cache_directory_tree_strip_thumbnail(
                 idx,
-                &strip_preview,
+                strip_for_cache,
                 crate::loader::PreviewStage::Refined,
                 logical_size,
                 strip_tag,
@@ -513,7 +511,7 @@ impl ImageViewerApp {
         self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
         self.cache_directory_tree_strip_thumbnail(
             idx,
-            &strip_preview,
+            strip_for_cache,
             crate::loader::PreviewStage::Refined,
             logical_size,
             strip_tag,

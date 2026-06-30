@@ -308,6 +308,12 @@ enum ProbePhase {
 }
 
 #[cfg(target_os = "linux")]
+enum WaylandProbeOutcome {
+    Monitor(Result<HdrMonitorSelection, String>),
+    Spawn(Result<SpawnMonitorHdrProbe, String>),
+}
+
+#[cfg(target_os = "linux")]
 struct ProbeState {
     phase: ProbePhase,
     color_manager: Option<wp_color_manager_v1::WpColorManagerV1>,
@@ -321,8 +327,7 @@ struct ProbeState {
     probe_origin: &'static str,
     spawn_probe: bool,
     error: Option<String>,
-    result: Option<Result<HdrMonitorSelection, String>>,
-    spawn_result: Option<Result<SpawnMonitorHdrProbe, String>>,
+    probe_outcome: Option<WaylandProbeOutcome>,
 }
 
 #[cfg(target_os = "linux")]
@@ -341,8 +346,7 @@ impl ProbeState {
             probe_origin,
             spawn_probe,
             error: None,
-            result: None,
-            spawn_result: None,
+            probe_outcome: None,
         }
     }
 
@@ -420,11 +424,11 @@ impl ProbeState {
 
     fn finish_probe(&mut self) {
         if let Some(err) = self.error.clone() {
-            if self.spawn_probe {
-                self.spawn_result = Some(Err(err));
+            self.probe_outcome = Some(if self.spawn_probe {
+                WaylandProbeOutcome::Spawn(Err(err))
             } else {
-                self.result = Some(Err(err));
-            }
+                WaylandProbeOutcome::Monitor(Err(err))
+            });
             self.phase = ProbePhase::Done;
             return;
         }
@@ -449,6 +453,12 @@ impl ProbeState {
             selection.linux_explicit_hdr_state = Some(state);
             selection.linux_explicit_hdr_state_source =
                 Some(super::kde::KDE_KSCREEN_HDR_STATE_SOURCE);
+        } else if selection.label.starts_with("Wayland output") {
+            log::debug!(
+                "[HDR] Wayland output label {:?} may not match KScreen connector names; \
+                 explicit desktop HDR state unavailable until names align",
+                selection.label
+            );
         }
 
         log::debug!(
@@ -472,15 +482,17 @@ impl ProbeState {
         );
 
         if self.spawn_probe {
-            self.spawn_result = Some(Ok(SpawnMonitorHdrProbe {
-                hdr_supported: spawn_hdr_supported(&selection),
-                label: selection.label,
-                origin: self.probe_origin,
-                max_luminance_nits: selection.max_luminance_nits,
-                max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
-            }));
+            self.probe_outcome = Some(WaylandProbeOutcome::Spawn(Ok(
+                SpawnMonitorHdrProbe {
+                    hdr_supported: spawn_hdr_supported(&selection),
+                    label: selection.label,
+                    origin: self.probe_origin,
+                    max_luminance_nits: selection.max_luminance_nits,
+                    max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
+                },
+            )));
         } else {
-            self.result = Some(Ok(selection));
+            self.probe_outcome = Some(WaylandProbeOutcome::Monitor(Ok(selection)));
         }
         self.phase = ProbePhase::Done;
     }
@@ -814,9 +826,10 @@ pub fn spawn_monitor_hdr_status(
     );
 
     let state = run_probe(point, origin, true)?;
-    state
-        .spawn_result
-        .unwrap_or_else(|| Err("Wayland spawn monitor probe did not produce a result".to_string()))
+    match state.probe_outcome {
+        Some(WaylandProbeOutcome::Spawn(result)) => result,
+        _ => Err("Wayland spawn monitor probe did not produce a result".to_string()),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -830,9 +843,10 @@ pub fn active_monitor_hdr_status(
     );
 
     let state = run_probe(point, origin, false)?;
-    state
-        .result
-        .unwrap_or_else(|| Err("Wayland active monitor probe did not produce a result".to_string()))
+    match state.probe_outcome {
+        Some(WaylandProbeOutcome::Monitor(result)) => result,
+        _ => Err("Wayland active monitor probe did not produce a result".to_string()),
+    }
 }
 
 #[cfg(test)]

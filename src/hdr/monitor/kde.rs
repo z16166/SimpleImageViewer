@@ -22,7 +22,7 @@ pub(crate) const KDE_KSCREEN_HDR_STATE_SOURCE: &str = "KDE KScreen";
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const KSCREEN_DOCTOR_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "linux")]
-const KSCREEN_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(750);
+const KSCREEN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[cfg(test)]
@@ -275,7 +275,7 @@ fn log_kde_probe_if_changed(message: String) {
     if guard.as_ref() == Some(&message) {
         return;
     }
-    log::info!("[HDR] KDE KScreen explicit HDR probe: {message}");
+    log::debug!("[HDR] KDE KScreen explicit HDR probe: {message}");
     *guard = Some(message);
 }
 

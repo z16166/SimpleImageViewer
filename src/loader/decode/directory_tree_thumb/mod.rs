@@ -24,13 +24,13 @@ use std::path::Path;
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
-    HeifThumbProbe, HeifThumbProbeDetail, probe_heif_strip_thumbnail,
+    HeifThumbProbe, probe_heif_strip_thumbnail,
     probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
 use crate::loader::downsample_decoded_for_strip;
-use crate::loader::metadata::{ExifThumbProbe, ExifThumbProbeDetail};
+use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
     DecodedImage, ImageData, TiledImageSource, extract_exif_thumbnail_from_mmap_probed,
     extract_exif_thumbnail_probed, preview_aspect_matches_logical,
@@ -49,6 +49,14 @@ use super::modern::{
 };
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
+
+mod probe_log;
+mod static_raster;
+
+use probe_log::{log_strip_decode_path, log_strip_exif_probe};
+#[cfg(feature = "heif-native")]
+use probe_log::log_strip_heif_probe;
+use static_raster::try_static_raster_strip_fast_path;
 
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
@@ -116,106 +124,6 @@ fn try_directory_tree_exif_thumb(
     }
     let decoded = downsample_decoded_to_max_side(exif.clone(), max_side).ok()?;
     Some((decoded, logical))
-}
-
-#[cfg(feature = "preload-debug")]
-fn log_strip_exif_probe(
-    path: &Path,
-    probe: ExifThumbProbe,
-    detail: ExifThumbProbeDetail,
-    logical: Option<(u32, u32)>,
-    max_side: u32,
-    extra: &str,
-) {
-    crate::preload_debug!(
-        "[PreloadDebug][Strip] exif_probe path={} outcome={} offset={:?} len={:?} thumb={:?} logical={:?} max_side={} {}",
-        path.display(),
-        probe.label(),
-        detail.offset,
-        detail.len,
-        detail
-            .thumb_w
-            .zip(detail.thumb_h)
-            .map(|(w, h)| format!("{w}x{h}"))
-            .unwrap_or_else(|| "-".to_string()),
-        logical,
-        max_side,
-        extra
-    );
-}
-
-#[cfg(not(feature = "preload-debug"))]
-fn log_strip_exif_probe(
-    _path: &Path,
-    _probe: ExifThumbProbe,
-    _detail: ExifThumbProbeDetail,
-    _logical: Option<(u32, u32)>,
-    _max_side: u32,
-    _extra: &str,
-) {
-}
-
-#[cfg(feature = "preload-debug")]
-fn log_strip_heif_probe(
-    path: &Path,
-    probe: HeifThumbProbe,
-    detail: HeifThumbProbeDetail,
-    max_side: u32,
-    extra: &str,
-) {
-    crate::preload_debug!(
-        "[PreloadDebug][Strip] heif_thumb_probe path={} outcome={} count={:?} id={:?} thumb={:?} primary={:?} decode_ms={:?} max_side={} {}",
-        path.display(),
-        probe.label(),
-        detail.thumb_count,
-        detail.thumb_id,
-        detail
-            .thumb_w
-            .zip(detail.thumb_h)
-            .map(|(w, h)| format!("{w}x{h}"))
-            .unwrap_or_else(|| "-".to_string()),
-        detail
-            .primary_w
-            .zip(detail.primary_h)
-            .map(|(w, h)| format!("{w}x{h}"))
-            .unwrap_or_else(|| "-".to_string()),
-        detail.decode_ms,
-        max_side,
-        extra
-    );
-}
-
-#[cfg(all(not(feature = "preload-debug"), feature = "heif-native"))]
-fn log_strip_heif_probe(
-    _path: &Path,
-    _probe: HeifThumbProbe,
-    _detail: HeifThumbProbeDetail,
-    _max_side: u32,
-    _extra: &str,
-) {
-}
-
-#[cfg(feature = "preload-debug")]
-fn log_strip_decode_path(path: &Path, kind: &str, logical: (u32, u32), out_w: u32, out_h: u32) {
-    crate::preload_debug!(
-        "[PreloadDebug][Strip] decode_path path={} kind={} logical={}x{} out={}x{}",
-        path.display(),
-        kind,
-        logical.0,
-        logical.1,
-        out_w,
-        out_h
-    );
-}
-
-#[cfg(not(feature = "preload-debug"))]
-fn log_strip_decode_path(
-    _path: &Path,
-    _kind: &str,
-    _logical: (u32, u32),
-    _out_w: u32,
-    _out_h: u32,
-) {
 }
 
 pub(crate) fn generate_directory_tree_thumb_decode_from_path(
@@ -537,7 +445,7 @@ fn path_has_extension(path: &Path, ext: &str) -> bool {
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(ext))
 }
 
-fn path_extension_ascii_lower(path: &Path) -> Option<String> {
+pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
     path.extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
 }
@@ -902,260 +810,9 @@ fn try_jpeg_dct_strip_fast_path(
     super::jpeg::try_decode_jpeg_strip_dct(data, max_side)
 }
 
-fn try_static_raster_strip_fast_path(
-    path: &Path,
-    mmap: Option<&memmap2::Mmap>,
-    max_side: u32,
-) -> Option<Result<DirectoryTreeThumbDecode, String>> {
-    let ext = path_extension_ascii_lower(path)?;
-    if !matches!(
-        ext.as_str(),
-        "png" | "apng" | "webp" | "gif" | "bmp" | "tga" | "ico" | "pnm" | "qoi"
-    ) {
-        return None;
-    }
-    let data = mmap?;
-    Some(decode_static_raster_strip_from_bytes(
-        data.as_ref(),
-        max_side,
-        Some(ext.as_str()),
-    ))
-}
-
-fn decode_static_raster_strip_from_bytes(
-    bytes: &[u8],
-    max_side: u32,
-    format_hint: Option<&str>,
-) -> Result<DirectoryTreeThumbDecode, String> {
-    use image::ImageReader;
-    use std::io::Cursor;
-
-    if max_side == 0 {
-        return Err("static raster strip max_side must be non-zero".to_string());
-    }
-
-    let mut dimensions_reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    dimensions_reader.no_limits();
-    let mut logical = dimensions_reader
-        .into_dimensions()
-        .map_err(|e| e.to_string())?;
-
-    let mut decode_reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    decode_reader.no_limits();
-    let rgba = decode_reader
-        .decode()
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    let (width, height) = rgba.dimensions();
-    let mut full = DecodedImage::new(width, height, rgba.into_raw());
-
-    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes);
-    if orientation > 4 {
-        logical = (logical.1, logical.0);
-    }
-
-    let mut decoded = downsample_decoded_for_strip(&full, max_side)?;
-    let reusable_full_allowed = reusable_static_raster_full_decode(bytes, format_hint);
-
-    decoded = apply_orientation_to_owned_decoded(decoded, orientation);
-    if reusable_full_allowed {
-        full = apply_orientation_to_owned_decoded(full, orientation);
-    }
-
-    Ok(DirectoryTreeThumbDecode::new(
-        decoded,
-        logical,
-        reusable_full_allowed.then_some(full),
-        false,
-    ))
-}
-
-fn apply_orientation_to_owned_decoded(mut decoded: DecodedImage, orientation: u16) -> DecodedImage {
-    if orientation <= 1 {
-        return decoded;
-    }
-    let pixels = decoded.take_rgba_owned();
-    let (width, height, pixels) = crate::libtiff_loader::apply_orientation_buffer(
-        pixels,
-        decoded.width,
-        decoded.height,
-        orientation,
-    );
-    DecodedImage::new(width, height, pixels)
-}
-
-fn reusable_static_raster_full_decode(bytes: &[u8], format_hint: Option<&str>) -> bool {
-    match format_hint {
-        Some("png") => png_bytes_are_static(bytes),
-        Some("webp") => webp_bytes_are_static(bytes),
-        Some("bmp" | "tga" | "ico" | "pnm" | "qoi") => true,
-        _ => false,
-    }
-}
-
-fn png_bytes_are_static(bytes: &[u8]) -> bool {
-    use image::codecs::png::PngDecoder;
-    use std::io::Cursor;
-
-    PngDecoder::new(Cursor::new(bytes))
-        .and_then(|decoder| decoder.is_apng())
-        .map(|is_apng| !is_apng)
-        .unwrap_or(false)
-}
-
-fn webp_bytes_are_static(bytes: &[u8]) -> bool {
-    use image::codecs::webp::WebPDecoder;
-    use std::io::Cursor;
-
-    WebPDecoder::new(Cursor::new(bytes))
-        .map(|decoder| !decoder.has_animation())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::normalize_logical_size;
-    use crate::loader::preview_aspect_matches_logical;
-    use image::ImageEncoder;
-
-    fn encode_test_png(width: u32, height: u32) -> Vec<u8> {
-        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
-        for y in 0..height {
-            for x in 0..width {
-                pixels.extend_from_slice(&[
-                    (x % 251) as u8,
-                    (y % 241) as u8,
-                    ((x + y) % 239) as u8,
-                    255,
-                ]);
-            }
-        }
-        let mut encoded = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut encoded)
-            .write_image(&pixels, width, height, image::ColorType::Rgba8.into())
-            .expect("encode test PNG");
-        encoded
-    }
-
-    fn encode_test_webp(width: u32, height: u32) -> Vec<u8> {
-        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
-        for y in 0..height {
-            for x in 0..width {
-                pixels.extend_from_slice(&[
-                    (x % 251) as u8,
-                    (y % 241) as u8,
-                    ((x + y) % 239) as u8,
-                    255,
-                ]);
-            }
-        }
-        let mut encoded = Vec::new();
-        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
-            .write_image(&pixels, width, height, image::ColorType::Rgba8.into())
-            .expect("encode test WebP");
-        encoded
-    }
-
-    fn test_crc32(bytes: &[u8]) -> u32 {
-        let mut crc = 0xffff_ffffu32;
-        for &byte in bytes {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                let mask = 0u32.wrapping_sub(crc & 1);
-                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-            }
-        }
-        !crc
-    }
-
-    fn append_test_png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(kind);
-        out.extend_from_slice(data);
-        let mut crc_input = Vec::with_capacity(kind.len() + data.len());
-        crc_input.extend_from_slice(kind);
-        crc_input.extend_from_slice(data);
-        out.extend_from_slice(&test_crc32(&crc_input).to_be_bytes());
-    }
-
-    fn inject_test_apng_actl_chunk(png: &[u8]) -> Vec<u8> {
-        const PNG_SIGNATURE_LEN: usize = 8;
-        const IHDR_CHUNK_TOTAL_LEN: usize = 4 + 4 + 13 + 4;
-        let insert_at = PNG_SIGNATURE_LEN + IHDR_CHUNK_TOTAL_LEN;
-        let mut out = Vec::with_capacity(png.len() + 20);
-        out.extend_from_slice(&png[..insert_at]);
-        let mut actl = Vec::with_capacity(8);
-        actl.extend_from_slice(&1u32.to_be_bytes());
-        actl.extend_from_slice(&0u32.to_be_bytes());
-        append_test_png_chunk(&mut out, b"acTL", &actl);
-        out.extend_from_slice(&png[insert_at..]);
-        out
-    }
-
-    fn chunk_payload<'a>(container: &'a [u8], kind: &[u8; 4]) -> &'a [u8] {
-        let mut pos = 12usize;
-        while pos + 8 <= container.len() {
-            let size = u32::from_le_bytes(
-                container[pos + 4..pos + 8]
-                    .try_into()
-                    .expect("chunk size bytes"),
-            ) as usize;
-            let payload_start = pos + 8;
-            let payload_end = payload_start + size;
-            if &container[pos..pos + 4] == kind {
-                return &container[payload_start..payload_end];
-            }
-            pos = payload_end + (size % 2);
-        }
-        panic!("missing WebP chunk {:?}", kind);
-    }
-
-    fn append_test_webp_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(kind);
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(data);
-        if data.len() % 2 != 0 {
-            out.push(0);
-        }
-    }
-
-    fn animated_webp_from_static_webp(static_webp: &[u8], width: u32, height: u32) -> Vec<u8> {
-        let vp8l = chunk_payload(static_webp, b"VP8L");
-
-        let mut chunks = Vec::new();
-        let mut vp8x = Vec::with_capacity(10);
-        vp8x.push(0b0000_0010);
-        vp8x.extend_from_slice(&[0, 0, 0]);
-        vp8x.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
-        vp8x.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
-        append_test_webp_chunk(&mut chunks, b"VP8X", &vp8x);
-
-        let mut anim = Vec::with_capacity(6);
-        anim.extend_from_slice(&[0, 0, 0, 0]);
-        anim.extend_from_slice(&0u16.to_le_bytes());
-        append_test_webp_chunk(&mut chunks, b"ANIM", &anim);
-
-        let mut anmf = Vec::new();
-        anmf.extend_from_slice(&[0, 0, 0]);
-        anmf.extend_from_slice(&[0, 0, 0]);
-        anmf.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
-        anmf.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
-        anmf.extend_from_slice(&100u32.to_le_bytes()[..3]);
-        anmf.push(0);
-        append_test_webp_chunk(&mut anmf, b"VP8L", vp8l);
-        append_test_webp_chunk(&mut chunks, b"ANMF", &anmf);
-
-        let mut out = Vec::with_capacity(12 + chunks.len());
-        out.extend_from_slice(b"RIFF");
-        out.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
-        out.extend_from_slice(b"WEBP");
-        out.extend_from_slice(&chunks);
-        out
-    }
 
     #[test]
     fn zero_logical_falls_back_to_exif() {
@@ -1176,91 +833,5 @@ mod tests {
             normalize_logical_size((4000, 3000), (1920, 1080)),
             (4000, 3000)
         );
-    }
-
-    #[test]
-    fn static_raster_strip_from_mmap_downsamples_png_to_max_side() {
-        let encoded = encode_test_png(120, 60);
-        let strip = super::decode_static_raster_strip_from_bytes(&encoded, 30, Some("png"))
-            .expect("decode PNG strip");
-        let decoded = strip.preview;
-        let logical = strip.logical_size;
-
-        assert_eq!(logical, (120, 60));
-        assert_eq!(decoded.width, 30);
-        assert_eq!(decoded.height, 15);
-        assert!(preview_aspect_matches_logical(
-            decoded.width,
-            decoded.height,
-            logical.0,
-            logical.1
-        ));
-        assert_eq!(decoded.rgba().len(), 30 * 15 * 4);
-    }
-
-    #[test]
-    fn static_raster_strip_from_static_png_keeps_reusable_full_decode() {
-        let encoded = encode_test_png(120, 60);
-        let strip = super::decode_static_raster_strip_from_bytes(&encoded, 30, Some("png"))
-            .expect("decode PNG strip");
-        let full = strip
-            .reusable_full
-            .expect("static PNG strip decode should retain full image for preload reuse");
-
-        assert_eq!(full.width, 120);
-        assert_eq!(full.height, 60);
-        assert_eq!(full.rgba().len(), 120 * 60 * 4);
-    }
-
-    #[test]
-    fn static_raster_strip_from_static_webp_keeps_reusable_full_decode() {
-        let encoded = encode_test_webp(80, 40);
-        let strip = super::decode_static_raster_strip_from_bytes(&encoded, 20, Some("webp"))
-            .expect("decode WebP strip");
-        let full = strip
-            .reusable_full
-            .expect("static WebP strip decode should retain full image for preload reuse");
-
-        assert_eq!(full.width, 80);
-        assert_eq!(full.height, 40);
-        assert_eq!(full.rgba().len(), 80 * 40 * 4);
-    }
-
-    #[test]
-    fn static_raster_reuse_rejects_apng() {
-        let encoded = encode_test_png(8, 4);
-        let apng = inject_test_apng_actl_chunk(&encoded);
-
-        assert!(!super::png_bytes_are_static(&apng));
-        let strip = super::decode_static_raster_strip_from_bytes(&apng, 8, Some("png"))
-            .expect("decode APNG default image");
-        assert!(
-            strip.reusable_full.is_none(),
-            "APNG must not reuse the default image as the main static decode"
-        );
-    }
-
-    #[test]
-    fn static_raster_reuse_rejects_animated_webp() {
-        let static_webp = encode_test_webp(8, 4);
-        let animated_webp = animated_webp_from_static_webp(&static_webp, 8, 4);
-
-        assert!(!super::webp_bytes_are_static(&animated_webp));
-    }
-
-    #[test]
-    fn owned_decoded_orientation_rotates_reusable_full_image() {
-        let pixels = vec![
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 255, 0, 255, 255, 0,
-            255, 255, 255,
-        ];
-        let decoded = super::apply_orientation_to_owned_decoded(
-            crate::loader::DecodedImage::new(2, 3, pixels),
-            6,
-        );
-
-        assert_eq!(decoded.width, 3);
-        assert_eq!(decoded.height, 2);
-        assert_eq!(decoded.rgba().len(), 2 * 3 * 4);
     }
 }

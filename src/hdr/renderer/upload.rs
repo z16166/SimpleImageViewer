@@ -231,6 +231,18 @@ fn copy_padded_rows(
     unpadded_bytes_per_row: usize,
     bytes_per_row: usize,
 ) {
+    const PARALLEL_ROW_THRESHOLD: usize = 8;
+
+    if tight.len() / unpadded_bytes_per_row.max(1) < PARALLEL_ROW_THRESHOLD {
+        for (dst_row, src_row) in padded
+            .chunks_mut(bytes_per_row)
+            .zip(tight.chunks(unpadded_bytes_per_row))
+        {
+            dst_row[..unpadded_bytes_per_row].copy_from_slice(src_row);
+        }
+        return;
+    }
+
     use rayon::prelude::*;
 
     padded

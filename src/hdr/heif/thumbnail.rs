@@ -357,6 +357,14 @@ pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPri
     };
     // Post-downsample mismatch: fall through (None) so the strip chain tries the next method.
     if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
+        log::debug!(
+            "[HEIF] primary SDR strip aspect mismatch after downsample ({}x{} vs logical {}x{}); \
+             trying next strip path",
+            strip.width,
+            strip.height,
+            logical.0,
+            logical.1
+        );
         return None;
     }
 

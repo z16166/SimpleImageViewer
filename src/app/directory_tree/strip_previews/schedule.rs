@@ -40,6 +40,7 @@ use super::send_strip_inflight_release;
 
 impl ImageViewerApp {
     pub(super) fn should_defer_neighbor_strip_for_current_main(&self, index: usize) -> bool {
+        // GPU texture clone only; no CPU decode — intentionally not deferred while current main loads.
         if index == self.current_index {
             return false;
         }
@@ -398,6 +399,11 @@ impl ImageViewerApp {
                     }
                 }
                 None => {
+                    #[cfg(feature = "preload-debug")]
+                    crate::preload_debug!(
+                        "[PreloadDebug][Strip] compose_upgrade idx={} path_decode=1 reason=no_hdr_image_cache",
+                        index
+                    );
                     match crate::loader::directory_tree_strip_composed_from_gain_map_path(
                         &path,
                         None,
