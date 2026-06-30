@@ -205,10 +205,24 @@ fn refresh_kscreen_cache_blocking(output_label: &str) -> Option<LinuxExplicitHdr
 }
 
 #[cfg(target_os = "linux")]
+const KSCREEN_DOCTOR_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[cfg(target_os = "linux")]
+struct KscreenRefreshInFlightGuard;
+
+#[cfg(target_os = "linux")]
+impl Drop for KscreenRefreshInFlightGuard {
+    fn drop(&mut self) {
+        kscreen_cache().lock().refresh_in_flight = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn spawn_kscreen_cache_refresh(output_label: String) {
     if let Err(err) = std::thread::Builder::new()
         .name("siv-kde-hdr-probe".to_string())
         .spawn(move || {
+            let _in_flight = KscreenRefreshInFlightGuard;
             let _ = refresh_kscreen_cache_blocking(&output_label);
         })
     {
@@ -258,37 +272,55 @@ fn run_kscreen_doctor_outputs(timeout: std::time::Duration) -> Result<String, St
         .spawn()
         .map_err(|err| format!("kscreen-doctor spawn failed: {err}"))?;
 
-    let start = Instant::now();
-    loop {
-        match child
-            .try_wait()
-            .map_err(|err| format!("kscreen-doctor wait failed: {err}"))?
-        {
-            Some(status) => {
-                let mut stdout = String::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    let _ = pipe.read_to_string(&mut stdout);
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    std::thread::scope(|scope| {
+        let stdout_handle = stdout_pipe.map(|mut pipe| {
+            scope.spawn(move || {
+                let mut buf = String::new();
+                if let Err(err) = pipe.read_to_string(&mut buf) {
+                    log::warn!("[HDR] kscreen-doctor stdout read failed: {err}");
                 }
-                if status.success() {
-                    return Ok(stdout);
+                buf
+            })
+        });
+        let stderr_handle = stderr_pipe.map(|mut pipe| {
+            scope.spawn(move || {
+                let mut buf = String::new();
+                if let Err(err) = pipe.read_to_string(&mut buf) {
+                    log::warn!("[HDR] kscreen-doctor stderr read failed: {err}");
                 }
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
+                buf
+            })
+        });
+
+        let start = Instant::now();
+        loop {
+            match child
+                .try_wait()
+                .map_err(|err| format!("kscreen-doctor wait failed: {err}"))?
+            {
+                Some(status) => {
+                    let stdout = stdout_handle.map(|handle| handle.join()).unwrap_or_default();
+                    let stderr = stderr_handle.map(|handle| handle.join()).unwrap_or_default();
+                    if status.success() {
+                        return Ok(stdout);
+                    }
+                    return Err(format!(
+                        "kscreen-doctor --outputs failed with {status}: {}",
+                        stderr.trim()
+                    ));
                 }
-                return Err(format!(
-                    "kscreen-doctor --outputs failed with {status}: {}",
-                    stderr.trim()
-                ));
+                None if start.elapsed() >= timeout => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("kscreen-doctor --outputs timed out".to_string());
+                }
+                None => std::thread::sleep(KSCREEN_DOCTOR_POLL_INTERVAL),
             }
-            None if start.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("kscreen-doctor --outputs timed out".to_string());
-            }
-            None => std::thread::sleep(std::time::Duration::from_millis(10)),
         }
-    }
+    })
 }
 
 #[cfg(test)]

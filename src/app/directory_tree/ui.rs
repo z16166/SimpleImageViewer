@@ -17,11 +17,12 @@
 // Directory tree navigation UI drawing.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
 use eframe::egui;
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
@@ -120,7 +121,7 @@ fn maybe_log_directory_tree_panel_layout(
 
     let diag = DIRECTORY_TREE_PANEL_LAYOUT_DIAG
         .get_or_init(|| Mutex::new(DirectoryTreePanelLayoutDiag::default()));
-    let Ok(mut diag) = diag.try_lock() else {
+    let Some(mut diag) = diag.try_lock() else {
         return;
     };
 
@@ -149,7 +150,7 @@ fn maybe_log_directory_tree_panel_layout(
         .map_or(true, |last| now.saturating_duration_since(last) >= interval);
 
     if interval_elapsed && (splitter_dragged || width_changed || left_clamped) {
-        log::info!(
+        log::debug!(
             "[DirectoryTree][PanelDiag] embedded_w={:.1} d_w={:+.1} layout_left={:.1} d_left={:+.1} \
              layout_list={:.1} d_list={:+.1} stored_left={:.1}->{:.1} dragged={} drag_dx={:+.1} clamped={}",
             viewport_width,

@@ -115,7 +115,7 @@ fn maybe_log_embedded_side_panel_layout(
         || chrome_embedded_delta.abs() >= WIDTH_CHANGE_EPS;
 
     if interval_elapsed && changed {
-        log::info!(
+        log::debug!(
             "[DirectoryTree][OuterPanelDiag] avail_before={:.1} d_avail={:+.1} avail_after={:.1} \
              max_rect_before={:.1} panel_w={:.1} d_panel={:+.1} panel_x={:.1}->{:.1} \
              default={:.1} min={:.1} tree_embedded_before={:.1} chrome_embedded_after={:?} \
@@ -155,7 +155,7 @@ fn embedded_side_panel_stable_rect_before_show(
         .unwrap_or(default_width)
         .clamp(
             DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
-            available.width().max(0.0),
+            available.width().max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
         );
     egui::Rect::from_min_max(
         available.min,

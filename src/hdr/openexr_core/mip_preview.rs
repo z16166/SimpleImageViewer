@@ -27,14 +27,17 @@ pub(crate) struct ExrMipLevelSelection {
     pub(crate) level_y: i32,
 }
 
+/// u32 shift cap for mip level divisors (prevents `1_u32 << level` overflow; EXR dims are far smaller).
+const EXR_MIP_LEVEL_SHIFT_CAP: u32 = 30;
+
 pub(crate) fn exr_mip_level_dimensions(
     base_width: u32,
     base_height: u32,
     level_x: u32,
     level_y: u32,
 ) -> (u32, u32) {
-    let div_x = 1_u32 << level_x.min(30);
-    let div_y = 1_u32 << level_y.min(30);
+    let div_x = 1_u32 << level_x.min(EXR_MIP_LEVEL_SHIFT_CAP);
+    let div_y = 1_u32 << level_y.min(EXR_MIP_LEVEL_SHIFT_CAP);
     (base_width.div_ceil(div_x), base_height.div_ceil(div_y))
 }
 

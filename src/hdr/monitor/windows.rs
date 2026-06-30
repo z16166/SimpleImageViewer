@@ -18,7 +18,10 @@
 use super::types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 
 #[cfg(target_os = "windows")]
-use std::sync::{Mutex, OnceLock};
+use parking_lot::Mutex;
+
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 
 #[cfg(target_os = "windows")]
 pub(crate) fn monitor_device_name(name: &[u16; 32]) -> String {
@@ -186,9 +189,7 @@ fn active_monitor_probe_log_gate_should_emit(
     monitor_handle: usize,
 ) -> bool {
     let gate = LAST_ACTIVE_MONITOR_PROBE_LOG.get_or_init(|| Mutex::new(None));
-    let Ok(mut last) = gate.lock() else {
-        return true;
-    };
+    let mut last = gate.lock();
     active_monitor_probe_log_should_emit(
         &mut last,
         logical,

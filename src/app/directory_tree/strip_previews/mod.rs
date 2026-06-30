@@ -565,7 +565,7 @@ impl ImageViewerApp {
 
     /// Drop stale navigation list rows and strip previews before a new directory scan.
     pub(crate) fn reset_directory_tree_file_list_for_scan(&mut self) {
-        if self.settings.browse_mode != crate::settings::BrowseMode::Tree {
+        if !self.directory_tree_settings_active() {
             return;
         }
         self.invalidate_directory_tree_strip_after_image_list_reorder();

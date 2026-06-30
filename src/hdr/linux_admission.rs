@@ -19,6 +19,9 @@
 //! WSI alone is **not** sufficient — compositors may advertise HDR swap-chain pairs even on
 //! SDR outputs. Admission requires an explicit compositor / desktop HDR signal; WSI then chooses
 //! the concrete `(format, color_space)` encoding, preferring ST2084 when available.
+//!
+//! Explicit desktop HDR state is currently sourced from KDE `kscreen-doctor` only; other Linux
+//! desktops (GNOME, Sway, etc.) fail closed until a comparable explicit signal is integrated.
 
 use super::monitor::{HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandTransferFunction};
 use super::wsi_probe::WsiHdrSurfaceGates;

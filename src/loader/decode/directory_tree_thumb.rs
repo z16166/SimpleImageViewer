@@ -472,7 +472,25 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         decoded.width,
         decoded.height,
     );
-    Ok(DirectoryTreeThumbDecode::new(decoded, logical, None, false))
+    Ok(DirectoryTreeThumbDecode::new(
+        decoded,
+        logical,
+        reusable_full_decoded_from_image_data(&image_data),
+        false,
+    ))
+}
+
+fn reusable_full_decoded_from_image_data(image_data: &ImageData) -> Option<DecodedImage> {
+    match image_data {
+        ImageData::Static(image) => Some(image.clone()),
+        ImageData::Hdr { fallback, .. } if !fallback.is_sdr_deferred_placeholder() => {
+            Some(fallback.clone())
+        }
+        ImageData::Animated(frames) => frames.first().map(|frame| {
+            DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())
+        }),
+        _ => None,
+    }
 }
 
 fn normalize_logical_size(logical: (u32, u32), fallback: (u32, u32)) -> (u32, u32) {
@@ -940,7 +958,7 @@ fn decode_static_raster_strip_from_bytes(
         logical = (logical.1, logical.0);
     }
 
-    let mut decoded = downsample_decoded_to_max_side(full.clone(), max_side)?;
+    let mut decoded = downsample_decoded_for_strip(&full, max_side)?;
     let reusable_full_allowed = reusable_static_raster_full_decode(bytes, format_hint);
 
     decoded = apply_orientation_to_owned_decoded(decoded, orientation);

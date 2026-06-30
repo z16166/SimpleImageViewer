@@ -437,6 +437,12 @@ unsafe fn interleave_rgb_packed_to_rgba_ssse3(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "ssse3")]
+/// Interleave 16 RGB888 pixels (48 bytes) into 16 RGBA8888 pixels (64 bytes).
+///
+/// # Safety
+///
+/// `src` must address at least 48 readable bytes and `dst` at least 64 writable bytes.
+/// The two pointers must not alias.
 unsafe fn interleave_rgb_packed_16_to_rgba_ssse3(src: *const u8, dst: *mut u8) {
     unsafe {
         let in0 = _mm_loadu_si128(src as *const __m128i);

@@ -130,7 +130,10 @@ impl DirectoryTreeStripComposeProbeCache {
             return *cached;
         }
         let needs_compose = probe();
-        self.needs_compose_by_index.insert(index, needs_compose);
+        // Only cache positive results: mmap/parse failures must not permanently skip upgrades.
+        if needs_compose {
+            self.needs_compose_by_index.insert(index, true);
+        }
         needs_compose
     }
 
@@ -905,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_probe_cache_reuses_result_until_invalidated() {
+    fn compose_probe_cache_reuses_positive_result_until_invalidated() {
         use std::cell::Cell;
 
         let mut cache = DirectoryTreeStripComposeProbeCache::default();
@@ -921,6 +924,22 @@ mod tests {
 
         cache.remove_index(7);
         assert!(cache.needs_compose_upgrade(7, probe));
+        assert_eq!(probes.get(), 2);
+    }
+
+    #[test]
+    fn compose_probe_cache_does_not_remember_negative_results() {
+        use std::cell::Cell;
+
+        let mut cache = DirectoryTreeStripComposeProbeCache::default();
+        let probes = Cell::new(0usize);
+        let probe = || {
+            probes.set(probes.get() + 1);
+            false
+        };
+
+        assert!(!cache.needs_compose_upgrade(3, probe));
+        assert!(!cache.needs_compose_upgrade(3, probe));
         assert_eq!(probes.get(), 2);
     }
 

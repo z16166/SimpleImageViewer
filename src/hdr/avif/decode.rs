@@ -135,6 +135,8 @@ pub(crate) fn avif_image_duplicate_for_strip_fallback(
     let dst = libavif_sys::AvifImageOwned::create_empty()
         .ok_or_else(|| "avifImageCreateEmpty failed for strip fallback copy".to_string())?;
     let planes = libavif_sys::AVIF_PLANES_YUV | libavif_sys::AVIF_PLANES_A;
+    // SAFETY: `dst` and `src` are valid `AvifImageOwned` pointers; `planes` requests YUV+A only.
+    // `avifImageCopy` allocates destination planes as needed; ownership stays with `dst`.
     let copy = unsafe { libavif_sys::avifImageCopy(dst.as_ptr(), src.as_ptr(), planes) };
     if copy != libavif_sys::AVIF_RESULT_OK {
         return Err(format!(

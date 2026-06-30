@@ -113,8 +113,12 @@ pub(crate) fn jxl_probe_forward_iso_gain_map(bytes: &[u8]) -> bool {
 }
 
 #[cfg(feature = "jpegxl")]
+const JXL_JHGM_BOX_SCAN_LIMIT: usize = 4 * 1024 * 1024;
+
+#[cfg(feature = "jpegxl")]
 fn extract_jhgm_box_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    let scan_limit = bytes.len().min(4 * 1024 * 1024);
+    // jhgm usually follows jxlc near the file head; cap scan cost on huge containers.
+    let scan_limit = bytes.len().min(JXL_JHGM_BOX_SCAN_LIMIT);
     let mut offset = 0usize;
     while offset + 8 <= scan_limit {
         let size = u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);

@@ -48,6 +48,22 @@ pub(super) struct TiledImageInstall<'a> {
     pub(super) ctx: &'a egui::Context,
 }
 
+fn hdr_fallback_directory_tree_strip_tag(
+    hdr: Option<&crate::hdr::types::HdrImageBuffer>,
+    composed_strip_preview: bool,
+) -> crate::app::directory_tree_strip_cache::StripPreviewBufferTag {
+    use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
+    if composed_strip_preview
+        && hdr.is_some_and(|hdr| {
+            crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
+        })
+    {
+        StripPreviewBufferTag::HdrComposedStrip
+    } else {
+        StripPreviewBufferTag::HdrToneMappedStrip
+    }
+}
+
 impl ImageViewerApp {
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
         index == self.current_index
@@ -463,7 +479,7 @@ impl ImageViewerApp {
                 .get(&idx)
                 .map(|hdr| (hdr.width, hdr.height))
         });
-        let strip_preview = self
+        let composed_strip_preview = self
             .hdr_image_cache
             .get(&idx)
             .and_then(|hdr| {
@@ -472,27 +488,18 @@ impl ImageViewerApp {
                     &fallback_image,
                     false,
                 )
-            })
+            });
+        let strip_preview = composed_strip_preview
+            .clone()
             .unwrap_or_else(|| fallback_image.clone());
+        let strip_tag = hdr_fallback_directory_tree_strip_tag(
+            self.hdr_image_cache.get(&idx).map(|hdr| hdr.as_ref()),
+            composed_strip_preview.is_some(),
+        );
         if active_hdr_plane_displays_current {
             // The float HDR plane is the displayed source; applying the refined SDR fallback here
             // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
             self.insert_deferred_sdr_upload(idx, fallback_image.clone());
-            let strip_tag = self
-                .hdr_image_cache
-                .get(&idx)
-                .map(|hdr| {
-                    if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
-                        && hdr.rgba_f32.is_empty()
-                    {
-                        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrComposedStrip
-                    } else {
-                        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip
-                    }
-                })
-                .unwrap_or(
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip,
-                );
             self.cache_directory_tree_strip_thumbnail(
                 idx,
                 &strip_preview,
@@ -504,20 +511,6 @@ impl ImageViewerApp {
             return;
         }
         self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
-        let strip_tag = self
-            .hdr_image_cache
-            .get(&idx)
-            .map(|hdr| {
-                if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()) && hdr.rgba_f32.is_empty()
-                {
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrComposedStrip
-                } else {
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip
-                }
-            })
-            .unwrap_or(
-                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrToneMappedStrip,
-            );
         self.cache_directory_tree_strip_thumbnail(
             idx,
             &strip_preview,

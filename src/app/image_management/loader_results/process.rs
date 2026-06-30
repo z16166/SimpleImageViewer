@@ -166,6 +166,10 @@ impl ImageViewerApp {
             .hdr_in_flight_fallback_refinements
             .contains(&self.current_index);
 
+        // Merge channel results into the local queue before polling so a repushed neighbor
+        // cannot block the current image result that is still waiting on rx.
+        self.loader.drain_channel_into_local_queue();
+
         while let Some(output) = self.loader.poll() {
             match output {
                 LoaderOutput::Image(mut load_result) => {

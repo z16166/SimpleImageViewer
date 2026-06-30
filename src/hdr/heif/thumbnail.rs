@@ -23,7 +23,7 @@ use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 use super::decode::heif_try_decode_into;
 use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
 use super::session::open_heif_primary_from_bytes;
-use super::ycbcr::{HeifYcbcrMatrix, ycbcr_linear_to_rgb};
+use super::ycbcr::ycbcr_linear_to_rgb;
 
 /// Outcome of a libheif container-thumbnail probe ([`preload-debug`] logs use [`label`](Self::label)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +256,7 @@ fn decode_heif_handle_to_rgba8(
         decode_options,
         "strip-thumb-ycbcr",
     ) {
-        Ok(raw) => ycbcr420_image_to_rgba8(raw.as_ptr()),
+        Ok(raw) => ycbcr420_image_to_rgba8(handle, raw.as_ptr()),
         Err(err) => Err(format!(
             "YCbCr420 decode failed ({}); interleaved attempts: {last_err}",
             super::decode::heif_err_to_plain(err)
@@ -373,7 +373,36 @@ pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPri
     Some(Ok((strip, logical)))
 }
 
-fn ycbcr420_image_to_rgba8(image: *const libheif_sys::heif_image) -> Result<DecodedImage, String> {
+fn ycbcr_matrix_from_heif_handle(
+    handle: *const libheif_sys::heif_image_handle,
+) -> super::ycbcr::HeifYcbcrMatrix {
+    use super::brand::heif_nclx_to_metadata;
+    use super::ycbcr::{HeifYcbcrMatrix, heif_ycbcr_matrix_from_nclx};
+
+    let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
+    let height = unsafe { libheif_sys::heif_image_handle_get_height(handle) }.max(0) as usize;
+    let mut nclx_ptr = std::ptr::null_mut();
+    let status = unsafe {
+        libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr)
+    };
+    if status.code == libheif_sys::heif_error_Ok && !nclx_ptr.is_null() {
+        let nclx_guard = unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
+        let nclx = nclx_guard.as_ref();
+        let metadata = heif_nclx_to_metadata(
+            nclx.color_primaries as u16,
+            nclx.transfer_characteristics as u16,
+            nclx.matrix_coefficients as u16,
+            nclx.full_range_flag != 0,
+        );
+        return heif_ycbcr_matrix_from_nclx(&metadata, width, height);
+    }
+    HeifYcbcrMatrix::Bt709
+}
+
+fn ycbcr420_image_to_rgba8(
+    handle: *const libheif_sys::heif_image_handle,
+    image: *const libheif_sys::heif_image,
+) -> Result<DecodedImage, String> {
     let y_w = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
     let y_h = unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
     if y_w <= 0 || y_h <= 0 {
@@ -410,7 +439,7 @@ fn ycbcr420_image_to_rgba8(image: *const libheif_sys::heif_image) -> Result<Deco
         return Err("libheif YCbCr thumbnail missing planes".to_string());
     }
 
-    let matrix = HeifYcbcrMatrix::Bt709;
+    let matrix = ycbcr_matrix_from_heif_handle(handle);
     let chroma_row_len = (width as usize).div_ceil(2);
     let mut rgba = vec![0_u8; width as usize * height as usize * 4];
     for y in 0..height as usize {

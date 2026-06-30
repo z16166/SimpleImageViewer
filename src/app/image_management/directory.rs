@@ -78,7 +78,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn apply_picked_image_directory(&mut self, dir: PathBuf) {
-        if self.settings.show_directory_tree_nav {
+        if self.directory_tree_settings_active() {
             self.initialize_directory_tree_root(dir.clone());
         } else if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode.
