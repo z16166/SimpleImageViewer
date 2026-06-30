@@ -79,7 +79,11 @@ impl ImageViewerApp {
             let can_preload = bootstrap_visible
                 && self.settings.preload
                 && !self.preload_deferred_for_hdr_capacity
-                && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS;
+                && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS
+                && !crate::app::image_management::should_defer_neighbor_work_for_current_main(
+                    self.has_loaded_asset(self.current_index),
+                    self.loader.is_loading(self.current_index),
+                );
             if can_preload {
                 self.schedule_preloads(true);
                 self.strip_preload_cooldown_frames = 3;

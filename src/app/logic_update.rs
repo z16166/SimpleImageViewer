@@ -564,6 +564,7 @@ impl ImageViewerApp {
         }
         #[cfg(feature = "preload-debug")]
         {
+            use crate::app::preload_hdr_gate::HdrSwapGateSnapshot;
             use crate::app::preload_hdr_gate::SwapRequestOutcome;
             let wsi = self.vulkan_wsi_hdr_gates.get();
             let wp_selection = self.hdr_monitor_state.selection();
@@ -576,20 +577,27 @@ impl ImageViewerApp {
             } else {
                 SwapRequestOutcome::Requested
             };
-            self.hdr_preload_gate_log.log_swap_chain_gate(
-                native_surface_requests_enabled,
-                self.settings.hdr_native_surface_enabled_effective(),
-                self.settings.hdr_native_surface_enabled,
-                self.hdr_capabilities.backend,
-                self.hdr_target_format,
-                desired_target_format,
-                swap_request_outcome,
-                wsi,
-                wp_selection,
-                effective_selection,
-                output_mode,
-                self.hdr_capabilities.native_presentation_enabled,
-            );
+            self.hdr_preload_gate_log
+                .log_swap_chain_gate(HdrSwapGateSnapshot {
+                    native_surface_requests_enabled,
+                    settings_native_surface_effective: self
+                        .settings
+                        .hdr_native_surface_enabled_effective(),
+                    settings_hdr_native_surface_enabled: self.settings.hdr_native_surface_enabled,
+                    backend: self.hdr_capabilities.backend,
+                    current_target_format: self.hdr_target_format,
+                    desired_target_format,
+                    swap_request_outcome,
+                    wsi_probed: wsi.probed,
+                    wsi_hdr10_st2084_rgb10a2: wsi.hdr10_st2084_rgb10a2,
+                    wsi_extended_srgb_linear_rgba16f: wsi.extended_srgb_linear_rgba16f,
+                    wp_selection_present: wp_selection.is_some(),
+                    wp_hdr_supported: wp_selection.map(|s| s.hdr_supported),
+                    effective_selection_present: effective_selection.is_some(),
+                    effective_hdr_supported: effective_selection.map(|s| s.hdr_supported),
+                    output_mode,
+                    native_presentation_enabled: self.hdr_capabilities.native_presentation_enabled,
+                });
         }
         self.hdr_capabilities.available = self.hdr_capabilities.native_presentation_enabled
             || output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;

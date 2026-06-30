@@ -776,6 +776,30 @@ fn raw_hq_bootstrap_only_detects_texture_without_hdr_plane() {
 }
 
 #[test]
+fn neighbor_work_defers_while_current_main_in_flight() {
+    assert!(super::should_defer_neighbor_work_for_current_main(
+        false, true
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        true, true
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        false, false
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        true, false
+    ));
+}
+
+#[test]
+fn neighbor_image_install_yields_until_current_ready() {
+    assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(false, true, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(false, false, false));
+}
+
+#[test]
 fn background_preload_defers_while_current_raw_gpu_path_active() {
     assert!(super::should_defer_background_preload_for_raw_gpu_current(
         true, true, true, false, false
@@ -1630,6 +1654,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         strip_preload_cooldown_frames: 0,
         strip_stale_retain_last_generation: u64::MAX,
         current_image_res: None,
+        canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
         current_file_name: String::new(),

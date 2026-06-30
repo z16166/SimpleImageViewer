@@ -596,6 +596,7 @@ impl ImageViewerApp {
             music_scan_cancel: None,
             music_scan_path: None,
             current_image_res: None,
+            canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
             raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
             image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
             current_file_name: String::new(),

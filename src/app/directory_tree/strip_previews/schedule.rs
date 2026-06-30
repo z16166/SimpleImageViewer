@@ -22,6 +22,7 @@ use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPreviewJobResult, StripPreviewBufferTag,
 };
+use crate::app::image_management::should_defer_neighbor_work_for_current_main;
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
     DecodedImage, PreviewStage, downsample_decoded_for_strip,
@@ -38,6 +39,16 @@ use super::{
 use super::send_strip_inflight_release;
 
 impl ImageViewerApp {
+    pub(super) fn should_defer_neighbor_strip_for_current_main(&self, index: usize) -> bool {
+        if index == self.current_index {
+            return false;
+        }
+        should_defer_neighbor_work_for_current_main(
+            self.has_loaded_asset(self.current_index),
+            self.loader.is_loading(self.current_index),
+        )
+    }
+
     pub(super) fn try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
         &mut self,
         index: usize,
@@ -45,6 +56,9 @@ impl ImageViewerApp {
         height: u32,
         baseline: Arc<Vec<u8>>,
     ) -> bool {
+        if self.should_defer_neighbor_strip_for_current_main(index) {
+            return false;
+        }
         if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
@@ -107,6 +121,9 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_schedule_strip_from_hdr_image_cache(&mut self, index: usize) -> bool {
+        if self.should_defer_neighbor_strip_for_current_main(index) {
+            return false;
+        }
         let Some(hdr) = self.hdr_image_cache.get(&index).cloned() else {
             return false;
         };
@@ -262,6 +279,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize) {
+        // GPU texture clone only; no CPU decode — do not defer while the current main loads.
         // Main-window texture_cache handles are ROOT-context textures; the detached
         // directory-tree viewport must upload strip thumbs via its own egui context.
         if self.directory_tree_nav_is_detached() {
@@ -413,6 +431,9 @@ impl ImageViewerApp {
         // in this Vec — a linear scan is faster than the hash-table allocation + hashing overhead.
         let mut seen = Vec::with_capacity(MAX_COLD_STRIP_SCHEDULE_PER_FRAME);
         let mut try_push = |index: usize| -> bool {
+            if self.should_defer_neighbor_strip_for_current_main(index) {
+                return false;
+            }
             if index < total && !seen.contains(&index) {
                 seen.push(index);
                 if self.strip_index_needs_cold_thumbnail(index) {
@@ -457,6 +478,14 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_generate_cold_directory_tree_strip_thumbnail(&mut self, index: usize) {
+        if self.should_defer_neighbor_strip_for_current_main(index) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] skip cold idx={} reason=current_main_in_flight",
+                index
+            );
+            return;
+        }
         if !self.strip_index_needs_cold_thumbnail(index) {
             return;
         }
@@ -486,12 +515,10 @@ impl ImageViewerApp {
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             #[cfg(feature = "preload-debug")]
             {
-                let use_fast_gain_map = path.extension().is_some_and(|ext| {
-                    let ext = ext.to_string_lossy().to_ascii_lowercase();
-                    ext == "avif" || ext == "avifs" || ext == "jxl"
-                });
+                let use_fast_gain_map =
+                    crate::loader::path_may_have_gain_map_embedded_sdr_preview(&path);
                 crate::preload_debug!(
-                    "[PreloadDebug][Strip] cold worker start idx={} path={} fast={}",
+                    "[PreloadDebug][Strip] cold worker start idx={} path={} gain_map_container={}",
                     index,
                     path.display(),
                     use_fast_gain_map
@@ -505,12 +532,16 @@ impl ImageViewerApp {
             let mut decoded = DecodedImage::new(0, 0, Vec::new());
             let mut reusable_full_decoded = None;
             let mut logical = (0u32, 0u32);
+            let mut buffer_tag = StripPreviewBufferTag::StripDecodedPixels;
             if com_ok {
                 match generate_directory_tree_thumb_decode_from_path(&path, max_side) {
                     Ok(strip_decode) => {
                         decoded = strip_decode.preview;
                         logical = strip_decode.logical_size;
                         reusable_full_decoded = strip_decode.reusable_full;
+                        if strip_decode.from_embedded_sdr_preview {
+                            buffer_tag = StripPreviewBufferTag::PreloadSdrFallback;
+                        }
                     }
                     Err(err) => {
                         log::warn!(
@@ -524,8 +555,9 @@ impl ImageViewerApp {
                     "[DirectoryTree] COM init failed for cold strip preview worker index {index}"
                 );
             }
+            #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
-                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} placeholder={}",
+                "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} placeholder={} from_embedded_sdr={} buffer_tag={:?}",
                 index,
                 decoded.width,
                 decoded.height,
@@ -537,7 +569,9 @@ impl ImageViewerApp {
                     logical.0,
                     logical.1,
                 ),
-                decoded.is_sdr_deferred_placeholder()
+                decoded.is_sdr_deferred_placeholder(),
+                buffer_tag == StripPreviewBufferTag::PreloadSdrFallback,
+                buffer_tag
             );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,
@@ -547,7 +581,7 @@ impl ImageViewerApp {
                 reusable_full_decoded,
                 logical,
                 stage: PreviewStage::Initial,
-                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                buffer_tag,
             };
             let send_result = tx.try_send(job);
             if send_result.is_ok() {

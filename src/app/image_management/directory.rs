@@ -135,6 +135,7 @@ impl ImageViewerApp {
         self.file_byte_len_by_index.clear();
         self.file_modified_unix_by_index.clear();
         self.set_current_index(0);
+        self.canvas_display_timing.on_navigate();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.animation_cache.clear();

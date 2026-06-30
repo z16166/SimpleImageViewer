@@ -574,6 +574,8 @@ pub struct ImageViewerApp {
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
+    /// Main-canvas loading hint -> first drawable frame (`preload-debug` only logs).
+    pub(crate) canvas_display_timing: crate::preload_debug::CanvasDisplayTiming,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,

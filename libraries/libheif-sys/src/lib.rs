@@ -209,6 +209,19 @@ unsafe extern "C" {
     pub fn heif_image_handle_get_height(handle: *const heif_image_handle) -> libc::c_int;
     pub fn heif_image_handle_get_ispe_width(handle: *const heif_image_handle) -> libc::c_int;
     pub fn heif_image_handle_get_ispe_height(handle: *const heif_image_handle) -> libc::c_int;
+    pub fn heif_image_handle_get_number_of_thumbnails(
+        handle: *const heif_image_handle,
+    ) -> libc::c_int;
+    pub fn heif_image_handle_get_list_of_thumbnail_IDs(
+        handle: *const heif_image_handle,
+        out_ids: *mut heif_item_id,
+        count: libc::c_int,
+    ) -> libc::c_int;
+    pub fn heif_image_handle_get_thumbnail(
+        main_image_handle: *const heif_image_handle,
+        thumbnail_id: heif_item_id,
+        out_thumbnail_handle: *mut *mut heif_image_handle,
+    ) -> heif_error;
 
     pub fn heif_image_handle_get_item_id(handle: *const heif_image_handle) -> heif_item_id;
 

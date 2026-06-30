@@ -150,6 +150,23 @@ impl ImageViewerApp {
             current_is_loading = true;
         }
 
+        if should_defer_neighbor_work_for_current_main(current_has_asset, current_is_loading) {
+            preload_debug!(
+                "[PreloadDebug] defer background preload: cur={} reason=current_main_in_flight loading={} has_asset={}",
+                cur,
+                current_is_loading,
+                current_has_asset
+            );
+            return;
+        }
+
+        preload_debug!(
+            "[PreloadDebug] neighbor preload allowed: cur={} has_asset={} loading={}",
+            cur,
+            current_has_asset,
+            current_is_loading
+        );
+
         if !self.settings.preload {
             preload_debug!("[PreloadDebug] background preload disabled in settings");
             return;
@@ -443,7 +460,7 @@ impl ImageViewerApp {
         );
     }
 
-    pub(super) fn has_loaded_asset(&self, index: usize) -> bool {
+    pub(crate) fn has_loaded_asset(&self, index: usize) -> bool {
         let has_static_hdr = self.hdr_image_cache.contains_key(&index);
         let has_hdr_tiled_source = self.hdr_tiled_source_cache.contains_key(&index);
         let has_hdr_plane = has_static_hdr || has_hdr_tiled_source;

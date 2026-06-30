@@ -1159,17 +1159,17 @@ impl ImageLoader {
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
         #[cfg(feature = "preload-debug")]
-        if crate::preload_debug::path_is_raw(path) {
-            if let Ok(ref image_data) = load_result.result {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW] load_done idx={} hq={} hdr_cap={:.3} result={} path={}",
-                    index,
-                    high_quality,
-                    hdr_target_capacity,
-                    crate::preload_debug::summarize_image_data(image_data),
-                    path.display()
-                );
-            }
+        if crate::preload_debug::path_is_raw(&path)
+            && let Ok(ref image_data) = load_result.result
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] load_done idx={} hq={} hdr_cap={:.3} result={} path={}",
+                index,
+                high_quality,
+                hdr_target_capacity,
+                crate::preload_debug::summarize_image_data(image_data),
+                path.display()
+            );
         }
 
         if Self::load_result_superseded(&loading_ref, index, &decode_profile) {

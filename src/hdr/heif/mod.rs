@@ -15,6 +15,17 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 mod brand;
 
+use std::path::Path;
+
+/// Optional preload-debug context for HEIF HDR decode logs (`idx`, full `path`).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct HeifHdrDecodeDiag<'a> {
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    pub idx: Option<usize>,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    pub path: Option<&'a Path>,
+}
+
 #[cfg(feature = "heif-native")]
 mod decode;
 #[cfg(feature = "heif-native")]
@@ -28,6 +39,8 @@ mod orientation;
 #[cfg(feature = "heif-native")]
 mod session;
 #[cfg(feature = "heif-native")]
+mod thumbnail;
+#[cfg(feature = "heif-native")]
 mod ycbcr;
 
 #[cfg(test)]
@@ -40,6 +53,11 @@ pub(crate) use load::load_heif_hdr;
 pub(crate) use orientation::{
     decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag,
     libheif_manual_geometry_exif_orientation_from_path,
+};
+#[cfg(feature = "heif-native")]
+pub(crate) use thumbnail::{
+    HeifThumbProbe, HeifThumbProbeDetail, probe_heif_strip_thumbnail,
+    probe_heif_strip_thumbnail_from_path,
 };
 
 #[cfg(all(test, feature = "heif-native"))]

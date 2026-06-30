@@ -25,14 +25,20 @@ use super::session::open_heif_primary_from_bytes;
 use crate::hdr::types::HdrColorProfile;
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
+#[cfg(feature = "heif-native")]
+use std::path::Path;
+
+#[cfg(feature = "heif-native")]
+use super::HeifHdrDecodeDiag;
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(
-    path: &std::path::Path,
+    path: &Path,
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
+    diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    let hdr = decode_heif_hdr(path, hdr_target_capacity)?;
+    let hdr = decode_heif_hdr(path, hdr_target_capacity, diag)?;
     let fallback = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
         crate::loader::DecodedImage::new(
             hdr.width,
@@ -59,8 +65,9 @@ pub(crate) fn load_heif_hdr(
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_heif_hdr(
-    path: &std::path::Path,
+    path: &Path,
     hdr_target_capacity: f32,
+    diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<HdrImageBuffer, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
@@ -68,7 +75,7 @@ pub(crate) fn decode_heif_hdr(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("(unknown)");
-    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity, label)
+    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity, label, diag)
 }
 
 #[cfg(feature = "heif-native")]
@@ -76,7 +83,15 @@ pub(crate) fn decode_heif_hdr_bytes(
     bytes: &[u8],
     hdr_target_capacity: f32,
     source_label: &str,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<
+        '_,
+    >,
 ) -> Result<HdrImageBuffer, String> {
+    #[cfg(feature = "preload-debug")]
+    let total_start = std::time::Instant::now();
+    #[cfg(feature = "preload-debug")]
+    let mut phase_start = std::time::Instant::now();
+
     let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
     let mut metadata = read_heif_metadata(handle.as_ptr());
@@ -91,7 +106,22 @@ pub(crate) fn decode_heif_hdr_bytes(
         .as_ref()
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
+
+    #[cfg(feature = "preload-debug")]
+    let open_ms = crate::preload_debug::elapsed_ms(phase_start);
+    #[cfg(feature = "preload-debug")]
+    {
+        phase_start = std::time::Instant::now();
+    }
+
     let mut hdr = decode_primary_heif_to_hdr(handle.as_ptr(), metadata, decode_opts_ptr)?;
+
+    #[cfg(feature = "preload-debug")]
+    let primary_decode_ms = crate::preload_debug::elapsed_ms(phase_start);
+    #[cfg(feature = "preload-debug")]
+    {
+        phase_start = std::time::Instant::now();
+    }
 
     // Apple HDR gain map: only decode the auxiliary plane when display headroom weight > 0
     // (SDR tone-mapped output keeps the primary plane; skip redundant libheif + CPU work).
@@ -166,5 +196,23 @@ pub(crate) fn decode_heif_hdr_bytes(
         hdr.metadata.luminance.mastering_max_nits,
         hdr.metadata.gain_map.is_some(),
     );
+
+    #[cfg(feature = "preload-debug")]
+    {
+        let tone_map_ms = crate::preload_debug::elapsed_ms(phase_start);
+        let total_ms = total_start.elapsed().as_millis();
+        let idx = diag
+            .idx
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let path = diag
+            .path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| source_label.to_string());
+        crate::preload_debug!(
+            "[PreloadDebug][HEIF] decode_heif_hdr_bytes open_ms={open_ms} primary_decode_ms={primary_decode_ms} tone_map_ms={tone_map_ms} total_ms={total_ms} idx={idx} path={path}"
+        );
+    }
+
     Ok(hdr)
 }
