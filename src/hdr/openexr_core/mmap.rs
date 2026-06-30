@@ -16,8 +16,7 @@
 
 #![allow(dead_code)]
 
-use libc::{c_char, c_int, c_void};
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{
     Arc,
