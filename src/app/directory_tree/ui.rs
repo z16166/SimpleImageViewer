@@ -638,6 +638,14 @@ pub(super) fn clamp_directory_tree_left_panel_width(width: f32, viewport_width: 
     width.clamp(min_left, max_left)
 }
 
+pub(super) fn apply_directory_tree_splitter_frame_delta(
+    left_panel_width: f32,
+    frame_delta_x: f32,
+    viewport_width: f32,
+) -> f32 {
+    clamp_directory_tree_left_panel_width(left_panel_width + frame_delta_x, viewport_width)
+}
+
 pub(super) fn directory_tree_panel_layout(
     left_panel_width: f32,
     _image_list_panel_width: f32,
@@ -724,9 +732,10 @@ fn draw_directory_tree_top_panels(
     let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
     let mut splitter_drag_delta_x = 0.0;
     if splitter_response.dragged() {
-        splitter_drag_delta_x = splitter_response.drag_delta().x;
-        chrome.left_panel_width = clamp_directory_tree_left_panel_width(
-            chrome.left_panel_width + splitter_drag_delta_x,
+        splitter_drag_delta_x = ui.input(|input| input.pointer.delta().x);
+        chrome.left_panel_width = apply_directory_tree_splitter_frame_delta(
+            chrome.left_panel_width,
+            splitter_drag_delta_x,
             viewport_width,
         );
         chrome.panel_layout_dirty = true;
