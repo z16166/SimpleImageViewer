@@ -144,6 +144,39 @@ fn maybe_log_embedded_side_panel_layout(
     }
 }
 
+fn embedded_side_panel_stable_rect_before_show(
+    ui: &egui::Ui,
+    panel_id: egui::Id,
+    default_width: f32,
+) -> egui::Rect {
+    let available = ui.available_rect_before_wrap();
+    let width = egui::PanelState::load(ui.ctx(), panel_id)
+        .map(|state| state.rect.width())
+        .unwrap_or(default_width)
+        .clamp(
+            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+            available.width().max(0.0),
+        );
+    egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(available.min.x + width, available.max.y),
+    )
+}
+
+fn restore_embedded_side_panel_state_if_not_resizing(
+    ctx: &egui::Context,
+    panel_id: egui::Id,
+    stable_rect: egui::Rect,
+) {
+    let resize_active = ctx
+        .read_response(panel_id.with("__resize"))
+        .is_some_and(|response| response.dragged());
+    if resize_active {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_persisted(panel_id, egui::PanelState { rect: stable_rect }));
+}
+
 impl ImageViewerApp {
     pub(crate) fn directory_tree_nav_blocks_main_window_wheel(&self, ctx: &egui::Context) -> bool {
         if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
@@ -1628,6 +1661,9 @@ impl ImageViewerApp {
 
         let available_before = ui.available_width();
         let max_rect_width_before = ui.max_rect().width();
+        let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
+        let stable_panel_rect =
+            embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
         let tree_embedded_width_before = self
             .directory_tree
             .tree
@@ -1663,6 +1699,7 @@ impl ImageViewerApp {
                 }
                 self.finish_directory_tree_image_list_context_menu(ui.ctx(), true);
             });
+        restore_embedded_side_panel_state_if_not_resizing(ui.ctx(), panel_id, stable_panel_rect);
         let panel_rect = panel_response.response.rect;
         let chrome_embedded_width_after = self
             .directory_tree
