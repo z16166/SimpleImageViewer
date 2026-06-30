@@ -379,22 +379,39 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn effective_scan_recursive(&self) -> bool {
-        self.settings.effective_scan_recursive()
+        if self.auto_hidden_directory_tree_nav {
+            self.settings.recursive
+        } else {
+            self.settings.effective_scan_recursive()
+        }
     }
 
     pub(crate) fn current_browse_directory(&self) -> Option<PathBuf> {
-        match self.settings.browse_mode {
-            BrowseMode::Tree if self.settings.show_directory_tree_nav => self
-                .settings
+        if self.directory_tree_settings_active() {
+            self.settings
                 .tree_nav_selected_dir
                 .clone()
-                .or_else(|| self.settings.last_image_dir.clone()),
-            BrowseMode::Tree | BrowseMode::Linear => self
-                .settings
+                .or_else(|| self.settings.last_image_dir.clone())
+        } else {
+            self.settings
                 .transient_image_dir
                 .clone()
-                .or_else(|| self.settings.last_image_dir.clone()),
+                .or_else(|| self.settings.last_image_dir.clone())
         }
+    }
+
+    pub(crate) fn auto_hide_directory_tree_nav_for_single_image_open(
+        &mut self,
+        ctx: &egui::Context,
+    ) {
+        if self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav {
+            self.hide_detached_directory_tree_nav_viewport(ctx);
+            self.auto_hidden_directory_tree_nav = true;
+        }
+    }
+
+    pub(crate) fn clear_auto_hidden_directory_tree_nav(&mut self) {
+        self.auto_hidden_directory_tree_nav = false;
     }
 
     pub(crate) fn saved_directory_tree_selection_dir(&self) -> Option<PathBuf> {
@@ -828,18 +845,20 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
-        self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
+        self.settings.directory_tree_nav_active() && !self.auto_hidden_directory_tree_nav
     }
 
     /// Temporarily hide directory-tree navigation (Settings toggle off, Ctrl+T, close nav window).
     /// Keeps `browse_mode` and persisted tree root/selection so the panel can be restored in place.
     pub(crate) fn hide_directory_tree_nav(&mut self, ctx: &egui::Context) {
+        self.clear_auto_hidden_directory_tree_nav();
         self.hide_detached_directory_tree_nav_viewport(ctx);
         self.settings.show_directory_tree_nav = false;
     }
 
     /// Show directory-tree navigation. Recursive scan stays stored but is ignored while visible.
     pub(crate) fn activate_directory_tree_nav(&mut self) {
+        self.clear_auto_hidden_directory_tree_nav();
         self.settings.browse_mode = BrowseMode::Tree;
         self.settings.show_directory_tree_nav = true;
     }

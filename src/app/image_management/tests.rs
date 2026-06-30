@@ -1608,6 +1608,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         pending_open_directory: false,
         folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
         directory_tree: crate::app::DirectoryTreeRuntime::new(),
+        auto_hidden_directory_tree_nav: false,
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
         directory_tree_strip_compose_probe_cache:
@@ -2864,6 +2865,32 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
     assert_eq!(queued.last_image_dir, Some(saved));
     assert!(!queued.recursive);
     assert!(!queued.auto_switch);
+}
+
+#[test]
+fn ipc_double_click_auto_hides_tree_nav_without_persisting_toggle() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let saved = std::env::temp_dir().join("siv_tree_saved_gallery");
+    let opened = std::env::temp_dir().join("siv_tree_opened_gallery");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.last_image_dir = Some(saved);
+
+    app.handle_ipc_open_image(image, &ctx, true);
+
+    assert!(!app.directory_tree_settings_active());
+    assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
+    assert!(app.settings.show_directory_tree_nav);
+    let queued = save_rx.try_iter().last().expect("settings save queued");
+    assert_eq!(queued.browse_mode, crate::settings::BrowseMode::Tree);
+    assert!(queued.show_directory_tree_nav);
 }
 
 #[test]

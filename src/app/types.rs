@@ -493,6 +493,7 @@ pub struct ImageViewerApp {
     pub(crate) pending_open_directory: bool,
     pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
     pub(crate) directory_tree: DirectoryTreeRuntime,
+    pub(crate) auto_hidden_directory_tree_nav: bool,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
     pub(crate) directory_tree_strip_compose_probe_cache:

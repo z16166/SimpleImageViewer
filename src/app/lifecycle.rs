@@ -470,6 +470,8 @@ impl ImageViewerApp {
                 settings.hdr_native_surface_enabled_effective(),
                 hdr_capabilities.backend,
             );
+        let auto_hidden_directory_tree_nav =
+            initial_image.is_some() && settings.show_directory_tree_nav;
         let mut app = Self {
             save_tx,
             initial_image,
@@ -572,6 +574,7 @@ impl ImageViewerApp {
             pending_open_directory: false,
             folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
+            auto_hidden_directory_tree_nav,
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
             directory_tree_strip_compose_probe_cache:
