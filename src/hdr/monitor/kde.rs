@@ -34,13 +34,34 @@ pub(crate) fn parse_kscreen_hdr_state_for_output(
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn strip_ansi_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_kscreen_hdr_states(outputs: &str) -> HashMap<String, LinuxExplicitHdrState> {
     let mut states = HashMap::new();
     let mut current_output_name: Option<String> = None;
     for line in outputs.lines() {
-        let trimmed = line.trim();
+        let trimmed = strip_ansi_escapes(line).trim().to_string();
         if trimmed.starts_with("Output:") {
-            current_output_name = output_name_from_header(trimmed).map(str::to_string);
+            current_output_name = output_name_from_header(&trimmed).map(str::to_string);
             continue;
         }
         if let (Some(output_name), Some(value)) =
@@ -321,6 +342,21 @@ Output: 3 DP-1
         assert_eq!(
             parse_kscreen_hdr_state_for_output(KSCREEN_OUTPUTS, "DP-2"),
             None
+        );
+    }
+
+    #[test]
+    fn parses_ansi_colored_kscreen_doctor_output() {
+        const KSCREEN_OUTPUTS_ANSI: &str = "\
+\x1b[01;32mOutput: \x1b[0;0m1 eDP-1 1f82d966-5306-40a9-918a-e9331819a2ff
+\t\x1b[01;32menabled\x1b[0;0m
+\t\x1b[01;32mconnected\x1b[0;0m
+\t\x1b[01;33mHDR: \x1b[0;0menabled
+\t\x1b[01;33mWide Color Gamut: \x1b[0;0menabled
+";
+        assert_eq!(
+            parse_kscreen_hdr_state_for_output(KSCREEN_OUTPUTS_ANSI, "eDP-1"),
+            Some(LinuxExplicitHdrState::Enabled)
         );
     }
 }

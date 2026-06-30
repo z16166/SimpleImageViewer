@@ -820,6 +820,7 @@ pub fn active_monitor_hdr_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hdr::monitor::LinuxExplicitHdrState;
 
     #[test]
     fn st2084_is_hdr() {
@@ -901,7 +902,7 @@ mod tests {
             None,
         );
         assert!(!selection.hdr_supported);
-        selection.linux_explicit_hdr_state = Some(super::LinuxExplicitHdrState::Enabled);
+        selection.linux_explicit_hdr_state = Some(LinuxExplicitHdrState::Enabled);
         assert!(spawn_hdr_supported(&selection));
     }
 
@@ -916,7 +917,7 @@ mod tests {
             None,
         );
         assert!(selection.hdr_supported);
-        selection.linux_explicit_hdr_state = Some(super::LinuxExplicitHdrState::Disabled);
+        selection.linux_explicit_hdr_state = Some(LinuxExplicitHdrState::Disabled);
         assert!(!spawn_hdr_supported(&selection));
     }
 
