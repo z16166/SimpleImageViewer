@@ -30,7 +30,9 @@ use crate::hdr::avif_gain_map_deferred::avif_build_iso_sdr_baseline_rgba8;
 use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::hdr::tiled::{downsample_rgba8_nearest, preview_dimensions};
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrTransferFunction};
+use crate::hdr::types::{
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrTransferFunction,
+};
 use crate::loader::hdr_tone_map_settings_for_directory_tree_strip;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
@@ -456,8 +458,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_composed_from_image(
             strip_h,
             gain_map_compose_capacity,
             compose_color_space,
-        )
-        {
+        ) {
             Ok(pixels) => {
                 let strip = DecodedImage::new(strip_w, strip_h, pixels);
                 return Some(finish_strip(path, strip, logical_w, logical_h));
@@ -537,4 +538,3 @@ pub(crate) fn decode_avif_strip_iso_gain_map_composed(
         gain_map_compose_capacity,
     )
 }
-

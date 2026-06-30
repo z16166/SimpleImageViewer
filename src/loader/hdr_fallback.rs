@@ -187,7 +187,8 @@ pub(crate) fn directory_tree_strip_composed_from_gain_map_path(
     #[cfg(feature = "avif-native")]
     if ext == "avif" || ext == "avifs" {
         match crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap) {
-            None | Some(crate::hdr::avif::AvifGainMapStripProbe::NoGainMap)
+            None
+            | Some(crate::hdr::avif::AvifGainMapStripProbe::NoGainMap)
             | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr) => {
                 return Err(format!(
                     "strip compose requires ISO forward deferred gain map: {}",
@@ -260,9 +261,7 @@ pub(crate) fn directory_tree_strip_composed_from_iso_deferred(
         .and_then(|gain_map| gain_map.iso_deferred.as_ref())
         && crate::hdr::gain_map::iso_gain_map_skips_forward_compose(iso.metadata)
     {
-        return Err(
-            "strip compose upgrade requires forward ISO deferred gain map".to_string(),
-        );
+        return Err("strip compose upgrade requires forward ISO deferred gain map".to_string());
     }
     if !hdr.rgba_f32.is_empty() {
         let (width, height, pixels) = hdr_directory_tree_strip_sdr_at_max_side(hdr, max_side)?;
