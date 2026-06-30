@@ -104,6 +104,10 @@ pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     }
 }
 
+pub(crate) fn runtime_prewarm_persist_enabled(backend: wgpu::Backend) -> bool {
+    backend != wgpu::Backend::Metal
+}
+
 #[cfg(target_os = "windows")]
 #[allow(dead_code)] // DX12 uses PipelineCache auto-persist; manual save for other adapters
 pub fn save_atomic(adapter: &wgpu::Adapter, data: &[u8]) -> std::io::Result<()> {
@@ -189,5 +193,12 @@ mod tests {
         let new_driver = cache_path_for_adapter_info(&adapter_info("32.0.16.2000"));
 
         assert_ne!(old_driver.file_name(), new_driver.file_name());
+    }
+
+    #[test]
+    fn runtime_prewarm_persist_is_disabled_for_metal() {
+        assert!(!runtime_prewarm_persist_enabled(wgpu::Backend::Metal));
+        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Dx12));
+        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Vulkan));
     }
 }
