@@ -493,8 +493,11 @@ pub struct ImageViewerApp {
     pub(crate) pending_open_directory: bool,
     pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
     pub(crate) directory_tree: DirectoryTreeRuntime,
+    pub(crate) auto_hidden_directory_tree_nav: bool,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
+    pub(crate) directory_tree_strip_compose_probe_cache:
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
     pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
@@ -574,6 +577,8 @@ pub struct ImageViewerApp {
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
+    /// Main-canvas loading hint -> first drawable frame (`preload-debug` only logs).
+    pub(crate) canvas_display_timing: crate::preload_debug::CanvasDisplayTiming,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,

@@ -17,13 +17,13 @@
 //! Linux native HDR admission: combine Wayland `wp_color_management` with Vulkan WSI gates.
 //!
 //! WSI alone is **not** sufficient — compositors may advertise HDR swap-chain pairs even on
-//! SDR outputs. Admission requires matching compositor metadata (transfer function, primaries,
-//! peak vs reference luminance from the probe) with the correct WSI `(format, color_space)` pair.
+//! SDR outputs. Admission requires an explicit compositor / desktop HDR signal; WSI then chooses
+//! the concrete `(format, color_space)` encoding, preferring ST2084 when available.
+//!
+//! Explicit desktop HDR state is currently sourced from KDE `kscreen-doctor` only; other Linux
+//! desktops (GNOME, Sway, etc.) fail closed until a comparable explicit signal is integrated.
 
-use super::monitor::{
-    HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandColorPrimaries,
-    LinuxWaylandTransferFunction,
-};
+use super::monitor::{HdrMonitorSelection, HdrNativeSurfaceEncoding, LinuxWaylandTransferFunction};
 use super::wsi_probe::WsiHdrSurfaceGates;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,45 +68,38 @@ impl LinuxHdrAdmission {
     }
 }
 
-fn wp_explicit_pq_output(selection: &HdrMonitorSelection) -> bool {
+/// True when Wayland `wp_color_management` reports ST2084/PQ transfer on the output.
+/// This reflects compositor metadata, not the final Vulkan WSI swapchain encoding.
+fn wp_reports_st2084_transfer(selection: &HdrMonitorSelection) -> bool {
     matches!(
         selection.linux_wp_transfer,
         Some(LinuxWaylandTransferFunction::St2084)
     )
 }
 
-fn wp_peak_exceeds_reference(selection: &HdrMonitorSelection) -> bool {
-    match (
-        selection.max_luminance_nits,
-        selection.reference_luminance_nits,
-    ) {
-        (Some(max), Some(reference))
-            if max.is_finite() && reference.is_finite() && reference > 0.0 =>
-        {
-            max > reference
-        }
-        _ => false,
-    }
-}
-
-/// True when compositor metadata describes a conventional SDR display profile.
-fn wp_is_sdr_display_profile(selection: &HdrMonitorSelection) -> bool {
-    if wp_explicit_pq_output(selection) {
-        return false;
-    }
-    match selection.linux_wp_primaries {
-        Some(LinuxWaylandColorPrimaries::Narrow) => true,
-        Some(LinuxWaylandColorPrimaries::Wide) => false,
-        Some(LinuxWaylandColorPrimaries::Unknown) | None => !wp_peak_exceeds_reference(selection),
-    }
-}
-
-fn wp_supports_kwin_gamma22_offload(selection: &HdrMonitorSelection) -> bool {
+fn wp_describes_gamma22_offload(selection: &HdrMonitorSelection) -> bool {
     matches!(
         selection.linux_wp_transfer,
         Some(LinuxWaylandTransferFunction::Gamma22)
             | Some(LinuxWaylandTransferFunction::CompoundPower24)
-    ) && !wp_is_sdr_display_profile(selection)
+    )
+}
+
+fn explicit_desktop_hdr_enabled(selection: &HdrMonitorSelection) -> bool {
+    matches!(
+        selection.linux_explicit_hdr_state,
+        Some(super::monitor::LinuxExplicitHdrState::Enabled)
+    )
+}
+
+fn explicit_desktop_hdr_disabled(selection: &HdrMonitorSelection) -> bool {
+    matches!(
+        selection.linux_explicit_hdr_state,
+        Some(
+            super::monitor::LinuxExplicitHdrState::Disabled
+                | super::monitor::LinuxExplicitHdrState::Incapable
+        )
+    )
 }
 
 /// Classify native HDR admission once Vulkan WSI gates are available.
@@ -114,6 +107,10 @@ pub fn classify_linux_hdr_admission(
     wp: &HdrMonitorSelection,
     wsi: WsiHdrSurfaceGates,
 ) -> LinuxHdrAdmission {
+    if explicit_desktop_hdr_disabled(wp) {
+        return LinuxHdrAdmission::Sdr;
+    }
+
     // WSI gates are not ready yet: trust wp seed metadata only for explicit PQ (St2084) paths.
     // Gamma22 / scRGB HDR TVs stay SDR until WSI confirms the matching swap-chain pair, avoiding
     // false positives when compositors advertise HDR pairs on SDR outputs (walkthrough §6).
@@ -121,28 +118,32 @@ pub fn classify_linux_hdr_admission(
         return if wp.hdr_supported {
             match wp.native_surface_encoding {
                 Some(HdrNativeSurfaceEncoding::PqHdr10) => LinuxHdrAdmission::NativePqHdr10,
-                Some(HdrNativeSurfaceEncoding::Gamma22Electrical) => {
-                    LinuxHdrAdmission::NativeGamma22Electrical
-                }
-                Some(HdrNativeSurfaceEncoding::LinearScRgb) => {
-                    LinuxHdrAdmission::NativeExtendedScRgb
-                }
-                None => LinuxHdrAdmission::Sdr,
+                // Non-PQ native paths require WSI confirmation; otherwise fail closed.
+                Some(
+                    HdrNativeSurfaceEncoding::Gamma22Electrical
+                    | HdrNativeSurfaceEncoding::LinearScRgb,
+                )
+                | None => LinuxHdrAdmission::Sdr,
             }
         } else {
             LinuxHdrAdmission::Sdr
         };
     }
 
-    if wp_explicit_pq_output(wp) && wsi.hdr10_st2084_rgb10a2 {
+    let native_hdr_admitted = wp_reports_st2084_transfer(wp) || explicit_desktop_hdr_enabled(wp);
+    if !native_hdr_admitted {
+        return LinuxHdrAdmission::Sdr;
+    }
+
+    if wsi.hdr10_st2084_rgb10a2 {
         return LinuxHdrAdmission::NativePqHdr10;
     }
 
-    if wp_supports_kwin_gamma22_offload(wp) && wsi.srgb_nonlinear_rgb10a2 {
+    if wp_describes_gamma22_offload(wp) && wsi.srgb_nonlinear_rgb10a2 {
         return LinuxHdrAdmission::NativeGamma22Electrical;
     }
 
-    if !wp_is_sdr_display_profile(wp) && wsi.extended_srgb_linear_rgba16f {
+    if wsi.extended_srgb_linear_rgba16f {
         return LinuxHdrAdmission::NativeExtendedScRgb;
     }
 
@@ -152,8 +153,19 @@ pub fn classify_linux_hdr_admission(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hdr::monitor::LinuxWaylandColorPrimaries;
 
     fn wp_selection(
+        transfer: LinuxWaylandTransferFunction,
+        primaries: LinuxWaylandColorPrimaries,
+        max_nits: Option<f32>,
+        reference_nits: Option<f32>,
+    ) -> HdrMonitorSelection {
+        wp_selection_for_label("test-output", transfer, primaries, max_nits, reference_nits)
+    }
+
+    fn wp_selection_for_label(
+        label: impl Into<String>,
         transfer: LinuxWaylandTransferFunction,
         primaries: LinuxWaylandColorPrimaries,
         max_nits: Option<f32>,
@@ -162,7 +174,7 @@ mod tests {
         let hdr_supported = matches!(transfer, LinuxWaylandTransferFunction::St2084);
         HdrMonitorSelection {
             hdr_supported,
-            label: "test-output".to_string(),
+            label: label.into(),
             max_luminance_nits: max_nits,
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
@@ -171,6 +183,8 @@ mod tests {
             reference_luminance_nits: reference_nits,
             linux_wp_transfer: Some(transfer),
             linux_wp_primaries: Some(primaries),
+            linux_explicit_hdr_state: None,
+            linux_explicit_hdr_state_source: None,
         }
     }
 
@@ -184,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn sdr_profile_vetoes_wsi_hdr10_false_positive() {
+    fn gamma22_without_explicit_hdr_state_vetoes_wsi_hdr10_false_positive() {
         let wp = wp_selection(
             LinuxWaylandTransferFunction::Gamma22,
             LinuxWaylandColorPrimaries::Narrow,
@@ -196,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn bright_sdr_narrow_gamut_vetoed_despite_high_peak() {
+    fn high_luminance_metadata_does_not_enable_hdr_without_explicit_state() {
         let wp = wp_selection(
             LinuxWaylandTransferFunction::Gamma22,
             LinuxWaylandColorPrimaries::Narrow,
@@ -208,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn kwin_gamma22_tv_admits_with_srgb_nonlinear_wsi_pair() {
+    fn gamma22_output_without_explicit_hdr_state_fails_closed() {
         let wp = wp_selection(
             LinuxWaylandTransferFunction::Gamma22,
             LinuxWaylandColorPrimaries::Wide,
@@ -216,6 +230,72 @@ mod tests {
             Some(203.0),
         );
         let admission = classify_linux_hdr_admission(&wp, wsi_all_hdr_pairs());
+        assert_eq!(admission, LinuxHdrAdmission::Sdr);
+    }
+
+    #[test]
+    fn kde_enabled_gamma22_output_prefers_st2084_wsi_pair() {
+        let mut wp = wp_selection(
+            LinuxWaylandTransferFunction::Gamma22,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1800.0),
+            Some(1800.0),
+        );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Enabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
+
+        let admission = classify_linux_hdr_admission(&wp, wsi_all_hdr_pairs());
+        assert_eq!(admission, LinuxHdrAdmission::NativePqHdr10);
+    }
+
+    #[test]
+    fn kde_disabled_gamma22_output_vetoes_st2084_wsi_pair() {
+        let mut wp = wp_selection(
+            LinuxWaylandTransferFunction::Gamma22,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1800.0),
+            Some(1800.0),
+        );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Disabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
+
+        let admission = classify_linux_hdr_admission(&wp, wsi_all_hdr_pairs());
+        assert_eq!(admission, LinuxHdrAdmission::Sdr);
+    }
+
+    #[test]
+    fn gamma22_with_st2084_wsi_fails_closed_without_explicit_hdr_state() {
+        let wp = wp_selection(
+            LinuxWaylandTransferFunction::Gamma22,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1800.0),
+            Some(1800.0),
+        );
+
+        let admission = classify_linux_hdr_admission(&wp, wsi_all_hdr_pairs());
+        assert_eq!(admission, LinuxHdrAdmission::Sdr);
+    }
+
+    #[test]
+    fn kde_enabled_gamma22_falls_back_to_gamma22_without_st2084_pair() {
+        let mut wp = wp_selection(
+            LinuxWaylandTransferFunction::Gamma22,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1800.0),
+            Some(1800.0),
+        );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Enabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
+
+        let admission = classify_linux_hdr_admission(
+            &wp,
+            WsiHdrSurfaceGates {
+                hdr10_st2084_rgb10a2: false,
+                extended_srgb_linear_rgba16f: false,
+                srgb_nonlinear_rgb10a2: true,
+                probed: true,
+            },
+        );
         assert_eq!(admission, LinuxHdrAdmission::NativeGamma22Electrical);
     }
 
@@ -278,13 +358,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_disabled_vetoes_wp_st2084_before_wsi_probe() {
+        let mut wp = wp_selection(
+            LinuxWaylandTransferFunction::St2084,
+            LinuxWaylandColorPrimaries::Wide,
+            Some(1000.0),
+            Some(203.0),
+        );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Disabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
+        let admission = classify_linux_hdr_admission(
+            &wp,
+            WsiHdrSurfaceGates {
+                probed: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(admission, LinuxHdrAdmission::Sdr);
+    }
+
+    #[test]
     fn compound_power24_wide_peak_admits_extended_scrgb() {
-        let wp = wp_selection(
+        let mut wp = wp_selection(
             LinuxWaylandTransferFunction::CompoundPower24,
             LinuxWaylandColorPrimaries::Wide,
             Some(1000.0),
             Some(203.0),
         );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Enabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
         let admission = classify_linux_hdr_admission(
             &wp,
             WsiHdrSurfaceGates {
@@ -298,13 +400,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_primaries_high_peak_admits_extended_scrgb() {
-        let wp = wp_selection(
+    fn explicit_hdr_state_admits_extended_scrgb() {
+        let mut wp = wp_selection(
             LinuxWaylandTransferFunction::Gamma22,
             LinuxWaylandColorPrimaries::Unknown,
             Some(800.0),
             Some(203.0),
         );
+        wp.linux_explicit_hdr_state = Some(crate::hdr::monitor::LinuxExplicitHdrState::Enabled);
+        wp.linux_explicit_hdr_state_source = Some("KDE KScreen");
         let admission = classify_linux_hdr_admission(
             &wp,
             WsiHdrSurfaceGates {

@@ -263,7 +263,15 @@ pub(crate) fn load_via_content_detection(
             return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
         }
         if crate::hdr::heif::is_heif_brand(brand) {
-            return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map);
+            return load_heif_hdr_aware(
+                path,
+                hdr_target_capacity,
+                hdr_tone_map,
+                crate::hdr::heif::HeifHdrDecodeDiag {
+                    idx: None,
+                    path: Some(path),
+                },
+            );
         }
         return load_bmff_ftyp_container(path, hdr_target_capacity, hdr_tone_map, brand);
     }

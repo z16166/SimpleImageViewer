@@ -17,9 +17,12 @@
 // Directory tree navigation UI drawing.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
 use eframe::egui;
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::app::ImageViewerApp;
@@ -84,6 +87,90 @@ pub(super) fn directory_tree_node_icon_fields(
         return DirectoryTreeNodeIcon::Drive;
     }
     DirectoryTreeNodeIcon::Folder
+}
+
+#[derive(Default)]
+struct DirectoryTreePanelLayoutDiag {
+    last_embedded_width: Option<f32>,
+    last_layout_left: Option<f32>,
+    last_layout_list: Option<f32>,
+    last_log_at: Option<Instant>,
+}
+
+static DIRECTORY_TREE_PANEL_LAYOUT_DIAG: OnceLock<Mutex<DirectoryTreePanelLayoutDiag>> =
+    OnceLock::new();
+
+fn maybe_log_directory_tree_panel_layout(
+    embedded: bool,
+    viewport_width: f32,
+    layout_left_w: f32,
+    layout_list_w: f32,
+    stored_left_before: f32,
+    stored_left_after: f32,
+    splitter_dragged: bool,
+    splitter_drag_delta_x: f32,
+) {
+    if !embedded {
+        return;
+    }
+
+    const WIDTH_CHANGE_EPS: f32 = 2.0;
+    const LEFT_CLAMP_EPS: f32 = 0.5;
+    const IDLE_LOG_INTERVAL: Duration = Duration::from_millis(1000);
+    const DRAG_LOG_INTERVAL: Duration = Duration::from_millis(250);
+
+    let diag = DIRECTORY_TREE_PANEL_LAYOUT_DIAG
+        .get_or_init(|| Mutex::new(DirectoryTreePanelLayoutDiag::default()));
+    let Some(mut diag) = diag.try_lock() else {
+        return;
+    };
+
+    let now = Instant::now();
+    let width_delta = diag
+        .last_embedded_width
+        .map(|prev| viewport_width - prev)
+        .unwrap_or(0.0);
+    let layout_left_delta = diag
+        .last_layout_left
+        .map(|prev| layout_left_w - prev)
+        .unwrap_or(0.0);
+    let layout_list_delta = diag
+        .last_layout_list
+        .map(|prev| layout_list_w - prev)
+        .unwrap_or(0.0);
+    let left_clamped = (stored_left_before - layout_left_w).abs() > LEFT_CLAMP_EPS;
+    let width_changed = width_delta.abs() >= WIDTH_CHANGE_EPS;
+    let interval = if splitter_dragged {
+        DRAG_LOG_INTERVAL
+    } else {
+        IDLE_LOG_INTERVAL
+    };
+    let interval_elapsed = diag
+        .last_log_at
+        .map_or(true, |last| now.saturating_duration_since(last) >= interval);
+
+    if interval_elapsed && (splitter_dragged || width_changed || left_clamped) {
+        log::debug!(
+            "[DirectoryTree][PanelDiag] embedded_w={:.1} d_w={:+.1} layout_left={:.1} d_left={:+.1} \
+             layout_list={:.1} d_list={:+.1} stored_left={:.1}->{:.1} dragged={} drag_dx={:+.1} clamped={}",
+            viewport_width,
+            width_delta,
+            layout_left_w,
+            layout_left_delta,
+            layout_list_w,
+            layout_list_delta,
+            stored_left_before,
+            stored_left_after,
+            splitter_dragged,
+            splitter_drag_delta_x,
+            left_clamped
+        );
+        diag.last_log_at = Some(now);
+    }
+
+    diag.last_embedded_width = Some(viewport_width);
+    diag.last_layout_left = Some(layout_left_w);
+    diag.last_layout_list = Some(layout_list_w);
 }
 
 pub(super) trait DirectoryTreeNodeLookup {
@@ -552,6 +639,14 @@ pub(super) fn clamp_directory_tree_left_panel_width(width: f32, viewport_width: 
     width.clamp(min_left, max_left)
 }
 
+pub(super) fn apply_directory_tree_splitter_frame_delta(
+    left_panel_width: f32,
+    frame_delta_x: f32,
+    viewport_width: f32,
+) -> f32 {
+    clamp_directory_tree_left_panel_width(left_panel_width + frame_delta_x, viewport_width)
+}
+
 pub(super) fn directory_tree_panel_layout(
     left_panel_width: f32,
     _image_list_panel_width: f32,
@@ -601,6 +696,7 @@ fn draw_directory_tree_top_panels(
     let chrome = &mut *params.chrome;
     let splitter_w = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
     let right_w = list_w;
+    let stored_left_before = chrome.left_panel_width;
 
     let origin = ui.cursor().min;
     let left_rect = egui::Rect::from_min_size(origin, egui::vec2(left_w, viewport_height));
@@ -635,14 +731,27 @@ fn draw_directory_tree_top_panels(
 
     let splitter_id = ui.id().with("directory_tree_splitter");
     let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
+    let mut splitter_drag_delta_x = 0.0;
     if splitter_response.dragged() {
-        chrome.left_panel_width = clamp_directory_tree_left_panel_width(
-            chrome.left_panel_width + splitter_response.drag_delta().x,
+        splitter_drag_delta_x = ui.input(|input| input.pointer.delta().x);
+        chrome.left_panel_width = apply_directory_tree_splitter_frame_delta(
+            chrome.left_panel_width,
+            splitter_drag_delta_x,
             viewport_width,
         );
         chrome.panel_layout_dirty = true;
         ui.ctx().request_repaint();
     }
+    maybe_log_directory_tree_panel_layout(
+        embedded,
+        viewport_width,
+        left_w,
+        right_w,
+        stored_left_before,
+        chrome.left_panel_width,
+        splitter_response.dragged(),
+        splitter_drag_delta_x,
+    );
     if splitter_response.hovered() || splitter_response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }

@@ -61,7 +61,7 @@ impl eframe::App for ImageViewerApp {
                 self.settings.window_maximized_inner_size = None;
             }
         }
-        self.persist_directory_tree_layout_to_settings();
+        self.persist_directory_tree_layout_to_settings(true);
         #[cfg(feature = "preload-debug")]
         log::info!(
             "[PreloadDebug][Panel] on_exit save folder={:?} list={:?} embedded={:?}",
@@ -133,7 +133,7 @@ impl eframe::App for ImageViewerApp {
             self.wgpu_adapter_info.as_ref(),
             self.wgpu_pipeline_cache.as_deref(),
         ) {
-            crate::wgpu_pipeline_cache::persist(info, cache);
+            crate::wgpu_pipeline_cache::persist_async(info, cache);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.

@@ -776,6 +776,30 @@ fn raw_hq_bootstrap_only_detects_texture_without_hdr_plane() {
 }
 
 #[test]
+fn neighbor_work_defers_while_current_main_in_flight() {
+    assert!(super::should_defer_neighbor_work_for_current_main(
+        false, true
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        true, true
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        false, false
+    ));
+    assert!(!super::should_defer_neighbor_work_for_current_main(
+        true, false
+    ));
+}
+
+#[test]
+fn neighbor_image_install_yields_until_current_ready() {
+    assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(false, true, true));
+    assert!(!super::should_yield_neighbor_image_install_until_current_ready(false, false, false));
+}
+
+#[test]
 fn background_preload_defers_while_current_raw_gpu_path_active() {
     assert!(super::should_defer_background_preload_for_raw_gpu_current(
         true, true, true, false, false
@@ -1584,8 +1608,11 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         pending_open_directory: false,
         folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
         directory_tree: crate::app::DirectoryTreeRuntime::new(),
+        auto_hidden_directory_tree_nav: false,
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+        directory_tree_strip_compose_probe_cache:
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache::default(),
         directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
@@ -1630,6 +1657,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         strip_preload_cooldown_frames: 0,
         strip_stale_retain_last_generation: u64::MAX,
         current_image_res: None,
+        canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
         current_file_name: String::new(),
@@ -2837,6 +2865,32 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
     assert_eq!(queued.last_image_dir, Some(saved));
     assert!(!queued.recursive);
     assert!(!queued.auto_switch);
+}
+
+#[test]
+fn ipc_double_click_auto_hides_tree_nav_without_persisting_toggle() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let saved = std::env::temp_dir().join("siv_tree_saved_gallery");
+    let opened = std::env::temp_dir().join("siv_tree_opened_gallery");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&opened).unwrap();
+    let image = opened.join("opened.jpg");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.last_image_dir = Some(saved);
+
+    app.handle_ipc_open_image(image, &ctx, true);
+
+    assert!(!app.directory_tree_settings_active());
+    assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
+    assert!(app.settings.show_directory_tree_nav);
+    let queued = save_rx.try_iter().last().expect("settings save queued");
+    assert_eq!(queued.browse_mode, crate::settings::BrowseMode::Tree);
+    assert!(queued.show_directory_tree_nav);
 }
 
 #[test]

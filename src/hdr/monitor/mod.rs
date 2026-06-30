@@ -15,6 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod effective;
+#[cfg(any(target_os = "linux", test))]
+mod kde;
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_screen_parameters;
@@ -38,7 +40,9 @@ pub use probe::spawn_monitor_hdr_status;
 pub use state::HdrMonitorState;
 pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 #[cfg(any(target_os = "linux", test))]
-pub use types::{LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
+pub use types::{LinuxExplicitHdrState, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
+#[cfg(target_os = "linux")]
+pub(crate) use kde::refresh_linux_explicit_hdr_state_from_kscreen;
 
 #[cfg(test)]
 pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;

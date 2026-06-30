@@ -40,31 +40,12 @@ pub(crate) fn libavif_result_to_string(result: libavif_sys::avifResult) -> Strin
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn decode_avif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes(&mmap[..])
-}
-
-#[cfg(feature = "avif-native")]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn decode_avif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
     decode_avif_hdr_bytes_with_target_capacity(
         bytes,
         crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
     )
-}
-
-#[cfg(feature = "avif-native")]
-#[allow(dead_code)]
-pub(crate) fn decode_avif_hdr_with_target_capacity(
-    path: &std::path::Path,
-    target_hdr_capacity: f32,
-) -> Result<HdrImageBuffer, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes_with_target_capacity(&mmap[..], target_hdr_capacity)
 }
 
 #[cfg(feature = "avif-native")]
@@ -125,6 +106,26 @@ pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifI
     }
 
     Ok(unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) })
+}
+
+/// Deep-copy YUV + alpha planes (and gain-map metadata) for strip compose fallback without re-decode.
+#[cfg(feature = "avif-native")]
+pub(crate) fn avif_image_duplicate_for_strip_fallback(
+    src: &libavif_sys::AvifImageOwned,
+) -> Result<libavif_sys::AvifImageOwned, String> {
+    let dst = libavif_sys::AvifImageOwned::create_empty()
+        .ok_or_else(|| "avifImageCreateEmpty failed for strip fallback copy".to_string())?;
+    let planes = libavif_sys::AVIF_PLANES_YUV | libavif_sys::AVIF_PLANES_A;
+    // SAFETY: `dst` and `src` are valid `AvifImageOwned` pointers; `planes` requests YUV+A only.
+    // `avifImageCopy` allocates destination planes as needed; ownership stays with `dst`.
+    let copy = unsafe { libavif_sys::avifImageCopy(dst.as_ptr(), src.as_ptr(), planes) };
+    if copy != libavif_sys::AVIF_RESULT_OK {
+        return Err(format!(
+            "avifImageCopy for strip fallback: {}",
+            libavif_result_to_string(copy)
+        ));
+    }
+    Ok(dst)
 }
 
 #[cfg(feature = "avif-native")]

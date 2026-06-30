@@ -64,15 +64,12 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
 ///   callers should propagate the error rather than silently falling back.
 /// - `Some(Ok(...))` — baseline RGBA8 pixels ready for downsampling.
 #[cfg(feature = "avif-native")]
-pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
-    bytes: &[u8],
+pub(crate) fn decode_avif_strip_iso_gain_map_baseline_from_image(
+    image: libavif_sys::AvifImageOwned,
     path: &Path,
 ) -> OptionalStripResult<(Vec<u8>, u32, u32)> {
-    let image = match read_avif_decoder_image(bytes) {
-        Ok(image) => image,
-        Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_iso: {err}"))),
-    };
-    let image_ref = unsafe { &*image.as_ptr() };
+    let image_ptr = image.as_ptr();
+    let image_ref = unsafe { &*image_ptr };
     if image_ref.gainMap.is_null() {
         return None;
     }
@@ -92,9 +89,9 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     }
 
     let metadata = avif_cicp_to_metadata(
-        image_ref.colorPrimaries as u16,
-        image_ref.transferCharacteristics as u16,
-        image_ref.matrixCoefficients as u16,
+        image_ref.colorPrimaries,
+        image_ref.transferCharacteristics,
+        image_ref.matrixCoefficients,
         image_ref.yuvRange == libavif_sys::AVIF_RANGE_FULL,
     )
     .with_clli(image_ref.clli.maxCLL, image_ref.clli.maxPALL);
@@ -102,7 +99,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     let color_space = metadata.color_space_hint();
 
     let (rgba_u16, rgb_out_depth) =
-        match decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string) {
+        match decode_avif_image_rgba_u16(image_ptr, image_ref, &libavif_result_to_string) {
             Ok(ok) => ok,
             Err(err) => {
                 return Some(Err(format!(
@@ -122,24 +119,29 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     Some(Ok((baseline, width, height)))
 }
 
-/// Fast directory-tree strip for precomposed PQ/HLG AVIF (`base_hdr` layout).
-///
-/// Skips gain-map plane RGB and full [`ImageData`] assembly; tone-maps a downsampled HDR buffer.
+/// Standalone bytes entry for tests; production uses [`super::strip_fast`].
 #[cfg(feature = "avif-native")]
-pub(crate) fn decode_avif_strip_precomposed_hdr(
+#[allow(dead_code)]
+pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
     bytes: &[u8],
+    path: &Path,
+) -> OptionalStripResult<(Vec<u8>, u32, u32)> {
+    let image = match read_avif_decoder_image(bytes) {
+        Ok(image) => image,
+        Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_iso: {err}"))),
+    };
+    decode_avif_strip_iso_gain_map_baseline_from_image(image, path)
+}
+
+/// Fast directory-tree strip for precomposed PQ/HLG AVIF (`base_hdr` layout).
+#[cfg(feature = "avif-native")]
+pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
+    image: libavif_sys::AvifImageOwned,
     path: &Path,
     max_side: u32,
 ) -> OptionalStripResult<StripWithLogicalSize> {
-    let image = match read_avif_decoder_image(bytes) {
-        Ok(image) => image,
-        Err(err) => {
-            return Some(Err(format!(
-                "{path:?}: decode_avif_strip_precomposed: {err}"
-            )));
-        }
-    };
-    let image_ref = unsafe { &*image.as_ptr() };
+    let image_ptr = image.as_ptr();
+    let image_ref = unsafe { &*image_ptr };
     if image_ref.gainMap.is_null() {
         return None;
     }
@@ -152,7 +154,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
         return None;
     }
 
-    let hdr = match super::avif_image_to_hdr_buffer(image.as_ptr(), 1.0) {
+    let hdr = match super::avif_image_to_hdr_buffer(image_ptr, 1.0) {
         Ok(hdr) => hdr,
         Err(err) => return Some(Err(format!("{path:?}: convert to HDR buffer: {err}"))),
     };
@@ -172,4 +174,26 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
         crate::loader::DecodedImage::new(width, height, pixels),
         logical,
     )))
+}
+
+/// Fast directory-tree strip for precomposed PQ/HLG AVIF (`base_hdr` layout).
+///
+/// Skips gain-map plane RGB and full [`ImageData`] assembly; tone-maps a downsampled HDR buffer.
+/// Standalone bytes entry for tests; production uses [`super::strip_fast`].
+#[cfg(feature = "avif-native")]
+#[allow(dead_code)]
+pub(crate) fn decode_avif_strip_precomposed_hdr(
+    bytes: &[u8],
+    path: &Path,
+    max_side: u32,
+) -> OptionalStripResult<StripWithLogicalSize> {
+    let image = match read_avif_decoder_image(bytes) {
+        Ok(image) => image,
+        Err(err) => {
+            return Some(Err(format!(
+                "{path:?}: decode_avif_strip_precomposed: {err}"
+            )));
+        }
+    };
+    decode_avif_strip_precomposed_hdr_from_image(image, path, max_side)
 }

@@ -19,6 +19,7 @@ mod metadata;
 mod probe;
 mod runner;
 mod strip_baseline;
+mod strip_baseline_error;
 
 #[cfg(test)]
 mod tests;
@@ -32,7 +33,8 @@ pub(crate) use decode::{
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use decode::{
-    decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
+    decode_jxl_hdr_bytes_with_target_capacity, decode_jxl_strip_iso_gain_map_baseline,
+    load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use metadata::{
@@ -40,11 +42,15 @@ pub(crate) use metadata::{
 };
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use metadata::{hdr_metadata_from_jxl_float_decode, icc_trc_kind, linear_to_srgb_u8};
+#[cfg(feature = "jpegxl")]
+pub(crate) use probe::jxl_probe_forward_iso_gain_map;
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use probe::{
     JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,
     JXL_TRANSFER_FUNCTION_SRGB, jxl_color_encoding_to_metadata,
 };
-pub(crate) use probe::{is_jxl_header, libjxl_probe_orientation_from_path};
+pub(crate) use probe::{
+    is_jxl_header, libjxl_probe_logical_size_from_bytes, libjxl_probe_orientation_from_path,
+};
 #[cfg(feature = "jpegxl")]
 pub(crate) use strip_baseline::decode_jxl_strip_preview_rgba8;

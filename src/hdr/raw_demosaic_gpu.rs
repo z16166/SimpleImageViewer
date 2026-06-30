@@ -25,8 +25,8 @@ pub(super) const RAW_DEMOSAIC_COMPUTE_SHADER: &str = r#"
 struct DemosaicUniforms {
     width: u32,
     height: u32,
-    output_scale: f32,
-    _pad: u32,
+    _pad0: u32,
+    _pad1: u32,
     black_level: vec4<f32>,
     cfa_scale: vec4<f32>,
     bayer_pattern: vec4<u32>,
@@ -220,30 +220,29 @@ fn read_green_plane_wg(c: i32, r: i32) -> f32 {
 
 fn ppg_green_at_wg(col: i32, row: i32, c: u32) -> f32 {
     let x = read_cfa_wg(col, row);
-    let h_guess = (read_green_plane_wg(col - 1, row) + x + read_green_plane_wg(col + 1, row)) * 2.0
-        - read_cfa_wg(col - 2, row) - read_cfa_wg(col + 2, row);
-    let h_diff = (abs_f(read_cfa_wg(col - 2, row) - x) + abs_f(read_cfa_wg(col + 2, row) - x)
-        + abs_f(read_green_plane_wg(col - 1, row) - read_green_plane_wg(col + 1, row))) * 3.0
-        + (abs_f(read_green_plane_wg(col + 3, row) - read_green_plane_wg(col + 1, row))
-        + abs_f(read_green_plane_wg(col - 3, row) - read_green_plane_wg(col - 1, row))) * 2.0;
-    let v_guess = (read_green_plane_wg(col, row - 1) + x + read_green_plane_wg(col, row + 1)) * 2.0
-        - read_cfa_wg(col, row - 2) - read_cfa_wg(col, row + 2);
-    let v_diff = (abs_f(read_cfa_wg(col, row - 2) - x) + abs_f(read_cfa_wg(col, row + 2) - x)
-        + abs_f(read_green_plane_wg(col, row - 1) - read_green_plane_wg(col, row + 1))) * 3.0
-        + (abs_f(read_green_plane_wg(col, row + 3) - read_green_plane_wg(col, row + 1))
-        + abs_f(read_green_plane_wg(col, row - 3) - read_green_plane_wg(col, row - 1))) * 2.0;
+    let g_l1 = read_green_plane_wg(col - 1, row);
+    let g_r1 = read_green_plane_wg(col + 1, row);
+    let g_l3 = read_green_plane_wg(col - 3, row);
+    let g_r3 = read_green_plane_wg(col + 3, row);
+    let c_l2 = read_cfa_wg(col - 2, row);
+    let c_r2 = read_cfa_wg(col + 2, row);
+    let g_u1 = read_green_plane_wg(col, row - 1);
+    let g_d1 = read_green_plane_wg(col, row + 1);
+    let g_u3 = read_green_plane_wg(col, row - 3);
+    let g_d3 = read_green_plane_wg(col, row + 3);
+    let c_u2 = read_cfa_wg(col, row - 2);
+    let c_d2 = read_cfa_wg(col, row + 2);
+
+    let h_guess = (g_l1 + x + g_r1) * 2.0 - c_l2 - c_r2;
+    let h_diff = (abs_f(c_l2 - x) + abs_f(c_r2 - x) + abs_f(g_l1 - g_r1)) * 3.0
+        + (abs_f(g_r3 - g_r1) + abs_f(g_l3 - g_l1)) * 2.0;
+    let v_guess = (g_u1 + x + g_d1) * 2.0 - c_u2 - c_d2;
+    let v_diff = (abs_f(c_u2 - x) + abs_f(c_d2 - x) + abs_f(g_u1 - g_d1)) * 3.0
+        + (abs_f(g_d3 - g_d1) + abs_f(g_u3 - g_u1)) * 2.0;
 
     let use_vertical = h_diff > v_diff;
-    let v_result = ulim(
-        v_guess / 4.0,
-        read_green_plane_wg(col, row + 1),
-        read_green_plane_wg(col, row - 1),
-    );
-    let h_result = ulim(
-        h_guess / 4.0,
-        read_green_plane_wg(col + 1, row),
-        read_green_plane_wg(col - 1, row),
-    );
+    let v_result = ulim(v_guess / 4.0, g_d1, g_u1);
+    let h_result = ulim(h_guess / 4.0, g_r1, g_l1);
     return select(h_result, v_result, use_vertical);
 }
 
@@ -444,7 +443,7 @@ fn cs_ppg_rgb(
         libraw_clip_channel(rgb.g),
         libraw_clip_channel(rgb.b),
     );
-    rgb = rgb * uniforms.output_scale * uniforms.scene_color_scale.xyz;
+    rgb = rgb * uniforms.scene_color_scale.xyz;
     // Scene-linear HDR: no clamp to 1.0; scene_color_scale is identity (auto_bright disabled on CPU develop too).
 
     textureStore(output_texture, vec2<i32>(col, row), vec4<f32>(rgb, 1.0));
@@ -460,8 +459,8 @@ pub const RAW_DEMOSAIC_WORKGROUP_SIZE: u32 = 16;
 pub struct RawDemosaicUniform {
     pub width: u32,
     pub height: u32,
-    pub output_scale: f32,
-    pub _pad: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
     pub black_level: [f32; 4],
     pub cfa_scale: [f32; 4],
     pub bayer_pattern: [u32; 4],
@@ -473,11 +472,12 @@ pub struct RawDemosaicUniform {
 
 impl RawDemosaicUniform {
     pub fn new(source: &RawGpuSource) -> Self {
+        let output_scale = 1.0 / RAW16_MAX;
         Self {
             width: source.width,
             height: source.height,
-            output_scale: 1.0 / RAW16_MAX,
-            _pad: 0,
+            _pad0: 0,
+            _pad1: 0,
             black_level: source.black_level,
             cfa_scale: source.cfa_scale,
             bayer_pattern: source.bayer_pattern,
@@ -485,9 +485,9 @@ impl RawDemosaicUniform {
             rgb_cam1: source.rgb_cam[4..8].try_into().expect("rgb_cam row 1"),
             rgb_cam2: source.rgb_cam[8..12].try_into().expect("rgb_cam row 2"),
             scene_color_scale: [
-                source.scene_color_scale[0],
-                source.scene_color_scale[1],
-                source.scene_color_scale[2],
+                source.scene_color_scale[0] * output_scale,
+                source.scene_color_scale[1] * output_scale,
+                source.scene_color_scale[2] * output_scale,
                 0.0,
             ],
         }
@@ -632,19 +632,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
         cache: pipeline_cache,
     });
 
-    let dummy_uniform = RawDemosaicUniform {
-        width: 1,
-        height: 1,
-        output_scale: 1.0 / RAW16_MAX,
-        _pad: 0,
-        black_level: [0.0; 4],
-        cfa_scale: [1.0; 4],
-        bayer_pattern: [0, 1, 1, 2], // Standard RGGB
-        rgb_cam0: [1.0, 0.0, 0.0, 0.0],
-        rgb_cam1: [0.0, 1.0, 0.0, 0.0],
-        rgb_cam2: [0.0, 0.0, 1.0, 0.0],
-        scene_color_scale: [1.0, 1.0, 1.0, 0.0],
-    };
+    let dummy_uniform = initial_raw_demosaic_uniform();
 
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-raw-demosaic-uniforms-buffer"),
@@ -659,6 +647,23 @@ pub(super) fn create_raw_demosaic_compute_resources(
         rgb_pipeline,
         uniforms_buffer,
     )
+}
+
+fn initial_raw_demosaic_uniform() -> RawDemosaicUniform {
+    let output_scale = 1.0 / RAW16_MAX;
+    RawDemosaicUniform {
+        width: 1,
+        height: 1,
+        _pad0: 0,
+        _pad1: 0,
+        black_level: [0.0; 4],
+        cfa_scale: [1.0; 4],
+        bayer_pattern: [0, 1, 1, 2], // Standard RGGB
+        rgb_cam0: [1.0, 0.0, 0.0, 0.0],
+        rgb_cam1: [0.0, 1.0, 0.0, 0.0],
+        rgb_cam2: [0.0, 0.0, 1.0, 0.0],
+        scene_color_scale: [output_scale, output_scale, output_scale, 0.0],
+    }
 }
 
 pub(crate) struct RawDemosaicComputePass<'a> {
@@ -1104,7 +1109,11 @@ pub(crate) fn cpu_demosaic_ppg_camera_counts(source: &RawGpuSource) -> Vec<f32> 
 /// CPU mirror of the GPU PPG demosaic + LibRaw color path (tests / calibration).
 pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
     let w = source.width as usize;
-    let output_scale = 1.0f32 / 65535.0;
+    let scene_scale = [
+        source.scene_color_scale[0] / RAW16_MAX,
+        source.scene_color_scale[1] / RAW16_MAX,
+        source.scene_color_scale[2] / RAW16_MAX,
+    ];
     let read_cfa = cpu_ppg_helpers(source);
     let green_plane = cpu_build_green_plane(source, &read_cfa);
     let rb_plane = cpu_build_rb_at_green_plane(source, &read_cfa, &green_plane);
@@ -1123,9 +1132,9 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
             let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, &rb_plane, col, row);
             let linear = apply_rgb_cam(rgb);
             let i = (row as usize * w + col as usize) * 4;
-            out[i] = clip(linear[0]) * output_scale * source.scene_color_scale[0];
-            out[i + 1] = clip(linear[1]) * output_scale * source.scene_color_scale[1];
-            out[i + 2] = clip(linear[2]) * output_scale * source.scene_color_scale[2];
+            out[i] = clip(linear[0]) * scene_scale[0];
+            out[i + 1] = clip(linear[1]) * scene_scale[1];
+            out[i + 2] = clip(linear[2]) * scene_scale[2];
             out[i + 3] = 1.0;
         }
     }
@@ -1256,6 +1265,46 @@ fn center_mean_rgba(pixels: &[f32], width: usize, height: usize) -> (f64, f64, f
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[test]
+    fn raw_demosaic_uniform_precombines_output_scale_into_scene_scale() {
+        let source = RawGpuSource {
+            raw_width: 2,
+            raw_height: 2,
+            width: 2,
+            height: 2,
+            raw_pixels: Arc::new(vec![0, 1, 2, 3]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            bayer_pattern: [0, 1, 1, 2],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 65535.0,
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+            scene_color_scale: [2.0, 4.0, 8.0],
+            bootstrap_preview: None,
+        };
+
+        let uniform = RawDemosaicUniform::new(&source);
+
+        assert!(!RAW_DEMOSAIC_COMPUTE_SHADER.contains("output_scale"));
+        assert_eq!(uniform._pad0, 0);
+        assert_eq!(uniform._pad1, 0);
+        assert_eq!(
+            uniform.scene_color_scale,
+            [2.0 / RAW16_MAX, 4.0 / RAW16_MAX, 8.0 / RAW16_MAX, 0.0],
+        );
+    }
+
+    #[test]
+    fn raw_demosaic_initial_uniform_uses_precombined_scene_scale() {
+        let uniform = initial_raw_demosaic_uniform();
+
+        assert_eq!(
+            uniform.scene_color_scale,
+            [1.0 / RAW16_MAX, 1.0 / RAW16_MAX, 1.0 / RAW16_MAX, 0.0],
+        );
+    }
 
     fn raw_integration_sample_path(subpath: &str) -> PathBuf {
         if let Ok(root) = std::env::var("SIV_RAW_TEST_ROOT") {

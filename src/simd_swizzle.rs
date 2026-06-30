@@ -349,9 +349,9 @@ pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if is_x86_feature_detected!("ssse3") {
             unsafe {
-                interleave_rgb_packed_to_rgba_avx2(src, dst, &mut i, count);
+                interleave_rgb_packed_to_rgba_ssse3(src, dst, &mut i, count);
             }
         }
     }
@@ -405,26 +405,64 @@ unsafe fn interleave_rgb_with_alpha_neon(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn interleave_rgb_packed_to_rgba_avx2(
+#[target_feature(enable = "ssse3")]
+unsafe fn interleave_rgb_packed_to_rgba_ssse3(
     src: &[u8],
     dst: &mut [u8],
     i: &mut usize,
     count: usize,
 ) {
     while *i + 32 <= count {
-        // LLVM handles this loop very well with AVX2 if we hint it correctly.
-        // For a more robust implementation, one could use _mm256_shuffle_epi8,
-        // but that requires complex masks for 3-to-4 byte expansion across 256-bit lanes.
-        for _ in 0..32 {
-            let s = *i * 3;
-            let d = *i * 4;
-            dst[d] = src[s];
-            dst[d + 1] = src[s + 1];
-            dst[d + 2] = src[s + 2];
-            dst[d + 3] = MAX_CHANNEL_VALUE;
-            *i += 1;
+        unsafe {
+            let src_ptr = src.as_ptr().add(*i * RGB_CHANNELS);
+            let dst_ptr = dst.as_mut_ptr().add(*i * RGBA_CHANNELS);
+            interleave_rgb_packed_16_to_rgba_ssse3(src_ptr, dst_ptr);
+            interleave_rgb_packed_16_to_rgba_ssse3(
+                src_ptr.add(16 * RGB_CHANNELS),
+                dst_ptr.add(16 * RGBA_CHANNELS),
+            );
         }
+        *i += 32;
+    }
+    while *i + 16 <= count {
+        unsafe {
+            interleave_rgb_packed_16_to_rgba_ssse3(
+                src.as_ptr().add(*i * RGB_CHANNELS),
+                dst.as_mut_ptr().add(*i * RGBA_CHANNELS),
+            );
+        }
+        *i += 16;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+/// Interleave 16 RGB888 pixels (48 bytes) into 16 RGBA8888 pixels (64 bytes).
+///
+/// # Safety
+///
+/// `src` must address at least 48 readable bytes and `dst` at least 64 writable bytes.
+/// The two pointers must not alias.
+unsafe fn interleave_rgb_packed_16_to_rgba_ssse3(src: *const u8, dst: *mut u8) {
+    unsafe {
+        let in0 = _mm_loadu_si128(src as *const __m128i);
+        let in1 = _mm_loadu_si128(src.add(16) as *const __m128i);
+        let in2 = _mm_loadu_si128(src.add(32) as *const __m128i);
+        let rgb0 = _mm_setr_epi8(0, 1, 2, -128, 3, 4, 5, -128, 6, 7, 8, -128, 9, 10, 11, -128);
+        let rgb_tail = _mm_setr_epi8(
+            4, 5, 6, -128, 7, 8, 9, -128, 10, 11, 12, -128, 13, 14, 15, -128,
+        );
+        let alpha = _mm_setr_epi8(0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -1);
+
+        let out0 = _mm_or_si128(_mm_shuffle_epi8(in0, rgb0), alpha);
+        let out1 = _mm_or_si128(_mm_shuffle_epi8(_mm_alignr_epi8(in1, in0, 12), rgb0), alpha);
+        let out2 = _mm_or_si128(_mm_shuffle_epi8(_mm_alignr_epi8(in2, in1, 8), rgb0), alpha);
+        let out3 = _mm_or_si128(_mm_shuffle_epi8(in2, rgb_tail), alpha);
+
+        _mm_storeu_si128(dst as *mut __m128i, out0);
+        _mm_storeu_si128(dst.add(16) as *mut __m128i, out1);
+        _mm_storeu_si128(dst.add(32) as *mut __m128i, out2);
+        _mm_storeu_si128(dst.add(48) as *mut __m128i, out3);
     }
 }
 
@@ -545,5 +583,25 @@ mod tests {
             interleave_rgb_packed_to_rgba_packed_scalar(&src, &mut scalar_dst);
             assert_eq!(simd_dst, scalar_dst, "len={len}");
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn simd_swizzle_rgb24_chunk16_expander_matches_scalar() {
+        if !is_x86_feature_detected!("ssse3") {
+            return;
+        }
+        let src: Vec<u8> = (0..16 * RGB_CHANNELS)
+            .map(|i| ((i * 17 + 11) % 256) as u8)
+            .collect();
+        let mut simd_dst = vec![0_u8; 16 * RGBA_CHANNELS];
+        let mut scalar_dst = vec![0_u8; 16 * RGBA_CHANNELS];
+
+        unsafe {
+            interleave_rgb_packed_16_to_rgba_ssse3(src.as_ptr(), simd_dst.as_mut_ptr());
+        }
+        interleave_rgb_packed_to_rgba_packed_scalar(&src, &mut scalar_dst);
+
+        assert_eq!(simd_dst, scalar_dst);
     }
 }

@@ -25,13 +25,16 @@ impl ImageViewerApp {
         let selection = self.effective_hdr_monitor_selection();
         let wsi = self.vulkan_wsi_hdr_gates.get();
         self.hdr_preload_gate_log.log_preload_defer_gate(
-            self.preload_deferred_for_hdr_capacity,
-            self.hdr_monitor_state.runtime_probe_completed(),
-            self.hdr_capabilities.output_mode,
-            selection.as_ref(),
-            can_release,
-            wsi.probed,
-            self.hdr_target_format,
+            crate::app::preload_hdr_gate::PreloadDeferGateSnapshot {
+                preload_deferred: self.preload_deferred_for_hdr_capacity,
+                runtime_probe_completed: self.hdr_monitor_state.runtime_probe_completed(),
+                output_mode: self.hdr_capabilities.output_mode,
+                effective_hdr_supported: selection.as_ref().map(|s| s.hdr_supported),
+                capacity_known: super::monitor_hdr_decode_capacity_is_known(selection.as_ref()),
+                can_release,
+                wsi_probed: wsi.probed,
+                current_target_format: self.hdr_target_format,
+            },
         );
     }
 

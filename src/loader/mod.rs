@@ -54,10 +54,12 @@ pub use texture_cache::{TextureCache, TextureCacheInsert};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;
-pub(crate) use decode::generate_directory_tree_thumb_from_path;
+pub(crate) use decode::generate_directory_tree_thumb_decode_from_path;
+pub(crate) use decode::path_needs_directory_tree_strip_compose_upgrade;
 pub(crate) use hdr_fallback::{
-    cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_composed_from_iso_deferred,
-    directory_tree_strip_from_hdr_or_fallback, directory_tree_strip_logical_for_preview,
+    cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_composed_from_gain_map_path,
+    directory_tree_strip_composed_from_iso_deferred, directory_tree_strip_from_hdr_or_fallback,
+    directory_tree_strip_gain_map_compose_capacity, directory_tree_strip_logical_for_preview,
     hdr_directory_tree_strip_sdr_at_max_side, hdr_display_requests_sdr_preview,
     hdr_has_iso_deferred_gain_map, hdr_raw_gpu_bootstrap_fallback_decoded,
     hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
@@ -67,7 +69,8 @@ pub(crate) use hdr_fallback::{
     static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
-    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes, extract_exif_thumbnail_from_mmap,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,
+    extract_exif_thumbnail_from_mmap_probed, extract_exif_thumbnail_probed,
 };
 pub(crate) use orientation::{
     apply_exif_orientation_to_hdr_pair, apply_exif_orientation_to_image_data,

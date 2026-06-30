@@ -41,16 +41,17 @@ impl ImageViewerApp {
             )
         });
         #[cfg(feature = "preload-debug")]
-        if defer_pending_animation_upload && let Some(idx) = pending_idx {
-            if let Some(pending) = self.pending_anim_frames.get(&idx) {
-                preload_debug!(
-                    "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
-                    pending.image_index,
-                    self.current_index,
-                    pending.next_frame,
-                    pending.frames.len()
-                );
-            }
+        if defer_pending_animation_upload
+            && let Some(idx) = pending_idx
+            && let Some(pending) = self.pending_anim_frames.get(&idx)
+        {
+            preload_debug!(
+                "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
+                pending.image_index,
+                self.current_index,
+                pending.next_frame,
+                pending.frames.len()
+            );
         }
         if !defer_pending_animation_upload && let Some(pending_idx) = pending_idx {
             let mut uploaded = 0;
@@ -165,6 +166,10 @@ impl ImageViewerApp {
             .hdr_in_flight_fallback_refinements
             .contains(&self.current_index);
 
+        // Merge channel results into the local queue before polling so a repushed neighbor
+        // cannot block the current image result that is still waiting on rx.
+        self.loader.drain_channel_into_local_queue();
+
         while let Some(output) = self.loader.poll() {
             match output {
                 LoaderOutput::Image(mut load_result) => {
@@ -236,6 +241,25 @@ impl ImageViewerApp {
 
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
                         self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
+                    let current_has_asset = self.has_loaded_asset(self.current_index);
+                    let current_is_loading = self.loader.is_loading(self.current_index);
+                    if should_yield_neighbor_image_install_until_current_ready(
+                        is_current,
+                        current_has_asset,
+                        current_is_loading,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield image install: idx={} current={} reason=current_main_not_ready loading={} has_asset={}",
+                            idx,
+                            self.current_index,
+                            current_is_loading,
+                            current_has_asset
+                        );
+                        self.loader.repush_back(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
                         break;
                     }

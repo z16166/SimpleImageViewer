@@ -470,6 +470,9 @@ impl ImageViewerApp {
                 settings.hdr_native_surface_enabled_effective(),
                 hdr_capabilities.backend,
             );
+        let auto_hidden_directory_tree_nav = initial_image.is_some()
+            && settings.show_directory_tree_nav
+            && settings.browse_mode == BrowseMode::Tree;
         let mut app = Self {
             save_tx,
             initial_image,
@@ -572,8 +575,12 @@ impl ImageViewerApp {
             pending_open_directory: false,
             folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
+            auto_hidden_directory_tree_nav,
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+            directory_tree_strip_compose_probe_cache:
+                crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache::default(
+                ),
             directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
@@ -596,6 +603,7 @@ impl ImageViewerApp {
             music_scan_cancel: None,
             music_scan_path: None,
             current_image_res: None,
+            canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
             raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
             image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
             current_file_name: String::new(),
@@ -745,7 +753,7 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
 
         // Restore last session state
-        if app.settings.show_directory_tree_nav {
+        if app.directory_tree_settings_active() {
             app.settings.browse_mode = BrowseMode::Tree;
             app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();

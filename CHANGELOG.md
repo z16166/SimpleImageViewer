@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.2] - 2026-06-30
+
+### Fixed
+- **Linux HDR display selection**: KDE Wayland systems now keep HDR photos on the correct HDR presentation path for HDR TVs while avoiding false HDR activation on SDR displays.
+- **Navigation panel layout**: Embedded navigation panels keep their intended width and visibility state more reliably while browsing.
+- **GPU startup compatibility**: The viewer avoids reusing incompatible GPU pipeline caches after graphics backend changes, improving launch reliability after upgrades.
+- **Double-click and navigation panel setting**: Double-clicking an image no longer turns off “show navigation panel” in your saved settings; the panel can stay hidden for that session while your preference stays on.
+- **Session-only navigation panel hide**: Opening a single image from the file list can hide the navigation panel for the current session without changing your saved “show navigation panel” preference; folder scanning stays limited to the current folder while the panel is hidden.
+- **Linux HDR on non-KDE desktops**: HDR output admission on GNOME, Sway, and other non-KDE Wayland compositors remains conservative (fail-closed) until explicit desktop HDR state integration is available; KDE KScreen remains the supported path for explicit HDR toggles.
+
+### Improved
+- **Current image first when changing folders**: Switching folders now loads and shows the image you are on before preloading nearby files in the background.
+- **Faster opening from the file list**: Thumbnail generation and full-size viewing share work more often, so opening an image you already saw in the list is typically quicker.
+- **Faster HDR and RAW image display**: Optimized several HDR, RAW, HEIF, JPEG XL, and gain-map processing paths so large photos load and render more smoothly.
+- **Smoother navigation thumbnails**: File-list thumbnails are built with less redundant decoding and processing, improving browsing responsiveness in large image folders.
+- **Lower memory overhead for modern HDR formats**: JPEG XL and HEIF decoding now avoid some unnecessary full-buffer copies during preview and image preparation.
+
 ## [2.8.1] - 2026-06-28
 
 ### Fixed

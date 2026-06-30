@@ -51,6 +51,22 @@ pub(super) const DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID: &str =
     "siv_directory_tree_nav_wheel_block_rect";
 pub(super) const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
 pub(super) const DIRECTORY_TREE_EMBEDDED_MIN_WIDTH: f32 = 320.0;
+
+/// Clamp persisted embedded side-panel width to the current viewport (never panics on narrow windows).
+pub(crate) fn embedded_side_panel_clamped_width(
+    persisted_width: Option<f32>,
+    default_width: f32,
+    available_width: f32,
+) -> f32 {
+    persisted_width.unwrap_or(default_width).clamp(
+        DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+        available_width.max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
+    )
+}
+
+pub(crate) fn should_restore_embedded_side_panel_state(resize_active: bool) -> bool {
+    !resize_active
+}
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 pub(super) const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 pub(super) const DIRECTORY_TREE_LEFT_WIDTH: f32 = 340.0;

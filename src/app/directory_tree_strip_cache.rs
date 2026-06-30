@@ -79,6 +79,10 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub path: PathBuf,
     pub image_list_generation: u64,
     pub decoded: DecodedImage,
+    /// Full static SDR decode produced while generating a cold strip thumbnail.
+    /// When present, the app can reuse it as a preloaded main image instead of
+    /// decoding the same file again.
+    pub reusable_full_decoded: Option<DecodedImage>,
     pub logical: (u32, u32),
     pub stage: PreviewStage,
     pub buffer_tag: StripPreviewBufferTag,
@@ -108,6 +112,50 @@ pub(crate) struct DirectoryTreeStripCache {
     logical_sizes: HashMap<usize, (u32, u32)>,
     lru_order: VecDeque<usize>,
     gpu_revision: u64,
+}
+
+/// Per-index result cache for container-only ISO gain-map compose probes.
+#[derive(Default)]
+pub(crate) struct DirectoryTreeStripComposeProbeCache {
+    needs_compose_by_index: HashMap<usize, bool>,
+}
+
+impl DirectoryTreeStripComposeProbeCache {
+    pub(crate) fn needs_compose_upgrade(
+        &mut self,
+        index: usize,
+        probe: impl FnOnce() -> bool,
+    ) -> bool {
+        if let Some(cached) = self.needs_compose_by_index.get(&index) {
+            return *cached;
+        }
+        let needs_compose = probe();
+        // Only cache positive results: mmap/parse failures must not permanently skip upgrades.
+        if needs_compose {
+            self.needs_compose_by_index.insert(index, true);
+        }
+        needs_compose
+    }
+
+    pub(crate) fn remove_index(&mut self, index: usize) {
+        self.needs_compose_by_index.remove(&index);
+    }
+
+    pub(crate) fn retain_len(&mut self, len: usize) {
+        self.needs_compose_by_index.retain(|index, _| *index < len);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.needs_compose_by_index.clear();
+    }
+
+    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
+        remap_partial_hashmap(&mut self.needs_compose_by_index, old_to_new);
+    }
+
+    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
+        permute_usize_hashmap(&mut self.needs_compose_by_index, old_to_new);
+    }
 }
 
 pub(crate) struct StripDecodedUpsert<'a> {
@@ -243,6 +291,42 @@ impl DirectoryTreeStripCache {
         );
     }
 
+    fn commit_existing_strip_texture_update(
+        &mut self,
+        index: usize,
+        buffer_tag: StripPreviewBufferTag,
+        stage: PreviewStage,
+        logical_size: Option<(u32, u32)>,
+        path: &std::path::Path,
+    ) {
+        let _ = path; // used by preload-debug logging below
+        if let Some(logical) = logical_size {
+            self.logical_sizes.insert(index, logical);
+        }
+        self.preview_buffer_tag.insert(index, buffer_tag);
+        self.preview_stage.insert(index, stage);
+        self.touch_lru(index);
+        self.bump_gpu_revision();
+
+        #[cfg(feature = "preload-debug")]
+        {
+            let tex_size = self
+                .textures
+                .get(&index)
+                .map(|texture| texture.size())
+                .unwrap_or([0, 0]);
+            crate::preload_debug!(
+                "[PreloadDebug][StripCache] update-existing idx={} path={} tag={buffer_tag:?} \
+                 stage={stage:?} tex={}x{} logical={logical_size:?} rev={}",
+                index,
+                path.display(),
+                tex_size[0],
+                tex_size[1],
+                self.gpu_revision
+            );
+        }
+    }
+
     /// Insert a strip texture from the main-window texture cache.
     /// Whether a main-window texture clone would upgrade the strip entry (no logging).
     pub(crate) fn strip_texture_handle_would_replace(
@@ -364,6 +448,18 @@ impl DirectoryTreeStripCache {
             [thumb.width as usize, thumb.height as usize],
             thumb.rgba(),
         );
+        let thumb_size = [thumb.width as usize, thumb.height as usize];
+        if self
+            .textures
+            .get(&index)
+            .is_some_and(|handle| handle.size() == thumb_size)
+        {
+            if let Some(handle) = self.textures.get_mut(&index) {
+                handle.set(color_image, TextureOptions::LINEAR);
+            }
+            self.commit_existing_strip_texture_update(index, buffer_tag, stage, logical_size, path);
+            return;
+        }
         let handle = ctx.load_texture(
             format!("dir_tree_strip_{index}"),
             color_image,
@@ -812,6 +908,42 @@ mod tests {
     }
 
     #[test]
+    fn compose_probe_cache_reuses_positive_result_until_invalidated() {
+        use std::cell::Cell;
+
+        let mut cache = DirectoryTreeStripComposeProbeCache::default();
+        let probes = Cell::new(0usize);
+        let probe = || {
+            probes.set(probes.get() + 1);
+            true
+        };
+
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert_eq!(probes.get(), 1);
+
+        cache.remove_index(7);
+        assert!(cache.needs_compose_upgrade(7, probe));
+        assert_eq!(probes.get(), 2);
+    }
+
+    #[test]
+    fn compose_probe_cache_does_not_remember_negative_results() {
+        use std::cell::Cell;
+
+        let mut cache = DirectoryTreeStripComposeProbeCache::default();
+        let probes = Cell::new(0usize);
+        let probe = || {
+            probes.set(probes.get() + 1);
+            false
+        };
+
+        assert!(!cache.needs_compose_upgrade(3, probe));
+        assert!(!cache.needs_compose_upgrade(3, probe));
+        assert_eq!(probes.get(), 2);
+    }
+
+    #[test]
     fn deferred_placeholder_rank_loses_to_main_window_tiled_preview() {
         let cached_rank = strip_preview_quality_rank(
             StripPreviewBufferTag::MainWindowTiledPreview,
@@ -916,6 +1048,43 @@ mod tests {
         );
         assert!(cache.contains(0));
         assert_eq!(cache.preview_dimensions(0), Some((128, 64)));
+    }
+
+    #[test]
+    fn strip_cache_reuses_texture_for_same_size_quality_upgrade() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        let initial = DecodedImage::new(64, 64, vec![120; 64 * 64 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &initial,
+            StripDecodedUpsert {
+                stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+                logical_size: Some((64, 64)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
+        );
+        let first_id = cache.textures().get(&0).expect("initial texture").id();
+
+        let refined = DecodedImage::new(64, 64, vec![220; 64 * 64 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &refined,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: Some((64, 64)),
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+            },
+        );
+
+        let second_id = cache.textures().get(&0).expect("refined texture").id();
+        assert_eq!(first_id, second_id);
     }
 
     #[test]

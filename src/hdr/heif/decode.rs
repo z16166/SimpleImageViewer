@@ -346,18 +346,19 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16_le(
 
     let bit_depth = heif_sample_bit_depth(image, handle)?;
     let scale = ((1_u32 << bit_depth.min(16)) - 1) as f32;
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut rgba_f32 = vec![0.0_f32; width as usize * height as usize * 4];
     for y in 0..height as usize {
         let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
-        for px in row.chunks_exact(bytes_per_pixel) {
-            rgba_f32.push(u16::from_le_bytes([px[0], px[1]]) as f32 / scale);
-            rgba_f32.push(u16::from_le_bytes([px[2], px[3]]) as f32 / scale);
-            rgba_f32.push(u16::from_le_bytes([px[4], px[5]]) as f32 / scale);
-            if components == 4 {
-                rgba_f32.push(u16::from_le_bytes([px[6], px[7]]) as f32 / scale);
+        for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
+            let dst = (y * width as usize + x) * 4;
+            rgba_f32[dst] = u16::from_le_bytes([px[0], px[1]]) as f32 / scale;
+            rgba_f32[dst + 1] = u16::from_le_bytes([px[2], px[3]]) as f32 / scale;
+            rgba_f32[dst + 2] = u16::from_le_bytes([px[4], px[5]]) as f32 / scale;
+            rgba_f32[dst + 3] = if components == 4 {
+                u16::from_le_bytes([px[6], px[7]]) as f32 / scale
             } else {
-                rgba_f32.push(1.0);
-            }
+                1.0
+            };
         }
     }
 
@@ -414,18 +415,19 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
 
     let bit_depth = heif_sample_bit_depth(image, handle)?.clamp(1, 8);
     let scale = ((1_u32 << bit_depth) - 1) as f32;
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut rgba_f32 = vec![0.0_f32; width as usize * height as usize * 4];
     for y in 0..height as usize {
         let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
-        for px in row.chunks_exact(bytes_per_pixel) {
-            rgba_f32.push(px[0] as f32 / scale);
-            rgba_f32.push(px[1] as f32 / scale);
-            rgba_f32.push(px[2] as f32 / scale);
-            if components == 4 {
-                rgba_f32.push(px[3] as f32 / scale);
+        for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
+            let dst = (y * width as usize + x) * 4;
+            rgba_f32[dst] = px[0] as f32 / scale;
+            rgba_f32[dst + 1] = px[1] as f32 / scale;
+            rgba_f32[dst + 2] = px[2] as f32 / scale;
+            rgba_f32[dst + 3] = if components == 4 {
+                px[3] as f32 / scale
             } else {
-                rgba_f32.push(1.0);
-            }
+                1.0
+            };
         }
     }
 
@@ -571,7 +573,7 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
     let scale_b =
         planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_B)?);
 
-    let mut rgba_f32 = Vec::with_capacity(w * h * 4);
+    let mut rgba_f32 = vec![0.0_f32; w * h * 4];
 
     for y in 0..h {
         let row_r = unsafe { ptr_r.byte_add(y * stride_r) };
@@ -599,17 +601,18 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
             let gn = planar_read_sample(row_g, x_px, stride_g, span_g)?;
             let bn = planar_read_sample(row_b, x_px, stride_b, span_b)?;
 
-            rgba_f32.push(rn as f32 / scale_r.max(1.0));
-            rgba_f32.push(gn as f32 / scale_g.max(1.0));
-            rgba_f32.push(bn as f32 / scale_b.max(1.0));
+            let dst = (y * w + x_px) * 4;
+            rgba_f32[dst] = rn as f32 / scale_r.max(1.0);
+            rgba_f32[dst + 1] = gn as f32 / scale_g.max(1.0);
+            rgba_f32[dst + 2] = bn as f32 / scale_b.max(1.0);
 
-            if let Some((ap_base, sar, spam_a_px, scl_a)) = alpha_pack {
+            rgba_f32[dst + 3] = if let Some((ap_base, sar, spam_a_px, scl_a)) = alpha_pack {
                 let row_a = unsafe { ap_base.byte_add(y * sar) };
                 let an = planar_read_sample(row_a, x_px, sar, spam_a_px)?;
-                rgba_f32.push((an as f32 / scl_a.max(1.0)).clamp(0.0, 1.0));
+                (an as f32 / scl_a.max(1.0)).clamp(0.0, 1.0)
             } else {
-                rgba_f32.push(1.0);
-            }
+                1.0
+            };
         }
     }
 

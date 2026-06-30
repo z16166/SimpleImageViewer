@@ -79,6 +79,10 @@ pub(crate) fn process_scanline_contig(
     params: TiffSampleDecodeParams,
     palette: TiffPaletteMaps,
 ) {
+    if process_rgb8_scanline_contig_fast(buf, rgba_row, width, spp, params) {
+        return;
+    }
+
     let TiffSampleDecodeParams { photo, .. } = params;
     let is_palette = photo == PHOTO_PALETTE;
     for x in 0..width as usize {
@@ -134,6 +138,91 @@ pub(crate) fn process_scanline_contig(
             }
             _ => {}
         }
+    }
+}
+
+fn process_rgb8_scanline_contig_fast(
+    buf: &[u8],
+    rgba_row: &mut [u8],
+    width: u32,
+    spp: u16,
+    params: TiffSampleDecodeParams,
+) -> bool {
+    let TiffSampleDecodeParams {
+        bps,
+        photo,
+        format,
+        smin,
+        smax,
+        ..
+    } = params;
+    if photo != PHOTO_RGB
+        || bps != 8
+        || format != FORMAT_UINT
+        || smin != 0.0
+        || smax != 255.0
+        || !matches!(spp, 3 | 4)
+    {
+        return false;
+    }
+
+    let src_len = width as usize * spp as usize;
+    let dst_len = width as usize * 4;
+    if buf.len() < src_len || rgba_row.len() < dst_len {
+        return false;
+    }
+
+    let src = &buf[..src_len];
+    let dst = &mut rgba_row[..dst_len];
+    if spp == 3 {
+        simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(src, dst);
+    } else {
+        dst.copy_from_slice(src);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgb8_params() -> TiffSampleDecodeParams {
+        TiffSampleDecodeParams {
+            bps: 8,
+            photo: PHOTO_RGB,
+            format: FORMAT_UINT,
+            swapped: false,
+            smin: 0.0,
+            smax: 255.0,
+        }
+    }
+
+    fn empty_palette() -> TiffPaletteMaps {
+        TiffPaletteMaps {
+            r_map: std::ptr::null_mut(),
+            g_map: std::ptr::null_mut(),
+            b_map: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn rgb8_contig_fast_path_expands_rgb24_to_rgba() {
+        let src = [10, 20, 30, 40, 50, 60];
+        let mut dst = [0; 8];
+
+        process_scanline_contig(&src, &mut dst, 2, 3, rgb8_params(), empty_palette());
+
+        assert_eq!(dst, [10, 20, 30, 255, 40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn rgb8_contig_fast_path_copies_rgba32() {
+        let src = [10, 20, 30, 128, 40, 50, 60, 64];
+        let mut dst = [0; 8];
+
+        process_scanline_contig(&src, &mut dst, 2, 4, rgb8_params(), empty_palette());
+
+        assert_eq!(dst, src);
     }
 }
 

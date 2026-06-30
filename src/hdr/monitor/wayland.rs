@@ -138,6 +138,19 @@ pub(crate) fn wayland_output_selection(
         reference_luminance_nits,
         linux_wp_transfer: Some(map_wayland_transfer_function(tf)),
         linux_wp_primaries: Some(map_wayland_primaries(primaries)),
+        linux_explicit_hdr_state: None,
+        linux_explicit_hdr_state_source: None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_hdr_supported(selection: &HdrMonitorSelection) -> bool {
+    match selection.linux_explicit_hdr_state {
+        Some(super::LinuxExplicitHdrState::Enabled) => true,
+        Some(super::LinuxExplicitHdrState::Disabled | super::LinuxExplicitHdrState::Incapable) => {
+            false
+        }
+        None => selection.hdr_supported,
     }
 }
 
@@ -295,6 +308,12 @@ enum ProbePhase {
 }
 
 #[cfg(target_os = "linux")]
+enum WaylandProbeOutcome {
+    Monitor(Result<HdrMonitorSelection, String>),
+    Spawn(Result<SpawnMonitorHdrProbe, String>),
+}
+
+#[cfg(target_os = "linux")]
 struct ProbeState {
     phase: ProbePhase,
     color_manager: Option<wp_color_manager_v1::WpColorManagerV1>,
@@ -308,8 +327,7 @@ struct ProbeState {
     probe_origin: &'static str,
     spawn_probe: bool,
     error: Option<String>,
-    result: Option<Result<HdrMonitorSelection, String>>,
-    spawn_result: Option<Result<SpawnMonitorHdrProbe, String>>,
+    probe_outcome: Option<WaylandProbeOutcome>,
 }
 
 #[cfg(target_os = "linux")]
@@ -328,8 +346,7 @@ impl ProbeState {
             probe_origin,
             spawn_probe,
             error: None,
-            result: None,
-            spawn_result: None,
+            probe_outcome: None,
         }
     }
 
@@ -407,11 +424,11 @@ impl ProbeState {
 
     fn finish_probe(&mut self) {
         if let Some(err) = self.error.clone() {
-            if self.spawn_probe {
-                self.spawn_result = Some(Err(err));
+            self.probe_outcome = Some(if self.spawn_probe {
+                WaylandProbeOutcome::Spawn(Err(err))
             } else {
-                self.result = Some(Err(err));
-            }
+                WaylandProbeOutcome::Monitor(Err(err))
+            });
             self.phase = ProbePhase::Done;
             return;
         }
@@ -420,13 +437,29 @@ impl ProbeState {
             .image_state
             .transfer_function
             .unwrap_or(WaylandTransferFunction::Unknown);
-        let selection = wayland_output_selection(
+        let mut selection = wayland_output_selection(
             self.selected_output_label.clone(),
             tf,
             self.image_state.max_luminance_nits,
             self.image_state.reference_luminance_nits,
             self.image_state.primaries,
         );
+        let explicit_state = if self.spawn_probe {
+            super::kde::explicit_hdr_state_for_output_blocking(&selection.label)
+        } else {
+            super::kde::explicit_hdr_state_for_output(&selection.label)
+        };
+        if let Some(state) = explicit_state {
+            selection.linux_explicit_hdr_state = Some(state);
+            selection.linux_explicit_hdr_state_source =
+                Some(super::kde::KDE_KSCREEN_HDR_STATE_SOURCE);
+        } else if selection.label.starts_with("Wayland output") {
+            log::debug!(
+                "[HDR] Wayland output label {:?} may not match KScreen connector names; \
+                 explicit desktop HDR state unavailable until names align",
+                selection.label
+            );
+        }
 
         log::debug!(
             "[HDR] Wayland image description: tf={tf:?} primaries={:?} \
@@ -449,15 +482,17 @@ impl ProbeState {
         );
 
         if self.spawn_probe {
-            self.spawn_result = Some(Ok(SpawnMonitorHdrProbe {
-                hdr_supported: selection.hdr_supported,
-                label: selection.label,
-                origin: self.probe_origin,
-                max_luminance_nits: selection.max_luminance_nits,
-                max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
-            }));
+            self.probe_outcome = Some(WaylandProbeOutcome::Spawn(Ok(
+                SpawnMonitorHdrProbe {
+                    hdr_supported: spawn_hdr_supported(&selection),
+                    label: selection.label,
+                    origin: self.probe_origin,
+                    max_luminance_nits: selection.max_luminance_nits,
+                    max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
+                },
+            )));
         } else {
-            self.result = Some(Ok(selection));
+            self.probe_outcome = Some(WaylandProbeOutcome::Monitor(Ok(selection)));
         }
         self.phase = ProbePhase::Done;
     }
@@ -700,11 +735,20 @@ impl Dispatch<wp_image_description_info_v1::WpImageDescriptionInfoV1, ()> for Pr
 }
 
 #[cfg(target_os = "linux")]
+const WAYLAND_OUTPUT_DISCOVERY_ROUNDTRIPS: u32 = 8;
+#[cfg(target_os = "linux")]
+const WAYLAND_HDR_METADATA_ROUNDTRIPS: u32 = 8;
+#[cfg(target_os = "linux")]
+const WAYLAND_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(target_os = "linux")]
 fn run_probe(
     probe_point: [i32; 2],
     probe_origin: &'static str,
     spawn_probe: bool,
 ) -> Result<ProbeState, String> {
+    use std::time::Instant;
+
     ensure_wayland_session()?;
 
     let connection =
@@ -715,8 +759,13 @@ fn run_probe(
 
     let mut state = ProbeState::new(probe_point, probe_origin, spawn_probe);
     display.get_registry(&qh, ());
+    let deadline = Instant::now() + WAYLAND_PROBE_TIMEOUT;
 
-    for _ in 0..8 {
+    for _ in 0..WAYLAND_OUTPUT_DISCOVERY_ROUNDTRIPS {
+        if Instant::now() >= deadline {
+            state.fail("Wayland HDR probe timed out during output discovery".to_string());
+            break;
+        }
         event_queue
             .roundtrip(&mut state)
             .map_err(|err| format!("Wayland roundtrip failed: {err}"))?;
@@ -735,8 +784,12 @@ fn run_probe(
         }
     }
 
-    for _ in 0..8 {
+    for _ in 0..WAYLAND_HDR_METADATA_ROUNDTRIPS {
         if matches!(state.phase, ProbePhase::Done) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            state.fail("Wayland HDR probe timed out waiting for image description".to_string());
             break;
         }
         event_queue
@@ -773,9 +826,10 @@ pub fn spawn_monitor_hdr_status(
     );
 
     let state = run_probe(point, origin, true)?;
-    state
-        .spawn_result
-        .unwrap_or_else(|| Err("Wayland spawn monitor probe did not produce a result".to_string()))
+    match state.probe_outcome {
+        Some(WaylandProbeOutcome::Spawn(result)) => result,
+        _ => Err("Wayland spawn monitor probe did not produce a result".to_string()),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -789,14 +843,16 @@ pub fn active_monitor_hdr_status(
     );
 
     let state = run_probe(point, origin, false)?;
-    state
-        .result
-        .unwrap_or_else(|| Err("Wayland active monitor probe did not produce a result".to_string()))
+    match state.probe_outcome {
+        Some(WaylandProbeOutcome::Monitor(result)) => result,
+        _ => Err("Wayland active monitor probe did not produce a result".to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hdr::monitor::LinuxExplicitHdrState;
 
     #[test]
     fn st2084_is_hdr() {
@@ -865,6 +921,36 @@ mod tests {
         );
         assert!(!sdr.hdr_supported);
         assert_eq!(sdr.hdr_capacity_source, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_hdr_supported_uses_explicit_kde_enabled_state() {
+        let mut selection = wayland_output_selection(
+            "HDMI-A-1".to_string(),
+            WaylandTransferFunction::Gamma22,
+            Some(1800.0),
+            Some(203.0),
+            None,
+        );
+        assert!(!selection.hdr_supported);
+        selection.linux_explicit_hdr_state = Some(LinuxExplicitHdrState::Enabled);
+        assert!(spawn_hdr_supported(&selection));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_hdr_supported_uses_explicit_kde_disabled_veto() {
+        let mut selection = wayland_output_selection(
+            "HDMI-A-1".to_string(),
+            WaylandTransferFunction::St2084,
+            Some(1000.0),
+            Some(203.0),
+            None,
+        );
+        assert!(selection.hdr_supported);
+        selection.linux_explicit_hdr_state = Some(LinuxExplicitHdrState::Disabled);
+        assert!(!spawn_hdr_supported(&selection));
     }
 
     #[test]

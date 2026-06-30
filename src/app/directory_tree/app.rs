@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -43,7 +43,8 @@ use super::{
     DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
     DirectoryTreeListPreviewLayout, DirectoryTreeListSnapshot, DirectoryTreeListState,
     DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
-    FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_namespace_path, view,
+    FileMetadataRequest, ImageListSortColumn, domains, embedded_side_panel_clamped_width,
+    is_places_sentinel_namespace_path, view,
 };
 
 struct DirectoryTreePanelRefs<'a> {
@@ -59,6 +60,149 @@ struct DirectoryTreePanelRefs<'a> {
     theme: &'a Arc<parking_lot::Mutex<crate::theme::ThemePalette>>,
     embedded: bool,
     allow_image_context_menu: bool,
+}
+
+#[cfg(feature = "preload-debug")]
+mod embedded_side_panel_layout_diag {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    use parking_lot::Mutex;
+
+    #[derive(Default)]
+    struct EmbeddedSidePanelLayoutDiag {
+        last_available_before: Option<f32>,
+        last_panel_width: Option<f32>,
+        last_chrome_embedded_width: Option<f32>,
+        last_log_at: Option<Instant>,
+    }
+
+    static EMBEDDED_SIDE_PANEL_LAYOUT_DIAG: OnceLock<Mutex<EmbeddedSidePanelLayoutDiag>> =
+        OnceLock::new();
+
+    pub(super) fn maybe_log_embedded_side_panel_layout(
+        available_before: f32,
+        available_after: f32,
+        max_rect_width_before: f32,
+        panel_width: f32,
+        panel_left: f32,
+        panel_right: f32,
+        default_width: f32,
+        min_width: f32,
+        tree_embedded_width_before: f32,
+        chrome_embedded_width_after: Option<f32>,
+    ) {
+        const WIDTH_CHANGE_EPS: f32 = 2.0;
+        const LOG_INTERVAL: Duration = Duration::from_millis(1000);
+
+        let diag = EMBEDDED_SIDE_PANEL_LAYOUT_DIAG
+            .get_or_init(|| Mutex::new(EmbeddedSidePanelLayoutDiag::default()));
+        let Some(mut diag) = diag.try_lock() else {
+            return;
+        };
+
+        let now = Instant::now();
+        let available_delta = diag
+            .last_available_before
+            .map(|prev| available_before - prev)
+            .unwrap_or(0.0);
+        let panel_delta = diag
+            .last_panel_width
+            .map(|prev| panel_width - prev)
+            .unwrap_or(0.0);
+        let chrome_embedded_delta = diag
+            .last_chrome_embedded_width
+            .zip(chrome_embedded_width_after)
+            .map(|(prev, now)| now - prev)
+            .unwrap_or(0.0);
+        let first_sample = diag.last_panel_width.is_none();
+        let interval_elapsed = diag.last_log_at.map_or(true, |last| {
+            now.saturating_duration_since(last) >= LOG_INTERVAL
+        });
+        let changed = first_sample
+            || available_delta.abs() >= WIDTH_CHANGE_EPS
+            || panel_delta.abs() >= WIDTH_CHANGE_EPS
+            || chrome_embedded_delta.abs() >= WIDTH_CHANGE_EPS;
+
+        if interval_elapsed && changed {
+            log::debug!(
+                "[DirectoryTree][OuterPanelDiag] avail_before={:.1} d_avail={:+.1} avail_after={:.1} \
+                 max_rect_before={:.1} panel_w={:.1} d_panel={:+.1} panel_x={:.1}->{:.1} \
+                 default={:.1} min={:.1} tree_embedded_before={:.1} chrome_embedded_after={:?} \
+                 d_chrome_embedded={:+.1}",
+                available_before,
+                available_delta,
+                available_after,
+                max_rect_width_before,
+                panel_width,
+                panel_delta,
+                panel_left,
+                panel_right,
+                default_width,
+                min_width,
+                tree_embedded_width_before,
+                chrome_embedded_width_after,
+                chrome_embedded_delta,
+            );
+            diag.last_log_at = Some(now);
+        }
+
+        diag.last_available_before = Some(available_before);
+        diag.last_panel_width = Some(panel_width);
+        if let Some(width) = chrome_embedded_width_after {
+            diag.last_chrome_embedded_width = Some(width);
+        }
+    }
+}
+
+#[cfg(feature = "preload-debug")]
+use embedded_side_panel_layout_diag::maybe_log_embedded_side_panel_layout;
+
+#[cfg(not(feature = "preload-debug"))]
+#[inline]
+fn maybe_log_embedded_side_panel_layout(
+    _available_before: f32,
+    _available_after: f32,
+    _max_rect_width_before: f32,
+    _panel_width: f32,
+    _panel_left: f32,
+    _panel_right: f32,
+    _default_width: f32,
+    _min_width: f32,
+    _tree_embedded_width_before: f32,
+    _chrome_embedded_width_after: Option<f32>,
+) {
+}
+
+fn embedded_side_panel_stable_rect_before_show(
+    ui: &egui::Ui,
+    panel_id: egui::Id,
+    default_width: f32,
+) -> egui::Rect {
+    let available = ui.available_rect_before_wrap();
+    let width = embedded_side_panel_clamped_width(
+        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.rect.width()),
+        default_width,
+        available.width(),
+    );
+    egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(available.min.x + width, available.max.y),
+    )
+}
+
+fn restore_embedded_side_panel_state_if_not_resizing(
+    ctx: &egui::Context,
+    panel_id: egui::Id,
+    stable_rect: egui::Rect,
+) {
+    let resize_active = ctx
+        .read_response(panel_id.with("__resize"))
+        .is_some_and(|response| response.dragged());
+    if !super::should_restore_embedded_side_panel_state(resize_active) {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_persisted(panel_id, egui::PanelState { rect: stable_rect }));
 }
 
 impl ImageViewerApp {
@@ -263,22 +407,41 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn effective_scan_recursive(&self) -> bool {
-        self.settings.effective_scan_recursive()
+        match self.settings.browse_mode {
+            BrowseMode::Tree if self.directory_tree_settings_active() || self.auto_hidden_directory_tree_nav => {
+                // Tree browsing (including session auto-hide) stays folder-scoped.
+                false
+            }
+            _ => self.settings.recursive,
+        }
     }
 
     pub(crate) fn current_browse_directory(&self) -> Option<PathBuf> {
-        match self.settings.browse_mode {
-            BrowseMode::Tree if self.settings.show_directory_tree_nav => self
-                .settings
+        if self.directory_tree_settings_active() {
+            self.settings
                 .tree_nav_selected_dir
                 .clone()
-                .or_else(|| self.settings.last_image_dir.clone()),
-            BrowseMode::Tree | BrowseMode::Linear => self
-                .settings
+                .or_else(|| self.settings.last_image_dir.clone())
+        } else {
+            self.settings
                 .transient_image_dir
                 .clone()
-                .or_else(|| self.settings.last_image_dir.clone()),
+                .or_else(|| self.settings.last_image_dir.clone())
         }
+    }
+
+    pub(crate) fn auto_hide_directory_tree_nav_for_single_image_open(
+        &mut self,
+        ctx: &egui::Context,
+    ) {
+        if self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav {
+            self.hide_detached_directory_tree_nav_viewport(ctx);
+            self.auto_hidden_directory_tree_nav = true;
+        }
+    }
+
+    pub(crate) fn clear_auto_hidden_directory_tree_nav(&mut self) {
+        self.auto_hidden_directory_tree_nav = false;
     }
 
     pub(crate) fn saved_directory_tree_selection_dir(&self) -> Option<PathBuf> {
@@ -712,18 +875,20 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
-        self.settings.browse_mode == BrowseMode::Tree && self.settings.show_directory_tree_nav
+        self.settings.directory_tree_nav_active() && !self.auto_hidden_directory_tree_nav
     }
 
     /// Temporarily hide directory-tree navigation (Settings toggle off, Ctrl+T, close nav window).
     /// Keeps `browse_mode` and persisted tree root/selection so the panel can be restored in place.
     pub(crate) fn hide_directory_tree_nav(&mut self, ctx: &egui::Context) {
+        self.clear_auto_hidden_directory_tree_nav();
         self.hide_detached_directory_tree_nav_viewport(ctx);
         self.settings.show_directory_tree_nav = false;
     }
 
     /// Show directory-tree navigation. Recursive scan stays stored but is ignored while visible.
     pub(crate) fn activate_directory_tree_nav(&mut self) {
+        self.clear_auto_hidden_directory_tree_nav();
         self.settings.browse_mode = BrowseMode::Tree;
         self.settings.show_directory_tree_nav = true;
     }
@@ -855,7 +1020,10 @@ impl ImageViewerApp {
         );
     }
 
-    pub(crate) fn persist_directory_tree_layout_to_settings(&mut self) {
+    pub(crate) fn persist_directory_tree_layout_to_settings(
+        &mut self,
+        persist_embedded_width: bool,
+    ) {
         let tree = self.directory_tree.tree.lock();
         let list = self.directory_tree.list.lock();
         #[cfg(feature = "preload-debug")]
@@ -870,7 +1038,10 @@ impl ImageViewerApp {
         if list.image_list_panel_width > 0.0 {
             self.settings.directory_tree_image_list_panel_width = Some(list.image_list_panel_width);
         }
-        if self.directory_tree_nav_is_embedded() && tree.embedded_nav_panel_width > 0.0 {
+        if persist_embedded_width
+            && self.directory_tree_nav_is_embedded()
+            && tree.embedded_nav_panel_width > 0.0
+        {
             self.settings.directory_tree_embedded_panel_width = Some(
                 tree.embedded_nav_panel_width
                     .max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
@@ -966,7 +1137,7 @@ impl ImageViewerApp {
             dirty
         };
         if dirty {
-            self.persist_directory_tree_layout_to_settings();
+            self.persist_directory_tree_layout_to_settings(false);
             self.queue_save();
         }
     }
@@ -1537,7 +1708,18 @@ impl ImageViewerApp {
             return;
         }
 
-        egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+        let available_before = ui.available_width();
+        let max_rect_width_before = ui.max_rect().width();
+        let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
+        let stable_panel_rect =
+            embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
+        let tree_embedded_width_before = self
+            .directory_tree
+            .tree
+            .try_lock()
+            .map(|tree| tree.embedded_nav_panel_width)
+            .unwrap_or(0.0);
+        let panel_response = egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
             .resizable(true)
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
@@ -1566,6 +1748,25 @@ impl ImageViewerApp {
                 }
                 self.finish_directory_tree_image_list_context_menu(ui.ctx(), true);
             });
+        restore_embedded_side_panel_state_if_not_resizing(ui.ctx(), panel_id, stable_panel_rect);
+        let panel_rect = panel_response.response.rect;
+        let chrome_embedded_width_after = self
+            .directory_tree
+            .chrome
+            .try_lock()
+            .and_then(|chrome| chrome.embedded_nav_panel_width);
+        maybe_log_embedded_side_panel_layout(
+            available_before,
+            ui.available_width(),
+            max_rect_width_before,
+            panel_rect.width(),
+            panel_rect.left(),
+            panel_rect.right(),
+            default_width,
+            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+            tree_embedded_width_before,
+            chrome_embedded_width_after,
+        );
     }
 
     /// Apply a directory-tree list selection queued in `process_directory_tree_events`.

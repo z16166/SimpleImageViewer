@@ -82,6 +82,15 @@ impl ImageLoader {
         self.tx.set_root_wake(wake);
     }
 
+    /// Move any worker results waiting on the channel into the local queue so they
+    /// participate in the same FIFO as repushed neighbors (avoids starving the current
+    /// image when a neighbor was deferred to the back of the local queue).
+    pub fn drain_channel_into_local_queue(&mut self) {
+        while let Ok(output) = self.rx.try_recv() {
+            self.local_queue.push_back(output);
+        }
+    }
+
     pub fn poll(&mut self) -> Option<LoaderOutput> {
         // Priority: drain deferred items from previous frames first.
         if let Some(output) = self.local_queue.pop_front() {

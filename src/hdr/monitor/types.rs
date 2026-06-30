@@ -85,9 +85,18 @@ pub enum LinuxWaylandTransferFunction {
 pub enum LinuxWaylandColorPrimaries {
     /// sRGB / BT.709 and other conventional SDR gamuts.
     Narrow,
-    /// BT.2020, Display P3, and other wide gamuts used for HDR offload.
+    /// BT.2020, Display P3, and other wide gamuts reported by Wayland.
     Wide,
     Unknown,
+}
+
+/// Explicit Linux desktop HDR output state from a compositor/desktop API.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxExplicitHdrState {
+    Enabled,
+    Disabled,
+    Incapable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +133,10 @@ pub struct HdrMonitorSelection {
     pub linux_wp_transfer: Option<LinuxWaylandTransferFunction>,
     /// Raw Wayland primaries bucket; populated by the Linux Wayland probe.
     pub linux_wp_primaries: Option<LinuxWaylandColorPrimaries>,
+    /// Explicit Linux compositor / desktop HDR state, if available.
+    pub linux_explicit_hdr_state: Option<LinuxExplicitHdrState>,
+    /// Human-readable source for [`Self::linux_explicit_hdr_state`].
+    pub linux_explicit_hdr_state_source: Option<&'static str>,
 }
 
 impl HdrMonitorSelection {
@@ -142,6 +155,8 @@ impl HdrMonitorSelection {
             reference_luminance_nits: None,
             linux_wp_transfer: None,
             linux_wp_primaries: None,
+            linux_explicit_hdr_state: None,
+            linux_explicit_hdr_state_source: None,
         }
     }
 }

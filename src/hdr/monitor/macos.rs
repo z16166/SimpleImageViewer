@@ -94,6 +94,8 @@ pub(crate) fn macos_edr_selection_from_values(
         reference_luminance_nits: None,
         linux_wp_transfer: None,
         linux_wp_primaries: None,
+        linux_explicit_hdr_state: None,
+        linux_explicit_hdr_state_source: None,
     }
 }
 

@@ -22,12 +22,18 @@
 
 use std::path::Path;
 
+#[cfg(feature = "heif-native")]
+use crate::hdr::heif::{
+    HeifThumbProbe, probe_heif_strip_thumbnail,
+    probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
+};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
 use crate::loader::downsample_decoded_for_strip;
+use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
-    DecodedImage, ImageData, TiledImageSource, extract_exif_thumbnail,
-    extract_exif_thumbnail_from_mmap, preview_aspect_matches_logical,
+    DecodedImage, ImageData, TiledImageSource, extract_exif_thumbnail_from_mmap_probed,
+    extract_exif_thumbnail_probed, preview_aspect_matches_logical,
 };
 
 use super::assemble::make_image_data;
@@ -44,8 +50,66 @@ use super::modern::{
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
 
+mod probe_log;
+mod static_raster;
+
+use probe_log::{log_strip_decode_path, log_strip_exif_probe};
+#[cfg(feature = "heif-native")]
+use probe_log::log_strip_heif_probe;
+use static_raster::try_static_raster_strip_fast_path;
+
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
+
+pub(crate) struct DirectoryTreeThumbDecode {
+    pub(crate) preview: DecodedImage,
+    pub(crate) logical_size: (u32, u32),
+    pub(crate) reusable_full: Option<DecodedImage>,
+    /// Gain-map modern-format placeholder only (AVIF/HEIF/JXL via EXIF, container thumb, or
+    /// primary-SDR fast paths). Schedules a later refined strip upgrade; not set for other
+    /// fast paths (`hdr_float_preview`, `iso_gain_map_baseline`, `jpeg_dct`, etc.).
+    pub(crate) from_embedded_sdr_preview: bool,
+    /// ISO forward gain-map compose already applied (`iso_gain_map_composed` and equivalents).
+    pub(crate) is_hdr_composed_strip: bool,
+}
+
+impl DirectoryTreeThumbDecode {
+    fn new(
+        preview: DecodedImage,
+        logical_size: (u32, u32),
+        reusable_full: Option<DecodedImage>,
+        from_embedded_sdr_preview: bool,
+    ) -> Self {
+        Self {
+            preview,
+            logical_size,
+            reusable_full,
+            from_embedded_sdr_preview,
+            is_hdr_composed_strip: false,
+        }
+    }
+
+    fn new_hdr_composed(
+        preview: DecodedImage,
+        logical_size: (u32, u32),
+        reusable_full: Option<DecodedImage>,
+    ) -> Self {
+        Self {
+            preview,
+            logical_size,
+            reusable_full,
+            from_embedded_sdr_preview: false,
+            is_hdr_composed_strip: true,
+        }
+    }
+}
+
+/// `path_may_have_gain_map_embedded_sdr_preview` is extension-heuristic (all AVIF/HEIF/JXL);
+/// only mark fast-path strips as placeholders when that heuristic matches so plain raster
+/// formats keep `StripDecodedPixels` and avoid a spurious full-decode upgrade pass.
+fn embedded_sdr_strip_may_be_placeholder(gain_map_container: bool) -> bool {
+    gain_map_container
+}
 
 /// Directory-tree list previews are always SDR thumbnails, independent of main-window HDR output.
 const DIRECTORY_TREE_THUMB_HDR_CAPACITY: f32 = 1.0;
@@ -62,58 +126,241 @@ fn try_directory_tree_exif_thumb(
     Some((decoded, logical))
 }
 
-pub(crate) fn generate_directory_tree_thumb_from_path(
+pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     path: &Path,
     max_side: u32,
-) -> Result<(DecodedImage, (u32, u32)), String> {
-    let skip_exif_fast_path = super::modern::is_hdr_capable_modern_format_path(path);
+    gain_map_compose_capacity: f32,
+) -> Result<DirectoryTreeThumbDecode, String> {
+    let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
+    // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
+    let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
     let mmap = crate::mmap_util::map_file(path).ok();
-    let exif = if skip_exif_fast_path {
-        None
-    } else {
-        match mmap.as_ref() {
-            Some(data) => extract_exif_thumbnail_from_mmap(data, path),
-            None => extract_exif_thumbnail(path),
-        }
+    let (exif, exif_probe, exif_probe_detail) = match mmap.as_ref() {
+        Some(data) => extract_exif_thumbnail_from_mmap_probed(data, path),
+        None => extract_exif_thumbnail_probed(path),
     };
+    if gain_map_container {
+        log_strip_exif_probe(
+            path,
+            exif_probe,
+            exif_probe_detail,
+            None,
+            max_side,
+            "phase=initial",
+        );
+    }
     if let Some(exif) = exif.as_ref() {
         let exif_logical = (exif.width, exif.height);
         let logical = normalize_logical_size(
             mmap.as_ref()
-                .and_then(probe_still_image_logical_size_from_mmap)
+                .and_then(|data| probe_still_image_logical_size_from_bytes(data.as_ref(), path))
                 .unwrap_or(exif_logical),
             exif_logical,
         );
         if let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side) {
-            return Ok(result);
+            log_strip_decode_path(
+                path,
+                "exif_embedded_sdr",
+                logical,
+                result.0.width,
+                result.0.height,
+            );
+            return Ok(DirectoryTreeThumbDecode::new(
+                result.0,
+                result.1,
+                None,
+                placeholder_if_fast_path,
+            ));
+        }
+        if gain_map_container {
+            log_strip_exif_probe(
+                path,
+                ExifThumbProbe::AspectRejected,
+                exif_probe_detail,
+                Some(logical),
+                max_side,
+                &format!(
+                    "phase=initial_rejected reason=aspect_or_downsample exif={}x{}",
+                    exif.width, exif.height
+                ),
+            );
         }
     }
 
-    let path_buf = path.to_path_buf();
+    #[cfg(feature = "heif-native")]
+    if super::modern::is_heif_path(path) {
+        let (heif_thumb, heif_probe, heif_detail) = match mmap.as_ref() {
+            Some(data) => probe_heif_strip_thumbnail(data.as_ref(), max_side),
+            None => probe_heif_strip_thumbnail_from_path(path, max_side),
+        };
+        log_strip_heif_probe(path, heif_probe, heif_detail, max_side, "phase=initial");
+        if let Some((preview, logical)) = heif_thumb {
+            log_strip_decode_path(
+                path,
+                "heif_container_thumb",
+                logical,
+                preview.width,
+                preview.height,
+            );
+            return Ok(DirectoryTreeThumbDecode::new(
+                preview,
+                logical,
+                None,
+                placeholder_if_fast_path,
+            ));
+        }
+        if matches!(
+            heif_probe,
+            HeifThumbProbe::AspectRejected | HeifThumbProbe::DownsampleFailed
+        ) {
+            log_strip_heif_probe(
+                path,
+                heif_probe,
+                heif_detail,
+                max_side,
+                "phase=initial_rejected reason=aspect_or_downsample",
+            );
+        }
+
+        // Initial strip mmap failed (rare); one retry here avoids a second open in the common path.
+        if let Some(result) = match mmap.as_ref() {
+            Some(data) => try_heif_strip_primary_sdr(data.as_ref(), max_side),
+            None => crate::mmap_util::map_file(path)
+                .ok()
+                .and_then(|owned| try_heif_strip_primary_sdr(owned.as_ref(), max_side)),
+        } {
+            return result.map(|(preview, logical)| {
+                log_strip_decode_path(
+                    path,
+                    "heif_primary_sdr",
+                    logical,
+                    preview.width,
+                    preview.height,
+                );
+                DirectoryTreeThumbDecode::new(preview, logical, None, placeholder_if_fast_path)
+            });
+        }
+    }
+
+    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, max_side) {
+        return fast.map(|(preview, logical_size)| {
+            log_strip_decode_path(
+                path,
+                "hdr_float_preview",
+                logical_size,
+                preview.width,
+                preview.height,
+            );
+            // Float HDR has no gain map; strip is final (no PreloadSdrFallback upgrade).
+            DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
+        });
+    }
     if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
         path,
         mmap.as_ref().map(|data| data.as_ref()),
         max_side,
+        gain_map_compose_capacity,
     ) {
-        return fast;
+        return fast.map(|result| {
+            log_strip_decode_path(
+                path,
+                if result.is_hdr_composed_strip {
+                    "iso_gain_map_composed"
+                } else {
+                    "iso_gain_map_fast"
+                },
+                result.logical_size,
+                result.preview.width,
+                result.preview.height,
+            );
+            if result.is_hdr_composed_strip {
+                DirectoryTreeThumbDecode::new_hdr_composed(
+                    result.preview,
+                    result.logical_size,
+                    None,
+                )
+            } else {
+                DirectoryTreeThumbDecode::new(result.preview, result.logical_size, None, false)
+            }
+        });
     }
-    // DCT-scaled baseline-JPEG fast path: when no EXIF thumbnail exists and the file
-    // is not Ultra HDR / JPEG_R, decode directly at the scaled output size.  For a
-    // 4000×3000 → 256px strip this is ~10× faster and 64× less peak memory than a
-    // full-resolution decode followed by a software downsample.
+    if gain_map_container {
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] fast_path_miss path={} kind=iso_gain_map_baseline",
+            path.display()
+        );
+    }
+    // DCT-scaled baseline-JPEG fast path: when no EXIF thumbnail exists, decode
+    // directly at the scaled output size.  Ultra HDR / JPEG_R images also take
+    // this path; the gain map is intentionally ignored because the strip only
+    // needs a fast SDR preview.  For a 4000×3000 → 256px strip this is ~10×
+    // faster and 64× less peak memory than a full-resolution decode followed
+    // by a software downsample.
     if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_ref(), max_side) {
-        return result;
+        return result.map(|(preview, logical_size)| {
+            log_strip_decode_path(
+                path,
+                "jpeg_dct",
+                logical_size,
+                preview.width,
+                preview.height,
+            );
+            DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
+        });
     }
+    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_ref(), max_side) {
+        match result {
+            Ok(strip) => {
+                log_strip_decode_path(
+                    path,
+                    "static_raster",
+                    strip.logical_size,
+                    strip.preview.width,
+                    strip.preview.height,
+                );
+                return Ok(strip);
+            }
+            Err(err) => {
+                log::debug!(
+                    "[DirectoryTree] static raster strip fast path failed for {:?}: {err}; falling back to regular decode",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
+    }
+    let path_buf = path.to_path_buf();
     let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()
         && let Some(result) = try_directory_tree_exif_thumb(exif, logical, max_side)
     {
-        return Ok(result);
+        log_strip_decode_path(
+            path,
+            "exif_embedded_sdr_after_open",
+            logical,
+            result.0.width,
+            result.0.height,
+        );
+        return Ok(DirectoryTreeThumbDecode::new(
+            result.0,
+            result.1,
+            None,
+            placeholder_if_fast_path,
+        ));
+    }
+    if gain_map_container && exif.is_some() {
+        log_strip_exif_probe(
+            path,
+            ExifThumbProbe::AspectRejected,
+            exif_probe_detail,
+            Some(logical),
+            max_side,
+            "phase=after_open_rejected reason=aspect_or_downsample",
+        );
     }
 
-    let decoded = preview_from_image_data(&image_data, max_side)?;
+    let decoded = preview_from_image_data(&image_data, max_side, gain_map_compose_capacity)?;
     if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
         return Err(format!(
             "directory tree thumb aspect mismatch: {}x{} vs {}x{}",
@@ -126,7 +373,32 @@ pub(crate) fn generate_directory_tree_thumb_from_path(
             path.display()
         ));
     }
-    Ok((decoded, logical))
+    log_strip_decode_path(
+        path,
+        "full_open_preview",
+        logical,
+        decoded.width,
+        decoded.height,
+    );
+    Ok(DirectoryTreeThumbDecode::new(
+        decoded,
+        logical,
+        reusable_full_decoded_from_image_data(&image_data),
+        false,
+    ))
+}
+
+fn reusable_full_decoded_from_image_data(image_data: &ImageData) -> Option<DecodedImage> {
+    match image_data {
+        ImageData::Static(image) => Some(image.clone()),
+        ImageData::Hdr { fallback, .. } if !fallback.is_sdr_deferred_placeholder() => {
+            Some(fallback.clone())
+        }
+        ImageData::Animated(frames) => frames.first().map(|frame| {
+            DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())
+        }),
+        _ => None,
+    }
 }
 
 fn normalize_logical_size(logical: (u32, u32), fallback: (u32, u32)) -> (u32, u32) {
@@ -137,9 +409,31 @@ fn normalize_logical_size(logical: (u32, u32), fallback: (u32, u32)) -> (u32, u3
     }
 }
 
-fn probe_still_image_logical_size_from_mmap(mmap: &memmap2::Mmap) -> Option<(u32, u32)> {
+fn probe_still_image_logical_size_from_bytes(bytes: &[u8], path: &Path) -> Option<(u32, u32)> {
+    let ext = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    #[cfg(feature = "avif-native")]
+    if (ext == "avif" || ext == "avifs")
+        && let Some(logical) = crate::hdr::avif::libavif_probe_logical_size_from_bytes(bytes)
+    {
+        return Some(logical);
+    }
+    #[cfg(feature = "jpegxl")]
+    if ext == "jxl"
+        && let Some(logical) = crate::hdr::jpegxl::libjxl_probe_logical_size_from_bytes(bytes)
+    {
+        return Some(logical);
+    }
+    #[cfg(feature = "heif-native")]
+    if super::modern::is_heif_path(path)
+        && let Some(logical) = crate::hdr::heif::libheif_probe_logical_size_from_bytes(bytes)
+    {
+        return Some(logical);
+    }
     use std::io::Cursor;
-    image::ImageReader::new(Cursor::new(mmap.as_ref()))
+    image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?
         .into_dimensions()
@@ -151,7 +445,7 @@ fn path_has_extension(path: &Path, ext: &str) -> bool {
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(ext))
 }
 
-fn path_extension_ascii_lower(path: &Path) -> Option<String> {
+pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
     path.extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
 }
@@ -265,7 +559,17 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map),
+            || {
+                load_heif_hdr_aware(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    crate::hdr::heif::HeifHdrDecodeDiag {
+                        idx: None,
+                        path: Some(path),
+                    },
+                )
+            },
         );
     }
 
@@ -403,11 +707,15 @@ fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
     }
 }
 
-fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<DecodedImage, String> {
+fn preview_from_image_data(
+    image_data: &ImageData,
+    max_side: u32,
+    gain_map_compose_capacity: f32,
+) -> Result<DecodedImage, String> {
     match image_data {
         ImageData::Static(image) => downsample_decoded_to_max_side(image.clone(), max_side),
         ImageData::Hdr { hdr, fallback, .. } => {
-            sdr_preview_for_hdr_fallback(hdr, fallback, max_side)
+            sdr_preview_for_hdr_fallback(hdr, fallback, max_side, gain_map_compose_capacity)
         }
         ImageData::Animated(frames) => frames
             .first()
@@ -431,7 +739,14 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
         }
         ImageData::HdrAnimated(frames) => frames
             .first()
-            .map(|frame| sdr_preview_for_hdr_fallback(&frame.hdr, &frame.fallback, max_side))
+            .map(|frame| {
+                sdr_preview_for_hdr_fallback(
+                    &frame.hdr,
+                    &frame.fallback,
+                    max_side,
+                    gain_map_compose_capacity,
+                )
+            })
             .transpose()?
             .ok_or_else(|| "animated HDR image has no frames".to_string()),
     }
@@ -441,8 +756,14 @@ fn sdr_preview_for_hdr_fallback(
     hdr: &crate::hdr::types::HdrImageBuffer,
     fallback: &DecodedImage,
     max_side: u32,
+    gain_map_compose_capacity: f32,
 ) -> Result<DecodedImage, String> {
-    crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side)
+    crate::loader::directory_tree_strip_from_hdr_or_fallback(
+        hdr,
+        fallback,
+        max_side,
+        gain_map_compose_capacity,
+    )
 }
 
 fn tiled_source_preview(
@@ -472,9 +793,11 @@ fn downsample_decoded_to_max_side(
 
 /// Try to produce a strip thumbnail from a baseline JPEG using DCT-domain scaling.
 ///
-/// Returns `None` when the file is not a `.jpg`/`.jpeg`, no mmap data is available,
-/// or the JPEG is Ultra HDR / JPEG_R.  On success the aspect ratio is guaranteed to
-/// match the logical size because DCT scaling applies the same ratio to both axes.
+/// Returns `None` when the file is not a `.jpg`/`.jpeg` or no mmap data is
+/// available.  Ultra HDR / JPEG_R images are also handled here; the gain map is
+/// intentionally ignored because the strip only needs a fast SDR preview.  On
+/// success the aspect ratio is guaranteed to match the logical size because DCT
+/// scaling applies the same ratio to both axes.
 fn try_jpeg_dct_strip_fast_path(
     path: &Path,
     mmap: Option<&memmap2::Mmap>,

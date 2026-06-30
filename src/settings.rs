@@ -511,14 +511,6 @@ impl Settings {
         self.browse_mode == BrowseMode::Tree && self.show_directory_tree_nav
     }
 
-    pub(crate) fn effective_scan_recursive(&self) -> bool {
-        if self.directory_tree_nav_active() {
-            false
-        } else {
-            self.recursive
-        }
-    }
-
     pub(crate) fn set_current_browse_directory(&mut self, dir: PathBuf, persist_gallery_dir: bool) {
         if persist_gallery_dir {
             self.transient_image_dir = None;
@@ -966,39 +958,42 @@ mod tests {
     }
 
     #[test]
-    fn effective_scan_recursive_respects_browse_mode() {
+    fn directory_tree_nav_active_requires_tree_mode_and_visible_nav() {
         let mut settings = Settings::default();
         settings.recursive = true;
-        assert!(settings.effective_scan_recursive());
+        assert!(!settings.directory_tree_nav_active());
 
         settings.browse_mode = BrowseMode::Tree;
         settings.show_directory_tree_nav = true;
-        assert!(!settings.effective_scan_recursive());
+        assert!(settings.directory_tree_nav_active());
+        assert!(settings.recursive);
     }
 
     #[test]
-    fn hidden_tree_nav_allows_recursive_scan() {
+    fn hidden_tree_nav_is_not_active() {
         let mut settings = Settings::default();
         settings.browse_mode = BrowseMode::Tree;
         settings.show_directory_tree_nav = true;
         settings.recursive = true;
-        assert!(!settings.effective_scan_recursive());
+        assert!(settings.directory_tree_nav_active());
 
         settings.show_directory_tree_nav = false;
-        assert!(settings.effective_scan_recursive());
+        assert!(!settings.directory_tree_nav_active());
+        assert!(settings.recursive);
     }
 
     #[test]
-    fn linear_browse_mode_allows_recursive_scan() {
+    fn linear_browse_mode_is_not_tree_nav_active() {
         let mut settings = Settings::default();
         settings.browse_mode = BrowseMode::Tree;
         settings.show_directory_tree_nav = true;
         settings.recursive = true;
-        assert!(!settings.effective_scan_recursive());
+        assert!(settings.directory_tree_nav_active());
 
         settings.show_directory_tree_nav = false;
         settings.browse_mode = BrowseMode::Linear;
-        assert!(settings.effective_scan_recursive());
+        assert!(!settings.directory_tree_nav_active());
+        assert!(settings.recursive);
     }
 
     #[test]
@@ -1010,7 +1005,6 @@ mod tests {
 
         assert!(settings.directory_tree_nav_active());
         assert!(settings.recursive);
-        assert!(!settings.effective_scan_recursive());
     }
 
     #[test]

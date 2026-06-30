@@ -17,6 +17,18 @@
 //! On-disk persistence for [`wgpu::PipelineCache`] (DX12/Metal/Vulkan pipeline caches via patched wgpu-hal).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
+
+/// Bump when wgpu render pipelines or WGSL change in ways that invalidate on-disk cache bytes.
+const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 2;
+
+/// Runtime prewarm persist is disabled on Metal: `PipelineCache::get_data()` + disk write on the
+/// UI thread has caused macOS crashes independent of loading stale cache files (schema version).
+pub fn runtime_prewarm_persist_enabled(backend: wgpu::Backend) -> bool {
+    backend != wgpu::Backend::Metal
+}
 
 pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
     adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
@@ -39,7 +51,10 @@ pub fn cache_path_for_adapter_info(info: &wgpu::AdapterInfo) -> PathBuf {
             info.backend, info.vendor, info.device
         )
     });
-    let stem = format!("{stem}_drv{:016x}", driver_cache_hash(info));
+    let stem = format!(
+        "{stem}_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_drv{:016x}",
+        driver_cache_hash(info)
+    );
     cache_dir().join(format!("{stem}.bin"))
 }
 
@@ -74,6 +89,7 @@ fn stable_hash_bytes(bytes: &[u8], seed: u64) -> u64 {
 
 pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     let path = cache_path(adapter);
+    remove_stale_pipeline_cache_files(&path);
     match std::fs::read(&path) {
         Ok(data) => {
             log::info!(
@@ -94,13 +110,85 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     }
 }
 
-/// Writes on-disk pipeline cache bytes. Call only when a cache was created (`Some` at startup).
-pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
+/// Writes on-disk pipeline cache bytes synchronously (Windows non-DX12 path only).
+#[cfg(target_os = "windows")]
+fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     let Some(data) = cache.get_data() else {
         return;
     };
     if let Err(error) = save_to_path(&cache_path_for_adapter_info(info), &data) {
         log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
+    }
+}
+
+/// Same as [`persist`] but performs disk I/O on a background thread (for UI-thread call sites).
+pub fn persist_async(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
+    let path = cache_path_for_adapter_info(info);
+    let Some(data) = cache.get_data() else {
+        return;
+    };
+    let mut in_flight = persist_in_flight().lock();
+    if in_flight.as_ref() == Some(&path) {
+        return;
+    }
+    *in_flight = Some(path.clone());
+    drop(in_flight);
+
+    if let Err(err) = std::thread::Builder::new()
+        .name("siv-wgpu-pcache-persist".to_string())
+        .spawn(move || {
+            let result = save_to_path(&path, &data);
+            persist_in_flight().lock().take();
+            if let Err(error) = result {
+                log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
+            }
+        })
+    {
+        persist_in_flight().lock().take();
+        log::warn!("[HDR] failed to spawn wgpu pipeline cache persist thread: {err}");
+    }
+}
+
+fn persist_in_flight() -> &'static Mutex<Option<PathBuf>> {
+    static GATE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(None))
+}
+
+fn remove_stale_pipeline_cache_files(current_path: &Path) {
+    let Some(parent) = current_path.parent() else {
+        return;
+    };
+    let current_name = current_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let Some(current_name) = current_name else {
+        return;
+    };
+    let Some(base_prefix) = current_name.split("_pcv").next() else {
+        return;
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == current_name {
+            continue;
+        }
+        if name.starts_with(base_prefix) && name.ends_with(".bin") && name.contains("_pcv") {
+            if let Err(error) = std::fs::remove_file(entry.path()) {
+                log::debug!(
+                    "[HDR] failed to remove stale wgpu pipeline cache {}: {error}",
+                    entry.path().display()
+                );
+            } else {
+                log::info!(
+                    "[HDR] removed stale wgpu pipeline cache {}",
+                    entry.path().display()
+                );
+            }
+        }
     }
 }
 
@@ -146,6 +234,13 @@ pub fn create_pipeline_cache(
         return None;
     }
     let cache_data = load_for_adapter(adapter);
+    let path = cache_path(adapter);
+    debug_assert!(
+        path.to_string_lossy().contains(&format!(
+            "_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_"
+        )),
+        "pipeline cache path must embed schema version"
+    );
     // SAFETY: `cache_data` comes from our own prior `PipelineCache::get_data` writes.
     Some(unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
@@ -189,5 +284,19 @@ mod tests {
         let new_driver = cache_path_for_adapter_info(&adapter_info("32.0.16.2000"));
 
         assert_ne!(old_driver.file_name(), new_driver.file_name());
+    }
+
+    #[test]
+    fn cache_path_includes_schema_version() {
+        let path = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
+        let file_name = path.file_name().unwrap().to_string_lossy();
+
+        assert!(file_name.contains("_pcv2_"));
+    }
+
+    #[test]
+    fn runtime_prewarm_persist_skips_metal() {
+        assert!(!runtime_prewarm_persist_enabled(wgpu::Backend::Metal));
+        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Vulkan));
     }
 }

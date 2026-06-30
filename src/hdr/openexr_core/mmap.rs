@@ -16,7 +16,7 @@
 
 #![allow(dead_code)]
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{
     Arc,
@@ -140,17 +140,36 @@ impl Drop for ExrMmapCookieGuard {
     }
 }
 
-pub(crate) fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrContextInitializer {
+/// OpenEXRCore prints to stderr when `error_handler_fn` is null. Mip/ripmap probing calls
+/// `exr_get_tile_counts` on invalid levels and expects failure via return codes instead.
+unsafe extern "C" fn openexr_error_handler_silent(
+    _ctxt: sys::ExrConstContext,
+    code: sys::ExrResult,
+    text: *const c_char,
+) {
+    if log::log_enabled!(log::Level::Trace) {
+        let message = if text.is_null() {
+            "unknown OpenEXRCore error".to_string()
+        } else {
+            unsafe { CStr::from_ptr(text) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        log::trace!("OpenEXRCore error {code}: {message}");
+    }
+}
+
+fn openexr_base_initializer() -> sys::ExrContextInitializer {
     sys::ExrContextInitializer {
         size: std::mem::size_of::<sys::ExrContextInitializer>(),
-        error_handler_fn: None,
+        error_handler_fn: Some(openexr_error_handler_silent),
         alloc_fn: None,
         free_fn: None,
-        user_data: cookie,
-        read_fn: Some(openexr_read_mmap),
-        size_fn: Some(openexr_query_mmap_size),
+        user_data: ptr::null_mut(),
+        read_fn: None,
+        size_fn: None,
         write_fn: None,
-        destroy_fn: Some(openexr_destroy_mmap_cookie),
+        destroy_fn: None,
         max_image_width: -2,
         max_image_height: -2,
         max_tile_width: -2,
@@ -160,4 +179,18 @@ pub(crate) fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrCon
         flags: 0,
         pad: [0u8; 4],
     }
+}
+
+/// Default initializer for OpenEXRCore's built-in file reader (no custom mmap I/O).
+pub(crate) fn openexr_file_initializer() -> sys::ExrContextInitializer {
+    openexr_base_initializer()
+}
+
+pub(crate) fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrContextInitializer {
+    let mut init = openexr_base_initializer();
+    init.user_data = cookie;
+    init.read_fn = Some(openexr_read_mmap);
+    init.size_fn = Some(openexr_query_mmap_size);
+    init.destroy_fn = Some(openexr_destroy_mmap_cookie);
+    init
 }

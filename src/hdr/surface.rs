@@ -123,8 +123,8 @@ pub fn native_hdr_swapchain_active(
 #[derive(Debug, Clone, PartialEq)]
 pub enum HdrEnvironmentProbe {
     /// The monitor where the window is expected to spawn reports active HDR
-    /// signaling — keep the `Rgba16Float` swap chain so we can drive scRGB
-    /// native presentation.
+    /// signaling — keep a native HDR swap chain so we can drive platform-native
+    /// HDR presentation.
     SpawnMonitorHdr {
         label: String,
         origin: &'static str,
@@ -179,15 +179,15 @@ pub fn initial_monitor_selection_from_environment_probe(
             max_luminance_nits: *max_luminance_nits,
             max_full_frame_luminance_nits: *max_full_frame_luminance_nits,
             max_hdr_capacity: None,
-            hdr_capacity_source: Some("spawn DXGI probe"),
+            hdr_capacity_source: Some("spawn monitor probe"),
             #[cfg(target_os = "macos")]
             current_edr_headroom: None,
-            native_surface_encoding: Some(
-                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
-            ),
+            native_surface_encoding: Some(spawn_monitor_native_surface_encoding()),
             reference_luminance_nits: None,
             linux_wp_transfer: None,
             linux_wp_primaries: None,
+            linux_explicit_hdr_state: None,
+            linux_explicit_hdr_state_source: None,
         }),
         HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
             Some(crate::hdr::monitor::HdrMonitorSelection {
@@ -203,9 +203,19 @@ pub fn initial_monitor_selection_from_environment_probe(
                 reference_luminance_nits: None,
                 linux_wp_transfer: None,
                 linux_wp_primaries: None,
+                linux_explicit_hdr_state: None,
+                linux_explicit_hdr_state_source: None,
             })
         }
         HdrEnvironmentProbe::ProbeUnavailable => None,
+    }
+}
+
+fn spawn_monitor_native_surface_encoding() -> crate::hdr::monitor::HdrNativeSurfaceEncoding {
+    if cfg!(target_os = "linux") {
+        crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10
+    } else {
+        crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb
     }
 }
 
@@ -371,6 +381,8 @@ mod tests {
             reference_luminance_nits: None,
             linux_wp_transfer: None,
             linux_wp_primaries: None,
+            linux_explicit_hdr_state: None,
+            linux_explicit_hdr_state_source: None,
         }
     }
 
@@ -388,6 +400,8 @@ mod tests {
             reference_luminance_nits: None,
             linux_wp_transfer: None,
             linux_wp_primaries: None,
+            linux_explicit_hdr_state: None,
+            linux_explicit_hdr_state_source: None,
         }
     }
 
@@ -414,7 +428,7 @@ mod tests {
         assert_eq!(sel.label, r"\\.\DISPLAY1");
         assert_eq!(sel.max_luminance_nits, Some(420.0));
         assert_eq!(sel.max_full_frame_luminance_nits, Some(200.0));
-        assert_eq!(sel.hdr_capacity_source, Some("spawn DXGI probe"));
+        assert_eq!(sel.hdr_capacity_source, Some("spawn monitor probe"));
     }
 
     #[test]

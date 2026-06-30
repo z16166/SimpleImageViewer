@@ -191,6 +191,7 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
+        self.canvas_display_timing.on_navigate();
         #[cfg(feature = "preload-debug")]
         {
             let target_is_raw = self

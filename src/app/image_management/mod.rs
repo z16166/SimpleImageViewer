@@ -671,6 +671,27 @@ pub(crate) fn prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
     texture_cache_contains || crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)
 }
 
+/// Hold neighbor main-image preloads and neighbor strip work while the current index's
+/// main-window load is in flight (`is_loading` and no drawable asset yet).
+/// Intentionally ignores low-quality placeholders: a visible bootstrap preview still
+/// allows neighbor work so the list can fill while refined decode completes.
+pub(crate) fn should_defer_neighbor_work_for_current_main(
+    current_has_asset: bool,
+    current_is_loading: bool,
+) -> bool {
+    !current_has_asset && current_is_loading
+}
+
+/// Defer installing a background [`LoaderOutput::Image`] until the current index is installed.
+pub(crate) fn should_yield_neighbor_image_install_until_current_ready(
+    is_current: bool,
+    current_has_asset: bool,
+    current_is_loading: bool,
+) -> bool {
+    !is_current
+        && should_defer_neighbor_work_for_current_main(current_has_asset, current_is_loading)
+}
+
 /// Hold neighbor preloads while the current index is extracting CFA, waiting on GPU demosaic,
 /// or until the HDR float plane has been presented after demosaic completes.
 pub(crate) fn should_defer_background_preload_for_raw_gpu_current(

@@ -23,7 +23,9 @@ mod hdr_draw;
 mod helpers;
 mod transitions;
 
-pub(crate) use self::hdr_draw::{HdrImagePlaneClippedDraw, HdrRectangularTransitionDraw, PrevImageUnderneathParams};
+pub(crate) use self::hdr_draw::{
+    HdrImagePlaneClippedDraw, HdrRectangularTransitionDraw, PrevImageUnderneathParams,
+};
 pub(crate) use self::transitions::{
     OutgoingFrameClippedParams, OutgoingFrameRippleParams, PageFlipTransitionDraw,
 };

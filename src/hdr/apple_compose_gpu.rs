@@ -31,17 +31,8 @@ const STORAGE_BINDING_ALIGNMENT: u64 = 256;
 const COMPOSE_WORKGROUP_SIZE: u32 = 16;
 
 /// Apple HEIC gain-map compose — primary from storage buffer, gain from texture, output to storage texture.
-pub(super) const APPLE_GAIN_COMPOSE_SHADER: &str = r#"
-const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
-const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
-const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
-const INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR: u32 = 6u;
-const INPUT_TRANSFER_LINEAR: u32 = 0u;
-const INPUT_TRANSFER_SRGB: u32 = 1u;
-const INPUT_TRANSFER_PQ: u32 = 2u;
-const INPUT_TRANSFER_HLG: u32 = 3u;
-const INPUT_TRANSFER_BT709: u32 = 6u;
-
+pub(super) const APPLE_GAIN_COMPOSE_SHADER: &str = concat!(
+    r#"
 struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
@@ -74,109 +65,14 @@ struct ToneMapSettings {
     _pad1: u32,
     _pad2: u32,
 };
+"#,
+    crate::hdr::wgsl_color::hdr_wgsl_color_helpers!(),
+    r#"
 
 @group(0) @binding(0) var<storage, read> encoded_primary: array<vec4<f32>>;
 @group(0) @binding(1) var gain_map_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> tone_map: ToneMapSettings;
 @group(0) @binding(3) var compose_output: texture_storage_2d<rgba32float, write>;
-
-fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        1.6605 * rgb.r - 0.5876 * rgb.g - 0.0728 * rgb.b,
-        -0.1246 * rgb.r + 1.1329 * rgb.g - 0.0083 * rgb.b,
-        -0.0182 * rgb.r - 0.1006 * rgb.g + 1.1187 * rgb.b,
-    );
-}
-
-fn display_p3_linear_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        1.2249401 * rgb.r - 0.2249402 * rgb.g,
-        -0.0420569 * rgb.r + 1.0420571 * rgb.g,
-        -0.0196376 * rgb.r - 0.0786507 * rgb.g + 1.0982884 * rgb.b,
-    );
-}
-
-fn aces2065_1_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        2.5216 * rgb.r - 1.1369 * rgb.g - 0.3849 * rgb.b,
-        -0.2762 * rgb.r + 1.3697 * rgb.g - 0.0935 * rgb.b,
-        -0.0159 * rgb.r - 0.1478 * rgb.g + 1.1638 * rgb.b,
-    );
-}
-
-fn xyz_to_linear_srgb(xyz: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        3.2404 * xyz.x - 1.5371 * xyz.y - 0.4985 * xyz.z,
-        -0.9692 * xyz.x + 1.8760 * xyz.y + 0.0415 * xyz.z,
-        0.0556 * xyz.x - 0.2040 * xyz.y + 1.0572 * xyz.z,
-    );
-}
-
-fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
-    let low = rgb / vec3<f32>(12.92);
-    let high = pow((rgb + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
-    return select(high, low, rgb <= vec3<f32>(0.04045));
-}
-
-fn bt709_nonlinear_to_linear(rgb: vec3<f32>) -> vec3<f32> {
-    let low = rgb / vec3<f32>(4.5);
-    let high = pow((rgb + vec3<f32>(0.099)) / vec3<f32>(1.099), vec3<f32>(1.0 / 0.45));
-    return select(high, low, rgb < vec3<f32>(0.081));
-}
-
-fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    let m1 = 2610.0 / 16384.0;
-    let m2 = 2523.0 / 32.0;
-    let c1 = 3424.0 / 4096.0;
-    let c2 = 2413.0 / 128.0;
-    let c3 = 2392.0 / 128.0;
-    let code = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / m2));
-    let numerator = max(code - vec3<f32>(c1), vec3<f32>(0.0));
-    let denominator = max(vec3<f32>(c2) - vec3<f32>(c3) * code, vec3<f32>(0.000001));
-    let absolute_nits = vec3<f32>(10000.0) * pow(numerator / denominator, vec3<f32>(1.0 / m1));
-    return absolute_nits / max(settings.sdr_white_nits, 1.0);
-}
-
-fn hlg_to_scene_linear(rgb: vec3<f32>) -> vec3<f32> {
-    let a = 0.17883277;
-    let b = 0.28466892;
-    let c = 0.55991073;
-    let low = (rgb * rgb) / vec3<f32>(3.0);
-    let high = (exp((rgb - vec3<f32>(c)) / vec3<f32>(a)) + vec3<f32>(b)) / vec3<f32>(12.0);
-    return select(high, low, rgb <= vec3<f32>(0.5));
-}
-
-fn decode_input_transfer(rgb: vec3<f32>, input_transfer_function: u32, settings: ToneMapSettings) -> vec3<f32> {
-    if input_transfer_function == INPUT_TRANSFER_SRGB {
-        return srgb_to_linear(rgb);
-    }
-    if input_transfer_function == INPUT_TRANSFER_BT709 {
-        return bt709_nonlinear_to_linear(rgb);
-    }
-    if input_transfer_function == INPUT_TRANSFER_PQ {
-        return pq_to_display_linear(rgb, settings);
-    }
-    if input_transfer_function == INPUT_TRANSFER_HLG {
-        return hlg_to_scene_linear(rgb);
-    }
-    return rgb;
-}
-
-fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<f32> {
-    if input_color_space == INPUT_COLOR_SPACE_REC2020_LINEAR {
-        return rec2020_to_linear_srgb(rgb);
-    }
-    if input_color_space == INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR {
-        return display_p3_linear_to_linear_srgb(rgb);
-    }
-    if input_color_space == INPUT_COLOR_SPACE_ACES2065_1 {
-        return aces2065_1_to_linear_srgb(rgb);
-    }
-    if input_color_space == INPUT_COLOR_SPACE_XYZ {
-        return xyz_to_linear_srgb(rgb);
-    }
-    return rgb;
-}
 
 fn bt709_gain_rgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
     let encoded = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -246,7 +142,8 @@ fn cs_compose_apple_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out = compose_apple_at_primary_pixel(px, py, local_py, tone_map);
     textureStore(compose_output, vec2<i32>(px, py), out);
 }
-"#;
+"#
+);
 
 pub(super) fn primary_row_stride_bytes(width: u32) -> u64 {
     u64::from(width) * 16
@@ -628,5 +525,11 @@ mod tests {
         assert!(APPLE_GAIN_COMPOSE_SHADER.contains("var<storage, read> encoded_primary"));
         assert!(APPLE_GAIN_COMPOSE_SHADER.contains("compose_row_offset"));
         assert!(APPLE_GAIN_COMPOSE_SHADER.contains("fn cs_compose_apple_gain"));
+    }
+
+    #[test]
+    fn compose_shader_parses_as_wgsl() {
+        naga::front::wgsl::parse_str(APPLE_GAIN_COMPOSE_SHADER)
+            .expect("Apple gain compose shader WGSL should parse");
     }
 }

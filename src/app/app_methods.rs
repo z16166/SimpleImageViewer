@@ -227,10 +227,7 @@ impl ImageViewerApp {
             return;
         };
 
-        self.settings.browse_mode = crate::settings::BrowseMode::Linear;
-        self.settings.show_directory_tree_nav = false;
-        self.settings.tree_nav_selected_dir = None;
-        self.settings.tree_nav_selected_namespace_path = None;
+        self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
         let persist_gallery_dir = !(no_recursive && self.settings.keep_gallery_dir_on_double_click);
 
         let same_dir = self

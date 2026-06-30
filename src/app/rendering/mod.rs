@@ -41,6 +41,25 @@ fn should_show_loading_hint(
     res_w == 0 && !has_current_drawable && !has_pending_hold_frame
 }
 
+#[cfg(feature = "preload-debug")]
+fn canvas_drawable_kind(app: &ImageViewerApp) -> &'static str {
+    if app.tiled_canvas_matches_current_index() {
+        "tiled"
+    } else if app.texture_cache.contains(app.current_index) {
+        "sdr_texture"
+    } else if app
+        .current_hdr_image
+        .as_ref()
+        .is_some_and(|current| current.image_for_index(app.current_index).is_some())
+    {
+        "hdr_current"
+    } else if app.hdr_image_cache.contains_key(&app.current_index) {
+        "hdr_cache"
+    } else {
+        "unknown"
+    }
+}
+
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Block canvas mouse interaction when a modal dialog is open.
@@ -248,8 +267,27 @@ impl ImageViewerApp {
                         self.current_index,
                         self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
                     );
-                    if should_show_loading_hint(res_w, has_current_drawable, has_pending_hold_frame)
-                    {
+                    let show_loading_hint = should_show_loading_hint(
+                        res_w,
+                        has_current_drawable,
+                        has_pending_hold_frame,
+                    );
+                    self.canvas_display_timing.tick_paint(
+                        self.current_index,
+                        show_loading_hint,
+                        has_current_drawable,
+                        {
+                            #[cfg(feature = "preload-debug")]
+                            {
+                                canvas_drawable_kind(self)
+                            }
+                            #[cfg(not(feature = "preload-debug"))]
+                            {
+                                ""
+                            }
+                        },
+                    );
+                    if show_loading_hint {
                         self.osd
                             .render_loading_hint(ui, screen_rect, &self.cached_palette);
                     }

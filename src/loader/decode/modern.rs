@@ -33,7 +33,6 @@ pub(crate) fn is_avif_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("avif") || ext.eq_ignore_ascii_case("avifs"))
 }
 
-#[allow(dead_code)]
 pub(crate) fn is_heif_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -53,6 +52,13 @@ pub(crate) fn is_jxl_path(path: &Path) -> bool {
 
 pub(crate) fn is_hdr_capable_modern_format_path(path: &Path) -> bool {
     is_avif_path(path) || is_heif_path(path) || is_jxl_path(path)
+}
+
+/// Heuristic: modern HDR-capable containers that often embed an SDR preview (EXIF JPEG or
+/// libheif thumbnail). Today aliases [`is_hdr_capable_modern_format_path`]; may narrow to
+/// verified gain-map containers later.
+pub(crate) fn path_may_have_gain_map_embedded_sdr_preview(path: &Path) -> bool {
+    is_hdr_capable_modern_format_path(path)
 }
 
 pub(crate) fn load_avif_with_target_capacity(
@@ -142,7 +148,12 @@ pub(crate) fn load_avif_with_target_capacity(
                             "[Loader] libavif rejected container/brands — trying libheif for {}",
                             path.display()
                         );
-                        return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map)
+                        return load_heif_hdr_aware(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            crate::hdr::heif::HeifHdrDecodeDiag::default(),
+                        )
                             .map_err(|heif_err| {
                                 format!(
                                     "[Loader] libavif failed ({err}); HEIF fallback also failed ({heif_err})"
@@ -190,10 +201,11 @@ pub(crate) fn load_heif_hdr_aware(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
-        match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map) {
+        match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map, diag) {
             Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
             Err(err) => {
                 log::warn!(
@@ -207,7 +219,7 @@ pub(crate) fn load_heif_hdr_aware(
 
     #[cfg(not(feature = "heif-native"))]
     {
-        let _ = (path, hdr_target_capacity, hdr_tone_map);
+        let _ = (path, hdr_target_capacity, hdr_tone_map, diag);
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
                 .to_string(),

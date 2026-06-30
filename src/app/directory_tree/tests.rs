@@ -19,12 +19,13 @@ use super::sort::{
     compare_image_list_sort_keys, compare_optional_unix_time, image_list_sort_order,
 };
 use super::ui::{
-    DirectoryTreeNodeIcon, clamp_directory_tree_left_panel_width, directory_ancestor_chain,
-    directory_display_name, directory_tree_left_panel_width_limits,
-    directory_tree_node_icon_fields, directory_tree_panel_layout, filesystem_ancestor_chain,
-    image_list_column_layout, image_list_modified_column, image_list_name_column,
-    image_list_size_column, image_list_thumb_column, min_scroll_offset_to_show_row,
-    preview_texture_contain_rect, unc_share_root, wrapped_image_list_index,
+    DirectoryTreeNodeIcon, apply_directory_tree_splitter_frame_delta,
+    clamp_directory_tree_left_panel_width, directory_ancestor_chain, directory_display_name,
+    directory_tree_left_panel_width_limits, directory_tree_node_icon_fields,
+    directory_tree_panel_layout, filesystem_ancestor_chain, image_list_column_layout,
+    image_list_modified_column, image_list_name_column, image_list_size_column,
+    image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
+    unc_share_root, wrapped_image_list_index,
 };
 use super::workers::read_child_directories;
 use super::*;
@@ -284,6 +285,46 @@ fn left_panel_width_limits_allow_wide_folder_tree() {
     assert_eq!(min, 0.0);
     assert_eq!(max, 450.0);
     assert_eq!(clamp_directory_tree_left_panel_width(500.0, 640.0), 450.0);
+}
+
+#[test]
+fn directory_tree_splitter_applies_frame_delta_not_cumulative_drag_delta() {
+    let width = apply_directory_tree_splitter_frame_delta(340.0, -4.0, 640.0);
+    let width = apply_directory_tree_splitter_frame_delta(width, -4.0, 640.0);
+
+    assert_eq!(width, 332.0);
+}
+
+#[test]
+fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
+    use super::embedded_side_panel_clamped_width;
+
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(400.0), 380.0, 280.0),
+        320.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(400.0), 380.0, 200.0),
+        320.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(None, 380.0, 640.0),
+        380.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(500.0), 380.0, 640.0),
+        500.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(900.0), 380.0, 640.0),
+        640.0
+    );
+}
+
+#[test]
+fn should_restore_embedded_side_panel_state_when_not_resizing() {
+    assert!(super::should_restore_embedded_side_panel_state(false));
+    assert!(!super::should_restore_embedded_side_panel_state(true));
 }
 
 #[test]

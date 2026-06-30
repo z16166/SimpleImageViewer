@@ -17,6 +17,7 @@
 #[allow(dead_code)]
 mod channels;
 mod chromaticities;
+mod mip_preview;
 mod mmap;
 mod read_context;
 mod types;

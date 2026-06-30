@@ -78,7 +78,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn apply_picked_image_directory(&mut self, dir: PathBuf) {
-        if self.settings.show_directory_tree_nav {
+        if self.directory_tree_settings_active() {
             self.initialize_directory_tree_root(dir.clone());
         } else if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             // Nav hidden temporarily (Ctrl+T / Settings): keep tree mode.
@@ -135,6 +135,7 @@ impl ImageViewerApp {
         self.file_byte_len_by_index.clear();
         self.file_modified_unix_by_index.clear();
         self.set_current_index(0);
+        self.canvas_display_timing.on_navigate();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.animation_cache.clear();
@@ -668,8 +669,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn defer_main_preload_for_directory_tree_list(&self) -> bool {
-        self.settings.browse_mode == crate::settings::BrowseMode::Tree
-            && self.settings.show_directory_tree_nav
+        self.directory_tree_settings_active()
             && self.settings.directory_tree_show_list_previews
             && !self.refresh_scan_in_progress
     }

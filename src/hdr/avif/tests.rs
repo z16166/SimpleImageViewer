@@ -480,3 +480,182 @@ fn probe_gain_map_sample_avif_base_hdr_folder() {
         mean_luma(&bright_sdr)
     );
 }
+
+#[cfg(feature = "avif-native")]
+#[test]
+fn avif_base_sdr_strip_compose_is_strip_sized() {
+    use crate::hdr::types::HdrToneMapSettings;
+    use crate::loader::directory_tree_strip_gain_map_compose_capacity;
+
+    let path = std::path::Path::new(
+        r"F:\HDR\Gain_Map_Sample_Photos\Gain_Map_Sample_Photos\samples_avif_base_sdr\01_base_sdr.avif",
+    );
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(path).expect("read");
+    let max_side = 128_u32;
+    let tone = HdrToneMapSettings::default();
+    let capacity = directory_tree_strip_gain_map_compose_capacity(&tone);
+    let composed = super::decode_avif_strip_iso_gain_map_composed(&bytes, path, max_side, capacity)
+        .expect("forward gain map")
+        .expect("strip compose");
+    let (strip, logical) = composed;
+    assert_eq!(logical, (2400, 3000));
+    assert!(strip.width <= max_side && strip.height <= max_side);
+    assert_eq!(strip.width, 102);
+    assert_eq!(strip.height, 128);
+    let mean_luma = strip
+        .rgba()
+        .chunks_exact(4)
+        .map(|px| 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32)
+        .sum::<f32>()
+        / (strip.rgba().len() / 4).max(1) as f32;
+    assert!(
+        mean_luma > 20.0,
+        "composed strip should not be near-black baseline (mean_luma={mean_luma:.1})"
+    );
+}
+
+/// Probe (A) ApplyGainMap output sizing and (B) safe YUV scale via SetViewRect.
+#[cfg(feature = "avif-native")]
+#[test]
+fn probe_avif_strip_scale_and_apply_gain_map() {
+    use std::time::Instant;
+
+    use super::decode::read_avif_decoder_image;
+    use crate::hdr::tiled::preview_dimensions;
+
+    let path = std::path::Path::new(
+        r"F:\HDR\Gain_Map_Sample_Photos\Gain_Map_Sample_Photos\samples_avif_base_sdr\01_base_sdr.avif",
+    );
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(path).expect("read");
+    let max_side = 128_u32;
+    let image = read_avif_decoder_image(&bytes).expect("decode");
+    let image_ptr = image.as_ptr();
+    let image_ref = unsafe { &*image_ptr };
+    assert!(!image_ref.gainMap.is_null());
+    let (strip_w, strip_h) =
+        preview_dimensions(image_ref.width, image_ref.height, max_side, max_side);
+    eprintln!(
+        "logical={}x{} strip={strip_w}x{strip_h}",
+        image_ref.width, image_ref.height
+    );
+    let mut diag = libavif_sys::avifDiagnostics { error: [0; 256] };
+
+    eprintln!("(B0) in-place noop scale on decoder image...");
+    let noop = unsafe {
+        libavif_sys::avifImageScale(image_ptr, image_ref.width, image_ref.height, &mut diag)
+    };
+    eprintln!("(B0) -> {}", super::decode::libavif_result_to_string(noop));
+
+    eprintln!("(B0b) in-place strip scale on decoder image (same decode)...");
+    let image2 = read_avif_decoder_image(&bytes).expect("decode2");
+    let t0 = Instant::now();
+    let in_place =
+        unsafe { libavif_sys::avifImageScale(image2.as_ptr(), strip_w, strip_h, &mut diag) };
+    eprintln!(
+        "(B0b) -> {} in {}ms",
+        super::decode::libavif_result_to_string(in_place),
+        t0.elapsed().as_millis()
+    );
+
+    // (B) Deep-copy base YUV then scale (owned planes).
+    eprintln!("(B) copy YUV + progressive scale...");
+    let t_copy_scale = Instant::now();
+    let scaled_base = {
+        let Some(copy) = libavif_sys::AvifImageOwned::create_empty() else {
+            panic!("create_empty");
+        };
+        let copy_res = unsafe {
+            libavif_sys::avifImageCopy(copy.as_ptr(), image_ptr, libavif_sys::AVIF_PLANES_YUV)
+        };
+        eprintln!(
+            "(B) avifImageCopy -> {}",
+            super::decode::libavif_result_to_string(copy_res)
+        );
+        assert_eq!(copy_res, libavif_sys::AVIF_RESULT_OK);
+        unsafe {
+            (*copy.as_ptr()).gainMap = std::ptr::null_mut();
+        }
+        let copy_ref = unsafe { &*copy.as_ptr() };
+        eprintln!(
+            "(B) copy planes: {}x{} depth={} format={}",
+            copy_ref.width, copy_ref.height, copy_ref.depth, copy_ref.yuvFormat
+        );
+        for (label, tw, th) in [
+            ("noop", image_ref.width, image_ref.height),
+            ("half", copy_ref.width / 2, copy_ref.height / 2),
+            ("strip", strip_w, strip_h),
+        ] {
+            eprintln!("(B) avifImageScale {label} -> {tw}x{th}...");
+            let scale = unsafe { libavif_sys::avifImageScale(copy.as_ptr(), tw, th, &mut diag) };
+            eprintln!(
+                "(B) {label} -> {}",
+                super::decode::libavif_result_to_string(scale)
+            );
+            if label == "noop" {
+                assert_eq!(scale, libavif_sys::AVIF_RESULT_OK);
+                continue;
+            }
+            assert_eq!(scale, libavif_sys::AVIF_RESULT_OK);
+        }
+        copy
+    };
+    eprintln!(
+        "(B) copy+scale total {}ms",
+        t_copy_scale.elapsed().as_millis()
+    );
+
+    // (A) ApplyGainMap on strip-sized base: output dims follow baseImage, not caller preset.
+    {
+        let gain_map = unsafe { &*image_ref.gainMap };
+        let scaled_ref = unsafe { &*scaled_base.as_ptr() };
+        let mut rgb_out = std::mem::MaybeUninit::<libavif_sys::avifRGBImage>::zeroed();
+        unsafe {
+            libavif_sys::avifRGBImageSetDefaults(rgb_out.as_mut_ptr(), scaled_base.as_ptr());
+        }
+        let mut rgb_out = unsafe { rgb_out.assume_init() };
+        let hdr_headroom = 4.9_f32.log2();
+        let t0 = Instant::now();
+        let result = unsafe {
+            libavif_sys::avifImageApplyGainMap(
+                scaled_base.as_ptr(),
+                gain_map,
+                hdr_headroom,
+                libavif_sys::AVIF_COLOR_PRIMARIES_BT709,
+                libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_LINEAR,
+                &mut rgb_out,
+                std::ptr::null_mut(),
+                &mut diag,
+            )
+        };
+        eprintln!(
+            "(A) ApplyGainMap -> {} out={}x{} (base={}x{}) in {}ms",
+            super::decode::libavif_result_to_string(result),
+            rgb_out.width,
+            rgb_out.height,
+            scaled_ref.width,
+            scaled_ref.height,
+            t0.elapsed().as_millis()
+        );
+        assert_eq!(result, libavif_sys::AVIF_RESULT_OK);
+        assert_eq!(rgb_out.width, strip_w);
+        assert_eq!(rgb_out.height, strip_h);
+        unsafe { libavif_sys::avifRGBImageFreePixels(&mut rgb_out) };
+    }
+
+    let t0 = Instant::now();
+    let _ = super::decode_avif_strip_iso_gain_map_composed(&bytes, path, max_side, 4.9)
+        .expect("compose")
+        .expect("ok");
+    eprintln!(
+        "(current) decode_avif_strip_iso_gain_map_composed in {}ms",
+        t0.elapsed().as_millis()
+    );
+}

@@ -24,16 +24,19 @@ mod detect;
 mod directory_tree_thumb;
 mod gain_map_strip;
 mod hdr_formats;
+mod hdr_strip_fast;
 mod jpeg;
 mod modern;
 mod raster;
 mod raw;
 pub(crate) use raw::open_raw_processor_with_preview;
+mod strip_compose_probe;
 mod strip_downsample;
 mod tiff_raw_sniff;
 
-pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_from_path;
+pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_decode_from_path;
 pub(crate) use raster::is_maybe_animated;
+pub(crate) use strip_compose_probe::path_needs_directory_tree_strip_compose_upgrade;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
@@ -230,7 +233,17 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map),
+                || {
+                    load_heif_hdr_aware(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        crate::hdr::heif::HeifHdrDecodeDiag {
+                            idx: Some(index),
+                            path: Some(path),
+                        },
+                    )
+                },
             );
         }
 
