@@ -110,8 +110,9 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     }
 }
 
-/// Writes on-disk pipeline cache bytes. Call only when a cache was created (`Some` at startup).
-pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
+/// Writes on-disk pipeline cache bytes synchronously (Windows non-DX12 path only).
+#[cfg(target_os = "windows")]
+fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     let Some(data) = cache.get_data() else {
         return;
     };
