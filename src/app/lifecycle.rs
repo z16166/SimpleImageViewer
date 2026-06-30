@@ -470,8 +470,9 @@ impl ImageViewerApp {
                 settings.hdr_native_surface_enabled_effective(),
                 hdr_capabilities.backend,
             );
-        let auto_hidden_directory_tree_nav =
-            initial_image.is_some() && settings.show_directory_tree_nav;
+        let auto_hidden_directory_tree_nav = initial_image.is_some()
+            && settings.show_directory_tree_nav
+            && settings.browse_mode == BrowseMode::Tree;
         let mut app = Self {
             save_tx,
             initial_image,

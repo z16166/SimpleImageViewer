@@ -580,18 +580,25 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
 #[cfg(feature = "jpegxl")]
 pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
     bytes: &[u8],
-) -> Result<(Vec<u8>, u32, u32), String> {
+) -> Result<(Vec<u8>, u32, u32), super::strip_baseline_error::JxlStripBaselineError> {
+    use super::strip_baseline_error::{JxlStripBaselineError, classify_jxl_strip_baseline_failure};
+
     let tone_map = HdrToneMapSettings::default();
-    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true)? {
-        ImageData::Static(mut decoded) => {
+    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true) {
+        Ok(ImageData::Static(mut decoded)) => {
             Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
         }
-        ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_) => {
-            Err("JPEG XL strip baseline expected Static image data".to_string())
+        Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_)) => {
+            Err(JxlStripBaselineError::UnsupportedImageData(
+                "JPEG XL strip baseline expected Static image data".to_string(),
+            ))
         }
-        ImageData::Animated(_) | ImageData::Tiled(_) => {
-            Err("JPEG XL strip baseline does not support animation or tiling".to_string())
-        }
+        Ok(ImageData::Animated(_) | ImageData::Tiled(_)) => Err(
+            JxlStripBaselineError::UnsupportedImageData(
+                "JPEG XL strip baseline does not support animation or tiling".to_string(),
+            ),
+        ),
+        Err(message) => Err(classify_jxl_strip_baseline_failure(&message)),
     }
 }
 

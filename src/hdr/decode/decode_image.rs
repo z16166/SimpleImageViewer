@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::{GenericImageView, ImageReader, Limits};
+use image::{ImageReader, Limits};
 
 use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
@@ -36,7 +36,16 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     }
 
     let mmap = crate::mmap_util::map_file(path)?;
-    let mut decoder = ImageReader::new(std::io::Cursor::new(&mmap[..]))
+    let mut dimensions_reader = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    dimensions_reader.no_limits();
+    let (width, height) = dimensions_reader
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+    super::tone_map::validate_hdr_fallback_budget(width, height)?;
+
+    let mut decoder = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
 
@@ -45,8 +54,6 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     decoder.limits(limits);
 
     let image = decoder.decode().map_err(|e| e.to_string())?;
-    let (width, height) = image.dimensions();
-    super::tone_map::validate_hdr_fallback_budget(width, height)?;
     let rgba = image.into_rgba32f();
 
     Ok(HdrImageBuffer {
@@ -62,19 +69,19 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn hdr_fallback_validates_dimensions_before_rgba32f_conversion() {
+    fn hdr_fallback_validates_dimensions_before_decode() {
         let source = include_str!("decode_image.rs");
-        let decode_pos = source
-            .find("let image = decoder.decode()")
-            .expect("decode_hdr_image should decode into a DynamicImage first");
         let validate_pos = source
             .find("validate_hdr_fallback_budget(width, height)")
             .expect("decode_hdr_image should validate HDR fallback dimensions");
+        let decode_pos = source
+            .find("let image = decoder.decode()")
+            .expect("decode_hdr_image should decode after budget validation");
         let convert_pos = source
             .find("let rgba = image.into_rgba32f()")
-            .expect("decode_hdr_image should convert after validation");
+            .expect("decode_hdr_image should convert after decode");
 
-        assert!(decode_pos < validate_pos);
-        assert!(validate_pos < convert_pos);
+        assert!(validate_pos < decode_pos);
+        assert!(decode_pos < convert_pos);
     }
 }

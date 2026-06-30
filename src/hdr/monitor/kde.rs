@@ -100,6 +100,26 @@ fn parse_hdr_state(value: &str) -> Option<LinuxExplicitHdrState> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn peek_cached_explicit_hdr_state(output_label: &str) -> Option<LinuxExplicitHdrState> {
+    if !is_kde_session() {
+        return None;
+    }
+    kscreen_cache().lock().states.get(output_label).copied()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn refresh_linux_explicit_hdr_state_from_kscreen(
+    selection: &mut super::types::HdrMonitorSelection,
+) {
+    let state = peek_cached_explicit_hdr_state(&selection.label)
+        .or_else(|| explicit_hdr_state_for_output(&selection.label));
+    if let Some(state) = state {
+        selection.linux_explicit_hdr_state = Some(state);
+        selection.linux_explicit_hdr_state_source = Some(KDE_KSCREEN_HDR_STATE_SOURCE);
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn explicit_hdr_state_for_output(output_label: &str) -> Option<LinuxExplicitHdrState> {
     if !is_kde_session() {
         log_kde_probe_if_changed("skipped: KDE session environment not detected".to_string());

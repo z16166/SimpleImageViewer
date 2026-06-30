@@ -38,7 +38,9 @@ pub fn linux_effective_monitor_selection(
     wp: Option<&HdrMonitorSelection>,
     wsi: WsiHdrSurfaceGates,
 ) -> Option<HdrMonitorSelection> {
-    let wp = wp.cloned()?;
+    let mut wp = wp.cloned()?;
+    #[cfg(target_os = "linux")]
+    crate::hdr::monitor::kde::refresh_linux_explicit_hdr_state_from_kscreen(&mut wp);
     let admission = crate::hdr::linux_admission::classify_linux_hdr_admission(&wp, wsi);
     let hdr_supported = admission.hdr_supported();
     Some(HdrMonitorSelection {

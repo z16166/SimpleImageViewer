@@ -296,6 +296,38 @@ fn directory_tree_splitter_applies_frame_delta_not_cumulative_drag_delta() {
 }
 
 #[test]
+fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
+    use super::embedded_side_panel_clamped_width;
+
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(400.0), 380.0, 280.0),
+        320.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(400.0), 380.0, 200.0),
+        320.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(None, 380.0, 640.0),
+        380.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(500.0), 380.0, 640.0),
+        500.0
+    );
+    assert_eq!(
+        embedded_side_panel_clamped_width(Some(900.0), 380.0, 640.0),
+        640.0
+    );
+}
+
+#[test]
+fn should_restore_embedded_side_panel_state_when_not_resizing() {
+    assert!(super::should_restore_embedded_side_panel_state(false));
+    assert!(!super::should_restore_embedded_side_panel_state(true));
+}
+
+#[test]
 fn main_window_canvas_rects_insets_embedded_nav_panel() {
     use crate::app::rendering::geometry::main_window_canvas_rects;
     use eframe::egui::{Pos2, Rect};

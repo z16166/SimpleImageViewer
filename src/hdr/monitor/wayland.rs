@@ -723,11 +723,20 @@ impl Dispatch<wp_image_description_info_v1::WpImageDescriptionInfoV1, ()> for Pr
 }
 
 #[cfg(target_os = "linux")]
+const WAYLAND_OUTPUT_DISCOVERY_ROUNDTRIPS: u32 = 8;
+#[cfg(target_os = "linux")]
+const WAYLAND_HDR_METADATA_ROUNDTRIPS: u32 = 8;
+#[cfg(target_os = "linux")]
+const WAYLAND_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(target_os = "linux")]
 fn run_probe(
     probe_point: [i32; 2],
     probe_origin: &'static str,
     spawn_probe: bool,
 ) -> Result<ProbeState, String> {
+    use std::time::Instant;
+
     ensure_wayland_session()?;
 
     let connection =
@@ -738,8 +747,13 @@ fn run_probe(
 
     let mut state = ProbeState::new(probe_point, probe_origin, spawn_probe);
     display.get_registry(&qh, ());
+    let deadline = Instant::now() + WAYLAND_PROBE_TIMEOUT;
 
-    for _ in 0..8 {
+    for _ in 0..WAYLAND_OUTPUT_DISCOVERY_ROUNDTRIPS {
+        if Instant::now() >= deadline {
+            state.fail("Wayland HDR probe timed out during output discovery".to_string());
+            break;
+        }
         event_queue
             .roundtrip(&mut state)
             .map_err(|err| format!("Wayland roundtrip failed: {err}"))?;
@@ -758,8 +772,12 @@ fn run_probe(
         }
     }
 
-    for _ in 0..8 {
+    for _ in 0..WAYLAND_HDR_METADATA_ROUNDTRIPS {
         if matches!(state.phase, ProbePhase::Done) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            state.fail("Wayland HDR probe timed out waiting for image description".to_string());
             break;
         }
         event_queue

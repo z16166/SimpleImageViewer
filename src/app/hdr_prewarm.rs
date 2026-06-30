@@ -96,7 +96,7 @@ impl ImageViewerApp {
             )
             && crate::wgpu_pipeline_cache::runtime_prewarm_persist_enabled(info.backend)
         {
-            crate::wgpu_pipeline_cache::persist(info, cache);
+            crate::wgpu_pipeline_cache::persist_async(info, cache);
         }
     }
 }

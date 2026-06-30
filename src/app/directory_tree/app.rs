@@ -43,7 +43,8 @@ use super::{
     DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
     DirectoryTreeListPreviewLayout, DirectoryTreeListSnapshot, DirectoryTreeListState,
     DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
-    FileMetadataRequest, ImageListSortColumn, domains, is_places_sentinel_namespace_path, view,
+    FileMetadataRequest, ImageListSortColumn, domains, embedded_side_panel_clamped_width,
+    is_places_sentinel_namespace_path, view,
 };
 
 struct DirectoryTreePanelRefs<'a> {
@@ -150,13 +151,11 @@ fn embedded_side_panel_stable_rect_before_show(
     default_width: f32,
 ) -> egui::Rect {
     let available = ui.available_rect_before_wrap();
-    let width = egui::PanelState::load(ui.ctx(), panel_id)
-        .map(|state| state.rect.width())
-        .unwrap_or(default_width)
-        .clamp(
-            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
-            available.width().max(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH),
-        );
+    let width = embedded_side_panel_clamped_width(
+        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.rect.width()),
+        default_width,
+        available.width(),
+    );
     egui::Rect::from_min_max(
         available.min,
         egui::pos2(available.min.x + width, available.max.y),
@@ -171,7 +170,7 @@ fn restore_embedded_side_panel_state_if_not_resizing(
     let resize_active = ctx
         .read_response(panel_id.with("__resize"))
         .is_some_and(|response| response.dragged());
-    if resize_active {
+    if !super::should_restore_embedded_side_panel_state(resize_active) {
         return;
     }
     ctx.data_mut(|data| data.insert_persisted(panel_id, egui::PanelState { rect: stable_rect }));

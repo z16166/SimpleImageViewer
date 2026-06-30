@@ -19,6 +19,7 @@ mod metadata;
 mod probe;
 mod runner;
 mod strip_baseline;
+mod strip_baseline_error;
 
 #[cfg(test)]
 mod tests;

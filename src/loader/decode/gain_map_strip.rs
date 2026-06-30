@@ -148,11 +148,8 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
                         baseline, width, height, max_side, path,
                     ));
                 }
-                Err(err) => {
-                    if !err.contains("strip baseline") && !err.contains("jhgm") {
-                        return Some(Err(err));
-                    }
-                }
+                Err(err) if err.allows_compose_fallback() => {}
+                Err(err) => return Some(Err(err.to_string())),
             }
             if let Ok((strip, logical)) =
                 crate::loader::directory_tree_strip_composed_from_gain_map_path(
