@@ -36,13 +36,13 @@ mod tests;
 pub use effective::{
     effective_capability_output_mode, effective_monitor_selection, effective_render_output_mode,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use kde::refresh_linux_explicit_hdr_state_from_kscreen;
 pub use probe::spawn_monitor_hdr_status;
 pub use state::HdrMonitorState;
 pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 #[cfg(any(target_os = "linux", test))]
 pub use types::{LinuxExplicitHdrState, LinuxWaylandColorPrimaries, LinuxWaylandTransferFunction};
-#[cfg(target_os = "linux")]
-pub(crate) use kde::refresh_linux_explicit_hdr_state_from_kscreen;
 
 #[cfg(test)]
 pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;

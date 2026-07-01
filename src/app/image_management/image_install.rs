@@ -479,16 +479,9 @@ impl ImageViewerApp {
                 .get(&idx)
                 .map(|hdr| (hdr.width, hdr.height))
         });
-        let composed_strip_preview = self
-            .hdr_image_cache
-            .get(&idx)
-            .and_then(|hdr| {
-                self.installed_hdr_directory_tree_strip_preview(
-                    hdr.as_ref(),
-                    &fallback_image,
-                    false,
-                )
-            });
+        let composed_strip_preview = self.hdr_image_cache.get(&idx).and_then(|hdr| {
+            self.installed_hdr_directory_tree_strip_preview(hdr.as_ref(), &fallback_image, false)
+        });
         let strip_tag = hdr_fallback_directory_tree_strip_tag(
             self.hdr_image_cache.get(&idx).map(|hdr| hdr.as_ref()),
             composed_strip_preview.is_some(),

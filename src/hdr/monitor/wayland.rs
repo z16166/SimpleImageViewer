@@ -482,15 +482,13 @@ impl ProbeState {
         );
 
         if self.spawn_probe {
-            self.probe_outcome = Some(WaylandProbeOutcome::Spawn(Ok(
-                SpawnMonitorHdrProbe {
-                    hdr_supported: spawn_hdr_supported(&selection),
-                    label: selection.label,
-                    origin: self.probe_origin,
-                    max_luminance_nits: selection.max_luminance_nits,
-                    max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
-                },
-            )));
+            self.probe_outcome = Some(WaylandProbeOutcome::Spawn(Ok(SpawnMonitorHdrProbe {
+                hdr_supported: spawn_hdr_supported(&selection),
+                label: selection.label,
+                origin: self.probe_origin,
+                max_luminance_nits: selection.max_luminance_nits,
+                max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
+            })));
         } else {
             self.probe_outcome = Some(WaylandProbeOutcome::Monitor(Ok(selection)));
         }

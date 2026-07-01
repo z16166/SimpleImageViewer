@@ -494,6 +494,8 @@ pub struct ImageViewerApp {
     pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
     pub(crate) directory_tree: DirectoryTreeRuntime,
     pub(crate) auto_hidden_directory_tree_nav: bool,
+    /// One-shot embedded nav panel `PanelState` seed from persisted yaml width (startup layout).
+    pub(crate) embedded_directory_tree_panel_bootstrapped: bool,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
     pub(crate) directory_tree_strip_compose_probe_cache:

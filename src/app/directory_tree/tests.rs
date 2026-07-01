@@ -307,10 +307,7 @@ fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
         embedded_side_panel_clamped_width(Some(400.0), 380.0, 200.0),
         320.0
     );
-    assert_eq!(
-        embedded_side_panel_clamped_width(None, 380.0, 640.0),
-        380.0
-    );
+    assert_eq!(embedded_side_panel_clamped_width(None, 380.0, 640.0), 380.0);
     assert_eq!(
         embedded_side_panel_clamped_width(Some(500.0), 380.0, 640.0),
         500.0
@@ -325,6 +322,43 @@ fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
 fn should_restore_embedded_side_panel_state_when_not_resizing() {
     assert!(super::should_restore_embedded_side_panel_state(false));
     assert!(!super::should_restore_embedded_side_panel_state(true));
+}
+
+#[test]
+fn seed_embedded_side_panel_states_writes_persisted_layout() {
+    use super::{DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, seed_embedded_side_panel_states};
+    use eframe::egui::{self, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let available = Rect::from_min_max(Pos2::new(8.0, 0.0), Pos2::new(1008.0, 800.0));
+    seed_embedded_side_panel_states(&ctx, available, 420.0);
+
+    let state = egui::PanelState::load(&ctx, egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
+        .expect("panel state");
+    assert_eq!(state.rect.min, available.min);
+    assert!((state.rect.width() - 420.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn sync_images_updates_list_while_places_still_loading() {
+    let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loading = true;
+    state.tree.places_loaded = false;
+    state.list.image_rows.clear();
+    state.list.scanning = true;
+
+    state.sync_images(
+        &paths,
+        &[0, 0],
+        &[None, None],
+        0,
+        true,
+        String::from("scanning"),
+    );
+
+    assert_eq!(state.list.image_rows.len(), 2);
+    assert!(state.list.scanning);
 }
 
 #[test]
@@ -1286,6 +1320,171 @@ fn restore_tree_selection_preserves_namespace_before_places_load() {
 }
 
 #[test]
+fn reveal_selected_namespace_pre_places_builds_mount_chain() {
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+    let iphone15 = PathBuf::from(r"F:\iphone15");
+    let iphone15_ns =
+        super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &iphone15);
+
+    let mut state = DirectoryTreeState::default();
+    assert!(!state.tree.places_loaded);
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_mount.clone()));
+    let requests = state.tree.reveal_selected_namespace();
+    assert!(
+        state.tree.nodes.contains_key(&mount_root),
+        "mount root node should exist before Places loads"
+    );
+    assert!(
+        state.tree.nodes.contains_key(&via_mount),
+        "selected namespace node should exist before Places loads"
+    );
+    assert!(
+        !requests.is_empty()
+            || state
+                .tree
+                .nodes
+                .get(&mount_root)
+                .is_some_and(|node| node.loading),
+        "reveal should request children for the bootstrap chain"
+    );
+    let mount_node = state.tree.nodes.get(&mount_root).expect("mount node");
+    assert!(
+        mount_node
+            .children
+            .iter()
+            .any(|child| child.as_os_str() == iphone15_ns.as_os_str()),
+        "bootstrap chain should link mount root toward the selected path"
+    );
+}
+
+#[test]
+fn pre_places_folder_display_root_none_when_places_loaded() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loaded: true,
+            selected_namespace_path: Some(mount_root.clone()),
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(view.pre_places_folder_display_root().is_none());
+}
+
+#[test]
+fn pre_places_folder_display_root_none_without_selected_namespace() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(view.pre_places_folder_display_root().is_none());
+}
+
+#[test]
+fn pre_places_folder_display_root_none_without_bootstrap_nodes() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            selected_namespace_path: Some(via_mount),
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(
+        view.pre_places_folder_display_root().is_none(),
+        "without bootstrap nodes in the snapshot, paint falls back to loading status only"
+    );
+}
+
+#[test]
+fn pre_places_folder_display_root_returns_mount_when_bootstrap_node_exists() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let browse = PathBuf::from(r"F:\Photos");
+    let photos = super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &browse);
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        mount_root.clone(),
+        Arc::new(super::directory_tree_node(
+            "F:\\".to_string(),
+            PathBuf::from(r"F:\"),
+        )),
+    );
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            selected_namespace_path: Some(photos),
+            nodes,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert_eq!(
+        view.pre_places_folder_display_root().as_deref(),
+        Some(mount_root.as_path())
+    );
+}
+
+#[test]
+fn fs_path_for_namespace_node_pre_places_none_without_mount_roots() {
+    let mount = super::namespace::drive_mount_namespace_path(Path::new(r"Z:\"));
+    let mut tree = DirectoryTreeTreeState::default();
+    tree.selected_fs_path = Some(PathBuf::from("relative/no/volume/file.jpg"));
+    assert!(
+        tree.fs_path_for_namespace_node_pre_places(&mount).is_none(),
+        "unresolved relative paths yield no mount roots and no fs mapping"
+    );
+}
+
+#[test]
 fn apply_children_omits_network_share_roots_from_filesystem_parent() {
     use crate::directory_tree_places::types::DriveEntry;
 
@@ -1743,11 +1942,13 @@ fn begin_paint_frame_promotes_folder_scroll_to_selected_without_clobbering_clear
 }
 
 #[test]
-fn folder_reveal_work_pending_tracks_scroll_flag() {
+fn folder_reveal_work_needs_repaint_tracks_scroll_flag() {
+    use super::visibility::folder_reveal_work_needs_repaint;
+
     let mut tree = DirectoryTreeTreeState::default();
-    assert!(!tree.folder_reveal_work_pending());
+    assert!(!folder_reveal_work_needs_repaint(&tree));
     tree.scroll_folder_tree_to_selected = true;
-    assert!(tree.folder_reveal_work_pending());
+    assert!(folder_reveal_work_needs_repaint(&tree));
 }
 
 #[test]
@@ -1948,4 +2149,68 @@ fn directory_tree_view_carries_sync_warning_from_state() {
         Arc::new(DirectoryTreePreviewSnapshot::default()),
     );
     assert_eq!(view.sync_warning(), Some("sync dropped"));
+}
+
+#[test]
+fn appended_image_rows_affect_visible_only_when_in_viewport() {
+    use super::visibility::appended_image_rows_affect_visible;
+
+    assert!(appended_image_rows_affect_visible(0, 5, None));
+    assert!(appended_image_rows_affect_visible(10, 15, Some((0, 12))));
+    assert!(!appended_image_rows_affect_visible(10, 20, Some((0, 10))));
+    assert!(!appended_image_rows_affect_visible(100, 200, Some((5, 15))));
+}
+
+#[test]
+fn initialize_places_preserves_bootstrap_mount_nodes() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let child = super::namespace::namespace_child_path(
+        &mount_root,
+        Path::new(r"F:\"),
+        &PathBuf::from(r"F:\photos"),
+    );
+    let mut state = DirectoryTreeState::default();
+    let _ = state.tree.nodes.insert(
+        mount_root.clone(),
+        DirectoryTreeNode {
+            display_name: "F:\\".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+            expanded: true,
+            loading: false,
+            children_loaded: true,
+            children: vec![child.clone()],
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+    let _ = state.tree.nodes.insert(
+        child.clone(),
+        DirectoryTreeNode {
+            display_name: "photos".to_string(),
+            fs_path: PathBuf::from(r"F:\photos"),
+            expanded: false,
+            loading: false,
+            children_loaded: false,
+            children: Vec::new(),
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        this_pc_label: "This PC".to_string(),
+        known_folders: Vec::new(),
+        drives: vec![DriveEntry {
+            display_name: "Local Disk (F:)".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+        }],
+        network_locations: Vec::new(),
+        network_label: "Network".to_string(),
+    };
+    state.tree.initialize_places(places);
+
+    assert!(state.tree.nodes.contains_key(&child));
+    assert!(state.tree.places_loaded);
 }

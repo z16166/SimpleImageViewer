@@ -45,8 +45,6 @@ pub(super) const DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES: u32 = 120;
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
-pub(super) const DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID: &str =
-    "siv_directory_tree_embedded_loading";
 pub(super) const DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID: &str =
     "siv_directory_tree_nav_wheel_block_rect";
 pub(super) const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
@@ -66,6 +64,25 @@ pub(crate) fn embedded_side_panel_clamped_width(
 
 pub(crate) fn should_restore_embedded_side_panel_state(resize_active: bool) -> bool {
     !resize_active
+}
+
+/// Pre-seed embedded side-panel `PanelState` from persisted yaml width before the first paint.
+pub(crate) fn seed_embedded_side_panel_states(
+    ctx: &egui::Context,
+    available: egui::Rect,
+    width: f32,
+) {
+    let width = width.min(available.width().max(0.0));
+    let rect = egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(available.min.x + width, available.max.y),
+    );
+    ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
+            egui::PanelState { rect },
+        );
+    });
 }
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 pub(super) const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
@@ -211,6 +228,10 @@ fn modified_unix_for_display(stored: i64) -> i64 {
 }
 
 impl DirectoryTreeFileRow {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(crate) fn new(
         path: PathBuf,
         name: String,
@@ -588,6 +609,12 @@ impl DirectoryTreeRuntime {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum RevealNamespaceMode {
+    PrePlaces,
+    PostPlaces,
+}
+
 impl DirectoryTreeTreeState {
     fn note_nodes_cap_reached(&mut self, context_path: &Path) {
         log::warn!(
@@ -657,7 +684,6 @@ impl DirectoryTreeTreeState {
         self.known_folders = places.known_folders;
         self.network_label = places.network_label;
         self.network_visible = false;
-        self.nodes.clear();
         self.places_drive_roots = places
             .drives
             .iter()
@@ -892,10 +918,6 @@ impl DirectoryTreeTreeState {
         self.set_selected_fs_path(dir);
     }
 
-    pub(crate) fn folder_reveal_work_pending(&self) -> bool {
-        self.scroll_folder_tree_to_selected || self.nodes.iter().any(|(_, node)| node.loading)
-    }
-
     pub(crate) fn expand_requests_for_selection(
         &mut self,
         dir: &Path,
@@ -951,6 +973,11 @@ impl DirectoryTreeTreeState {
     /// Priority: known folder, UNC share, deepest Places mount root, then root `/` on Linux.
     /// Preferring the deepest mount avoids flattening mount subtrees under a parent filesystem
     /// expansion (see tests `reveal_mount_path_skips_root_slash_ancestor_chain`).
+    ///
+    /// After Places load, mount resolution uses [`Self::places_mount_root_for_path`] (Places drive
+    /// list). Before Places load, the fallback branch uses [`ui::volume_root_for_path`], which
+    /// heuristically picks volume/share roots and may disagree with Places -- if tree nodes look
+    /// wrong around startup, compare these two paths first.
     fn namespace_path_for_fs_path(&self, dir: &Path) -> Option<PathBuf> {
         if let Some(entry) = self.known_folder_for_fs_path(dir) {
             let chain = namespace::namespace_ancestor_chain(
@@ -983,6 +1010,31 @@ impl DirectoryTreeTreeState {
             );
             return chain.last().cloned().or(Some(mount_tree));
         }
+        if !self.places_loaded
+            && is_unc_path(dir)
+            && let Some(share) = ui::unc_share_root(dir)
+        {
+            let share_tree = namespace::network_share_namespace_path(&share);
+            let chain = namespace::namespace_ancestor_chain(
+                &share_tree,
+                &share,
+                dir,
+                MAX_DIRECTORY_TREE_REVEAL_DEPTH,
+            );
+            return chain.last().cloned().or(Some(share_tree));
+        }
+        if !self.places_loaded
+            && let Some(mount_root) = ui::volume_root_for_path(dir)
+        {
+            let mount_tree = namespace::drive_mount_namespace_path(&mount_root);
+            let chain = namespace::namespace_ancestor_chain(
+                &mount_tree,
+                &mount_root,
+                dir,
+                MAX_DIRECTORY_TREE_REVEAL_DEPTH,
+            );
+            return chain.last().cloned().or(Some(mount_tree));
+        }
         if self
             .places_drive_roots
             .iter()
@@ -1001,13 +1053,194 @@ impl DirectoryTreeTreeState {
         None
     }
 
+    fn pre_places_mount_roots(&self, selection: &Path) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = self.places_drive_roots.iter().cloned().collect();
+        if let Some(root) = ui::volume_root_for_path(selection)
+            && !roots.iter().any(|existing| existing == &root)
+        {
+            roots.push(root);
+        }
+        roots
+    }
+
+    fn fs_path_for_namespace_node_pre_places(&self, tree: &Path) -> Option<PathBuf> {
+        if let Some(node) = self.nodes.get(tree) {
+            return Some(node.fs_path.clone());
+        }
+        let selection = self.selected_fs_path.as_deref()?;
+        let mount_roots = self.pre_places_mount_roots(selection);
+        // `fs_path_for_mount_namespace` returns None when `mount_roots` is empty (no iterator match).
+        if let Some(browse) =
+            namespace::fs_path_for_mount_namespace(tree, mount_roots.iter().cloned())
+        {
+            return Some(browse);
+        }
+        if is_unc_path(selection)
+            && let Some(share) = ui::unc_share_root(selection)
+        {
+            return namespace::fs_path_for_network_share_namespace(tree, [share]);
+        }
+        None
+    }
+
+    fn pre_places_reveal_namespace_chain(&self, selected_tree_key: &Path) -> Vec<PathBuf> {
+        let mut chain = namespace::namespace_path_ancestor_chain(selected_tree_key);
+        if chain.is_empty()
+            && let Some(selected_fs) = self.selected_fs_path.as_deref()
+        {
+            if is_unc_path(selected_fs)
+                && let Some(share) = ui::unc_share_root(selected_fs)
+            {
+                let share_tree = namespace::network_share_namespace_path(&share);
+                chain = namespace::namespace_ancestor_chain(
+                    &share_tree,
+                    &share,
+                    selected_fs,
+                    MAX_DIRECTORY_TREE_REVEAL_DEPTH,
+                );
+            } else if let Some(mount_root) = ui::volume_root_for_path(selected_fs) {
+                let mount_tree = namespace::drive_mount_namespace_path(&mount_root);
+                chain = namespace::namespace_ancestor_chain(
+                    &mount_tree,
+                    &mount_root,
+                    selected_fs,
+                    MAX_DIRECTORY_TREE_REVEAL_DEPTH,
+                );
+            }
+        }
+        if chain.len() > MAX_DIRECTORY_TREE_REVEAL_DEPTH {
+            chain.truncate(MAX_DIRECTORY_TREE_REVEAL_DEPTH);
+        }
+        chain
+    }
+
+    fn link_pre_places_namespace_chain(&mut self, chain: &[PathBuf]) {
+        for window in chain.windows(2) {
+            let parent_key = &window[0];
+            let child_key = &window[1];
+            if is_places_sentinel_namespace_path(parent_key) {
+                continue;
+            }
+            let Some(parent) = self.nodes.get_mut(parent_key) else {
+                continue;
+            };
+            parent.expanded = true;
+            if !parent
+                .children
+                .iter()
+                .any(|child| child.as_os_str() == child_key.as_os_str())
+            {
+                parent.children.push(child_key.clone());
+                Self::dedupe_tree_children(&mut parent.children);
+            }
+        }
+        self.mark_snapshot_dirty();
+    }
+
+    fn fs_path_for_reveal(
+        &self,
+        namespace_path: &Path,
+        mode: RevealNamespaceMode,
+    ) -> Option<PathBuf> {
+        match mode {
+            RevealNamespaceMode::PrePlaces => {
+                self.fs_path_for_namespace_node_pre_places(namespace_path)
+            }
+            RevealNamespaceMode::PostPlaces => self.fs_path_for_namespace_node(namespace_path),
+        }
+    }
+
+    /// Expand ancestors on a reveal chain, queueing children loads for unloaded nodes.
+    fn expand_reveal_chain_ancestors(
+        &mut self,
+        chain: &[PathBuf],
+        mode: RevealNamespaceMode,
+    ) -> (Vec<DirectoryChildrenRequest>, bool) {
+        let mut requests = Vec::new();
+        let mut reveal_chain_ok = true;
+        for path in chain.iter().take(chain.len().saturating_sub(1)) {
+            if is_places_sentinel_namespace_path(path) {
+                continue;
+            }
+            let Some(browse) = self.fs_path_for_reveal(path, mode) else {
+                if matches!(mode, RevealNamespaceMode::PostPlaces) {
+                    log::warn!(
+                        "[DirectoryTree] Reveal skipped namespace node without browse path: {}",
+                        path.display()
+                    );
+                }
+                reveal_chain_ok = false;
+                break;
+            };
+            if !self.or_insert_tree_node(path.clone(), || {
+                directory_tree_node(directory_display_name(&browse), browse)
+            }) {
+                reveal_chain_ok = false;
+                break;
+            }
+            let Some(node) = self.nodes.get_mut(path) else {
+                reveal_chain_ok = false;
+                break;
+            };
+            node.expanded = true;
+            if !node.children_loaded && !node.loading {
+                node.loading = true;
+                node.error = None;
+                let fs_path = node.fs_path.clone();
+                requests.push(children_request(path.clone(), fs_path, self.generation));
+            }
+        }
+        (requests, reveal_chain_ok)
+    }
+
+    /// Insert or refresh the selected leaf node at the end of a reveal chain.
+    fn ensure_reveal_leaf_node(
+        &mut self,
+        selected_tree_key: &Path,
+        mode: RevealNamespaceMode,
+    ) -> bool {
+        let browse = self
+            .fs_path_for_reveal(selected_tree_key, mode)
+            .or_else(|| self.selected_fs_path.clone())
+            .unwrap_or_else(|| selected_tree_key.to_path_buf());
+        self.or_insert_tree_node(selected_tree_key.to_path_buf(), || {
+            directory_tree_node(directory_display_name(&browse), browse)
+        })
+    }
+
+    fn reveal_selected_namespace_pre_places(&mut self) -> Vec<DirectoryChildrenRequest> {
+        let Some(selected_fs) = self.selected_fs_path.clone() else {
+            return Vec::new();
+        };
+        let selected_tree_key = self.resolve_selected_namespace_path().unwrap_or_else(|| {
+            self.namespace_path_for_fs_path(&selected_fs)
+                .unwrap_or_else(|| selected_fs.clone())
+        });
+        let chain = self.pre_places_reveal_namespace_chain(&selected_tree_key);
+        if chain.is_empty() {
+            return Vec::new();
+        }
+
+        let (requests, mut reveal_chain_ok) =
+            self.expand_reveal_chain_ancestors(&chain, RevealNamespaceMode::PrePlaces);
+        if reveal_chain_ok {
+            reveal_chain_ok =
+                self.ensure_reveal_leaf_node(&selected_tree_key, RevealNamespaceMode::PrePlaces);
+        }
+        if reveal_chain_ok {
+            self.link_pre_places_namespace_chain(&chain);
+        }
+        requests
+    }
+
     pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
+        if !self.places_loaded {
+            return self.reveal_selected_namespace_pre_places();
+        }
+
         let Some(selected_tree_key) = self.resolve_selected_namespace_path() else {
             return Vec::new();
         };
-        if !self.places_loaded {
-            return Vec::new();
-        }
 
         let mut chain = self.reveal_ancestor_chain_for_selection();
         if chain.len() > MAX_DIRECTORY_TREE_REVEAL_DEPTH {
@@ -1034,47 +1267,12 @@ impl DirectoryTreeTreeState {
             }
         }
 
-        let mut reveal_chain_ok = true;
-        for path in chain.iter().take(chain.len().saturating_sub(1)) {
-            if is_places_sentinel_namespace_path(path) {
-                continue;
-            }
-            let Some(browse) = self.fs_path_for_namespace_node(path) else {
-                log::warn!(
-                    "[DirectoryTree] Reveal skipped namespace node without browse path: {}",
-                    path.display()
-                );
-                reveal_chain_ok = false;
-                break;
-            };
-            if !self.or_insert_tree_node(path.clone(), || {
-                directory_tree_node(directory_display_name(&browse), browse)
-            }) {
-                reveal_chain_ok = false;
-                break;
-            }
-            let Some(node) = self.nodes.get_mut(path) else {
-                reveal_chain_ok = false;
-                break;
-            };
-            node.expanded = true;
-            if !node.children_loaded && !node.loading {
-                node.loading = true;
-                node.error = None;
-                let fs_path = node.fs_path.clone();
-                requests.push(children_request(path.clone(), fs_path, self.generation));
-            }
-        }
+        let (mut chain_requests, mut reveal_chain_ok) =
+            self.expand_reveal_chain_ancestors(&chain, RevealNamespaceMode::PostPlaces);
+        requests.append(&mut chain_requests);
         if reveal_chain_ok {
-            let browse = self
-                .fs_path_for_namespace_node(&selected_tree_key)
-                .or_else(|| self.selected_fs_path.clone())
-                .unwrap_or_else(|| selected_tree_key.clone());
-            if !self.or_insert_tree_node(selected_tree_key.clone(), || {
-                directory_tree_node(directory_display_name(&browse), browse)
-            }) {
-                reveal_chain_ok = false;
-            }
+            reveal_chain_ok =
+                self.ensure_reveal_leaf_node(&selected_tree_key, RevealNamespaceMode::PostPlaces);
         }
         if reveal_chain_ok {
             self.link_revealed_selection_to_parents(&selected_tree_key, &chain);
@@ -1454,6 +1652,7 @@ mod sort;
 mod strip_previews;
 mod ui;
 mod view;
+mod visibility;
 mod workers;
 
 use ui::{

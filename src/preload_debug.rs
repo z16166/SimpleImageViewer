@@ -17,7 +17,8 @@
 //! Preload / RAW load diagnostics behind the `preload-debug` feature.
 //!
 //! Build: `cargo build --features preload-debug`
-//! Run:   set `SIV_LOG_LEVEL=info` (optional `SIV_LOG_FILE=1` for a log file)
+//! Run:   `SIV_LOG_LEVEL=info` (and optional `SIV_LOG_FILE=1` for a log file).
+//! Logs use `info` so they appear without raising the global log level to `debug`.
 
 /// Preload / RAW pipeline diagnostics. No-op unless `--features preload-debug`.
 #[macro_export]
@@ -25,7 +26,7 @@ macro_rules! preload_debug {
     ($($arg:tt)*) => {
         #[cfg(feature = "preload-debug")]
         {
-            log::debug!($($arg)*);
+            log::info!($($arg)*);
         }
     };
 }

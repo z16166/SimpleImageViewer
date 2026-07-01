@@ -593,11 +593,11 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
                 "JPEG XL strip baseline expected Static image data".to_string(),
             ))
         }
-        Ok(ImageData::Animated(_) | ImageData::Tiled(_)) => Err(
-            JxlStripBaselineError::UnsupportedImageData(
+        Ok(ImageData::Animated(_) | ImageData::Tiled(_)) => {
+            Err(JxlStripBaselineError::UnsupportedImageData(
                 "JPEG XL strip baseline does not support animation or tiling".to_string(),
-            ),
-        ),
+            ))
+        }
         Err(message) => Err(classify_jxl_strip_baseline_failure(&message)),
     }
 }

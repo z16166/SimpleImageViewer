@@ -1609,6 +1609,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
         directory_tree: crate::app::DirectoryTreeRuntime::new(),
         auto_hidden_directory_tree_nav: false,
+        embedded_directory_tree_panel_bootstrapped: false,
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
         directory_tree_strip_compose_probe_cache:
@@ -2865,6 +2866,63 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
     assert_eq!(queued.last_image_dir, Some(saved));
     assert!(!queued.recursive);
     assert!(!queued.auto_switch);
+}
+
+#[test]
+fn embedded_panel_bootstrap_retries_until_embedded_nav_active() {
+    use crate::settings::DirectoryTreeNavStyle;
+    use eframe::egui::{self, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    app.embedded_directory_tree_panel_bootstrapped = false;
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_nav_style = DirectoryTreeNavStyle::Embedded;
+    app.auto_hidden_directory_tree_nav = true;
+
+    let available = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 800.0));
+    app.bootstrap_embedded_directory_tree_panel_layout(&ctx, available);
+    assert!(
+        !app.embedded_directory_tree_panel_bootstrapped,
+        "session auto-hide keeps nav inactive; bootstrap must not latch yet"
+    );
+
+    app.clear_auto_hidden_directory_tree_nav();
+    app.bootstrap_embedded_directory_tree_panel_layout(&ctx, available);
+    assert!(
+        app.embedded_directory_tree_panel_bootstrapped,
+        "once embedded nav is active, bootstrap seeds panel state once"
+    );
+}
+
+#[test]
+fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let dir = std::env::temp_dir().join("siv_list_double_click_nav");
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("first.jpg");
+    let second = dir.join("second.jpg");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.image_files = vec![first, second];
+    app.file_byte_len_by_index = vec![0, 0];
+    app.file_modified_unix_by_index = vec![None, None];
+
+    app.directory_tree
+        .command_tx
+        .send(crate::app::directory_tree::DirectoryTreeCommand::SelectImageAndHideNav(1))
+        .unwrap();
+    app.process_directory_tree_events(&ctx);
+
+    assert!(!app.directory_tree_settings_active());
+    assert!(app.auto_hidden_directory_tree_nav);
+    assert!(app.settings.show_directory_tree_nav);
+    assert!(save_rx.try_iter().next().is_none());
 }
 
 #[test]

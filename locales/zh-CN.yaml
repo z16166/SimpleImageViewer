@@ -66,6 +66,7 @@ btn.open_release_page: "打开发布页面"
 # Labels / Checkboxes
 label.recursive_scan: "递归扫描子目录"
 label.show_directory_tree_nav: "显示目录树导航窗口"
+label.directory_tree_nav_session_hidden: "本次会话已临时隐藏（双击列表或单图打开）。可用导航快捷键，或关闭再开启此选项以重新显示。"
 label.directory_tree_show_list_previews: "在导航列表中显示图片预览"
 label.directory_tree_list_preview_size: "预览尺寸"
 directory_tree.preview_size.small: "小 (48 px)"

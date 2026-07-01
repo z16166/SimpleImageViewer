@@ -358,10 +358,8 @@ mod tests {
             255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 255, 0, 255, 255, 0,
             255, 255, 255,
         ];
-        let decoded = apply_orientation_to_owned_decoded(
-            crate::loader::DecodedImage::new(2, 3, pixels),
-            6,
-        );
+        let decoded =
+            apply_orientation_to_owned_decoded(crate::loader::DecodedImage::new(2, 3, pixels), 6);
 
         assert_eq!(decoded.width, 3);
         assert_eq!(decoded.height, 2);

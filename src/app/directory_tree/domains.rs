@@ -55,6 +55,8 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) generation: u64,
     pub(crate) folder_scroll_offset_y: f32,
     pub(crate) scroll_folder_tree_to_selected: bool,
+    /// Last painted flat folder-row range `[start, end)` for off-screen repaint skipping.
+    pub(crate) folder_visible_row_range: Option<(usize, usize)>,
     pub(crate) network_label: String,
     pub(crate) network_visible: bool,
     pub(crate) left_panel_width: f32,
@@ -81,6 +83,7 @@ impl Default for DirectoryTreeTreeState {
             generation: 0,
             folder_scroll_offset_y: 0.0,
             scroll_folder_tree_to_selected: false,
+            folder_visible_row_range: None,
             network_label: String::new(),
             network_visible: false,
             left_panel_width: DIRECTORY_TREE_LEFT_WIDTH,

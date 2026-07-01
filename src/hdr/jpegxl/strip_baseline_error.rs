@@ -28,10 +28,7 @@ pub(crate) enum JxlStripBaselineError {
 
 impl JxlStripBaselineError {
     pub(crate) fn allows_compose_fallback(&self) -> bool {
-        matches!(
-            self,
-            Self::NoIsoGainMap | Self::UnsupportedImageData(_)
-        )
+        matches!(self, Self::NoIsoGainMap | Self::UnsupportedImageData(_))
     }
 }
 

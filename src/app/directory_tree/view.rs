@@ -73,6 +73,23 @@ impl DirectoryTreeView {
         self.tree.selected_namespace_path.as_ref()
     }
 
+    /// Mount/share root to paint while Places is still loading (bootstrap reveal chain).
+    ///
+    /// Returns None when bootstrap nodes are not materialized yet; [`super::ui::draw_folder_panel`]
+    /// then shows only the Places loading status row.
+    pub(super) fn pre_places_folder_display_root(&self) -> Option<std::path::PathBuf> {
+        if self.places_loaded() {
+            return None;
+        }
+        let selected = self.selected_namespace_path()?;
+        let chain = super::namespace::namespace_path_ancestor_chain(selected);
+        chain.into_iter().find(|path| {
+            self.nodes().contains_key(path)
+                && (super::namespace::is_mount_namespace_path(path)
+                    || super::namespace::is_network_share_namespace_path(path))
+        })
+    }
+
     pub(super) fn nodes(
         &self,
     ) -> &std::collections::HashMap<std::path::PathBuf, Arc<super::DirectoryTreeNode>> {
@@ -174,6 +191,8 @@ pub(crate) struct DirectoryTreeUiChrome {
     pub(super) scroll_image_list_to_current: bool,
     pub(super) folder_scroll_offset_y: f32,
     pub(super) scroll_folder_tree_to_selected: bool,
+    pub(super) folder_paint_row_index: usize,
+    pub(super) folder_visible_row_range: Option<(usize, usize)>,
     pub(super) folder_selected_row_rect: Option<egui::Rect>,
     pub(super) image_list_selected_row_rect: Option<egui::Rect>,
     pub(super) pending_image_context_menu: Option<(egui::Pos2, egui::ViewportId)>,
@@ -195,6 +214,8 @@ impl DirectoryTreeUiChrome {
             scroll_image_list_to_current: list.scroll_image_list_to_current,
             folder_scroll_offset_y: tree.folder_scroll_offset_y,
             scroll_folder_tree_to_selected: tree.scroll_folder_tree_to_selected,
+            folder_paint_row_index: 0,
+            folder_visible_row_range: tree.folder_visible_row_range,
             folder_selected_row_rect: None,
             image_list_selected_row_rect: None,
             pending_image_context_menu: None,
@@ -226,6 +247,16 @@ impl DirectoryTreeUiChrome {
         self.image_list_keyboard_active = list_keyboard_active;
     }
 
+    pub(super) fn record_folder_row_visible(&mut self, row_index: usize) {
+        match self.folder_visible_row_range {
+            None => self.folder_visible_row_range = Some((row_index, row_index + 1)),
+            Some((start, end)) => {
+                self.folder_visible_row_range =
+                    Some((start.min(row_index), end.max(row_index + 1)));
+            }
+        }
+    }
+
     pub(super) fn apply_to_domains(
         &self,
         tree: &mut DirectoryTreeTreeState,
@@ -254,6 +285,9 @@ impl DirectoryTreeUiChrome {
             list.mark_snapshot_dirty();
         }
         tree.folder_scroll_offset_y = self.folder_scroll_offset_y;
+        if tree.folder_visible_row_range != self.folder_visible_row_range {
+            tree.folder_visible_row_range = self.folder_visible_row_range;
+        }
         if tree.scroll_folder_tree_to_selected != self.scroll_folder_tree_to_selected {
             tree.scroll_folder_tree_to_selected = self.scroll_folder_tree_to_selected;
             tree.mark_snapshot_dirty();

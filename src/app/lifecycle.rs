@@ -576,6 +576,7 @@ impl ImageViewerApp {
             folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
             auto_hidden_directory_tree_nav,
+            embedded_directory_tree_panel_bootstrapped: false,
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
             directory_tree_strip_compose_probe_cache:
@@ -716,6 +717,12 @@ impl ImageViewerApp {
             explicit_quit: false,
             settings,
         };
+        if app.settings.browse_mode == BrowseMode::Tree
+            && app.settings.show_directory_tree_nav
+            && !auto_hidden_directory_tree_nav
+        {
+            app.ensure_directory_tree_places_loaded();
+        }
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
             log::info!("{diagnostic}");
         }
@@ -755,7 +762,6 @@ impl ImageViewerApp {
         // Restore last session state
         if app.directory_tree_settings_active() {
             app.settings.browse_mode = BrowseMode::Tree;
-            app.ensure_directory_tree_places_loaded();
             app.restore_saved_directory_tree_panel_layout();
             app.ensure_directory_tree_reveals_current_browse_dir();
         }

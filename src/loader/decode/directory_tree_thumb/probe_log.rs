@@ -99,7 +99,13 @@ pub(super) fn log_strip_heif_probe(
 }
 
 #[cfg(feature = "preload-debug")]
-pub(super) fn log_strip_decode_path(path: &Path, kind: &str, logical: (u32, u32), out_w: u32, out_h: u32) {
+pub(super) fn log_strip_decode_path(
+    path: &Path,
+    kind: &str,
+    logical: (u32, u32),
+    out_w: u32,
+    out_h: u32,
+) {
     crate::preload_debug!(
         "[PreloadDebug][Strip] decode_path path={} kind={} logical={}x{} out={}x{}",
         path.display(),
