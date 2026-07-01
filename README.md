@@ -148,7 +148,7 @@ HDR files still open without native HDR; the viewer falls back to **SDR tone map
 
 **When to use [vk-hdr-layer](https://copr.fedorainfracloud.org/coprs/jackgreiner/vk-hdr-layer/) + `ENABLE_HDR_WSI=1`**
 
-On Wayland, the GPU/driver must expose an HDR Vulkan swap chain. **Older NVIDIA cards** (e.g. GTX 10 series) often need the community **vk-hdr-layer** and launching with:
+On Wayland, the GPU/driver must expose an HDR Vulkan swap chain. On **NVIDIA**, that often means the community **vk-hdr-layer** until the proprietary driver exposes HDR WSI extensions itself (see the table below). Launch with:
 
 ```bash
 ENABLE_HDR_WSI=1 ./SimpleImageViewer
@@ -162,17 +162,18 @@ sudo dnf install vk-hdr-layer
 ENABLE_HDR_WSI=1 ./SimpleImageViewer
 ```
 
-**Newer NVIDIA** GPUs with proprietary driver **595+** (e.g. RTX 50 series) usually work **without** vk-hdr-layer or `ENABLE_HDR_WSI`. AMD and Intel Mesa stacks typically do not need them if the versions below are met.
+**NVIDIA RTX 20xx and newer (Turing+)** with proprietary driver **595+** (e.g. RTX 50 series) usually work **without** vk-hdr-layer or `ENABLE_HDR_WSI`. On **550–590**, native HDR often still works with vk-hdr-layer + `ENABLE_HDR_WSI=1`. **Maxwell / Pascal / Volta** cards (e.g. GTX 750–1080 Ti) use the **580.xx legacy** driver branch and typically need vk-hdr-layer — they cannot install 595+ or 590+ mainline drivers. AMD and Intel Mesa stacks typically do not need vk-hdr-layer if the versions below are met.
 
 **Verified working configurations**
 
-| GPU | Driver / stack |
-|---|---|
-| AMD (GCN 3+) | Mesa RADV 25.1+ |
-| Intel (Gen 9+) | Mesa ANV 25.1+ |
-| NVIDIA (Maxwell+) | NVIDIA proprietary 595+ |
+| GPU | Driver / stack | Notes |
+|---|---|---|
+| AMD (GCN 3+) | Mesa RADV 25.1+ | |
+| Intel (Gen 9+) | Mesa ANV 25.1+ | |
+| NVIDIA Turing+ (RTX 20xx and newer) | Proprietary **595+** for native HDR without vk-hdr-layer; **550–590** often works with vk-hdr-layer + `ENABLE_HDR_WSI=1` | |
+| NVIDIA Maxwell / Pascal / Volta (GTX 750–1080 Ti) | **580.xx legacy** branch + vk-hdr-layer + `ENABLE_HDR_WSI=1` | Cannot use 595+ or 590+ mainline drivers |
 
-Check the OSD HDR line: **Native Wayland HDR** means native presentation is active; **SDR tone-mapped** means you are on the fallback path (vk-hdr-layer / `ENABLE_HDR_WSI` may still help on older NVIDIA).
+Check the OSD HDR line: **Native Wayland HDR** means native presentation is active; **SDR tone-mapped** means you are on the fallback path (vk-hdr-layer / `ENABLE_HDR_WSI=1` may still help on NVIDIA).
 
 ---
 
