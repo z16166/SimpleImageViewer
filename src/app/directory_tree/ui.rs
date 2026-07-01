@@ -1147,19 +1147,18 @@ fn draw_image_file_list(
         }
 
         let total_rows = view.image_rows().len();
-        let current_index = chrome.current_index;
         let scroll_output = scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
             chrome.image_list_visible_row_range = Some((row_range.start, row_range.end));
             for row_index in row_range {
                 let Some(row) = view.image_rows().get(row_index) else {
                     continue;
                 };
-                let clicked = draw_image_details_row(
+                draw_image_details_row(
                     ui,
                     ImageDetailsRowParams {
                         row,
                         row_index,
-                        selected: row_index == current_index,
+                        selected: row_index == chrome.current_index,
                         columns: &column_layout,
                         body_font: &body_font,
                         thumb_px,
@@ -1173,9 +1172,6 @@ fn draw_image_file_list(
                         palette,
                     },
                 );
-                if clicked {
-                    chrome.image_list_keyboard_active = true;
-                }
             }
         });
         chrome.image_list_scroll_offset_y = scroll_output.state.offset.y;
@@ -1496,6 +1492,12 @@ pub(super) fn wrapped_image_list_index(current: usize, delta: i32, len: usize) -
     if next == current { None } else { Some(next) }
 }
 
+fn apply_image_list_row_selection(chrome: &mut DirectoryTreeUiChrome, index: usize) {
+    chrome.image_list_keyboard_active = true;
+    chrome.current_index = index;
+    chrome.scroll_image_list_to_current = true;
+}
+
 fn try_handle_image_list_arrow_keys(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
@@ -1532,9 +1534,7 @@ fn try_handle_image_list_arrow_keys(
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
     });
-    chrome.image_list_keyboard_active = true;
-    chrome.current_index = index;
-    chrome.scroll_image_list_to_current = true;
+    apply_image_list_row_selection(chrome, index);
     send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(index));
 }
 
@@ -1620,6 +1620,7 @@ fn draw_image_details_row(ui: &mut egui::Ui, params: ImageDetailsRowParams<'_>) 
     }
 
     if list_enabled && response.double_clicked() {
+        apply_image_list_row_selection(chrome, row_index);
         send_directory_tree_command(
             command_tx,
             DirectoryTreeCommand::SelectImageAndHideNav(row_index),
@@ -1627,7 +1628,15 @@ fn draw_image_details_row(ui: &mut egui::Ui, params: ImageDetailsRowParams<'_>) 
         return true;
     }
     if list_enabled && response.clicked() {
+        apply_image_list_row_selection(chrome, row_index);
         send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(row_index));
+        if ui.is_rect_visible(row_rect) {
+            ui.painter().rect_filled(
+                row_rect,
+                0.0,
+                directory_tree_row_selected_fill(palette),
+            );
+        }
         return true;
     }
     if selected {
