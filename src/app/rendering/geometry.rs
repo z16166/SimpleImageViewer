@@ -16,9 +16,7 @@
 
 use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
-use crate::app::directory_tree::{
-    DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-};
+use crate::app::directory_tree::DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID;
 use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
 fn clamp_non_empty_canvas_rect(rect: Rect) -> Rect {
@@ -31,15 +29,8 @@ fn clamp_non_empty_canvas_rect(rect: Rect) -> Rect {
 
 /// Last frame's [`egui::PanelState::rect`] for the embedded navigation side panel, if any.
 pub(crate) fn embedded_directory_tree_panel_rect(ctx: &Context) -> Option<Rect> {
-    for panel_id in [
-        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
-    ] {
-        if let Some(state) = egui::PanelState::load(ctx, egui::Id::new(panel_id)) {
-            return Some(state.rect);
-        }
-    }
-    None
+    egui::PanelState::load(ctx, egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
+        .map(|state| state.rect)
 }
 
 /// Paint vs pointer rects for the main image canvas when an embedded nav panel is present.

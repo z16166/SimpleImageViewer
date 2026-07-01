@@ -45,8 +45,6 @@ pub(super) const DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES: u32 = 120;
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
-pub(super) const DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID: &str =
-    "siv_directory_tree_embedded_loading";
 pub(super) const DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID: &str =
     "siv_directory_tree_nav_wheel_block_rect";
 pub(super) const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
@@ -79,14 +77,12 @@ pub(crate) fn seed_embedded_side_panel_states(
         available.min,
         egui::pos2(available.min.x + width, available.max.y),
     );
-    for panel_id in [
-        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
-    ] {
-        ctx.data_mut(|data| {
-            data.insert_persisted(egui::Id::new(panel_id), egui::PanelState { rect });
-        });
-    }
+    ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
+            egui::PanelState { rect },
+        );
+    });
 }
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 pub(super) const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;

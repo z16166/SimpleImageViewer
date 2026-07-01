@@ -36,15 +36,14 @@ use super::ui::{
     unc_share_root,
 };
 use super::{
-    DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH, DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
-    DIRECTORY_TREE_EMBEDDED_MIN_WIDTH, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-    DIRECTORY_TREE_LEFT_MIN_WIDTH, DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT,
-    DIRECTORY_TREE_MIN_WIDTH, DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH,
-    DIRECTORY_TREE_VIEWPORT_ID, DirectoryChildrenRequest, DirectoryTreeCommand,
-    DirectoryTreeListPreviewLayout, DirectoryTreeListSnapshot, DirectoryTreeListState,
-    DirectoryTreePreviewSnapshot, DirectoryTreeTreeSnapshot, DirectoryTreeTreeState,
-    FileMetadataRequest, ImageListSortColumn, domains, embedded_side_panel_clamped_width,
-    is_places_sentinel_namespace_path, view,
+    DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH, DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+    DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, DIRECTORY_TREE_LEFT_MIN_WIDTH,
+    DIRECTORY_TREE_LEFT_WIDTH, DIRECTORY_TREE_MIN_HEIGHT, DIRECTORY_TREE_MIN_WIDTH,
+    DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
+    DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
+    DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
+    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, FileMetadataRequest, ImageListSortColumn,
+    domains, embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
 };
 
 struct DirectoryTreePanelRefs<'a> {
@@ -1531,45 +1530,43 @@ impl ImageViewerApp {
             {
                 domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
             }
-            if !tree.places_loaded {
-                (false, false, ImageListSortColumn::default(), true)
-            } else {
-                let previous_index = list.current_index;
-                let previous_scanning = list.scanning;
-                let previous_row_count = list.image_rows.len();
-                let resort_after_scan =
-                    previous_scanning && !self.scanning && list.image_list_sort_active;
-                let resort_column = list.image_list_sort_column;
-                let resort_ascending = list.image_list_sort_ascending;
-                if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
-                    metadata_requests.push(request);
-                }
-                list.sync_warning = None;
-                sync_warning_cleared = true;
-                let preview_updated = self.directory_tree_list_previews_active()
-                    && self.directory_tree_strip_cache.gpu_revision() != previous_preview_revision;
-                let repaint = preview_updated
-                    || list.scroll_image_list_to_current
-                    || list.current_index != previous_index
-                    || list.scanning != previous_scanning
-                    || list.image_rows.len() != previous_row_count;
-                #[cfg(feature = "preload-debug")]
-                if repaint
-                    && (list.scanning != previous_scanning
-                        || list.image_rows.len() != previous_row_count
-                        || preview_updated)
-                {
-                    crate::preload_debug!(
-                        "[PreloadDebug][Scan] directory tree viewport repaint: scanning {} -> {} rows {} -> {} preview_sync={}",
-                        previous_scanning,
-                        list.scanning,
-                        previous_row_count,
-                        list.image_rows.len(),
-                        preview_updated
-                    );
-                }
-                (repaint, resort_after_scan, resort_column, resort_ascending)
+            let previous_index = list.current_index;
+            let previous_scanning = list.scanning;
+            let previous_row_count = list.image_rows.len();
+            let resort_after_scan = tree.places_loaded
+                && previous_scanning
+                && !self.scanning
+                && list.image_list_sort_active;
+            let resort_column = list.image_list_sort_column;
+            let resort_ascending = list.image_list_sort_ascending;
+            if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
+                metadata_requests.push(request);
             }
+            list.sync_warning = None;
+            sync_warning_cleared |= true;
+            let preview_updated = self.directory_tree_list_previews_active()
+                && self.directory_tree_strip_cache.gpu_revision() != previous_preview_revision;
+            let repaint = preview_updated
+                || list.scroll_image_list_to_current
+                || list.current_index != previous_index
+                || list.scanning != previous_scanning
+                || list.image_rows.len() != previous_row_count;
+            #[cfg(feature = "preload-debug")]
+            if repaint
+                && (list.scanning != previous_scanning
+                    || list.image_rows.len() != previous_row_count
+                    || preview_updated)
+            {
+                crate::preload_debug!(
+                    "[PreloadDebug][Scan] directory tree viewport repaint: scanning {} -> {} rows {} -> {} preview_sync={}",
+                    previous_scanning,
+                    list.scanning,
+                    previous_row_count,
+                    list.image_rows.len(),
+                    preview_updated
+                );
+            }
+            (repaint, resort_after_scan, resort_column, resort_ascending)
         };
 
         if request_viewport_repaint.1
@@ -1586,7 +1583,7 @@ impl ImageViewerApp {
                 metadata_requests.push(request);
             }
             list.sync_warning = None;
-            sync_warning_cleared = true;
+            sync_warning_cleared |= true;
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.current_index = self.current_index;
             list.image_list_col_widths_dirty = true;
@@ -1725,34 +1722,6 @@ impl ImageViewerApp {
 
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
         let panel_frame = super::ui::embedded_directory_tree_panel_frame(&self.cached_palette);
-        let has_places = self.directory_tree.view.load().places_loaded();
-        if !has_places {
-            let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID);
-            let stable_panel_rect =
-                embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
-            egui::Panel::left(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID)
-                .resizable(false)
-                .frame(panel_frame)
-                .default_size(default_width)
-                .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
-                .show_inside(ui, |ui| {
-                    super::ui::prepare_directory_tree_panel_chrome(ui, &self.cached_palette);
-                    ui.painter()
-                        .rect_filled(ui.max_rect(), 0.0, self.cached_palette.panel_bg);
-                    crate::app::directory_tree::ui::draw_directory_tree_places_status(
-                        ui,
-                        &self.directory_tree.view.load(),
-                    );
-                    crate::app::directory_tree::ui::publish_directory_tree_nav_wheel_block_rect(ui);
-                });
-            restore_embedded_side_panel_state_if_not_resizing(
-                ui.ctx(),
-                panel_id,
-                stable_panel_rect,
-            );
-            return;
-        }
-
         let available_before = ui.available_width();
         let max_rect_width_before = ui.max_rect().width();
         let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
@@ -1833,6 +1802,9 @@ impl ImageViewerApp {
     /// so a scan that finishes on a background thread is not left in `scan_rx` until the next
     /// frame's heavy upload path (see preload-debug `wait_ms` logs).
     pub(crate) fn process_directory_scan_pipeline(&mut self, ctx: &egui::Context) {
+        if self.directory_tree_settings_active() {
+            self.poll_directory_tree_places_load();
+        }
         let was_scanning = self.scanning;
         self.process_scan_results();
         self.process_directory_tree_events(ctx);

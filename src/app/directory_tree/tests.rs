@@ -325,25 +325,40 @@ fn should_restore_embedded_side_panel_state_when_not_resizing() {
 }
 
 #[test]
-fn seed_embedded_side_panel_states_writes_persisted_layout_for_both_panel_ids() {
-    use super::{
-        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-        seed_embedded_side_panel_states,
-    };
+fn seed_embedded_side_panel_states_writes_persisted_layout() {
+    use super::{DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, seed_embedded_side_panel_states};
     use eframe::egui::{self, Pos2, Rect};
 
     let ctx = egui::Context::default();
     let available = Rect::from_min_max(Pos2::new(8.0, 0.0), Pos2::new(1008.0, 800.0));
     seed_embedded_side_panel_states(&ctx, available, 420.0);
 
-    for panel_id in [
-        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
-        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
-    ] {
-        let state = egui::PanelState::load(&ctx, egui::Id::new(panel_id)).expect("panel state");
-        assert_eq!(state.rect.min, available.min);
-        assert!((state.rect.width() - 420.0).abs() < f32::EPSILON);
-    }
+    let state = egui::PanelState::load(&ctx, egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
+        .expect("panel state");
+    assert_eq!(state.rect.min, available.min);
+    assert!((state.rect.width() - 420.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn sync_images_updates_list_while_places_still_loading() {
+    let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loading = true;
+    state.tree.places_loaded = false;
+    state.list.image_rows.clear();
+    state.list.scanning = true;
+
+    state.sync_images(
+        &paths,
+        &[0, 0],
+        &[None, None],
+        0,
+        true,
+        String::from("scanning"),
+    );
+
+    assert_eq!(state.list.image_rows.len(), 2);
+    assert!(state.list.scanning);
 }
 
 #[test]
