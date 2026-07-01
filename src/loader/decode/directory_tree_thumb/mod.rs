@@ -24,8 +24,8 @@ use std::path::Path;
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
-    HeifThumbProbe, probe_heif_strip_thumbnail,
-    probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
+    HeifThumbProbe, probe_heif_strip_thumbnail, probe_heif_strip_thumbnail_from_path,
+    try_heif_strip_primary_sdr,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
@@ -53,9 +53,9 @@ use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
 mod probe_log;
 mod static_raster;
 
-use probe_log::{log_strip_decode_path, log_strip_exif_probe};
 #[cfg(feature = "heif-native")]
 use probe_log::log_strip_heif_probe;
+use probe_log::{log_strip_decode_path, log_strip_exif_probe};
 use static_raster::try_static_raster_strip_fast_path;
 
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
@@ -394,9 +394,9 @@ fn reusable_full_decoded_from_image_data(image_data: &ImageData) -> Option<Decod
         ImageData::Hdr { fallback, .. } if !fallback.is_sdr_deferred_placeholder() => {
             Some(fallback.clone())
         }
-        ImageData::Animated(frames) => frames.first().map(|frame| {
-            DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())
-        }),
+        ImageData::Animated(frames) => frames
+            .first()
+            .map(|frame| DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())),
         _ => None,
     }
 }

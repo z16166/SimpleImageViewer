@@ -19,8 +19,8 @@
 use std::path::Path;
 
 use super::domains::DirectoryTreeTreeState;
-use super::{BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DirectoryTreeFileRow};
 use super::ui::folder_tree_flat_row_index;
+use super::{BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DirectoryTreeFileRow};
 
 /// Max folder rows that can affect the viewport before a visible range is published.
 pub(super) const BOOTSTRAP_FOLDER_VISIBLE_ROW_CAP: usize = 32;

@@ -236,9 +236,8 @@ pub fn create_pipeline_cache(
     let cache_data = load_for_adapter(adapter);
     let path = cache_path(adapter);
     debug_assert!(
-        path.to_string_lossy().contains(&format!(
-            "_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_"
-        )),
+        path.to_string_lossy()
+            .contains(&format!("_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_")),
         "pipeline cache path must embed schema version"
     );
     // SAFETY: `cache_data` comes from our own prior `PipelineCache::get_data` writes.

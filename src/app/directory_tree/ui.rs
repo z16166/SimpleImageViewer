@@ -33,6 +33,7 @@ use crate::path_location::is_unc_path;
 use crate::theme::ThemePalette;
 use crate::ui::osd::FORMAT_FILE_SIZE_WIDTH_SAMPLES;
 
+use super::domains::DirectoryTreeTreeState;
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
     DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
@@ -46,7 +47,6 @@ use super::{
     is_places_sentinel_namespace_path, is_this_pc_namespace_path, network_namespace_path,
     send_directory_tree_command, this_pc_namespace_path,
 };
-use super::domains::DirectoryTreeTreeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DirectoryTreeNodeIcon {
@@ -879,18 +879,14 @@ pub(super) fn folder_tree_flat_row_index(
 ) -> Option<usize> {
     let mut index = 0usize;
     if !tree.places_loaded {
-        if let Some(root) = tree
-            .selected_namespace_path
-            .as_ref()
-            .and_then(|selected| {
-                let chain = super::namespace::namespace_path_ancestor_chain(selected);
-                chain.into_iter().find(|path| {
-                    tree.nodes.contains_key(path)
-                        && (super::namespace::is_mount_namespace_path(path)
-                            || super::namespace::is_network_share_namespace_path(path))
-                })
+        if let Some(root) = tree.selected_namespace_path.as_ref().and_then(|selected| {
+            let chain = super::namespace::namespace_path_ancestor_chain(selected);
+            chain.into_iter().find(|path| {
+                tree.nodes.contains_key(path)
+                    && (super::namespace::is_mount_namespace_path(path)
+                        || super::namespace::is_network_share_namespace_path(path))
             })
-            && folder_tree_walk_row_index(tree, &root, target, &mut index)
+        }) && folder_tree_walk_row_index(tree, &root, target, &mut index)
         {
             return Some(index);
         }
@@ -1147,7 +1143,8 @@ fn draw_directory_node(
         chrome.folder_paint_row_index = chrome.folder_paint_row_index.saturating_add(1);
         ui.horizontal(|ui| {
             ui.add_space((depth + 1) as f32 * DIRECTORY_TREE_INDENT);
-            let error_response = ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
+            let error_response =
+                ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
             if ui.clip_rect().intersects(error_response.rect) {
                 chrome.record_folder_row_visible(error_index);
             }

@@ -390,9 +390,8 @@ fn ycbcr_matrix_from_heif_handle(
     let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
     let height = unsafe { libheif_sys::heif_image_handle_get_height(handle) }.max(0) as usize;
     let mut nclx_ptr = std::ptr::null_mut();
-    let status = unsafe {
-        libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr)
-    };
+    let status =
+        unsafe { libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr) };
     if status.code == libheif_sys::heif_error_Ok && !nclx_ptr.is_null() {
         let nclx_guard = unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
         let nclx = nclx_guard.as_ref();

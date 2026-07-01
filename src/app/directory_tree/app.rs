@@ -724,8 +724,10 @@ impl ImageViewerApp {
                 let mut tree = self.directory_tree.tree.lock();
                 tree.apply_children_result(result);
                 let pending_folder_scroll = tree.scroll_folder_tree_to_selected;
-                let folder_repaint =
-                    super::visibility::folder_children_load_affects_visible(&tree, &loaded_namespace);
+                let folder_repaint = super::visibility::folder_children_load_affects_visible(
+                    &tree,
+                    &loaded_namespace,
+                );
                 let requests = tree.reveal_selected_namespace();
                 (requests, pending_folder_scroll, folder_repaint)
             };
@@ -1552,9 +1554,8 @@ impl ImageViewerApp {
             let previous_scanning = list.scanning;
             let previous_row_count = list.image_rows.len();
             let visible_row_range = list.image_list_visible_row_range;
-            let resort_after_scan = previous_scanning
-                && !self.scanning
-                && list.image_list_sort_active;
+            let resort_after_scan =
+                previous_scanning && !self.scanning && list.image_list_sort_active;
             let resort_column = list.image_list_sort_column;
             let resort_ascending = list.image_list_sort_ascending;
             if let Some(request) = self.sync_directory_tree_list_images(&mut list) {
@@ -1579,9 +1580,7 @@ impl ImageViewerApp {
                 || rows_affect_visible;
             #[cfg(feature = "preload-debug")]
             if repaint
-                && (list.scanning != previous_scanning
-                    || row_count_changed
-                    || preview_updated)
+                && (list.scanning != previous_scanning || row_count_changed || preview_updated)
             {
                 crate::preload_debug!(
                     "[PreloadDebug][Scan] directory tree viewport repaint: scanning {} -> {} rows {} -> {} preview_sync={}",

@@ -1141,9 +1141,15 @@ impl DirectoryTreeTreeState {
         self.mark_snapshot_dirty();
     }
 
-    fn fs_path_for_reveal(&self, namespace_path: &Path, mode: RevealNamespaceMode) -> Option<PathBuf> {
+    fn fs_path_for_reveal(
+        &self,
+        namespace_path: &Path,
+        mode: RevealNamespaceMode,
+    ) -> Option<PathBuf> {
         match mode {
-            RevealNamespaceMode::PrePlaces => self.fs_path_for_namespace_node_pre_places(namespace_path),
+            RevealNamespaceMode::PrePlaces => {
+                self.fs_path_for_namespace_node_pre_places(namespace_path)
+            }
             RevealNamespaceMode::PostPlaces => self.fs_path_for_namespace_node(namespace_path),
         }
     }
@@ -1222,10 +1228,8 @@ impl DirectoryTreeTreeState {
         let (requests, mut reveal_chain_ok) =
             self.expand_reveal_chain_ancestors(&chain, RevealNamespaceMode::PrePlaces);
         if reveal_chain_ok {
-            reveal_chain_ok = self.ensure_reveal_leaf_node(
-                &selected_tree_key,
-                RevealNamespaceMode::PrePlaces,
-            );
+            reveal_chain_ok =
+                self.ensure_reveal_leaf_node(&selected_tree_key, RevealNamespaceMode::PrePlaces);
         }
         if reveal_chain_ok {
             self.link_pre_places_namespace_chain(&chain);
@@ -1271,10 +1275,8 @@ impl DirectoryTreeTreeState {
             self.expand_reveal_chain_ancestors(&chain, RevealNamespaceMode::PostPlaces);
         requests.append(&mut chain_requests);
         if reveal_chain_ok {
-            reveal_chain_ok = self.ensure_reveal_leaf_node(
-                &selected_tree_key,
-                RevealNamespaceMode::PostPlaces,
-            );
+            reveal_chain_ok =
+                self.ensure_reveal_leaf_node(&selected_tree_key, RevealNamespaceMode::PostPlaces);
         }
         if reveal_chain_ok {
             self.link_revealed_selection_to_parents(&selected_tree_key, &chain);
