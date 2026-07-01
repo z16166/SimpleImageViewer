@@ -1320,6 +1320,56 @@ fn restore_tree_selection_preserves_namespace_before_places_load() {
 }
 
 #[test]
+fn reveal_selected_namespace_pre_places_builds_mount_chain() {
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+    let iphone15 = PathBuf::from(r"F:\iphone15");
+    let iphone15_ns =
+        super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &iphone15);
+
+    let mut state = DirectoryTreeState::default();
+    assert!(!state.tree.places_loaded);
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_mount.clone()));
+    let requests = state.tree.reveal_selected_namespace();
+    assert!(
+        state.tree.nodes.contains_key(&mount_root),
+        "mount root node should exist before Places loads"
+    );
+    assert!(
+        state.tree.nodes.contains_key(&via_mount),
+        "selected namespace node should exist before Places loads"
+    );
+    assert!(
+        !requests.is_empty()
+            || state
+                .tree
+                .nodes
+                .get(&mount_root)
+                .is_some_and(|node| node.loading),
+        "reveal should request children for the bootstrap chain"
+    );
+    let mount_node = state.tree.nodes.get(&mount_root).expect("mount node");
+    assert!(
+        mount_node
+            .children
+            .iter()
+            .any(|child| child.as_os_str() == iphone15_ns.as_os_str()),
+        "bootstrap chain should link mount root toward the selected path"
+    );
+}
+
+#[test]
 fn apply_children_omits_network_share_roots_from_filesystem_parent() {
     use crate::directory_tree_places::types::DriveEntry;
 

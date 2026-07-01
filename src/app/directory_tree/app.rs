@@ -463,13 +463,8 @@ impl ImageViewerApp {
         };
         let requests = {
             let mut tree = self.directory_tree.tree.lock();
-            if !tree.places_loaded {
-                tree.scroll_folder_tree_to_selected = true;
-                tree.mark_snapshot_dirty();
-                Vec::new()
-            } else {
-                tree.expand_requests_for_selection(&dir)
-            }
+            tree.scroll_folder_tree_to_selected = true;
+            tree.expand_requests_for_selection(&dir)
         };
         for request in requests {
             self.send_directory_tree_children_request(request);

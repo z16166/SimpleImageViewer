@@ -73,6 +73,20 @@ impl DirectoryTreeView {
         self.tree.selected_namespace_path.as_ref()
     }
 
+    /// Mount/share root to paint while Places is still loading (bootstrap reveal chain).
+    pub(super) fn pre_places_folder_display_root(&self) -> Option<std::path::PathBuf> {
+        if self.places_loaded() {
+            return None;
+        }
+        let selected = self.selected_namespace_path()?;
+        let chain = super::namespace::namespace_path_ancestor_chain(selected);
+        chain.into_iter().find(|path| {
+            self.nodes().contains_key(path)
+                && (super::namespace::is_mount_namespace_path(path)
+                    || super::namespace::is_network_share_namespace_path(path))
+        })
+    }
+
     pub(super) fn nodes(
         &self,
     ) -> &std::collections::HashMap<std::path::PathBuf, Arc<super::DirectoryTreeNode>> {
