@@ -124,8 +124,8 @@ mod embedded_side_panel_layout_diag {
             || chrome_embedded_delta.abs() >= WIDTH_CHANGE_EPS;
 
         if interval_elapsed && changed {
-            log::debug!(
-                "[DirectoryTree][OuterPanelDiag] avail_before={:.1} d_avail={:+.1} avail_after={:.1} \
+            log::info!(
+                "[PreloadDebug][DirectoryTree][OuterPanelDiag] avail_before={:.1} d_avail={:+.1} avail_after={:.1} \
                  max_rect_before={:.1} panel_w={:.1} d_panel={:+.1} panel_x={:.1}->{:.1} \
                  default={:.1} min={:.1} tree_embedded_before={:.1} chrome_embedded_after={:?} \
                  d_chrome_embedded={:+.1}",
