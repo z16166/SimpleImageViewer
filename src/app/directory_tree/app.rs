@@ -1306,7 +1306,16 @@ impl ImageViewerApp {
         )
     }
 
-    /// One-shot: seed egui panel state so the main canvas reserves final nav width on frame 1.
+    /// One-shot seed of egui [`PanelState`] so the main canvas reserves final nav width on
+    /// frame 1 while embedded nav is visible.
+    ///
+    /// Early return does **not** set [`crate::app::ImageViewerApp::embedded_directory_tree_panel_bootstrapped`];
+    /// bootstrap is retried on every ROOT `ui()` pass until embedded nav is active, then runs once.
+    ///
+    /// Deferred cases (flag stays false until nav becomes visible):
+    /// - [`crate::app::ImageViewerApp::auto_hidden_directory_tree_nav`] (CLI / double-click session hide)
+    /// - [`DirectoryTreeNavStyle::Detached`](crate::settings::DirectoryTreeNavStyle::Detached)
+    /// - `show_directory_tree_nav == false` or `browse_mode != Tree`
     pub(crate) fn bootstrap_embedded_directory_tree_panel_layout(
         &mut self,
         ctx: &egui::Context,
@@ -1504,9 +1513,8 @@ impl ImageViewerApp {
         }
 
         let viewport_id = self.directory_tree_repaint_viewport_id();
-        let mut sync_warning_cleared = false;
         let mut metadata_requests = Vec::new();
-        let request_viewport_repaint = {
+        let (request_viewport_repaint, mut sync_warning_cleared) = {
             let pending_warning = self.pending_directory_tree_sync_warning.take();
             let tree_guard = self.directory_tree.tree.try_lock();
             let list_guard = self.directory_tree.list.try_lock();
@@ -1538,7 +1546,6 @@ impl ImageViewerApp {
                 metadata_requests.push(request);
             }
             list.sync_warning = None;
-            sync_warning_cleared |= true;
             let preview_updated = self.directory_tree_list_previews_active()
                 && self.directory_tree_strip_cache.gpu_revision() != previous_preview_revision;
             let repaint = preview_updated
@@ -1561,7 +1568,10 @@ impl ImageViewerApp {
                     preview_updated
                 );
             }
-            (repaint, resort_after_scan, resort_column, resort_ascending)
+            (
+                (repaint, resort_after_scan, resort_column, resort_ascending),
+                true,
+            )
         };
 
         if request_viewport_repaint.1
@@ -1578,7 +1588,7 @@ impl ImageViewerApp {
                 metadata_requests.push(request);
             }
             list.sync_warning = None;
-            sync_warning_cleared |= true;
+            sync_warning_cleared = true;
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.current_index = self.current_index;
             list.image_list_col_widths_dirty = true;

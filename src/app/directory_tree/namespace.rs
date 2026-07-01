@@ -238,6 +238,7 @@ pub(crate) fn fs_path_for_mount_namespace(
     tree: &Path,
     mount_roots: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
+    // Safe when `mount_roots` is empty: the inner walk finds no prefix match and returns None.
     fs_path_for_namespace_tree(
         tree,
         mount_roots
@@ -399,5 +400,22 @@ mod tests {
         assert_eq!(normalized, custom);
         let chain = namespace_path_ancestor_chain(&normalized);
         assert_eq!(chain.len(), 3, "{chain:?}");
+    }
+
+    #[test]
+    fn fs_path_for_mount_namespace_returns_none_for_empty_roots() {
+        let mount = drive_mount_namespace_path(Path::new(r"C:\"));
+        assert!(fs_path_for_mount_namespace(&mount, std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn fs_path_for_mount_namespace_resolves_when_root_matches() {
+        let mount_root = PathBuf::from(r"C:\");
+        let mount = drive_mount_namespace_path(&mount_root);
+        let child = namespace_child_path(&mount, &mount_root, &PathBuf::from(r"C:\Photos"));
+        assert_eq!(
+            fs_path_for_mount_namespace(&child, [mount_root]).as_deref(),
+            Some(Path::new(r"C:\Photos"))
+        );
     }
 }

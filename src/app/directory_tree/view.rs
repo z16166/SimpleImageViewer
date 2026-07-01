@@ -74,6 +74,9 @@ impl DirectoryTreeView {
     }
 
     /// Mount/share root to paint while Places is still loading (bootstrap reveal chain).
+    ///
+    /// Returns None when bootstrap nodes are not materialized yet; [`super::ui::draw_folder_panel`]
+    /// then shows only the Places loading status row.
     pub(super) fn pre_places_folder_display_root(&self) -> Option<std::path::PathBuf> {
         if self.places_loaded() {
             return None;

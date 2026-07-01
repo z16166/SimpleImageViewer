@@ -2869,6 +2869,34 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
 }
 
 #[test]
+fn embedded_panel_bootstrap_retries_until_embedded_nav_active() {
+    use crate::settings::DirectoryTreeNavStyle;
+    use eframe::egui::{self, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    app.embedded_directory_tree_panel_bootstrapped = false;
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_nav_style = DirectoryTreeNavStyle::Embedded;
+    app.auto_hidden_directory_tree_nav = true;
+
+    let available = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 800.0));
+    app.bootstrap_embedded_directory_tree_panel_layout(&ctx, available);
+    assert!(
+        !app.embedded_directory_tree_panel_bootstrapped,
+        "session auto-hide keeps nav inactive; bootstrap must not latch yet"
+    );
+
+    app.clear_auto_hidden_directory_tree_nav();
+    app.bootstrap_embedded_directory_tree_panel_layout(&ctx, available);
+    assert!(
+        app.embedded_directory_tree_panel_bootstrapped,
+        "once embedded nav is active, bootstrap seeds panel state once"
+    );
+}
+
+#[test]
 fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();

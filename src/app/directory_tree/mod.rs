@@ -968,6 +968,11 @@ impl DirectoryTreeTreeState {
     /// Priority: known folder, UNC share, deepest Places mount root, then root `/` on Linux.
     /// Preferring the deepest mount avoids flattening mount subtrees under a parent filesystem
     /// expansion (see tests `reveal_mount_path_skips_root_slash_ancestor_chain`).
+    ///
+    /// After Places load, mount resolution uses [`Self::places_mount_root_for_path`] (Places drive
+    /// list). Before Places load, the fallback branch uses [`ui::volume_root_for_path`], which
+    /// heuristically picks volume/share roots and may disagree with Places -- if tree nodes look
+    /// wrong around startup, compare these two paths first.
     fn namespace_path_for_fs_path(&self, dir: &Path) -> Option<PathBuf> {
         if let Some(entry) = self.known_folder_for_fs_path(dir) {
             let chain = namespace::namespace_ancestor_chain(
@@ -1059,6 +1064,7 @@ impl DirectoryTreeTreeState {
         }
         let selection = self.selected_fs_path.as_deref()?;
         let mount_roots = self.pre_places_mount_roots(selection);
+        // `fs_path_for_mount_namespace` returns None when `mount_roots` is empty (no iterator match).
         if let Some(browse) =
             namespace::fs_path_for_mount_namespace(tree, mount_roots.iter().cloned())
         {

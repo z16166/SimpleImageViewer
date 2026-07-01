@@ -1370,6 +1370,121 @@ fn reveal_selected_namespace_pre_places_builds_mount_chain() {
 }
 
 #[test]
+fn pre_places_folder_display_root_none_when_places_loaded() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loaded: true,
+            selected_namespace_path: Some(mount_root.clone()),
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(view.pre_places_folder_display_root().is_none());
+}
+
+#[test]
+fn pre_places_folder_display_root_none_without_selected_namespace() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(view.pre_places_folder_display_root().is_none());
+}
+
+#[test]
+fn pre_places_folder_display_root_none_without_bootstrap_nodes() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::sync::Arc;
+
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            selected_namespace_path: Some(via_mount),
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert!(
+        view.pre_places_folder_display_root().is_none(),
+        "without bootstrap nodes in the snapshot, paint falls back to loading status only"
+    );
+}
+
+#[test]
+fn pre_places_folder_display_root_returns_mount_when_bootstrap_node_exists() {
+    use super::domains::DirectoryTreeTreeSnapshot;
+    use super::view::DirectoryTreeView;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let browse = PathBuf::from(r"F:\Photos");
+    let photos = super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &browse);
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        mount_root.clone(),
+        Arc::new(super::directory_tree_node(
+            "F:\\".to_string(),
+            PathBuf::from(r"F:\"),
+        )),
+    );
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(DirectoryTreeTreeSnapshot {
+            places_loading: true,
+            selected_namespace_path: Some(photos),
+            nodes,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    assert_eq!(
+        view.pre_places_folder_display_root().as_deref(),
+        Some(mount_root.as_path())
+    );
+}
+
+#[test]
+fn fs_path_for_namespace_node_pre_places_none_without_mount_roots() {
+    let mount = super::namespace::drive_mount_namespace_path(Path::new(r"Z:\"));
+    let mut tree = DirectoryTreeTreeState::default();
+    tree.selected_fs_path = Some(PathBuf::from("relative/no/volume/file.jpg"));
+    assert!(
+        tree.fs_path_for_namespace_node_pre_places(&mount).is_none(),
+        "unresolved relative paths yield no mount roots and no fs mapping"
+    );
+}
+
+#[test]
 fn apply_children_omits_network_share_roots_from_filesystem_parent() {
     use crate::directory_tree_places::types::DriveEntry;
 

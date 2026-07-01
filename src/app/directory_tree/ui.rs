@@ -865,6 +865,8 @@ fn draw_folder_panel(
     }
     let scroll_output = scroll.show(ui, |ui| {
             if !view.places_loaded() {
+                // No bootstrap mount/share root yet: keep spinner / status only (see
+                // `DirectoryTreeView::pre_places_folder_display_root` tests).
                 draw_directory_tree_places_status(ui, view);
                 if let Some(root) = view.pre_places_folder_display_root() {
                     draw_directory_node(
