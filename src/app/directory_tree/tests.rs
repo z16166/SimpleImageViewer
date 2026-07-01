@@ -402,6 +402,24 @@ fn sync_images_marks_list_scroll_when_current_index_changes() {
 }
 
 #[test]
+fn sync_images_preserves_keyboard_list_selection_until_main_window_catches_up() {
+    let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+    let mut state = DirectoryTreeState::default();
+    state.list.image_rows = paths
+        .iter()
+        .map(|path| DirectoryTreeFileRow::new(path.clone(), directory_display_name(path), 0, None))
+        .collect();
+    state.list.current_index = 1;
+    state.list.image_list_keyboard_active = true;
+    state.list.scroll_image_list_to_current = true;
+
+    state.sync_images(&paths, &[0, 0], &[None, None], 0, false, String::new());
+
+    assert_eq!(state.list.current_index, 1);
+    assert!(state.list.scroll_image_list_to_current);
+}
+
+#[test]
 fn wrapped_image_list_index_loops_at_bounds() {
     assert_eq!(wrapped_image_list_index(0, -1, 10), Some(9));
     assert_eq!(wrapped_image_list_index(9, 1, 10), Some(0));
@@ -1676,6 +1694,29 @@ fn begin_paint_frame_preserves_folder_scroll_offset_from_chrome() {
     chrome.begin_paint_frame(&view, false);
 
     assert_eq!(chrome.folder_scroll_offset_y, 240.0);
+}
+
+#[test]
+fn begin_paint_frame_preserves_keyboard_list_selection_from_chrome() {
+    use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
+    use std::sync::Arc;
+
+    let tree = DirectoryTreeTreeState::default();
+    let list = DirectoryTreeListState::default();
+    let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
+    chrome.current_index = 1;
+
+    let view = DirectoryTreeView::assemble(
+        Arc::new(super::domains::DirectoryTreeTreeSnapshot::default()),
+        Arc::new(super::domains::DirectoryTreeListSnapshot {
+            current_index: 0,
+            ..Default::default()
+        }),
+        Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
+    );
+    chrome.begin_paint_frame(&view, true);
+
+    assert_eq!(chrome.current_index, 1);
 }
 
 #[test]

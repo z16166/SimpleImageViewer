@@ -799,6 +799,7 @@ impl ImageViewerApp {
                         let mut list = self.directory_tree.list.lock();
                         list.current_index = index;
                         list.scroll_image_list_to_current = true;
+                        list.mark_snapshot_dirty();
                         ctx.request_repaint();
                         self.request_directory_tree_viewport_repaint(ctx);
                     }
