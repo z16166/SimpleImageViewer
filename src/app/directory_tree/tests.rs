@@ -2148,3 +2148,67 @@ fn directory_tree_view_carries_sync_warning_from_state() {
     );
     assert_eq!(view.sync_warning(), Some("sync dropped"));
 }
+
+#[test]
+fn appended_image_rows_affect_visible_only_when_in_viewport() {
+    use super::visibility::appended_image_rows_affect_visible;
+
+    assert!(appended_image_rows_affect_visible(0, 5, None));
+    assert!(appended_image_rows_affect_visible(10, 15, Some((0, 12))));
+    assert!(!appended_image_rows_affect_visible(10, 20, Some((0, 10))));
+    assert!(!appended_image_rows_affect_visible(100, 200, Some((5, 15))));
+}
+
+#[test]
+fn initialize_places_preserves_bootstrap_mount_nodes() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let child = super::namespace::namespace_child_path(
+        &mount_root,
+        Path::new(r"F:\"),
+        &PathBuf::from(r"F:\photos"),
+    );
+    let mut state = DirectoryTreeState::default();
+    let _ = state.tree.nodes.insert(
+        mount_root.clone(),
+        DirectoryTreeNode {
+            display_name: "F:\\".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+            expanded: true,
+            loading: false,
+            children_loaded: true,
+            children: vec![child.clone()],
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+    let _ = state.tree.nodes.insert(
+        child.clone(),
+        DirectoryTreeNode {
+            display_name: "photos".to_string(),
+            fs_path: PathBuf::from(r"F:\photos"),
+            expanded: false,
+            loading: false,
+            children_loaded: false,
+            children: Vec::new(),
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        this_pc_label: "This PC".to_string(),
+        known_folders: Vec::new(),
+        drives: vec![DriveEntry {
+            display_name: "Local Disk (F:)".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+        }],
+        network_locations: Vec::new(),
+        network_label: "Network".to_string(),
+    };
+    state.tree.initialize_places(places);
+
+    assert!(state.tree.nodes.contains_key(&child));
+    assert!(state.tree.places_loaded);
+}

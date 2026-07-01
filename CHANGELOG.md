@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - **Navigation panel mouse selection**: Clicking a row in the file list now moves the selection highlight to that image reliably.
 - **Navigation list double-click**: Double-clicking an image in the navigation panel’s file list hides the panel for the current session only; your saved “show navigation panel” preference is no longer turned off.
 
+### Improved
+- **Faster navigation panel startup**: Embedded and detached navigation panels show folder tree and file list progress sooner while folders are still scanning, with less layout flicker on launch.
+- **Smoother scanning in the file list**: The navigation panel repaints less often when new files are discovered below the visible list area.
+
 ## [2.8.2] - 2026-06-30
 
 ### Fixed

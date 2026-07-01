@@ -228,6 +228,10 @@ fn modified_unix_for_display(stored: i64) -> i64 {
 }
 
 impl DirectoryTreeFileRow {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(crate) fn new(
         path: PathBuf,
         name: String,
@@ -674,7 +678,6 @@ impl DirectoryTreeTreeState {
         self.known_folders = places.known_folders;
         self.network_label = places.network_label;
         self.network_visible = false;
-        self.nodes.clear();
         self.places_drive_roots = places
             .drives
             .iter()
@@ -1644,6 +1647,7 @@ mod sort;
 mod strip_previews;
 mod ui;
 mod view;
+mod visibility;
 mod workers;
 
 use ui::{

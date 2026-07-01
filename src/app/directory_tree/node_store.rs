@@ -46,6 +46,7 @@ impl DirectoryTreeNodeArena {
         }
     }
 
+    #[allow(dead_code)] // retained for tests and future arena resets
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.path_index.clear();

@@ -110,6 +110,11 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
                 app.queue_save();
             }
         }
+        if app.auto_hidden_directory_tree_nav && app.settings.show_directory_tree_nav {
+            ui.label(
+                egui::RichText::new(t!("label.directory_tree_nav_session_hidden")).weak(),
+            );
+        }
 
         let old_tree_nav_style = app.settings.directory_tree_nav_style;
         ui.add_enabled_ui(app.settings.show_directory_tree_nav, |ui| {

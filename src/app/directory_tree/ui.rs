@@ -46,6 +46,7 @@ use super::{
     is_places_sentinel_namespace_path, is_this_pc_namespace_path, network_namespace_path,
     send_directory_tree_command, this_pc_namespace_path,
 };
+use super::domains::DirectoryTreeTreeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DirectoryTreeNodeIcon {
@@ -845,6 +846,72 @@ pub(super) fn draw_directory_tree_places_status(ui: &mut egui::Ui, view: &Direct
     }
 }
 
+fn folder_tree_walk_row_index(
+    tree: &DirectoryTreeTreeState,
+    path: &Path,
+    target: &Path,
+    index: &mut usize,
+) -> bool {
+    let Some(node) = tree.nodes.get(path) else {
+        return false;
+    };
+    if path.as_os_str() == target.as_os_str() {
+        return true;
+    }
+    *index = index.saturating_add(1);
+    if node.error.is_some() {
+        *index = index.saturating_add(1);
+    }
+    if node.expanded {
+        for child in &node.children {
+            if folder_tree_walk_row_index(tree, child, target, index) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Flat folder-tree row index for `target`, matching [`draw_folder_panel`] paint order.
+pub(super) fn folder_tree_flat_row_index(
+    tree: &DirectoryTreeTreeState,
+    target: &Path,
+) -> Option<usize> {
+    let mut index = 0usize;
+    if !tree.places_loaded {
+        if let Some(root) = tree
+            .selected_namespace_path
+            .as_ref()
+            .and_then(|selected| {
+                let chain = super::namespace::namespace_path_ancestor_chain(selected);
+                chain.into_iter().find(|path| {
+                    tree.nodes.contains_key(path)
+                        && (super::namespace::is_mount_namespace_path(path)
+                            || super::namespace::is_network_share_namespace_path(path))
+                })
+            })
+            && folder_tree_walk_row_index(tree, &root, target, &mut index)
+        {
+            return Some(index);
+        }
+        return None;
+    }
+    for entry in &tree.known_folders {
+        if folder_tree_walk_row_index(tree, &entry.namespace_path, target, &mut index) {
+            return Some(index);
+        }
+    }
+    if folder_tree_walk_row_index(tree, &this_pc_namespace_path(), target, &mut index) {
+        return Some(index);
+    }
+    if tree.network_visible
+        && folder_tree_walk_row_index(tree, &network_namespace_path(), target, &mut index)
+    {
+        return Some(index);
+    }
+    None
+}
+
 fn draw_folder_panel(
     ui: &mut egui::Ui,
     view: &DirectoryTreeView,
@@ -864,6 +931,8 @@ fn draw_folder_panel(
         scroll = scroll.vertical_scroll_offset(chrome.folder_scroll_offset_y);
     }
     let scroll_output = scroll.show(ui, |ui| {
+            chrome.folder_paint_row_index = 0;
+            chrome.folder_visible_row_range = None;
             if !view.places_loaded() {
                 // No bootstrap mount/share root yet: keep spinner / status only (see
                 // `DirectoryTreeView::pre_places_folder_display_root` tests).
@@ -978,6 +1047,8 @@ fn draw_directory_node(
         return;
     };
     let node = node.as_ref();
+    let row_index = chrome.folder_paint_row_index;
+    chrome.folder_paint_row_index = chrome.folder_paint_row_index.saturating_add(1);
 
     let icon = directory_tree_node_icon_fields(view.known_folders(), view.nodes(), path);
     let expandable = directory_tree_node_expandable(node, path);
@@ -1064,14 +1135,22 @@ fn draw_directory_node(
             }
         },
     );
+    if ui.clip_rect().intersects(row_response.response.rect) {
+        chrome.record_folder_row_visible(row_index);
+    }
     if selected {
         chrome.folder_selected_row_rect = Some(row_response.response.rect);
     }
 
     if let Some(error) = node.error.as_deref() {
+        let error_index = chrome.folder_paint_row_index;
+        chrome.folder_paint_row_index = chrome.folder_paint_row_index.saturating_add(1);
         ui.horizontal(|ui| {
             ui.add_space((depth + 1) as f32 * DIRECTORY_TREE_INDENT);
-            ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
+            let error_response = ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
+            if ui.clip_rect().intersects(error_response.rect) {
+                chrome.record_folder_row_visible(error_index);
+            }
         });
     }
 

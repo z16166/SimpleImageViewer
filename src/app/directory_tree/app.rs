@@ -598,7 +598,7 @@ impl ImageViewerApp {
         self.ensure_directory_tree_reveals_current_browse_dir();
     }
 
-    pub(crate) fn poll_directory_tree_places_load(&mut self) {
+    pub(crate) fn poll_directory_tree_places_load(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.directory_tree_places_load_rx.as_ref() else {
             return;
         };
@@ -614,6 +614,10 @@ impl ImageViewerApp {
                     tree.places_load_error =
                         Some(t!("directory_tree.places_load_failed").to_string());
                 }
+            }
+            if self.directory_tree_settings_active() {
+                ctx.request_repaint();
+                self.request_directory_tree_viewport_repaint(ctx);
             }
             return;
         }
@@ -635,6 +639,10 @@ impl ImageViewerApp {
             tree.places_loading = false;
             tree.places_load_started_at = None;
             tree.places_load_error = Some(t!("directory_tree.places_load_timeout").to_string());
+            if self.directory_tree_settings_active() {
+                ctx.request_repaint();
+                self.request_directory_tree_viewport_repaint(ctx);
+            }
         }
     }
 
@@ -709,14 +717,17 @@ impl ImageViewerApp {
 
     pub(crate) fn process_directory_tree_events(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.directory_tree.result_rx.try_recv() {
+            let loaded_namespace = result.namespace_path.clone();
             // Capture scroll intent before reveal_selected_namespace(); only re-request scroll when
             // a reveal/show/reveal-in-progress already set the flag (not for unrelated expands).
-            let (requests, pending_folder_scroll) = {
+            let (requests, pending_folder_scroll, folder_repaint) = {
                 let mut tree = self.directory_tree.tree.lock();
                 tree.apply_children_result(result);
                 let pending_folder_scroll = tree.scroll_folder_tree_to_selected;
+                let folder_repaint =
+                    super::visibility::folder_children_load_affects_visible(&tree, &loaded_namespace);
                 let requests = tree.reveal_selected_namespace();
-                (requests, pending_folder_scroll)
+                (requests, pending_folder_scroll, folder_repaint)
             };
             for request in requests {
                 self.send_directory_tree_children_request(request);
@@ -724,18 +735,28 @@ impl ImageViewerApp {
             if pending_folder_scroll {
                 self.request_directory_tree_folder_scroll_to_selected();
             }
-            ctx.request_repaint();
-            self.request_directory_tree_viewport_repaint(ctx);
+            if folder_repaint {
+                ctx.request_repaint();
+                self.request_directory_tree_viewport_repaint(ctx);
+            }
+            self.publish_directory_tree_view_from_state(folder_repaint);
             self.wake_root_for_logic();
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
-            self.directory_tree
-                .list
-                .lock()
-                .apply_metadata_result(result);
-            ctx.request_repaint();
-            self.request_directory_tree_viewport_repaint(ctx);
+            let metadata_repaint = {
+                let mut list = self.directory_tree.list.lock();
+                let visible = list.image_list_visible_row_range;
+                let rows = list.image_rows.clone();
+                let paths = result.paths.clone();
+                list.apply_metadata_result(result);
+                super::visibility::metadata_paths_affect_visible_list(&paths, &rows, visible)
+            };
+            if metadata_repaint {
+                ctx.request_repaint();
+                self.request_directory_tree_viewport_repaint(ctx);
+            }
+            self.publish_directory_tree_view_from_state(metadata_repaint);
         }
 
         while let Ok(command) = self.directory_tree.command_rx.try_recv() {
@@ -911,13 +932,7 @@ impl ImageViewerApp {
     }
 
     fn directory_tree_viewport_active(&self) -> bool {
-        if !self.directory_tree_settings_active() {
-            return false;
-        }
-        match self.directory_tree.tree.try_lock() {
-            Some(tree) => tree.places_loaded,
-            None => self.directory_tree.view.load().places_loaded(),
-        }
+        self.directory_tree_settings_active()
     }
 
     pub(crate) fn directory_tree_nav_is_detached(&self) -> bool {
@@ -1514,11 +1529,11 @@ impl ImageViewerApp {
 
         let viewport_id = self.directory_tree_repaint_viewport_id();
         let mut metadata_requests = Vec::new();
-        let (request_viewport_repaint, mut sync_warning_cleared) = {
+        let request_viewport_repaint = {
             let pending_warning = self.pending_directory_tree_sync_warning.take();
             let tree_guard = self.directory_tree.tree.try_lock();
             let list_guard = self.directory_tree.list.try_lock();
-            let (Some(tree), Some(mut list)) = (tree_guard, list_guard) else {
+            let (Some(_tree), Some(mut list)) = (tree_guard, list_guard) else {
                 self.pending_directory_tree_sync_warning = pending_warning;
                 self.defer_directory_tree_file_list_sync();
                 return;
@@ -1536,8 +1551,8 @@ impl ImageViewerApp {
             let previous_index = list.current_index;
             let previous_scanning = list.scanning;
             let previous_row_count = list.image_rows.len();
-            let resort_after_scan = tree.places_loaded
-                && previous_scanning
+            let visible_row_range = list.image_list_visible_row_range;
+            let resort_after_scan = previous_scanning
                 && !self.scanning
                 && list.image_list_sort_active;
             let resort_column = list.image_list_sort_column;
@@ -1548,15 +1563,24 @@ impl ImageViewerApp {
             list.sync_warning = None;
             let preview_updated = self.directory_tree_list_previews_active()
                 && self.directory_tree_strip_cache.gpu_revision() != previous_preview_revision;
+            let row_count_changed = list.image_rows.len() != previous_row_count;
+            let rows_affect_visible = row_count_changed
+                && (list.scanning != previous_scanning
+                    || !list.scanning
+                    || super::visibility::appended_image_rows_affect_visible(
+                        previous_row_count,
+                        list.image_rows.len(),
+                        visible_row_range,
+                    ));
             let repaint = preview_updated
                 || list.scroll_image_list_to_current
                 || list.current_index != previous_index
                 || list.scanning != previous_scanning
-                || list.image_rows.len() != previous_row_count;
+                || rows_affect_visible;
             #[cfg(feature = "preload-debug")]
             if repaint
                 && (list.scanning != previous_scanning
-                    || list.image_rows.len() != previous_row_count
+                    || row_count_changed
                     || preview_updated)
             {
                 crate::preload_debug!(
@@ -1568,10 +1592,7 @@ impl ImageViewerApp {
                     preview_updated
                 );
             }
-            (
-                (repaint, resort_after_scan, resort_column, resort_ascending),
-                true,
-            )
+            (repaint, resort_after_scan, resort_column, resort_ascending)
         };
 
         if request_viewport_repaint.1
@@ -1588,7 +1609,6 @@ impl ImageViewerApp {
                 metadata_requests.push(request);
             }
             list.sync_warning = None;
-            sync_warning_cleared = true;
             list.image_list_generation = list.image_list_generation.wrapping_add(1);
             list.current_index = self.current_index;
             list.image_list_col_widths_dirty = true;
@@ -1605,22 +1625,17 @@ impl ImageViewerApp {
             }
         }
 
-        if sync_warning_cleared {
-            self.pending_directory_tree_sync_warning = None;
-        }
+        self.pending_directory_tree_sync_warning = None;
 
         if request_viewport_repaint.0 {
             ctx.request_repaint_of(viewport_id);
             self.mark_directory_tree_repaint_pending();
         }
         self.publish_directory_tree_view_from_state(request_viewport_repaint.0);
-        if self.directory_tree_viewport_active() {
+        if request_viewport_repaint.0 && self.directory_tree_viewport_active() {
             // Keep ROOT painting while the tree viewport is open. logic() may run on a child
             // repaint; egui repaint requests alone do not wake ROOT on Windows.
             self.wake_root_for_logic();
-            if self.scanning || self.scan_results_pending_since.is_some() {
-                ctx.request_repaint();
-            }
         }
     }
 
@@ -1808,7 +1823,7 @@ impl ImageViewerApp {
     /// frame's heavy upload path (see preload-debug `wait_ms` logs).
     pub(crate) fn process_directory_scan_pipeline(&mut self, ctx: &egui::Context) {
         if self.directory_tree_settings_active() {
-            self.poll_directory_tree_places_load();
+            self.poll_directory_tree_places_load(ctx);
         }
         let was_scanning = self.scanning;
         self.process_scan_results();
@@ -1852,7 +1867,7 @@ impl ImageViewerApp {
             return;
         }
 
-        self.poll_directory_tree_places_load();
+        self.poll_directory_tree_places_load(ctx);
         self.ensure_directory_tree_places_loaded();
 
         const PENDING_PRELOAD_DEFER_RETRY_INTERVAL: Duration = Duration::from_millis(500);
@@ -1882,18 +1897,17 @@ impl ImageViewerApp {
         {
             self.defer_directory_tree_file_list_sync();
         }
-        let folder_reveal_pending = self
+        let folder_reveal_repaint = self
             .directory_tree
             .tree
             .try_lock()
-            .is_some_and(|tree| tree.folder_reveal_work_pending());
-        let strip_work_pending = self.scanning
-            || self.pending_directory_tree_state_sync
+            .is_some_and(|tree| super::visibility::folder_reveal_work_needs_repaint(&tree));
+        let strip_work_pending = self.pending_directory_tree_state_sync
             || self.directory_tree_strip_bootstrap_after_scan
             || !self.directory_tree_strip_generate_inflight.is_empty()
             || !self.directory_tree_strip_pending_gpu_initial.is_empty()
             || !self.directory_tree_strip_pending_gpu_refined.is_empty()
-            || folder_reveal_pending;
+            || folder_reveal_repaint;
         if strip_work_pending {
             if self.directory_tree_strip_cache.gpu_revision() > 0 {
                 self.request_directory_tree_viewport_repaint(ctx);
