@@ -1942,11 +1942,13 @@ fn begin_paint_frame_promotes_folder_scroll_to_selected_without_clobbering_clear
 }
 
 #[test]
-fn folder_reveal_work_pending_tracks_scroll_flag() {
+fn folder_reveal_work_needs_repaint_tracks_scroll_flag() {
+    use super::visibility::folder_reveal_work_needs_repaint;
+
     let mut tree = DirectoryTreeTreeState::default();
-    assert!(!tree.folder_reveal_work_pending());
+    assert!(!folder_reveal_work_needs_repaint(&tree));
     tree.scroll_folder_tree_to_selected = true;
-    assert!(tree.folder_reveal_work_pending());
+    assert!(folder_reveal_work_needs_repaint(&tree));
 }
 
 #[test]

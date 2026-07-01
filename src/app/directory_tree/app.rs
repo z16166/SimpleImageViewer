@@ -749,10 +749,13 @@ impl ImageViewerApp {
             let metadata_repaint = {
                 let mut list = self.directory_tree.list.lock();
                 let visible = list.image_list_visible_row_range;
-                let rows = list.image_rows.clone();
-                let paths = result.paths.clone();
+                let metadata_repaint = super::visibility::metadata_paths_affect_visible_list(
+                    &result.paths,
+                    &list.image_rows,
+                    visible,
+                );
                 list.apply_metadata_result(result);
-                super::visibility::metadata_paths_affect_visible_list(&paths, &rows, visible)
+                metadata_repaint
             };
             if metadata_repaint {
                 ctx.request_repaint();

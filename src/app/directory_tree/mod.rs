@@ -918,10 +918,6 @@ impl DirectoryTreeTreeState {
         self.set_selected_fs_path(dir);
     }
 
-    pub(crate) fn folder_reveal_work_pending(&self) -> bool {
-        self.scroll_folder_tree_to_selected || self.nodes.iter().any(|(_, node)| node.loading)
-    }
-
     pub(crate) fn expand_requests_for_selection(
         &mut self,
         dir: &Path,
