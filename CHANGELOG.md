@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.3] - 2026-07-01
+
+### Fixed
+- **Navigation panel image list selection**: The highlighted row in the file list now stays on the image you chose when using arrow keys, including while the next image is still loading, instead of jumping back to the previous row.
+- **Navigation panel mouse selection**: Clicking a row in the file list now moves the selection highlight to that image reliably.
+
 ## [2.8.2] - 2026-06-30
 
 ### Fixed

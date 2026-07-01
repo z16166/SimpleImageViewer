@@ -1625,18 +1625,13 @@ fn draw_image_details_row(ui: &mut egui::Ui, params: ImageDetailsRowParams<'_>) 
             command_tx,
             DirectoryTreeCommand::SelectImageAndHideNav(row_index),
         );
+        ui.ctx().request_repaint();
         return true;
     }
     if list_enabled && response.clicked() {
         apply_image_list_row_selection(chrome, row_index);
         send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(row_index));
-        if ui.is_rect_visible(row_rect) {
-            ui.painter().rect_filled(
-                row_rect,
-                0.0,
-                directory_tree_row_selected_fill(palette),
-            );
-        }
+        ui.ctx().request_repaint();
         return true;
     }
     if selected {
