@@ -576,6 +576,7 @@ impl ImageViewerApp {
             folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
             auto_hidden_directory_tree_nav,
+            embedded_directory_tree_panel_bootstrapped: false,
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
             directory_tree_strip_compose_probe_cache:

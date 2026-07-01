@@ -586,12 +586,20 @@ struct ImageDetailsRowParams<'a> {
     palette: &'a ThemePalette,
 }
 
+pub(super) fn embedded_directory_tree_panel_frame(palette: &ThemePalette) -> egui::Frame {
+    egui::Frame::NONE.fill(palette.panel_bg)
+}
+
+pub(super) fn prepare_directory_tree_panel_chrome(ui: &mut egui::Ui, palette: &ThemePalette) {
+    ui.visuals_mut().button_frame = false;
+    ui.visuals_mut().override_text_color = Some(palette.text_normal);
+}
+
 pub(super) fn draw_directory_tree_window(
     ui: &mut egui::Ui,
     mut params: DirectoryTreeDrawParams<'_>,
 ) {
-    ui.visuals_mut().button_frame = false;
-    ui.visuals_mut().override_text_color = Some(params.palette.text_normal);
+    prepare_directory_tree_panel_chrome(ui, params.palette);
     ui.painter()
         .rect_filled(ui.max_rect(), 0.0, params.palette.panel_bg);
     draw_directory_tree_top_panels(
@@ -712,6 +720,7 @@ fn draw_directory_tree_top_panels(
     ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
         ui.set_clip_rect(left_rect);
         ui.set_width(left_w);
+        ui.painter().rect_filled(left_rect, 0.0, palette.panel_bg);
         draw_folder_panel(ui, view, chrome, command_tx, root_wake, palette);
     });
 

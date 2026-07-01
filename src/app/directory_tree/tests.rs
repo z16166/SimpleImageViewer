@@ -307,10 +307,7 @@ fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
         embedded_side_panel_clamped_width(Some(400.0), 380.0, 200.0),
         320.0
     );
-    assert_eq!(
-        embedded_side_panel_clamped_width(None, 380.0, 640.0),
-        380.0
-    );
+    assert_eq!(embedded_side_panel_clamped_width(None, 380.0, 640.0), 380.0);
     assert_eq!(
         embedded_side_panel_clamped_width(Some(500.0), 380.0, 640.0),
         500.0
@@ -325,6 +322,28 @@ fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
 fn should_restore_embedded_side_panel_state_when_not_resizing() {
     assert!(super::should_restore_embedded_side_panel_state(false));
     assert!(!super::should_restore_embedded_side_panel_state(true));
+}
+
+#[test]
+fn seed_embedded_side_panel_states_writes_persisted_layout_for_both_panel_ids() {
+    use super::{
+        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID, DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+        seed_embedded_side_panel_states,
+    };
+    use eframe::egui::{self, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let available = Rect::from_min_max(Pos2::new(8.0, 0.0), Pos2::new(1008.0, 800.0));
+    seed_embedded_side_panel_states(&ctx, available, 420.0);
+
+    for panel_id in [
+        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
+    ] {
+        let state = egui::PanelState::load(&ctx, egui::Id::new(panel_id)).expect("panel state");
+        assert_eq!(state.rect.min, available.min);
+        assert!((state.rect.width() - 420.0).abs() < f32::EPSILON);
+    }
 }
 
 #[test]

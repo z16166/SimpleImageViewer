@@ -226,6 +226,8 @@ impl eframe::App for ImageViewerApp {
         // style there are wrong and would corrupt dark-theme widget colors on the main window.
         self.sync_theme_and_visuals(&ctx);
         self.sync_directory_tree_keyboard_focus_with_viewports(&ctx);
+        let embedded_nav_available = ui.available_rect_before_wrap();
+        self.bootstrap_embedded_directory_tree_panel_layout(&ctx, embedded_nav_available);
         // Draw embedded tree before keyboard so the file list can consume arrow keys first.
         self.draw_embedded_directory_tree_panel(ui);
         // Keyboard must run from ROOT ui(), not logic(): logic() runs before integration.update

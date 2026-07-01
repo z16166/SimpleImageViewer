@@ -1609,6 +1609,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         folder_picker: crate::app::folder_picker::FolderPickerRuntime::new(),
         directory_tree: crate::app::DirectoryTreeRuntime::new(),
         auto_hidden_directory_tree_nav: false,
+        embedded_directory_tree_panel_bootstrapped: false,
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
         directory_tree_strip_compose_probe_cache:

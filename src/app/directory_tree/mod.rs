@@ -67,6 +67,27 @@ pub(crate) fn embedded_side_panel_clamped_width(
 pub(crate) fn should_restore_embedded_side_panel_state(resize_active: bool) -> bool {
     !resize_active
 }
+
+/// Pre-seed embedded side-panel `PanelState` from persisted yaml width before the first paint.
+pub(crate) fn seed_embedded_side_panel_states(
+    ctx: &egui::Context,
+    available: egui::Rect,
+    width: f32,
+) {
+    let width = width.min(available.width().max(0.0));
+    let rect = egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(available.min.x + width, available.max.y),
+    );
+    for panel_id in [
+        DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+        DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID,
+    ] {
+        ctx.data_mut(|data| {
+            data.insert_persisted(egui::Id::new(panel_id), egui::PanelState { rect });
+        });
+    }
+}
 pub(super) const DIRECTORY_TREE_MIN_WIDTH: f32 = 640.0;
 pub(super) const DIRECTORY_TREE_MIN_HEIGHT: f32 = 420.0;
 pub(super) const DIRECTORY_TREE_LEFT_WIDTH: f32 = 340.0;

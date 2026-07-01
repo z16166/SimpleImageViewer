@@ -1303,6 +1303,32 @@ impl ImageViewerApp {
         Self::directory_tree_embedded_panel_default_width(&self.settings)
     }
 
+    /// Target embedded side-panel width from yaml (clamped to the current viewport).
+    pub(crate) fn embedded_nav_panel_clamped_target_width(&self, available_width: f32) -> f32 {
+        embedded_side_panel_clamped_width(
+            self.settings.directory_tree_embedded_panel_width,
+            Self::directory_tree_embedded_panel_default_width(&self.settings),
+            available_width,
+        )
+    }
+
+    /// One-shot: seed egui panel state so the main canvas reserves final nav width on frame 1.
+    pub(crate) fn bootstrap_embedded_directory_tree_panel_layout(
+        &mut self,
+        ctx: &egui::Context,
+        available: egui::Rect,
+    ) {
+        if self.embedded_directory_tree_panel_bootstrapped
+            || !self.directory_tree_settings_active()
+            || !self.directory_tree_nav_is_embedded()
+        {
+            return;
+        }
+        self.embedded_directory_tree_panel_bootstrapped = true;
+        let width = self.embedded_nav_panel_clamped_target_width(available.width());
+        super::seed_embedded_side_panel_states(ctx, available, width);
+    }
+
     pub(crate) fn directory_tree_viewport_id() -> egui::ViewportId {
         egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID)
     }
@@ -1698,17 +1724,32 @@ impl ImageViewerApp {
         self.flush_directory_tree_strip_pending_gpu_uploads(ui.ctx());
 
         let default_width = Self::directory_tree_embedded_panel_default_width(&self.settings);
+        let panel_frame = super::ui::embedded_directory_tree_panel_frame(&self.cached_palette);
         let has_places = self.directory_tree.view.load().places_loaded();
         if !has_places {
+            let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID);
+            let stable_panel_rect =
+                embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
             egui::Panel::left(DIRECTORY_TREE_EMBEDDED_LOADING_PANEL_ID)
                 .resizable(false)
+                .frame(panel_frame)
+                .default_size(default_width)
+                .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
                 .show_inside(ui, |ui| {
+                    super::ui::prepare_directory_tree_panel_chrome(ui, &self.cached_palette);
+                    ui.painter()
+                        .rect_filled(ui.max_rect(), 0.0, self.cached_palette.panel_bg);
                     crate::app::directory_tree::ui::draw_directory_tree_places_status(
                         ui,
                         &self.directory_tree.view.load(),
                     );
                     crate::app::directory_tree::ui::publish_directory_tree_nav_wheel_block_rect(ui);
                 });
+            restore_embedded_side_panel_state_if_not_resizing(
+                ui.ctx(),
+                panel_id,
+                stable_panel_rect,
+            );
             return;
         }
 
@@ -1725,6 +1766,7 @@ impl ImageViewerApp {
             .unwrap_or(0.0);
         let panel_response = egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
             .resizable(true)
+            .frame(panel_frame)
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
             .show_inside(ui, |ui| {
