@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Navigation panel image list selection**: The highlighted row in the file list now stays on the image you chose when using arrow keys, including while the next image is still loading, instead of jumping back to the previous row.
 - **Navigation panel mouse selection**: Clicking a row in the file list now moves the selection highlight to that image reliably.
+- **Navigation list double-click**: Double-clicking an image in the navigation panel’s file list hides the panel for the current session only; your saved “show navigation panel” preference is no longer turned off.
 
 ## [2.8.2] - 2026-06-30
 

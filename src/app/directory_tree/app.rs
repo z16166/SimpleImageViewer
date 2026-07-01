@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -408,7 +408,9 @@ impl ImageViewerApp {
 
     pub(crate) fn effective_scan_recursive(&self) -> bool {
         match self.settings.browse_mode {
-            BrowseMode::Tree if self.directory_tree_settings_active() || self.auto_hidden_directory_tree_nav => {
+            BrowseMode::Tree
+                if self.directory_tree_settings_active() || self.auto_hidden_directory_tree_nav =>
+            {
                 // Tree browsing (including session auto-hide) stays folder-scoped.
                 false
             }
@@ -822,8 +824,9 @@ impl ImageViewerApp {
                             list.current_index = index;
                             list.scroll_image_list_to_current = true;
                         }
-                        self.hide_directory_tree_nav(ctx);
-                        self.queue_save();
+                        // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
+                        // Settings can restore the panel without rewriting yaml.
+                        self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
                         ctx.request_repaint();
                         self.request_directory_tree_viewport_repaint(ctx);
                     }

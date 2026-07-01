@@ -2868,6 +2868,35 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
 }
 
 #[test]
+fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let (save_tx, save_rx) = crossbeam_channel::unbounded();
+    app.save_tx = save_tx;
+    let dir = std::env::temp_dir().join("siv_list_double_click_nav");
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("first.jpg");
+    let second = dir.join("second.jpg");
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.image_files = vec![first, second];
+    app.file_byte_len_by_index = vec![0, 0];
+    app.file_modified_unix_by_index = vec![None, None];
+
+    app.directory_tree
+        .command_tx
+        .send(crate::app::directory_tree::DirectoryTreeCommand::SelectImageAndHideNav(1))
+        .unwrap();
+    app.process_directory_tree_events(&ctx);
+
+    assert!(!app.directory_tree_settings_active());
+    assert!(app.auto_hidden_directory_tree_nav);
+    assert!(app.settings.show_directory_tree_nav);
+    assert!(save_rx.try_iter().next().is_none());
+}
+
+#[test]
 fn ipc_double_click_auto_hides_tree_nav_without_persisting_toggle() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
