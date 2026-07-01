@@ -211,7 +211,11 @@ impl DirectoryTreeUiChrome {
         list_keyboard_active: bool,
     ) {
         self.left_panel_width = view.left_panel_width();
-        self.current_index = view.current_index();
+        // Keep keyboard-driven list selection in chrome while the RCU snapshot may still
+        // reflect the previous main-window index (sync runs on logic(), paint on ui()).
+        if !list_keyboard_active {
+            self.current_index = view.current_index();
+        }
         self.scroll_image_list_to_current = view.scroll_image_list_to_current();
         // folder_scroll_offset_y is frame-local chrome (like image_list_scroll_offset_y):
         // do not reload from the RCU snapshot each frame because scroll changes do not mark
@@ -241,7 +245,10 @@ impl DirectoryTreeUiChrome {
         list.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
         list.image_list_visible_row_range = self.image_list_visible_row_range;
         list.image_list_keyboard_active = self.image_list_keyboard_active;
-        list.current_index = self.current_index;
+        if list.current_index != self.current_index {
+            list.current_index = self.current_index;
+            list.mark_snapshot_dirty();
+        }
         if list.scroll_image_list_to_current != self.scroll_image_list_to_current {
             list.scroll_image_list_to_current = self.scroll_image_list_to_current;
             list.mark_snapshot_dirty();

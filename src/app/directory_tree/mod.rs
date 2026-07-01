@@ -1271,10 +1271,16 @@ impl DirectoryTreeListState {
         }
 
         let new_index = current_index.min(self.image_rows.len().saturating_sub(1));
-        if new_index != self.current_index {
-            self.scroll_image_list_to_current = true;
+        let preserve_keyboard_selection =
+            self.image_list_keyboard_active && self.current_index != new_index;
+        // List selection leads while keyboard navigation is in flight; do not snap back
+        // to the main-window index until navigation catches up.
+        if !preserve_keyboard_selection {
+            if new_index != self.current_index {
+                self.scroll_image_list_to_current = true;
+            }
+            self.current_index = new_index;
         }
-        self.current_index = new_index;
         self.scanning = scanning;
         self.scan_status = scan_status;
         if scanning {

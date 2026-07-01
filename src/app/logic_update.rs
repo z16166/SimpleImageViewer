@@ -235,10 +235,10 @@ impl ImageViewerApp {
         self.check_auto_switch(ctx);
         self.process_file_op_results();
         self.run_directory_tree_logic_updates(ctx);
-        self.sync_directory_tree_file_list_state(ctx);
-        self.process_pending_directory_tree_state_sync(ctx);
         let had_tree_select = self.pending_directory_tree_select_index.is_some();
         self.process_pending_directory_tree_select(ctx);
+        self.sync_directory_tree_file_list_state(ctx);
+        self.process_pending_directory_tree_state_sync(ctx);
         if had_tree_select {
             self.run_directory_tree_logic_updates(ctx);
             self.sync_directory_tree_file_list_state(ctx);
