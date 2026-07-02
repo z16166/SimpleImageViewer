@@ -18,6 +18,7 @@
 
 mod decode;
 mod decode_profile;
+pub(crate) mod embedded_sdr_fallback;
 mod hdr_fallback;
 mod metadata;
 mod orchestrator;

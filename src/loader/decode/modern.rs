@@ -18,14 +18,11 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    DecodedImage, HdrAnimationFrame, ImageData, LoadResult, apply_exif_orientation_to_hdr_pair,
-    apply_exif_orientation_to_image_data, hdr_gain_map_decode_capacity,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, source_key_for_path,
+    DecodedImage, HdrAnimationFrame, ImageData, LoadResult, apply_exif_orientation_to_image_data,
+    hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder, source_key_for_path,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use super::assemble::make_hdr_image_data;
 
 #[allow(dead_code)]
 pub(crate) fn is_avif_path(path: &Path) -> bool {
@@ -240,27 +237,6 @@ fn load_avif_with_target_capacity_outcome_impl(
                 gain_map_probe,
                 Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
             );
-        if !skip_embedded_sdr
-            && crate::loader::should_use_embedded_sdr_master_load(
-                prefer_embedded_sdr_master,
-                hdr_target_capacity,
-            )
-        {
-            match crate::hdr::avif::load_avif_embedded_sdr_master(path) {
-                Ok(image) => {
-                    return Ok(AvifLoadOutcome {
-                        image,
-                        sequence_remainder: None,
-                    });
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[Loader] AVIF embedded SDR master failed for {}: {err}; trying full HDR path",
-                        path.display()
-                    );
-                }
-            }
-        }
 
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         log::debug!(
@@ -315,23 +291,23 @@ fn load_avif_with_target_capacity_outcome_impl(
             }
         }
 
-        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(bytes, decode_capacity) {
-            Ok(hdr) => {
-                let fallback = DecodedImage::from_hdr_sdr_fallback(
-                    hdr.width,
-                    hdr.height,
-                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        hdr_target_capacity,
-                        &hdr_tone_map,
-                    )?,
-                );
-                let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
-                Ok(AvifLoadOutcome {
-                    image: make_hdr_image_data(hdr, fallback),
-                    sequence_remainder: None,
-                })
-            }
+        let try_embedded = !skip_embedded_sdr
+            && crate::loader::should_use_embedded_sdr_master_load(
+                prefer_embedded_sdr_master,
+                hdr_target_capacity,
+            );
+        match crate::hdr::avif::decode_avif_static_with_optional_embedded_sdr(
+            bytes,
+            path,
+            decode_capacity,
+            hdr_target_capacity,
+            &hdr_tone_map,
+            try_embedded,
+        ) {
+            Ok(image) => Ok(AvifLoadOutcome {
+                image,
+                sequence_remainder: None,
+            }),
             Err(err) => {
                 log::warn!(
                     "[Loader] libavif decode failed for {}: {err}",
@@ -421,28 +397,10 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
 ) -> Result<JxlLoadOutcome, String> {
     #[cfg(feature = "jpegxl")]
     {
-        if crate::loader::should_use_embedded_sdr_master_load(
+        let try_embedded_sdr_master = crate::loader::should_use_embedded_sdr_master_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
-        ) {
-            let mmap =
-                crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read JXL: {e}"))?;
-            match crate::hdr::jpegxl::decode_jxl_embedded_sdr_master_bytes(&mmap[..]) {
-                Ok(image) => {
-                    return Ok(JxlLoadOutcome {
-                        image: apply_exif_orientation_to_image_data(path, image),
-                        remainder_job: None,
-                    });
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[Loader] JPEG XL embedded SDR master failed for {}: {err}; trying full HDR path",
-                        path.display()
-                    );
-                }
-            }
-        }
-
+        );
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
@@ -450,6 +408,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
             hdr_target_capacity,
             hdr_tone_map,
             bootstrap_animation,
+            try_embedded_sdr_master,
         )?;
         let remainder_job = if output.animation_remainder {
             Some(JxlAnimationRemainderJob {
@@ -528,21 +487,32 @@ pub(crate) fn load_heif_hdr_aware(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
+        let mmap =
+            crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
         if crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
         ) {
-            match crate::hdr::heif::load_heif_embedded_sdr_primary(path, diag) {
-                Ok(image) => return Ok(image),
+            match crate::hdr::heif::load_heif_embedded_sdr_primary_from_bytes(
+                &mmap[..],
+                path,
+                diag,
+            ) {
+                Ok(image) => return Ok(apply_exif_orientation_to_image_data(path, image)),
                 Err(err) => {
-                    log::warn!(
-                        "[Loader] HEIF embedded SDR primary failed for {}: {err}; trying full HDR path",
-                        path.display()
+                    crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
+                        "HEIF", path, &err,
                     );
                 }
             }
         }
-        match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map, diag) {
+        match crate::hdr::heif::load_heif_hdr_from_bytes(
+            &mmap[..],
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+            diag,
+        ) {
             Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
             Err(err) => {
                 log::warn!(

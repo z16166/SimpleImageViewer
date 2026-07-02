@@ -50,7 +50,8 @@ mod tests;
 pub(crate) use brand::is_heif_brand;
 #[cfg(feature = "heif-native")]
 pub(crate) use load::{
-    heif_should_use_embedded_sdr_primary_load, load_heif_embedded_sdr_primary, load_heif_hdr,
+    heif_should_use_embedded_sdr_primary_load, load_heif_embedded_sdr_primary_from_bytes,
+    load_heif_hdr_from_bytes,
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{

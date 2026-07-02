@@ -26,13 +26,10 @@ use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
 use crate::loader::{DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair};
 
 #[cfg(feature = "avif-native")]
-pub(crate) fn load_avif_embedded_sdr_master(path: &Path) -> Result<ImageData, String> {
-    #[cfg(feature = "preload-debug")]
-    let total_start = std::time::Instant::now();
-
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    let image = read_avif_decoder_image(&mmap[..])?;
+pub(crate) fn try_avif_embedded_sdr_from_decoded_image(
+    image: &libavif_sys::AvifImageOwned,
+    path: &Path,
+) -> Result<ImageData, String> {
     let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.gainMap.is_null() {
         return Err(format!(
@@ -70,19 +67,35 @@ pub(crate) fn load_avif_embedded_sdr_master(path: &Path) -> Result<ImageData, St
     });
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
 
-    #[cfg(feature = "preload-debug")]
-    {
-        let total_ms = total_start.elapsed().as_millis();
-        crate::preload_debug!(
-            "[PreloadDebug][AVIF] embedded_sdr_master total_ms={total_ms} path={} size={}x{}",
-            path.display(),
-            hdr.width,
-            hdr.height
-        );
-    }
-
     Ok(ImageData::Hdr {
         hdr: Box::new(hdr),
         fallback,
     })
+}
+
+#[cfg(feature = "avif-native")]
+#[allow(dead_code)] // Path-based wrapper; production uses `decode_avif_static_with_optional_embedded_sdr`.
+pub(crate) fn load_avif_embedded_sdr_master(path: &Path) -> Result<ImageData, String> {
+    #[cfg(feature = "preload-debug")]
+    let total_start = std::time::Instant::now();
+
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
+    let image = read_avif_decoder_image(&mmap[..])?;
+    let image_data = try_avif_embedded_sdr_from_decoded_image(&image, path)?;
+
+    #[cfg(feature = "preload-debug")]
+    {
+        let total_ms = total_start.elapsed().as_millis();
+        if let ImageData::Hdr { hdr, .. } = &image_data {
+            crate::preload_debug!(
+                "[PreloadDebug][AVIF] embedded_sdr_master total_ms={total_ms} path={} size={}x{}",
+                path.display(),
+                hdr.width,
+                hdr.height
+            );
+        }
+    }
+
+    Ok(image_data)
 }

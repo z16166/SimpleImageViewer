@@ -42,10 +42,10 @@ pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes;
-#[cfg(feature = "avif-native")]
+#[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(feature = "avif-native")]
-pub(crate) use embedded_sdr::load_avif_embedded_sdr_master;
+pub(crate) use decode::decode_avif_static_with_optional_embedded_sdr;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]

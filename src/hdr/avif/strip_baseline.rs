@@ -65,7 +65,7 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
 /// - `Some(Ok(...))` — baseline RGBA8 pixels ready for downsampling.
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_iso_gain_map_baseline_from_image(
-    image: libavif_sys::AvifImageOwned,
+    image: &libavif_sys::AvifImageOwned,
     path: &Path,
 ) -> OptionalStripResult<(Vec<u8>, u32, u32)> {
     let image_ptr = image.as_ptr();
@@ -130,7 +130,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
         Ok(image) => image,
         Err(err) => return Some(Err(format!("{path:?}: decode_avif_strip_iso: {err}"))),
     };
-    decode_avif_strip_iso_gain_map_baseline_from_image(image, path)
+    decode_avif_strip_iso_gain_map_baseline_from_image(&image, path)
 }
 
 /// Fast directory-tree strip for precomposed PQ/HLG AVIF (`base_hdr` layout).

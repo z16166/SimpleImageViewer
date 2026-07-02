@@ -100,7 +100,7 @@ pub(crate) fn try_decode_avif_gain_map_strip_fast(
     }
 
     if let Some(Ok((baseline, width, height))) =
-        decode_avif_strip_iso_gain_map_baseline_from_image(image, path)
+        decode_avif_strip_iso_gain_map_baseline_from_image(&image, path)
     {
         return Some(finish_baseline_interim_strip(
             baseline, width, height, max_side, path,
