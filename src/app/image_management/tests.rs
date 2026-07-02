@@ -819,10 +819,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
     app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
-    app.image_files = vec![
-        PathBuf::from("a.heif"),
-        PathBuf::from("b.heif"),
-    ];
+    app.image_files = vec![PathBuf::from("a.heif"), PathBuf::from("b.heif")];
     app.current_index = 0;
     app.loader.request_load(
         0,
@@ -834,6 +831,49 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     assert!(
         app.strip_cold_skip_slow_embedded_sdr_primary(1),
         "neighbor strip should defer while current main decode is in flight"
+    );
+}
+
+#[test]
+fn strip_cold_defers_current_index_while_main_loader_in_flight() {
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.image_files = vec![PathBuf::from("a.avif"), PathBuf::from("b.avif")];
+    app.current_index = 0;
+    app.loader.request_load(
+        0,
+        app.image_files[0].clone(),
+        app.settings.raw_high_quality,
+        app.settings.raw_demosaic_mode,
+    );
+
+    assert!(
+        app.should_defer_neighbor_strip_for_current_main(0),
+        "current-index strip cold path should defer until main asset is installed"
+    );
+}
+
+#[test]
+fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    app.image_files = vec![PathBuf::from("a.avif"), PathBuf::from("b.avif")];
+    app.current_index = 0;
+    app.loader.request_load(
+        0,
+        app.image_files[0].clone(),
+        app.settings.raw_high_quality,
+        app.settings.raw_demosaic_mode,
+    );
+
+    assert!(
+        !app.strip_path_benefits_from_main_loader_embedded_sdr_share(&app.image_files[0]),
+        "plain .avif extension alone must not imply main-loader strip sharing"
+    );
+    assert!(
+        !app.strip_path_benefits_from_main_loader_embedded_sdr_share(&app.image_files[1]),
+        "neighbor plain .avif must not defer strip to main loader embedded-SDR path"
     );
 }
 
@@ -912,50 +952,50 @@ fn background_preload_schedule_with_force_neighbors() {
     assert!(app.loader.is_loading(1));
 }
 
-    #[test]
-    fn schedule_preloads_only_requests_neighbors_within_retention_window() {
-        let mut app = make_test_app();
-        app.image_files = (0..10)
-            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
-            .collect();
-        app.current_index = 0;
-        app.settings.preload = true;
-        app.cached_available_memory_mb = 8192;
-        app.cached_total_memory_mb = 16384;
-        app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
-        app.hdr_image_cache.insert(
-            0,
-            std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
-                width: 1,
-                height: 1,
-                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
-                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
-                metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
-                    crate::hdr::types::HdrColorSpace::LinearSrgb,
-                ),
-                rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
-            }),
-        );
+#[test]
+fn schedule_preloads_only_requests_neighbors_within_retention_window() {
+    let mut app = make_test_app();
+    app.image_files = (0..10)
+        .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+        .collect();
+    app.current_index = 0;
+    app.settings.preload = true;
+    app.cached_available_memory_mb = 8192;
+    app.cached_total_memory_mb = 16384;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    app.hdr_image_cache.insert(
+        0,
+        std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
+            rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
+        }),
+    );
 
-        app.schedule_preloads(true);
+    app.schedule_preloads(true);
 
-        for idx in 3..=7 {
-            assert!(
-                !app.loader.is_loading(idx),
-                "unexpected preload outside retention window for idx={idx}"
-            );
-        }
+    for idx in 3..=7 {
         assert!(
-            app.loader.is_loading(1)
-                || app.loader.is_loading(2)
-                || app.loader.is_loading(8)
-                || app.loader.is_loading(9),
-            "expected at least one in-window neighbor preload"
+            !app.loader.is_loading(idx),
+            "unexpected preload outside retention window for idx={idx}"
         );
     }
+    assert!(
+        app.loader.is_loading(1)
+            || app.loader.is_loading(2)
+            || app.loader.is_loading(8)
+            || app.loader.is_loading(9),
+        "expected at least one in-window neighbor preload"
+    );
+}
 
-    #[test]
-    fn startup_target_detects_explicit_image_or_resume_image() {
+#[test]
+fn startup_target_detects_explicit_image_or_resume_image() {
     let explicit = PathBuf::from("explicit.jpg");
     let resumed = PathBuf::from("resumed.jpg");
 
@@ -2470,71 +2510,71 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
     );
 }
 
-    #[test]
-    fn flush_prefetch_neighbor_uploads_deferred_sdr_to_texture_cache() {
-        let mut app = make_test_app();
-        app.image_files = (0..10)
-            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
-            .collect();
-        app.current_index = 2;
-        app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
-        app.insert_deferred_sdr_upload(3, DecodedImage::new(1, 1, vec![1, 2, 3, 4]));
+#[test]
+fn flush_prefetch_neighbor_uploads_deferred_sdr_to_texture_cache() {
+    let mut app = make_test_app();
+    app.image_files = (0..10)
+        .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+        .collect();
+    app.current_index = 2;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    app.insert_deferred_sdr_upload(3, DecodedImage::new(1, 1, vec![1, 2, 3, 4]));
 
-        let ctx = egui::Context::default();
-        assert!(app.flush_deferred_sdr_for_completed_prefetch_neighbor(3, &ctx));
-        assert!(app.texture_cache.contains(3));
-        assert!(!app.deferred_sdr_uploads.contains_key(&3));
-    }
+    let ctx = egui::Context::default();
+    assert!(app.flush_deferred_sdr_for_completed_prefetch_neighbor(3, &ctx));
+    assert!(app.texture_cache.contains(3));
+    assert!(!app.deferred_sdr_uploads.contains_key(&3));
+}
 
-    #[test]
-    fn navigate_inflight_reuse_promotes_neighbor_without_duplicate_load() {
-        use crate::loader::LoadIntent;
-        use eframe::egui;
+#[test]
+fn navigate_inflight_reuse_promotes_neighbor_without_duplicate_load() {
+    use crate::loader::LoadIntent;
+    use eframe::egui;
 
-        let mut app = make_test_app();
-        app.image_files = (0..10)
-            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
-            .collect();
-        app.current_index = 2;
-        app.loader.test_register_inflight(3);
+    let mut app = make_test_app();
+    app.image_files = (0..10)
+        .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+        .collect();
+    app.current_index = 2;
+    app.loader.test_register_inflight(3);
 
-        let ctx = egui::Context::default();
-        app.navigate_to(3, &ctx);
+    let ctx = egui::Context::default();
+    app.navigate_to(3, &ctx);
 
-        assert_eq!(app.current_index, 3);
-        assert!(app.loader.is_loading(3));
-        assert_eq!(
-            app.loader
-                .in_flight_profile(3)
-                .map(|profile| profile.load_intent),
-            Some(LoadIntent::Current)
-        );
-    }
+    assert_eq!(app.current_index, 3);
+    assert!(app.loader.is_loading(3));
+    assert_eq!(
+        app.loader
+            .in_flight_profile(3)
+            .map(|profile| profile.load_intent),
+        Some(LoadIntent::Current)
+    );
+}
 
-    #[test]
-    fn navigate_preserves_in_window_neighbor_loader_registrations() {
-        use eframe::egui;
+#[test]
+fn navigate_preserves_in_window_neighbor_loader_registrations() {
+    use eframe::egui;
 
-        let mut app = make_test_app();
-        app.image_files = (0..10)
-            .map(|i| PathBuf::from(format!("img{i}.jpg")))
-            .collect();
-        app.current_index = 2;
-        app.loader.test_register_inflight(3);
-        app.loader.test_register_inflight(4);
+    let mut app = make_test_app();
+    app.image_files = (0..10)
+        .map(|i| PathBuf::from(format!("img{i}.jpg")))
+        .collect();
+    app.current_index = 2;
+    app.loader.test_register_inflight(3);
+    app.loader.test_register_inflight(4);
 
-        let ctx = egui::Context::default();
-        app.navigate_to(3, &ctx);
+    let ctx = egui::Context::default();
+    app.navigate_to(3, &ctx);
 
-        assert_eq!(app.current_index, 3);
-        assert!(
-            app.loader.is_loading(4),
-            "forward neighbor preload within retention window should survive navigation"
-        );
-    }
+    assert_eq!(app.current_index, 3);
+    assert!(
+        app.loader.is_loading(4),
+        "forward neighbor preload within retention window should survive navigation"
+    );
+}
 
-    #[test]
-    fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
+#[test]
+fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     use crate::loader::RenderShape;
     use eframe::egui;
 

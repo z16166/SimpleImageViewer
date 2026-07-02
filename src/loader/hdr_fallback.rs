@@ -17,8 +17,7 @@
 use std::sync::Arc;
 
 use crate::hdr::types::{
-    DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrReference, HdrToneMapSettings,
-    HdrTransferFunction,
+    DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrReference, HdrToneMapSettings, HdrTransferFunction,
 };
 use crate::loader::DecodedImage;
 
@@ -139,8 +138,11 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
             .as_ref()
             .and_then(|gain_map| gain_map.iso_deferred.as_ref())
         {
-            let decoded =
-                crate::loader::DecodedImage::from_arc(hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba));
+            let decoded = crate::loader::DecodedImage::from_arc(
+                hdr.width,
+                hdr.height,
+                Arc::clone(&iso.sdr_rgba),
+            );
             return downsample_decoded_for_strip(&decoded, max_side);
         }
     }
@@ -450,8 +452,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let fallback = DecodedImage::new(4, 4, vec![200_u8; 4 * 4 * 4]);
-        let strip =
-            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        let strip = directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
         assert_eq!(strip.width, 4);
         assert_eq!(strip.height, 4);
         assert_eq!(strip.rgba()[0], 200);
@@ -496,8 +497,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let fallback = DecodedImage::new(4, 4, iso_sdr.to_vec());
-        let strip =
-            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        let strip = directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
         assert_eq!(strip.rgba()[0], 32);
     }
 
@@ -544,8 +544,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let fallback = DecodedImage::new(width, height, iso_sdr.to_vec());
-        let strip =
-            directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
+        let strip = directory_tree_strip_from_hdr_or_fallback(&hdr, &fallback, 128).expect("strip");
         assert!(strip.width <= 128, "strip width should be downsampled");
         assert!(strip.height <= 128, "strip height should be downsampled");
     }

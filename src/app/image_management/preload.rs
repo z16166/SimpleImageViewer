@@ -251,12 +251,10 @@ impl ImageViewerApp {
             )
         };
 
-        let primary_indices = prefetch_retention::prefetch_window_neighbors_in_direction(
-            cur, n, window, forward,
-        );
-        let secondary_indices = prefetch_retention::prefetch_window_neighbors_in_direction(
-            cur, n, window, !forward,
-        );
+        let primary_indices =
+            prefetch_retention::prefetch_window_neighbors_in_direction(cur, n, window, forward);
+        let secondary_indices =
+            prefetch_retention::prefetch_window_neighbors_in_direction(cur, n, window, !forward);
 
         preload_debug!(
             "[PreloadDebug] direction budgets: primary_max={} primary_budget={} secondary_max={} secondary_budget={}",

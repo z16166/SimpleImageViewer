@@ -718,10 +718,8 @@ impl ImageViewerApp {
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
                     if !is_current
                         && uploads_this_frame < background_upload_quota
-                        && self.flush_deferred_sdr_for_completed_prefetch_neighbor(
-                            fallback_idx,
-                            ctx,
-                        )
+                        && self
+                            .flush_deferred_sdr_for_completed_prefetch_neighbor(fallback_idx, ctx)
                     {
                         uploads_this_frame += 1;
                     }

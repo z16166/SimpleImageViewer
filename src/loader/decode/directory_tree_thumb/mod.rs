@@ -68,8 +68,8 @@ pub(crate) struct DirectoryTreeThumbDecodeOptions {
     /// (`static_raster`, `open_image_data_for_directory_tree_thumb`). Cheap strip paths
     /// (EXIF/HEIF container thumb, JPEG DCT scale, HDR float preview) still run.
     pub skip_slow_embedded_sdr_primary: bool,
-    /// When set, skip ISO gain-map baseline strip decode (AVIF/JXL full-resolution SDR
-    /// baseline) so the main loader's embedded SDR master path owns that work.
+    /// When set (together with [`Self::skip_slow_embedded_sdr_primary`]), skip ISO gain-map
+    /// baseline strip decode so the main loader's embedded SDR master path owns that work.
     pub defer_iso_gain_map_baseline: bool,
 }
 
@@ -288,10 +288,29 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         );
     }
     if gain_map_container && !options.defer_iso_gain_map_baseline {
-        crate::preload_debug!(
-            "[PreloadDebug][Strip] fast_path_miss path={} kind=iso_gain_map_baseline",
-            path.display()
-        );
+        let log_iso_gain_map_miss = match mmap.as_ref().map(|data| data.as_ref()) {
+            #[cfg(feature = "avif-native")]
+            Some(bytes)
+                if path_has_extension(path, "avif") || path_has_extension(path, "avifs") =>
+            {
+                matches!(
+                    crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes),
+                    Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap)
+                        | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
+                )
+            }
+            #[cfg(not(feature = "avif-native"))]
+            Some(_) if path_has_extension(path, "avif") || path_has_extension(path, "avifs") => {
+                true
+            }
+            _ => true,
+        };
+        if log_iso_gain_map_miss {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] fast_path_miss path={} kind=iso_gain_map_baseline",
+                path.display()
+            );
+        }
     }
     // DCT-scaled baseline-JPEG fast path: when no EXIF thumbnail exists, decode
     // directly at the scaled output size.  Ultra HDR / JPEG_R images also take
@@ -311,9 +330,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
         });
     }
-    if options.skip_slow_embedded_sdr_primary
-        || (options.defer_iso_gain_map_baseline && gain_map_container)
-    {
+    if options.skip_slow_embedded_sdr_primary {
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][Strip] defer cold path={} reason=await_main_loader_full_decode",
@@ -722,10 +739,7 @@ fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
     }
 }
 
-fn preview_from_image_data(
-    image_data: &ImageData,
-    max_side: u32,
-) -> Result<DecodedImage, String> {
+fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<DecodedImage, String> {
     match image_data {
         ImageData::Static(image) => downsample_decoded_to_max_side(image.clone(), max_side),
         ImageData::Hdr { hdr, fallback, .. } => {
@@ -855,10 +869,8 @@ mod tests {
         PngEncoder::new(&mut png)
             .write_image(&[255, 0, 0, 255], 1, 1, ColorType::Rgba8.into())
             .expect("encode 1x1 png");
-        let path = std::env::temp_dir().join(format!(
-            "siv_strip_defer_test_{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("siv_strip_defer_test_{}.png", std::process::id()));
         std::fs::write(&path, png.into_inner()).expect("write png");
 
         let defer_err = super::generate_directory_tree_thumb_decode_from_path(

@@ -82,19 +82,20 @@ fn avif_open_image_sequence_decoder(
     Ok(Some((decoder, count)))
 }
 
-pub(crate) fn try_decode_avif_image_sequence_hdr(
-    bytes: &[u8],
+fn decode_avif_sequence_frames_from_decoder(
+    decoder: &libavif_sys::AvifDecoderOwned,
     target_hdr_capacity: f32,
-) -> Result<Option<Vec<(std::time::Duration, HdrImageBuffer)>>, String> {
+    max_frames: Option<usize>,
+) -> Result<Vec<(std::time::Duration, HdrImageBuffer)>, String> {
     use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
     use std::time::Duration;
 
-    let Some((decoder, count)) = avif_open_image_sequence_decoder(bytes)? else {
-        return Ok(None);
-    };
-
-    let mut frames = Vec::with_capacity(count);
-    for _ in 0..count {
+    let total = unsafe { libavif_sys::siv_avif_decoder_get_image_count(decoder.as_ptr()) };
+    let total =
+        usize::try_from(total).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
+    let limit = max_frames.unwrap_or(total).min(total);
+    let mut frames = Vec::with_capacity(limit);
+    for _ in 0..limit {
         let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
         if r != libavif_sys::AVIF_RESULT_OK {
             return Err(format!(
@@ -126,5 +127,28 @@ pub(crate) fn try_decode_avif_image_sequence_hdr(
         frames.push((Duration::from_millis(delay_ms as u64), hdr));
     }
 
-    Ok(Some(frames))
+    Ok(frames)
+}
+
+pub(crate) struct AvifSequenceDecode {
+    pub frames: Vec<(std::time::Duration, HdrImageBuffer)>,
+    pub total_frame_count: usize,
+}
+
+/// Decode an AVIF image sequence. When `max_frames` is `Some(n)`, decode at most `n` frames
+/// but still report the container [`AvifSequenceDecode::total_frame_count`].
+pub(crate) fn try_decode_avif_image_sequence_hdr_limited(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+    max_frames: Option<usize>,
+) -> Result<Option<AvifSequenceDecode>, String> {
+    let Some((decoder, total_frame_count)) = avif_open_image_sequence_decoder(bytes)? else {
+        return Ok(None);
+    };
+    let frames =
+        decode_avif_sequence_frames_from_decoder(&decoder, target_hdr_capacity, max_frames)?;
+    Ok(Some(AvifSequenceDecode {
+        frames,
+        total_frame_count,
+    }))
 }

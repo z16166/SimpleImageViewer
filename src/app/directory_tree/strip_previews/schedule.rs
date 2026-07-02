@@ -40,15 +40,24 @@ use super::{
 use super::send_strip_inflight_release;
 
 impl ImageViewerApp {
-    pub(super) fn should_defer_neighbor_strip_for_current_main(&self, index: usize) -> bool {
-        // GPU texture clone only; no CPU decode — intentionally not deferred while current main loads.
+    pub(crate) fn should_defer_neighbor_strip_for_current_main(&self, index: usize) -> bool {
+        if index == self.current_index && !self.has_loaded_asset(self.current_index) {
+            return true;
+        }
         if index == self.current_index {
             return false;
         }
-        should_defer_neighbor_work_for_current_main(
+        if !should_defer_neighbor_work_for_current_main(
             self.has_loaded_asset(self.current_index),
             self.loader.is_loading(self.current_index),
-        )
+        ) {
+            return false;
+        }
+        // Neighbors with independent strip decode (no embedded-SDR sharing with main loader)
+        // may run cheap cold paths in parallel instead of waiting for the current main decode.
+        self.image_files
+            .get(index)
+            .is_some_and(|path| self.strip_path_benefits_from_main_loader_embedded_sdr_share(path))
     }
 
     pub(super) fn try_schedule_strip_from_preloaded_iso_baseline_with_pixels(
@@ -374,7 +383,8 @@ impl ImageViewerApp {
         let mut try_push = |index: usize| -> bool {
             let in_visible_bootstrap = bootstrap_visible
                 && visible_row_range.is_some_and(|(start, end)| index >= start && index < end);
-            if self.should_defer_neighbor_strip_for_current_main(index) && !in_visible_bootstrap {
+            let bootstrap_bypass_defer = in_visible_bootstrap && index != self.current_index;
+            if self.should_defer_neighbor_strip_for_current_main(index) && !bootstrap_bypass_defer {
                 return false;
             }
             if index < total && !seen.contains(&index) {
@@ -386,18 +396,17 @@ impl ImageViewerApp {
             ordered.len() >= schedule_budget
         };
 
-        if bootstrap_visible && try_push(current) {
+        if bootstrap_visible {
+            for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
+                if try_push(index) {
+                    break;
+                }
+            }
             return ordered;
         }
 
         if let Some((start, end)) = visible_row_range {
             for index in start..end.min(total) {
-                if try_push(index) {
-                    return ordered;
-                }
-            }
-        } else if bootstrap_visible {
-            for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
                 if try_push(index) {
                     return ordered;
                 }
@@ -432,9 +441,12 @@ impl ImageViewerApp {
         if !self.strip_index_needs_cold_thumbnail(index) {
             return;
         }
-        let skip_slow_primary = self.strip_cold_skip_slow_embedded_sdr_primary(index);
-        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active();
         let path = self.image_files[index].clone();
+        let shares_main_embedded_sdr =
+            self.strip_path_benefits_from_main_loader_embedded_sdr_share(&path);
+        let skip_slow_primary =
+            self.strip_cold_skip_slow_embedded_sdr_primary(index) && shares_main_embedded_sdr;
+        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active() && skip_slow_primary;
         let Some(list) = self.directory_tree.list.try_lock() else {
             return;
         };

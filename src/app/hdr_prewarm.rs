@@ -15,9 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::ImageViewerApp;
-use crate::hdr::renderer::{
-    hdr_callback_formats_to_prewarm, predicted_hdr_callback_target_format,
-};
+use crate::hdr::renderer::{hdr_callback_formats_to_prewarm, predicted_hdr_callback_target_format};
 
 impl ImageViewerApp {
     pub(crate) fn hdr_callback_prewarm_target_format(&self) -> Option<wgpu::TextureFormat> {

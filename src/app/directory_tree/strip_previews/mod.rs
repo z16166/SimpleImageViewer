@@ -50,13 +50,15 @@ impl ImageViewerApp {
     pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
         self.directory_tree_strip_cache.remove_index(index);
         self.directory_tree_strip_cold_attempted.remove(&index);
-        self.directory_tree_strip_cold_awaiting_main_loader.remove(&index);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
     }
 
     pub(super) fn mark_strip_cold_awaiting_main_loader(&mut self, index: usize) {
-        self.directory_tree_strip_cold_awaiting_main_loader.insert(index);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .insert(index);
         self.directory_tree_strip_cold_attempted.insert(index);
     }
 
@@ -72,7 +74,8 @@ impl ImageViewerApp {
             || (!self.loader.is_loading(index)
                 && !self.strip_cold_skip_slow_embedded_sdr_primary(index));
         if resolved {
-            self.directory_tree_strip_cold_awaiting_main_loader.remove(&index);
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .remove(&index);
             self.directory_tree_strip_cold_attempted.remove(&index);
         }
     }

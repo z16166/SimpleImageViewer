@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
-use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
     RenderShape as LoadedRenderShape, TileResult, source_key_for_path,

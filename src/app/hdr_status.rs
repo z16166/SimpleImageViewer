@@ -256,9 +256,7 @@ impl ImageViewerApp {
                     self.effective_hdr_target_format(),
                     effective_selection.as_ref(),
                 ),
-                self.hdr_image_cache
-                    .get(&idx)
-                    .map(|entry| entry.as_ref()),
+                self.hdr_image_cache.get(&idx).map(|entry| entry.as_ref()),
             );
 
         let plan = crate::app::rendering::plan::build_render_plan_for_state(

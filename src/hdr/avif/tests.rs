@@ -365,15 +365,15 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
     };
     let bytes = std::fs::read(&path).expect("read avif");
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
-    let frames = super::try_decode_avif_image_sequence_hdr(&bytes, capacity)
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, None)
         .expect("decode avif sequence")
         .expect("animated avif should expose a sequence");
     assert!(
-        frames.len() > 1,
+        decode.total_frame_count > 1,
         "{} should have multiple frames",
         path.display()
     );
-    for (idx, (_delay, hdr)) in frames.iter().enumerate() {
+    for (idx, (_delay, hdr)) in decode.frames.iter().enumerate() {
         use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
         let deferred = iso_deferred_from_metadata(&hdr.metadata).is_some();
         assert!(
@@ -386,8 +386,32 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
     eprintln!(
         "{} -> {} HdrAnimated frames, tf={:?}",
         path.display(),
-        frames.len(),
-        frames[0].1.metadata.transfer_function
+        decode.total_frame_count,
+        decode.frames[0].1.metadata.transfer_function
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
+fn avif_animated_sequence_bootstrap_decodes_first_frame_only() {
+    use crate::hdr::types::HdrToneMapSettings;
+    use std::path::PathBuf;
+
+    let path =
+        PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\Chimera-AV1-10bit-480x270.avif");
+    if !path.is_file() {
+        eprintln!("skip avif bootstrap test; {} not present", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read avif");
+    let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, Some(1))
+        .expect("decode avif sequence")
+        .expect("animated avif should expose a sequence");
+    assert_eq!(decode.frames.len(), 1);
+    assert!(
+        decode.total_frame_count > 1,
+        "bootstrap sample should be a multi-frame sequence"
     );
 }
 

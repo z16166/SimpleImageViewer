@@ -209,8 +209,7 @@ pub(crate) fn select_render_backend(
         && !prefer_embedded_iso_gain_map_sdr_master;
     if has_hdr_plane
         && ((!has_sdr_fallback)
-            || (has_hdr_target
-                && (output_mode.is_native_hdr() || tone_map_via_hdr_plane)))
+            || (has_hdr_target && (output_mode.is_native_hdr() || tone_map_via_hdr_plane)))
     {
         PlaneBackendKind::Hdr
     } else {

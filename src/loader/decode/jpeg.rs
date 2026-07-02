@@ -279,16 +279,15 @@ mod tests {
             return;
         };
         let settings = HdrToneMapSettings::default();
-        let err =
-            match load_jpeg_with_target_capacity(
-                &path,
-                settings.target_hdr_capacity(),
-                settings,
-                false,
-            ) {
-                Err(err) => err,
-                Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),
-            };
+        let err = match load_jpeg_with_target_capacity(
+            &path,
+            settings.target_hdr_capacity(),
+            settings,
+            false,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),
+        };
         assert!(
             err.contains(crate::loader::decode::detect::MOTION_VIDEO_BMFF_ERROR_TAG),
             "unexpected error: {err}"

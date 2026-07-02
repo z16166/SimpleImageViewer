@@ -42,9 +42,11 @@ impl ImageViewerApp {
         if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
             return false;
         }
-        if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
-        }) {
+        if self
+            .hdr_image_cache
+            .get(&index)
+            .is_some_and(|hdr| crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref()))
+        {
             return false;
         }
         self.hdr_image_cache
@@ -268,13 +270,52 @@ impl ImageViewerApp {
                 == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster
     }
 
+    /// True when deferring strip decode to the main loader can reuse embedded SDR / ISO gain-map work.
+    pub(crate) fn strip_path_benefits_from_main_loader_embedded_sdr_share(
+        &self,
+        path: &std::path::Path,
+    ) -> bool {
+        let ext = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(
+            ext.as_str(),
+            "avif" | "avifs" | "heif" | "heic" | "hif" | "jxl"
+        ) {
+            return false;
+        }
+        if ext == "avif" || ext == "avifs" {
+            #[cfg(feature = "avif-native")]
+            {
+                if crate::hdr::avif::path_is_avif_image_sequence(path) {
+                    return false;
+                }
+                let Ok(mmap) = crate::mmap_util::map_file(path) else {
+                    return false;
+                };
+                return matches!(
+                    crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()),
+                    Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap)
+                        | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
+                );
+            }
+            #[cfg(not(feature = "avif-native"))]
+            {
+                return false;
+            }
+        }
+        matches!(ext.as_str(), "heif" | "heic" | "hif" | "jxl")
+    }
+
     /// Skip strip paths that duplicate the main loader; cheap embedded previews still run.
     pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
         if self.strip_main_loader_decode_in_flight(index) {
             return true;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            !hdr.rgba_f32.is_empty() || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+            !hdr.rgba_f32.is_empty()
+                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
         }) {
             return true;
         }
@@ -313,7 +354,7 @@ impl ImageViewerApp {
         ) {
             return true;
         }
-        current_has_asset || current_is_loading
+        false
     }
 
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {

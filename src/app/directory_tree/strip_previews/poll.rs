@@ -53,7 +53,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
         self.directory_tree_strip_cold_attempted.remove(&index);
-        self.directory_tree_strip_cold_awaiting_main_loader.remove(&index);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .remove(&index);
     }
 
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).

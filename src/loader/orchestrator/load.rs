@@ -134,8 +134,7 @@ impl ImageLoader {
         let hdr_tone_max_display_nits_bits =
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
         let hdr_callback_upload_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let embedded_iso_gain_map_sdr_master =
-            Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let embedded_iso_gain_map_sdr_master = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());

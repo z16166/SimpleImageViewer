@@ -54,8 +54,7 @@ mod prewarm;
 pub(crate) use self::prewarm::{
     HdrCallbackResourcesPrewarm, HdrCallbackResourcesPrewarmSlot, HdrCallbackResourcesReadiness,
     HdrCallbackResourcesSet, ensure_hdr_callback_resources, hdr_callback_formats_to_prewarm,
-    hdr_callback_resources_readiness,
-    predicted_hdr_callback_target_format,
+    hdr_callback_resources_readiness, predicted_hdr_callback_target_format,
 };
 
 pub(super) mod tile_cache;

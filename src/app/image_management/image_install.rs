@@ -73,9 +73,8 @@ impl ImageViewerApp {
     /// True when the canvas is actually drawing through the HDR float plane for `index`,
     /// not merely when an HDR buffer exists in cache (e.g. ISO gain-map embedded SDR master on SDR output).
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
-        self.render_plan_for_index(index).is_some_and(|plan| {
-            plan.backend == crate::app::rendering::plane::PlaneBackendKind::Hdr
-        })
+        self.render_plan_for_index(index)
+            .is_some_and(|plan| plan.backend == crate::app::rendering::plane::PlaneBackendKind::Hdr)
     }
 
     fn render_plan_for_index(
@@ -133,12 +132,7 @@ impl ImageViewerApp {
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
-        crate::loader::directory_tree_strip_from_hdr_or_fallback(
-            hdr,
-            fallback,
-            max_side,
-        )
-        .ok()
+        crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side).ok()
     }
 
     fn should_eager_cache_install_hdr_strip(&self, idx: usize) -> bool {

@@ -59,11 +59,12 @@ fn finish_gain_map_strip_result(
     max_side: u32,
     path: &Path,
 ) -> Result<FastGainMapStripResult, String> {
-    finish_gain_map_strip(baseline, width, height, max_side, path)
-        .map(|(preview, logical_size)| FastGainMapStripResult {
+    finish_gain_map_strip(baseline, width, height, max_side, path).map(|(preview, logical_size)| {
+        FastGainMapStripResult {
             preview,
             logical_size,
-        })
+        }
+    })
 }
 
 /// Try a lightweight ISO gain-map baseline decode for directory-tree strips.
@@ -153,7 +154,19 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
                 }));
             }
             match crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes) {
-                None | Some(crate::hdr::avif::AvifGainMapStripProbe::NoGainMap) => return None,
+                None | Some(crate::hdr::avif::AvifGainMapStripProbe::NoGainMap) => {
+                    if let Some(result) = crate::hdr::avif::try_decode_avif_strip_primary_scaled(
+                        bytes, path, max_side,
+                    ) {
+                        return Some(result.map(|(preview, logical_size)| {
+                            FastGainMapStripResult {
+                                preview,
+                                logical_size,
+                            }
+                        }));
+                    }
+                    return None;
+                }
                 Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
                 | Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap) => {}
             }

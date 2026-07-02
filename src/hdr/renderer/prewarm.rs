@@ -53,8 +53,7 @@ impl HdrCallbackResourcesSet {
     }
 
     pub(crate) fn insert_format(&mut self, resources: HdrCallbackResources) {
-        self.by_format
-            .insert(resources.target_format, resources);
+        self.by_format.insert(resources.target_format, resources);
     }
 }
 
@@ -295,7 +294,10 @@ pub(crate) fn ensure_hdr_callback_resources(
         "[HDR] prepare sync compile HDR callback resources format={:?} (prewarm missed)",
         target_format
     );
-    ensure_callback_resources_set(callback_resources)
-        .insert_format(create_callback_resources(device, target_format, None));
+    ensure_callback_resources_set(callback_resources).insert_format(create_callback_resources(
+        device,
+        target_format,
+        None,
+    ));
     true
 }

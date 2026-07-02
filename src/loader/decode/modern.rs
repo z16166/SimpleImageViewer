@@ -18,11 +18,12 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    DecodedImage, HdrAnimationFrame, ImageData, apply_exif_orientation_to_hdr_pair,
+    DecodedImage, HdrAnimationFrame, ImageData, LoadResult, apply_exif_orientation_to_hdr_pair,
     apply_exif_orientation_to_image_data, hdr_gain_map_decode_capacity,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder, source_key_for_path,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::assemble::make_hdr_image_data;
 
@@ -61,20 +62,197 @@ pub(crate) fn path_may_have_gain_map_embedded_sdr_preview(path: &Path) -> bool {
     is_hdr_capable_modern_format_path(path)
 }
 
+pub(crate) struct AvifLoadOutcome {
+    pub image: ImageData,
+    pub sequence_remainder: Option<AvifSequenceRemainderJob>,
+}
+
+pub(crate) struct AvifSequenceRemainderJob {
+    pub bytes: Arc<[u8]>,
+    pub path: PathBuf,
+    pub hdr_target_capacity: f32,
+    pub hdr_tone_map: HdrToneMapSettings,
+}
+
 pub(crate) fn load_avif_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
+    load_avif_with_target_capacity_outcome(
+        path,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        false,
+    )
+    .map(|outcome| outcome.image)
+}
+
+pub(crate) fn load_avif_with_target_capacity_outcome(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+    bootstrap_animation: bool,
+) -> Result<AvifLoadOutcome, String> {
+    load_avif_with_target_capacity_outcome_impl(
+        path,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        bootstrap_animation,
+    )
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn spawn_avif_sequence_remainder_decode(
+    job: AvifSequenceRemainderJob,
+    tx: crate::loader::orchestrator::LoaderOutputSender,
+    index: usize,
+    decode_profile: crate::loader::DecodeProfile,
+) {
+    use crate::loader::preview_caps::REFINEMENT_POOL;
+    use crate::loader::{LoaderOutput, PreviewBundle};
+
+    REFINEMENT_POOL.spawn(move || {
+        #[cfg(target_os = "windows")]
+        let _com = crate::wic::ComGuard::new();
+
+        let decode_capacity =
+            hdr_gain_map_decode_capacity(job.hdr_target_capacity, &job.hdr_tone_map);
+        let decode = match crate::hdr::avif::try_decode_avif_image_sequence_hdr_limited(
+            &job.bytes,
+            decode_capacity,
+            None,
+        ) {
+            Ok(Some(decode)) => decode,
+            Ok(None) => return,
+            Err(err) => {
+                log::warn!(
+                    "[Loader] AVIF sequence remainder decode failed for {}: {err}",
+                    job.path.display()
+                );
+                return;
+            }
+        };
+        let frames: Result<Vec<HdrAnimationFrame>, String> = decode
+            .frames
+            .into_iter()
+            .map(|(delay, hdr)| {
+                let fallback = DecodedImage::from_hdr_sdr_fallback(
+                    hdr.width,
+                    hdr.height,
+                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                        &hdr,
+                        job.hdr_target_capacity,
+                        &job.hdr_tone_map,
+                    )?,
+                );
+                Ok(HdrAnimationFrame::new(hdr, fallback, delay))
+            })
+            .collect();
+        let Ok(frames) = frames else {
+            return;
+        };
+        let image = apply_exif_orientation_to_image_data(&job.path, ImageData::HdrAnimated(frames));
+        log::info!(
+            "[Loader] AVIF image sequence remainder: {} frames — {}",
+            decode.total_frame_count,
+            job.path.display()
+        );
+        let load_result = LoadResult {
+            index,
+            decode_profile: decode_profile.clone(),
+            source_key: source_key_for_path(&job.path),
+            ultra_hdr_capacity_sensitive: true,
+            result: Ok(image),
+            preview_bundle: PreviewBundle::initial(),
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: job.hdr_target_capacity,
+            raw_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+        };
+        let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
+    });
+}
+
+#[cfg(not(feature = "avif-native"))]
+pub(crate) fn spawn_avif_sequence_remainder_decode(
+    _job: AvifSequenceRemainderJob,
+    _tx: crate::loader::orchestrator::LoaderOutputSender,
+    _index: usize,
+    _decode_profile: crate::loader::DecodeProfile,
+) {
+}
+
+fn hdr_animated_from_sequence_decode(
+    path: &Path,
+    decode: crate::hdr::avif::AvifSequenceDecode,
+    hdr_target_capacity: f32,
+    hdr_tone_map: &HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let frames: Vec<HdrAnimationFrame> = decode
+        .frames
+        .into_iter()
+        .map(|(delay, hdr)| {
+            let fallback = DecodedImage::from_hdr_sdr_fallback(
+                hdr.width,
+                hdr.height,
+                hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                )?,
+            );
+            Ok(HdrAnimationFrame::new(hdr, fallback, delay))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    log::info!(
+        "[Loader] AVIF image sequence: {} frames (HdrAnimated) — {}",
+        decode.total_frame_count,
+        path.display()
+    );
+    Ok(apply_exif_orientation_to_image_data(
+        path,
+        ImageData::HdrAnimated(frames),
+    ))
+}
+
+fn load_avif_with_target_capacity_outcome_impl(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+    bootstrap_animation: bool,
+) -> Result<AvifLoadOutcome, String> {
     #[cfg(feature = "avif-native")]
     {
-        if crate::loader::should_use_embedded_sdr_master_load(
-            prefer_embedded_sdr_master,
-            hdr_target_capacity,
-        ) {
+        let mmap =
+            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+        let bytes = mmap.as_ref();
+
+        let gain_map_probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes);
+        let skip_embedded_sdr = crate::hdr::avif::path_is_avif_image_sequence(path)
+            || matches!(
+                gain_map_probe,
+                Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
+            );
+        if !skip_embedded_sdr
+            && crate::loader::should_use_embedded_sdr_master_load(
+                prefer_embedded_sdr_master,
+                hdr_target_capacity,
+            )
+        {
             match crate::hdr::avif::load_avif_embedded_sdr_master(path) {
-                Ok(image) => return Ok(image),
+                Ok(image) => {
+                    return Ok(AvifLoadOutcome {
+                        image,
+                        sequence_remainder: None,
+                    });
+                }
                 Err(err) => {
                     log::warn!(
                         "[Loader] AVIF embedded SDR master failed for {}: {err}; trying full HDR path",
@@ -84,43 +262,49 @@ pub(crate) fn load_avif_with_target_capacity(
             }
         }
 
-        let mmap =
-            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
-
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         log::debug!(
-            "[HDR][AVIF] load path={} hdr_cap={:.3} decode_capacity={:.3} tone_target={:.3}",
+            "[HDR][AVIF] load path={} hdr_cap={:.3} decode_capacity={:.3} tone_target={:.3} bootstrap={}",
             path.display(),
             hdr_target_capacity,
             decode_capacity,
-            hdr_tone_map.target_hdr_capacity()
+            hdr_tone_map.target_hdr_capacity(),
+            bootstrap_animation
         );
-        match crate::hdr::avif::try_decode_avif_image_sequence_hdr(&mmap[..], decode_capacity) {
-            Ok(Some(raw)) if raw.len() > 1 => {
-                let frames: Vec<HdrAnimationFrame> = raw
-                    .into_iter()
-                    .map(|(delay, hdr)| {
-                        let fallback = DecodedImage::from_hdr_sdr_fallback(
-                            hdr.width,
-                            hdr.height,
-                            hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                                &hdr,
-                                hdr_target_capacity,
-                                &hdr_tone_map,
-                            )?,
+        let max_frames = bootstrap_animation.then_some(1);
+        match crate::hdr::avif::try_decode_avif_image_sequence_hdr_limited(
+            bytes,
+            decode_capacity,
+            max_frames,
+        ) {
+            Ok(Some(decode)) if decode.total_frame_count > 1 => {
+                let remainder =
+                    if bootstrap_animation && decode.frames.len() < decode.total_frame_count {
+                        log::info!(
+                            "[Loader] AVIF sequence bootstrap: {} / {} frames — {}",
+                            decode.frames.len(),
+                            decode.total_frame_count,
+                            path.display()
                         );
-                        Ok(HdrAnimationFrame::new(hdr, fallback, delay))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                log::info!(
-                    "[Loader] AVIF image sequence: {} frames (HdrAnimated) — {}",
-                    frames.len(),
-                    path.display()
-                );
-                return Ok(apply_exif_orientation_to_image_data(
+                        Some(AvifSequenceRemainderJob {
+                            bytes: Arc::from(bytes),
+                            path: path.to_path_buf(),
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                        })
+                    } else {
+                        None
+                    };
+                let image = hdr_animated_from_sequence_decode(
                     path,
-                    ImageData::HdrAnimated(frames),
-                ));
+                    decode,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                )?;
+                return Ok(AvifLoadOutcome {
+                    image,
+                    sequence_remainder: remainder,
+                });
             }
             Ok(_) => {}
             Err(e) => {
@@ -131,10 +315,7 @@ pub(crate) fn load_avif_with_target_capacity(
             }
         }
 
-        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(
-            &mmap[..],
-            decode_capacity,
-        ) {
+        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(bytes, decode_capacity) {
             Ok(hdr) => {
                 let fallback = DecodedImage::from_hdr_sdr_fallback(
                     hdr.width,
@@ -146,7 +327,10 @@ pub(crate) fn load_avif_with_target_capacity(
                     )?,
                 );
                 let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
-                Ok(make_hdr_image_data(hdr, fallback))
+                Ok(AvifLoadOutcome {
+                    image: make_hdr_image_data(hdr, fallback),
+                    sequence_remainder: None,
+                })
             }
             Err(err) => {
                 log::warn!(
@@ -171,11 +355,15 @@ pub(crate) fn load_avif_with_target_capacity(
                             crate::hdr::heif::HeifHdrDecodeDiag::default(),
                             false,
                         )
-                            .map_err(|heif_err| {
-                                format!(
-                                    "[Loader] libavif failed ({err}); HEIF fallback also failed ({heif_err})"
-                                )
-                            });
+                        .map(|image| AvifLoadOutcome {
+                            image,
+                            sequence_remainder: None,
+                        })
+                        .map_err(|heif_err| {
+                            format!(
+                                "[Loader] libavif failed ({err}); HEIF fallback also failed ({heif_err})"
+                            )
+                        });
                     }
                 }
                 Err(err)
@@ -190,6 +378,7 @@ pub(crate) fn load_avif_with_target_capacity(
             hdr_target_capacity,
             hdr_tone_map,
             prefer_embedded_sdr_master,
+            bootstrap_animation,
         );
         Err("AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats).".to_string())
     }
@@ -201,6 +390,35 @@ pub(crate) fn load_jxl_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
+    load_jxl_with_target_capacity_outcome(
+        path,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        false,
+    )
+    .map(|outcome| outcome.image)
+}
+
+pub(crate) struct JxlAnimationRemainderJob {
+    pub path: PathBuf,
+    pub hdr_target_capacity: f32,
+    pub hdr_tone_map: HdrToneMapSettings,
+    pub prefer_embedded_sdr_master: bool,
+}
+
+pub(crate) struct JxlLoadOutcome {
+    pub image: ImageData,
+    pub remainder_job: Option<JxlAnimationRemainderJob>,
+}
+
+pub(crate) fn load_jxl_with_target_capacity_outcome(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+    bootstrap_animation: bool,
+) -> Result<JxlLoadOutcome, String> {
     #[cfg(feature = "jpegxl")]
     {
         if crate::loader::should_use_embedded_sdr_master_load(
@@ -210,7 +428,12 @@ pub(crate) fn load_jxl_with_target_capacity(
             let mmap =
                 crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read JXL: {e}"))?;
             match crate::hdr::jpegxl::decode_jxl_embedded_sdr_master_bytes(&mmap[..]) {
-                Ok(image) => return Ok(apply_exif_orientation_to_image_data(path, image)),
+                Ok(image) => {
+                    return Ok(JxlLoadOutcome {
+                        image: apply_exif_orientation_to_image_data(path, image),
+                        remainder_job: None,
+                    });
+                }
                 Err(err) => {
                     log::warn!(
                         "[Loader] JPEG XL embedded SDR master failed for {}: {err}; trying full HDR path",
@@ -221,13 +444,27 @@ pub(crate) fn load_jxl_with_target_capacity(
         }
 
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        let data = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
+        let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
             decode_capacity,
             hdr_target_capacity,
             hdr_tone_map,
+            bootstrap_animation,
         )?;
-        Ok(apply_exif_orientation_to_image_data(path, data))
+        let remainder_job = if output.animation_remainder {
+            Some(JxlAnimationRemainderJob {
+                path: path.to_path_buf(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                prefer_embedded_sdr_master,
+            })
+        } else {
+            None
+        };
+        Ok(JxlLoadOutcome {
+            image: apply_exif_orientation_to_image_data(path, output.image),
+            remainder_job,
+        })
     }
 
     #[cfg(not(feature = "jpegxl"))]
@@ -237,9 +474,49 @@ pub(crate) fn load_jxl_with_target_capacity(
             hdr_target_capacity,
             hdr_tone_map,
             prefer_embedded_sdr_master,
+            bootstrap_animation,
         );
         Err("JPEG XL support requires the jpegxl feature".to_string())
     }
+}
+
+pub(crate) fn spawn_jxl_animation_remainder_decode(
+    job: JxlAnimationRemainderJob,
+    tx: crate::loader::orchestrator::LoaderOutputSender,
+    index: usize,
+    decode_profile: crate::loader::DecodeProfile,
+) {
+    use crate::loader::preview_caps::REFINEMENT_POOL;
+    use crate::loader::{LoaderOutput, PreviewBundle};
+
+    REFINEMENT_POOL.spawn(move || {
+        let Ok(image) = load_jxl_with_target_capacity(
+            &job.path,
+            job.hdr_target_capacity,
+            job.hdr_tone_map,
+            job.prefer_embedded_sdr_master,
+        ) else {
+            return;
+        };
+        log::info!(
+            "[Loader] JPEG XL animation remainder: {}",
+            job.path.display()
+        );
+        let load_result = LoadResult {
+            index,
+            decode_profile: decode_profile.clone(),
+            source_key: source_key_for_path(&job.path),
+            ultra_hdr_capacity_sensitive: true,
+            result: Ok(image),
+            preview_bundle: PreviewBundle::initial(),
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: job.hdr_target_capacity,
+            raw_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+        };
+        let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
+    });
 }
 
 pub(crate) fn load_heif_hdr_aware(
@@ -279,7 +556,13 @@ pub(crate) fn load_heif_hdr_aware(
 
     #[cfg(not(feature = "heif-native"))]
     {
-        let _ = (path, hdr_target_capacity, hdr_tone_map, diag, prefer_embedded_sdr_master);
+        let _ = (
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+            diag,
+            prefer_embedded_sdr_master,
+        );
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
                 .to_string(),

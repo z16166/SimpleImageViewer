@@ -25,8 +25,7 @@ use super::metadata::{
 use super::session::open_heif_primary_from_bytes;
 
 use crate::hdr::types::{
-    HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer,
-    HdrPixelFormat,
+    HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat,
 };
 
 #[cfg(feature = "heif-native")]

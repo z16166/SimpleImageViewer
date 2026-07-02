@@ -23,8 +23,8 @@ use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
     iso_gain_map_skips_forward_compose, parse_iso_gain_map_metadata, sample_gain_map_rgb,
 };
-use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
+use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
 use crate::hdr::jpegxl::{
     JxlGainMapBundleRef, decode_jxl_gain_map_from_bundle, read_jxl_gain_map_bundle, srgb_unit_to_u8,
 };

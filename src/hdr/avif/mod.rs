@@ -37,17 +37,17 @@ mod strip_fast;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use brand::is_avif_brand;
+pub(crate) use brand::{is_avif_brand, path_is_avif_image_sequence};
 pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes;
 #[cfg(feature = "avif-native")]
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
-#[cfg(all(test, feature = "avif-native"))]
-pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]
 pub(crate) use embedded_sdr::load_avif_embedded_sdr_master;
+#[cfg(all(test, feature = "avif-native"))]
+pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]
 pub(crate) use gain_map_probe::{AvifGainMapStripProbe, avif_probe_gain_map_strip_kind};
 #[cfg(feature = "avif-native")]
@@ -59,9 +59,11 @@ pub(crate) use orientation::{
     AVIF_TRANSFORM_IMIR_FLAG, AVIF_TRANSFORM_IROT_FLAG, avif_irot_imir_to_exif_orientation,
 };
 #[cfg(feature = "avif-native")]
-pub(crate) use sequence::try_decode_avif_image_sequence_hdr;
+pub(crate) use sequence::{AvifSequenceDecode, try_decode_avif_image_sequence_hdr_limited};
 #[cfg(feature = "avif-native")]
-pub(crate) use strip_baseline::decode_avif_strip_exif_thumbnail;
+pub(crate) use strip_baseline::{
+    decode_avif_strip_exif_thumbnail, try_decode_avif_strip_primary_scaled,
+};
 #[cfg(feature = "avif-native")]
 pub(crate) use strip_fast::try_decode_avif_gain_map_strip_fast;
 
