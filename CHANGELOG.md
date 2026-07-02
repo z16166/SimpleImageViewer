@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.4] - 2026-07-02
+
+### Added
+- **HDR gain-map viewing on SDR displays**: In Settings → Viewing, choose how HDR photos with a built-in SDR master (Ultra HDR, AVIF, HEIF/HEIC, JPEG XL) appear on SDR monitors — show the embedded SDR image directly (default) or full HDR decode with tone mapping. Native HDR monitor output is unchanged.
+
+### Improved
+- **Faster navigation strip thumbnails for HDR gain-map photos**: File-list previews skip slow gain-map compositing and use accelerated tone mapping tuned for small thumbnails, while the main canvas on HDR displays still uses full gain-map rendering.
+- **Faster HDR and animated image loading**: The viewer reuses one full decode for both the main image and strip preview where possible, moves full-image tone mapping to the GPU, and shows the first frame of animated GIF, APNG, WebP, AVIF, and JXL files on the canvas immediately while later frames load in the background.
+- **Smarter background preloading**: Preload queue sizing keeps more nearby images ready so decoded previews are less often discarded before you open them.
+- **Mislabeled file names**: Images whose extension does not match the actual format (for example a JPEG saved as `.png`) open correctly again via automatic format detection.
+
+### Fixed
+- **Empty folder and load-error messages**: “No images” and decode-error hints are centered in the canvas and file list for clearer feedback.
+- **Navigation strip previews for some AVIF and HEIF files**: Thumbnails fall back to the system decoder when the fast path cannot produce a preview, matching what the main viewer shows for difficult files.
+- **Some HEIC gain-map photos**: Fixed incorrect rotation and a black main canvas when the embedded SDR path should display the built-in preview.
+
 ## [2.8.3] - 2026-07-01
 
 ### Fixed
