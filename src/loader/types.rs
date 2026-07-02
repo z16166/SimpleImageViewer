@@ -75,6 +75,7 @@ impl DecodedImage {
         }
     }
 
+    #[cfg(test)]
     pub fn new_sdr_deferred_placeholder(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         Self {
             width,
@@ -506,8 +507,7 @@ pub struct LoadResult {
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
     /// True when [`ImageData::Hdr`] used a cheap SDR placeholder because the display HDR target
-    /// capacity indicated native HDR output; a follow-up [`LoaderOutput::HdrSdrFallback`] may
-    /// replace the texture with a tone-mapped fallback for SDR-only draw paths (e.g. Ripple).
+    /// capacity indicated native HDR output; the HDR plane shader tone-maps for SDR draw paths.
     pub sdr_fallback_is_placeholder: bool,
     /// The HDR capacity of the display when this load was processed, used to detect capacity mismatch.
     pub target_hdr_capacity: f32,
@@ -544,15 +544,6 @@ impl Clone for LoadResult {
             device_id: self.device_id,
         }
     }
-}
-
-/// Refined full-resolution SDR RGBA8 for a static HDR image that initially loaded with a
-/// placeholder fallback (see [`LoadResult::sdr_fallback_is_placeholder`]).
-pub struct HdrSdrFallbackResult {
-    pub index: usize,
-    pub decode_profile: DecodeProfile,
-    pub source_key: SourceKey,
-    pub fallback: Option<DecodedImage>,
 }
 
 pub struct TileResult {
@@ -641,8 +632,6 @@ pub enum LoaderOutput {
     Image(Box<LoadResult>),
     Tile(TileResult),
     Preview(PreviewResult),
-    /// Tone-mapped SDR fallback for static HDR (after native-HDR placeholder load).
-    HdrSdrFallback(HdrSdrFallbackResult),
     /// Background refinement finished (e.g. LibRaw demosaic)
     Refined(usize),
 }

@@ -89,11 +89,7 @@ pub(crate) fn hdr_to_directory_tree_strip_sdr_rgba8(
 ) -> Result<Vec<u8>, String> {
     let tone = hdr_tone_map_settings_for_directory_tree_strip();
     if !buffer.rgba_f32.is_empty() {
-        return crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-            buffer,
-            tone.exposure_ev,
-            &tone,
-        );
+        return crate::hdr::decode::hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, &tone);
     }
     hdr_to_sdr_with_user_tone(buffer, &tone)
 }
@@ -255,11 +251,6 @@ pub(crate) fn directory_tree_strip_logical_for_preview(
 /// GPU CFA extract finished but demosaic has not yet populated `rgba_f32`.
 pub(crate) fn hdr_raw_gpu_demosaic_pending(hdr: &HdrImageBuffer) -> bool {
     hdr.metadata.raw_gpu_source.is_some() && hdr.rgba_f32.is_empty()
-}
-
-/// Empty GPU RAW buffers cannot be tone-mapped on the refinement worker.
-pub(crate) fn hdr_raw_gpu_refinement_is_pointless(hdr: &HdrImageBuffer) -> bool {
-    hdr_raw_gpu_demosaic_pending(hdr)
 }
 
 /// Whether a loader worker should upload the static HDR float plane in the background.
@@ -605,7 +596,6 @@ mod tests {
         };
         assert!(!hdr_sdr_fallback_is_placeholder_for_load(&hdr, 4.0));
         assert!(hdr_raw_gpu_demosaic_pending(&hdr));
-        assert!(hdr_raw_gpu_refinement_is_pointless(&hdr));
     }
 
     #[test]

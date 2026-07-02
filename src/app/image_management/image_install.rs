@@ -48,27 +48,6 @@ pub(super) struct TiledImageInstall<'a> {
     pub(super) ctx: &'a egui::Context,
 }
 
-fn hdr_fallback_directory_tree_strip_tag(
-    hdr: Option<&crate::hdr::types::HdrImageBuffer>,
-    _composed_strip_preview: bool,
-) -> crate::app::directory_tree_strip_cache::StripPreviewBufferTag {
-    use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
-    if hdr.is_some_and(|hdr| {
-        hdr.metadata
-            .gain_map
-            .as_ref()
-            .is_some_and(|gm| gm.is_heif_embedded_sdr_primary_only())
-    }) {
-        StripPreviewBufferTag::PreloadSdrFallback
-    } else if hdr.is_some_and(|hdr| {
-        crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
-    }) {
-        StripPreviewBufferTag::IsoGainMapBaseline
-    } else {
-        StripPreviewBufferTag::HdrToneMappedStrip
-    }
-}
-
 impl ImageViewerApp {
     /// True when the canvas is actually drawing through the HDR float plane for `index`,
     /// not merely when an HDR buffer exists in cache (e.g. ISO gain-map embedded SDR master on SDR output).
@@ -512,66 +491,6 @@ impl ImageViewerApp {
                 ctx,
             );
         }
-    }
-
-    pub(super) fn handle_hdr_sdr_fallback_update(
-        &mut self,
-        update: crate::loader::HdrSdrFallbackResult,
-        ctx: &egui::Context,
-    ) {
-        let idx = update.index;
-        if !self.hdr_image_cache.contains_key(&idx) {
-            return;
-        }
-        let Some(fallback_image) = update.fallback else {
-            return;
-        };
-        if idx == self.current_index {
-            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
-                width: fallback_image.width,
-                height: fallback_image.height,
-                pixels: fallback_image.arc_pixels(),
-            });
-        }
-        let active_hdr_plane_displays_current = self.active_hdr_plane_displays_index(idx);
-        self.hdr_sdr_fallback_indices.insert(idx);
-        self.hdr_placeholder_fallback_indices.remove(&idx);
-        let logical_size = self.texture_cache.get_original_res(idx).or_else(|| {
-            self.hdr_image_cache
-                .get(&idx)
-                .map(|hdr| (hdr.width, hdr.height))
-        });
-        let composed_strip_preview = self.hdr_image_cache.get(&idx).and_then(|hdr| {
-            self.installed_hdr_directory_tree_strip_preview(hdr.as_ref(), &fallback_image, false)
-        });
-        let strip_tag = hdr_fallback_directory_tree_strip_tag(
-            self.hdr_image_cache.get(&idx).map(|hdr| hdr.as_ref()),
-            composed_strip_preview.is_some(),
-        );
-        let strip_for_cache = composed_strip_preview.as_ref().unwrap_or(&fallback_image);
-        if active_hdr_plane_displays_current {
-            // The float HDR plane is the displayed source; applying the refined SDR fallback here
-            // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
-            self.insert_deferred_sdr_upload(idx, fallback_image.clone());
-            self.cache_directory_tree_strip_thumbnail(
-                idx,
-                strip_for_cache,
-                crate::loader::PreviewStage::Refined,
-                logical_size,
-                strip_tag,
-                ctx,
-            );
-            return;
-        }
-        self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
-        self.cache_directory_tree_strip_thumbnail(
-            idx,
-            strip_for_cache,
-            crate::loader::PreviewStage::Refined,
-            logical_size,
-            strip_tag,
-            ctx,
-        );
     }
 
     pub(super) fn install_tiled_image(&mut self, install: TiledImageInstall<'_>) {

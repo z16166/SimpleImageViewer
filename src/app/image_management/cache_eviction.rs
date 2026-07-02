@@ -115,9 +115,6 @@ impl ImageViewerApp {
         if self.main_loader_failed_indices.remove(&from) {
             self.main_loader_failed_indices.insert(to);
         }
-        if self.hdr_in_flight_fallback_refinements.remove(&from) {
-            self.hdr_in_flight_fallback_refinements.insert(to);
-        }
         if self.cpu_raw_refinement_pending_indices.remove(&from) {
             self.cpu_raw_refinement_pending_indices.insert(to);
         }
@@ -256,8 +253,6 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.hdr_raw_gpu_demosaic_pending_key_index
             .retain(|_, idx| *idx == except_idx);
-        self.hdr_in_flight_fallback_refinements
-            .retain(|&idx| idx == except_idx);
         self.cpu_raw_refinement_pending_indices
             .retain(|&idx| idx == except_idx);
         self.hq_tiled_preview_pending_indices
@@ -575,7 +570,6 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.main_loader_failed_indices, old_to_new);
-        permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
         permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
         permute_usize_hashmap(&mut self.installed_display_modes, old_to_new);

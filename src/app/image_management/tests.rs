@@ -267,18 +267,6 @@ fn refinement_uploads_defer_for_current_index_while_transition_is_animating() {
 }
 
 #[test]
-fn hdr_sdr_fallback_defers_during_transition_and_until_settle_window_for_current() {
-    assert!(should_defer_hdr_sdr_fallback_install(true, true, None));
-    assert!(!should_defer_hdr_sdr_fallback_install(false, true, None));
-    assert!(!should_defer_hdr_sdr_fallback_install(true, false, None));
-    assert!(should_defer_hdr_sdr_fallback_install(
-        true,
-        false,
-        Some(std::time::Instant::now()),
-    ));
-}
-
-#[test]
 fn background_preload_memory_guard_uses_adaptive_reserve() {
     assert_eq!(background_preload_memory_guard_threshold_mb(4 * 1024), 1024);
     assert_eq!(
@@ -1330,41 +1318,6 @@ fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
 }
 
 #[test]
-fn current_hdr_plane_ignores_refined_sdr_fallback_install() {
-    let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("current.avif")];
-    app.current_index = 0;
-    app.hdr_target_format = Some(wgpu::TextureFormat::Rgba16Float);
-    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
-        width: 1,
-        height: 1,
-        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
-        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
-        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
-            crate::hdr::types::HdrColorSpace::LinearSrgb,
-        ),
-        rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
-    });
-    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
-    app.hdr_image_cache.insert(0, hdr);
-    app.hdr_sdr_fallback_indices.insert(0);
-    app.hdr_placeholder_fallback_indices.insert(0);
-
-    let update = crate::loader::HdrSdrFallbackResult {
-        index: 0,
-        decode_profile: crate::loader::decode_profile_stub(),
-        source_key: source_key_for_path(&app.image_files[0]),
-        fallback: Some(DecodedImage::new(1, 1, vec![255, 255, 255, 255])),
-    };
-
-    app.handle_hdr_sdr_fallback_update(update, &egui::Context::default());
-
-    assert!(!app.hdr_placeholder_fallback_indices.contains(&0));
-    assert!(app.hdr_sdr_fallback_indices.contains(&0));
-    assert!(app.deferred_sdr_uploads.contains_key(&0));
-}
-
-#[test]
 fn placeholder_sdr_transition_source_is_kept_when_hdr_output_is_unavailable() {
     assert!(!should_drop_placeholder_sdr_transition_source(
         true, true, false
@@ -1918,7 +1871,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
-        hdr_in_flight_fallback_refinements: HashSet::new(),
         cpu_raw_refinement_pending_indices: HashSet::new(),
         hq_tiled_preview_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),

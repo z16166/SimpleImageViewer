@@ -666,7 +666,6 @@ impl ImageViewerApp {
                 self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
-        self.trigger_current_hdr_fallback_refinement_if_needed();
         self.sync_and_ensure_hq_tiled_preview(self.current_index, ctx);
         self.try_start_pending_transition_if_ready();
         self.sync_directory_tree_file_list_state(ctx);

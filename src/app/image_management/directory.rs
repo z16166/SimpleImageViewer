@@ -300,8 +300,6 @@ impl ImageViewerApp {
         self.main_loader_failed_indices.retain(|&idx| idx == keep);
         self.hdr_raw_gpu_demosaic_pending_key_index
             .retain(|_, idx| *idx == keep);
-        self.hdr_in_flight_fallback_refinements
-            .retain(|&idx| idx == keep);
         self.cpu_raw_refinement_pending_indices
             .retain(|&idx| idx == keep);
         self.hq_tiled_preview_pending_indices

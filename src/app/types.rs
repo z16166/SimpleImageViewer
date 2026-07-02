@@ -443,8 +443,6 @@ pub struct ImageViewerApp {
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
-    /// HDR indices for which fallback refinement is currently in-flight.
-    pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
     pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
     /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).

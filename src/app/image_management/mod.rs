@@ -271,26 +271,6 @@ fn should_drop_placeholder_sdr_transition_source(
     placeholder && has_hdr && hdr_output_available
 }
 
-/// Hold off refined SDR fallback GPU uploads for the navigation target briefly after the
-/// transition animation ends. Applying them on the same frame as `transition_start` clears
-/// re-uploads the 8-bit cache and retriggers ISO/Apple HDR compose (see preload logs:
-/// `install hdr_sdr_fallback` immediately after the last defer loop).
-pub(crate) fn should_defer_hdr_sdr_fallback_install(
-    is_current: bool,
-    is_transitioning: bool,
-    transition_settled_at: Option<std::time::Instant>,
-) -> bool {
-    if !is_current {
-        return false;
-    }
-    if is_transitioning {
-        return true;
-    }
-    const POST_TRANSITION_REFINEMENT_HOLD: std::time::Duration =
-        std::time::Duration::from_millis(50);
-    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_HOLD)
-}
-
 /// Circular distance within which prefetch CPU/GPU caches are retained (see `prefetch_retention`).
 pub(crate) const PREFETCH_WINDOW_DISTANCE: usize = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
 
@@ -1094,42 +1074,8 @@ impl ImageViewerApp {
                     LoaderOutput::Tile(t) => gate_ctx
                         .retention_for(t.index, loading.contains_key(&t.index))
                         .should_retain(),
-                    LoaderOutput::HdrSdrFallback(_) => true,
                 }
             });
-    }
-
-    pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
-        if self.transition_start.is_some() {
-            return;
-        }
-        if self.current_index >= self.image_files.len() {
-            return;
-        }
-        if self
-            .hdr_placeholder_fallback_indices
-            .contains(&self.current_index)
-        {
-            if self
-                .hdr_in_flight_fallback_refinements
-                .contains(&self.current_index)
-            {
-                return;
-            }
-            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
-                if crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr) {
-                    return;
-                }
-                let source_key = source_key_for_path(&self.image_files[self.current_index]);
-                self.hdr_in_flight_fallback_refinements
-                    .insert(self.current_index);
-                self.loader.trigger_hdr_sdr_fallback_refinement(
-                    self.current_index,
-                    hdr,
-                    source_key,
-                );
-            }
-        }
     }
 
     pub(super) fn raw_hq_index_requires_hdr_plane(&self, index: usize) -> bool {

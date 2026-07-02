@@ -1486,14 +1486,4 @@ impl ImageLoader {
             }
         });
     }
-
-    pub fn trigger_hdr_sdr_fallback_refinement(
-        &self,
-        index: usize,
-        hdr: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
-        source_key: u64,
-    ) {
-        let _ = (index, hdr, source_key);
-        // Full-frame SDR tone-map is performed on the GPU HDR plane shader; no CPU refinement.
-    }
 }
