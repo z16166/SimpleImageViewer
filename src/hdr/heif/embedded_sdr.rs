@@ -29,12 +29,10 @@ use crate::hdr::types::{
 };
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn build_heif_embedded_sdr_master_hdr(
-    bytes: &[u8],
+pub(crate) fn build_heif_embedded_sdr_master_hdr_from_handle(
+    handle: *const libheif_sys::heif_image_handle,
     logical: (u32, u32),
 ) -> Result<HdrImageBuffer, String> {
-    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let handle = primary.as_ptr();
     let mut metadata = read_heif_metadata(handle);
     refine_heif_transfer_for_primary_bit_depth(handle, &mut metadata);
     metadata.gain_map = inspect_heif_gain_map_auxiliaries(handle).map(|mut gain_map| {
@@ -60,4 +58,14 @@ pub(crate) fn build_heif_embedded_sdr_master_hdr(
         metadata,
         rgba_f32: Arc::new(Vec::new()),
     })
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Used by path-based wrappers and external callers.
+pub(crate) fn build_heif_embedded_sdr_master_hdr(
+    bytes: &[u8],
+    logical: (u32, u32),
+) -> Result<HdrImageBuffer, String> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
+    build_heif_embedded_sdr_master_hdr_from_handle(primary.as_ptr(), logical)
 }

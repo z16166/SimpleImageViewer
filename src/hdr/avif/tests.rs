@@ -293,7 +293,7 @@ fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback"),
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr).expect("fallback"),
     );
     eprintln!(
         "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",

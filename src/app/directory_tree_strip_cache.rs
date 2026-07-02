@@ -569,13 +569,9 @@ pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: Prev
 pub(crate) fn strip_buffer_tag_for_hdr_preview(
     hdr_has_float_pixels: bool,
     decoded_is_deferred_placeholder: bool,
-    iso_deferred_empty_rgba: bool,
 ) -> StripPreviewBufferTag {
     if decoded_is_deferred_placeholder {
         return StripPreviewBufferTag::SdrDeferredPlaceholder;
-    }
-    if iso_deferred_empty_rgba {
-        return StripPreviewBufferTag::IsoGainMapBaseline;
     }
     if hdr_has_float_pixels {
         return StripPreviewBufferTag::HdrToneMappedStrip;
@@ -839,7 +835,7 @@ mod tests {
     #[test]
     fn strip_buffer_tag_marks_decoded_placeholder_as_deferred() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, true, false),
+            strip_buffer_tag_for_hdr_preview(false, true),
             StripPreviewBufferTag::SdrDeferredPlaceholder
         );
     }
@@ -847,7 +843,7 @@ mod tests {
     #[test]
     fn strip_buffer_tag_uses_preload_fallback_for_real_sdr_strip_before_float_readback() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, false, false),
+            strip_buffer_tag_for_hdr_preview(false, false),
             StripPreviewBufferTag::PreloadSdrFallback
         );
     }
@@ -855,7 +851,7 @@ mod tests {
     #[test]
     fn strip_buffer_tag_uses_hdr_tone_mapped_when_float_pixels_ready() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(true, false, false),
+            strip_buffer_tag_for_hdr_preview(true, false),
             StripPreviewBufferTag::HdrToneMappedStrip
         );
     }

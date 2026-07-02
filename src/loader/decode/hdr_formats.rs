@@ -53,7 +53,7 @@ pub(crate) fn load_hdr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
@@ -118,7 +118,7 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     log::info!(
         "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
@@ -173,11 +173,7 @@ pub(crate) fn load_deep_exr(
             let fallback = DecodedImage::from_hdr_sdr_fallback(
                 hdr.width,
                 hdr.height,
-                hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                    &hdr,
-                    hdr_target_capacity,
-                    &hdr_tone_map,
-                )?,
+                hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
             );
             let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             Ok(make_hdr_image_data(hdr, fallback))
@@ -246,7 +242,7 @@ pub(crate) fn load_detected_exr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))

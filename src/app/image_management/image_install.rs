@@ -478,7 +478,6 @@ impl ImageViewerApp {
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
                     strip_preview.is_sdr_deferred_placeholder(),
-                    false,
                 )
             };
             self.cache_directory_tree_strip_thumbnail(

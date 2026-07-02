@@ -117,8 +117,9 @@ fn hdr_metadata_for_ultra_hdr_gain_map(gain: GainMapMetadata) -> HdrImageMetadat
     metadata
 }
 
+/// Test-only entry: production uses [`decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master`].
 #[cfg(test)]
-pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+pub(crate) fn decode_ultra_hdr_jpeg_bytes_for_test(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {

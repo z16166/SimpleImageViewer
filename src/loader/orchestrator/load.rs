@@ -536,11 +536,7 @@ impl ImageLoader {
                                 *slot.write() = Some(hdr.clone());
                             }
 
-                            let fb = match hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                                &hdr,
-                                req.hdr_target_capacity,
-                                &req.hdr_tone_map,
-                            ) {
+                            let fb = match hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr) {
                                 Ok(fb) => fb,
                                 Err(e) => {
                                     log::error!(

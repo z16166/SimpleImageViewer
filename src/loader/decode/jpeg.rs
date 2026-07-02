@@ -139,11 +139,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 let fallback = DecodedImage::from_hdr_sdr_fallback(
                     hdr.width,
                     hdr.height,
-                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        hdr_target_capacity,
-                        &hdr_tone_map,
-                    )?,
+                    hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
                 );
                 return Ok(make_hdr_image_data(hdr, fallback));
             }

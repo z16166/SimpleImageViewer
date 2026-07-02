@@ -152,7 +152,6 @@ impl ImageViewerApp {
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
             false,
-            false,
         );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
             #[cfg(feature = "preload-debug")]
@@ -213,7 +212,6 @@ impl ImageViewerApp {
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     hdr_has_float_pixels,
                     decoded.is_sdr_deferred_placeholder(),
-                    false,
                 );
             let job = DirectoryTreeStripPreviewJobResult {
                 index,

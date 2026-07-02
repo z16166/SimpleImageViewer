@@ -141,11 +141,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
                 let fallback = DecodedImage::from_hdr_sdr_fallback(
                     hdr.width,
                     hdr.height,
-                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        job.hdr_target_capacity,
-                        &job.hdr_tone_map,
-                    )?,
+                    hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
                 );
                 Ok(HdrAnimationFrame::new(hdr, fallback, delay))
             })
@@ -198,11 +194,7 @@ fn hdr_animated_from_sequence_decode(
             let fallback = DecodedImage::from_hdr_sdr_fallback(
                 hdr.width,
                 hdr.height,
-                hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                    &hdr,
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                )?,
+                hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
             );
             Ok(HdrAnimationFrame::new(hdr, fallback, delay))
         })
@@ -489,25 +481,17 @@ pub(crate) fn load_heif_hdr_aware(
     {
         let mmap =
             crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-        if crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
+        let try_embedded = crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
-        ) {
-            match crate::hdr::heif::load_heif_embedded_sdr_primary_from_bytes(&mmap[..], diag) {
-                Ok(image) => return Ok(apply_exif_orientation_to_image_data(path, image)),
-                Err(err) => {
-                    crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
-                        "HEIF", path, &err,
-                    );
-                }
-            }
-        }
-        match crate::hdr::heif::load_heif_hdr_from_bytes(
+        );
+        match crate::hdr::heif::load_heif_with_optional_embedded_sdr_from_bytes(
             &mmap[..],
             path,
             hdr_target_capacity,
             hdr_tone_map,
             diag,
+            try_embedded,
         ) {
             Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
             Err(err) => {

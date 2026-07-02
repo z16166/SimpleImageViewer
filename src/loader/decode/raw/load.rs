@@ -113,11 +113,7 @@ fn load_raw_hq_static_hdr(
         Ok((hdr, cpu_ms)) => {
             let width = hdr.width;
             let height = hdr.height;
-            let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                &hdr,
-                hdr_target_capacity,
-                hdr_tone_map,
-            ) {
+            let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr) {
                 Ok(fb) => fb,
                 Err(err) => return Some(Err(err)),
             };

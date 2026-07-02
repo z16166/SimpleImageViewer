@@ -151,7 +151,7 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, tone_map)?,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(crate::loader::ImageData::Hdr {

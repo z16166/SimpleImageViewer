@@ -633,11 +633,7 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         width,
         height,
-        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            &hdr,
-            hdr_target_capacity,
-            tone_map,
-        )?,
+        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     Ok(Some(ImageData::Hdr {
         hdr: Box::new(hdr),

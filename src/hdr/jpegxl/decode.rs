@@ -333,18 +333,14 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
 #[cfg(feature = "jpegxl")]
 fn jxl_build_hdr_fallback(
     hdr: &HdrImageBuffer,
-    display_hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
+    _display_hdr_target_capacity: f32,
+    _tone_map: &HdrToneMapSettings,
 ) -> Result<DecodedImage, String> {
     if hdr.rgba_f32.is_empty() {
         return Ok(DecodedImage::from_hdr_sdr_fallback(
             hdr.width,
             hdr.height,
-            crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                hdr,
-                display_hdr_target_capacity,
-                tone_map,
-            )?,
+            crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(hdr)?,
         ));
     }
     if let Some(px) =
@@ -355,11 +351,7 @@ fn jxl_build_hdr_fallback(
     Ok(DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            hdr,
-            display_hdr_target_capacity,
-            tone_map,
-        )?,
+        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(hdr)?,
     ))
 }
 

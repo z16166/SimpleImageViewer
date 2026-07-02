@@ -49,9 +49,10 @@ mod tests;
 
 pub(crate) use brand::is_heif_brand;
 #[cfg(feature = "heif-native")]
+#[allow(unused_imports)] // Path-based wrappers kept for tests and external callers.
 pub(crate) use load::{
     heif_should_use_embedded_sdr_primary_load, load_heif_embedded_sdr_primary_from_bytes,
-    load_heif_hdr_from_bytes,
+    load_heif_hdr_from_bytes, load_heif_with_optional_embedded_sdr_from_bytes,
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{

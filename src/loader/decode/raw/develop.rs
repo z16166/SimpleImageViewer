@@ -111,11 +111,7 @@ pub(crate) fn develop_full_resolution(
                     let fallback = DecodedImage::from_hdr_sdr_fallback(
                         hw,
                         hh,
-                        hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                            &hdr,
-                            hdr_target_capacity,
-                            &hdr_tone_map,
-                        )?,
+                        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
                     );
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
@@ -214,7 +210,7 @@ pub(crate) fn develop_hq_preview(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
     );
     let osd = osd_ctx
         .full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host)

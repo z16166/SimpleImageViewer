@@ -190,7 +190,7 @@ pub(crate) fn probe_heif_strip_thumbnail(bytes: &[u8], max_side: u32) -> HeifStr
     (Some((preview, logical)), HeifThumbProbe::Found, detail)
 }
 
-fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, u32) {
+pub(crate) fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, u32) {
     if handle.is_null() {
         return (0, 0);
     }
@@ -211,7 +211,7 @@ pub(crate) fn libheif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32
     (logical.0 > 0 && logical.1 > 0).then_some(logical)
 }
 
-fn decode_heif_handle_to_rgba8(
+pub(crate) fn decode_heif_handle_to_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<DecodedImage, String> {
@@ -310,21 +310,14 @@ fn interleaved_image_to_rgba8(
 type HeifPrimaryStripResult = Option<Result<(DecodedImage, (u32, u32)), String>>;
 
 /// Full-resolution primary HEIF item as 8-bit SDR RGBA (no gain-map auxiliary).
-pub(crate) fn decode_heif_primary_sdr_from_bytes(
-    bytes: &[u8],
+pub(crate) fn decode_heif_primary_sdr_from_handle(
+    handle: *const libheif_sys::heif_image_handle,
+    decode_opts_ptr: *const libheif_sys::heif_decoding_options,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
-    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let handle = primary.as_ptr();
     let logical = primary_logical_size(handle);
     if logical.0 == 0 || logical.1 == 0 {
         return Err("HEIF primary has zero logical size".to_string());
     }
-
-    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
-    let decode_opts_ptr = decode_geo_holder
-        .as_ref()
-        .map(|g| g.as_ptr())
-        .unwrap_or(std::ptr::null());
 
     let decoded = decode_heif_handle_to_rgba8(handle, decode_opts_ptr)?;
     if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
@@ -334,6 +327,19 @@ pub(crate) fn decode_heif_primary_sdr_from_bytes(
         ));
     }
     Ok((decoded, logical))
+}
+
+/// Full-resolution primary HEIF item as 8-bit SDR RGBA (no gain-map auxiliary).
+pub(crate) fn decode_heif_primary_sdr_from_bytes(
+    bytes: &[u8],
+) -> Result<(DecodedImage, (u32, u32)), String> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
+    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
+    let decode_opts_ptr = decode_geo_holder
+        .as_ref()
+        .map(|g| g.as_ptr())
+        .unwrap_or(std::ptr::null());
+    decode_heif_primary_sdr_from_handle(primary.as_ptr(), decode_opts_ptr)
 }
 
 /// Decode the primary HEIF item to 8-bit SDR RGBA for directory-tree strips (no gain map auxiliary).
