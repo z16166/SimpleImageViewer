@@ -25,10 +25,9 @@ impl ImageViewerApp {
         run
     }
 
-    pub(super) fn logic_shared(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // `frame` is always ROOT integration (eframe fork); safe for loader wgpu on aux paint.
-
-        // Poll tray commands (handlers wake the event loop via request_repaint).
+    /// Poll tray menu/icon commands. Must run on every ROOT logic pass (not coalesced) so
+    /// Quit is handled while hidden to tray.
+    pub(super) fn poll_tray_commands(&mut self, ctx: &Context) {
         while let Ok(cmd) = self.tray_cmd_rx.try_recv() {
             match cmd {
                 crate::app::tray_handlers::TrayCommand::ShowMainWindow => {
@@ -44,6 +43,10 @@ impl ImageViewerApp {
                 }
             }
         }
+    }
+
+    pub(super) fn logic_shared(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // `frame` is always ROOT integration (eframe fork); safe for loader wgpu on aux paint.
 
         // Process IPC messages (needs to happen before minimized check to wake up immediately)
         let mut ipc_handled = false;
