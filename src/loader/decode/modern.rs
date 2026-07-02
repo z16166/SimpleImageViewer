@@ -19,7 +19,7 @@
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
     DecodedImage, HdrAnimationFrame, ImageData, LoadResult, apply_exif_orientation_to_image_data,
-    hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder, source_key_for_path,
+    hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_or_placeholder, source_key_for_path,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -141,7 +141,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
                 let fallback = DecodedImage::from_hdr_sdr_fallback(
                     hdr.width,
                     hdr.height,
-                    hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                    hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                 );
                 Ok(HdrAnimationFrame::new(hdr, fallback, delay))
             })
@@ -184,8 +184,6 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
 fn hdr_animated_from_sequence_decode(
     path: &Path,
     decode: crate::hdr::avif::AvifSequenceDecode,
-    hdr_target_capacity: f32,
-    hdr_tone_map: &HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let frames: Vec<HdrAnimationFrame> = decode
         .frames
@@ -194,7 +192,7 @@ fn hdr_animated_from_sequence_decode(
             let fallback = DecodedImage::from_hdr_sdr_fallback(
                 hdr.width,
                 hdr.height,
-                hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
             );
             Ok(HdrAnimationFrame::new(hdr, fallback, delay))
         })
@@ -263,12 +261,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                     } else {
                         None
                     };
-                let image = hdr_animated_from_sequence_decode(
-                    path,
-                    decode,
-                    hdr_target_capacity,
-                    &hdr_tone_map,
-                )?;
+                let image = hdr_animated_from_sequence_decode(path, decode)?;
                 return Ok(AvifLoadOutcome {
                     image,
                     sequence_remainder: remainder,
@@ -292,8 +285,6 @@ fn load_avif_with_target_capacity_outcome_impl(
             bytes,
             path,
             decode_capacity,
-            hdr_target_capacity,
-            &hdr_tone_map,
             try_embedded,
         ) {
             Ok(image) => Ok(AvifLoadOutcome {
@@ -473,7 +464,7 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
 pub(crate) fn load_heif_hdr_aware(
     path: &Path,
     hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
+    _hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
@@ -489,7 +480,6 @@ pub(crate) fn load_heif_hdr_aware(
             &mmap[..],
             path,
             hdr_target_capacity,
-            hdr_tone_map,
             diag,
             try_embedded,
         ) {

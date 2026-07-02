@@ -231,7 +231,7 @@ pub(crate) fn load_by_image_format(
             load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
         }
         image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::OpenExr => load_detected_exr(path, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::OpenExr => load_detected_exr(path),
         _ => Err(rust_i18n::t!(
             "error.unsupported_detected_format",
             format = format!("{:?}", format)

@@ -361,7 +361,8 @@ pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr_float_plane_defers_sdr_tone_map_to_gpu(hdr) || hdr.rgba_f32.is_empty()
 }
 
-pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
+/// SDR fallback RGBA8: embedded ISO baseline, RAW bootstrap preview, or deferred black placeholder.
+pub(crate) fn hdr_sdr_fallback_rgba8_or_placeholder(
     hdr: &HdrImageBuffer,
 ) -> Result<HdrSdrFallbackRgba8, String> {
     if let Some(source) = hdr.metadata.raw_gpu_source.as_ref() {
@@ -444,7 +445,7 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
         let out =
-            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr).expect("fallback");
+            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert_eq!(out.pixels.as_slice(), iso_sdr);
         assert!(!out.is_deferred_placeholder);
     }
@@ -658,7 +659,7 @@ mod tests {
             rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
         };
         let out =
-            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr).expect("fallback");
+            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert!(out.is_deferred_placeholder);
         assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }
@@ -689,7 +690,7 @@ mod tests {
             rgba_f32: Arc::new(vec![10.0, 0.0, 0.0, 1.0]),
         };
         let out =
-            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr).expect("fallback");
+            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert!(out.is_deferred_placeholder);
         assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }

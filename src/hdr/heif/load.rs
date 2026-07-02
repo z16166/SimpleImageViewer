@@ -14,19 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::decode_primary_heif_to_hdr;
-use super::embedded_sdr::build_heif_embedded_sdr_master_hdr_from_handle;
+use super::embedded_sdr::heif_embedded_sdr_master_hdr_from_metadata;
 use super::gain_map::{decode_heif_gain_map, heif_has_apple_hdr_gain_map_auxiliary};
-use super::metadata::{
-    inspect_heif_gain_map_auxiliaries, read_heif_metadata,
-    refine_heif_transfer_for_primary_bit_depth,
-};
-use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
+use super::metadata::read_heif_opened_primary_metadata;
+use super::orientation::heif_manual_geometry_decode_options;
 use super::session::{HeifPrimaryGuard, open_heif_primary_from_bytes};
 use super::thumbnail::{
     decode_heif_handle_to_rgba8, decode_heif_primary_sdr_from_handle, primary_logical_size,
 };
 
-use crate::hdr::types::HdrColorProfile;
+use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
 use crate::loader::preview_aspect_matches_logical;
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -39,7 +36,16 @@ use super::HeifHdrDecodeDiag;
 #[cfg(feature = "heif-native")]
 struct HeifEmbeddedSdrFailure {
     err: String,
+    /// Valid-aspect 8-bit primary from embedded-SDR attempt; never set on aspect mismatch.
     recovered_sdr: Option<crate::loader::DecodedImage>,
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_recovered_sdr_usable_for_logical(
+    decoded: &crate::loader::DecodedImage,
+    logical: (u32, u32),
+) -> bool {
+    preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1)
 }
 
 #[cfg(feature = "heif-native")]
@@ -51,6 +57,7 @@ fn heif_load_skips_primary_hdr_decode_at_capacity(hdr_target_capacity: f32) -> b
 fn try_heif_embedded_sdr_primary_from_opened(
     handle: *const libheif_sys::heif_image_handle,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
+    primary_metadata: &HdrImageMetadata,
     #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<(HdrImageBuffer, crate::loader::DecodedImage), HeifEmbeddedSdrFailure> {
     #[cfg(feature = "preload-debug")]
@@ -74,25 +81,17 @@ fn try_heif_embedded_sdr_primary_from_opened(
         }
     };
 
-    if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
+    if !heif_recovered_sdr_usable_for_logical(&decoded, logical) {
         return Err(HeifEmbeddedSdrFailure {
             err: format!(
                 "HEIF primary SDR aspect mismatch: {}x{} vs logical {}x{}",
                 decoded.width, decoded.height, logical.0, logical.1
             ),
-            recovered_sdr: Some(decoded),
+            recovered_sdr: None,
         });
     }
 
-    let hdr = match build_heif_embedded_sdr_master_hdr_from_handle(handle, logical) {
-        Ok(hdr) => hdr,
-        Err(err) => {
-            return Err(HeifEmbeddedSdrFailure {
-                err,
-                recovered_sdr: Some(decoded),
-            });
-        }
-    };
+    let hdr = heif_embedded_sdr_master_hdr_from_metadata(primary_metadata.clone(), logical);
 
     #[cfg(feature = "preload-debug")]
     {
@@ -121,27 +120,22 @@ fn finish_heif_sdr_capacity_from_opened_primary(
     handle: *const libheif_sys::heif_image_handle,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
     recovered_sdr: Option<crate::loader::DecodedImage>,
+    primary_metadata: &HdrImageMetadata,
 ) -> Result<(HdrImageBuffer, crate::loader::DecodedImage), String> {
-    if let Some(decoded) = recovered_sdr {
-        let logical = primary_logical_size(handle);
-        if logical.0 == 0 || logical.1 == 0 {
-            return Err("HEIF primary has zero logical size".to_string());
-        }
-        let hdr = build_heif_embedded_sdr_master_hdr_from_handle(handle, logical)?;
-        return Ok((hdr, decoded));
-    }
-
-    if let Ok((decoded, logical)) = decode_heif_primary_sdr_from_handle(handle, decode_opts_ptr) {
-        let hdr = build_heif_embedded_sdr_master_hdr_from_handle(handle, logical)?;
-        return Ok((hdr, decoded));
-    }
-
     let logical = primary_logical_size(handle);
     if logical.0 == 0 || logical.1 == 0 {
         return Err("HEIF primary has zero logical size".to_string());
     }
-    let decoded = decode_heif_handle_to_rgba8(handle, decode_opts_ptr)?;
-    let hdr = build_heif_embedded_sdr_master_hdr_from_handle(handle, logical)?;
+
+    if let Some(decoded) = recovered_sdr {
+        if heif_recovered_sdr_usable_for_logical(&decoded, logical) {
+            let hdr = heif_embedded_sdr_master_hdr_from_metadata(primary_metadata.clone(), logical);
+            return Ok((hdr, decoded));
+        }
+    }
+
+    let (decoded, _) = decode_heif_primary_sdr_from_handle(handle, decode_opts_ptr)?;
+    let hdr = heif_embedded_sdr_master_hdr_from_metadata(primary_metadata.clone(), logical);
     Ok((hdr, decoded))
 }
 
@@ -150,10 +144,12 @@ fn heif_image_data_fallback(
     hdr: &HdrImageBuffer,
     recovered_sdr: Option<crate::loader::DecodedImage>,
 ) -> Result<crate::loader::DecodedImage, String> {
-    if let Some(decoded) = recovered_sdr {
+    if let Some(decoded) = recovered_sdr
+        && heif_recovered_sdr_usable_for_logical(&decoded, (hdr.width, hdr.height))
+    {
         return Ok(decoded);
     }
-    let fb = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(hdr)?;
+    let fb = crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(hdr)?;
     Ok(crate::loader::DecodedImage::from_hdr_sdr_fallback(
         hdr.width, hdr.height, fb,
     ))
@@ -165,20 +161,22 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
     bytes: &[u8],
     path: &Path,
     hdr_target_capacity: f32,
-    _tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
     try_embedded_sdr_master: bool,
 ) -> Result<crate::loader::ImageData, String> {
     let (ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
-    let decode_opts_ptr = decode_geo_holder
-        .as_ref()
-        .map(|g| g.as_ptr())
-        .unwrap_or(std::ptr::null());
+    let (_decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
+    let handle = primary.as_ptr();
+    let primary_metadata = read_heif_opened_primary_metadata(handle);
 
     let mut recovered_sdr = None;
     if try_embedded_sdr_master {
-        match try_heif_embedded_sdr_primary_from_opened(primary.as_ptr(), decode_opts_ptr, diag) {
+        match try_heif_embedded_sdr_primary_from_opened(
+            handle,
+            decode_opts_ptr,
+            &primary_metadata,
+            diag,
+        ) {
             Ok((hdr, decoded)) => {
                 return Ok(crate::loader::ImageData::Hdr {
                     hdr: Box::new(hdr),
@@ -198,6 +196,8 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
 
     let _ctx = ctx;
     if heif_load_skips_primary_hdr_decode_at_capacity(hdr_target_capacity) {
+        // SDR-display load: empty rgba_f32 is intentional. Strip cache tags use
+        // PreloadSdrFallback (not HdrToneMappedStrip) until float pixels exist.
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][HEIF] sdr_capacity_load skip_primary_hdr_decode path={}",
@@ -207,6 +207,7 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
             primary.as_ptr(),
             decode_opts_ptr,
             recovered_sdr,
+            &primary_metadata,
         )?;
         return Ok(crate::loader::ImageData::Hdr {
             hdr: Box::new(hdr),
@@ -220,11 +221,11 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
         .unwrap_or("(unknown)");
     let hdr = decode_heif_hdr_from_opened_primary(
         &primary,
-        bytes,
         hdr_target_capacity,
         label,
         diag,
         decode_opts_ptr,
+        primary_metadata,
     )?;
     let fallback = heif_image_data_fallback(&hdr, recovered_sdr)?;
 
@@ -240,14 +241,17 @@ pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
     let (ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
-    let decode_opts_ptr = decode_geo_holder
-        .as_ref()
-        .map(|g| g.as_ptr())
-        .unwrap_or(std::ptr::null());
-    let (hdr, decoded) =
-        try_heif_embedded_sdr_primary_from_opened(primary.as_ptr(), decode_opts_ptr, diag)
-            .map_err(|failure| failure.err)?;
+    let (_decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
+    let primary_metadata = read_heif_opened_primary_metadata(primary.as_ptr());
+    let (hdr, decoded) = match try_heif_embedded_sdr_primary_from_opened(
+        primary.as_ptr(),
+        decode_opts_ptr,
+        &primary_metadata,
+        diag,
+    ) {
+        Ok(pair) => pair,
+        Err(failure) => return Err(failure.err),
+    };
     let _ctx = ctx;
     Ok(crate::loader::ImageData::Hdr {
         hdr: Box::new(hdr),
@@ -271,14 +275,13 @@ pub(crate) fn load_heif_hdr_from_bytes(
     bytes: &[u8],
     path: &Path,
     hdr_target_capacity: f32,
-    tone_map: HdrToneMapSettings,
+    _tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
     load_heif_with_optional_embedded_sdr_from_bytes(
         bytes,
         path,
         hdr_target_capacity,
-        tone_map,
         diag,
         false,
     )
@@ -332,29 +335,26 @@ pub(crate) fn decode_heif_hdr_bytes(
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<HdrImageBuffer, String> {
     let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
-    let decode_opts_ptr = decode_geo_holder
-        .as_ref()
-        .map(|g| g.as_ptr())
-        .unwrap_or(std::ptr::null());
+    let (_decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
+    let primary_metadata = read_heif_opened_primary_metadata(primary.as_ptr());
     decode_heif_hdr_from_opened_primary(
         &primary,
-        bytes,
         hdr_target_capacity,
         source_label,
         diag,
         decode_opts_ptr,
+        primary_metadata,
     )
 }
 
 #[cfg(feature = "heif-native")]
 fn decode_heif_hdr_from_opened_primary(
     primary: &HeifPrimaryGuard,
-    bytes: &[u8],
     hdr_target_capacity: f32,
     source_label: &str,
     #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<'_>,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
+    metadata: HdrImageMetadata,
 ) -> Result<HdrImageBuffer, String> {
     #[cfg(feature = "preload-debug")]
     let total_start = std::time::Instant::now();
@@ -362,11 +362,6 @@ fn decode_heif_hdr_from_opened_primary(
     let mut phase_start = std::time::Instant::now();
 
     let handle = primary.as_ptr();
-    let mut metadata = read_heif_metadata(handle);
-    if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle) {
-        metadata.gain_map = Some(diagnostic);
-    }
-    refine_heif_transfer_for_primary_bit_depth(handle, &mut metadata);
     crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
 
     #[cfg(feature = "preload-debug")]
@@ -475,7 +470,6 @@ fn decode_heif_hdr_from_opened_primary(
         );
     }
 
-    let _bytes = bytes;
     Ok(hdr)
 }
 
@@ -492,6 +486,21 @@ mod tests {
         assert!(heif_load_skips_primary_hdr_decode_at_capacity(1.001));
         assert!(!heif_load_skips_primary_hdr_decode_at_capacity(1.01));
         assert!(!heif_load_skips_primary_hdr_decode_at_capacity(4.0));
+    }
+
+    #[test]
+    fn heif_fallback_rejects_recovered_sdr_with_aspect_mismatch() {
+        let recovered = DecodedImage::new(4, 2, vec![0; 4 * 2 * 4]);
+        let hdr = HdrImageBuffer {
+            width: 2,
+            height: 2,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::default(),
+            rgba_f32: Arc::new(vec![1.0; 16]),
+        };
+        let fallback = heif_image_data_fallback(&hdr, Some(recovered)).expect("fallback");
+        assert!(fallback.is_sdr_deferred_placeholder());
     }
 
     #[test]

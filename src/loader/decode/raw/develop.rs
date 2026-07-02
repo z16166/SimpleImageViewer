@@ -31,7 +31,7 @@ use crate::loader::raw_osd::{RawDemosaicBackend, RawOsdContext};
 use crate::loader::tiled_sources::{RawImageSource, RawImageSourceParams};
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_sdr_fallback_rgba8_or_placeholder,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -111,7 +111,7 @@ pub(crate) fn develop_full_resolution(
                     let fallback = DecodedImage::from_hdr_sdr_fallback(
                         hw,
                         hh,
-                        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                     );
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
@@ -192,8 +192,8 @@ pub(crate) fn develop_hq_preview(
     processor: &mut RawProcessor,
     _path: &Path,
     _raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
+    _hdr_target_capacity: f32,
+    _hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
 ) -> Result<RawLoadOutput, String> {
     crate::preload_debug!(
@@ -210,7 +210,7 @@ pub(crate) fn develop_hq_preview(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     let osd = osd_ctx
         .full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host)

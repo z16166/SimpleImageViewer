@@ -279,7 +279,7 @@ fn decode_mexico_yuv444_avif_metadata_when_sample_present() {
 #[test]
 fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
     use crate::hdr::types::HdrToneMapSettings;
-    use crate::loader::{DecodedImage, hdr_sdr_fallback_rgba8_eager_or_placeholder};
+    use crate::loader::{DecodedImage, hdr_sdr_fallback_rgba8_or_placeholder};
 
     let path = std::path::Path::new(r"F:\HDR\libavif\tests\data\paris_icc_exif_xmp.avif");
     if !path.is_file() {
@@ -293,7 +293,7 @@ fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr).expect("fallback"),
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback"),
     );
     eprintln!(
         "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",

@@ -202,7 +202,7 @@ pub fn load_via_libtiff(
                     let fallback = DecodedImage::from_hdr_sdr_fallback(
                         hdr.width,
                         hdr.height,
-                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                        crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                     );
                     return Ok(ImageData::Hdr {
                         hdr: Box::new(hdr),
@@ -254,7 +254,7 @@ pub fn load_via_libtiff(
                     let fallback = DecodedImage::from_hdr_sdr_fallback(
                         hdr.width,
                         hdr.height,
-                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                        crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                     );
                     return Ok(ImageData::Hdr {
                         hdr: Box::new(hdr),
@@ -309,7 +309,7 @@ pub fn load_via_libtiff(
                     let fallback = DecodedImage::from_hdr_sdr_fallback(
                         hdr.width,
                         hdr.height,
-                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)?,
+                        crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                     );
                     return Ok(ImageData::Hdr {
                         hdr: Box::new(hdr),

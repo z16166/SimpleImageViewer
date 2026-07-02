@@ -296,6 +296,22 @@ pub(crate) fn allocate_decode_options_for_heif_manual_geometry_fixup(
     }
 }
 
+/// Keep the options guard alive for the decode call; returns a null pointer when none is needed.
+#[cfg(feature = "heif-native")]
+pub(crate) fn heif_manual_geometry_decode_options(
+    bytes: &[u8],
+) -> (
+    Option<HeifDecodeOptionsIgnoredGeometryOwned>,
+    *const libheif_sys::heif_decoding_options,
+) {
+    let holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
+    let ptr = holder
+        .as_ref()
+        .map(|g| g.as_ptr())
+        .unwrap_or(std::ptr::null());
+    (holder, ptr)
+}
+
 /// When the decoded raster's width/height are the **swap** of libheif’s `ispe` width/height (non-square),
 /// decoder has already applied a 90°/270° HEIF transform on the pixel grid — suppress applying EXIF
 /// Orientation again to avoid double rotation.

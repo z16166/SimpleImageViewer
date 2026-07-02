@@ -331,16 +331,12 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
 }
 
 #[cfg(feature = "jpegxl")]
-fn jxl_build_hdr_fallback(
-    hdr: &HdrImageBuffer,
-    _display_hdr_target_capacity: f32,
-    _tone_map: &HdrToneMapSettings,
-) -> Result<DecodedImage, String> {
+fn jxl_build_hdr_fallback(hdr: &HdrImageBuffer) -> Result<DecodedImage, String> {
     if hdr.rgba_f32.is_empty() {
         return Ok(DecodedImage::from_hdr_sdr_fallback(
             hdr.width,
             hdr.height,
-            crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(hdr)?,
+            crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(hdr)?,
         ));
     }
     if let Some(px) =
@@ -351,7 +347,7 @@ fn jxl_build_hdr_fallback(
     Ok(DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(hdr)?,
+        crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(hdr)?,
     ))
 }
 
@@ -378,8 +374,8 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         height,
         jhgm_box,
         decode_target_hdr_capacity,
-        display_hdr_target_capacity,
-        tone_map,
+        display_hdr_target_capacity: _,
+        tone_map: _,
         strip_baseline_only,
         embedded_sdr_master_load,
     } = input;
@@ -419,7 +415,7 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
             }
         }
     };
-    let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+    let fallback = jxl_build_hdr_fallback(&hdr)?;
     Ok(ImageData::Hdr {
         hdr: Box::new(hdr),
         fallback,
@@ -484,8 +480,7 @@ fn jxl_finish_static_frame_with_embedded_fallback(
             | JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
             | JxlJhgmFrameOutcome::GpuDeferred(hdr)
             | JxlJhgmFrameOutcome::CpuComposed(hdr) => {
-                let fallback =
-                    jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+                let fallback = jxl_build_hdr_fallback(&hdr)?;
                 return Ok(ImageData::Hdr {
                     hdr: Box::new(hdr),
                     fallback,
@@ -564,8 +559,6 @@ fn jxl_build_hdr_animated_image_data(
     meta_base: HdrImageMetadata,
     jhgm_box: Option<&[u8]>,
     decode_target_hdr_capacity: f32,
-    display_hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
     use crate::loader::HdrAnimationFrame;
@@ -609,7 +602,7 @@ fn jxl_build_hdr_animated_image_data(
                 }
             }
         };
-        let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+        let fallback = jxl_build_hdr_fallback(&hdr)?;
         let delay_ms = jxl_frame_ticks_to_delay_ms(info, ticks);
         frames.push(HdrAnimationFrame::new(
             hdr,
@@ -766,7 +759,7 @@ fn jxl_bootstrap_first_animation_frame(
     jhgm_box: Option<&[u8]>,
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
-    tone_map: &HdrToneMapSettings,
+    _tone_map: &HdrToneMapSettings,
 ) -> Result<JxlDecodeOutput, String> {
     let mut meta_base = metadata;
     jxl_tag_display_referred_when_sdr_grade(&mut meta_base);
@@ -781,8 +774,6 @@ fn jxl_bootstrap_first_animation_frame(
             meta_base,
             jhgm_box,
             decode_target_hdr_capacity,
-            display_hdr_target_capacity,
-            tone_map,
         )?;
         return Ok(jxl_wrap_decode_output(image, true));
     }
@@ -971,8 +962,6 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                                 meta_base,
                                 jhgm_box.as_deref(),
                                 decode_target_hdr_capacity,
-                                display_hdr_target_capacity,
-                                &tone_map,
                             )?,
                             false,
                         ));

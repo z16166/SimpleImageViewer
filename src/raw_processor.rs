@@ -1528,7 +1528,7 @@ mod tests {
                 let hdr = tone_processor
                     .develop_scene_linear_hdr()
                     .expect("develop_scene_linear_hdr");
-                let fallback = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr)
+                let fallback = crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr)
                 .expect("sdr fallback");
                 let (r, g, b, max) = luminance_stats_rgba8(fallback.pixels.as_ref());
                 eprintln!("{label}: sdr_fallback cap={cap} avg=({r:.1},{g:.1},{b:.1}) max={max}");

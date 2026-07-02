@@ -26,7 +26,7 @@ use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
     MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
     RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side,
+    hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
     in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
@@ -536,7 +536,7 @@ impl ImageLoader {
                                 *slot.write() = Some(hdr.clone());
                             }
 
-                            let fb = match hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr) {
+                            let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
                                 Ok(fb) => fb,
                                 Err(e) => {
                                     log::error!(
