@@ -562,18 +562,16 @@ pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: Prev
 
 /// Buffer tag for HDR-related strip previews.
 ///
-/// When CPU `rgba_f32` is still empty and only a deferred/black placeholder is available,
-/// callers must use [`StripPreviewBufferTag::SdrDeferredPlaceholder`] (lowest rank) rather than
-/// [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps any existing real preview.
+/// Tag reflects the strip buffer itself, not the main-window SDR fallback. When the strip
+/// decoded image is a deferred/black placeholder, use [`StripPreviewBufferTag::SdrDeferredPlaceholder`]
+/// (lowest rank) rather than [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps
+/// any existing real preview.
 pub(crate) fn strip_buffer_tag_for_hdr_preview(
     hdr_has_float_pixels: bool,
-    fallback_is_deferred_placeholder: bool,
     decoded_is_deferred_placeholder: bool,
     iso_deferred_empty_rgba: bool,
 ) -> StripPreviewBufferTag {
-    if decoded_is_deferred_placeholder
-        || (!hdr_has_float_pixels && fallback_is_deferred_placeholder)
-    {
+    if decoded_is_deferred_placeholder {
         return StripPreviewBufferTag::SdrDeferredPlaceholder;
     }
     if iso_deferred_empty_rgba {
@@ -839,17 +837,17 @@ mod tests {
     }
 
     #[test]
-    fn strip_buffer_tag_marks_empty_hdr_placeholder_as_deferred() {
+    fn strip_buffer_tag_marks_decoded_placeholder_as_deferred() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, true, false, false),
+            strip_buffer_tag_for_hdr_preview(false, true, false),
             StripPreviewBufferTag::SdrDeferredPlaceholder
         );
     }
 
     #[test]
-    fn strip_buffer_tag_uses_preload_fallback_for_bootstrap_before_float_readback() {
+    fn strip_buffer_tag_uses_preload_fallback_for_real_sdr_strip_before_float_readback() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, false, false, false),
+            strip_buffer_tag_for_hdr_preview(false, false, false),
             StripPreviewBufferTag::PreloadSdrFallback
         );
     }
@@ -857,7 +855,7 @@ mod tests {
     #[test]
     fn strip_buffer_tag_uses_hdr_tone_mapped_when_float_pixels_ready() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(true, false, false, false),
+            strip_buffer_tag_for_hdr_preview(true, false, false),
             StripPreviewBufferTag::HdrToneMappedStrip
         );
     }

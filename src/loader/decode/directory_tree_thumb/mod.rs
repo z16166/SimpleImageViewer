@@ -269,16 +269,29 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             mmap.as_ref().map(|data| data.as_ref()),
             max_side,
         ) {
-            return fast.map(|result| {
-                log_strip_decode_path(
-                    path,
-                    "iso_gain_map_fast",
-                    result.logical_size,
-                    result.preview.width,
-                    result.preview.height,
-                );
-                DirectoryTreeThumbDecode::new(result.preview, result.logical_size, None, false)
-            });
+            match fast {
+                Ok(result) => {
+                    log_strip_decode_path(
+                        path,
+                        "iso_gain_map_fast",
+                        result.logical_size,
+                        result.preview.width,
+                        result.preview.height,
+                    );
+                    return Ok(DirectoryTreeThumbDecode::new(
+                        result.preview,
+                        result.logical_size,
+                        None,
+                        false,
+                    ));
+                }
+                Err(err) => {
+                    log::debug!(
+                        "[DirectoryTree] ISO gain-map strip fast path failed for {:?}: {err}; falling back to regular decode",
+                        path.file_name().unwrap_or_default()
+                    );
+                }
+            }
         }
     } else if gain_map_container {
         #[cfg(feature = "preload-debug")]
@@ -894,5 +907,36 @@ mod tests {
         .expect("PNG strip without defer");
         assert_eq!((ok.preview.width, ok.preview.height), (1, 1));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// libavif cannot decode some libavif test vectors; strip cold path must fall back to WIC.
+    #[cfg(all(feature = "avif-native", target_os = "windows"))]
+    #[test]
+    fn avif_strip_falls_back_when_libavif_primary_scaled_fails() {
+        let base = std::path::Path::new(r"F:\HDR\libavif\tests\data");
+        for name in [
+            "clap_irot_imir_non_essential.avif",
+            "color_grid_alpha_grid_tile_shared_in_dimg.avif",
+        ] {
+            let path = base.join(name);
+            if !path.is_file() {
+                eprintln!("skip missing {}", path.display());
+                continue;
+            }
+            let strip = super::generate_directory_tree_thumb_decode_from_path(
+                &path,
+                128,
+                super::DirectoryTreeThumbDecodeOptions::default(),
+            )
+            .unwrap_or_else(|err| panic!("strip decode for {name}: {err}"));
+            assert!(
+                strip.preview.width > 0 && strip.preview.height > 0,
+                "{name}: expected non-empty strip preview"
+            );
+            assert!(
+                !strip.preview.is_sdr_deferred_placeholder(),
+                "{name}: strip must not be deferred placeholder"
+            );
+        }
     }
 }

@@ -477,7 +477,6 @@ impl ImageViewerApp {
             } else {
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
-                    sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
                     strip_preview.is_sdr_deferred_placeholder(),
                     false,
                 )

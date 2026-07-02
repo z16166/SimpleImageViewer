@@ -149,10 +149,8 @@ impl ImageViewerApp {
         drop(list);
 
         let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
-        let fallback_is_deferred_placeholder = fallback.is_sdr_deferred_placeholder();
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
-            fallback_is_deferred_placeholder,
             false,
             false,
         );
@@ -214,7 +212,6 @@ impl ImageViewerApp {
             let buffer_tag =
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     hdr_has_float_pixels,
-                    fallback_is_deferred_placeholder,
                     decoded.is_sdr_deferred_placeholder(),
                     false,
                 );

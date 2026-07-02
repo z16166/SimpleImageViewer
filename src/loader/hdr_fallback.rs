@@ -301,7 +301,10 @@ fn static_hdr_plane_preload_needs_upload(has_sdr_fallback: bool, hdr_target_capa
     }
 }
 
-/// True when the loader attached a black SDR placeholder instead of a tone-mapped fallback.
+/// True when the loader attached a black SDR placeholder instead of display-ready fallback pixels.
+///
+/// Embedded SDR master loads (HEIF primary-only, ISO gain-map baseline, etc.) ship real SDR bytes in
+/// the fallback even when `rgba_f32` is empty; those are not placeholders.
 pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
@@ -320,6 +323,9 @@ pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
         .and_then(|g| g.iso_deferred.as_ref())
         .is_some()
     {
+        return false;
+    }
+    if hdr_has_embedded_sdr_master_display(hdr) {
         return false;
     }
     hdr_float_plane_defers_sdr_tone_map_to_gpu(hdr) || hdr.rgba_f32.is_empty()
@@ -783,6 +789,7 @@ mod tests {
         };
 
         assert!(super::hdr_has_embedded_sdr_master_display(&hdr));
+        assert!(!hdr_sdr_fallback_is_placeholder_for_load(&hdr, 1.0));
         assert!(super::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
             &crate::settings::Settings::default(),
             crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,

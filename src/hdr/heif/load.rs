@@ -34,12 +34,11 @@ use super::HeifHdrDecodeDiag;
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
     bytes: &[u8],
-    path: &Path,
+    _path: &Path,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
     use super::embedded_sdr::build_heif_embedded_sdr_master_hdr;
     use super::thumbnail::decode_heif_primary_sdr_from_bytes;
-    use crate::loader::apply_exif_orientation_to_hdr_pair;
 
     #[cfg(feature = "preload-debug")]
     let total_start = std::time::Instant::now();
@@ -48,7 +47,6 @@ pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
 
     let (decoded, logical) = decode_heif_primary_sdr_from_bytes(bytes)?;
     let hdr = build_heif_embedded_sdr_master_hdr(bytes, logical)?;
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, decoded);
 
     #[cfg(feature = "preload-debug")]
     {
@@ -60,7 +58,7 @@ pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
         let path_label = diag
             .path
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+            .unwrap_or_else(|| _path.display().to_string());
         crate::preload_debug!(
             "[PreloadDebug][HEIF] embedded_sdr_primary total_ms={total_ms} idx={idx} path={path_label} size={}x{}",
             hdr.width,
@@ -70,7 +68,7 @@ pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
 
     Ok(crate::loader::ImageData::Hdr {
         hdr: Box::new(hdr),
-        fallback,
+        fallback: decoded,
     })
 }
 

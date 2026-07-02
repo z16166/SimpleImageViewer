@@ -138,25 +138,6 @@ impl ImageViewerApp {
         placeholder
     }
 
-    /// Predicate version of [`strip_fallback_for_hdr_cache_sync`] — only determines whether
-    /// the fallback would be a deferred placeholder, without constructing a [`DecodedImage`].
-    fn strip_fallback_is_deferred_placeholder(
-        &self,
-        index: usize,
-        hdr: &crate::hdr::types::HdrImageBuffer,
-    ) -> bool {
-        if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
-            return false;
-        }
-        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
-            return decoded.is_sdr_deferred_placeholder();
-        }
-        if let Some(preview) = crate::loader::hdr_raw_gpu_bootstrap_fallback_decoded(hdr) {
-            return preview.is_sdr_deferred_placeholder();
-        }
-        true
-    }
-
     pub(super) fn strip_needs_hdr_cache_sync_for_hdr(
         &self,
         index: usize,
@@ -178,7 +159,6 @@ impl ImageViewerApp {
         // ISO-deferred empty-float entries use the baseline sync path (early return above).
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
-            self.strip_fallback_is_deferred_placeholder(index, hdr),
             false,
             false,
         );

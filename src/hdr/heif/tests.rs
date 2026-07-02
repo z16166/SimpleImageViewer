@@ -460,3 +460,19 @@ fn embedded_sdr_primary_load_gate_requires_sdr_output_and_setting() {
     assert!(!heif_should_use_embedded_sdr_primary_load(false, 1.0));
     assert!(!heif_should_use_embedded_sdr_primary_load(true, 4.0));
 }
+
+#[cfg(feature = "heif-native")]
+#[test]
+#[ignore = "local corpus: F:\\HDR\\heif\\2013\\IMG_2603.HEIC"]
+fn heif_display_orientation_prefers_irot_when_exif_normal() {
+    use std::path::Path;
+
+    let path = Path::new(r"F:\HDR\heif\2013\IMG_2603.HEIC");
+    let manual =
+        crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path).expect("irot");
+    assert!(
+        manual > 1,
+        "Apple HEIC corpus should expose non-normal irot/imir geometry"
+    );
+    assert_eq!(crate::metadata_utils::get_exif_orientation(path), manual);
+}
