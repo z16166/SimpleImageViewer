@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::constants::RGBA_CHANNELS;
-use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::types::{
     DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
 };
@@ -98,15 +97,11 @@ impl MemoryImageSource {
 
 pub(crate) struct HdrSdrTiledFallbackSource {
     source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-    tone_map: HdrToneMapSettings,
 }
 
 impl HdrSdrTiledFallbackSource {
-    pub(crate) fn new(
-        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-        tone_map: HdrToneMapSettings,
-    ) -> Self {
-        Self { source, tone_map }
+    pub(crate) fn new(source: Arc<dyn crate::hdr::tiled::HdrTiledSource>) -> Self {
+        Self { source }
     }
 }
 
@@ -124,26 +119,12 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let pixels = self
-            .source
-            .extract_tile_rgba32f_arc(x, y, w, h)
-            .and_then(|tile| {
-                super::hdr_to_sdr_with_user_tone(
-                    &crate::hdr::types::HdrImageBuffer {
-                        width: tile.width,
-                        height: tile.height,
-                        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
-                        color_space: tile.color_space,
-                        metadata: tile.metadata.clone(),
-                        rgba_f32: Arc::clone(&tile.rgba_f32),
-                    },
-                    &self.tone_map,
-                )
-            })
-            .unwrap_or_else(|err| {
-                log::warn!("[Loader] HDR SDR tile fallback failed: {err}");
-                vec![0; w as usize * h as usize * 4]
-            });
+        let _ = (x, y, self);
+        let byte_len = w as usize * h as usize * 4;
+        let mut pixels = vec![0_u8; byte_len];
+        for px in pixels.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
         Arc::new(pixels)
     }
 

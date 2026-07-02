@@ -651,6 +651,26 @@ fn jxl_wrap_decode_output(image: ImageData, animation_remainder: bool) -> JxlDec
 }
 
 #[cfg(feature = "jpegxl")]
+fn jxl_animation_frame_needs_gpu_tone_map(
+    buf: &[f32],
+    color_space: crate::hdr::types::HdrColorSpace,
+    metadata: &HdrImageMetadata,
+) -> bool {
+    jxl_sdr_grade_fallback_rgba8(buf, color_space, metadata).is_none()
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_animation_frames_need_gpu_tone_map(
+    captured_frames: &[(Vec<f32>, u32)],
+    metadata: &HdrImageMetadata,
+) -> bool {
+    let color_space = metadata.color_space_hint();
+    captured_frames
+        .iter()
+        .any(|(buf, _)| jxl_animation_frame_needs_gpu_tone_map(buf, color_space, metadata))
+}
+
+#[cfg(feature = "jpegxl")]
 fn jxl_bootstrap_first_animation_frame(
     captured_frames: Vec<(Vec<f32>, u32)>,
     info: &libjxl_sys::JxlBasicInfo,
@@ -664,7 +684,8 @@ fn jxl_bootstrap_first_animation_frame(
     jxl_tag_display_referred_when_sdr_grade(&mut meta_base);
     let use_hdr_animated = jhgm_box.is_some()
         || jxl_animation_frames_need_hdr_plane(&captured_frames, &meta_base)
-        || !crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity);
+        || !crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity)
+        || jxl_animation_frames_need_gpu_tone_map(&captured_frames, &meta_base);
     if use_hdr_animated {
         let image = jxl_build_hdr_animated_image_data(
             captured_frames,
@@ -683,28 +704,10 @@ fn jxl_bootstrap_first_animation_frame(
         .ok_or("JPEG XL bootstrap animation missing first frame")?;
     let frame_metadata = meta_base.clone();
     let color_space = frame_metadata.color_space_hint();
-    let pixels = if let Some(px) = jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata)
-    {
-        px
-    } else {
-        let hdr = HdrImageBuffer {
-            width: info.xsize,
-            height: info.ysize,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space,
-            metadata: frame_metadata,
-            rgba_f32: Arc::new(buf),
-        };
-        if crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity) {
-            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                &hdr,
-                tone_map.exposure_ev,
-                tone_map,
-            )?
-        } else {
-            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
-        }
-    };
+    let pixels =
+        jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata).ok_or_else(|| {
+            "JPEG XL bootstrap animation expected display-referred SDR grade pixels".to_string()
+        })?;
     let delay_ms = jxl_frame_ticks_to_delay_ms(info, ticks);
     Ok(jxl_wrap_decode_output(
         ImageData::Animated(vec![AnimationFrame::new(
@@ -867,7 +870,8 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         || jxl_animation_frames_need_hdr_plane(&captured_frames, &meta_base)
                         || !crate::loader::hdr_display_requests_sdr_preview(
                             display_hdr_target_capacity,
-                        );
+                        )
+                        || jxl_animation_frames_need_gpu_tone_map(&captured_frames, &meta_base);
                     if use_hdr_animated {
                         return Ok(jxl_wrap_decode_output(
                             jxl_build_hdr_animated_image_data(
@@ -886,33 +890,12 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     for (buf, ticks) in captured_frames {
                         let frame_metadata = meta_base.clone();
                         let color_space = frame_metadata.color_space_hint();
-                        let pixels = if let Some(px) =
+                        let pixels =
                             jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata)
-                        {
-                            px
-                        } else {
-                            let hdr = HdrImageBuffer {
-                                width: info.xsize,
-                                height: info.ysize,
-                                format: HdrPixelFormat::Rgba32Float,
-                                color_space,
-                                metadata: frame_metadata,
-                                rgba_f32: Arc::new(buf),
-                            };
-                            if crate::loader::hdr_display_requests_sdr_preview(
-                                display_hdr_target_capacity,
-                            ) {
-                                crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                                    &hdr,
-                                    tone_map.exposure_ev,
-                                    &tone_map,
-                                )?
-                            } else {
-                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
-                                    hdr.width, hdr.height,
-                                )?
-                            }
-                        };
+                                .ok_or_else(|| {
+                                    "JPEG XL animation expected display-referred SDR grade pixels"
+                                        .to_string()
+                                })?;
                         let delay_ms = jxl_frame_ticks_to_delay_ms(&info, ticks);
                         animation.push(AnimationFrame::new(
                             info.xsize,

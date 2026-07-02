@@ -184,10 +184,8 @@ impl ImageViewerApp {
 /// 1. **`has_hdr_plane && !has_sdr_fallback`** — HDR plane exists but CPU SDR fallback is
 ///    missing (`Flowers.exr`-style tiling on SDR; otherwise blank until tiles arrive).
 /// 2. **`has_hdr_plane && has_hdr_target && output_mode == SdrToneMapped`** — an HDR float
-///    buffer is decoded but [`HdrRenderOutputMode::SdrToneMapped`] means we composite into an
-///    SDR swap chain: the cached SDR texture is baked from CPU tone-map settings at load time
-///    and **`set_hdr_tone_map_settings` does not re-upload it**. Routing through the HDR plane
-///    keeps sliders / EV responsive on ordinary monitors instead of silently no-op-ing.
+///    buffer on an SDR panel: tone-map runs in WGSL on the HDR plane so exposure / nits sliders
+///    stay live (the cached SDR texture is a black placeholder, not CPU tone-mapped pixels).
 ///
 /// Ordinary 8‑bit albums stay on `PlaneBackendKind::Sdr` because `has_hdr_plane` is false.
 pub(crate) fn select_render_backend(

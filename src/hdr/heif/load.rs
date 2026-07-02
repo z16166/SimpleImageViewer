@@ -94,22 +94,13 @@ pub(crate) fn load_heif_hdr(
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
     let hdr = decode_heif_hdr(path, hdr_target_capacity, diag)?;
-    let fallback = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        crate::loader::DecodedImage::new(
-            hdr.width,
-            hdr.height,
-            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                &hdr,
-                tone_map.exposure_ev,
-                &tone_map,
-            )?,
-        )
-    } else {
-        crate::loader::DecodedImage::new_sdr_deferred_placeholder(
-            hdr.width,
-            hdr.height,
-            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?,
-        )
+    let fallback = {
+        let fb = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            &hdr,
+            hdr_target_capacity,
+            &tone_map,
+        )?;
+        crate::loader::DecodedImage::from_hdr_sdr_fallback(hdr.width, hdr.height, fb)
     };
 
     Ok(crate::loader::ImageData::Hdr {

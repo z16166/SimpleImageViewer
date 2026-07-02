@@ -467,15 +467,6 @@ impl ImageViewerApp {
                 pixels: fallback.arc_pixels(),
             });
         }
-        if sdr_fallback_is_placeholder
-            && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
-            && !self.hdr_in_flight_fallback_refinements.contains(&idx)
-        {
-            let source_key = source_key_for_path(&self.image_files[idx]);
-            self.hdr_in_flight_fallback_refinements.insert(idx);
-            self.loader
-                .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
-        }
         if self.should_eager_cache_install_hdr_strip(idx)
             && let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
                 &hdr,

@@ -90,10 +90,8 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-    let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
-        Arc::clone(&hdr),
-        hdr_tone_map,
-    ));
+    let fallback: Arc<dyn TiledImageSource> =
+        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
     log::info!(
         "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
         hdr.width(),
@@ -134,7 +132,7 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
 
 pub(crate) fn try_load_disk_backed_radiance_hdr(
     path: &Path,
-    hdr_tone_map: HdrToneMapSettings,
+    _hdr_tone_map: HdrToneMapSettings,
 ) -> Result<Option<ImageData>, String> {
     let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open(path)?;
     let pixel_count = source.width() as u64 * source.height() as u64;
@@ -145,10 +143,8 @@ pub(crate) fn try_load_disk_backed_radiance_hdr(
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-    let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
-        Arc::clone(&hdr),
-        hdr_tone_map,
-    ));
+    let fallback: Arc<dyn TiledImageSource> =
+        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
     log::info!(
         "[Loader] Radiance HDR {}x{} routed to disk-backed HDR tiles.",
         hdr.width(),

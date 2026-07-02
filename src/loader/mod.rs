@@ -65,8 +65,7 @@ pub(crate) use hdr_fallback::{
     hdr_has_iso_deferred_gain_map, hdr_is_gain_map_sdr_display_sensitive,
     hdr_raw_gpu_bootstrap_fallback_decoded, hdr_raw_gpu_demosaic_pending,
     hdr_raw_gpu_refinement_is_pointless, hdr_sdr_fallback_is_placeholder_for_load,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, hdr_to_sdr_with_user_tone,
-    hdr_tone_map_settings_for_directory_tree_strip, libraw_scene_linear_needs_eager_sdr_fallback,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder, hdr_tone_map_settings_for_directory_tree_strip,
     prefer_embedded_iso_gain_map_sdr_on_sdr_output, raw_gpu_source_has_bootstrap_preview,
     should_use_embedded_sdr_master_load, static_hdr_background_plane_upload_eligible,
 };

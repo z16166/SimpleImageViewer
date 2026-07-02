@@ -23,13 +23,12 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::{ImageLoadRequest, load_image_file};
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
-    DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle,
-    PreviewResult, RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
-    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
-    in_flight_profile_supersedes_load_result, source_key_for_path,
-    static_hdr_background_plane_upload_eligible,
+    DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
+    MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
+    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side,
+    in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
+    source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender};
@@ -1494,86 +1493,7 @@ impl ImageLoader {
         hdr: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
         source_key: u64,
     ) {
-        let adoptee_profile = self
-            .in_flight_profile(index)
-            .unwrap_or_else(decode_profile_stub);
-        let tx = self.tx.clone();
-        let loading = std::sync::Arc::clone(&self.loading);
-        let tone = self.hdr_tone_map_settings_snapshot();
-        let fallback_profile = adoptee_profile.clone();
-
-        REFINEMENT_POOL.spawn(move || {
-            struct RefinementGuard {
-                tx: super::types::LoaderOutputSender,
-                index: usize,
-                decode_profile: DecodeProfile,
-                source_key: u64,
-                sent: bool,
-            }
-            impl Drop for RefinementGuard {
-                fn drop(&mut self) {
-                    if !self.sent {
-                        let _ = self.tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
-                            index: self.index,
-                            decode_profile: self.decode_profile.clone(),
-                            source_key: self.source_key,
-                            fallback: None,
-                        }));
-                    }
-                }
-            }
-
-            let mut guard = RefinementGuard {
-                tx: tx.clone(),
-                index,
-                decode_profile: fallback_profile,
-                source_key,
-                sent: false,
-            };
-
-            if Self::hq_refinement_superseded(&loading, index, &guard.decode_profile) {
-                return;
-            }
-            #[cfg(target_os = "windows")]
-            let _com = crate::wic::ComGuard::new();
-
-            let started_at = std::time::Instant::now();
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(&hdr, &tone)
-            }));
-            match r {
-                Ok(Ok(pixels)) => {
-                    if Self::hq_refinement_superseded(&loading, index, &guard.decode_profile) {
-                        log::debug!(
-                            "[Loader] HDR SDR fallback refinement discarded (stale): index={index}"
-                        );
-                        return;
-                    }
-                    log::debug!(
-                        "[Loader] HDR SDR fallback refined after placeholder: index={index} elapsed={:?}",
-                        started_at.elapsed()
-                    );
-                    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
-                    guard.sent = true;
-                    let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
-                        index,
-                        decode_profile: guard.decode_profile.clone(),
-                        source_key,
-                        fallback: Some(fallback),
-                    }));
-                }
-                Ok(Err(e)) => {
-                    log::warn!(
-                        "[Loader] HDR SDR fallback refinement failed: index={index}: {e}"
-                    );
-                }
-                Err(payload) => {
-                    log::error!(
-                        "[Loader] HDR SDR fallback refinement panicked: index={index}: {:?}",
-                        payload
-                    );
-                }
-            }
-        });
+        let _ = (index, hdr, source_key);
+        // Full-frame SDR tone-map is performed on the GPU HDR plane shader; no CPU refinement.
     }
 }

@@ -16,9 +16,7 @@
 
 use std::sync::Arc;
 
-use crate::hdr::types::{
-    DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrReference, HdrToneMapSettings, HdrTransferFunction,
-};
+use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrToneMapSettings};
 use crate::loader::DecodedImage;
 
 /// True when the HDR buffer carries a deferred ISO gain map (Ultra HDR / AVIF JPEG-R, etc.).
@@ -155,7 +153,7 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
 }
 
 /// Display-referred peak headroom used by the loader: values `<= 1.0` (plus epsilon) mean SDR or
-/// SDR tone-mapped output where an eager full-frame SDR fallback is appropriate.
+/// SDR tone-mapped output where the HDR float plane is tone-mapped on GPU at display time.
 #[inline]
 pub(crate) fn hdr_display_requests_sdr_preview(hdr_target_capacity: f32) -> bool {
     const MAX_SDR: f32 = 1.0;
@@ -193,11 +191,13 @@ pub(crate) fn cheap_hdr_sdr_placeholder_rgba8(width: u32, height: u32) -> Result
     Ok(out)
 }
 
-pub(crate) fn libraw_scene_linear_needs_eager_sdr_fallback(hdr: &HdrImageBuffer) -> bool {
-    hdr.metadata.gain_map.is_none()
-        && hdr.metadata.raw_gpu_source.is_none()
-        && hdr.metadata.transfer_function == HdrTransferFunction::Linear
-        && hdr.metadata.reference == HdrReference::SceneLinear
+pub(crate) fn hdr_float_plane_defers_sdr_tone_map_to_gpu(hdr: &HdrImageBuffer) -> bool {
+    !hdr.rgba_f32.is_empty()
+        || hdr
+            .metadata
+            .gain_map
+            .as_ref()
+            .is_some_and(|g| g.apple_heic_deferred.is_some())
 }
 
 /// Embedded preview attached for GPU demosaic bootstrap (real pixels, not a black placeholder).
@@ -315,17 +315,12 @@ pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
 ) -> bool {
+    let _ = hdr_target_capacity;
     if raw_gpu_source_has_bootstrap_preview(hdr) {
         return false;
     }
     if hdr_raw_gpu_demosaic_pending(hdr) {
         return true;
-    }
-    if hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        return false;
-    }
-    if libraw_scene_linear_needs_eager_sdr_fallback(hdr) {
-        return false;
     }
     if hdr
         .metadata
@@ -336,13 +331,13 @@ pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     {
         return false;
     }
-    true
+    hdr_float_plane_defers_sdr_tone_map_to_gpu(hdr) || hdr.rgba_f32.is_empty()
 }
 
 pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr: &HdrImageBuffer,
-    hdr_target_capacity: f32,
-    tone: &HdrToneMapSettings,
+    _hdr_target_capacity: f32,
+    _tone: &HdrToneMapSettings,
 ) -> Result<HdrSdrFallbackRgba8, String> {
     if let Some(source) = hdr.metadata.raw_gpu_source.as_ref() {
         if let Some(preview) = source.bootstrap_preview.as_ref() {
@@ -372,19 +367,10 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
             });
         }
     }
-    if hdr_display_requests_sdr_preview(hdr_target_capacity)
-        || libraw_scene_linear_needs_eager_sdr_fallback(hdr)
-    {
-        Ok(HdrSdrFallbackRgba8 {
-            pixels: Arc::new(hdr_to_sdr_with_user_tone(hdr, tone)?),
-            is_deferred_placeholder: false,
-        })
-    } else {
-        Ok(HdrSdrFallbackRgba8 {
-            pixels: Arc::new(cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?),
-            is_deferred_placeholder: true,
-        })
-    }
+    Ok(HdrSdrFallbackRgba8 {
+        pixels: Arc::new(cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?),
+        is_deferred_placeholder: true,
+    })
 }
 
 #[cfg(test)]
@@ -623,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn libraw_scene_linear_load_is_not_sdr_placeholder_at_hdr_headroom() {
+    fn libraw_scene_linear_load_uses_gpu_tone_map_placeholder() {
         let metadata = crate::raw_processor::raw_scene_linear_metadata();
         let hdr = HdrImageBuffer {
             width: 1,
@@ -633,11 +619,12 @@ mod tests {
             metadata,
             rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
         };
-        assert!(!hdr_sdr_fallback_is_placeholder_for_load(&hdr, 4.0));
+        assert!(hdr_sdr_fallback_is_placeholder_for_load(&hdr, 4.0));
+        assert!(hdr_sdr_fallback_is_placeholder_for_load(&hdr, 1.0));
     }
 
     #[test]
-    fn sdr_fallback_tone_maps_libraw_scene_linear_instead_of_black_placeholder() {
+    fn sdr_fallback_defers_libraw_scene_linear_tone_map_to_gpu() {
         let metadata = crate::raw_processor::raw_scene_linear_metadata();
         let hdr = HdrImageBuffer {
             width: 1,
@@ -650,12 +637,8 @@ mod tests {
         let out =
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
                 .expect("fallback");
-        let px = out.pixels.as_slice();
-        assert!(
-            px[0] > 0 || px[1] > 0 || px[2] > 0,
-            "LibRaw scene-linear HDR must not use a black SDR placeholder at HDR headroom > 1"
-        );
-        assert!(!out.is_deferred_placeholder);
+        assert!(out.is_deferred_placeholder);
+        assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }
 
     #[test]
