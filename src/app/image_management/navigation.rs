@@ -116,6 +116,7 @@ impl ImageViewerApp {
         }
 
         self.sync_loader_hdr_callback_upload_snapshot();
+        self.cached_frame_hdr_render_path = None;
 
         let count = self.image_files.len();
         let sensitive: Vec<usize> = (0..count)

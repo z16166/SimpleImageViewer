@@ -1123,6 +1123,91 @@ fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() 
 }
 
 #[test]
+fn hdr_gain_map_sdr_display_change_evicts_heif_tone_map_primary_cache() {
+    use crate::hdr::types::{
+        HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+    };
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+
+    let mut metadata = HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "HEIF",
+        target_hdr_capacity: None,
+        diagnostic: "AppleHdrGainMap".to_string(),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4032,
+        height: 3024,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+    });
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(!app.hdr_image_cache.contains_key(&0));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
+fn hdr_gain_map_sdr_display_change_evicts_apple_heic_tone_map_cache() {
+    use crate::hdr::types::{
+        AppleHeicGainMapGpuSource, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
+        HdrPixelFormat,
+    };
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+
+    let mut metadata = HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "HEIF",
+        target_hdr_capacity: Some(2.0),
+        diagnostic: String::new(),
+        capped_display_referred: false,
+        apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            headroom_span: 1.0,
+            stops: 1.0,
+        }),
+        iso_deferred: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4032,
+        height: 3024,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+    });
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(!app.hdr_image_cache.contains_key(&0));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
 fn capture_transition_prefers_sdr_texture_for_embedded_iso_gain_map() {
     use crate::hdr::types::{HdrGainMapMetadata, IsoGainMapGpuSource};
     use crate::settings::HdrGainMapSdrDisplayMode;
@@ -1246,15 +1331,15 @@ fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
     let mut metadata = crate::hdr::types::HdrImageMetadata::default();
     metadata.gain_map = Some(HdrGainMapMetadata {
         source: "AVIF",
-        target_hdr_capacity: Some(4.0),
+        target_hdr_capacity: None,
         diagnostic: String::new(),
         capped_display_referred: false,
         apple_heic_deferred: None,
         iso_deferred: Some(IsoGainMapGpuSource {
             sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
+            gain_rgba: Arc::new(Vec::new()),
+            gain_width: 0,
+            gain_height: 0,
             metadata: crate::hdr::gain_map::GainMapMetadata {
                 gain_map_min: [0.0; 3],
                 gain_map_max: [1.0; 3],

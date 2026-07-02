@@ -30,7 +30,31 @@ pub(crate) fn hdr_has_iso_deferred_gain_map(hdr: &HdrImageBuffer) -> bool {
 
 /// True when cached HDR state depends on [`crate::settings::HdrGainMapSdrDisplayMode`].
 pub(crate) fn hdr_is_gain_map_sdr_display_sensitive(hdr: &HdrImageBuffer) -> bool {
-    hdr_has_embedded_sdr_master_display(hdr)
+    if hdr_has_embedded_sdr_master_display(hdr) {
+        return true;
+    }
+    let Some(gain_map) = hdr.metadata.gain_map.as_ref() else {
+        return false;
+    };
+    if gain_map.apple_heic_deferred.is_some() {
+        return true;
+    }
+    if gain_map
+        .iso_deferred
+        .as_ref()
+        .is_some_and(|iso| !iso_deferred_is_embedded_sdr_master_only(iso))
+    {
+        return true;
+    }
+    // HEIC tone-map on SDR: full primary float plane + auxiliary gain-map metadata, but Apple
+    // compose skipped at capacity 1.0 (see log: decode_heif_hdr_bytes without apple_heic_deferred).
+    !hdr.rgba_f32.is_empty()
+}
+
+/// ISO deferred planes from [`crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only`]
+/// carry no gain-map texels; full HDR decode + compose uses non-zero gain dimensions.
+fn iso_deferred_is_embedded_sdr_master_only(iso: &crate::hdr::types::IsoGainMapGpuSource) -> bool {
+    iso.gain_width == 0 && iso.gain_height == 0 && iso.gain_rgba.is_empty()
 }
 
 /// True when the HDR buffer represents gain-map HDR shown via embedded SDR master (no float plane).
@@ -39,7 +63,13 @@ pub(crate) fn hdr_has_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool 
         return false;
     }
     hdr.metadata.gain_map.as_ref().is_some_and(|gain_map| {
-        hdr_has_iso_deferred_gain_map(hdr) || gain_map.is_heif_embedded_sdr_primary_only()
+        if gain_map.is_heif_embedded_sdr_primary_only() {
+            return true;
+        }
+        gain_map
+            .iso_deferred
+            .as_ref()
+            .is_some_and(iso_deferred_is_embedded_sdr_master_only)
     })
 }
 
@@ -734,9 +764,9 @@ mod tests {
             apple_heic_deferred: None,
             iso_deferred: Some(crate::hdr::types::IsoGainMapGpuSource {
                 sdr_rgba: Arc::new(vec![128; 4]),
-                gain_rgba: Arc::new(vec![0; 4]),
-                gain_width: 1,
-                gain_height: 1,
+                gain_rgba: Arc::new(Vec::new()),
+                gain_width: 0,
+                gain_height: 0,
                 metadata: crate::hdr::gain_map::GainMapMetadata {
                     gain_map_min: [0.0; 3],
                     gain_map_max: [1.0; 3],
@@ -764,6 +794,99 @@ mod tests {
         assert!(super::static_hdr_background_plane_upload_eligible(
             &hdr, 1.0, true, false
         ));
+    }
+
+    #[test]
+    fn full_iso_deferred_is_not_embedded_sdr_master_display() {
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(crate::hdr::types::IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(vec![128; 4]),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+
+        assert!(!super::hdr_has_embedded_sdr_master_display(&hdr));
+        assert!(super::hdr_is_gain_map_sdr_display_sensitive(&hdr));
+    }
+
+    #[test]
+    fn heif_tone_mapped_primary_float_is_gain_map_sdr_display_sensitive() {
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: None,
+            diagnostic: "#63 urn:com:apple:photo:2020:aux:hdrgainmap (AppleHdrGainMap)".to_string(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        });
+        let hdr = HdrImageBuffer {
+            width: 4032,
+            height: 3024,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+        };
+
+        assert!(!super::hdr_has_embedded_sdr_master_display(&hdr));
+        assert!(super::hdr_is_gain_map_sdr_display_sensitive(&hdr));
+    }
+
+    #[test]
+    fn apple_heic_deferred_is_gain_map_sdr_display_sensitive() {
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: Some(2.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: Some(crate::hdr::types::AppleHeicGainMapGpuSource {
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                headroom_span: 1.0,
+                stops: 1.0,
+            }),
+            iso_deferred: None,
+        });
+        let hdr = HdrImageBuffer {
+            width: 4032,
+            height: 3024,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+        };
+
+        assert!(!super::hdr_has_embedded_sdr_master_display(&hdr));
+        assert!(super::hdr_is_gain_map_sdr_display_sensitive(&hdr));
     }
 
     #[test]
