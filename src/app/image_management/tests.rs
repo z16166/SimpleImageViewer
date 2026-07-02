@@ -792,6 +792,52 @@ fn neighbor_work_defers_while_current_main_in_flight() {
 }
 
 #[test]
+fn strip_skip_slow_allows_neighbors_when_current_main_loader_failed() {
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    app.image_files = vec![
+        PathBuf::from("a.heif"),
+        PathBuf::from("b.heif"),
+        PathBuf::from("c.heif"),
+    ];
+    app.current_index = 0;
+    app.main_loader_failed_indices.insert(0);
+
+    assert!(
+        !app.strip_cold_skip_slow_embedded_sdr_primary(1),
+        "neighbor strip should fall back to slow path when current load failed"
+    );
+    assert!(
+        !app.strip_cold_skip_slow_embedded_sdr_primary(2),
+        "second neighbor strip should fall back to slow path when current load failed"
+    );
+}
+
+#[test]
+fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    app.image_files = vec![
+        PathBuf::from("a.heif"),
+        PathBuf::from("b.heif"),
+    ];
+    app.current_index = 0;
+    app.loader.request_load(
+        0,
+        app.image_files[0].clone(),
+        app.settings.raw_high_quality,
+        app.settings.raw_demosaic_mode,
+    );
+
+    assert!(
+        app.strip_cold_skip_slow_embedded_sdr_primary(1),
+        "neighbor strip should defer while current main decode is in flight"
+    );
+}
+
+#[test]
 fn neighbor_image_install_yields_until_current_ready() {
     assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
     assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));
@@ -1032,6 +1078,46 @@ fn current_preview_updates_are_not_deferred_during_transition() {
     assert!(!should_defer_preview_update_during_transition(true, true));
     assert!(should_defer_preview_update_during_transition(false, true));
     assert!(!should_defer_preview_update_during_transition(false, false));
+}
+
+#[test]
+fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() {
+    use crate::hdr::types::{
+        HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer,
+        HdrImageMetadata, HdrPixelFormat,
+    };
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+
+    let mut metadata = HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+        target_hdr_capacity: None,
+        diagnostic: String::new(),
+        capped_display_referred: true,
+        apple_heic_deferred: None,
+        iso_deferred: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4032,
+        height: 3024,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(!app.hdr_image_cache.contains_key(&0));
+    assert!(app.loader.is_loading(0));
 }
 
 #[test]
@@ -1787,6 +1873,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         hdr_raw_gpu_demosaic_baked_indices: HashSet::new(),
         hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
+        main_loader_failed_indices: HashSet::new(),
         raw_gpu_demosaic_await_hdr_present: false,
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),

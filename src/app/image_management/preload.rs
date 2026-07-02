@@ -63,6 +63,9 @@ impl ImageViewerApp {
         if (current_has_asset && !current_missing_hdr_plane) || current_is_loading {
             return;
         }
+        if self.main_loader_failed_indices.contains(&cur) {
+            return;
+        }
 
         let path = self.image_files[cur].clone();
         self.loader.request_load(
@@ -126,8 +129,10 @@ impl ImageViewerApp {
             &self.hdr_image_cache,
             &self.hdr_tiled_source_cache,
         );
-        if (!current_has_asset && !current_is_loading)
-            || (current_missing_hdr_plane && !current_is_loading)
+        if !current_has_asset
+            && !current_is_loading
+            && !self.main_loader_failed_indices.contains(&cur)
+            || current_missing_hdr_plane && !current_is_loading
         {
             if current_missing_hdr_plane && current_has_asset {
                 preload_debug!(

@@ -109,7 +109,7 @@ pub(super) fn draw_viewing_tab(
                 .response
                 .on_hover_text(t!("hint.hdr_gain_map_sdr_display"));
                 if old_mode != app.settings.hdr_gain_map_sdr_display {
-                    app.reload_current();
+                    app.reload_after_hdr_gain_map_sdr_display_change();
                     app.queue_save();
                 }
             });

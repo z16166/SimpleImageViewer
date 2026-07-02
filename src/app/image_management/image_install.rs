@@ -805,9 +805,14 @@ impl ImageViewerApp {
             idx,
             path_str
         );
+        self.main_loader_failed_indices.insert(idx);
         if idx == self.current_index {
             self.error_message =
                 Some(t!("status.load_failed", path = path_str, err = error).to_string());
         }
+    }
+
+    pub(super) fn note_main_loader_install_success(&mut self, idx: usize) {
+        self.main_loader_failed_indices.remove(&idx);
     }
 }

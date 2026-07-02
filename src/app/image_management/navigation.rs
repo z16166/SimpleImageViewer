@@ -107,6 +107,76 @@ impl ImageViewerApp {
         source_size.map(|size| self.compute_plane_layout(size, screen_rect).dest)
     }
 
+    /// Drop gain-map HDR caches in the preload window and reload the current image after
+    /// [`crate::settings::HdrGainMapSdrDisplayMode`] changes. Unlike [`Self::reload_current`],
+    /// this applies to HEIF/AVIF/JPEG-R gain-map files, not only RAW.
+    pub(crate) fn reload_after_hdr_gain_map_sdr_display_change(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        self.sync_loader_hdr_callback_upload_snapshot();
+
+        let count = self.image_files.len();
+        let sensitive: Vec<usize> = (0..count)
+            .filter(|&idx| {
+                prefetch_window_contains(
+                    self.current_index,
+                    count,
+                    idx,
+                    self.prefetch_window_max_distance,
+                )
+            })
+            .filter(|&idx| {
+                self.hdr_image_cache.get(&idx).is_some_and(|hdr| {
+                    crate::loader::hdr_is_gain_map_sdr_display_sensitive(hdr.as_ref())
+                })
+            })
+            .collect();
+
+        if sensitive.is_empty() {
+            return;
+        }
+
+        log::info!(
+            "[HDR] hdr_gain_map_sdr_display -> {}; evicting {} gain-map cache(s) in preload window and reloading current idx={}",
+            self.settings.hdr_gain_map_sdr_display.label(),
+            sensitive.len(),
+            self.current_index
+        );
+
+        self.invalidate_decode_profile_epoch();
+        self.loader.cancel_all();
+
+        let current = self.current_index;
+        for idx in &sensitive {
+            self.texture_cache.remove(*idx);
+            self.prefetched_tiles.remove(idx);
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            self.remove_hdr_image_index(*idx);
+            if *idx == current {
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.animation_cache.remove(idx);
+                self.pending_anim_frames.remove(idx);
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
+                self.transition_start = None;
+                self.pending_transition_target = None;
+            }
+        }
+
+        self.loader.request_load(
+            current,
+            self.image_files[current].clone(),
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(current),
+        );
+        self.schedule_preloads(true);
+    }
+
     pub(crate) fn reload_current(&mut self) {
         if self.image_files.is_empty() {
             return;
@@ -200,6 +270,7 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
+        self.main_loader_failed_indices.remove(&target_index);
         self.canvas_display_timing.on_navigate();
         #[cfg(feature = "preload-debug")]
         {

@@ -31,6 +31,11 @@ pub(crate) fn hdr_has_iso_deferred_gain_map(hdr: &HdrImageBuffer) -> bool {
         .is_some()
 }
 
+/// True when cached HDR state depends on [`crate::settings::HdrGainMapSdrDisplayMode`].
+pub(crate) fn hdr_is_gain_map_sdr_display_sensitive(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata.gain_map.is_some()
+}
+
 /// True when the HDR buffer represents gain-map HDR shown via embedded SDR master (no float plane).
 pub(crate) fn hdr_has_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool {
     if !hdr.rgba_f32.is_empty() {

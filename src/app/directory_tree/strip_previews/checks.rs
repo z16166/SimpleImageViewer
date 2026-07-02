@@ -274,7 +274,36 @@ impl ImageViewerApp {
         {
             return true;
         }
-        self.strip_index_within_prefetch_window(index)
+        if !self.strip_index_within_prefetch_window(index) {
+            return false;
+        }
+        self.strip_prefetch_window_defers_to_main_loader(index)
+    }
+
+    /// True while the main loader is expected to decode this index soon (avoid duplicate strip slow path).
+    fn strip_prefetch_window_defers_to_main_loader(&self, index: usize) -> bool {
+        if !self.settings.preload {
+            return false;
+        }
+        let cur = self.current_index;
+        if self.main_loader_failed_indices.contains(&cur) {
+            return self.loader.is_loading(index);
+        }
+        if index == cur {
+            return !self.has_loaded_asset(cur) && self.loader.is_loading(cur);
+        }
+        if self.loader.is_loading(index) {
+            return true;
+        }
+        let current_has_asset = self.has_loaded_asset(cur);
+        let current_is_loading = self.loader.is_loading(cur);
+        if crate::app::image_management::should_defer_neighbor_work_for_current_main(
+            current_has_asset,
+            current_is_loading,
+        ) {
+            return true;
+        }
+        current_has_asset || current_is_loading
     }
 
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {

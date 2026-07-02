@@ -437,6 +437,8 @@ pub struct ImageViewerApp {
     /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
     pub(crate) hdr_register_prewarm_repush_counts: HashMap<usize, u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
+    /// Main-window loader gave up on these indices until the user navigates back or rescans.
+    pub(crate) main_loader_failed_indices: HashSet<usize>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:

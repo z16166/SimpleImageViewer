@@ -46,6 +46,7 @@ impl ImageViewerApp {
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
+        self.main_loader_failed_indices.clear();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.prefetched_tiles.clear();
@@ -110,6 +111,9 @@ impl ImageViewerApp {
         }
         if self.gpu_demosaic_failed_indices.remove(&from) {
             self.gpu_demosaic_failed_indices.insert(to);
+        }
+        if self.main_loader_failed_indices.remove(&from) {
+            self.main_loader_failed_indices.insert(to);
         }
         if self.hdr_in_flight_fallback_refinements.remove(&from) {
             self.hdr_in_flight_fallback_refinements.insert(to);
@@ -570,6 +574,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.hdr_raw_gpu_demosaic_baked_indices, old_to_new);
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
+        permute_usize_set(&mut self.main_loader_failed_indices, old_to_new);
         permute_usize_set(&mut self.hdr_in_flight_fallback_refinements, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
         permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
