@@ -125,10 +125,10 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
     decode_capacity: f32,
     try_embedded_sdr_master: bool,
 ) -> Result<crate::loader::ImageData, String> {
+    use super::embedded_sdr::try_avif_embedded_sdr_from_decoded_image;
     use crate::loader::{
         DecodedImage, apply_exif_orientation_to_hdr_pair, hdr_sdr_fallback_rgba8_or_placeholder,
     };
-    use super::embedded_sdr::try_avif_embedded_sdr_from_decoded_image;
 
     let image = read_avif_decoder_image(bytes)?;
     if try_embedded_sdr_master {

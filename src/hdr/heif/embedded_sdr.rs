@@ -62,7 +62,9 @@ pub(crate) fn build_heif_embedded_sdr_master_hdr_from_handle(
     logical: (u32, u32),
 ) -> Result<HdrImageBuffer, String> {
     let metadata = read_heif_opened_primary_metadata(handle);
-    Ok(heif_embedded_sdr_master_hdr_from_metadata(metadata, logical))
+    Ok(heif_embedded_sdr_master_hdr_from_metadata(
+        metadata, logical,
+    ))
 }
 
 #[cfg(feature = "heif-native")]

@@ -649,6 +649,7 @@ pub struct RefinementRequest {
     pub hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
     pub hdr_target_capacity: f32,
-    #[allow(dead_code)] // Snapshot at refine queue time; display tone comes from settings at render.
+    #[allow(dead_code)]
+    // Snapshot at refine queue time; display tone comes from settings at render.
     pub hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
 }

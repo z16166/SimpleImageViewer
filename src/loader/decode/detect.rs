@@ -335,11 +335,8 @@ mod tests {
     #[test]
     fn optional_mislabeled_png_jpeg_recovers_via_content_detection() {
         let candidates = [
-            std::env::var_os("SIV_MISLABELED_PNG_JPEG")
-                .map(std::path::PathBuf::from),
-            Some(std::path::PathBuf::from(
-                r"F:\win7\64MP_Raw\20250615.png",
-            )),
+            std::env::var_os("SIV_MISLABELED_PNG_JPEG").map(std::path::PathBuf::from),
+            Some(std::path::PathBuf::from(r"F:\win7\64MP_Raw\20250615.png")),
         ];
         let Some(path) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
             eprintln!("skip; set SIV_MISLABELED_PNG_JPEG to a JPEG file with a .png extension");
@@ -364,9 +361,7 @@ mod tests {
                     path.display()
                 );
             }
-            Err(err) => panic!(
-                "mislabeled PNG/JPEG should recover via content detection: {err}"
-            ),
+            Err(err) => panic!("mislabeled PNG/JPEG should recover via content detection: {err}"),
         }
     }
 

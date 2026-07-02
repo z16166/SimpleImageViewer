@@ -238,8 +238,8 @@ fn disk_backed_exr_probe_accepts_subsampled_yc_sample() {
         return;
     }
 
-    let image_data = try_load_disk_backed_exr_hdr(&path)
-        .expect("probe should load subsampled YC EXR");
+    let image_data =
+        try_load_disk_backed_exr_hdr(&path).expect("probe should load subsampled YC EXR");
 
     assert!(
         matches!(image_data, Some(ImageData::Hdr { .. })),
@@ -259,8 +259,7 @@ fn subsampled_exr_below_tile_threshold_routes_to_static_hdr() {
         return;
     };
 
-    let image_data = try_load_disk_backed_exr_hdr(&path)
-        .expect("probe should load MtTamNorth EXR");
+    let image_data = try_load_disk_backed_exr_hdr(&path).expect("probe should load MtTamNorth EXR");
 
     let Some(ImageData::Hdr { hdr, .. }) = image_data else {
         panic!("expected small subsampled EXR to route to static HDR image data");

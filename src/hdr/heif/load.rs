@@ -24,9 +24,9 @@ use super::thumbnail::{
 };
 
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
-use crate::loader::preview_aspect_matches_logical;
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
+use crate::loader::preview_aspect_matches_logical;
 #[cfg(feature = "heif-native")]
 use std::path::Path;
 
@@ -58,7 +58,9 @@ fn try_heif_embedded_sdr_primary_from_opened(
     handle: *const libheif_sys::heif_image_handle,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
     primary_metadata: &HdrImageMetadata,
-    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<'_>,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<
+        '_,
+    >,
 ) -> Result<(HdrImageBuffer, crate::loader::DecodedImage), HeifEmbeddedSdrFailure> {
     #[cfg(feature = "preload-debug")]
     let total_start = std::time::Instant::now();
@@ -278,13 +280,7 @@ pub(crate) fn load_heif_hdr_from_bytes(
     _tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    load_heif_with_optional_embedded_sdr_from_bytes(
-        bytes,
-        path,
-        hdr_target_capacity,
-        diag,
-        false,
-    )
+    load_heif_with_optional_embedded_sdr_from_bytes(bytes, path, hdr_target_capacity, diag, false)
 }
 
 #[cfg(feature = "heif-native")]
@@ -352,7 +348,9 @@ fn decode_heif_hdr_from_opened_primary(
     primary: &HeifPrimaryGuard,
     hdr_target_capacity: f32,
     source_label: &str,
-    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<'_>,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] diag: HeifHdrDecodeDiag<
+        '_,
+    >,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
     metadata: HdrImageMetadata,
 ) -> Result<HdrImageBuffer, String> {

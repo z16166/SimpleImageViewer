@@ -444,8 +444,7 @@ mod tests {
             metadata,
             rgba_f32: Arc::new(Vec::new()),
         };
-        let out =
-            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
+        let out = hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert_eq!(out.pixels.as_slice(), iso_sdr);
         assert!(!out.is_deferred_placeholder);
     }
@@ -658,8 +657,7 @@ mod tests {
             metadata,
             rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
         };
-        let out =
-            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
+        let out = hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert!(out.is_deferred_placeholder);
         assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }
@@ -689,8 +687,7 @@ mod tests {
             metadata,
             rgba_f32: Arc::new(vec![10.0, 0.0, 0.0, 1.0]),
         };
-        let out =
-            hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
+        let out = hdr_sdr_fallback_rgba8_or_placeholder(&hdr).expect("fallback");
         assert!(out.is_deferred_placeholder);
         assert_eq!(out.pixels.as_slice(), [0, 0, 0, 255]);
     }

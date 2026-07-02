@@ -81,8 +81,7 @@ pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageDa
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        return exr_tiled_source_to_static_hdr(path, source)
-            .map(Some);
+        return exr_tiled_source_to_static_hdr(path, source).map(Some);
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
@@ -209,8 +208,7 @@ pub(crate) fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String
 }
 
 pub(crate) fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
-    if let Some(image_data) = try_load_disk_backed_exr_hdr(path)?
-    {
+    if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
         return Ok(image_data);
     }
 

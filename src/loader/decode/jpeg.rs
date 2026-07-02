@@ -109,7 +109,10 @@ pub(crate) fn load_jpeg_from_mapped(
                     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
                     if orientation > 1 {
                         let oriented = crate::libtiff_loader::apply_orientation_buffer(
-                            pixels, w, h, orientation,
+                            pixels,
+                            w,
+                            h,
+                            orientation,
                         );
                         w = oriented.0;
                         h = oriented.1;

@@ -26,15 +26,14 @@ mod tests;
 
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use decode::decode_jxl_bytes_to_image_data;
-#[cfg(feature = "jpegxl")]
-pub(crate) use decode::{
-    decode_jxl_strip_iso_gain_map_baseline,
-    load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
-};
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use decode::{
     decode_jxl_hdr_bytes, jxl_find_black_extra_channel_index, jxl_sdr_grade_fallback_rgba8,
     jxl_tag_display_referred_when_sdr_grade,
+};
+#[cfg(feature = "jpegxl")]
+pub(crate) use decode::{
+    decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use metadata::{

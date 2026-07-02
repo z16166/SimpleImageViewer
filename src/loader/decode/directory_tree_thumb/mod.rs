@@ -36,9 +36,7 @@ use crate::loader::{
 };
 
 use super::assemble::make_image_data;
-use super::detect::{
-    load_primary_with_detection_fallback,
-};
+use super::detect::load_primary_with_detection_fallback;
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
 use super::jpeg::load_jpeg_with_target_capacity;
@@ -188,9 +186,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     if super::modern::is_heif_path(path) {
         let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
         let heif_outcome = match mmap.as_ref() {
-            Some(data) => {
-                try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr)
-            }
+            Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
                 .ok()
                 .map(|owned| {

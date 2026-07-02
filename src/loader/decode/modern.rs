@@ -470,8 +470,8 @@ pub(crate) fn load_heif_hdr_aware(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
-        let mmap =
-            crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
+        let mmap = crate::mmap_util::map_file(path)
+            .map_err(|err| format!("Failed to read HEIF: {err}"))?;
         let try_embedded = crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,

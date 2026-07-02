@@ -694,7 +694,9 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
     use super::strip_baseline_error::{JxlStripBaselineError, classify_jxl_strip_baseline_failure};
 
     let tone_map = HdrToneMapSettings::default();
-    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true, false, false, false, None) {
+    match decode_jxl_bytes_to_image_data_impl(
+        bytes, 1.0, 1.0, tone_map, true, false, false, false, None,
+    ) {
         Ok(output) => match output.image {
             ImageData::Static(mut decoded) => {
                 Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
