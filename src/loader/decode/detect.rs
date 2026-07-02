@@ -333,6 +333,44 @@ mod tests {
     }
 
     #[test]
+    fn optional_mislabeled_png_jpeg_recovers_via_content_detection() {
+        let candidates = [
+            std::env::var_os("SIV_MISLABELED_PNG_JPEG")
+                .map(std::path::PathBuf::from),
+            Some(std::path::PathBuf::from(
+                r"F:\win7\64MP_Raw\20250615.png",
+            )),
+        ];
+        let Some(path) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
+            eprintln!("skip; set SIV_MISLABELED_PNG_JPEG to a JPEG file with a .png extension");
+            return;
+        };
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+        let capacity = tone.target_hdr_capacity();
+        let result = load_via_content_detection(&path, capacity, tone);
+        match result {
+            Ok(image) => {
+                let (w, h) = match image {
+                    crate::loader::ImageData::Static(ref img) => (img.width, img.height),
+                    crate::loader::ImageData::Tiled(ref src) => (src.width(), src.height()),
+                    other => panic!(
+                        "mislabeled PNG/JPEG should decode as static or tiled, got {:?}",
+                        std::mem::discriminant(&other)
+                    ),
+                };
+                assert!(
+                    w > 0 && h > 0,
+                    "{} should decode to non-zero dimensions",
+                    path.display()
+                );
+            }
+            Err(err) => panic!(
+                "mislabeled PNG/JPEG should recover via content detection: {err}"
+            ),
+        }
+    }
+
+    #[test]
     fn optional_mislabeled_quicktime_jpg_rejects_without_wic_decode() {
         let Some(path) = std::env::var_os("SIV_QT_JPG_SAMPLE").map(std::path::PathBuf::from) else {
             eprintln!("skip; set SIV_QT_JPG_SAMPLE");

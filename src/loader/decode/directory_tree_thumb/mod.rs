@@ -38,8 +38,7 @@ use crate::loader::{
 
 use super::assemble::make_image_data;
 use super::detect::{
-    load_primary_with_detection_fallback, load_via_content_detection,
-    primary_decode_failure_is_final,
+    load_primary_with_detection_fallback,
 };
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
@@ -632,18 +631,19 @@ fn open_image_data_for_directory_tree_thumb(
         }
     }
 
-    match ext.as_str() {
-        "png" => load_png(path, hdr_target_capacity, hdr_tone_map),
-        "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
-        "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-        _ => load_static(path, hdr_target_capacity, hdr_tone_map),
-    }
-    .or_else(|primary_err: String| {
-        if primary_decode_failure_is_final(&primary_err) {
-            return Err(primary_err);
-        }
-        load_via_content_detection(path, hdr_target_capacity, hdr_tone_map)
-    })
+    load_primary_with_detection_fallback(
+        path,
+        file_name.as_str(),
+        hdr_target_capacity,
+        hdr_tone_map,
+        high_quality,
+        || match ext.as_str() {
+            "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
+            "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
+            "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
+            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+        },
+    )
 }
 
 fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData, String> {

@@ -312,48 +312,49 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             }
         }
 
-        let result = match ext.as_str() {
-            "gif" => {
-                let outcome =
-                    load_gif_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)?;
-                if let Some(job) = outcome.remainder {
-                    spawn_raster_animation_remainder_decode(
-                        job,
-                        tx.clone(),
-                        index,
-                        decode_profile.clone(),
-                    );
-                }
-                Ok(outcome.image)
-            }
-            "png" | "apng" => {
-                let outcome =
-                    load_png_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)?;
-                if let Some(job) = outcome.remainder {
-                    spawn_raster_animation_remainder_decode(
-                        job,
-                        tx.clone(),
-                        index,
-                        decode_profile.clone(),
-                    );
-                }
-                Ok(outcome.image)
-            }
-            "webp" => {
-                let outcome =
-                    load_webp_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)?;
-                if let Some(job) = outcome.remainder {
-                    spawn_raster_animation_remainder_decode(
-                        job,
-                        tx.clone(),
-                        index,
-                        decode_profile.clone(),
-                    );
-                }
-                Ok(outcome.image)
-            }
-            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
-        };
+        if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || {
+                    let outcome = match ext.as_str() {
+                        "gif" => load_gif_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        "png" | "apng" => load_png_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        "webp" => load_webp_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        _ => unreachable!("matched gif/png/apng/webp above"),
+                    }?;
+                    if let Some(job) = outcome.remainder {
+                        spawn_raster_animation_remainder_decode(
+                            job,
+                            tx.clone(),
+                            index,
+                            decode_profile.clone(),
+                        );
+                    }
+                    Ok(outcome.image)
+                },
+            );
+        }
+
+        let result = load_static(path, hdr_target_capacity, hdr_tone_map);
         match result {
             Ok(image) => Ok(image),
             Err(primary_err) => recover_via_platform_and_content_detection(
