@@ -158,6 +158,7 @@ impl ImageViewerApp {
                     self.directory_tree_strip_logical_size(update.index),
                     crate::app::directory_tree_strip_cache::StripPreviewBufferTag::MainWindowTiledPreview,
                     ctx,
+                    false,
                 );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 if let Some(cpu_ms) = update.cpu_demosaic_ms
