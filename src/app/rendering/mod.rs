@@ -60,6 +60,27 @@ fn canvas_drawable_kind(app: &ImageViewerApp) -> &'static str {
     }
 }
 
+fn draw_canvas_centered_error(ui: &mut egui::Ui, canvas_rect: Rect, text: String) {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(canvas_rect), |ui| {
+        ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+                ui.set_max_width((canvas_rect.width() * 0.9).max(64.0));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(text)
+                            .font(FontId::proportional(16.0))
+                            .color(Color32::from_rgb(255, 100, 100)),
+                    )
+                    .selectable(true)
+                    .wrap()
+                    .halign(egui::Align::Center),
+                );
+            },
+        );
+    });
+}
+
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Block canvas mouse interaction when a modal dialog is open.
@@ -164,19 +185,7 @@ impl ImageViewerApp {
                         } else {
                             format!("⚠ {err}")
                         };
-                        egui::Area::new("error_display".into())
-                            .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                            .show(ui.ctx(), |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text)
-                                            .font(FontId::proportional(16.0))
-                                            .color(Color32::from_rgb(255, 100, 100)),
-                                    )
-                                    .selectable(true)
-                                    .halign(egui::Align::Center),
-                                );
-                            });
+                        draw_canvas_centered_error(ui, screen_rect, text);
                         return;
                     }
                 }
@@ -343,6 +352,17 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::rendering::geometry::main_window_canvas_rects;
+    use eframe::egui::Pos2;
+
+    #[test]
+    fn canvas_error_overlay_center_follows_inset_canvas_not_full_window() {
+        let available = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 800.0));
+        let panel = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(200.0, 800.0));
+        let (paint, _) = main_window_canvas_rects(available, 0.0, Some(panel));
+        assert_ne!(paint.center().x, available.center().x);
+        assert_eq!(paint.center().x, 600.0);
+    }
 
     #[test]
     fn loading_hint_only_shows_when_nothing_is_drawable() {
