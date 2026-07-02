@@ -33,7 +33,7 @@ pub(crate) fn hdr_has_iso_deferred_gain_map(hdr: &HdrImageBuffer) -> bool {
 
 /// True when cached HDR state depends on [`crate::settings::HdrGainMapSdrDisplayMode`].
 pub(crate) fn hdr_is_gain_map_sdr_display_sensitive(hdr: &HdrImageBuffer) -> bool {
-    hdr.metadata.gain_map.is_some()
+    hdr_has_embedded_sdr_master_display(hdr)
 }
 
 /// True when the HDR buffer represents gain-map HDR shown via embedded SDR master (no float plane).
@@ -159,6 +159,14 @@ pub(crate) fn hdr_display_requests_sdr_preview(hdr_target_capacity: f32) -> bool
     const MAX_SDR: f32 = 1.0;
     const EPS: f32 = 0.001;
     hdr_target_capacity <= MAX_SDR + EPS
+}
+
+/// True when the main loader should skip HDR float-plane decode and use embedded SDR master only.
+pub(crate) fn should_use_embedded_sdr_master_load(
+    prefer_embedded_sdr_master: bool,
+    hdr_target_capacity: f32,
+) -> bool {
+    prefer_embedded_sdr_master && hdr_display_requests_sdr_preview(hdr_target_capacity)
 }
 
 /// RGBA8 SDR fallback bytes plus whether they are a cheap deferred placeholder buffer.

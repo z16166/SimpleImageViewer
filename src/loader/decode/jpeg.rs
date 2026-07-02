@@ -34,6 +34,7 @@ pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
         path,
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
+        false,
     )
 }
 
@@ -41,9 +42,16 @@ pub(crate) fn load_jpeg_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     let mmap = crate::mmap_util::map_file(path)?;
-    load_jpeg_from_mapped(path, &mmap, hdr_target_capacity, hdr_tone_map)
+    load_jpeg_from_mapped(
+        path,
+        &mmap,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+    )
 }
 
 pub(crate) fn load_jpeg_from_mapped(
@@ -51,6 +59,7 @@ pub(crate) fn load_jpeg_from_mapped(
     mmap: &memmap2::Mmap,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -71,6 +80,36 @@ pub(crate) fn load_jpeg_from_mapped(
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
     // looks like a normal landscape before correction; the tag still requests transpose, so the
     // result can differ from viewers that ignore the tag or use heuristics.
+    if crate::loader::should_use_embedded_sdr_master_load(
+        prefer_embedded_sdr_master,
+        hdr_target_capacity,
+    ) && crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(mmap)
+        .ok()
+        .is_some_and(|info| info.is_ultra_hdr)
+    {
+        match crate::hdr::ultra_hdr::load_ultra_hdr_embedded_sdr_master_bytes(mmap, orientation) {
+            Ok(hdr) => {
+                let fallback = DecodedImage::new(hdr.width, hdr.height, {
+                    hdr.metadata
+                        .gain_map
+                        .as_ref()
+                        .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+                        .map(|iso| (*iso.sdr_rgba).clone())
+                        .ok_or_else(|| {
+                            "Ultra HDR embedded SDR master missing baseline pixels".to_string()
+                        })?
+                });
+                return Ok(make_hdr_image_data(hdr, fallback));
+            }
+            Err(err) => {
+                log::warn!(
+                    "[Loader] Ultra HDR embedded SDR master failed for {}: {err}; trying full HDR path",
+                    path.display()
+                );
+            }
+        }
+    }
+
     match crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
         mmap,
         decode_capacity,
@@ -241,7 +280,12 @@ mod tests {
         };
         let settings = HdrToneMapSettings::default();
         let err =
-            match load_jpeg_with_target_capacity(&path, settings.target_hdr_capacity(), settings) {
+            match load_jpeg_with_target_capacity(
+                &path,
+                settings.target_hdr_capacity(),
+                settings,
+                false,
+            ) {
                 Err(err) => err,
                 Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),
             };

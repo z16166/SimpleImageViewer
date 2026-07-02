@@ -258,7 +258,17 @@ impl ImageViewerApp {
         forward.min(backward) <= self.prefetch_window_max_distance
     }
 
-    /// Skip slow embedded-SDR-primary strip decode (full open + downsample); fast paths stay on.
+    /// True when Viewing settings use embedded SDR master on an SDR tone-mapped output path.
+    pub(crate) fn strip_embedded_sdr_master_mode_active(&self) -> bool {
+        let Some((_, output_mode)) = self.effective_hdr_display_output() else {
+            return false;
+        };
+        output_mode == crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped
+            && self.settings.hdr_gain_map_sdr_display
+                == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster
+    }
+
+    /// Skip strip paths that duplicate the main loader; cheap embedded previews still run.
     pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
         if self.strip_main_loader_decode_in_flight(index) {
             return true;

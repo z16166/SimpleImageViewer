@@ -66,3 +66,35 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
         hdr_target_capacity: target_hdr_capacity,
     })
 }
+
+/// Ultra HDR JPEG loaded as embedded SDR master only (primary baseline, no gain-map decode).
+pub(crate) fn load_ultra_hdr_embedded_sdr_master_bytes(
+    bytes: &[u8],
+    orientation: u16,
+) -> Result<HdrImageBuffer, String> {
+    let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
+    if !info.is_ultra_hdr {
+        return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
+    }
+
+    let (mut width, mut height, mut sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
+    if orientation > 1 {
+        let oriented =
+            crate::libtiff_loader::apply_orientation_buffer(sdr_rgba, width, height, orientation);
+        width = oriented.0;
+        height = oriented.1;
+        sdr_rgba = oriented.2;
+    }
+
+    let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
+    let metadata = gain_map_metadata(&gain_map_jpeg)?;
+    if iso_gain_map_skips_forward_compose(metadata) {
+        return Err(
+            "Ultra HDR JPEG primary is HDR base; embedded SDR master load is invalid".to_string(),
+        );
+    }
+
+    crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only(
+        "JPEG_R", width, height, sdr_rgba, metadata,
+    )
+}

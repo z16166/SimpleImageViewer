@@ -20,6 +20,8 @@ mod metadata;
 #[cfg(feature = "avif-native")]
 mod decode;
 #[cfg(feature = "avif-native")]
+mod embedded_sdr;
+#[cfg(feature = "avif-native")]
 mod gain_map;
 #[cfg(feature = "avif-native")]
 mod gain_map_probe;
@@ -44,6 +46,8 @@ pub(crate) use decode::decode_avif_hdr_bytes;
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use gain_map::avif_gain_map_to_metadata;
+#[cfg(feature = "avif-native")]
+pub(crate) use embedded_sdr::load_avif_embedded_sdr_master;
 #[cfg(feature = "avif-native")]
 pub(crate) use gain_map_probe::{AvifGainMapStripProbe, avif_probe_gain_map_strip_kind};
 #[cfg(feature = "avif-native")]

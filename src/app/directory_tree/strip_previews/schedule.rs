@@ -433,6 +433,7 @@ impl ImageViewerApp {
             return;
         }
         let skip_slow_primary = self.strip_cold_skip_slow_embedded_sdr_primary(index);
+        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active();
         let path = self.image_files[index].clone();
         let Some(list) = self.directory_tree.list.try_lock() else {
             return;
@@ -469,6 +470,7 @@ impl ImageViewerApp {
             if com_ok {
                 let decode_options = DirectoryTreeThumbDecodeOptions {
                     skip_slow_embedded_sdr_primary: skip_slow_primary,
+                    defer_iso_gain_map_baseline: defer_iso_baseline,
                 };
                 match generate_directory_tree_thumb_decode_from_path(
                     &path,

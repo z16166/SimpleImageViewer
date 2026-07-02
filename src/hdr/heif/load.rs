@@ -80,7 +80,10 @@ pub(crate) fn heif_should_use_embedded_sdr_primary_load(
     prefer_embedded_sdr_master: bool,
     hdr_target_capacity: f32,
 ) -> bool {
-    prefer_embedded_sdr_master && crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
+    crate::loader::should_use_embedded_sdr_master_load(
+        prefer_embedded_sdr_master,
+        hdr_target_capacity,
+    )
 }
 
 #[cfg(feature = "heif-native")]

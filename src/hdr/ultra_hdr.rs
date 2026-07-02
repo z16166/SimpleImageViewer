@@ -44,7 +44,9 @@ use crate::hdr::types::{
 };
 #[cfg(test)]
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
-use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
+pub(crate) use crate::hdr::ultra_hdr_deferred::{
+    decode_ultra_hdr_jpeg_deferred_bytes, load_ultra_hdr_embedded_sdr_master_bytes,
+};
 
 #[cfg(test)]
 use crate::hdr::types::{HdrToneMapSettings, HdrTransferFunction};

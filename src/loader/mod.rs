@@ -68,7 +68,7 @@ pub(crate) use hdr_fallback::{
     hdr_sdr_fallback_rgba8_eager_or_placeholder, hdr_to_sdr_with_user_tone,
     hdr_tone_map_settings_for_directory_tree_strip, libraw_scene_linear_needs_eager_sdr_fallback,
     prefer_embedded_iso_gain_map_sdr_on_sdr_output, raw_gpu_source_has_bootstrap_preview,
-    static_hdr_background_plane_upload_eligible,
+    should_use_embedded_sdr_master_load, static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
     extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,

@@ -107,6 +107,67 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
     })
 }
 
+/// ISO forward gain-map HDR shown via embedded SDR master only (no gain-map plane decode).
+pub(crate) fn attach_iso_embedded_sdr_master_only(
+    source: &'static str,
+    width: u32,
+    height: u32,
+    sdr_rgba: Vec<u8>,
+    metadata: GainMapMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| format!("dimension overflow: {width}x{height}"))?;
+    if sdr_rgba.len() != expected_len {
+        return Err(format!(
+            "embedded SDR master RGBA length mismatch: got {}, expected {} for {}x{}",
+            sdr_rgba.len(),
+            expected_len,
+            width,
+            height
+        ));
+    }
+    if metadata.backward_direction {
+        return Err(format!(
+            "{source} ISO gain map has backward direction; embedded SDR master load is invalid"
+        ));
+    }
+
+    let sdr_rgba = Arc::new(sdr_rgba);
+    let empty_gain = Arc::new(Vec::new());
+    let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    image_metadata.transfer_function = HdrTransferFunction::Srgb;
+    image_metadata.reference = HdrReference::SdrGainMapBase;
+    image_metadata.luminance = luminance_hints_from_gain_map(metadata);
+    image_metadata.gain_map = Some(HdrGainMapMetadata {
+        source,
+        target_hdr_capacity: None,
+        diagnostic: format!(
+            "{source} embedded SDR master (skipped HDR decode): {}",
+            gain_map_metadata_diagnostic(metadata, metadata.hdr_capacity_min)
+        ),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: Some(IsoGainMapGpuSource {
+            sdr_rgba: Arc::clone(&sdr_rgba),
+            gain_rgba: empty_gain,
+            gain_width: 0,
+            gain_height: 0,
+            metadata,
+        }),
+    });
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        metadata: image_metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    })
+}
+
 /// Primary JPEG stores the HDR base rendition (ISO backward / `BaseRenditionIsHDR`); skip forward compose.
 pub(crate) fn attach_iso_gain_map_hdr_base_from_primary_rgba8(
     source: &'static str,

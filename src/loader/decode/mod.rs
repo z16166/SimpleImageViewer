@@ -167,7 +167,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || load_jpeg_with_target_capacity(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    prefer_embedded_sdr_master,
+                ),
             );
         }
         if ext == "tif" || ext == "tiff" {
@@ -214,7 +219,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || load_avif_with_target_capacity(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    prefer_embedded_sdr_master,
+                ),
             );
         }
 
@@ -225,7 +235,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || load_jxl_with_target_capacity(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    prefer_embedded_sdr_master,
+                ),
             );
         }
 

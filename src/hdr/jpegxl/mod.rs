@@ -33,7 +33,7 @@ pub(crate) use decode::{
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use decode::{
-    decode_jxl_strip_iso_gain_map_baseline,
+    decode_jxl_embedded_sdr_master_bytes, decode_jxl_strip_iso_gain_map_baseline,
     load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]

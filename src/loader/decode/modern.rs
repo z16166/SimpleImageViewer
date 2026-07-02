@@ -65,9 +65,25 @@ pub(crate) fn load_avif_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "avif-native")]
     {
+        if crate::loader::should_use_embedded_sdr_master_load(
+            prefer_embedded_sdr_master,
+            hdr_target_capacity,
+        ) {
+            match crate::hdr::avif::load_avif_embedded_sdr_master(path) {
+                Ok(image) => return Ok(image),
+                Err(err) => {
+                    log::warn!(
+                        "[Loader] AVIF embedded SDR master failed for {}: {err}; trying full HDR path",
+                        path.display()
+                    );
+                }
+            }
+        }
+
         let mmap =
             crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
 
@@ -169,7 +185,12 @@ pub(crate) fn load_avif_with_target_capacity(
 
     #[cfg(not(feature = "avif-native"))]
     {
-        let _ = (path, hdr_target_capacity, hdr_tone_map);
+        let _ = (
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+            prefer_embedded_sdr_master,
+        );
         Err("AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats).".to_string())
     }
 }
@@ -178,9 +199,27 @@ pub(crate) fn load_jxl_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "jpegxl")]
     {
+        if crate::loader::should_use_embedded_sdr_master_load(
+            prefer_embedded_sdr_master,
+            hdr_target_capacity,
+        ) {
+            let mmap =
+                crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read JXL: {e}"))?;
+            match crate::hdr::jpegxl::decode_jxl_embedded_sdr_master_bytes(&mmap[..]) {
+                Ok(image) => return Ok(apply_exif_orientation_to_image_data(path, image)),
+                Err(err) => {
+                    log::warn!(
+                        "[Loader] JPEG XL embedded SDR master failed for {}: {err}; trying full HDR path",
+                        path.display()
+                    );
+                }
+            }
+        }
+
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         let data = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
@@ -193,7 +232,12 @@ pub(crate) fn load_jxl_with_target_capacity(
 
     #[cfg(not(feature = "jpegxl"))]
     {
-        let _ = (path, hdr_target_capacity, hdr_tone_map);
+        let _ = (
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+            prefer_embedded_sdr_master,
+        );
         Err("JPEG XL support requires the jpegxl feature".to_string())
     }
 }

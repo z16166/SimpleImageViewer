@@ -217,7 +217,7 @@ pub(crate) fn load_by_image_format(
         }
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => {
-            load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+            load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
         }
         image::ImageFormat::Bmp
         | image::ImageFormat::Ico
@@ -228,7 +228,7 @@ pub(crate) fn load_by_image_format(
         | image::ImageFormat::Qoi => load_static(path, hdr_target_capacity, hdr_tone_map),
         // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
         image::ImageFormat::Avif => {
-            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
         }
         image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::OpenExr => load_detected_exr(path, hdr_target_capacity, hdr_tone_map),
@@ -253,14 +253,14 @@ pub(crate) fn load_via_content_detection(
     }
 
     if crate::hdr::jpegxl::is_jxl_header(&header[..n]) {
-        return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+        return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
     }
 
     // 2. Manual BMFF detection (image-rs 0.25 does not guess HEIF/AVIF/QuickTime).
     if n >= 12 && &header[4..8] == b"ftyp" {
         let brand = &header[8..12];
         if crate::hdr::avif::is_avif_brand(brand) {
-            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
         }
         if crate::hdr::heif::is_heif_brand(brand) {
             return load_heif_hdr_aware(

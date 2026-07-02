@@ -116,7 +116,7 @@ impl ImageViewerApp {
                 && self.has_loaded_asset(self.current_index)
                 && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS
                 && !crate::app::image_management::should_defer_neighbor_work_for_current_main(
-                    true,
+                    self.has_loaded_asset(self.current_index),
                     self.loader.is_loading(self.current_index),
                 );
             if can_preload_neighbors {
