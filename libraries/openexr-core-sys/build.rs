@@ -16,6 +16,46 @@
 
 use std::path::Path;
 
+/// Windows vcpkg ships versioned import libs (e.g. `openjph.0.30.lib`); discover the stem at build time.
+fn windows_openjph_link_name(lib_dir: &Path) -> String {
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+
+    let mut names: Vec<String> = std::fs::read_dir(lib_dir)
+        .unwrap_or_else(|e| {
+            panic!(
+                "openexr (windows): read lib dir {}: {e}",
+                lib_dir.display()
+            )
+        })
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "lib") {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("openjph") {
+                    return path.file_stem().map(|stem| stem.to_string_lossy().into_owned());
+                }
+            }
+            None
+        })
+        .collect();
+
+    names.sort();
+    names.dedup();
+
+    match names.len() {
+        1 => names.pop().unwrap(),
+        0 => panic!(
+            "openexr (windows): no openjph*.lib in {}",
+            lib_dir.display()
+        ),
+        _ => panic!(
+            "openexr (windows): multiple openjph*.lib in {}: {names:?}",
+            lib_dir.display()
+        ),
+    }
+}
+
 /// `rustc-link-lib=static=stdc++` only resolves if `libstdc++.a` is on a `-L` path; it lives under
 /// the toolchain (not vcpkg). Query the same C++ driver as `.cargo/config.toml` (`linker = "g++"`).
 fn link_linux_libstdcxx_static() {
@@ -146,7 +186,10 @@ fn main() {
                 println!("cargo:rustc-link-lib=static=Iex-3_4");
                 println!("cargo:rustc-link-lib=static=IlmThread-3_4");
                 println!("cargo:rustc-link-lib=static=Imath-3_2");
-                println!("cargo:rustc-link-lib=static=openjph.0.27");
+                println!(
+                    "cargo:rustc-link-lib=static={}",
+                    windows_openjph_link_name(&lib_dir)
+                );
                 println!("cargo:rustc-link-lib=static=deflatestatic");
                 println!("cargo:rustc-link-lib=static=zlibstatic");
             } else {
