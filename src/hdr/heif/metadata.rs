@@ -299,3 +299,16 @@ pub(crate) fn heif_sample_bit_depth(
     }
     Ok(bit_depth as u32)
 }
+
+/// Primary-handle metadata for HDR decode (NCLX/ICC, gain-map auxiliaries, bit-depth transfer).
+#[cfg(feature = "heif-native")]
+pub(crate) fn read_heif_opened_primary_metadata(
+    handle: *const libheif_sys::heif_image_handle,
+) -> HdrImageMetadata {
+    let mut metadata = read_heif_metadata(handle);
+    if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle) {
+        metadata.gain_map = Some(diagnostic);
+    }
+    refine_heif_transfer_for_primary_bit_depth(handle, &mut metadata);
+    metadata
+}

@@ -1124,9 +1124,7 @@ fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() 
 
 #[test]
 fn hdr_gain_map_sdr_display_change_evicts_heif_tone_map_primary_cache() {
-    use crate::hdr::types::{
-        HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    };
+    use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();

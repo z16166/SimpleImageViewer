@@ -321,24 +321,15 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 high_quality,
                 || {
                     let outcome = match ext.as_str() {
-                        "gif" => load_gif_with_bootstrap(
-                            path,
-                            hdr_target_capacity,
-                            hdr_tone_map,
-                            true,
-                        ),
-                        "png" | "apng" => load_png_with_bootstrap(
-                            path,
-                            hdr_target_capacity,
-                            hdr_tone_map,
-                            true,
-                        ),
-                        "webp" => load_webp_with_bootstrap(
-                            path,
-                            hdr_target_capacity,
-                            hdr_tone_map,
-                            true,
-                        ),
+                        "gif" => {
+                            load_gif_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
+                        }
+                        "png" | "apng" => {
+                            load_png_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
+                        }
+                        "webp" => {
+                            load_webp_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
+                        }
                         _ => unreachable!("matched gif/png/apng/webp above"),
                     }?;
                     if let Some(job) = outcome.remainder {

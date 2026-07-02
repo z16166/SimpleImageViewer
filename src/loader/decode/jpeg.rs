@@ -18,7 +18,7 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{DecodedImage, ImageData};
-use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder};
+use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_or_placeholder};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -109,7 +109,10 @@ pub(crate) fn load_jpeg_from_mapped(
                     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
                     if orientation > 1 {
                         let oriented = crate::libtiff_loader::apply_orientation_buffer(
-                            pixels, w, h, orientation,
+                            pixels,
+                            w,
+                            h,
+                            orientation,
                         );
                         w = oriented.0;
                         h = oriented.1;
@@ -139,11 +142,7 @@ pub(crate) fn load_jpeg_from_mapped(
                 let fallback = DecodedImage::from_hdr_sdr_fallback(
                     hdr.width,
                     hdr.height,
-                    hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        hdr_target_capacity,
-                        &hdr_tone_map,
-                    )?,
+                    hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
                 );
                 return Ok(make_hdr_image_data(hdr, fallback));
             }

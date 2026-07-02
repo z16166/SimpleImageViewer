@@ -34,7 +34,10 @@ struct UltraHdrPrimaryRgba {
     sdr_rgba: Vec<u8>,
 }
 
-fn decode_ultra_hdr_primary_rgba(bytes: &[u8], orientation: u16) -> Result<UltraHdrPrimaryRgba, String> {
+fn decode_ultra_hdr_primary_rgba(
+    bytes: &[u8],
+    orientation: u16,
+) -> Result<UltraHdrPrimaryRgba, String> {
     let (mut width, mut height, mut sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
     if orientation > 1 {
         let oriented =
@@ -109,11 +112,13 @@ pub(crate) fn decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
         let metadata = gain_map_metadata(&gain_map_jpeg)?;
         if iso_gain_map_skips_forward_compose(metadata) {
-            let err =
-                "Ultra HDR JPEG primary is HDR base; embedded SDR master load is invalid".to_string();
+            let err = "Ultra HDR JPEG primary is HDR base; embedded SDR master load is invalid"
+                .to_string();
             if let Some(path) = path {
                 crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
-                    "Ultra HDR JPEG", path, &err,
+                    "Ultra HDR JPEG",
+                    path,
+                    &err,
                 );
             }
         } else {
@@ -132,7 +137,9 @@ pub(crate) fn decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
                 {
                     if let Some(path) = path {
                         crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
-                            "Ultra HDR JPEG", path, &err,
+                            "Ultra HDR JPEG",
+                            path,
+                            &err,
                         );
                     }
                 }

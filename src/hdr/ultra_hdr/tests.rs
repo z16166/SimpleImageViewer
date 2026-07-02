@@ -101,8 +101,8 @@ fn production_decode_defers_gain_map_compose_to_gpu() {
     let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap gain map JPEG") };
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
 
-    let deferred = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity)
-        .expect("deferred Ultra HDR decode");
+    let deferred =
+        decode_ultra_hdr_jpeg_bytes_for_test(&bytes, capacity).expect("deferred Ultra HDR decode");
     assert!(
         deferred.rgba_f32.is_empty(),
         "production decode should defer HDR pixels"

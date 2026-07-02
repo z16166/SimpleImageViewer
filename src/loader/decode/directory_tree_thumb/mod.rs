@@ -24,8 +24,7 @@ use std::path::Path;
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
-    HeifThumbProbe, probe_heif_strip_thumbnail, probe_heif_strip_thumbnail_from_path,
-    try_heif_strip_primary_sdr,
+    HeifDirectoryTreeStripOutcome, HeifThumbProbe, try_heif_directory_tree_strip,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
@@ -37,9 +36,7 @@ use crate::loader::{
 };
 
 use super::assemble::make_image_data;
-use super::detect::{
-    load_primary_with_detection_fallback,
-};
+use super::detect::load_primary_with_detection_fallback;
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
 use super::jpeg::load_jpeg_with_target_capacity;
@@ -187,60 +184,53 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
 
     #[cfg(feature = "heif-native")]
     if super::modern::is_heif_path(path) {
-        let (heif_thumb, heif_probe, heif_detail) = match mmap.as_ref() {
-            Some(data) => probe_heif_strip_thumbnail(data.as_ref(), max_side),
-            None => probe_heif_strip_thumbnail_from_path(path, max_side),
+        let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
+        let heif_outcome = match mmap.as_ref() {
+            Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
+            None => crate::mmap_util::map_file(path)
+                .ok()
+                .map(|owned| {
+                    try_heif_directory_tree_strip(owned.as_ref(), max_side, allow_primary_sdr)
+                })
+                .unwrap_or_else(|| HeifDirectoryTreeStripOutcome {
+                    strip: None,
+                    thumb_probe: HeifThumbProbe::ContainerUnreadable,
+                    thumb_detail: Default::default(),
+                    decode_path: None,
+                }),
         };
-        log_strip_heif_probe(path, heif_probe, heif_detail, max_side, "phase=initial");
-        if let Some((preview, logical)) = heif_thumb {
-            log_strip_decode_path(
-                path,
-                "heif_container_thumb",
-                logical,
-                preview.width,
-                preview.height,
-            );
-            return Ok(DirectoryTreeThumbDecode::new(
-                preview,
-                logical,
-                None,
-                placeholder_if_fast_path,
-            ));
+        log_strip_heif_probe(
+            path,
+            heif_outcome.thumb_probe,
+            heif_outcome.thumb_detail,
+            max_side,
+            "phase=initial",
+        );
+        if let Some(result) = heif_outcome.strip {
+            return result.map(|(preview, logical)| {
+                log_strip_decode_path(
+                    path,
+                    heif_outcome.decode_path.unwrap_or("heif_primary_sdr"),
+                    logical,
+                    preview.width,
+                    preview.height,
+                );
+                DirectoryTreeThumbDecode::new(preview, logical, None, placeholder_if_fast_path)
+            });
         }
         if matches!(
-            heif_probe,
+            heif_outcome.thumb_probe,
             HeifThumbProbe::AspectRejected | HeifThumbProbe::DownsampleFailed
         ) {
             log_strip_heif_probe(
                 path,
-                heif_probe,
-                heif_detail,
+                heif_outcome.thumb_probe,
+                heif_outcome.thumb_detail,
                 max_side,
                 "phase=initial_rejected reason=aspect_or_downsample",
             );
         }
-
-        // Full primary HEIF decode is slow; skip when preload will share one decode with main loader.
-        if !options.skip_slow_embedded_sdr_primary {
-            // Initial strip mmap failed (rare); one retry here avoids a second open in the common path.
-            if let Some(result) = match mmap.as_ref() {
-                Some(data) => try_heif_strip_primary_sdr(data.as_ref(), max_side),
-                None => crate::mmap_util::map_file(path)
-                    .ok()
-                    .and_then(|owned| try_heif_strip_primary_sdr(owned.as_ref(), max_side)),
-            } {
-                return result.map(|(preview, logical)| {
-                    log_strip_decode_path(
-                        path,
-                        "heif_primary_sdr",
-                        logical,
-                        preview.width,
-                        preview.height,
-                    );
-                    DirectoryTreeThumbDecode::new(preview, logical, None, placeholder_if_fast_path)
-                });
-            }
-        } else {
+        if !allow_primary_sdr {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][Strip] skip slow path path={} kind=heif_primary_sdr reason=preload_shared_primary",

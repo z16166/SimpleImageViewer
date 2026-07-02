@@ -18,26 +18,20 @@
 
 use std::sync::Arc;
 
-use super::metadata::{
-    inspect_heif_gain_map_auxiliaries, read_heif_metadata,
-    refine_heif_transfer_for_primary_bit_depth,
-};
+use super::metadata::read_heif_opened_primary_metadata;
 use super::session::open_heif_primary_from_bytes;
 
 use crate::hdr::types::{
-    HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat,
+    HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer,
+    HdrImageMetadata, HdrPixelFormat,
 };
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn build_heif_embedded_sdr_master_hdr(
-    bytes: &[u8],
+pub(crate) fn heif_embedded_sdr_master_hdr_from_metadata(
+    mut metadata: HdrImageMetadata,
     logical: (u32, u32),
-) -> Result<HdrImageBuffer, String> {
-    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let handle = primary.as_ptr();
-    let mut metadata = read_heif_metadata(handle);
-    refine_heif_transfer_for_primary_bit_depth(handle, &mut metadata);
-    metadata.gain_map = inspect_heif_gain_map_auxiliaries(handle).map(|mut gain_map| {
+) -> HdrImageBuffer {
+    metadata.gain_map = metadata.gain_map.map(|mut gain_map| {
         gain_map.source = HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE;
         gain_map
     });
@@ -52,12 +46,33 @@ pub(crate) fn build_heif_embedded_sdr_master_hdr(
         });
     }
     let color_space = metadata.color_space_hint();
-    Ok(HdrImageBuffer {
+    HdrImageBuffer {
         width: logical.0,
         height: logical.1,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
         metadata,
         rgba_f32: Arc::new(Vec::new()),
-    })
+    }
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn build_heif_embedded_sdr_master_hdr_from_handle(
+    handle: *const libheif_sys::heif_image_handle,
+    logical: (u32, u32),
+) -> Result<HdrImageBuffer, String> {
+    let metadata = read_heif_opened_primary_metadata(handle);
+    Ok(heif_embedded_sdr_master_hdr_from_metadata(
+        metadata, logical,
+    ))
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Used by path-based wrappers and external callers.
+pub(crate) fn build_heif_embedded_sdr_master_hdr(
+    bytes: &[u8],
+    logical: (u32, u32),
+) -> Result<HdrImageBuffer, String> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
+    build_heif_embedded_sdr_master_hdr_from_handle(primary.as_ptr(), logical)
 }

@@ -20,7 +20,7 @@ use crate::hdr::tiled::HdrTiledSource;
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
     DecodedImage, ImageData, TiledImageSource, apply_exif_orientation_to_hdr_pair,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_sdr_fallback_rgba8_or_placeholder,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -30,11 +30,11 @@ use crate::loader::tiled_sources::HdrSdrTiledFallbackSource;
 
 pub(crate) fn load_hdr(
     path: &Path,
-    hdr_target_capacity: f32,
+    _hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     if is_exr_path(path) {
-        return load_detected_exr(path, hdr_target_capacity, hdr_tone_map);
+        return load_detected_exr(path);
     } else if let Some(image_data) = try_load_disk_backed_radiance_hdr(path, hdr_tone_map)? {
         return Ok(image_data);
     }
@@ -46,14 +46,14 @@ pub(crate) fn load_hdr(
                 "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return load_deep_exr(path, hdr_target_capacity, hdr_tone_map);
+            return load_deep_exr(path);
         }
         Err(err) => return Err(err),
     };
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
@@ -65,11 +65,7 @@ pub(crate) fn is_exr_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
 }
 
-pub(crate) fn try_load_disk_backed_exr_hdr(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-) -> Result<Option<ImageData>, String> {
+pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
     let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open(path) {
         Ok(source) => source,
         Err(err) if is_exr_disk_backed_probe_fallback_error(&err) => {
@@ -85,8 +81,7 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map)
-            .map(Some);
+        return exr_tiled_source_to_static_hdr(path, source).map(Some);
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
@@ -103,8 +98,6 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
 pub(crate) fn exr_tiled_source_to_static_hdr(
     path: &Path,
     source: crate::hdr::exr_tiled::ExrTiledImageSource,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let tile = source.extract_tile_rgba32f_arc(0, 0, source.width(), source.height())?;
     let hdr = crate::hdr::types::HdrImageBuffer {
@@ -118,7 +111,7 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     log::info!(
         "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
@@ -163,21 +156,13 @@ pub(crate) fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
     err.contains("deep data not supported yet")
 }
 
-pub(crate) fn load_deep_exr(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+pub(crate) fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
     match crate::hdr::exr_tiled::decode_deep_exr_image(path) {
         Ok(hdr) => {
             let fallback = DecodedImage::from_hdr_sdr_fallback(
                 hdr.width,
                 hdr.height,
-                hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                    &hdr,
-                    hdr_target_capacity,
-                    &hdr_tone_map,
-                )?,
+                hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
             );
             let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             Ok(make_hdr_image_data(hdr, fallback))
@@ -222,13 +207,8 @@ pub(crate) fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
-pub(crate) fn load_detected_exr(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
-    if let Some(image_data) = try_load_disk_backed_exr_hdr(path, hdr_target_capacity, hdr_tone_map)?
-    {
+pub(crate) fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
+    if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
         return Ok(image_data);
     }
 
@@ -239,14 +219,14 @@ pub(crate) fn load_detected_exr(
                 "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return load_deep_exr(path, hdr_target_capacity, hdr_tone_map);
+            return load_deep_exr(path);
         }
         Err(err) => return Err(err),
     };
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))

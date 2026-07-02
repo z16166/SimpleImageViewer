@@ -123,14 +123,12 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
     bytes: &[u8],
     path: &std::path::Path,
     decode_capacity: f32,
-    hdr_target_capacity: f32,
-    tone_map: &crate::hdr::types::HdrToneMapSettings,
     try_embedded_sdr_master: bool,
 ) -> Result<crate::loader::ImageData, String> {
-    use crate::loader::{
-        DecodedImage, apply_exif_orientation_to_hdr_pair, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    };
     use super::embedded_sdr::try_avif_embedded_sdr_from_decoded_image;
+    use crate::loader::{
+        DecodedImage, apply_exif_orientation_to_hdr_pair, hdr_sdr_fallback_rgba8_or_placeholder,
+    };
 
     let image = read_avif_decoder_image(bytes)?;
     if try_embedded_sdr_master {
@@ -151,7 +149,7 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
-        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, tone_map)?,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(crate::loader::ImageData::Hdr {

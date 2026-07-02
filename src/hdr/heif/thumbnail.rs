@@ -21,8 +21,8 @@ use std::path::Path;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
 use super::decode::heif_try_decode_into;
-use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
-use super::session::open_heif_primary_from_bytes;
+use super::orientation::heif_manual_geometry_decode_options;
+use super::session::{HeifCtxGuard, HeifPrimaryGuard, open_heif_primary_from_bytes};
 use super::ycbcr::ycbcr_linear_to_rgb;
 
 /// Outcome of a libheif container-thumbnail probe ([`preload-debug`] logs use [`label`](Self::label)).
@@ -79,6 +79,28 @@ type HeifStripThumbProbeResult = (
 type HeifInterleavedDecodeFn =
     fn(*const libheif_sys::heif_image, u8) -> Result<DecodedImage, String>;
 
+/// One libheif open shared by container-thumb probe and primary-SDR strip fallback.
+#[cfg(feature = "heif-native")]
+struct HeifStripOpened {
+    _ctx: HeifCtxGuard,
+    primary: HeifPrimaryGuard,
+    _decode_geo_holder: Option<super::orientation::HeifDecodeOptionsIgnoredGeometryOwned>,
+    decode_opts_ptr: *const libheif_sys::heif_decoding_options,
+}
+
+#[cfg(feature = "heif-native")]
+fn open_heif_strip_session(bytes: &[u8]) -> Result<HeifStripOpened, ()> {
+    let (ctx, primary) = open_heif_primary_from_bytes(bytes).map_err(|_| ())?;
+    let (decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
+    Ok(HeifStripOpened {
+        _ctx: ctx,
+        primary,
+        _decode_geo_holder: decode_geo_holder,
+        decode_opts_ptr,
+    })
+}
+
+#[allow(dead_code)] // Used by env-gated corpus tests in this module.
 pub(crate) fn probe_heif_strip_thumbnail_from_path(
     path: &Path,
     max_side: u32,
@@ -96,22 +118,26 @@ pub(crate) fn probe_heif_strip_thumbnail_from_path(
     probe_heif_strip_thumbnail(mmap.as_ref(), max_side)
 }
 
+#[allow(dead_code)] // Thin wrapper; directory-tree strips use [`try_heif_directory_tree_strip`].
 pub(crate) fn probe_heif_strip_thumbnail(bytes: &[u8], max_side: u32) -> HeifStripThumbProbeResult {
+    match open_heif_strip_session(bytes) {
+        Ok(opened) => probe_heif_strip_thumbnail_on_opened(&opened, max_side),
+        Err(()) => (
+            None,
+            HeifThumbProbe::ContainerUnreadable,
+            HeifThumbProbeDetail::default(),
+        ),
+    }
+}
+
+fn probe_heif_strip_thumbnail_on_opened(
+    opened: &HeifStripOpened,
+    max_side: u32,
+) -> HeifStripThumbProbeResult {
     #[cfg(feature = "preload-debug")]
     let decode_start = std::time::Instant::now();
 
-    let (_ctx, primary) = match open_heif_primary_from_bytes(bytes) {
-        Ok(opened) => opened,
-        Err(_) => {
-            return (
-                None,
-                HeifThumbProbe::ContainerUnreadable,
-                HeifThumbProbeDetail::default(),
-            );
-        }
-    };
-
-    let primary_handle = primary.as_ptr();
+    let primary_handle = opened.primary.as_ptr();
     let logical = primary_logical_size(primary_handle);
     let mut detail = HeifThumbProbeDetail {
         primary_w: Some(logical.0),
@@ -190,7 +216,7 @@ pub(crate) fn probe_heif_strip_thumbnail(bytes: &[u8], max_side: u32) -> HeifStr
     (Some((preview, logical)), HeifThumbProbe::Found, detail)
 }
 
-fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, u32) {
+pub(crate) fn primary_logical_size(handle: *const libheif_sys::heif_image_handle) -> (u32, u32) {
     if handle.is_null() {
         return (0, 0);
     }
@@ -211,7 +237,7 @@ pub(crate) fn libheif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32
     (logical.0 > 0 && logical.1 > 0).then_some(logical)
 }
 
-fn decode_heif_handle_to_rgba8(
+pub(crate) fn decode_heif_handle_to_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<DecodedImage, String> {
@@ -310,21 +336,14 @@ fn interleaved_image_to_rgba8(
 type HeifPrimaryStripResult = Option<Result<(DecodedImage, (u32, u32)), String>>;
 
 /// Full-resolution primary HEIF item as 8-bit SDR RGBA (no gain-map auxiliary).
-pub(crate) fn decode_heif_primary_sdr_from_bytes(
-    bytes: &[u8],
+pub(crate) fn decode_heif_primary_sdr_from_handle(
+    handle: *const libheif_sys::heif_image_handle,
+    decode_opts_ptr: *const libheif_sys::heif_decoding_options,
 ) -> Result<(DecodedImage, (u32, u32)), String> {
-    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
-    let handle = primary.as_ptr();
     let logical = primary_logical_size(handle);
     if logical.0 == 0 || logical.1 == 0 {
         return Err("HEIF primary has zero logical size".to_string());
     }
-
-    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
-    let decode_opts_ptr = decode_geo_holder
-        .as_ref()
-        .map(|g| g.as_ptr())
-        .unwrap_or(std::ptr::null());
 
     let decoded = decode_heif_handle_to_rgba8(handle, decode_opts_ptr)?;
     if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
@@ -336,23 +355,23 @@ pub(crate) fn decode_heif_primary_sdr_from_bytes(
     Ok((decoded, logical))
 }
 
-/// Decode the primary HEIF item to 8-bit SDR RGBA for directory-tree strips (no gain map auxiliary).
-///
-/// Opens the container independently of [`probe_heif_strip_thumbnail`] (header parse only when
-/// the thumb path already ran); avoids sharing lifetimes between strip fast paths.
-pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPrimaryStripResult {
-    #[cfg(feature = "preload-debug")]
-    let decode_start = std::time::Instant::now();
+#[allow(dead_code)] // Standalone entry; strips use [`try_heif_directory_tree_strip`].
+pub(crate) fn decode_heif_primary_sdr_from_bytes(
+    bytes: &[u8],
+) -> Result<(DecodedImage, (u32, u32)), String> {
+    let opened = open_heif_strip_session(bytes).map_err(|_| "Failed to read HEIF".to_string())?;
+    decode_heif_primary_sdr_from_handle(opened.primary.as_ptr(), opened.decode_opts_ptr)
+}
 
-    let (decoded, logical) = match decode_heif_primary_sdr_from_bytes(bytes) {
-        Ok(pair) => pair,
-        Err(err) => return Some(Err(err)),
-    };
+fn downsample_heif_primary_sdr_strip(
+    decoded: DecodedImage,
+    logical: (u32, u32),
+    max_side: u32,
+) -> HeifPrimaryStripResult {
     let strip = match crate::loader::downsample_decoded_for_strip(&decoded, max_side) {
         Ok(image) => image,
         Err(err) => return Some(Err(err.to_string())),
     };
-    // Post-downsample mismatch: fall through (None) so the strip chain tries the next method.
     if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
         log::debug!(
             "[HEIF] primary SDR strip aspect mismatch after downsample ({}x{} vs logical {}x{}); \
@@ -364,18 +383,93 @@ pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPri
         );
         return None;
     }
-
-    #[cfg(feature = "preload-debug")]
-    crate::preload_debug!(
-        "[PreloadDebug][Strip] heif_primary_sdr logical={}x{} out={}x{} decode_ms={}",
-        logical.0,
-        logical.1,
-        strip.width,
-        strip.height,
-        crate::preload_debug::elapsed_ms(decode_start)
-    );
-
     Some(Ok((strip, logical)))
+}
+
+fn try_heif_strip_primary_sdr_on_opened(
+    opened: &HeifStripOpened,
+    max_side: u32,
+) -> HeifPrimaryStripResult {
+    #[cfg(feature = "preload-debug")]
+    let decode_start = std::time::Instant::now();
+
+    let (decoded, logical) = match decode_heif_primary_sdr_from_handle(
+        opened.primary.as_ptr(),
+        opened.decode_opts_ptr,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => return Some(Err(err)),
+    };
+    let result = downsample_heif_primary_sdr_strip(decoded, logical, max_side);
+    #[cfg(feature = "preload-debug")]
+    if let Some(Ok((strip, logical))) = result.as_ref() {
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] heif_primary_sdr logical={}x{} out={}x{} decode_ms={}",
+            logical.0,
+            logical.1,
+            strip.width,
+            strip.height,
+            crate::preload_debug::elapsed_ms(decode_start)
+        );
+    }
+    result
+}
+
+/// Directory-tree strip: one libheif open, container thumb first, then primary SDR on the same handle.
+pub(crate) struct HeifDirectoryTreeStripOutcome {
+    pub strip: HeifPrimaryStripResult,
+    pub thumb_probe: HeifThumbProbe,
+    pub thumb_detail: HeifThumbProbeDetail,
+    /// Set when [`Self::strip`] is `Some(Ok(_))`.
+    pub decode_path: Option<&'static str>,
+}
+
+pub(crate) fn try_heif_directory_tree_strip(
+    bytes: &[u8],
+    max_side: u32,
+    allow_primary_sdr_fallback: bool,
+) -> HeifDirectoryTreeStripOutcome {
+    let opened = match open_heif_strip_session(bytes) {
+        Ok(opened) => opened,
+        Err(()) => {
+            return HeifDirectoryTreeStripOutcome {
+                strip: None,
+                thumb_probe: HeifThumbProbe::ContainerUnreadable,
+                thumb_detail: HeifThumbProbeDetail::default(),
+                decode_path: None,
+            };
+        }
+    };
+
+    let (thumb, probe, detail) = probe_heif_strip_thumbnail_on_opened(&opened, max_side);
+    if let Some(preview) = thumb {
+        return HeifDirectoryTreeStripOutcome {
+            strip: Some(Ok(preview)),
+            thumb_probe: probe,
+            thumb_detail: detail,
+            decode_path: Some("heif_container_thumb"),
+        };
+    }
+
+    if !allow_primary_sdr_fallback {
+        return HeifDirectoryTreeStripOutcome {
+            strip: None,
+            thumb_probe: probe,
+            thumb_detail: detail,
+            decode_path: None,
+        };
+    }
+
+    let strip = try_heif_strip_primary_sdr_on_opened(&opened, max_side);
+    HeifDirectoryTreeStripOutcome {
+        decode_path: strip
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|_| "heif_primary_sdr"),
+        strip,
+        thumb_probe: probe,
+        thumb_detail: detail,
+    }
 }
 
 fn ycbcr_matrix_from_heif_handle(

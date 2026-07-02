@@ -600,6 +600,7 @@ fn rgba8_to_scene_linear_hdr_buffer(
 pub(crate) struct CameraTiffHdrUpgrade<'a> {
     pub(crate) path: &'a Path,
     pub(crate) hdr_target_capacity: f32,
+    #[allow(dead_code)]
     pub(crate) tone_map: &'a HdrToneMapSettings,
     pub(crate) photo: u16,
     pub(crate) bps: u16,
@@ -614,7 +615,7 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     let CameraTiffHdrUpgrade {
         path,
         hdr_target_capacity,
-        tone_map,
+        tone_map: _,
         photo,
         bps,
         width,
@@ -633,11 +634,7 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         width,
         height,
-        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            &hdr,
-            hdr_target_capacity,
-            tone_map,
-        )?,
+        crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
     Ok(Some(ImageData::Hdr {
         hdr: Box::new(hdr),

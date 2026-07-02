@@ -100,8 +100,8 @@ pub(crate) fn open_raw_processor_with_preview(
 fn load_raw_hq_static_hdr(
     processor: &mut RawProcessor,
     path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: &HdrToneMapSettings,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] hdr_target_capacity: f32,
+    _hdr_tone_map: &HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
 ) -> Option<Result<RawLoadOutput, String>> {
     crate::preload_debug!(
@@ -113,11 +113,7 @@ fn load_raw_hq_static_hdr(
         Ok((hdr, cpu_ms)) => {
             let width = hdr.width;
             let height = hdr.height;
-            let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                &hdr,
-                hdr_target_capacity,
-                hdr_tone_map,
-            ) {
+            let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
                 Ok(fb) => fb,
                 Err(err) => return Some(Err(err)),
             };

@@ -160,7 +160,6 @@ impl ImageViewerApp {
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
             false,
-            false,
         );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
             return false;
