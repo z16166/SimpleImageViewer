@@ -65,7 +65,7 @@ pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_from_hdr_or_fallback,
     directory_tree_strip_logical_for_preview, hdr_directory_tree_strip_sdr_at_max_side,
     hdr_display_requests_sdr_preview, hdr_has_embedded_sdr_master_display,
-    hdr_has_iso_deferred_gain_map, hdr_is_gain_map_sdr_display_sensitive,
+    hdr_has_iso_deferred_gain_map, hdr_gain_map_sdr_display_mode_affects_image,
     hdr_raw_gpu_bootstrap_fallback_decoded, hdr_raw_gpu_demosaic_pending,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_or_placeholder,
     hdr_tone_map_settings_for_directory_tree_strip, prefer_embedded_iso_gain_map_sdr_on_sdr_output,

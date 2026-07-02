@@ -130,7 +130,12 @@ impl ImageViewerApp {
             })
             .filter(|&idx| {
                 self.hdr_image_cache.get(&idx).is_some_and(|hdr| {
-                    crate::loader::hdr_is_gain_map_sdr_display_sensitive(hdr.as_ref())
+                    self.image_files.get(idx).is_some_and(|path| {
+                        crate::loader::hdr_gain_map_sdr_display_mode_affects_image(
+                            hdr.as_ref(),
+                            path,
+                        )
+                    })
                 })
             })
             .collect();

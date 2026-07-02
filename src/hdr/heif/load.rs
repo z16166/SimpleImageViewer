@@ -49,6 +49,7 @@ fn heif_recovered_sdr_usable_for_logical(
 }
 
 #[cfg(feature = "heif-native")]
+#[cfg_attr(not(test), allow(dead_code))]
 fn heif_load_skips_primary_hdr_decode_at_capacity(hdr_target_capacity: f32) -> bool {
     crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
 }
@@ -197,9 +198,11 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
     }
 
     let _ctx = ctx;
-    if heif_load_skips_primary_hdr_decode_at_capacity(hdr_target_capacity) {
-        // SDR-display load: empty rgba_f32 is intentional. Strip cache tags use
-        // PreloadSdrFallback (not HdrToneMappedStrip) until float pixels exist.
+    if crate::loader::should_use_embedded_sdr_master_load(
+        try_embedded_sdr_master,
+        hdr_target_capacity,
+    ) {
+        // Embedded-SDR master on SDR output: 8-bit primary + HDR shell only (no float plane).
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][HEIF] sdr_capacity_load skip_primary_hdr_decode path={}",
@@ -484,6 +487,12 @@ mod tests {
         assert!(heif_load_skips_primary_hdr_decode_at_capacity(1.001));
         assert!(!heif_load_skips_primary_hdr_decode_at_capacity(1.01));
         assert!(!heif_load_skips_primary_hdr_decode_at_capacity(4.0));
+    }
+
+    #[test]
+    fn heif_sdr_capacity_still_decodes_float_plane_for_hdr_tone_map_mode() {
+        assert!(!crate::loader::should_use_embedded_sdr_master_load(false, 1.0));
+        assert!(crate::loader::should_use_embedded_sdr_master_load(true, 1.0));
     }
 
     #[test]

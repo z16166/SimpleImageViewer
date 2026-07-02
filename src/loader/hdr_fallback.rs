@@ -51,6 +51,29 @@ pub(crate) fn hdr_is_gain_map_sdr_display_sensitive(hdr: &HdrImageBuffer) -> boo
     !hdr.rgba_f32.is_empty()
 }
 
+/// Whether changing [`crate::settings::HdrGainMapSdrDisplayMode`] should evict and reload this image.
+pub(crate) fn hdr_gain_map_sdr_display_mode_affects_image(
+    hdr: &HdrImageBuffer,
+    path: &std::path::Path,
+) -> bool {
+    if hdr_is_gain_map_sdr_display_sensitive(hdr) {
+        return true;
+    }
+    // Nokia-style HEIF stills: 8-bit primary with no gain-map auxiliary in metadata still toggle
+    // between embedded SDR master (8-bit primary) and GPU tone-mapped float plane on SDR output.
+    !hdr.rgba_f32.is_empty() && heif_extension_path(path)
+}
+
+fn heif_extension_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("heic")
+                || ext.eq_ignore_ascii_case("heif")
+                || ext.eq_ignore_ascii_case("hif")
+        })
+}
+
 /// ISO deferred planes from [`crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only`]
 /// carry no gain-map texels; full HDR decode + compose uses non-zero gain dimensions.
 fn iso_deferred_is_embedded_sdr_master_only(iso: &crate::hdr::types::IsoGainMapGpuSource) -> bool {
@@ -826,6 +849,24 @@ mod tests {
 
         assert!(!super::hdr_has_embedded_sdr_master_display(&hdr));
         assert!(super::hdr_is_gain_map_sdr_display_sensitive(&hdr));
+    }
+
+    #[test]
+    fn heif_float_plane_without_gain_map_aux_is_sdr_display_toggleable() {
+        let hdr = HdrImageBuffer {
+            width: 1440,
+            height: 960,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::default(),
+            rgba_f32: Arc::new(vec![0.5; 1440 * 960 * 4]),
+        };
+        let path = std::path::Path::new("autumn.heic");
+
+        assert!(!super::hdr_is_gain_map_sdr_display_sensitive(&hdr));
+        assert!(super::hdr_gain_map_sdr_display_mode_affects_image(
+            &hdr, path
+        ));
     }
 
     #[test]
