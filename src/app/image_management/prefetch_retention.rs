@@ -80,6 +80,27 @@ pub(super) fn effective_prefetch_window_distance(
     }
 }
 
+/// Neighbor indices within the preload window in one ring direction (excludes current).
+pub(super) fn prefetch_window_neighbors_in_direction(
+    current_index: usize,
+    image_count: usize,
+    max_distance: usize,
+    forward: bool,
+) -> Vec<usize> {
+    if image_count <= 1 || max_distance == 0 {
+        return Vec::new();
+    }
+    (1..=max_distance)
+        .map(|delta| {
+            if forward {
+                (current_index + delta) % image_count
+            } else {
+                (current_index + image_count - delta) % image_count
+            }
+        })
+        .collect()
+}
+
 /// Max distinct indices inside the circular preload window (includes current).
 #[allow(dead_code)]
 pub(super) fn prefetch_window_index_cap(image_count: usize, max_distance: usize) -> usize {
@@ -186,6 +207,19 @@ mod tests {
         let d = PREFETCH_WINDOW_DISTANCE;
         assert_eq!(prefetch_window_index_cap(100, d), 2 * d + 1);
         assert_eq!(prefetched_tiles_steady_state_cap(100, d), 2 * d);
+    }
+
+    #[test]
+    fn neighbors_in_direction_respect_max_distance() {
+        assert_eq!(
+            prefetch_window_neighbors_in_direction(0, 10, 2, true),
+            vec![1, 2]
+        );
+        assert_eq!(
+            prefetch_window_neighbors_in_direction(0, 10, 2, false),
+            vec![9, 8]
+        );
+        assert!(prefetch_window_neighbors_in_direction(0, 10, 0, true).is_empty());
     }
 
     #[test]

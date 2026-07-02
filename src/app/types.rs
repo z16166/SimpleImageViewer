@@ -498,11 +498,11 @@ pub struct ImageViewerApp {
     pub(crate) embedded_directory_tree_panel_bootstrapped: bool,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
-    pub(crate) directory_tree_strip_compose_probe_cache:
-        crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
     pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
+    /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
+    pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,

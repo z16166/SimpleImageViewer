@@ -171,12 +171,28 @@ impl ImageViewerApp {
                 self.active_transition,
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
+        let effective_selection = self
+            .frame_effective_hdr_monitor_selection
+            .clone()
+            .or_else(|| self.effective_hdr_monitor_selection());
+        let prefer_embedded_iso_gain_map_sdr_master =
+            crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+                &self.settings,
+                crate::hdr::monitor::effective_render_output_mode(
+                    self.effective_hdr_target_format(),
+                    effective_selection.as_ref(),
+                ),
+                self.hdr_image_cache
+                    .get(&self.current_index)
+                    .map(|entry| entry.as_ref()),
+            );
         self.cached_frame_hdr_render_path = hdr_render_path_for_render_plan(
             &plan,
             shape,
             complex_transition_active,
             prefer_sdr_for_pending_gpu_demosaic,
             has_hdr_content,
+            prefer_embedded_iso_gain_map_sdr_master,
         );
         self.cached_frame_render_plan = Some(plan);
     }
@@ -233,6 +249,18 @@ impl ImageViewerApp {
             .clone()
             .or_else(|| self.effective_hdr_monitor_selection());
 
+        let prefer_embedded_iso_gain_map_sdr_master =
+            crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+                &self.settings,
+                crate::hdr::monitor::effective_render_output_mode(
+                    self.effective_hdr_target_format(),
+                    effective_selection.as_ref(),
+                ),
+                self.hdr_image_cache
+                    .get(&idx)
+                    .map(|entry| entry.as_ref()),
+            );
+
         let plan = crate::app::rendering::plan::build_render_plan_for_state(
             shape,
             has_hdr_plane,
@@ -241,6 +269,7 @@ impl ImageViewerApp {
             effective_selection.as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
             self.raw_gpu_demosaic_await_hdr_present,
+            prefer_embedded_iso_gain_map_sdr_master,
         );
         hdr_render_path_for_render_plan(
             &plan,
@@ -248,6 +277,7 @@ impl ImageViewerApp {
             complex_transition_active,
             prefer_sdr_for_pending_gpu_demosaic,
             has_hdr_image || has_hdr_tiled_source || has_sdr_fallback,
+            prefer_embedded_iso_gain_map_sdr_master,
         )
     }
 
@@ -368,6 +398,7 @@ fn hdr_render_path_for_render_plan(
     complex_transition_active: bool,
     prefer_sdr_for_pending_gpu_demosaic: bool,
     has_hdr_content: bool,
+    prefer_embedded_iso_gain_map_sdr_master: bool,
 ) -> Option<HdrRenderPath> {
     // While GPU RAW demosaic is pending the canvas draws the cached SDR bootstrap texture.
     // Suppress the HDR supplemental line so OSD does not advertise float-plane / native HDR
@@ -387,7 +418,11 @@ fn hdr_render_path_for_render_plan(
     }
 
     if has_hdr_content {
-        Some(HdrRenderPath::SdrFallback)
+        if prefer_embedded_iso_gain_map_sdr_master {
+            Some(HdrRenderPath::EmbeddedSdrMaster)
+        } else {
+            Some(HdrRenderPath::SdrFallback)
+        }
     } else {
         None
     }
@@ -404,6 +439,7 @@ fn hdr_render_path_for_viewer_plan(
     monitor_selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     prefer_sdr_for_pending_gpu_demosaic: bool,
     force_hdr_plane_after_raw_demosaic: bool,
+    prefer_embedded_iso_gain_map_sdr_master: bool,
 ) -> Option<HdrRenderPath> {
     use crate::app::rendering::plan::build_render_plan_for_state;
 
@@ -425,6 +461,7 @@ fn hdr_render_path_for_viewer_plan(
         monitor_selection,
         prefer_sdr_for_pending_gpu_demosaic,
         force_hdr_plane_after_raw_demosaic,
+        prefer_embedded_iso_gain_map_sdr_master,
     );
     hdr_render_path_for_render_plan(
         &plan,
@@ -432,6 +469,7 @@ fn hdr_render_path_for_viewer_plan(
         complex_transition_active,
         prefer_sdr_for_pending_gpu_demosaic,
         has_hdr_image || has_hdr_tiled_source || has_sdr_fallback,
+        prefer_embedded_iso_gain_map_sdr_master,
     )
 }
 
@@ -470,6 +508,7 @@ mod tests {
                 Some(&monitor),
                 false,
                 false,
+                false,
             ),
             Some(HdrRenderPath::FloatTilePlane)
         );
@@ -479,7 +518,7 @@ mod tests {
     fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
         assert_eq!(
             hdr_render_path_for_viewer_plan(
-                true, true, false, true, None, false, None, false, false
+                true, true, false, true, None, false, None, false, false, false
             ),
             Some(HdrRenderPath::SdrFallback)
         );
@@ -497,6 +536,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 true,
                 Some(&monitor),
+                false,
                 false,
                 false,
             ),
@@ -518,6 +558,7 @@ mod tests {
                 Some(&monitor),
                 true,
                 false,
+                false,
             ),
             None
         );
@@ -534,6 +575,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
                 None,
+                false,
                 false,
                 false,
             ),
@@ -556,8 +598,28 @@ mod tests {
                 None,
                 false,
                 false,
+                false,
             ),
             Some(HdrRenderPath::FloatImagePlane)
+        );
+    }
+
+    #[test]
+    fn embedded_iso_gain_map_sdr_master_reports_embedded_render_path() {
+        assert_eq!(
+            hdr_render_path_for_viewer_plan(
+                false,
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Bgra8Unorm),
+                false,
+                None,
+                false,
+                false,
+                true,
+            ),
+            Some(HdrRenderPath::EmbeddedSdrMaster)
         );
     }
 
@@ -632,6 +694,7 @@ mod tests {
                     hdr_target_format,
                     complex_transition_active,
                     monitor_selection,
+                    false,
                     false,
                     false,
                 ),

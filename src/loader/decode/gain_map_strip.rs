@@ -26,26 +26,6 @@ type StripWithLogicalSize = (DecodedImage, (u32, u32));
 pub(crate) struct FastGainMapStripResult {
     pub preview: DecodedImage,
     pub logical_size: (u32, u32),
-    /// ISO forward gain-map compose is already applied at strip size.
-    pub is_hdr_composed_strip: bool,
-}
-
-impl FastGainMapStripResult {
-    fn composed(preview: DecodedImage, logical_size: (u32, u32)) -> Self {
-        Self {
-            preview,
-            logical_size,
-            is_hdr_composed_strip: true,
-        }
-    }
-
-    fn interim(preview: DecodedImage, logical_size: (u32, u32)) -> Self {
-        Self {
-            preview,
-            logical_size,
-            is_hdr_composed_strip: false,
-        }
-    }
 }
 
 fn finish_gain_map_strip(
@@ -80,7 +60,10 @@ fn finish_gain_map_strip_result(
     path: &Path,
 ) -> Result<FastGainMapStripResult, String> {
     finish_gain_map_strip(baseline, width, height, max_side, path)
-        .map(|pair| FastGainMapStripResult::interim(pair.0, pair.1))
+        .map(|(preview, logical_size)| FastGainMapStripResult {
+            preview,
+            logical_size,
+        })
 }
 
 /// Try a lightweight ISO gain-map baseline decode for directory-tree strips.
@@ -92,7 +75,6 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
     path: &Path,
     file_bytes: Option<&[u8]>,
     max_side: u32,
-    gain_map_compose_capacity: f32,
 ) -> Option<Result<FastGainMapStripResult, String>> {
     let ext = path
         .extension()
@@ -139,7 +121,10 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
                             strip.width, strip.height
                         ));
                     }
-                    Ok(FastGainMapStripResult::interim(strip, (lw, lh)))
+                    Ok(FastGainMapStripResult {
+                        preview: strip,
+                        logical_size: (lw, lh),
+                    })
                 }));
             }
             match crate::hdr::jpegxl::decode_jxl_strip_iso_gain_map_baseline(bytes) {
@@ -150,17 +135,6 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
                 }
                 Err(err) if err.allows_compose_fallback() => {}
                 Err(err) => return Some(Err(err.to_string())),
-            }
-            if let Ok((strip, logical)) =
-                crate::loader::directory_tree_strip_composed_from_gain_map_path(
-                    path,
-                    Some(bytes),
-                    max_side,
-                    gain_map_compose_capacity,
-                )
-                && preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1)
-            {
-                return Some(Ok(FastGainMapStripResult::composed(strip, logical)));
             }
         }
         #[cfg(not(feature = "jpegxl"))]
@@ -173,32 +147,23 @@ pub(crate) fn try_fast_iso_gain_map_strip_from_path(
             if let Some(result) =
                 crate::hdr::avif::decode_avif_strip_exif_thumbnail(bytes, path, max_side)
             {
-                return Some(
-                    result.map(|(preview, logical)| {
-                        FastGainMapStripResult::interim(preview, logical)
-                    }),
-                );
+                return Some(result.map(|(preview, logical)| FastGainMapStripResult {
+                    preview,
+                    logical_size: logical,
+                }));
             }
             match crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes) {
                 None | Some(crate::hdr::avif::AvifGainMapStripProbe::NoGainMap) => return None,
                 Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
                 | Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap) => {}
             }
-            if let Some(result) = crate::hdr::avif::try_decode_avif_gain_map_strip_fast(
-                bytes,
-                path,
-                max_side,
-                gain_map_compose_capacity,
-            ) {
-                return Some(result.map(|fast| {
-                    if fast.is_hdr_composed_strip {
-                        FastGainMapStripResult::composed(fast.preview, fast.logical_size)
-                    } else {
-                        FastGainMapStripResult::interim(fast.preview, fast.logical_size)
-                    }
-                }));
-            }
-            return None;
+            return crate::hdr::avif::try_decode_avif_gain_map_strip_fast(bytes, path, max_side)
+                .map(|result| {
+                    result.map(|fast| FastGainMapStripResult {
+                        preview: fast.preview,
+                        logical_size: fast.logical_size,
+                    })
+                });
         }
         #[cfg(not(feature = "avif-native"))]
         return None;

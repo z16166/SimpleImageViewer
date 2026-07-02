@@ -450,3 +450,13 @@ fn align_apple_gain_map_exif_rotates_even_when_gain_matches_ispe_dimensions() {
     );
     assert_eq!((out_w, out_h), (height, width));
 }
+
+#[cfg(feature = "heif-native")]
+#[test]
+fn embedded_sdr_primary_load_gate_requires_sdr_output_and_setting() {
+    use super::load::heif_should_use_embedded_sdr_primary_load;
+
+    assert!(heif_should_use_embedded_sdr_primary_load(true, 1.0));
+    assert!(!heif_should_use_embedded_sdr_primary_load(false, 1.0));
+    assert!(!heif_should_use_embedded_sdr_primary_load(true, 4.0));
+}

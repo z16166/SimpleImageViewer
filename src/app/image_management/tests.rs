@@ -866,8 +866,50 @@ fn background_preload_schedule_with_force_neighbors() {
     assert!(app.loader.is_loading(1));
 }
 
-#[test]
-fn startup_target_detects_explicit_image_or_resume_image() {
+    #[test]
+    fn schedule_preloads_only_requests_neighbors_within_retention_window() {
+        let mut app = make_test_app();
+        app.image_files = (0..10)
+            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+            .collect();
+        app.current_index = 0;
+        app.settings.preload = true;
+        app.cached_available_memory_mb = 8192;
+        app.cached_total_memory_mb = 16384;
+        app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+        app.hdr_image_cache.insert(
+            0,
+            std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                    crate::hdr::types::HdrColorSpace::LinearSrgb,
+                ),
+                rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
+            }),
+        );
+
+        app.schedule_preloads(true);
+
+        for idx in 3..=7 {
+            assert!(
+                !app.loader.is_loading(idx),
+                "unexpected preload outside retention window for idx={idx}"
+            );
+        }
+        assert!(
+            app.loader.is_loading(1)
+                || app.loader.is_loading(2)
+                || app.loader.is_loading(8)
+                || app.loader.is_loading(9),
+            "expected at least one in-window neighbor preload"
+        );
+    }
+
+    #[test]
+    fn startup_target_detects_explicit_image_or_resume_image() {
     let explicit = PathBuf::from("explicit.jpg");
     let resumed = PathBuf::from("resumed.jpg");
 
@@ -990,6 +1032,175 @@ fn current_preview_updates_are_not_deferred_during_transition() {
     assert!(!should_defer_preview_update_during_transition(true, true));
     assert!(should_defer_preview_update_during_transition(false, true));
     assert!(!should_defer_preview_update_during_transition(false, false));
+}
+
+#[test]
+fn capture_transition_prefers_sdr_texture_for_embedded_iso_gain_map() {
+    use crate::hdr::types::{HdrGainMapMetadata, IsoGainMapGpuSource};
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    let iso_sdr = vec![128_u8, 64, 32, 255];
+    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "AVIF",
+        target_hdr_capacity: Some(4.0),
+        diagnostic: String::new(),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: Some(IsoGainMapGpuSource {
+            sdr_rgba: Arc::new(iso_sdr.clone()),
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            metadata: crate::hdr::gain_map::GainMapMetadata {
+                gain_map_min: [0.0; 3],
+                gain_map_max: [1.0; 3],
+                gamma: [1.0; 3],
+                offset_sdr: [0.0; 3],
+                offset_hdr: [0.0; 3],
+                hdr_capacity_min: 1.0,
+                hdr_capacity_max: 4.0,
+                backward_direction: false,
+            },
+        }),
+    });
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_hdr_sdr_fallback_texture(0, &DecodedImage::new(1, 1, iso_sdr), &ctx);
+
+    let (texture, transition_hdr) = app.capture_transition_source_at_index(0, &ctx);
+    assert!(texture.is_some());
+    assert!(
+        transition_hdr.is_none(),
+        "embedded SDR master outgoing transition must reuse SDR texture, not HDR plane"
+    );
+}
+
+#[test]
+fn capture_transition_keeps_hdr_plane_for_tone_mapped_iso_gain_map() {
+    use crate::hdr::types::{HdrGainMapMetadata, IsoGainMapGpuSource};
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+    let iso_sdr = vec![128_u8, 64, 32, 255];
+    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "AVIF",
+        target_hdr_capacity: Some(4.0),
+        diagnostic: String::new(),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: Some(IsoGainMapGpuSource {
+            sdr_rgba: Arc::new(iso_sdr.clone()),
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            metadata: crate::hdr::gain_map::GainMapMetadata {
+                gain_map_min: [0.0; 3],
+                gain_map_max: [1.0; 3],
+                gamma: [1.0; 3],
+                offset_sdr: [0.0; 3],
+                offset_hdr: [0.0; 3],
+                hdr_capacity_min: 1.0,
+                hdr_capacity_max: 4.0,
+                backward_direction: false,
+            },
+        }),
+    });
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_hdr_sdr_fallback_texture(0, &DecodedImage::new(1, 1, iso_sdr), &ctx);
+
+    let (_, transition_hdr) = app.capture_transition_source_at_index(0, &ctx);
+    assert!(transition_hdr.is_some());
+}
+
+#[test]
+fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
+    use crate::hdr::types::{HdrGainMapMetadata, IsoGainMapGpuSource};
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    let iso_sdr = vec![128_u8, 64, 32, 255];
+    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "AVIF",
+        target_hdr_capacity: Some(4.0),
+        diagnostic: String::new(),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: Some(IsoGainMapGpuSource {
+            sdr_rgba: Arc::new(iso_sdr.clone()),
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            metadata: crate::hdr::gain_map::GainMapMetadata {
+                gain_map_min: [0.0; 3],
+                gain_map_max: [1.0; 3],
+                gamma: [1.0; 3],
+                offset_sdr: [0.0; 3],
+                offset_hdr: [0.0; 3],
+                hdr_capacity_min: 1.0,
+                hdr_capacity_max: 4.0,
+                backward_direction: false,
+            },
+        }),
+    });
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    app.insert_deferred_sdr_upload(0, DecodedImage::new(1, 1, iso_sdr));
+
+    let ctx = egui::Context::default();
+    assert!(
+        !app.active_hdr_plane_displays_index(0),
+        "embedded SDR master should route through SDR texture, not HDR plane"
+    );
+    app.flush_deferred_sdr_upload_for_index(0, &ctx);
+
+    assert!(app.texture_cache.contains(0));
+    assert!(!app.deferred_sdr_uploads.contains_key(&0));
 }
 
 #[test]
@@ -1612,10 +1823,9 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         embedded_directory_tree_panel_bootstrapped: false,
         directory_tree_strip_cache:
             crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
-        directory_tree_strip_compose_probe_cache:
-            crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache::default(),
         directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
+        directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
         directory_tree_strip_preview_tx: {
             let (tx, _rx) = crossbeam_channel::unbounded();
@@ -2173,8 +2383,71 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
     );
 }
 
-#[test]
-fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
+    #[test]
+    fn flush_prefetch_neighbor_uploads_deferred_sdr_to_texture_cache() {
+        let mut app = make_test_app();
+        app.image_files = (0..10)
+            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+            .collect();
+        app.current_index = 2;
+        app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+        app.insert_deferred_sdr_upload(3, DecodedImage::new(1, 1, vec![1, 2, 3, 4]));
+
+        let ctx = egui::Context::default();
+        assert!(app.flush_deferred_sdr_for_completed_prefetch_neighbor(3, &ctx));
+        assert!(app.texture_cache.contains(3));
+        assert!(!app.deferred_sdr_uploads.contains_key(&3));
+    }
+
+    #[test]
+    fn navigate_inflight_reuse_promotes_neighbor_without_duplicate_load() {
+        use crate::loader::LoadIntent;
+        use eframe::egui;
+
+        let mut app = make_test_app();
+        app.image_files = (0..10)
+            .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
+            .collect();
+        app.current_index = 2;
+        app.loader.test_register_inflight(3);
+
+        let ctx = egui::Context::default();
+        app.navigate_to(3, &ctx);
+
+        assert_eq!(app.current_index, 3);
+        assert!(app.loader.is_loading(3));
+        assert_eq!(
+            app.loader
+                .in_flight_profile(3)
+                .map(|profile| profile.load_intent),
+            Some(LoadIntent::Current)
+        );
+    }
+
+    #[test]
+    fn navigate_preserves_in_window_neighbor_loader_registrations() {
+        use eframe::egui;
+
+        let mut app = make_test_app();
+        app.image_files = (0..10)
+            .map(|i| PathBuf::from(format!("img{i}.jpg")))
+            .collect();
+        app.current_index = 2;
+        app.loader.test_register_inflight(3);
+        app.loader.test_register_inflight(4);
+
+        let ctx = egui::Context::default();
+        app.navigate_to(3, &ctx);
+
+        assert_eq!(app.current_index, 3);
+        assert!(
+            app.loader.is_loading(4),
+            "forward neighbor preload within retention window should survive navigation"
+        );
+    }
+
+    #[test]
+    fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     use crate::loader::RenderShape;
     use eframe::egui;
 

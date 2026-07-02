@@ -42,7 +42,7 @@ impl ImageViewerApp {
 
         // Prefer the HDR buffer already on screen (`current_hdr_image`) so the outgoing
         // transition plane reuses the same GPU binding instead of re-uploading/re-composing.
-        let hdr = if index == self.current_index {
+        let mut hdr = if index == self.current_index {
             self.current_hdr_image
                 .as_ref()
                 .and_then(|current| current.image_for_index(index))
@@ -67,6 +67,15 @@ impl ImageViewerApp {
             self.effective_hdr_display_output().is_some(),
         ) {
             texture = None;
+        }
+
+        // Outgoing transitions must reuse the same pixels the canvas was showing. Embedded SDR
+        // master draws the 8-bit fallback texture; routing the outgoing frame through the HDR
+        // float plane re-composes and looks noticeably dimmer for one or more frames.
+        if hdr.as_ref().is_some_and(|buffer| {
+            self.hdr_prefers_embedded_sdr_master_on_output(buffer) && texture.is_some()
+        }) {
+            hdr = None;
         }
 
         (texture, hdr)
@@ -323,7 +332,6 @@ impl ImageViewerApp {
             &mut self.prefetched_tiles,
         );
         self.set_current_index(target_index);
-        self.cancel_loader_tasks_except_current();
         self.refresh_current_file_name();
         self.current_hdr_image = self
             .first_cached_hdr_still_for_index(self.current_index)
@@ -461,6 +469,7 @@ impl ImageViewerApp {
                 self.installed_display_mode(self.current_index),
                 self.tile_manager.is_some()
             );
+            self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
             let needs_tile_manager_rebuild = (self.index_uses_tiled_pipeline(self.current_index)
                 || self
                     .hdr_tiled_source_cache
@@ -495,25 +504,43 @@ impl ImageViewerApp {
             }
         } else {
             let idx = self.current_index;
-            let missing_hdr = raw_hq_navigate_missing_hdr_plane(
-                &self.image_files,
-                idx,
-                self.settings.raw_high_quality,
-                &self.hdr_image_cache,
-                &self.hdr_tiled_source_cache,
-            );
-            if missing_hdr && self.loader.is_loading(idx) {
-                crate::preload_debug!("[PreloadDebug][RAW] navigate inflight_reuse idx={}", idx);
-                if self.current_image_res.is_none()
-                    && let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
-                        self.deferred_sdr_uploads
-                            .get(&idx)
-                            .map(|d| (d.width, d.height))
-                    })
+            if self.loader.is_loading(idx) {
+                self.loader.promote_inflight_to_current(idx);
+                #[cfg(feature = "preload-debug")]
                 {
-                    self.set_current_image_resolution(Some((w, h)));
+                    let missing_hdr = raw_hq_navigate_missing_hdr_plane(
+                        &self.image_files,
+                        idx,
+                        self.settings.raw_high_quality,
+                        &self.hdr_image_cache,
+                        &self.hdr_tiled_source_cache,
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug] navigate inflight_reuse idx={} raw_hq={} missing_hdr={}",
+                        idx,
+                        self.settings.raw_high_quality,
+                        missing_hdr
+                    );
                 }
+                if self.current_image_res.is_none() {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(idx) {
+                        self.set_current_image_resolution(Some((w, h)));
+                    } else if let Some(hdr) = self.hdr_image_cache.get(&idx) {
+                        self.set_current_image_resolution(Some((hdr.width, hdr.height)));
+                    } else if let Some(decoded) = self.deferred_sdr_uploads.get(&idx) {
+                        self.set_current_image_resolution(Some((decoded.width, decoded.height)));
+                    }
+                }
+                self.flush_deferred_sdr_upload_for_index(idx, ctx);
             } else {
+                #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+                let missing_hdr = raw_hq_navigate_missing_hdr_plane(
+                    &self.image_files,
+                    idx,
+                    self.settings.raw_high_quality,
+                    &self.hdr_image_cache,
+                    &self.hdr_tiled_source_cache,
+                );
                 #[cfg(feature = "preload-debug")]
                 {
                     let bootstrap_only = missing_hdr

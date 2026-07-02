@@ -18,13 +18,12 @@
 
 use std::path::Path;
 
-use super::decode::{avif_image_duplicate_for_strip_fallback, read_avif_decoder_image};
+use super::decode::read_avif_decoder_image;
 use super::gain_map::avif_gain_map_to_metadata;
 use super::strip_baseline::{
     decode_avif_strip_iso_gain_map_baseline_from_image,
     decode_avif_strip_precomposed_hdr_from_image,
 };
-use super::strip_compose::decode_avif_strip_iso_gain_map_composed_from_image;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
@@ -33,7 +32,6 @@ use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 pub(crate) struct AvifGainMapStripFastResult {
     pub preview: DecodedImage,
     pub logical_size: (u32, u32),
-    pub is_hdr_composed_strip: bool,
 }
 
 #[cfg(feature = "avif-native")]
@@ -64,17 +62,15 @@ fn finish_baseline_interim_strip(
     Ok(AvifGainMapStripFastResult {
         preview: strip,
         logical_size: (width, height),
-        is_hdr_composed_strip: false,
     })
 }
 
-/// One `read_avif_decoder_image` then precomposed / composed (+ baseline fallback on compose err).
+/// One `read_avif_decoder_image` then precomposed HDR or ISO baseline strip decode.
 #[cfg(feature = "avif-native")]
 pub(crate) fn try_decode_avif_gain_map_strip_fast(
     bytes: &[u8],
     path: &Path,
     max_side: u32,
-    gain_map_compose_capacity: f32,
 ) -> OptionalFastResult {
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
@@ -99,35 +95,16 @@ pub(crate) fn try_decode_avif_gain_map_strip_fast(
             opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
                 preview,
                 logical_size,
-                is_hdr_composed_strip: false,
             })
         });
     }
 
-    let backup = avif_image_duplicate_for_strip_fallback(&image).ok();
-    match decode_avif_strip_iso_gain_map_composed_from_image(
-        image,
-        bytes,
-        path,
-        max_side,
-        gain_map_compose_capacity,
-    ) {
-        Some(Ok((preview, logical_size))) => Some(Ok(AvifGainMapStripFastResult {
-            preview,
-            logical_size,
-            is_hdr_composed_strip: true,
-        })),
-        Some(Err(err)) => {
-            if let Some(backup) = backup
-                && let Some(Ok((baseline, width, height))) =
-                    decode_avif_strip_iso_gain_map_baseline_from_image(backup, path)
-            {
-                return Some(finish_baseline_interim_strip(
-                    baseline, width, height, max_side, path,
-                ));
-            }
-            Some(Err(err))
-        }
-        None => None,
+    if let Some(Ok((baseline, width, height))) =
+        decode_avif_strip_iso_gain_map_baseline_from_image(image, path)
+    {
+        return Some(finish_baseline_interim_strip(
+            baseline, width, height, max_side, path,
+        ));
     }
+    None
 }

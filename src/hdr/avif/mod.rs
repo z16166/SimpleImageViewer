@@ -30,8 +30,6 @@ mod sequence;
 #[cfg(feature = "avif-native")]
 mod strip_baseline;
 #[cfg(feature = "avif-native")]
-mod strip_compose;
-#[cfg(feature = "avif-native")]
 mod strip_fast;
 
 #[cfg(test)]
@@ -60,8 +58,6 @@ pub(crate) use orientation::{
 pub(crate) use sequence::try_decode_avif_image_sequence_hdr;
 #[cfg(feature = "avif-native")]
 pub(crate) use strip_baseline::decode_avif_strip_exif_thumbnail;
-#[cfg(feature = "avif-native")]
-pub(crate) use strip_compose::decode_avif_strip_iso_gain_map_composed;
 #[cfg(feature = "avif-native")]
 pub(crate) use strip_fast::try_decode_avif_gain_map_strip_fast;
 

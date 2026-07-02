@@ -651,6 +651,10 @@ impl ImageViewerApp {
 
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
+        permute_usize_set(
+            &mut self.directory_tree_strip_cold_awaiting_main_loader,
+            old_to_new,
+        );
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         self.invalidate_random_slideshow_order();
     }

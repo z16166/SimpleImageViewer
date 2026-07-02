@@ -63,6 +63,7 @@ impl RenderPlan {
             output_mode,
             false,
             false,
+            false,
         )
     }
 
@@ -74,6 +75,7 @@ impl RenderPlan {
         output_mode: HdrRenderOutputMode,
         prefer_sdr_for_pending_gpu_demosaic: bool,
         force_hdr_plane_after_raw_demosaic: bool,
+        prefer_embedded_iso_gain_map_sdr_master: bool,
     ) -> Self {
         let backend = select_render_backend(
             has_hdr_plane,
@@ -82,6 +84,7 @@ impl RenderPlan {
             output_mode,
             prefer_sdr_for_pending_gpu_demosaic,
             force_hdr_plane_after_raw_demosaic,
+            prefer_embedded_iso_gain_map_sdr_master,
         );
         let active_plane = match backend {
             PlaneBackendKind::Sdr => PixelPlaneKind::Sdr,
@@ -108,6 +111,7 @@ pub(crate) fn build_render_plan_for_state(
     monitor_selection: Option<&HdrMonitorSelection>,
     prefer_sdr_for_pending_gpu_demosaic: bool,
     force_hdr_plane_after_raw_demosaic: bool,
+    prefer_embedded_iso_gain_map_sdr_master: bool,
 ) -> RenderPlan {
     let output_mode =
         crate::hdr::monitor::effective_render_output_mode(target_format, monitor_selection);
@@ -119,6 +123,7 @@ pub(crate) fn build_render_plan_for_state(
         output_mode,
         prefer_sdr_for_pending_gpu_demosaic,
         force_hdr_plane_after_raw_demosaic,
+        prefer_embedded_iso_gain_map_sdr_master,
     )
 }
 
@@ -152,6 +157,20 @@ impl ImageViewerApp {
             self.effective_hdr_monitor_selection().as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
             self.raw_gpu_demosaic_await_hdr_present,
+            self.prefer_embedded_iso_gain_map_sdr_master(),
+        )
+    }
+
+    fn prefer_embedded_iso_gain_map_sdr_master(&self) -> bool {
+        let output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.effective_hdr_target_format(),
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        let hdr = self.hdr_image_cache.get(&self.current_index);
+        crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+            &self.settings,
+            output_mode,
+            hdr.map(|entry| entry.as_ref()),
         )
     }
 }
@@ -178,6 +197,7 @@ pub(crate) fn select_render_backend(
     output_mode: HdrRenderOutputMode,
     prefer_sdr_for_pending_gpu_demosaic: bool,
     force_hdr_plane_after_raw_demosaic: bool,
+    prefer_embedded_iso_gain_map_sdr_master: bool,
 ) -> PlaneBackendKind {
     if prefer_sdr_for_pending_gpu_demosaic {
         return PlaneBackendKind::Sdr;
@@ -185,11 +205,12 @@ pub(crate) fn select_render_backend(
     if force_hdr_plane_after_raw_demosaic && has_hdr_plane && has_hdr_target {
         return PlaneBackendKind::Hdr;
     }
+    let tone_map_via_hdr_plane = output_mode == HdrRenderOutputMode::SdrToneMapped
+        && !prefer_embedded_iso_gain_map_sdr_master;
     if has_hdr_plane
         && ((!has_sdr_fallback)
             || (has_hdr_target
-                && (output_mode.is_native_hdr()
-                    || output_mode == HdrRenderOutputMode::SdrToneMapped)))
+                && (output_mode.is_native_hdr() || tone_map_via_hdr_plane)))
     {
         PlaneBackendKind::Hdr
     } else {
@@ -282,6 +303,7 @@ mod tests {
             HdrRenderOutputMode::SdrToneMapped,
             false,
             false,
+            false,
         );
         assert_eq!(plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
@@ -295,6 +317,7 @@ mod tests {
             /* has_sdr_fallback */ false,
             Some(wgpu::TextureFormat::Bgra8Unorm),
             HdrRenderOutputMode::SdrToneMapped,
+            false,
             false,
             false,
         );
@@ -348,6 +371,7 @@ mod tests {
             Some(&non_hdr_monitor),
             false,
             false,
+            false,
         );
         assert_eq!(sdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -363,6 +387,7 @@ mod tests {
             Some(&hdr_monitor),
             false,
             false,
+            false,
         );
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -376,6 +401,7 @@ mod tests {
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
             Some(&hdr_monitor),
+            false,
             false,
             false,
         );
@@ -396,6 +422,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -414,6 +441,23 @@ mod tests {
             HdrRenderOutputMode::NativeHdr,
             true,
             false,
+            false,
+        );
+        assert_eq!(plan.backend, PlaneBackendKind::Sdr);
+        assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
+    }
+
+    #[test]
+    fn render_plan_stays_on_sdr_for_embedded_iso_gain_map_master_on_sdr_output() {
+        let plan = super::RenderPlan::new_with_sdr_fallback(
+            super::RenderShape::Static,
+            true,
+            true,
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+            HdrRenderOutputMode::SdrToneMapped,
+            false,
+            false,
+            true,
         );
         assert_eq!(plan.backend, PlaneBackendKind::Sdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
@@ -429,6 +473,7 @@ mod tests {
             HdrRenderOutputMode::NativeHdr,
             false,
             true,
+            false,
         );
         assert_eq!(plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);

@@ -30,13 +30,14 @@ mod modern;
 mod raster;
 mod raw;
 pub(crate) use raw::open_raw_processor_with_preview;
-mod strip_compose_probe;
 mod strip_downsample;
 mod tiff_raw_sniff;
 
-pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_decode_from_path;
+pub(crate) use directory_tree_thumb::{
+    DirectoryTreeThumbDecodeOptions, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    generate_directory_tree_thumb_decode_from_path,
+};
 pub(crate) use raster::is_maybe_animated;
-pub(crate) use strip_compose_probe::path_needs_directory_tree_strip_compose_upgrade;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
@@ -73,6 +74,7 @@ pub(crate) struct ImageLoadRequest<'a> {
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Option<&'a crate::loader::orchestrator::RawOpenPrefetch>,
+    pub(crate) prefer_embedded_sdr_master: bool,
 }
 
 pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
@@ -87,6 +89,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         hdr_target_capacity,
         hdr_tone_map,
         raw_open_prefetch,
+        prefer_embedded_sdr_master,
     } = request;
     let file_name = path
         .file_name()
@@ -242,6 +245,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             idx: Some(index),
                             path: Some(path),
                         },
+                        prefer_embedded_sdr_master,
                     )
                 },
             );

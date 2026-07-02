@@ -69,6 +69,7 @@ struct LoadWorkerInput {
     wgpu_is_opengl: bool,
     wgpu_device_id_live: Arc<AtomicU64>,
     hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
+    embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ImageLoader {
@@ -133,6 +134,8 @@ impl ImageLoader {
         let hdr_tone_max_display_nits_bits =
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
         let hdr_callback_upload_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let embedded_iso_gain_map_sdr_master =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
@@ -207,6 +210,9 @@ impl ImageLoader {
                             wgpu_device_id_live: Arc::clone(&job.wgpu_device_id_live),
                             hdr_callback_upload_active_live: Arc::clone(
                                 &job.hdr_callback_upload_active_live,
+                            ),
+                            embedded_iso_gain_map_sdr_master_live: Arc::clone(
+                                &job.embedded_iso_gain_map_sdr_master_live,
                             ),
                         });
                     }
@@ -634,6 +640,7 @@ impl ImageLoader {
             hdr_tone_sdr_white_nits_bits,
             hdr_tone_max_display_nits_bits,
             hdr_callback_upload_active,
+            embedded_iso_gain_map_sdr_master,
             wgpu_device: None,
             wgpu_queue: None,
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
@@ -717,16 +724,15 @@ impl ImageLoader {
             .write_navigation(current_index, image_count, max_distance);
     }
 
-    pub fn cancel_all_except(&mut self, keep_index: usize) {
-        let cancelled: Vec<usize> = {
-            let loading = self.loading.lock();
-            loading
-                .keys()
-                .filter(|&&idx| idx != keep_index)
-                .copied()
-                .collect()
+    /// Upgrade an in-flight neighbor registration to [`LoadIntent::Current`] without spawning
+    /// a second decode worker (navigation reuse).
+    pub fn promote_inflight_to_current(&mut self, index: usize) -> bool {
+        let mut loading = self.loading.lock();
+        let Some(entry) = loading.get_mut(&index) else {
+            return false;
         };
-        self.cancel_indices(cancelled);
+        entry.profile.load_intent = LoadIntent::Current;
+        true
     }
 
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
@@ -791,6 +797,11 @@ impl ImageLoader {
     pub fn set_hdr_callback_upload_active(&self, active: bool) {
         self.hdr_callback_upload_active
             .store(active, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn set_embedded_iso_gain_map_sdr_master(&self, enabled: bool) {
+        self.embedded_iso_gain_map_sdr_master
+            .store(enabled, std::sync::atomic::Ordering::Release);
     }
 
     fn hdr_target_capacity(&self) -> f32 {
@@ -898,6 +909,8 @@ impl ImageLoader {
         let wgpu_is_opengl = self.wgpu_is_opengl;
         let wgpu_device_id_live = Arc::clone(&self.wgpu_device_id);
         let hdr_callback_upload_active_live = Arc::clone(&self.hdr_callback_upload_active);
+        let embedded_iso_gain_map_sdr_master_live =
+            Arc::clone(&self.embedded_iso_gain_map_sdr_master);
 
         if path_is_raw {
             crate::preload_debug!(
@@ -914,6 +927,8 @@ impl ImageLoader {
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
         let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
+        let embedded_iso_gain_map_sdr_master_live_spawn =
+            Arc::clone(&embedded_iso_gain_map_sdr_master_live);
         let run_worker = move || {
             {
                 let loading = loading1.lock();
@@ -950,6 +965,7 @@ impl ImageLoader {
                 wgpu_is_opengl,
                 wgpu_device_id_live: wgpu_device_id_live_spawn,
                 hdr_callback_upload_active_live: hdr_callback_upload_active_live_spawn,
+                embedded_iso_gain_map_sdr_master_live: embedded_iso_gain_map_sdr_master_live_spawn,
             });
         };
         if load_intent == LoadIntent::Current {
@@ -1047,6 +1063,7 @@ impl ImageLoader {
             wgpu_is_opengl,
             wgpu_device_id_live,
             hdr_callback_upload_active_live,
+            embedded_iso_gain_map_sdr_master_live,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -1102,6 +1119,7 @@ impl ImageLoader {
             wgpu_is_opengl,
             wgpu_device_id_live,
             hdr_callback_upload_active_live,
+            embedded_iso_gain_map_sdr_master_live,
         } = input;
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -1125,6 +1143,8 @@ impl ImageLoader {
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
+                prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
+                    .load(std::sync::atomic::Ordering::Acquire),
             })
         }))
         .unwrap_or_else(|e| {
@@ -1200,6 +1220,7 @@ impl ImageLoader {
                 hdr,
                 hdr_target_capacity,
                 hdr_callback_upload_active_live.load(std::sync::atomic::Ordering::Acquire),
+                embedded_iso_gain_map_sdr_master_live.load(std::sync::atomic::Ordering::Acquire),
             )
         {
             match crate::hdr::renderer::upload_image_plane(device, queue, hdr) {

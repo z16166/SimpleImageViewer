@@ -15,7 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::ImageViewerApp;
-use crate::hdr::renderer::predicted_hdr_callback_target_format;
+use crate::hdr::renderer::{
+    hdr_callback_formats_to_prewarm, predicted_hdr_callback_target_format,
+};
 
 impl ImageViewerApp {
     pub(crate) fn hdr_callback_prewarm_target_format(&self) -> Option<wgpu::TextureFormat> {
@@ -31,9 +33,24 @@ impl ImageViewerApp {
         )
     }
 
+    pub(crate) fn hdr_callback_formats_to_prewarm(&self) -> Vec<wgpu::TextureFormat> {
+        hdr_callback_formats_to_prewarm(
+            crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+                self.settings.hdr_native_surface_enabled_effective(),
+                self.hdr_capabilities.backend,
+            ),
+            self.hdr_capabilities.candidate_texture_format,
+            self.effective_hdr_target_format(),
+        )
+    }
+
     pub(crate) fn sync_loader_hdr_callback_upload_snapshot(&self) {
         self.loader
             .set_hdr_callback_upload_active(self.hdr_callback_prewarm_target_format().is_some());
+        self.loader.set_embedded_iso_gain_map_sdr_master(
+            self.settings.hdr_gain_map_sdr_display
+                == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster,
+        );
     }
 
     /// Keep loader worker `device_id` and GPU handles aligned with the live painter Device.
@@ -72,24 +89,31 @@ impl ImageViewerApp {
         let Some(wgpu_state) = frame.wgpu_render_state() else {
             return;
         };
-        let Some(format) = self.hdr_callback_prewarm_target_format() else {
+        let formats = self.hdr_callback_formats_to_prewarm();
+        if formats.is_empty() {
             return;
-        };
+        }
 
-        self.hdr_callback_resources_prewarm.ensure_started(
-            &wgpu_state.device,
-            format,
-            self.wgpu_pipeline_cache.as_deref(),
-        );
+        for format in formats {
+            self.hdr_callback_resources_prewarm.ensure_started(
+                &wgpu_state.device,
+                format,
+                self.wgpu_pipeline_cache.as_deref(),
+            );
+        }
 
         let mut renderer = wgpu_state.renderer.write();
         crate::hdr::renderer::HdrCallbackResourcesPrewarm::ensure_prewarm_slot(
             &mut renderer.callback_resources,
             &self.hdr_callback_resources_prewarm,
         );
-        if self
-            .hdr_callback_resources_prewarm
-            .inject_ready_into_callback_resources(format, &mut renderer.callback_resources)
+        let mut injected = false;
+        for format in self.hdr_callback_formats_to_prewarm() {
+            injected |= self
+                .hdr_callback_resources_prewarm
+                .inject_ready_into_callback_resources(format, &mut renderer.callback_resources);
+        }
+        if injected
             && let (Some(info), Some(cache)) = (
                 self.wgpu_adapter_info.as_ref(),
                 self.wgpu_pipeline_cache.as_deref(),

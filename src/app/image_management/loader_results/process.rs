@@ -446,6 +446,12 @@ impl ImageViewerApp {
                     }
                     sdr_upload_bytes_this_frame =
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
+                    if !is_current
+                        && uploads_this_frame < background_upload_quota
+                        && self.flush_deferred_sdr_for_completed_prefetch_neighbor(idx, ctx)
+                    {
+                        uploads_this_frame += 1;
+                    }
 
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
@@ -702,6 +708,7 @@ impl ImageViewerApp {
                     if is_current {
                         current_refinement_pending = false;
                     }
+                    let fallback_idx = update.index;
                     self.handle_hdr_sdr_fallback_update(update, ctx);
                     uploads_this_frame += 1;
                     if !is_current && estimated_sdr_upload_bytes > 0 {
@@ -709,6 +716,15 @@ impl ImageViewerApp {
                     }
                     sdr_upload_bytes_this_frame =
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
+                    if !is_current
+                        && uploads_this_frame < background_upload_quota
+                        && self.flush_deferred_sdr_for_completed_prefetch_neighbor(
+                            fallback_idx,
+                            ctx,
+                        )
+                    {
+                        uploads_this_frame += 1;
+                    }
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
                         is_current,
@@ -730,6 +746,7 @@ impl ImageViewerApp {
             self.loader.repush_back(output);
         }
         self.try_start_pending_transition_if_ready();
+        self.maybe_schedule_neighbor_preloads_after_current_install();
         #[cfg(feature = "preload-debug")]
         {
             let frame_ms = crate::preload_debug::elapsed_ms(loaded_started);
@@ -770,7 +787,10 @@ impl ImageViewerApp {
         let Some(wgpu_state) = frame.wgpu_render_state() else {
             return abandon_preuploaded_planes(load_result);
         };
-        let Some(format) = self.hdr_callback_prewarm_target_format() else {
+        let Some(format) = self
+            .effective_hdr_target_format()
+            .or_else(|| self.hdr_callback_prewarm_target_format())
+        else {
             return abandon_preuploaded_planes(load_result);
         };
 
@@ -832,7 +852,8 @@ impl ImageViewerApp {
         #[allow(clippy::collapsible_if)]
         if let Some(resources) = renderer
             .callback_resources
-            .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
+            .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for_mut(format))
         {
             if !resources.register_preuploaded_binding(image_key, binding, self.current_device_id) {
                 // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.

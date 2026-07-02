@@ -271,6 +271,7 @@ pub(crate) fn load_via_content_detection(
                     idx: None,
                     path: Some(path),
                 },
+                false,
             );
         }
         return load_bmff_ftyp_container(path, hdr_target_capacity, hdr_tone_map, brand);

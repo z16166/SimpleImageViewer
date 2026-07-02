@@ -17,7 +17,7 @@
 use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
-use crate::app::{MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
+use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
     RenderShape as LoadedRenderShape, TileResult, source_key_for_path,
@@ -1020,15 +1020,6 @@ impl ImageViewerApp {
         if !outside.is_empty() {
             self.loader.cancel_indices(outside);
         }
-    }
-
-    /// Drop all in-flight loader registrations except the current image so navigation
-    /// is not starved behind long neighbor RAW decodes.
-    pub(super) fn cancel_loader_tasks_except_current(&mut self) {
-        if self.image_files.is_empty() {
-            return;
-        }
-        self.loader.cancel_all_except(self.current_index);
     }
 
     pub(super) fn discard_stale_loader_outputs(&mut self) {

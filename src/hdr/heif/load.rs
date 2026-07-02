@@ -32,6 +32,58 @@ use std::path::Path;
 use super::HeifHdrDecodeDiag;
 
 #[cfg(feature = "heif-native")]
+pub(crate) fn load_heif_embedded_sdr_primary(
+    path: &Path,
+    diag: HeifHdrDecodeDiag<'_>,
+) -> Result<crate::loader::ImageData, String> {
+    use super::embedded_sdr::build_heif_embedded_sdr_master_hdr;
+    use super::thumbnail::decode_heif_primary_sdr_from_bytes;
+    use crate::loader::apply_exif_orientation_to_hdr_pair;
+
+    #[cfg(feature = "preload-debug")]
+    let total_start = std::time::Instant::now();
+    #[cfg(not(feature = "preload-debug"))]
+    let _diag = diag;
+
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
+    let (decoded, logical) = decode_heif_primary_sdr_from_bytes(&mmap[..])?;
+    let hdr = build_heif_embedded_sdr_master_hdr(&mmap[..], logical)?;
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, decoded);
+
+    #[cfg(feature = "preload-debug")]
+    {
+        let total_ms = total_start.elapsed().as_millis();
+        let idx = diag
+            .idx
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let path_label = diag
+            .path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        crate::preload_debug!(
+            "[PreloadDebug][HEIF] embedded_sdr_primary total_ms={total_ms} idx={idx} path={path_label} size={}x{}",
+            hdr.width,
+            hdr.height
+        );
+    }
+
+    Ok(crate::loader::ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    })
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn heif_should_use_embedded_sdr_primary_load(
+    prefer_embedded_sdr_master: bool,
+    hdr_target_capacity: f32,
+) -> bool {
+    prefer_embedded_sdr_master && crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
+}
+
+#[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(
     path: &Path,
     hdr_target_capacity: f32,

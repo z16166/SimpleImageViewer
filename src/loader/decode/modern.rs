@@ -153,6 +153,7 @@ pub(crate) fn load_avif_with_target_capacity(
                             hdr_target_capacity,
                             hdr_tone_map,
                             crate::hdr::heif::HeifHdrDecodeDiag::default(),
+                            false,
                         )
                             .map_err(|heif_err| {
                                 format!(
@@ -202,9 +203,24 @@ pub(crate) fn load_heif_hdr_aware(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
+    prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
+        if crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
+            prefer_embedded_sdr_master,
+            hdr_target_capacity,
+        ) {
+            match crate::hdr::heif::load_heif_embedded_sdr_primary(path, diag) {
+                Ok(image) => return Ok(image),
+                Err(err) => {
+                    log::warn!(
+                        "[Loader] HEIF embedded SDR primary failed for {}: {err}; trying full HDR path",
+                        path.display()
+                    );
+                }
+            }
+        }
         match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map, diag) {
             Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
             Err(err) => {
@@ -219,7 +235,7 @@ pub(crate) fn load_heif_hdr_aware(
 
     #[cfg(not(feature = "heif-native"))]
     {
-        let _ = (path, hdr_target_capacity, hdr_tone_map, diag);
+        let _ = (path, hdr_target_capacity, hdr_tone_map, diag, prefer_embedded_sdr_master);
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
                 .to_string(),

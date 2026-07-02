@@ -45,7 +45,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         }
 
-        let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {
+        let Some(resources) = callback_resources
+            .get_mut::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for_mut(self.target_format))
+        else {
             return Vec::new();
         };
 
@@ -497,7 +500,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
-        let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
+        let Some(resources) = callback_resources
+            .get::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for(self.target_format))
+        else {
             return;
         };
         let image_key = HdrImageKey::from_image(&self.image);

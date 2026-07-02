@@ -29,6 +29,7 @@ pub(crate) struct HeifHdrDecodeDiag<'a> {
 #[cfg(feature = "heif-native")]
 mod decode;
 #[cfg(feature = "heif-native")]
+mod embedded_sdr;
 mod gain_map;
 #[cfg(feature = "heif-native")]
 mod load;
@@ -48,7 +49,9 @@ mod tests;
 
 pub(crate) use brand::is_heif_brand;
 #[cfg(feature = "heif-native")]
-pub(crate) use load::load_heif_hdr;
+pub(crate) use load::{
+    heif_should_use_embedded_sdr_primary_load, load_heif_embedded_sdr_primary, load_heif_hdr,
+};
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{
     decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag,
@@ -56,9 +59,8 @@ pub(crate) use orientation::{
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use thumbnail::{
-    HeifThumbProbe, HeifThumbProbeDetail, heif_probe_forward_iso_gain_map,
-    libheif_probe_logical_size_from_bytes, probe_heif_strip_thumbnail,
-    probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
+    HeifThumbProbe, HeifThumbProbeDetail, libheif_probe_logical_size_from_bytes,
+    probe_heif_strip_thumbnail, probe_heif_strip_thumbnail_from_path, try_heif_strip_primary_sdr,
 };
 
 #[cfg(all(test, feature = "heif-native"))]

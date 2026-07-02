@@ -211,14 +211,6 @@ pub(crate) fn libheif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32
     (logical.0 > 0 && logical.1 > 0).then_some(logical)
 }
 
-/// True when the primary image has an Apple ISO forward gain-map auxiliary (header only).
-pub(crate) fn heif_probe_forward_iso_gain_map(bytes: &[u8]) -> bool {
-    let Ok((_ctx, primary)) = open_heif_primary_from_bytes(bytes) else {
-        return false;
-    };
-    super::gain_map::heif_has_apple_hdr_gain_map_auxiliary(primary.as_ptr())
-}
-
 fn decode_heif_handle_to_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
@@ -317,22 +309,15 @@ fn interleaved_image_to_rgba8(
 
 type HeifPrimaryStripResult = Option<Result<(DecodedImage, (u32, u32)), String>>;
 
-/// Decode the primary HEIF item to 8-bit SDR RGBA for directory-tree strips (no gain map auxiliary).
-///
-/// Opens the container independently of [`probe_heif_strip_thumbnail`] (header parse only when
-/// the thumb path already ran); avoids sharing lifetimes between strip fast paths.
-pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPrimaryStripResult {
-    #[cfg(feature = "preload-debug")]
-    let decode_start = std::time::Instant::now();
-
-    let (_ctx, primary) = match open_heif_primary_from_bytes(bytes) {
-        Ok(opened) => opened,
-        Err(err) => return Some(Err(err)),
-    };
+/// Full-resolution primary HEIF item as 8-bit SDR RGBA (no gain-map auxiliary).
+pub(crate) fn decode_heif_primary_sdr_from_bytes(
+    bytes: &[u8],
+) -> Result<(DecodedImage, (u32, u32)), String> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes)?;
     let handle = primary.as_ptr();
     let logical = primary_logical_size(handle);
     if logical.0 == 0 || logical.1 == 0 {
-        return Some(Err("HEIF primary has zero logical size".to_string()));
+        return Err("HEIF primary has zero logical size".to_string());
     }
 
     let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
@@ -341,16 +326,28 @@ pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPri
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
 
-    let decoded = match decode_heif_handle_to_rgba8(handle, decode_opts_ptr) {
-        Ok(image) => image,
-        Err(err) => return Some(Err(err)),
-    };
+    let decoded = decode_heif_handle_to_rgba8(handle, decode_opts_ptr)?;
     if !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1) {
-        return Some(Err(format!(
+        return Err(format!(
             "HEIF primary SDR aspect mismatch: {}x{} vs logical {}x{}",
             decoded.width, decoded.height, logical.0, logical.1
-        )));
+        ));
     }
+    Ok((decoded, logical))
+}
+
+/// Decode the primary HEIF item to 8-bit SDR RGBA for directory-tree strips (no gain map auxiliary).
+///
+/// Opens the container independently of [`probe_heif_strip_thumbnail`] (header parse only when
+/// the thumb path already ran); avoids sharing lifetimes between strip fast paths.
+pub(crate) fn try_heif_strip_primary_sdr(bytes: &[u8], max_side: u32) -> HeifPrimaryStripResult {
+    #[cfg(feature = "preload-debug")]
+    let decode_start = std::time::Instant::now();
+
+    let (decoded, logical) = match decode_heif_primary_sdr_from_bytes(bytes) {
+        Ok(pair) => pair,
+        Err(err) => return Some(Err(err)),
+    };
     let strip = match crate::loader::downsample_decoded_for_strip(&decoded, max_side) {
         Ok(image) => image,
         Err(err) => return Some(Err(err.to_string())),

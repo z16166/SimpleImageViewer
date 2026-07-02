@@ -96,47 +96,6 @@ pub(crate) fn libjxl_probe_orientation_from_path(path: &std::path::Path) -> Opti
     libjxl_probe_orientation_from_bytes(&mmap[..])
 }
 
-/// True when the container carries an ISO forward (non-precomposed) `jhgm` gain map.
-#[cfg(feature = "jpegxl")]
-pub(crate) fn jxl_probe_forward_iso_gain_map(bytes: &[u8]) -> bool {
-    let probe_len = bytes.len().clamp(2, 16);
-    if bytes.len() < 2 || !is_jxl_header(&bytes[..probe_len]) {
-        return false;
-    }
-    let Some(jhgm) = extract_jhgm_box_payload(bytes) else {
-        return false;
-    };
-    let Ok(parsed) = crate::hdr::jxl_gain_map_deferred::parse_jxl_jhgm_box(&jhgm) else {
-        return false;
-    };
-    !parsed.skips_forward_compose
-}
-
-#[cfg(feature = "jpegxl")]
-const JXL_JHGM_BOX_SCAN_LIMIT: usize = 4 * 1024 * 1024;
-
-#[cfg(feature = "jpegxl")]
-fn extract_jhgm_box_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    // jhgm usually follows jxlc near the file head; cap scan cost on huge containers.
-    let scan_limit = bytes.len().min(JXL_JHGM_BOX_SCAN_LIMIT);
-    let mut offset = 0usize;
-    while offset + 8 <= scan_limit {
-        let size = u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);
-        if size < 8 {
-            break;
-        }
-        let end = offset.checked_add(size as usize)?;
-        if end > scan_limit {
-            break;
-        }
-        if &bytes[offset + 4..offset + 8] == b"jhgm" {
-            return Some(bytes[offset + 8..end].to_vec());
-        }
-        offset = end;
-    }
-    None
-}
-
 #[cfg(feature = "jpegxl")]
 fn jxl_display_dimensions(info: &libjxl_sys::JxlBasicInfo) -> (u32, u32) {
     let w = info.xsize;

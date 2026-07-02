@@ -22,16 +22,10 @@ use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
 use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 
+#[cfg(test)]
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
-    /// Gain-map compose capacity for directory-tree strip thumbnails (matches main HDR display).
-    pub(crate) fn directory_tree_strip_gain_map_compose_capacity(&self) -> f32 {
-        crate::loader::directory_tree_strip_gain_map_compose_capacity(
-            &self.effective_hdr_tone_map_settings(),
-        )
-    }
-
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
         self.pending_anim_frames
             .get(&index)
@@ -46,6 +40,11 @@ impl ImageViewerApp {
             return true;
         }
         if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
+            return false;
+        }
+        if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+            crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+        }) {
             return false;
         }
         self.hdr_image_cache
@@ -243,6 +242,41 @@ impl ImageViewerApp {
         None
     }
 
+    /// True when the main loader worker is decoding this index (current or neighbor prefetch).
+    pub(crate) fn strip_main_loader_decode_in_flight(&self, index: usize) -> bool {
+        self.loader.is_loading(index)
+    }
+
+    fn strip_index_within_prefetch_window(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 || index >= count || !self.settings.preload {
+            return false;
+        }
+        let current = self.current_index.min(count - 1);
+        let forward = (index + count - current) % count;
+        let backward = (current + count - index) % count;
+        forward.min(backward) <= self.prefetch_window_max_distance
+    }
+
+    /// Skip slow embedded-SDR-primary strip decode (full open + downsample); fast paths stay on.
+    pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
+        if self.strip_main_loader_decode_in_flight(index) {
+            return true;
+        }
+        if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+            !hdr.rgba_f32.is_empty() || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+        }) {
+            return true;
+        }
+        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && (self.deferred_sdr_uploads.contains_key(&index)
+                || self.texture_cache.contains(index))
+        {
+            return true;
+        }
+        self.strip_index_within_prefetch_window(index)
+    }
+
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
@@ -250,19 +284,10 @@ impl ImageViewerApp {
         if self.tiled_sdr_source_for_index(index).is_some() {
             return false;
         }
-        if self.settings.preload
-            && self.directory_tree_strip_bootstrap_after_scan
-            && index < self.image_files.len().min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
-        {
-            // Strip thumbnails come from preload install / hdr cache sync; avoid a second
-            // full decode on the strip pool (same CPU cost, doubles fan load).
-            return false;
-        }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            if !hdr.rgba_f32.is_empty() {
-                return true;
-            }
-            self.iso_deferred_baseline_pixels_for_strip(index).is_some()
+            !hdr.rgba_f32.is_empty()
+                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+                || self.iso_deferred_baseline_pixels_for_strip(index).is_some()
         }) {
             return false;
         }
@@ -271,6 +296,17 @@ impl ImageViewerApp {
                 .deferred_sdr_uploads
                 .get(&index)
                 .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
+        {
+            return false;
+        }
+        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && self.texture_cache.contains(index)
+        {
+            return false;
+        }
+        if self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .contains(&index)
         {
             return false;
         }
@@ -291,45 +327,6 @@ impl ImageViewerApp {
             return false;
         }
         true
-    }
-
-    pub(super) fn strip_needs_compose_upgrade(&mut self, index: usize) -> bool {
-        if index >= self.image_files.len() {
-            return false;
-        }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
-            return false;
-        }
-        let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) else {
-            return false;
-        };
-        let compose_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-            StripPreviewBufferTag::HdrComposedStrip,
-            PreviewStage::Refined,
-        );
-        let cached_stage = self
-            .directory_tree_strip_cache
-            .cached_preview_stage(index)
-            .unwrap_or(PreviewStage::Initial);
-        if crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-            cached_tag,
-            cached_stage,
-        ) >= compose_rank
-        {
-            return false;
-        }
-        if self
-            .hdr_image_cache
-            .get(&index)
-            .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
-        {
-            return true;
-        }
-        let path = self.image_files[index].clone();
-        self.directory_tree_strip_compose_probe_cache
-            .needs_compose_upgrade(index, || {
-                crate::loader::path_needs_directory_tree_strip_compose_upgrade(&path)
-            })
     }
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).

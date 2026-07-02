@@ -50,28 +50,77 @@ pub(super) struct TiledImageInstall<'a> {
 
 fn hdr_fallback_directory_tree_strip_tag(
     hdr: Option<&crate::hdr::types::HdrImageBuffer>,
-    composed_strip_preview: bool,
+    _composed_strip_preview: bool,
 ) -> crate::app::directory_tree_strip_cache::StripPreviewBufferTag {
     use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
-    if composed_strip_preview
-        && hdr.is_some_and(|hdr| {
-            crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
-        })
-    {
-        StripPreviewBufferTag::HdrComposedStrip
+    if hdr.is_some_and(|hdr| {
+        hdr.metadata
+            .gain_map
+            .as_ref()
+            .is_some_and(|gm| gm.is_heif_embedded_sdr_primary_only())
+    }) {
+        StripPreviewBufferTag::PreloadSdrFallback
+    } else if hdr.is_some_and(|hdr| {
+        crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
+    }) {
+        StripPreviewBufferTag::IsoGainMapBaseline
     } else {
         StripPreviewBufferTag::HdrToneMappedStrip
     }
 }
 
 impl ImageViewerApp {
+    /// True when the canvas is actually drawing through the HDR float plane for `index`,
+    /// not merely when an HDR buffer exists in cache (e.g. ISO gain-map embedded SDR master on SDR output).
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
-        index == self.current_index
-            && self.effective_hdr_display_output().is_some()
-            && self
-                .current_hdr_image
-                .as_ref()
-                .is_some_and(|current| current.image_for_index(index).is_some())
+        self.render_plan_for_index(index).is_some_and(|plan| {
+            plan.backend == crate::app::rendering::plane::PlaneBackendKind::Hdr
+        })
+    }
+
+    fn render_plan_for_index(
+        &self,
+        index: usize,
+    ) -> Option<crate::app::rendering::plan::RenderPlan> {
+        if index != self.current_index {
+            return None;
+        }
+        if self.effective_hdr_display_output().is_none() {
+            return None;
+        }
+        let has_hdr_plane = self
+            .current_hdr_image
+            .as_ref()
+            .is_some_and(|current| current.image_for_index(index).is_some())
+            || self.hdr_image_cache.contains_key(&index)
+            || self.hdr_tiled_source_cache.contains_key(&index);
+        if !has_hdr_plane {
+            return None;
+        }
+        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&index);
+        let shape = if self.should_draw_tiled_canvas()
+            || self.hdr_tiled_source_cache.contains_key(&index)
+        {
+            crate::app::rendering::plan::RenderShape::Tiled
+        } else {
+            crate::app::rendering::plan::RenderShape::Static
+        };
+        Some(self.build_render_plan(shape, has_hdr_plane, has_sdr_fallback))
+    }
+
+    pub(super) fn hdr_prefers_embedded_sdr_master_on_output(
+        &self,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+    ) -> bool {
+        let output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.effective_hdr_target_format(),
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+            &self.settings,
+            output_mode,
+            Some(hdr),
+        )
     }
 
     fn installed_hdr_directory_tree_strip_preview(
@@ -88,7 +137,6 @@ impl ImageViewerApp {
             hdr,
             fallback,
             max_side,
-            self.directory_tree_strip_gain_map_compose_capacity(),
         )
         .ok()
     }
@@ -226,6 +274,35 @@ impl ImageViewerApp {
         } else {
             self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
+    }
+
+    pub(super) fn index_within_prefetch_window(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 || index >= count {
+            return false;
+        }
+        super::prefetch_window_contains(
+            self.current_index,
+            count,
+            index,
+            self.prefetch_window_max_distance,
+        )
+    }
+
+    /// Upload deferred neighbor SDR pixels to `texture_cache` once preload completes.
+    pub(super) fn flush_deferred_sdr_for_completed_prefetch_neighbor(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) -> bool {
+        if index == self.current_index || !self.index_within_prefetch_window(index) {
+            return false;
+        }
+        if !self.deferred_sdr_uploads.contains_key(&index) {
+            return false;
+        }
+        self.flush_deferred_sdr_upload_for_index(index, ctx);
+        self.texture_cache.contains(index)
     }
 
     pub(crate) fn flush_deferred_sdr_upload_for_index(
@@ -432,7 +509,7 @@ impl ImageViewerApp {
             let strip_tag = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
                 && hdr.rgba_f32.is_empty()
             {
-                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrComposedStrip
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
             } else {
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
