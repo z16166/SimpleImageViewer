@@ -17,35 +17,63 @@
 use super::resources::{HdrCallbackResources, create_callback_resources};
 use eframe::egui_wgpu::CallbackResources;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Stored in [`CallbackResources`] so HDR callbacks can defer prepare while prewarm runs.
 pub(crate) struct HdrCallbackResourcesPrewarmSlot(pub Arc<HdrCallbackResourcesPrewarm>);
 
-enum PrewarmState {
-    Idle,
-    Running {
+/// One compiled pipeline bundle per swap-chain target format (avoids format ping-pong).
+pub(crate) struct HdrCallbackResourcesSet {
+    by_format: HashMap<wgpu::TextureFormat, HdrCallbackResources>,
+}
+
+impl Default for HdrCallbackResourcesSet {
+    fn default() -> Self {
+        Self {
+            by_format: HashMap::new(),
+        }
+    }
+}
+
+impl HdrCallbackResourcesSet {
+    pub(crate) fn get_for(&self, format: wgpu::TextureFormat) -> Option<&HdrCallbackResources> {
+        self.by_format.get(&format)
+    }
+
+    pub(crate) fn get_for_mut(
+        &mut self,
         format: wgpu::TextureFormat,
-    },
+    ) -> Option<&mut HdrCallbackResources> {
+        self.by_format.get_mut(&format)
+    }
+
+    pub(crate) fn contains_format(&self, format: wgpu::TextureFormat) -> bool {
+        self.by_format.contains_key(&format)
+    }
+
+    pub(crate) fn insert_format(&mut self, resources: HdrCallbackResources) {
+        self.by_format.insert(resources.target_format, resources);
+    }
+}
+
+enum FormatPrewarmState {
+    Running,
     Ready {
-        format: wgpu::TextureFormat,
         resources: Box<HdrCallbackResources>,
     },
-    /// Resources were injected into the live renderer; do not compile again.
-    Installed {
-        format: wgpu::TextureFormat,
-    },
+    Installed,
 }
 
 /// Background compilation of [`HdrCallbackResources`] (HDR render + RAW demosaic pipelines).
 pub(crate) struct HdrCallbackResourcesPrewarm {
-    state: Mutex<PrewarmState>,
+    states: Mutex<HashMap<wgpu::TextureFormat, FormatPrewarmState>>,
 }
 
 impl HdrCallbackResourcesPrewarm {
     pub(crate) fn new_shared() -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(PrewarmState::Idle),
+            states: Mutex::new(HashMap::new()),
         })
     }
 
@@ -55,31 +83,32 @@ impl HdrCallbackResourcesPrewarm {
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) {
-        let mut guard = self.state.lock();
-        match &*guard {
-            PrewarmState::Installed { format: installed } if *installed == format => return,
-            PrewarmState::Ready { format: ready, .. } if *ready == format => return,
-            PrewarmState::Running { format: running } if *running == format => return,
+        let mut states = self.states.lock();
+        match states.get(&format) {
+            Some(FormatPrewarmState::Installed)
+            | Some(FormatPrewarmState::Ready { .. })
+            | Some(FormatPrewarmState::Running) => return,
             _ => {}
         }
-
-        *guard = PrewarmState::Running { format };
-        drop(guard);
+        states.insert(format, FormatPrewarmState::Running);
+        drop(states);
 
         let this = Arc::clone(self);
         let device = device.clone();
         let pipeline_cache = pipeline_cache.cloned();
         let spawn_result = std::thread::Builder::new()
-            .name("hdr-callback-prewarm".into())
+            .name(format!("hdr-callback-prewarm-{format:?}"))
             .spawn(move || {
                 let resources = create_callback_resources(&device, format, pipeline_cache.as_ref());
-                let mut guard = this.state.lock();
-                match &*guard {
-                    PrewarmState::Running { format: wanted } if *wanted == format => {
-                        *guard = PrewarmState::Ready {
+                let mut states = this.states.lock();
+                match states.get(&format) {
+                    Some(FormatPrewarmState::Running) => {
+                        states.insert(
                             format,
-                            resources: Box::new(resources),
-                        };
+                            FormatPrewarmState::Ready {
+                                resources: Box::new(resources),
+                            },
+                        );
                     }
                     _ => {
                         log::debug!(
@@ -91,10 +120,10 @@ impl HdrCallbackResourcesPrewarm {
             });
         if let Err(error) = spawn_result {
             log::warn!(
-                "[HDR] failed to spawn callback resources prewarm thread: {error}; \
+                "[HDR] failed to spawn callback resources prewarm thread for format={format:?}: {error}; \
                  first prepare will compile synchronously"
             );
-            *self.state.lock() = PrewarmState::Idle;
+            self.states.lock().remove(&format);
         }
     }
 
@@ -102,36 +131,23 @@ impl HdrCallbackResourcesPrewarm {
         &self,
         format: wgpu::TextureFormat,
     ) -> Option<HdrCallbackResources> {
-        let mut guard = self.state.lock();
-        let PrewarmState::Ready {
-            format: ready,
-            resources: _,
-        } = &*guard
-        else {
+        let mut states = self.states.lock();
+        let Some(FormatPrewarmState::Ready { .. }) = states.get(&format) else {
             return None;
         };
-        if *ready != format {
-            return None;
-        }
-        let installed_format = *ready;
-        match std::mem::replace(
-            &mut *guard,
-            PrewarmState::Installed {
-                format: installed_format,
-            },
-        ) {
-            PrewarmState::Ready {
-                format: _,
-                resources,
-            } => Some(*resources),
+        match states.remove(&format) {
+            Some(FormatPrewarmState::Ready { resources }) => {
+                states.insert(format, FormatPrewarmState::Installed);
+                Some(*resources)
+            }
             _ => None,
         }
     }
 
     pub(crate) fn is_running(&self, format: wgpu::TextureFormat) -> bool {
         matches!(
-            *self.state.lock(),
-            PrewarmState::Running { format: running } if running == format
+            self.states.lock().get(&format),
+            Some(FormatPrewarmState::Running)
         )
     }
 
@@ -140,14 +156,12 @@ impl HdrCallbackResourcesPrewarm {
         format: wgpu::TextureFormat,
         callback_resources: &mut CallbackResources,
     ) -> bool {
-        if callback_resources
-            .get::<HdrCallbackResources>()
-            .is_some_and(|resources| resources.target_format == format)
-        {
+        let set = ensure_callback_resources_set(callback_resources);
+        if set.contains_format(format) {
             return false;
         }
         if let Some(resources) = self.try_take_ready(format) {
-            callback_resources.insert(resources);
+            set.insert_format(resources);
             return true;
         }
         false
@@ -157,10 +171,26 @@ impl HdrCallbackResourcesPrewarm {
         callback_resources: &mut CallbackResources,
         slot: &Arc<Self>,
     ) {
+        ensure_callback_resources_set(callback_resources);
         if !callback_resources.contains::<HdrCallbackResourcesPrewarmSlot>() {
             callback_resources.insert(HdrCallbackResourcesPrewarmSlot(Arc::clone(slot)));
         }
     }
+}
+
+fn ensure_callback_resources_set(
+    callback_resources: &mut CallbackResources,
+) -> &mut HdrCallbackResourcesSet {
+    if !callback_resources.contains::<HdrCallbackResourcesSet>() {
+        let mut set = HdrCallbackResourcesSet::default();
+        if let Some(legacy) = callback_resources.remove::<HdrCallbackResources>() {
+            set.insert_format(legacy);
+        }
+        callback_resources.insert(set);
+    }
+    callback_resources
+        .get_mut::<HdrCallbackResourcesSet>()
+        .expect("HdrCallbackResourcesSet just inserted")
 }
 
 /// Target format for early prewarm before the swap-chain hot-swap completes.
@@ -185,6 +215,26 @@ pub(crate) fn predicted_hdr_callback_target_format(
     live_target_format
 }
 
+/// All swap-chain formats that may need HDR callback pipelines this session.
+pub(crate) fn hdr_callback_formats_to_prewarm(
+    hdr_native_surface_enabled: bool,
+    candidate_texture_format: Option<wgpu::TextureFormat>,
+    live_target_format: Option<wgpu::TextureFormat>,
+) -> Vec<wgpu::TextureFormat> {
+    let mut formats = Vec::new();
+    if let Some(live) = live_target_format {
+        formats.push(live);
+    }
+    if hdr_native_surface_enabled {
+        if let Some(candidate) = candidate_texture_format
+            && !formats.contains(&candidate)
+        {
+            formats.push(candidate);
+        }
+    }
+    formats
+}
+
 /// Read-only snapshot of whether HDR callback resources can be used this frame.
 pub(crate) enum HdrCallbackResourcesReadiness {
     Ready,
@@ -198,8 +248,8 @@ pub(crate) fn hdr_callback_resources_readiness(
     target_format: wgpu::TextureFormat,
 ) -> HdrCallbackResourcesReadiness {
     if callback_resources
-        .get::<HdrCallbackResources>()
-        .is_some_and(|resources| resources.target_format == target_format)
+        .get::<HdrCallbackResourcesSet>()
+        .is_some_and(|set| set.contains_format(target_format))
     {
         return HdrCallbackResourcesReadiness::Ready;
     }
@@ -224,19 +274,19 @@ pub(crate) fn ensure_hdr_callback_resources(
     callback_resources: &mut CallbackResources,
 ) -> bool {
     if callback_resources
-        .get::<HdrCallbackResources>()
-        .is_some_and(|resources| resources.target_format == target_format)
+        .get::<HdrCallbackResourcesSet>()
+        .is_some_and(|set| set.contains_format(target_format))
     {
         return true;
     }
 
     if let Some(slot) = callback_resources.get::<HdrCallbackResourcesPrewarmSlot>() {
-        if let Some(resources) = slot.0.try_take_ready(target_format) {
-            callback_resources.insert(resources);
-            return true;
-        }
         if slot.0.is_running(target_format) {
             return false;
+        }
+        if let Some(resources) = slot.0.try_take_ready(target_format) {
+            ensure_callback_resources_set(callback_resources).insert_format(resources);
+            return true;
         }
     }
 
@@ -244,6 +294,10 @@ pub(crate) fn ensure_hdr_callback_resources(
         "[HDR] prepare sync compile HDR callback resources format={:?} (prewarm missed)",
         target_format
     );
-    callback_resources.insert(create_callback_resources(device, target_format, None));
+    ensure_callback_resources_set(callback_resources).insert_format(create_callback_resources(
+        device,
+        target_format,
+        None,
+    ));
     true
 }

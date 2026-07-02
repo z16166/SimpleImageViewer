@@ -365,15 +365,15 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
     };
     let bytes = std::fs::read(&path).expect("read avif");
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
-    let frames = super::try_decode_avif_image_sequence_hdr(&bytes, capacity)
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, None)
         .expect("decode avif sequence")
         .expect("animated avif should expose a sequence");
     assert!(
-        frames.len() > 1,
+        decode.total_frame_count > 1,
         "{} should have multiple frames",
         path.display()
     );
-    for (idx, (_delay, hdr)) in frames.iter().enumerate() {
+    for (idx, (_delay, hdr)) in decode.frames.iter().enumerate() {
         use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
         let deferred = iso_deferred_from_metadata(&hdr.metadata).is_some();
         assert!(
@@ -386,8 +386,32 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
     eprintln!(
         "{} -> {} HdrAnimated frames, tf={:?}",
         path.display(),
-        frames.len(),
-        frames[0].1.metadata.transfer_function
+        decode.total_frame_count,
+        decode.frames[0].1.metadata.transfer_function
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
+fn avif_animated_sequence_bootstrap_decodes_first_frame_only() {
+    use crate::hdr::types::HdrToneMapSettings;
+    use std::path::PathBuf;
+
+    let path =
+        PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\Chimera-AV1-10bit-480x270.avif");
+    if !path.is_file() {
+        eprintln!("skip avif bootstrap test; {} not present", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read avif");
+    let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, Some(1))
+        .expect("decode avif sequence")
+        .expect("animated avif should expose a sequence");
+    assert_eq!(decode.frames.len(), 1);
+    assert!(
+        decode.total_frame_count > 1,
+        "bootstrap sample should be a multi-frame sequence"
     );
 }
 
@@ -478,43 +502,6 @@ fn probe_gain_map_sample_avif_base_hdr_folder() {
         "01_base_hdr luma default={:.1} bright_peak={:.1}",
         mean_luma(&default_sdr),
         mean_luma(&bright_sdr)
-    );
-}
-
-#[cfg(feature = "avif-native")]
-#[test]
-fn avif_base_sdr_strip_compose_is_strip_sized() {
-    use crate::hdr::types::HdrToneMapSettings;
-    use crate::loader::directory_tree_strip_gain_map_compose_capacity;
-
-    let path = std::path::Path::new(
-        r"F:\HDR\Gain_Map_Sample_Photos\Gain_Map_Sample_Photos\samples_avif_base_sdr\01_base_sdr.avif",
-    );
-    if !path.is_file() {
-        eprintln!("skip: {}", path.display());
-        return;
-    }
-    let bytes = std::fs::read(path).expect("read");
-    let max_side = 128_u32;
-    let tone = HdrToneMapSettings::default();
-    let capacity = directory_tree_strip_gain_map_compose_capacity(&tone);
-    let composed = super::decode_avif_strip_iso_gain_map_composed(&bytes, path, max_side, capacity)
-        .expect("forward gain map")
-        .expect("strip compose");
-    let (strip, logical) = composed;
-    assert_eq!(logical, (2400, 3000));
-    assert!(strip.width <= max_side && strip.height <= max_side);
-    assert_eq!(strip.width, 102);
-    assert_eq!(strip.height, 128);
-    let mean_luma = strip
-        .rgba()
-        .chunks_exact(4)
-        .map(|px| 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32)
-        .sum::<f32>()
-        / (strip.rgba().len() / 4).max(1) as f32;
-    assert!(
-        mean_luma > 20.0,
-        "composed strip should not be near-black baseline (mean_luma={mean_luma:.1})"
     );
 }
 
@@ -649,13 +636,4 @@ fn probe_avif_strip_scale_and_apply_gain_map() {
         assert_eq!(rgb_out.height, strip_h);
         unsafe { libavif_sys::avifRGBImageFreePixels(&mut rgb_out) };
     }
-
-    let t0 = Instant::now();
-    let _ = super::decode_avif_strip_iso_gain_map_composed(&bytes, path, max_side, 4.9)
-        .expect("compose")
-        .expect("ok");
-    eprintln!(
-        "(current) decode_avif_strip_iso_gain_map_composed in {}ms",
-        t0.elapsed().as_millis()
-    );
 }

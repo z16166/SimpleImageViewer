@@ -911,7 +911,9 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
 
     let mut callback_resources = CallbackResources::default();
     let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    callback_resources.insert(create_callback_resources(&device, target_format, None));
+    let mut set = HdrCallbackResourcesSet::default();
+    set.insert_format(create_callback_resources(&device, target_format, None));
+    callback_resources.insert(set);
 
     let images: Vec<_> = (1..=9)
         .map(|i| {
@@ -964,7 +966,10 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
 
     // Verify that we have exactly eight bindings in resources and they are independent
     {
-        let resources = callback_resources.get::<HdrCallbackResources>().unwrap();
+        let resources = callback_resources
+            .get::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for(target_format))
+            .unwrap();
         assert_eq!(resources.image_bindings.len(), 8);
 
         let key0 = HdrImageKey::from_image(&images[0]);
@@ -1017,7 +1022,10 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
 
     // Verify that resources has size 8 and images[0] has been evicted
     {
-        let resources = callback_resources.get::<HdrCallbackResources>().unwrap();
+        let resources = callback_resources
+            .get::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for(target_format))
+            .unwrap();
         assert_eq!(resources.image_bindings.len(), 8);
 
         let key_evicted = HdrImageKey::from_image(&images[0]);

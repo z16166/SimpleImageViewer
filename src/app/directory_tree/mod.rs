@@ -94,11 +94,11 @@ pub(super) const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 pub(super) const DIRECTORY_TREE_IMAGE_ROW_HEIGHT_COMPACT: f32 = 22.0;
 pub(super) const DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS: usize = 20;
 pub(super) const MAX_COLD_STRIP_SCHEDULE_PER_FRAME: usize = 32;
-pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 2;
-pub(super) const MAX_STRIP_GENERATE_INFLIGHT: usize = 2;
-/// Modest strip cold-gen limits while the file list is first filling after a scan.
-pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP: usize = 3;
-pub(super) const MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP: usize = 2;
+pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME: usize = 8;
+pub(super) const MAX_STRIP_GENERATE_INFLIGHT: usize = 8;
+/// Higher strip cold-gen limits while the file list is first filling after a scan.
+pub(super) const MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP: usize = 16;
+pub(super) const MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP: usize = 8;
 /// Max list rows scanned per frame when bootstrap runs before the UI reports a visible range.
 pub(super) const BOOTSTRAP_STRIP_VISIBLE_ROW_CAP: usize = 64;
 /// End bootstrap high-throughput mode if the list never publishes a visible row range.

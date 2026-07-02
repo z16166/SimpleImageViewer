@@ -1188,10 +1188,18 @@ fn draw_image_file_list(
                 ui.label(egui::RichText::new(view.scan_status()).weak());
             });
         } else {
-            ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
-            if let Some(warning) = view.sync_warning() {
-                ui.label(egui::RichText::new(warning).weak());
-            }
+            let area = ui.available_rect_before_wrap();
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.label(egui::RichText::new(t!("directory_tree.no_images")).weak());
+                        if let Some(warning) = view.sync_warning() {
+                            ui.label(egui::RichText::new(warning).weak());
+                        }
+                    },
+                );
+            });
         }
         return;
     }

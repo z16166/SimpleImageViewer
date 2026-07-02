@@ -65,20 +65,37 @@ pub(crate) fn decode_jxl_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Strin
 }
 
 #[cfg(feature = "jpegxl")]
+pub(crate) struct JxlHdrLoadOutput {
+    pub image: ImageData,
+    pub animation_remainder: bool,
+}
+
+#[cfg(feature = "jpegxl")]
 pub(crate) fn load_jxl_hdr_with_target_capacity(
     path: &std::path::Path,
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+    bootstrap_animation: bool,
+    try_embedded_sdr_master: bool,
+) -> Result<JxlHdrLoadOutput, String> {
     let bytes =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
-    decode_jxl_bytes_to_image_data(
+    decode_jxl_bytes_to_image_data_impl(
         bytes.as_ref(),
         decode_target_hdr_capacity,
         display_hdr_target_capacity,
         tone_map,
+        false,
+        false,
+        bootstrap_animation,
+        try_embedded_sdr_master,
+        Some(path),
     )
+    .map(|output| JxlHdrLoadOutput {
+        image: output.image,
+        animation_remainder: output.animation_remainder,
+    })
 }
 
 #[cfg(feature = "jpegxl")]
@@ -357,6 +374,7 @@ struct JxlStaticFrameFinish<'a> {
     display_hdr_target_capacity: f32,
     tone_map: &'a HdrToneMapSettings,
     strip_baseline_only: bool,
+    embedded_sdr_master_load: bool,
 }
 
 #[cfg(feature = "jpegxl")]
@@ -371,6 +389,7 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         display_hdr_target_capacity,
         tone_map,
         strip_baseline_only,
+        embedded_sdr_master_load,
     } = input;
     use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
@@ -382,12 +401,14 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         height,
         &metadata,
         strip_baseline_only,
+        embedded_sdr_master_load,
     ) {
         JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
             return Ok(ImageData::Static(DecodedImage::new(
                 width, height, baseline,
             )));
         }
+        JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(hdr) => hdr,
         JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
         | JxlJhgmFrameOutcome::GpuDeferred(hdr)
         | JxlJhgmFrameOutcome::CpuComposed(hdr) => hdr,
@@ -410,6 +431,96 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
     Ok(ImageData::Hdr {
         hdr: Box::new(hdr),
         fallback,
+    })
+}
+
+/// After one libjxl pixel decode, try embedded-SDR finish first; on ineligible failure reuse the
+/// same float buffer for the full HDR finish (no second decode).
+#[cfg(feature = "jpegxl")]
+fn jxl_finish_static_frame_with_embedded_fallback(
+    input: JxlStaticFrameFinish<'_>,
+    try_embedded_sdr_master: bool,
+    path: Option<&std::path::Path>,
+) -> Result<ImageData, String> {
+    let JxlStaticFrameFinish {
+        rgba,
+        metadata,
+        width,
+        height,
+        jhgm_box,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        strip_baseline_only,
+        embedded_sdr_master_load,
+    } = input;
+
+    if strip_baseline_only || embedded_sdr_master_load {
+        return jxl_finish_static_frame(JxlStaticFrameFinish {
+            rgba,
+            metadata,
+            width,
+            height,
+            jhgm_box,
+            decode_target_hdr_capacity,
+            display_hdr_target_capacity,
+            tone_map,
+            strip_baseline_only,
+            embedded_sdr_master_load,
+        });
+    }
+
+    if try_embedded_sdr_master {
+        use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+
+        match finish_jxl_jhgm_frame(
+            jhgm_box,
+            decode_target_hdr_capacity,
+            &rgba,
+            width,
+            height,
+            &metadata,
+            true,
+            true,
+        ) {
+            JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
+                return Ok(ImageData::Static(DecodedImage::new(
+                    width, height, baseline,
+                )));
+            }
+            JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(hdr)
+            | JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
+            | JxlJhgmFrameOutcome::GpuDeferred(hdr)
+            | JxlJhgmFrameOutcome::CpuComposed(hdr) => {
+                let fallback =
+                    jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+                return Ok(ImageData::Hdr {
+                    hdr: Box::new(hdr),
+                    fallback,
+                });
+            }
+            JxlJhgmFrameOutcome::Unprocessed => {
+                let err = "JPEG XL strip baseline path requires ISO gain map".to_string();
+                if let Some(path) = path {
+                    crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
+                        "JPEG XL", path, &err,
+                    );
+                }
+            }
+        }
+    }
+
+    jxl_finish_static_frame(JxlStaticFrameFinish {
+        rgba,
+        metadata,
+        width,
+        height,
+        jhgm_box,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        strip_baseline_only: false,
+        embedded_sdr_master_load: false,
     })
 }
 
@@ -479,8 +590,10 @@ fn jxl_build_hdr_animated_image_data(
             info.ysize,
             &frame_metadata,
             false,
+            false,
         ) {
-            JxlJhgmFrameOutcome::IsoGainMapBaseline(_) => {
+            JxlJhgmFrameOutcome::IsoGainMapBaseline(_)
+            | JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(_) => {
                 return Err("JPEG XL animated jhgm strip baseline is not supported".to_string());
             }
             JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
@@ -544,7 +657,8 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
         target_hdr_capacity,
         target_hdr_capacity,
         crate::hdr::types::HdrToneMapSettings::default(),
-    )? {
+    )?
+    {
         ImageData::Hdr { hdr, .. } => Ok(*hdr),
         ImageData::HdrAnimated(_) | ImageData::Animated(_) => Err(
             "JPEG XL has multiple animation frames; use the image loader or decode_jxl_bytes_to_image_data"
@@ -554,6 +668,12 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
             "unexpected JPEG XL decode outcome (expected HDR buffer)".to_string(),
         ),
     }
+}
+
+#[cfg(feature = "jpegxl")]
+pub(crate) struct JxlDecodeOutput {
+    pub image: ImageData,
+    pub animation_remainder: bool,
 }
 
 /// Decode a full JPEG XL file into [`ImageData`]. Multi-frame animations become
@@ -573,7 +693,12 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
         display_hdr_target_capacity,
         tone_map,
         false,
+        false,
+        false,
+        false,
+        None,
     )
+    .map(|output| output.image)
 }
 
 /// ISO `jhgm` directory-tree strip: decode primary only, skip gain-map codestream decode.
@@ -584,32 +709,126 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
     use super::strip_baseline_error::{JxlStripBaselineError, classify_jxl_strip_baseline_failure};
 
     let tone_map = HdrToneMapSettings::default();
-    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true) {
-        Ok(ImageData::Static(mut decoded)) => {
-            Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
-        }
-        Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_)) => {
-            Err(JxlStripBaselineError::UnsupportedImageData(
-                "JPEG XL strip baseline expected Static image data".to_string(),
-            ))
-        }
-        Ok(ImageData::Animated(_) | ImageData::Tiled(_)) => {
-            Err(JxlStripBaselineError::UnsupportedImageData(
-                "JPEG XL strip baseline does not support animation or tiling".to_string(),
-            ))
-        }
+    match decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true, false, false, false, None) {
+        Ok(output) => match output.image {
+            ImageData::Static(mut decoded) => {
+                Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
+            }
+            ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_) => {
+                Err(JxlStripBaselineError::UnsupportedImageData(
+                    "JPEG XL strip baseline expected Static image data".to_string(),
+                ))
+            }
+            ImageData::Animated(_) | ImageData::Tiled(_) => {
+                Err(JxlStripBaselineError::UnsupportedImageData(
+                    "JPEG XL strip baseline does not support animation or tiling".to_string(),
+                ))
+            }
+        },
         Err(message) => Err(classify_jxl_strip_baseline_failure(&message)),
     }
 }
 
+/// ISO `jhgm` main load: decode primary SDR baseline only, skip gain-map codestream decode.
 #[cfg(feature = "jpegxl")]
+#[allow(dead_code)] // Standalone entry; main loader uses single-decode finish fallback.
+pub(crate) fn decode_jxl_embedded_sdr_master_bytes(bytes: &[u8]) -> Result<ImageData, String> {
+    let tone_map = HdrToneMapSettings::default();
+    decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true, true, false, false, None)
+        .map(|output| output.image)
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_wrap_decode_output(image: ImageData, animation_remainder: bool) -> JxlDecodeOutput {
+    JxlDecodeOutput {
+        image,
+        animation_remainder,
+    }
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_animation_frame_needs_gpu_tone_map(
+    buf: &[f32],
+    color_space: crate::hdr::types::HdrColorSpace,
+    metadata: &HdrImageMetadata,
+) -> bool {
+    jxl_sdr_grade_fallback_rgba8(buf, color_space, metadata).is_none()
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_animation_frames_need_gpu_tone_map(
+    captured_frames: &[(Vec<f32>, u32)],
+    metadata: &HdrImageMetadata,
+) -> bool {
+    let color_space = metadata.color_space_hint();
+    captured_frames
+        .iter()
+        .any(|(buf, _)| jxl_animation_frame_needs_gpu_tone_map(buf, color_space, metadata))
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_bootstrap_first_animation_frame(
+    captured_frames: Vec<(Vec<f32>, u32)>,
+    info: &libjxl_sys::JxlBasicInfo,
+    metadata: HdrImageMetadata,
+    jhgm_box: Option<&[u8]>,
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
+    tone_map: &HdrToneMapSettings,
+) -> Result<JxlDecodeOutput, String> {
+    let mut meta_base = metadata;
+    jxl_tag_display_referred_when_sdr_grade(&mut meta_base);
+    let use_hdr_animated = jhgm_box.is_some()
+        || jxl_animation_frames_need_hdr_plane(&captured_frames, &meta_base)
+        || !crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity)
+        || jxl_animation_frames_need_gpu_tone_map(&captured_frames, &meta_base);
+    if use_hdr_animated {
+        let image = jxl_build_hdr_animated_image_data(
+            captured_frames,
+            info,
+            meta_base,
+            jhgm_box,
+            decode_target_hdr_capacity,
+            display_hdr_target_capacity,
+            tone_map,
+        )?;
+        return Ok(jxl_wrap_decode_output(image, true));
+    }
+    let (buf, ticks) = captured_frames
+        .into_iter()
+        .next()
+        .ok_or("JPEG XL bootstrap animation missing first frame")?;
+    let frame_metadata = meta_base.clone();
+    let color_space = frame_metadata.color_space_hint();
+    let pixels =
+        jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata).ok_or_else(|| {
+            "JPEG XL bootstrap animation expected display-referred SDR grade pixels".to_string()
+        })?;
+    let delay_ms = jxl_frame_ticks_to_delay_ms(info, ticks);
+    Ok(jxl_wrap_decode_output(
+        ImageData::Animated(vec![AnimationFrame::new(
+            info.xsize,
+            info.ysize,
+            pixels,
+            Duration::from_millis(delay_ms),
+        )]),
+        true,
+    ))
+}
+
+#[cfg(feature = "jpegxl")]
+#[allow(clippy::too_many_arguments)]
 fn decode_jxl_bytes_to_image_data_impl(
     bytes: &[u8],
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
     strip_baseline_only: bool,
-) -> Result<ImageData, String> {
+    embedded_sdr_master_load: bool,
+    bootstrap_animation: bool,
+    try_embedded_sdr_master: bool,
+    source_path: Option<&std::path::Path>,
+) -> Result<JxlDecodeOutput, String> {
     let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
         return Err(
@@ -750,49 +969,32 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         || jxl_animation_frames_need_hdr_plane(&captured_frames, &meta_base)
                         || !crate::loader::hdr_display_requests_sdr_preview(
                             display_hdr_target_capacity,
-                        );
+                        )
+                        || jxl_animation_frames_need_gpu_tone_map(&captured_frames, &meta_base);
                     if use_hdr_animated {
-                        return jxl_build_hdr_animated_image_data(
-                            captured_frames,
-                            &info,
-                            meta_base,
-                            jhgm_box.as_deref(),
-                            decode_target_hdr_capacity,
-                            display_hdr_target_capacity,
-                            &tone_map,
-                        );
+                        return Ok(jxl_wrap_decode_output(
+                            jxl_build_hdr_animated_image_data(
+                                captured_frames,
+                                &info,
+                                meta_base,
+                                jhgm_box.as_deref(),
+                                decode_target_hdr_capacity,
+                                display_hdr_target_capacity,
+                                &tone_map,
+                            )?,
+                            false,
+                        ));
                     }
                     let mut animation = Vec::with_capacity(captured_frames.len());
                     for (buf, ticks) in captured_frames {
                         let frame_metadata = meta_base.clone();
                         let color_space = frame_metadata.color_space_hint();
-                        let pixels = if let Some(px) =
+                        let pixels =
                             jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata)
-                        {
-                            px
-                        } else {
-                            let hdr = HdrImageBuffer {
-                                width: info.xsize,
-                                height: info.ysize,
-                                format: HdrPixelFormat::Rgba32Float,
-                                color_space,
-                                metadata: frame_metadata,
-                                rgba_f32: Arc::new(buf),
-                            };
-                            if crate::loader::hdr_display_requests_sdr_preview(
-                                display_hdr_target_capacity,
-                            ) {
-                                crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                                    &hdr,
-                                    tone_map.exposure_ev,
-                                    &tone_map,
-                                )?
-                            } else {
-                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
-                                    hdr.width, hdr.height,
-                                )?
-                            }
-                        };
+                                .ok_or_else(|| {
+                                    "JPEG XL animation expected display-referred SDR grade pixels"
+                                        .to_string()
+                                })?;
                         let delay_ms = jxl_frame_ticks_to_delay_ms(&info, ticks);
                         animation.push(AnimationFrame::new(
                             info.xsize,
@@ -801,7 +1003,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                             Duration::from_millis(delay_ms),
                         ));
                     }
-                    return Ok(ImageData::Animated(animation));
+                    return Ok(jxl_wrap_decode_output(
+                        ImageData::Animated(animation),
+                        false,
+                    ));
                 }
 
                 let mut rgba = captured_frames
@@ -838,17 +1043,25 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 jxl_sanitize_straight_alpha(&mut rgba);
                 jxl_tag_display_referred_when_sdr_grade(&mut metadata);
-                return jxl_finish_static_frame(JxlStaticFrameFinish {
-                    rgba,
-                    metadata,
-                    width: info.xsize,
-                    height: info.ysize,
-                    jhgm_box: jhgm_box.as_deref(),
-                    decode_target_hdr_capacity,
-                    display_hdr_target_capacity,
-                    tone_map: &tone_map,
-                    strip_baseline_only,
-                });
+                return Ok(jxl_wrap_decode_output(
+                    jxl_finish_static_frame_with_embedded_fallback(
+                        JxlStaticFrameFinish {
+                            rgba,
+                            metadata,
+                            width: info.xsize,
+                            height: info.ysize,
+                            jhgm_box: jhgm_box.as_deref(),
+                            decode_target_hdr_capacity,
+                            display_hdr_target_capacity,
+                            tone_map: &tone_map,
+                            strip_baseline_only,
+                            embedded_sdr_master_load,
+                        },
+                        try_embedded_sdr_master,
+                        source_path,
+                    )?,
+                    false,
+                ));
             }
             libjxl_sys::JXL_DEC_ERROR => {
                 return Err(
@@ -1124,6 +1337,54 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 jxl_sanitize_straight_alpha(&mut rgba_f32);
                 captured_frames.push((std::mem::take(&mut rgba_f32), pending_duration_ticks));
+                if bootstrap_animation && !strip_baseline_only && !embedded_sdr_master_load {
+                    let peek = unsafe { libjxl_sys::JxlDecoderProcessInput(decoder.0) };
+                    if peek == libjxl_sys::JXL_DEC_SUCCESS {
+                        let mut rgba = captured_frames
+                            .pop()
+                            .map(|(buf, _)| buf)
+                            .ok_or("JPEG XL bootstrap missing first frame")?;
+                        if rgba.len() != expected_len {
+                            return Err(format!(
+                                "libjxl output buffer length mismatch: got {}, expected {}",
+                                rgba.len(),
+                                expected_len
+                            ));
+                        }
+                        jxl_sanitize_straight_alpha(&mut rgba);
+                        jxl_tag_display_referred_when_sdr_grade(&mut metadata);
+                        return Ok(jxl_wrap_decode_output(
+                            jxl_finish_static_frame(JxlStaticFrameFinish {
+                                rgba,
+                                metadata,
+                                width: info.xsize,
+                                height: info.ysize,
+                                jhgm_box: jhgm_box.as_deref(),
+                                decode_target_hdr_capacity,
+                                display_hdr_target_capacity,
+                                tone_map: &tone_map,
+                                strip_baseline_only,
+                                embedded_sdr_master_load,
+                            })?,
+                            false,
+                        ));
+                    }
+                    if peek == libjxl_sys::JXL_DEC_ERROR {
+                        return Err(
+                            "libjxl decode failed while probing animation continuation".to_string()
+                        );
+                    }
+                    log::info!("[Loader] JXL animation bootstrap: 1 frame");
+                    return jxl_bootstrap_first_animation_frame(
+                        captured_frames,
+                        &info,
+                        metadata.clone(),
+                        jhgm_box.as_deref(),
+                        decode_target_hdr_capacity,
+                        display_hdr_target_capacity,
+                        &tone_map,
+                    );
+                }
                 // Animations emit multiple FULL_IMAGE events; keep calling ProcessInput until SUCCESS.
                 continue;
             }

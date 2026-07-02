@@ -217,7 +217,7 @@ pub(crate) fn load_by_image_format(
         }
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => {
-            load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+            load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
         }
         image::ImageFormat::Bmp
         | image::ImageFormat::Ico
@@ -228,7 +228,7 @@ pub(crate) fn load_by_image_format(
         | image::ImageFormat::Qoi => load_static(path, hdr_target_capacity, hdr_tone_map),
         // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
         image::ImageFormat::Avif => {
-            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
         }
         image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::OpenExr => load_detected_exr(path, hdr_target_capacity, hdr_tone_map),
@@ -253,14 +253,14 @@ pub(crate) fn load_via_content_detection(
     }
 
     if crate::hdr::jpegxl::is_jxl_header(&header[..n]) {
-        return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+        return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
     }
 
     // 2. Manual BMFF detection (image-rs 0.25 does not guess HEIF/AVIF/QuickTime).
     if n >= 12 && &header[4..8] == b"ftyp" {
         let brand = &header[8..12];
         if crate::hdr::avif::is_avif_brand(brand) {
-            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
         }
         if crate::hdr::heif::is_heif_brand(brand) {
             return load_heif_hdr_aware(
@@ -271,6 +271,7 @@ pub(crate) fn load_via_content_detection(
                     idx: None,
                     path: Some(path),
                 },
+                false,
             );
         }
         return load_bmff_ftyp_container(path, hdr_target_capacity, hdr_tone_map, brand);
@@ -329,6 +330,44 @@ mod tests {
             "Failed to read HEIF from memory: Invalid input: No 'ftyp' box"
         ));
         assert!(!libheif_container_rejected("decoder plugin not found"));
+    }
+
+    #[test]
+    fn optional_mislabeled_png_jpeg_recovers_via_content_detection() {
+        let candidates = [
+            std::env::var_os("SIV_MISLABELED_PNG_JPEG")
+                .map(std::path::PathBuf::from),
+            Some(std::path::PathBuf::from(
+                r"F:\win7\64MP_Raw\20250615.png",
+            )),
+        ];
+        let Some(path) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
+            eprintln!("skip; set SIV_MISLABELED_PNG_JPEG to a JPEG file with a .png extension");
+            return;
+        };
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+        let capacity = tone.target_hdr_capacity();
+        let result = load_via_content_detection(&path, capacity, tone);
+        match result {
+            Ok(image) => {
+                let (w, h) = match image {
+                    crate::loader::ImageData::Static(ref img) => (img.width, img.height),
+                    crate::loader::ImageData::Tiled(ref src) => (src.width(), src.height()),
+                    other => panic!(
+                        "mislabeled PNG/JPEG should decode as static or tiled, got {:?}",
+                        std::mem::discriminant(&other)
+                    ),
+                };
+                assert!(
+                    w > 0 && h > 0,
+                    "{} should decode to non-zero dimensions",
+                    path.display()
+                );
+            }
+            Err(err) => panic!(
+                "mislabeled PNG/JPEG should recover via content detection: {err}"
+            ),
+        }
     }
 
     #[test]

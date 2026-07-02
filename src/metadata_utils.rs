@@ -70,15 +70,19 @@ pub fn get_exif_orientation_from_bytes(data: &[u8]) -> u16 {
 
 /// [`exif::Reader::read_from_container`] first (TIFF / HEIF BMFF scan). When that does not return an
 /// **Orientation** tag, **`.avif`/`.avifs`** use libavif’s container transform (`irot` / `imir`) mapped to
-/// the same 1–8 EXIF convention. **`.heic`/`.heif`/`.hif`**: `Exif` metadata item when present, then **`irot`/`imir`**
-/// on the primary item when the geometric list is rotation/mirror-only (no **`clap`**) — decoding uses matching
-/// `ignore_transformations` so pixels are not rotated twice. **`.jxl`**: after container EXIF,
-/// **`JxlDecoderSetKeepOrientation`** probe (values 1–8 match EXIF; the main decode path keeps coded
-/// orientation too). **Radiance `.hdr`/`.pic`**: scan order is encoded in the **resolution line**
+/// the same 1–8 EXIF convention. **`.heic`/`.heif`/`.hif`**: primary-item **`irot`/`imir`** when they
+/// imply rotation (Apple often leaves the Exif item at **1**), then container / `Exif`-item orientation.
+/// Decoding uses matching `ignore_transformations` so pixels are not rotated twice. **`.jxl`**: after
+/// container EXIF, **`JxlDecoderSetKeepOrientation`** probe (values 1–8 match EXIF; the main decode path
+/// keeps coded orientation too). **Radiance `.hdr`/`.pic`**: scan order is encoded in the **resolution line**
 /// (`±X`/`±Y`); the Radiance decoder unfolds that to normal top-left row-major RGBA (not EXIF).
 /// **JPEG XR `.jxr`/`.wdp`** do not carry HEIF **`irot`**; orientation for those relies on EXIF /
 /// WIC / ImageIO where applicable (`kamadak-exif`, …).
 pub fn get_exif_orientation(path: &Path) -> u16 {
+    #[cfg(feature = "heif-native")]
+    if is_heif_extension(path) {
+        return get_heif_display_orientation(path);
+    }
     if let Ok(file) = File::open(path) {
         let mut reader = BufReader::new(file);
         let o = read_exif_orientation(&mut reader);
@@ -95,22 +99,6 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
             return o;
         }
     }
-    #[cfg(feature = "heif-native")]
-    {
-        if is_heif_extension(path) {
-            if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag(path)
-                && (1..=8).contains(&o)
-            {
-                return o;
-            }
-            if let Some(o) =
-                crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path)
-                && (1..=8).contains(&o)
-            {
-                return o;
-            }
-        }
-    }
     #[cfg(feature = "jpegxl")]
     {
         if is_jxl_extension(path)
@@ -121,4 +109,28 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
         }
     }
     1
+}
+
+/// HEIF display orientation: prefer primary **`irot`/`imir`** over Exif **Orientation=1** (Apple HEIC).
+#[cfg(feature = "heif-native")]
+fn get_heif_display_orientation(path: &Path) -> u16 {
+    if let Some(o) =
+        crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path)
+    && o > 1
+    {
+        return o;
+    }
+    if let Ok(file) = File::open(path) {
+        let mut reader = BufReader::new(file);
+        let o = read_exif_orientation(&mut reader);
+        if o > 1 {
+            return o;
+        }
+    }
+    if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag(path)
+        && o > 1
+    {
+        return o;
+    }
+    crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path).unwrap_or(1)
 }

@@ -22,16 +22,10 @@ use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
 use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 
+#[cfg(test)]
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
-    /// Gain-map compose capacity for directory-tree strip thumbnails (matches main HDR display).
-    pub(crate) fn directory_tree_strip_gain_map_compose_capacity(&self) -> f32 {
-        crate::loader::directory_tree_strip_gain_map_compose_capacity(
-            &self.effective_hdr_tone_map_settings(),
-        )
-    }
-
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
         self.pending_anim_frames
             .get(&index)
@@ -46,6 +40,13 @@ impl ImageViewerApp {
             return true;
         }
         if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
+            return false;
+        }
+        if self
+            .hdr_image_cache
+            .get(&index)
+            .is_some_and(|hdr| crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref()))
+        {
             return false;
         }
         self.hdr_image_cache
@@ -137,25 +138,6 @@ impl ImageViewerApp {
         placeholder
     }
 
-    /// Predicate version of [`strip_fallback_for_hdr_cache_sync`] — only determines whether
-    /// the fallback would be a deferred placeholder, without constructing a [`DecodedImage`].
-    fn strip_fallback_is_deferred_placeholder(
-        &self,
-        index: usize,
-        hdr: &crate::hdr::types::HdrImageBuffer,
-    ) -> bool {
-        if self.iso_deferred_baseline_pixels_for_strip(index).is_some() {
-            return false;
-        }
-        if let Some(decoded) = self.deferred_sdr_uploads.get(&index) {
-            return decoded.is_sdr_deferred_placeholder();
-        }
-        if let Some(preview) = crate::loader::hdr_raw_gpu_bootstrap_fallback_decoded(hdr) {
-            return preview.is_sdr_deferred_placeholder();
-        }
-        true
-    }
-
     pub(super) fn strip_needs_hdr_cache_sync_for_hdr(
         &self,
         index: usize,
@@ -177,7 +159,6 @@ impl ImageViewerApp {
         // ISO-deferred empty-float entries use the baseline sync path (early return above).
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
-            self.strip_fallback_is_deferred_placeholder(index, hdr),
             false,
             false,
         );
@@ -243,6 +224,119 @@ impl ImageViewerApp {
         None
     }
 
+    /// True when the main loader worker is decoding this index (current or neighbor prefetch).
+    pub(crate) fn strip_main_loader_decode_in_flight(&self, index: usize) -> bool {
+        self.loader.is_loading(index)
+    }
+
+    fn strip_index_within_prefetch_window(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 || index >= count || !self.settings.preload {
+            return false;
+        }
+        let current = self.current_index.min(count - 1);
+        let forward = (index + count - current) % count;
+        let backward = (current + count - index) % count;
+        forward.min(backward) <= self.prefetch_window_max_distance
+    }
+
+    /// True when Viewing settings use embedded SDR master on an SDR tone-mapped output path.
+    pub(crate) fn strip_embedded_sdr_master_mode_active(&self) -> bool {
+        let Some((_, output_mode)) = self.effective_hdr_display_output() else {
+            return false;
+        };
+        output_mode == crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped
+            && self.settings.hdr_gain_map_sdr_display
+                == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster
+    }
+
+    /// True when deferring strip decode to the main loader can reuse embedded SDR / ISO gain-map work.
+    pub(crate) fn strip_path_benefits_from_main_loader_embedded_sdr_share(
+        &self,
+        path: &std::path::Path,
+    ) -> bool {
+        let ext = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(
+            ext.as_str(),
+            "avif" | "avifs" | "heif" | "heic" | "hif" | "jxl"
+        ) {
+            return false;
+        }
+        if ext == "avif" || ext == "avifs" {
+            #[cfg(feature = "avif-native")]
+            {
+                if crate::hdr::avif::path_is_avif_image_sequence(path) {
+                    return false;
+                }
+                let Ok(mmap) = crate::mmap_util::map_file(path) else {
+                    return false;
+                };
+                return matches!(
+                    crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()),
+                    Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap)
+                        | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
+                );
+            }
+            #[cfg(not(feature = "avif-native"))]
+            {
+                return false;
+            }
+        }
+        matches!(ext.as_str(), "heif" | "heic" | "hif" | "jxl")
+    }
+
+    /// Skip strip paths that duplicate the main loader; cheap embedded previews still run.
+    pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
+        if self.strip_main_loader_decode_in_flight(index) {
+            return true;
+        }
+        if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
+            !hdr.rgba_f32.is_empty()
+                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+        }) {
+            return true;
+        }
+        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && (self.deferred_sdr_uploads.contains_key(&index)
+                || self.texture_cache.contains(index))
+        {
+            return true;
+        }
+        if !self.strip_index_within_prefetch_window(index) {
+            return false;
+        }
+        self.strip_prefetch_window_defers_to_main_loader(index)
+    }
+
+    /// True while the main loader is expected to decode this index soon (avoid duplicate strip slow path).
+    fn strip_prefetch_window_defers_to_main_loader(&self, index: usize) -> bool {
+        if !self.settings.preload {
+            return false;
+        }
+        let cur = self.current_index;
+        if self.main_loader_failed_indices.contains(&cur) {
+            return self.loader.is_loading(index);
+        }
+        if index == cur {
+            return !self.has_loaded_asset(cur) && self.loader.is_loading(cur);
+        }
+        if self.loader.is_loading(index) {
+            return true;
+        }
+        let current_has_asset = self.has_loaded_asset(cur);
+        let current_is_loading = self.loader.is_loading(cur);
+        if crate::app::image_management::should_defer_neighbor_work_for_current_main(
+            current_has_asset,
+            current_is_loading,
+        ) {
+            return true;
+        }
+        false
+    }
+
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
@@ -250,19 +344,10 @@ impl ImageViewerApp {
         if self.tiled_sdr_source_for_index(index).is_some() {
             return false;
         }
-        if self.settings.preload
-            && self.directory_tree_strip_bootstrap_after_scan
-            && index < self.image_files.len().min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
-        {
-            // Strip thumbnails come from preload install / hdr cache sync; avoid a second
-            // full decode on the strip pool (same CPU cost, doubles fan load).
-            return false;
-        }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            if !hdr.rgba_f32.is_empty() {
-                return true;
-            }
-            self.iso_deferred_baseline_pixels_for_strip(index).is_some()
+            !hdr.rgba_f32.is_empty()
+                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+                || self.iso_deferred_baseline_pixels_for_strip(index).is_some()
         }) {
             return false;
         }
@@ -271,6 +356,17 @@ impl ImageViewerApp {
                 .deferred_sdr_uploads
                 .get(&index)
                 .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
+        {
+            return false;
+        }
+        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && self.texture_cache.contains(index)
+        {
+            return false;
+        }
+        if self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .contains(&index)
         {
             return false;
         }
@@ -291,45 +387,6 @@ impl ImageViewerApp {
             return false;
         }
         true
-    }
-
-    pub(super) fn strip_needs_compose_upgrade(&mut self, index: usize) -> bool {
-        if index >= self.image_files.len() {
-            return false;
-        }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
-            return false;
-        }
-        let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) else {
-            return false;
-        };
-        let compose_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-            StripPreviewBufferTag::HdrComposedStrip,
-            PreviewStage::Refined,
-        );
-        let cached_stage = self
-            .directory_tree_strip_cache
-            .cached_preview_stage(index)
-            .unwrap_or(PreviewStage::Initial);
-        if crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
-            cached_tag,
-            cached_stage,
-        ) >= compose_rank
-        {
-            return false;
-        }
-        if self
-            .hdr_image_cache
-            .get(&index)
-            .is_some_and(|hdr| crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref()))
-        {
-            return true;
-        }
-        let path = self.image_files[index].clone();
-        self.directory_tree_strip_compose_probe_cache
-            .needs_compose_upgrade(index, || {
-                crate::loader::path_needs_directory_tree_strip_compose_upgrade(&path)
-            })
     }
 
     /// Visible image-list row indices used for strip prefetch scheduling (unit tests).

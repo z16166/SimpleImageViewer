@@ -21,7 +21,6 @@ use super::decode::{
 };
 use super::scanline::{LibTiffScanlineSource, manual_decode_scanline};
 use super::tiled::LibTiffTiledSource;
-use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
@@ -200,26 +199,15 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback =
-                        if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-                            DecodedImage::new(
-                                hdr.width,
-                                hdr.height,
-                                hdr_to_sdr_rgba8_with_tone_settings(
-                                    &hdr,
-                                    tone_map.exposure_ev,
-                                    &tone_map,
-                                )?,
-                            )
-                        } else {
-                            DecodedImage::new_sdr_deferred_placeholder(
-                                hdr.width,
-                                hdr.height,
-                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
-                                    hdr.width, hdr.height,
-                                )?,
-                            )
-                        };
+                    let fallback = DecodedImage::from_hdr_sdr_fallback(
+                        hdr.width,
+                        hdr.height,
+                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &hdr,
+                            hdr_target_capacity,
+                            &tone_map,
+                        )?,
+                    );
                     return Ok(ImageData::Hdr {
                         hdr: Box::new(hdr),
                         fallback,
@@ -326,26 +314,15 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback =
-                        if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-                            DecodedImage::new(
-                                hdr.width,
-                                hdr.height,
-                                hdr_to_sdr_rgba8_with_tone_settings(
-                                    &hdr,
-                                    tone_map.exposure_ev,
-                                    &tone_map,
-                                )?,
-                            )
-                        } else {
-                            DecodedImage::new_sdr_deferred_placeholder(
-                                hdr.width,
-                                hdr.height,
-                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
-                                    hdr.width, hdr.height,
-                                )?,
-                            )
-                        };
+                    let fallback = DecodedImage::from_hdr_sdr_fallback(
+                        hdr.width,
+                        hdr.height,
+                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &hdr,
+                            hdr_target_capacity,
+                            &tone_map,
+                        )?,
+                    );
                     return Ok(ImageData::Hdr {
                         hdr: Box::new(hdr),
                         fallback,

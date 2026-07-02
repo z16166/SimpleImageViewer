@@ -315,7 +315,10 @@ fn use_direct_srgb_sdr_fallback(metadata: &HdrImageMetadata, tf: HdrTransferFunc
 /// [`use_direct_srgb_sdr_fallback`] only: unmanaged **IEC 61966‑2‑1 display‑referred** sRGB without filmic
 /// Reinhard. **PQ / BT.709 / scene-linear** use [`encode_sdr_rgb8`] (matches GPU **`encode_sdr`** for PQ).
 #[inline]
-fn should_use_iec61966_tone_map_fallback(buffer: &HdrImageBuffer, tf: HdrTransferFunction) -> bool {
+pub(crate) fn should_use_iec61966_tone_map_fallback(
+    buffer: &HdrImageBuffer,
+    tf: HdrTransferFunction,
+) -> bool {
     use_direct_srgb_sdr_fallback(&buffer.metadata, tf)
 }
 

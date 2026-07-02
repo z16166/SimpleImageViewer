@@ -19,13 +19,16 @@ use std::collections::HashSet;
 use super::types::{HardwareTier, UltraHdrCapacityRefresh};
 
 // -- Preload configuration --
-// Maximum number of images to preload in each direction.
-pub(crate) const MAX_PRELOAD_FORWARD: usize = 5;
-pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
+// Neighbor preload radius matches [`DEFAULT_PREFETCH_WINDOW_DISTANCE`] so scheduled decodes
+// are not evicted by `evict_distant_prefetch_caches` on the next navigation.
+pub(crate) const MAX_PRELOAD_FORWARD: usize = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+pub(crate) const MAX_PRELOAD_BACKWARD: usize = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
 /// Cap simultaneous image decoders so HQ RAW GPU extract is not starved by neighbor preloads.
 pub(crate) const MAX_CONCURRENT_DECODER_LOADS: usize = crate::loader::MAX_IMG_LOADER_THREADS;
-// Texture cache must hold: current + forward + backward + buffer for transitions
-pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
+/// Texture cache: current + both neighbor directions + transition buffer.
+const TRANSITION_TEXTURE_BUFFER_SLOTS: usize = 2;
+pub(crate) const CACHE_SIZE: usize =
+    MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 1 + TRANSITION_TEXTURE_BUFFER_SLOTS;
 /// Max CPU-side SDR previews queued for deferred GPU upload (neighbors + HDR fallbacks).
 /// Independent of preload direction limits so tuning one does not silently change the other.
 pub(crate) const MAX_DEFERRED_SDR_UPLOADS: usize = 12;

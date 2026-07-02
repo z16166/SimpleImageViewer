@@ -32,29 +32,76 @@ use std::path::Path;
 use super::HeifHdrDecodeDiag;
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn load_heif_hdr(
+pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
+    bytes: &[u8],
+    diag: HeifHdrDecodeDiag<'_>,
+) -> Result<crate::loader::ImageData, String> {
+    use super::embedded_sdr::build_heif_embedded_sdr_master_hdr;
+    use super::thumbnail::decode_heif_primary_sdr_from_bytes;
+
+    #[cfg(feature = "preload-debug")]
+    let total_start = std::time::Instant::now();
+    #[cfg(not(feature = "preload-debug"))]
+    let _diag = diag;
+
+    let (decoded, logical) = decode_heif_primary_sdr_from_bytes(bytes)?;
+    let hdr = build_heif_embedded_sdr_master_hdr(bytes, logical)?;
+
+    #[cfg(feature = "preload-debug")]
+    {
+        let total_ms = total_start.elapsed().as_millis();
+        let idx = diag
+            .idx
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let path_label = diag
+            .path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(unknown)".to_string());
+        crate::preload_debug!(
+            "[PreloadDebug][HEIF] embedded_sdr_primary total_ms={total_ms} idx={idx} path={path_label} size={}x{}",
+            hdr.width,
+            hdr.height
+        );
+    }
+
+    Ok(crate::loader::ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback: decoded,
+    })
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Path-based wrapper; production uses `load_heif_embedded_sdr_primary_from_bytes`.
+pub(crate) fn load_heif_embedded_sdr_primary(
+    path: &Path,
+    diag: HeifHdrDecodeDiag<'_>,
+) -> Result<crate::loader::ImageData, String> {
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
+    load_heif_embedded_sdr_primary_from_bytes(&mmap[..], diag)
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn load_heif_hdr_from_bytes(
+    bytes: &[u8],
     path: &Path,
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    let hdr = decode_heif_hdr(path, hdr_target_capacity, diag)?;
-    let fallback = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        crate::loader::DecodedImage::new(
-            hdr.width,
-            hdr.height,
-            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                &hdr,
-                tone_map.exposure_ev,
-                &tone_map,
-            )?,
-        )
-    } else {
-        crate::loader::DecodedImage::new_sdr_deferred_placeholder(
-            hdr.width,
-            hdr.height,
-            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?,
-        )
+    let label = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(unknown)");
+    let hdr = decode_heif_hdr_bytes(bytes, hdr_target_capacity, label, diag)?;
+    let fallback = {
+        let fb = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            &hdr,
+            hdr_target_capacity,
+            &tone_map,
+        )?;
+        crate::loader::DecodedImage::from_hdr_sdr_fallback(hdr.width, hdr.height, fb)
     };
 
     Ok(crate::loader::ImageData::Hdr {
@@ -64,6 +111,31 @@ pub(crate) fn load_heif_hdr(
 }
 
 #[cfg(feature = "heif-native")]
+pub(crate) fn heif_should_use_embedded_sdr_primary_load(
+    prefer_embedded_sdr_master: bool,
+    hdr_target_capacity: f32,
+) -> bool {
+    crate::loader::should_use_embedded_sdr_master_load(
+        prefer_embedded_sdr_master,
+        hdr_target_capacity,
+    )
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Path-based wrapper; production uses `load_heif_hdr_from_bytes`.
+pub(crate) fn load_heif_hdr(
+    path: &Path,
+    hdr_target_capacity: f32,
+    tone_map: HdrToneMapSettings,
+    diag: HeifHdrDecodeDiag<'_>,
+) -> Result<crate::loader::ImageData, String> {
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
+    load_heif_hdr_from_bytes(&mmap[..], path, hdr_target_capacity, tone_map, diag)
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Used by tests and path-based `load_heif_hdr`.
 pub(crate) fn decode_heif_hdr(
     path: &Path,
     hdr_target_capacity: f32,

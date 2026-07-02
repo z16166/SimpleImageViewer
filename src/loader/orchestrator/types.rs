@@ -143,6 +143,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) wgpu_device_id_live: Arc<AtomicU64>,
     pub(crate) hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) fn should_spawn_load_task(
@@ -195,6 +196,8 @@ pub struct ImageLoader {
     pub(crate) hdr_tone_max_display_nits_bits: Arc<AtomicU32>,
     /// True when the main thread has an active HDR callback target format for pre-upload registration.
     pub(crate) hdr_callback_upload_active: Arc<std::sync::atomic::AtomicBool>,
+    /// User setting: show embedded ISO gain-map SDR master on SDR monitors (skip HDR GPU pre-upload).
+    pub(crate) embedded_iso_gain_map_sdr_master: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) wgpu_device: Option<wgpu::Device>,
     pub(crate) wgpu_queue: Option<wgpu::Queue>,
     /// Live epoch; compare before background GPU upload and on the main thread at registration.

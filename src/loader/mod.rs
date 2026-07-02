@@ -18,6 +18,7 @@
 
 mod decode;
 mod decode_profile;
+pub(crate) mod embedded_sdr_fallback;
 mod hdr_fallback;
 mod metadata;
 mod orchestrator;
@@ -29,6 +30,8 @@ mod texture_cache;
 mod tiled_sources;
 mod types;
 
+#[allow(unused_imports)]
+// Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
 pub use decode_profile::{
     DEFAULT_PREFETCH_WINDOW_DISTANCE, DecodeProfile, DisplayRequirements,
     HDR_CAPACITY_MATCH_EPSILON, InFlightLoad, LoadIntent, MAX_CURRENT_IMAGE_OS_THREADS,
@@ -54,18 +57,19 @@ pub use texture_cache::{TextureCache, TextureCacheInsert};
 pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;
-pub(crate) use decode::generate_directory_tree_thumb_decode_from_path;
-pub(crate) use decode::path_needs_directory_tree_strip_compose_upgrade;
+pub(crate) use decode::{
+    DirectoryTreeThumbDecodeOptions, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    generate_directory_tree_thumb_decode_from_path,
+};
 pub(crate) use hdr_fallback::{
-    cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_composed_from_gain_map_path,
-    directory_tree_strip_composed_from_iso_deferred, directory_tree_strip_from_hdr_or_fallback,
-    directory_tree_strip_gain_map_compose_capacity, directory_tree_strip_logical_for_preview,
-    hdr_directory_tree_strip_sdr_at_max_side, hdr_display_requests_sdr_preview,
-    hdr_has_iso_deferred_gain_map, hdr_raw_gpu_bootstrap_fallback_decoded,
-    hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
+    cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_from_hdr_or_fallback,
+    directory_tree_strip_logical_for_preview, hdr_directory_tree_strip_sdr_at_max_side,
+    hdr_display_requests_sdr_preview, hdr_has_embedded_sdr_master_display,
+    hdr_has_iso_deferred_gain_map, hdr_is_gain_map_sdr_display_sensitive,
+    hdr_raw_gpu_bootstrap_fallback_decoded, hdr_raw_gpu_demosaic_pending,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hdr_to_sdr_with_user_tone, hdr_tone_map_settings_for_directory_tree_strip,
-    libraw_scene_linear_needs_eager_sdr_fallback, raw_gpu_source_has_bootstrap_preview,
+    hdr_tone_map_settings_for_directory_tree_strip, prefer_embedded_iso_gain_map_sdr_on_sdr_output,
+    raw_gpu_source_has_bootstrap_preview, should_use_embedded_sdr_master_load,
     static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{

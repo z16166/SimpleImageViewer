@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::MAX_CONCURRENT_DECODER_LOADS;
 use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
-use crate::app::{MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
     RenderShape as LoadedRenderShape, TileResult, source_key_for_path,
@@ -193,22 +193,6 @@ fn should_yield_background_result_for_pending_transition(
     !is_current && pending_transition_target == Some(current_index)
 }
 
-fn should_yield_background_result_for_post_transition_refinement(
-    is_current: bool,
-    transition_settled_at: Option<std::time::Instant>,
-    current_refinement_pending: bool,
-) -> bool {
-    if is_current || !current_refinement_pending {
-        return false;
-    }
-    // Give the current image's own refinement a short priority lane after transition settle.
-    // 500ms is long enough for the queued current refinement to surface on busy folders, but
-    // short enough that neighboring previews resume before the next deliberate navigation.
-    const POST_TRANSITION_REFINEMENT_PRIORITY: std::time::Duration =
-        std::time::Duration::from_millis(500);
-    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_PRIORITY)
-}
-
 fn background_upload_quota_after_transition(
     default_quota: usize,
     transition_settled_at: Option<std::time::Instant>,
@@ -269,26 +253,6 @@ fn should_drop_placeholder_sdr_transition_source(
     hdr_output_available: bool,
 ) -> bool {
     placeholder && has_hdr && hdr_output_available
-}
-
-/// Hold off refined SDR fallback GPU uploads for the navigation target briefly after the
-/// transition animation ends. Applying them on the same frame as `transition_start` clears
-/// re-uploads the 8-bit cache and retriggers ISO/Apple HDR compose (see preload logs:
-/// `install hdr_sdr_fallback` immediately after the last defer loop).
-pub(crate) fn should_defer_hdr_sdr_fallback_install(
-    is_current: bool,
-    is_transitioning: bool,
-    transition_settled_at: Option<std::time::Instant>,
-) -> bool {
-    if !is_current {
-        return false;
-    }
-    if is_transitioning {
-        return true;
-    }
-    const POST_TRANSITION_REFINEMENT_HOLD: std::time::Duration =
-        std::time::Duration::from_millis(50);
-    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_HOLD)
 }
 
 /// Circular distance within which prefetch CPU/GPU caches are retained (see `prefetch_retention`).
@@ -1022,15 +986,6 @@ impl ImageViewerApp {
         }
     }
 
-    /// Drop all in-flight loader registrations except the current image so navigation
-    /// is not starved behind long neighbor RAW decodes.
-    pub(super) fn cancel_loader_tasks_except_current(&mut self) {
-        if self.image_files.is_empty() {
-            return;
-        }
-        self.loader.cancel_all_except(self.current_index);
-    }
-
     pub(super) fn discard_stale_loader_outputs(&mut self) {
         let gate_ctx = self.result_gate_context();
         let files = &self.image_files;
@@ -1103,42 +1058,8 @@ impl ImageViewerApp {
                     LoaderOutput::Tile(t) => gate_ctx
                         .retention_for(t.index, loading.contains_key(&t.index))
                         .should_retain(),
-                    LoaderOutput::HdrSdrFallback(_) => true,
                 }
             });
-    }
-
-    pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
-        if self.transition_start.is_some() {
-            return;
-        }
-        if self.current_index >= self.image_files.len() {
-            return;
-        }
-        if self
-            .hdr_placeholder_fallback_indices
-            .contains(&self.current_index)
-        {
-            if self
-                .hdr_in_flight_fallback_refinements
-                .contains(&self.current_index)
-            {
-                return;
-            }
-            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
-                if crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr) {
-                    return;
-                }
-                let source_key = source_key_for_path(&self.image_files[self.current_index]);
-                self.hdr_in_flight_fallback_refinements
-                    .insert(self.current_index);
-                self.loader.trigger_hdr_sdr_fallback_refinement(
-                    self.current_index,
-                    hdr,
-                    source_key,
-                );
-            }
-        }
     }
 
     pub(super) fn raw_hq_index_requires_hdr_plane(&self, index: usize) -> bool {

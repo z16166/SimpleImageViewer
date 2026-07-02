@@ -42,7 +42,7 @@ env:
   # When dispatching manually with release_tag set, checkout and release use that tag; otherwise use the triggering ref.
   CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
-  MONKEY_SDK_VERSION: "1301"
+  MONKEY_SDK_VERSION: "1318"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
   MACOSX_DEPLOYMENT_TARGET: "11.0"
   # vcpkg accepts at most: nuget,<url>[,read|readwrite] — token cannot be a 4th segment (parse error).
@@ -735,12 +735,12 @@ jobs:
           # Get version without 'v' prefix
           VERSION=${RELEASE_TAG#v}
           echo "Extracting notes for version [$VERSION]"
-          
+
           # Extract section between the current version header and the next ## header
           # We use sed to find the range, then sed '$d' to remove the last line (the next header)
           # If it's the first entry in CHANGELOG, it will go to the end of file.
           sed -n "/^## \[$VERSION\]/,/^## /p" CHANGELOG.md | sed '$d' > RELEASE_NOTES.md
-          
+
           echo "=== RELEASE NOTES CONTENT ==="
           cat RELEASE_NOTES.md
           echo "============================="

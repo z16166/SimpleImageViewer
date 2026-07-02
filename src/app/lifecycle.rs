@@ -273,17 +273,15 @@ impl ImageViewerApp {
             }
             let pipeline_cache =
                 crate::wgpu_pipeline_cache::create_pipeline_cache(&state.device, &state.adapter);
-            if let Some(format) = crate::hdr::renderer::predicted_hdr_callback_target_format(
+            let formats = crate::hdr::renderer::hdr_callback_formats_to_prewarm(
                 crate::hdr::surface::native_hdr_swapchain_requests_enabled(
                     settings.hdr_native_surface_enabled_effective(),
                     Some(adapter_info.backend),
                 ),
-                initial_hdr_monitor_selection
-                    .as_ref()
-                    .is_some_and(|selection| selection.hdr_supported),
                 hdr_capabilities.candidate_texture_format,
                 hdr_target_format,
-            ) {
+            );
+            for format in formats {
                 hdr_callback_resources_prewarm.ensure_started(
                     &state.device,
                     format,
@@ -548,9 +546,9 @@ impl ImageViewerApp {
             raw_gpu_embedded_bootstrap_indices: std::collections::HashSet::new(),
             hdr_register_prewarm_repush_counts: std::collections::HashMap::new(),
             gpu_demosaic_failed_indices: std::collections::HashSet::new(),
+            main_loader_failed_indices: std::collections::HashSet::new(),
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
-            hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
             hq_tiled_preview_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
@@ -579,11 +577,9 @@ impl ImageViewerApp {
             embedded_directory_tree_panel_bootstrapped: false,
             directory_tree_strip_cache:
                 crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
-            directory_tree_strip_compose_probe_cache:
-                crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache::default(
-                ),
             directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
+            directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,

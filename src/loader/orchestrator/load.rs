@@ -23,13 +23,12 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::{ImageLoadRequest, load_image_file};
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
-    DecodeProfile, DecodedImage, HdrSdrFallbackResult, ImageData, InFlightLoad, LoadIntent,
-    LoadResult, LoaderOutput, MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle,
-    PreviewResult, RefinementRequest, TileDecodeSource, TileResult, decode_profile_stub,
-    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hq_preview_max_side, in_flight_profile_supersedes_hq_refinement,
-    in_flight_profile_supersedes_load_result, source_key_for_path,
-    static_hdr_background_plane_upload_eligible,
+    DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
+    MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
+    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side,
+    in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
+    source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender};
@@ -69,6 +68,7 @@ struct LoadWorkerInput {
     wgpu_is_opengl: bool,
     wgpu_device_id_live: Arc<AtomicU64>,
     hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
+    embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ImageLoader {
@@ -133,6 +133,7 @@ impl ImageLoader {
         let hdr_tone_max_display_nits_bits =
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
         let hdr_callback_upload_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let embedded_iso_gain_map_sdr_master = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
@@ -207,6 +208,9 @@ impl ImageLoader {
                             wgpu_device_id_live: Arc::clone(&job.wgpu_device_id_live),
                             hdr_callback_upload_active_live: Arc::clone(
                                 &job.hdr_callback_upload_active_live,
+                            ),
+                            embedded_iso_gain_map_sdr_master_live: Arc::clone(
+                                &job.embedded_iso_gain_map_sdr_master_live,
                             ),
                         });
                     }
@@ -634,6 +638,7 @@ impl ImageLoader {
             hdr_tone_sdr_white_nits_bits,
             hdr_tone_max_display_nits_bits,
             hdr_callback_upload_active,
+            embedded_iso_gain_map_sdr_master,
             wgpu_device: None,
             wgpu_queue: None,
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
@@ -717,16 +722,15 @@ impl ImageLoader {
             .write_navigation(current_index, image_count, max_distance);
     }
 
-    pub fn cancel_all_except(&mut self, keep_index: usize) {
-        let cancelled: Vec<usize> = {
-            let loading = self.loading.lock();
-            loading
-                .keys()
-                .filter(|&&idx| idx != keep_index)
-                .copied()
-                .collect()
+    /// Upgrade an in-flight neighbor registration to [`LoadIntent::Current`] without spawning
+    /// a second decode worker (navigation reuse).
+    pub fn promote_inflight_to_current(&mut self, index: usize) -> bool {
+        let mut loading = self.loading.lock();
+        let Some(entry) = loading.get_mut(&index) else {
+            return false;
         };
-        self.cancel_indices(cancelled);
+        entry.profile.load_intent = LoadIntent::Current;
+        true
     }
 
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
@@ -791,6 +795,11 @@ impl ImageLoader {
     pub fn set_hdr_callback_upload_active(&self, active: bool) {
         self.hdr_callback_upload_active
             .store(active, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn set_embedded_iso_gain_map_sdr_master(&self, enabled: bool) {
+        self.embedded_iso_gain_map_sdr_master
+            .store(enabled, std::sync::atomic::Ordering::Release);
     }
 
     fn hdr_target_capacity(&self) -> f32 {
@@ -898,6 +907,8 @@ impl ImageLoader {
         let wgpu_is_opengl = self.wgpu_is_opengl;
         let wgpu_device_id_live = Arc::clone(&self.wgpu_device_id);
         let hdr_callback_upload_active_live = Arc::clone(&self.hdr_callback_upload_active);
+        let embedded_iso_gain_map_sdr_master_live =
+            Arc::clone(&self.embedded_iso_gain_map_sdr_master);
 
         if path_is_raw {
             crate::preload_debug!(
@@ -914,6 +925,8 @@ impl ImageLoader {
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
         let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
+        let embedded_iso_gain_map_sdr_master_live_spawn =
+            Arc::clone(&embedded_iso_gain_map_sdr_master_live);
         let run_worker = move || {
             {
                 let loading = loading1.lock();
@@ -950,6 +963,7 @@ impl ImageLoader {
                 wgpu_is_opengl,
                 wgpu_device_id_live: wgpu_device_id_live_spawn,
                 hdr_callback_upload_active_live: hdr_callback_upload_active_live_spawn,
+                embedded_iso_gain_map_sdr_master_live: embedded_iso_gain_map_sdr_master_live_spawn,
             });
         };
         if load_intent == LoadIntent::Current {
@@ -1047,6 +1061,7 @@ impl ImageLoader {
             wgpu_is_opengl,
             wgpu_device_id_live,
             hdr_callback_upload_active_live,
+            embedded_iso_gain_map_sdr_master_live,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -1102,6 +1117,7 @@ impl ImageLoader {
             wgpu_is_opengl,
             wgpu_device_id_live,
             hdr_callback_upload_active_live,
+            embedded_iso_gain_map_sdr_master_live,
         } = input;
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -1125,6 +1141,8 @@ impl ImageLoader {
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
+                prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
+                    .load(std::sync::atomic::Ordering::Acquire),
             })
         }))
         .unwrap_or_else(|e| {
@@ -1200,6 +1218,7 @@ impl ImageLoader {
                 hdr,
                 hdr_target_capacity,
                 hdr_callback_upload_active_live.load(std::sync::atomic::Ordering::Acquire),
+                embedded_iso_gain_map_sdr_master_live.load(std::sync::atomic::Ordering::Acquire),
             )
         {
             match crate::hdr::renderer::upload_image_plane(device, queue, hdr) {
@@ -1464,95 +1483,6 @@ impl ImageLoader {
                     );
                 }
                 _ => {}
-            }
-        });
-    }
-
-    pub fn trigger_hdr_sdr_fallback_refinement(
-        &self,
-        index: usize,
-        hdr: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
-        source_key: u64,
-    ) {
-        let adoptee_profile = self
-            .in_flight_profile(index)
-            .unwrap_or_else(decode_profile_stub);
-        let tx = self.tx.clone();
-        let loading = std::sync::Arc::clone(&self.loading);
-        let tone = self.hdr_tone_map_settings_snapshot();
-        let fallback_profile = adoptee_profile.clone();
-
-        REFINEMENT_POOL.spawn(move || {
-            struct RefinementGuard {
-                tx: super::types::LoaderOutputSender,
-                index: usize,
-                decode_profile: DecodeProfile,
-                source_key: u64,
-                sent: bool,
-            }
-            impl Drop for RefinementGuard {
-                fn drop(&mut self) {
-                    if !self.sent {
-                        let _ = self.tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
-                            index: self.index,
-                            decode_profile: self.decode_profile.clone(),
-                            source_key: self.source_key,
-                            fallback: None,
-                        }));
-                    }
-                }
-            }
-
-            let mut guard = RefinementGuard {
-                tx: tx.clone(),
-                index,
-                decode_profile: fallback_profile,
-                source_key,
-                sent: false,
-            };
-
-            if Self::hq_refinement_superseded(&loading, index, &guard.decode_profile) {
-                return;
-            }
-            #[cfg(target_os = "windows")]
-            let _com = crate::wic::ComGuard::new();
-
-            let started_at = std::time::Instant::now();
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(&hdr, &tone)
-            }));
-            match r {
-                Ok(Ok(pixels)) => {
-                    if Self::hq_refinement_superseded(&loading, index, &guard.decode_profile) {
-                        log::debug!(
-                            "[Loader] HDR SDR fallback refinement discarded (stale): index={index}"
-                        );
-                        return;
-                    }
-                    log::debug!(
-                        "[Loader] HDR SDR fallback refined after placeholder: index={index} elapsed={:?}",
-                        started_at.elapsed()
-                    );
-                    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
-                    guard.sent = true;
-                    let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
-                        index,
-                        decode_profile: guard.decode_profile.clone(),
-                        source_key,
-                        fallback: Some(fallback),
-                    }));
-                }
-                Ok(Err(e)) => {
-                    log::warn!(
-                        "[Loader] HDR SDR fallback refinement failed: index={index}: {e}"
-                    );
-                }
-                Err(payload) => {
-                    log::error!(
-                        "[Loader] HDR SDR fallback refinement panicked: index={index}: {:?}",
-                        payload
-                    );
-                }
             }
         });
     }

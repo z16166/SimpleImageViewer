@@ -437,12 +437,12 @@ pub struct ImageViewerApp {
     /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
     pub(crate) hdr_register_prewarm_repush_counts: HashMap<usize, u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
+    /// Main-window loader gave up on these indices until the user navigates back or rescans.
+    pub(crate) main_loader_failed_indices: HashSet<usize>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
-    /// HDR indices for which fallback refinement is currently in-flight.
-    pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
     pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
     /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).
@@ -498,11 +498,11 @@ pub struct ImageViewerApp {
     pub(crate) embedded_directory_tree_panel_bootstrapped: bool,
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
-    pub(crate) directory_tree_strip_compose_probe_cache:
-        crate::app::directory_tree_strip_cache::DirectoryTreeStripComposeProbeCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
     pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
+    /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
+    pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,

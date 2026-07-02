@@ -48,30 +48,57 @@ pub(super) struct TiledImageInstall<'a> {
     pub(super) ctx: &'a egui::Context,
 }
 
-fn hdr_fallback_directory_tree_strip_tag(
-    hdr: Option<&crate::hdr::types::HdrImageBuffer>,
-    composed_strip_preview: bool,
-) -> crate::app::directory_tree_strip_cache::StripPreviewBufferTag {
-    use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
-    if composed_strip_preview
-        && hdr.is_some_and(|hdr| {
-            crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
-        })
-    {
-        StripPreviewBufferTag::HdrComposedStrip
-    } else {
-        StripPreviewBufferTag::HdrToneMappedStrip
-    }
-}
-
 impl ImageViewerApp {
+    /// True when the canvas is actually drawing through the HDR float plane for `index`,
+    /// not merely when an HDR buffer exists in cache (e.g. ISO gain-map embedded SDR master on SDR output).
     pub(super) fn active_hdr_plane_displays_index(&self, index: usize) -> bool {
-        index == self.current_index
-            && self.effective_hdr_display_output().is_some()
-            && self
-                .current_hdr_image
-                .as_ref()
-                .is_some_and(|current| current.image_for_index(index).is_some())
+        self.render_plan_for_index(index)
+            .is_some_and(|plan| plan.backend == crate::app::rendering::plane::PlaneBackendKind::Hdr)
+    }
+
+    fn render_plan_for_index(
+        &self,
+        index: usize,
+    ) -> Option<crate::app::rendering::plan::RenderPlan> {
+        if index != self.current_index {
+            return None;
+        }
+        if self.effective_hdr_display_output().is_none() {
+            return None;
+        }
+        let has_hdr_plane = self
+            .current_hdr_image
+            .as_ref()
+            .is_some_and(|current| current.image_for_index(index).is_some())
+            || self.hdr_image_cache.contains_key(&index)
+            || self.hdr_tiled_source_cache.contains_key(&index);
+        if !has_hdr_plane {
+            return None;
+        }
+        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&index);
+        let shape = if self.should_draw_tiled_canvas()
+            || self.hdr_tiled_source_cache.contains_key(&index)
+        {
+            crate::app::rendering::plan::RenderShape::Tiled
+        } else {
+            crate::app::rendering::plan::RenderShape::Static
+        };
+        Some(self.build_render_plan(shape, has_hdr_plane, has_sdr_fallback))
+    }
+
+    pub(super) fn hdr_prefers_embedded_sdr_master_on_output(
+        &self,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+    ) -> bool {
+        let output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.effective_hdr_target_format(),
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+            &self.settings,
+            output_mode,
+            Some(hdr),
+        )
     }
 
     fn installed_hdr_directory_tree_strip_preview(
@@ -84,13 +111,7 @@ impl ImageViewerApp {
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
-        crate::loader::directory_tree_strip_from_hdr_or_fallback(
-            hdr,
-            fallback,
-            max_side,
-            self.directory_tree_strip_gain_map_compose_capacity(),
-        )
-        .ok()
+        crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side).ok()
     }
 
     fn should_eager_cache_install_hdr_strip(&self, idx: usize) -> bool {
@@ -226,6 +247,35 @@ impl ImageViewerApp {
         } else {
             self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
+    }
+
+    pub(super) fn index_within_prefetch_window(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 || index >= count {
+            return false;
+        }
+        super::prefetch_window_contains(
+            self.current_index,
+            count,
+            index,
+            self.prefetch_window_max_distance,
+        )
+    }
+
+    /// Upload deferred neighbor SDR pixels to `texture_cache` once preload completes.
+    pub(super) fn flush_deferred_sdr_for_completed_prefetch_neighbor(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) -> bool {
+        if index == self.current_index || !self.index_within_prefetch_window(index) {
+            return false;
+        }
+        if !self.deferred_sdr_uploads.contains_key(&index) {
+            return false;
+        }
+        self.flush_deferred_sdr_upload_for_index(index, ctx);
+        self.texture_cache.contains(index)
     }
 
     pub(crate) fn flush_deferred_sdr_upload_for_index(
@@ -396,15 +446,6 @@ impl ImageViewerApp {
                 pixels: fallback.arc_pixels(),
             });
         }
-        if sdr_fallback_is_placeholder
-            && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
-            && !self.hdr_in_flight_fallback_refinements.contains(&idx)
-        {
-            let source_key = source_key_for_path(&self.image_files[idx]);
-            self.hdr_in_flight_fallback_refinements.insert(idx);
-            self.loader
-                .trigger_hdr_sdr_fallback_refinement(idx, Arc::clone(&hdr), source_key);
-        }
         if self.should_eager_cache_install_hdr_strip(idx)
             && let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
                 &hdr,
@@ -432,11 +473,10 @@ impl ImageViewerApp {
             let strip_tag = if crate::loader::hdr_has_iso_deferred_gain_map(hdr.as_ref())
                 && hdr.rgba_f32.is_empty()
             {
-                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::HdrComposedStrip
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
             } else {
                 crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
                     !hdr.rgba_f32.is_empty(),
-                    sdr_fallback_is_placeholder || fallback.is_sdr_deferred_placeholder(),
                     strip_preview.is_sdr_deferred_placeholder(),
                     false,
                 )
@@ -450,66 +490,6 @@ impl ImageViewerApp {
                 ctx,
             );
         }
-    }
-
-    pub(super) fn handle_hdr_sdr_fallback_update(
-        &mut self,
-        update: crate::loader::HdrSdrFallbackResult,
-        ctx: &egui::Context,
-    ) {
-        let idx = update.index;
-        if !self.hdr_image_cache.contains_key(&idx) {
-            return;
-        }
-        let Some(fallback_image) = update.fallback else {
-            return;
-        };
-        if idx == self.current_index {
-            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
-                width: fallback_image.width,
-                height: fallback_image.height,
-                pixels: fallback_image.arc_pixels(),
-            });
-        }
-        let active_hdr_plane_displays_current = self.active_hdr_plane_displays_index(idx);
-        self.hdr_sdr_fallback_indices.insert(idx);
-        self.hdr_placeholder_fallback_indices.remove(&idx);
-        let logical_size = self.texture_cache.get_original_res(idx).or_else(|| {
-            self.hdr_image_cache
-                .get(&idx)
-                .map(|hdr| (hdr.width, hdr.height))
-        });
-        let composed_strip_preview = self.hdr_image_cache.get(&idx).and_then(|hdr| {
-            self.installed_hdr_directory_tree_strip_preview(hdr.as_ref(), &fallback_image, false)
-        });
-        let strip_tag = hdr_fallback_directory_tree_strip_tag(
-            self.hdr_image_cache.get(&idx).map(|hdr| hdr.as_ref()),
-            composed_strip_preview.is_some(),
-        );
-        let strip_for_cache = composed_strip_preview.as_ref().unwrap_or(&fallback_image);
-        if active_hdr_plane_displays_current {
-            // The float HDR plane is the displayed source; applying the refined SDR fallback here
-            // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
-            self.insert_deferred_sdr_upload(idx, fallback_image.clone());
-            self.cache_directory_tree_strip_thumbnail(
-                idx,
-                strip_for_cache,
-                crate::loader::PreviewStage::Refined,
-                logical_size,
-                strip_tag,
-                ctx,
-            );
-            return;
-        }
-        self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
-        self.cache_directory_tree_strip_thumbnail(
-            idx,
-            strip_for_cache,
-            crate::loader::PreviewStage::Refined,
-            logical_size,
-            strip_tag,
-            ctx,
-        );
     }
 
     pub(super) fn install_tiled_image(&mut self, install: TiledImageInstall<'_>) {
@@ -728,9 +708,14 @@ impl ImageViewerApp {
             idx,
             path_str
         );
+        self.main_loader_failed_indices.insert(idx);
         if idx == self.current_index {
             self.error_message =
                 Some(t!("status.load_failed", path = path_str, err = error).to_string());
         }
+    }
+
+    pub(super) fn note_main_loader_install_success(&mut self, idx: usize) {
+        self.main_loader_failed_indices.remove(&idx);
     }
 }

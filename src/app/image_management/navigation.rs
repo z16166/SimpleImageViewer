@@ -42,7 +42,7 @@ impl ImageViewerApp {
 
         // Prefer the HDR buffer already on screen (`current_hdr_image`) so the outgoing
         // transition plane reuses the same GPU binding instead of re-uploading/re-composing.
-        let hdr = if index == self.current_index {
+        let mut hdr = if index == self.current_index {
             self.current_hdr_image
                 .as_ref()
                 .and_then(|current| current.image_for_index(index))
@@ -67,6 +67,15 @@ impl ImageViewerApp {
             self.effective_hdr_display_output().is_some(),
         ) {
             texture = None;
+        }
+
+        // Outgoing transitions must reuse the same pixels the canvas was showing. Embedded SDR
+        // master draws the 8-bit fallback texture; routing the outgoing frame through the HDR
+        // float plane re-composes and looks noticeably dimmer for one or more frames.
+        if hdr.as_ref().is_some_and(|buffer| {
+            self.hdr_prefers_embedded_sdr_master_on_output(buffer) && texture.is_some()
+        }) {
+            hdr = None;
         }
 
         (texture, hdr)
@@ -96,6 +105,77 @@ impl ImageViewerApp {
         .or_else(|| texture.map(|texture| texture.size_vec2()));
 
         source_size.map(|size| self.compute_plane_layout(size, screen_rect).dest)
+    }
+
+    /// Drop gain-map HDR caches in the preload window and reload the current image after
+    /// [`crate::settings::HdrGainMapSdrDisplayMode`] changes. Unlike [`Self::reload_current`],
+    /// this applies to HEIF/AVIF/JPEG-R gain-map files, not only RAW.
+    pub(crate) fn reload_after_hdr_gain_map_sdr_display_change(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        self.sync_loader_hdr_callback_upload_snapshot();
+        self.cached_frame_hdr_render_path = None;
+
+        let count = self.image_files.len();
+        let sensitive: Vec<usize> = (0..count)
+            .filter(|&idx| {
+                prefetch_window_contains(
+                    self.current_index,
+                    count,
+                    idx,
+                    self.prefetch_window_max_distance,
+                )
+            })
+            .filter(|&idx| {
+                self.hdr_image_cache.get(&idx).is_some_and(|hdr| {
+                    crate::loader::hdr_is_gain_map_sdr_display_sensitive(hdr.as_ref())
+                })
+            })
+            .collect();
+
+        if sensitive.is_empty() {
+            return;
+        }
+
+        log::info!(
+            "[HDR] hdr_gain_map_sdr_display -> {}; evicting {} gain-map cache(s) in preload window and reloading current idx={}",
+            self.settings.hdr_gain_map_sdr_display.label(),
+            sensitive.len(),
+            self.current_index
+        );
+
+        self.invalidate_decode_profile_epoch();
+        self.loader.cancel_all();
+
+        let current = self.current_index;
+        for idx in &sensitive {
+            self.texture_cache.remove(*idx);
+            self.prefetched_tiles.remove(idx);
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            self.remove_hdr_image_index(*idx);
+            if *idx == current {
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.animation_cache.remove(idx);
+                self.pending_anim_frames.remove(idx);
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
+                self.transition_start = None;
+                self.pending_transition_target = None;
+            }
+        }
+
+        self.loader.request_load(
+            current,
+            self.image_files[current].clone(),
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(current),
+        );
+        self.schedule_preloads(true);
     }
 
     pub(crate) fn reload_current(&mut self) {
@@ -191,6 +271,7 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
+        self.main_loader_failed_indices.remove(&target_index);
         self.canvas_display_timing.on_navigate();
         #[cfg(feature = "preload-debug")]
         {
@@ -323,7 +404,6 @@ impl ImageViewerApp {
             &mut self.prefetched_tiles,
         );
         self.set_current_index(target_index);
-        self.cancel_loader_tasks_except_current();
         self.refresh_current_file_name();
         self.current_hdr_image = self
             .first_cached_hdr_still_for_index(self.current_index)
@@ -461,6 +541,7 @@ impl ImageViewerApp {
                 self.installed_display_mode(self.current_index),
                 self.tile_manager.is_some()
             );
+            self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
             let needs_tile_manager_rebuild = (self.index_uses_tiled_pipeline(self.current_index)
                 || self
                     .hdr_tiled_source_cache
@@ -495,25 +576,43 @@ impl ImageViewerApp {
             }
         } else {
             let idx = self.current_index;
-            let missing_hdr = raw_hq_navigate_missing_hdr_plane(
-                &self.image_files,
-                idx,
-                self.settings.raw_high_quality,
-                &self.hdr_image_cache,
-                &self.hdr_tiled_source_cache,
-            );
-            if missing_hdr && self.loader.is_loading(idx) {
-                crate::preload_debug!("[PreloadDebug][RAW] navigate inflight_reuse idx={}", idx);
-                if self.current_image_res.is_none()
-                    && let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
-                        self.deferred_sdr_uploads
-                            .get(&idx)
-                            .map(|d| (d.width, d.height))
-                    })
+            if self.loader.is_loading(idx) {
+                self.loader.promote_inflight_to_current(idx);
+                #[cfg(feature = "preload-debug")]
                 {
-                    self.set_current_image_resolution(Some((w, h)));
+                    let missing_hdr = raw_hq_navigate_missing_hdr_plane(
+                        &self.image_files,
+                        idx,
+                        self.settings.raw_high_quality,
+                        &self.hdr_image_cache,
+                        &self.hdr_tiled_source_cache,
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug] navigate inflight_reuse idx={} raw_hq={} missing_hdr={}",
+                        idx,
+                        self.settings.raw_high_quality,
+                        missing_hdr
+                    );
                 }
+                if self.current_image_res.is_none() {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(idx) {
+                        self.set_current_image_resolution(Some((w, h)));
+                    } else if let Some(hdr) = self.hdr_image_cache.get(&idx) {
+                        self.set_current_image_resolution(Some((hdr.width, hdr.height)));
+                    } else if let Some(decoded) = self.deferred_sdr_uploads.get(&idx) {
+                        self.set_current_image_resolution(Some((decoded.width, decoded.height)));
+                    }
+                }
+                self.flush_deferred_sdr_upload_for_index(idx, ctx);
             } else {
+                #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+                let missing_hdr = raw_hq_navigate_missing_hdr_plane(
+                    &self.image_files,
+                    idx,
+                    self.settings.raw_high_quality,
+                    &self.hdr_image_cache,
+                    &self.hdr_tiled_source_cache,
+                );
                 #[cfg(feature = "preload-debug")]
                 {
                     let bootstrap_only = missing_hdr
@@ -568,7 +667,6 @@ impl ImageViewerApp {
                 self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
-        self.trigger_current_hdr_fallback_refinement_if_needed();
         self.sync_and_ensure_hq_tiled_preview(self.current_index, ctx);
         self.try_start_pending_transition_if_ready();
         self.sync_directory_tree_file_list_state(ctx);

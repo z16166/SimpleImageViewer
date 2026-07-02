@@ -53,6 +53,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
         self.directory_tree_strip_cold_attempted.remove(&index);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .remove(&index);
     }
 
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
@@ -253,6 +255,16 @@ impl ImageViewerApp {
                 continue;
             }
             if Self::strip_preview_failure_is_permanent(&result) {
+                if result.cold_deferred_to_main_loader {
+                    self.finish_strip_preview_job(result.index);
+                    self.mark_strip_cold_awaiting_main_loader(result.index);
+                    #[cfg(feature = "preload-debug")]
+                    crate::preload_debug!(
+                        "[PreloadDebug][StripPoll] idx={} cold deferred (await main loader fast path or install)",
+                        result.index
+                    );
+                    continue;
+                }
                 if result.decoded.width == 0 || result.decoded.height == 0 {
                     log::debug!(
                         "[DirectoryTree] Strip preview unavailable for index {} ({})",

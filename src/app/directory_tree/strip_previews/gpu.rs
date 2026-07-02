@@ -256,8 +256,7 @@ impl ImageViewerApp {
         if hdr_has_iso_deferred_gain_map(hdr.as_ref()) {
             return true;
         }
-        crate::loader::libraw_scene_linear_needs_eager_sdr_fallback(hdr.as_ref())
-            && !crate::loader::hdr_display_requests_sdr_preview(self.ultra_hdr_decode_capacity)
+        self.hdr_placeholder_fallback_indices.contains(&index)
     }
 
     pub(super) fn strip_skip_texture_cache_sync_for_deferred_black_sdr(

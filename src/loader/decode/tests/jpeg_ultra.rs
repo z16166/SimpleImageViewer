@@ -111,6 +111,7 @@ fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
         &path,
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
+        false,
     )
     .expect("load paris EXIF orientation 5 JPEG");
     let ImageData::Static(decoded) = image_data else {
@@ -168,7 +169,7 @@ fn ultra_hdr_loader_uses_target_hdr_capacity() {
         return;
     }
 
-    let low = load_jpeg_with_target_capacity(&path, 1.0, HdrToneMapSettings::default())
+    let low = load_jpeg_with_target_capacity(&path, 1.0, HdrToneMapSettings::default(), false)
         .expect("load low-capacity Ultra HDR JPEG_R sample");
     // `hdr_gain_map_decode_capacity` clamps to `HdrToneMapSettings::target_hdr_capacity()`;
     // raise the configured peak so an 8× probe survives the min() and exercises strong gain.
@@ -176,7 +177,7 @@ fn ultra_hdr_loader_uses_target_hdr_capacity() {
         max_display_nits: HdrToneMapSettings::default().sdr_white_nits * 8.0,
         ..HdrToneMapSettings::default()
     };
-    let high = load_jpeg_with_target_capacity(&path, 8.0, high_tone)
+    let high = load_jpeg_with_target_capacity(&path, 8.0, high_tone, false)
         .expect("load high-capacity Ultra HDR JPEG_R sample");
 
     let ImageData::Hdr { hdr: low, .. } = low else {
@@ -237,6 +238,7 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
         hdr_target_capacity: HdrToneMapSettings::default().target_hdr_capacity(),
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
+        prefer_embedded_sdr_master: false,
     });
 
     assert!(

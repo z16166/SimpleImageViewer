@@ -22,13 +22,7 @@ use std::sync::OnceLock;
 use parking_lot::Mutex;
 
 /// Bump when wgpu render pipelines or WGSL change in ways that invalidate on-disk cache bytes.
-const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 2;
-
-/// Runtime prewarm persist is disabled on Metal: `PipelineCache::get_data()` + disk write on the
-/// UI thread has caused macOS crashes independent of loading stale cache files (schema version).
-pub fn runtime_prewarm_persist_enabled(backend: wgpu::Backend) -> bool {
-    backend != wgpu::Backend::Metal
-}
+const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 3;
 
 pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
     adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
@@ -290,12 +284,7 @@ mod tests {
         let path = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
         let file_name = path.file_name().unwrap().to_string_lossy();
 
-        assert!(file_name.contains("_pcv2_"));
+        assert!(file_name.contains("_pcv3_"));
     }
 
-    #[test]
-    fn runtime_prewarm_persist_skips_metal() {
-        assert!(!runtime_prewarm_persist_enabled(wgpu::Backend::Metal));
-        assert!(runtime_prewarm_persist_enabled(wgpu::Backend::Vulkan));
-    }
 }

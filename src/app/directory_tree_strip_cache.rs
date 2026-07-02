@@ -46,8 +46,6 @@ pub(crate) enum StripPreviewBufferTag {
     StripDecodedPixels,
     /// CPU tone-mapped HDR strip (float `rgba_f32` tone-mapped on CPU).
     HdrToneMappedStrip,
-    /// Composed HDR strip after iso-deferred gain-map apply (`PreviewStage::Refined` upgrade).
-    HdrComposedStrip,
 }
 
 impl StripPreviewBufferTag {
@@ -64,7 +62,6 @@ impl StripPreviewBufferTag {
             Self::IsoGainMapBaseline => 4,
             Self::StripDecodedPixels => 5,
             Self::HdrToneMappedStrip => 6,
-            Self::HdrComposedStrip => 7,
         };
         let stage_bonus = match stage {
             PreviewStage::Initial => 0,
@@ -86,6 +83,8 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub logical: (u32, u32),
     pub stage: PreviewStage,
     pub buffer_tag: StripPreviewBufferTag,
+    /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
+    pub cold_deferred_to_main_loader: bool,
 }
 
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
@@ -112,50 +111,6 @@ pub(crate) struct DirectoryTreeStripCache {
     logical_sizes: HashMap<usize, (u32, u32)>,
     lru_order: VecDeque<usize>,
     gpu_revision: u64,
-}
-
-/// Per-index result cache for container-only ISO gain-map compose probes.
-#[derive(Default)]
-pub(crate) struct DirectoryTreeStripComposeProbeCache {
-    needs_compose_by_index: HashMap<usize, bool>,
-}
-
-impl DirectoryTreeStripComposeProbeCache {
-    pub(crate) fn needs_compose_upgrade(
-        &mut self,
-        index: usize,
-        probe: impl FnOnce() -> bool,
-    ) -> bool {
-        if let Some(cached) = self.needs_compose_by_index.get(&index) {
-            return *cached;
-        }
-        let needs_compose = probe();
-        // Only cache positive results: mmap/parse failures must not permanently skip upgrades.
-        if needs_compose {
-            self.needs_compose_by_index.insert(index, true);
-        }
-        needs_compose
-    }
-
-    pub(crate) fn remove_index(&mut self, index: usize) {
-        self.needs_compose_by_index.remove(&index);
-    }
-
-    pub(crate) fn retain_len(&mut self, len: usize) {
-        self.needs_compose_by_index.retain(|index, _| *index < len);
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.needs_compose_by_index.clear();
-    }
-
-    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
-        remap_partial_hashmap(&mut self.needs_compose_by_index, old_to_new);
-    }
-
-    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
-        permute_usize_hashmap(&mut self.needs_compose_by_index, old_to_new);
-    }
 }
 
 pub(crate) struct StripDecodedUpsert<'a> {
@@ -607,18 +562,16 @@ pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: Prev
 
 /// Buffer tag for HDR-related strip previews.
 ///
-/// When CPU `rgba_f32` is still empty and only a deferred/black placeholder is available,
-/// callers must use [`StripPreviewBufferTag::SdrDeferredPlaceholder`] (lowest rank) rather than
-/// [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps any existing real preview.
+/// Tag reflects the strip buffer itself, not the main-window SDR fallback. When the strip
+/// decoded image is a deferred/black placeholder, use [`StripPreviewBufferTag::SdrDeferredPlaceholder`]
+/// (lowest rank) rather than [`StripPreviewBufferTag::HdrToneMappedStrip`], so replace logic keeps
+/// any existing real preview.
 pub(crate) fn strip_buffer_tag_for_hdr_preview(
     hdr_has_float_pixels: bool,
-    fallback_is_deferred_placeholder: bool,
     decoded_is_deferred_placeholder: bool,
     iso_deferred_empty_rgba: bool,
 ) -> StripPreviewBufferTag {
-    if decoded_is_deferred_placeholder
-        || (!hdr_has_float_pixels && fallback_is_deferred_placeholder)
-    {
+    if decoded_is_deferred_placeholder {
         return StripPreviewBufferTag::SdrDeferredPlaceholder;
     }
     if iso_deferred_empty_rgba {
@@ -884,17 +837,17 @@ mod tests {
     }
 
     #[test]
-    fn strip_buffer_tag_marks_empty_hdr_placeholder_as_deferred() {
+    fn strip_buffer_tag_marks_decoded_placeholder_as_deferred() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, true, false, false),
+            strip_buffer_tag_for_hdr_preview(false, true, false),
             StripPreviewBufferTag::SdrDeferredPlaceholder
         );
     }
 
     #[test]
-    fn strip_buffer_tag_uses_preload_fallback_for_bootstrap_before_float_readback() {
+    fn strip_buffer_tag_uses_preload_fallback_for_real_sdr_strip_before_float_readback() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(false, false, false, false),
+            strip_buffer_tag_for_hdr_preview(false, false, false),
             StripPreviewBufferTag::PreloadSdrFallback
         );
     }
@@ -902,45 +855,9 @@ mod tests {
     #[test]
     fn strip_buffer_tag_uses_hdr_tone_mapped_when_float_pixels_ready() {
         assert_eq!(
-            strip_buffer_tag_for_hdr_preview(true, false, false, false),
+            strip_buffer_tag_for_hdr_preview(true, false, false),
             StripPreviewBufferTag::HdrToneMappedStrip
         );
-    }
-
-    #[test]
-    fn compose_probe_cache_reuses_positive_result_until_invalidated() {
-        use std::cell::Cell;
-
-        let mut cache = DirectoryTreeStripComposeProbeCache::default();
-        let probes = Cell::new(0usize);
-        let probe = || {
-            probes.set(probes.get() + 1);
-            true
-        };
-
-        assert!(cache.needs_compose_upgrade(7, probe));
-        assert!(cache.needs_compose_upgrade(7, probe));
-        assert_eq!(probes.get(), 1);
-
-        cache.remove_index(7);
-        assert!(cache.needs_compose_upgrade(7, probe));
-        assert_eq!(probes.get(), 2);
-    }
-
-    #[test]
-    fn compose_probe_cache_does_not_remember_negative_results() {
-        use std::cell::Cell;
-
-        let mut cache = DirectoryTreeStripComposeProbeCache::default();
-        let probes = Cell::new(0usize);
-        let probe = || {
-            probes.set(probes.get() + 1);
-            false
-        };
-
-        assert!(!cache.needs_compose_upgrade(3, probe));
-        assert!(!cache.needs_compose_upgrade(3, probe));
-        assert_eq!(probes.get(), 2);
     }
 
     #[test]
@@ -1137,7 +1054,7 @@ mod tests {
             Some(StripPreviewBufferTag::IsoGainMapBaseline),
             Some(PreviewStage::Initial),
             &refined,
-            StripPreviewBufferTag::HdrComposedStrip,
+            StripPreviewBufferTag::HdrToneMappedStrip,
             PreviewStage::Refined,
             logical,
         ));

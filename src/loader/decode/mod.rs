@@ -19,6 +19,7 @@
 //! On Windows, [`crate::wic::load_via_wic`] expects COM on the calling thread; [`crate::loader::ImageLoader`]
 //! installs [`crate::wic::ComGuard`] on loader and tile worker threads before invoking this pipeline.
 
+mod animation_bootstrap;
 mod assemble;
 mod detect;
 mod directory_tree_thumb;
@@ -30,13 +31,14 @@ mod modern;
 mod raster;
 mod raw;
 pub(crate) use raw::open_raw_processor_with_preview;
-mod strip_compose_probe;
 mod strip_downsample;
 mod tiff_raw_sniff;
 
-pub(crate) use directory_tree_thumb::generate_directory_tree_thumb_decode_from_path;
+pub(crate) use directory_tree_thumb::{
+    DirectoryTreeThumbDecodeOptions, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    generate_directory_tree_thumb_decode_from_path,
+};
 pub(crate) use raster::is_maybe_animated;
-pub(crate) use strip_compose_probe::path_needs_directory_tree_strip_compose_upgrade;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
@@ -54,12 +56,20 @@ use super::{
     hdr_sdr_fallback_is_placeholder_for_load,
 };
 
+use animation_bootstrap::{
+    load_gif_with_bootstrap, load_png_with_bootstrap, load_webp_with_bootstrap,
+    spawn_raster_animation_remainder_decode,
+};
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection};
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_with_target_capacity;
-use modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity};
-use raster::{load_gif, load_png, load_psd, load_static, load_webp};
+use modern::{
+    load_avif_with_target_capacity_outcome, load_heif_hdr_aware,
+    load_jxl_with_target_capacity_outcome, spawn_avif_sequence_remainder_decode,
+    spawn_jxl_animation_remainder_decode,
+};
+use raster::{load_psd, load_static};
 use raw::load_raw;
 
 pub(crate) struct ImageLoadRequest<'a> {
@@ -73,6 +83,7 @@ pub(crate) struct ImageLoadRequest<'a> {
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Option<&'a crate::loader::orchestrator::RawOpenPrefetch>,
+    pub(crate) prefer_embedded_sdr_master: bool,
 }
 
 pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
@@ -87,6 +98,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         hdr_target_capacity,
         hdr_tone_map,
         raw_open_prefetch,
+        prefer_embedded_sdr_master,
     } = request;
     let file_name = path
         .file_name()
@@ -164,7 +176,14 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || {
+                    load_jpeg_with_target_capacity(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        prefer_embedded_sdr_master,
+                    )
+                },
             );
         }
         if ext == "tif" || ext == "tiff" {
@@ -211,7 +230,24 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || {
+                    let outcome = load_avif_with_target_capacity_outcome(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        prefer_embedded_sdr_master,
+                        true,
+                    )?;
+                    if let Some(job) = outcome.sequence_remainder {
+                        spawn_avif_sequence_remainder_decode(
+                            job,
+                            tx.clone(),
+                            index,
+                            decode_profile.clone(),
+                        );
+                    }
+                    Ok(outcome.image)
+                },
             );
         }
 
@@ -222,7 +258,24 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+                || {
+                    let outcome = load_jxl_with_target_capacity_outcome(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        prefer_embedded_sdr_master,
+                        true,
+                    )?;
+                    if let Some(job) = outcome.remainder_job {
+                        spawn_jxl_animation_remainder_decode(
+                            job,
+                            tx.clone(),
+                            index,
+                            decode_profile.clone(),
+                        );
+                    }
+                    Ok(outcome.image)
+                },
             );
         }
 
@@ -242,6 +295,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             idx: Some(index),
                             path: Some(path),
                         },
+                        prefer_embedded_sdr_master,
                     )
                 },
             );
@@ -258,12 +312,49 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             }
         }
 
-        let result = match ext.as_str() {
-            "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-            "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
-            "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
-            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
-        };
+        if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || {
+                    let outcome = match ext.as_str() {
+                        "gif" => load_gif_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        "png" | "apng" => load_png_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        "webp" => load_webp_with_bootstrap(
+                            path,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            true,
+                        ),
+                        _ => unreachable!("matched gif/png/apng/webp above"),
+                    }?;
+                    if let Some(job) = outcome.remainder {
+                        spawn_raster_animation_remainder_decode(
+                            job,
+                            tx.clone(),
+                            index,
+                            decode_profile.clone(),
+                        );
+                    }
+                    Ok(outcome.image)
+                },
+            );
+        }
+
+        let result = load_static(path, hdr_target_capacity, hdr_tone_map);
         match result {
             Ok(image) => Ok(image),
             Err(primary_err) => recover_via_platform_and_content_detection(

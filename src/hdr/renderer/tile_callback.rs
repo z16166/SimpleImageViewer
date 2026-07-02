@@ -39,7 +39,10 @@ impl CallbackTrait for HdrTilePlaneCallback {
             return Vec::new();
         }
 
-        let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {
+        let Some(resources) = callback_resources
+            .get_mut::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for_mut(self.target_format))
+        else {
             return Vec::new();
         };
 
@@ -439,7 +442,10 @@ impl CallbackTrait for HdrTilePlaneCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
-        let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
+        let Some(resources) = callback_resources
+            .get::<HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for(self.target_format))
+        else {
             return;
         };
         let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);

@@ -49,11 +49,46 @@ pub(super) fn send_strip_inflight_release(
 impl ImageViewerApp {
     pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
         self.directory_tree_strip_cache.remove_index(index);
-        self.directory_tree_strip_compose_probe_cache
-            .remove_index(index);
         self.directory_tree_strip_cold_attempted.remove(&index);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
+    }
+
+    pub(super) fn mark_strip_cold_awaiting_main_loader(&mut self, index: usize) {
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .insert(index);
+        self.directory_tree_strip_cold_attempted.insert(index);
+    }
+
+    pub(super) fn release_strip_cold_awaiting_main_loader_if_resolved(&mut self, index: usize) {
+        if !self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .contains(&index)
+        {
+            return;
+        }
+        let resolved = self.directory_tree_strip_cache.contains(index)
+            || self.hdr_image_cache.contains_key(&index)
+            || (!self.loader.is_loading(index)
+                && !self.strip_cold_skip_slow_embedded_sdr_primary(index));
+        if resolved {
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .remove(&index);
+            self.directory_tree_strip_cold_attempted.remove(&index);
+        }
+    }
+
+    fn release_resolved_strip_cold_awaiting_main_loader(&mut self) {
+        let pending: Vec<usize> = self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .iter()
+            .copied()
+            .collect();
+        for index in pending {
+            self.release_strip_cold_awaiting_main_loader_if_resolved(index);
+        }
     }
 
     pub(crate) fn ensure_directory_tree_strip_thumbnails(&mut self, ctx: &egui::Context) {
@@ -62,6 +97,7 @@ impl ImageViewerApp {
         }
 
         self.poll_directory_tree_strip_preview_results(ctx);
+        self.release_resolved_strip_cold_awaiting_main_loader();
 
         let (visible_row_range, scroll_to_current_pending) =
             if let Some(list) = self.directory_tree.list.try_lock() {
@@ -78,15 +114,15 @@ impl ImageViewerApp {
         // skip for a few frames to avoid redundant per-frame scheduling overhead.
         let preload_cooled_down = self.strip_preload_cooldown_frames == 0;
         if preload_cooled_down {
-            let can_preload = bootstrap_visible
-                && self.settings.preload
+            let can_preload_neighbors = self.settings.preload
                 && !self.preload_deferred_for_hdr_capacity
+                && self.has_loaded_asset(self.current_index)
                 && self.loader.active_load_count() < MAX_CONCURRENT_DECODER_LOADS
                 && !crate::app::image_management::should_defer_neighbor_work_for_current_main(
                     self.has_loaded_asset(self.current_index),
                     self.loader.is_loading(self.current_index),
                 );
-            if can_preload {
+            if can_preload_neighbors {
                 self.schedule_preloads(true);
                 self.strip_preload_cooldown_frames = 3;
             }
@@ -296,48 +332,6 @@ impl ImageViewerApp {
             }
         }
 
-        let compose_room = inflight_room.saturating_sub(cold_scheduled);
-        if compose_room > 0 {
-            let mut compose_scheduled = 0usize;
-            if bootstrap_visible {
-                let compose_cap = file_count.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
-                for index in 0..compose_cap {
-                    if compose_scheduled >= compose_room {
-                        break;
-                    }
-                    if self.strip_needs_compose_upgrade(index)
-                        && self.try_schedule_strip_compose_upgrade(index)
-                    {
-                        compose_scheduled += 1;
-                    }
-                }
-            } else if self.strip_needs_compose_upgrade(self.current_index)
-                && self.try_schedule_strip_compose_upgrade(self.current_index)
-            {
-                compose_scheduled += 1;
-            }
-            if compose_scheduled < compose_room {
-                let compose_targets = if let Some((start, end)) = visible_row_range {
-                    (start..end.min(file_count)).collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                for index in compose_targets {
-                    if compose_scheduled >= compose_room {
-                        break;
-                    }
-                    if index == self.current_index {
-                        continue;
-                    }
-                    if self.strip_needs_compose_upgrade(index)
-                        && self.try_schedule_strip_compose_upgrade(index)
-                    {
-                        compose_scheduled += 1;
-                    }
-                }
-            }
-        }
-
         #[cfg(feature = "preload-debug")]
         if bootstrap_visible
             || cold_scheduled > 0
@@ -374,8 +368,6 @@ impl ImageViewerApp {
             self.strip_stale_retain_last_generation = current_gen;
             self.directory_tree_strip_cache
                 .retain(|index| index < self.image_files.len());
-            self.directory_tree_strip_compose_probe_cache
-                .retain_len(self.image_files.len());
             self.directory_tree_strip_tiled_attempted
                 .retain(|index| *index < self.image_files.len());
             self.directory_tree_strip_generate_inflight
@@ -423,11 +415,13 @@ impl ImageViewerApp {
         old_to_new: &[usize],
     ) {
         self.directory_tree_strip_cache.permute(old_to_new);
-        self.directory_tree_strip_compose_probe_cache
-            .permute(old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_cold_awaiting_main_loader,
+            old_to_new,
+        );
         self.permute_directory_tree_strip_pending_gpu(old_to_new);
         {
             let mut list = self.directory_tree.list.lock();
@@ -484,8 +478,6 @@ impl ImageViewerApp {
         for (old_idx, path) in old_files.iter().enumerate() {
             if !new_path_set.contains(path) {
                 self.directory_tree_strip_cache.remove_index(old_idx);
-                self.directory_tree_strip_compose_probe_cache
-                    .remove_index(old_idx);
             }
         }
 
@@ -518,14 +510,16 @@ impl ImageViewerApp {
 
         log::debug!("[DirectoryTree] Partial strip cache reorder retaining mapped entries");
         self.directory_tree_strip_cache.partial_remap(&old_to_new);
-        self.directory_tree_strip_compose_probe_cache
-            .partial_remap(&old_to_new);
         Self::permute_strip_index_set(
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
         Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
         Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
+        Self::permute_strip_index_set(
+            &mut self.directory_tree_strip_cold_awaiting_main_loader,
+            &old_to_new,
+        );
         self.permute_directory_tree_strip_pending_gpu(&old_to_new);
         {
             let mut list = self.directory_tree.list.lock();
@@ -543,10 +537,10 @@ impl ImageViewerApp {
 
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
-        self.directory_tree_strip_compose_probe_cache.clear();
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
+        self.directory_tree_strip_cold_awaiting_main_loader.clear();
         self.directory_tree_strip_pending_gpu_initial.clear();
         self.directory_tree_strip_pending_gpu_refined.clear();
         {
@@ -582,6 +576,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
+        self.directory_tree_strip_cold_awaiting_main_loader.clear();
     }
 
     pub(crate) fn directory_tree_list_previews_active(&self) -> bool {

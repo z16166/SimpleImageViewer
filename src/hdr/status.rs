@@ -21,6 +21,8 @@ use rust_i18n::t;
 pub enum HdrRenderPath {
     FloatImagePlane,
     FloatTilePlane,
+    /// ISO gain-map HDR shown via embedded SDR master on an SDR monitor (no live tone-map).
+    EmbeddedSdrMaster,
     SdrFallback,
 }
 
@@ -42,23 +44,13 @@ pub fn hdr_osd_tag_from_parts(input: HdrOsdTagParts<'_>) -> Option<String> {
 
     let render = hdr_render_path_label(input.render_path);
     let color = input.color_space.map(hdr_color_space_label);
-    let output = hdr_output_label_from_parts(input.output_mode, input.native_presentation_enabled);
+    let output = hdr_output_label_from_parts(
+        input.output_mode,
+        input.native_presentation_enabled,
+        input.render_path,
+    );
 
-    let mut parts = match color {
-        Some(color) => t!(
-            "hdr.osd.tag_with_color",
-            color = color,
-            render = render,
-            output = output
-        )
-        .to_string(),
-        None => t!(
-            "hdr.osd.tag_without_color",
-            render = render,
-            output = output
-        )
-        .to_string(),
-    };
+    let mut parts = hdr_osd_tag_core(color.as_deref(), &render, &output);
     if let Some(capacity) = input.ultra_hdr_decode_capacity {
         let capacity = format!("{capacity:.2}");
         parts.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = capacity));
@@ -81,6 +73,7 @@ fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
     match render_path {
         HdrRenderPath::FloatImagePlane => t!("hdr.render_path.float_plane").to_string(),
         HdrRenderPath::FloatTilePlane => t!("hdr.render_path.float_tile_plane").to_string(),
+        HdrRenderPath::EmbeddedSdrMaster => t!("hdr.render_path.embedded_sdr_master").to_string(),
         HdrRenderPath::SdrFallback => t!("hdr.render_path.sdr_fallback").to_string(),
     }
 }
@@ -88,6 +81,7 @@ fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
 pub fn hdr_output_label_from_parts(
     output_mode: HdrOutputMode,
     native_presentation_enabled: bool,
+    render_path: HdrRenderPath,
 ) -> String {
     if native_presentation_enabled {
         match output_mode {
@@ -97,7 +91,38 @@ pub fn hdr_output_label_from_parts(
             HdrOutputMode::SdrToneMapped => t!("hdr.output.native_hdr").to_string(),
         }
     } else {
-        t!("hdr.output.sdr_tone_mapped").to_string()
+        match render_path {
+            HdrRenderPath::FloatImagePlane | HdrRenderPath::FloatTilePlane => {
+                t!("hdr.output.sdr_tone_mapped").to_string()
+            }
+            HdrRenderPath::EmbeddedSdrMaster => String::new(),
+            HdrRenderPath::SdrFallback => t!("hdr.output.sdr").to_string(),
+        }
+    }
+}
+
+fn hdr_osd_tag_core(color: Option<&str>, render: &str, output: &str) -> String {
+    match (color, output.is_empty()) {
+        (Some(color), false) => t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string(),
+        (None, false) => t!(
+            "hdr.osd.tag_without_color",
+            render = render,
+            output = output
+        )
+        .to_string(),
+        (Some(color), true) => t!(
+            "hdr.osd.tag_with_color_render_only",
+            color = color,
+            render = render
+        )
+        .to_string(),
+        (None, true) => t!("hdr.osd.tag_render_only", render = render).to_string(),
     }
 }
 
@@ -287,5 +312,57 @@ mod tests {
         });
 
         assert_eq!(tag, None);
+    }
+
+    #[test]
+    fn hdr_osd_tag_embedded_sdr_master_omits_tone_mapped_output() {
+        rust_i18n::set_locale("en");
+        let color = t!("hdr.color_space.linear_srgb").to_string();
+        let render = t!("hdr.render_path.embedded_sdr_master").to_string();
+        let mut expected = t!(
+            "hdr.osd.tag_with_color_render_only",
+            color = color,
+            render = render
+        )
+        .to_string();
+        expected.push_str(" · +0.0 EV");
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::EmbeddedSdrMaster,
+            color_space: Some(HdrColorSpace::LinearSrgb),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
+
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn hdr_osd_tag_sdr_fallback_shows_sdr_not_tone_mapped() {
+        rust_i18n::set_locale("en");
+        let render = t!("hdr.render_path.sdr_fallback").to_string();
+        let output = t!("hdr.output.sdr").to_string();
+        let mut expected = t!(
+            "hdr.osd.tag_without_color",
+            render = render,
+            output = output
+        )
+        .to_string();
+        expected.push_str(" · +0.0 EV");
+        let tag = hdr_osd_tag_from_parts(HdrOsdTagParts {
+            is_hdr_source: true,
+            render_path: HdrRenderPath::SdrFallback,
+            color_space: None,
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        });
+
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 }

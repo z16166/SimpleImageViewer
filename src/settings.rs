@@ -156,6 +156,30 @@ impl RawDemosaicMode {
     }
 }
 
+/// How ISO gain-map HDR images (Ultra HDR / AVIF / JXL with embedded SDR master) are shown
+/// on SDR displays. Ignored when native HDR presentation is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum HdrGainMapSdrDisplayMode {
+    /// Show the embedded SDR master directly (fast; no HDR forward compose or tone-map).
+    #[default]
+    EmbeddedSdrMaster,
+    /// Full HDR decode, gain-map compose, and SDR tone-map (live exposure control).
+    HdrToneMapped,
+}
+
+impl HdrGainMapSdrDisplayMode {
+    pub fn label(self) -> String {
+        match self {
+            Self::EmbeddedSdrMaster => {
+                rust_i18n::t!("hdr_gain_map_sdr.embedded_master").to_string()
+            }
+            Self::HdrToneMapped => rust_i18n::t!("hdr_gain_map_sdr.tone_mapped").to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -321,6 +345,9 @@ pub struct Settings {
     pub hdr_sdr_white_nits: f32,
     #[serde(default = "default_hdr_max_display_nits")]
     pub hdr_max_display_nits: f32,
+    /// ISO gain-map HDR presentation on SDR monitors (see [`HdrGainMapSdrDisplayMode`]).
+    #[serde(default)]
+    pub hdr_gain_map_sdr_display: HdrGainMapSdrDisplayMode,
 
     // Language (locale code: "en", "zh-CN", "zh-HK")
     #[serde(default)]
@@ -477,6 +504,7 @@ impl Default for Settings {
             hdr_exposure_ev_sdr: 0.0,
             hdr_sdr_white_nits: default_hdr_sdr_white_nits(),
             hdr_max_display_nits: default_hdr_max_display_nits(),
+            hdr_gain_map_sdr_display: HdrGainMapSdrDisplayMode::default(),
             language: String::new(),
             theme: AppTheme::Dark,
             window_outer_position: None,

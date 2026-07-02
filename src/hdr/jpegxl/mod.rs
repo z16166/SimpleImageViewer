@@ -26,15 +26,15 @@ mod tests;
 
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use decode::decode_jxl_bytes_to_image_data;
+#[cfg(feature = "jpegxl")]
+pub(crate) use decode::{
+    decode_jxl_strip_iso_gain_map_baseline,
+    load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
+};
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use decode::{
     decode_jxl_hdr_bytes, jxl_find_black_extra_channel_index, jxl_sdr_grade_fallback_rgba8,
     jxl_tag_display_referred_when_sdr_grade,
-};
-#[cfg(feature = "jpegxl")]
-pub(crate) use decode::{
-    decode_jxl_hdr_bytes_with_target_capacity, decode_jxl_strip_iso_gain_map_baseline,
-    load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use metadata::{
@@ -42,8 +42,6 @@ pub(crate) use metadata::{
 };
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use metadata::{hdr_metadata_from_jxl_float_decode, icc_trc_kind, linear_to_srgb_u8};
-#[cfg(feature = "jpegxl")]
-pub(crate) use probe::jxl_probe_forward_iso_gain_map;
 #[cfg(all(test, feature = "jpegxl"))]
 pub(crate) use probe::{
     JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,

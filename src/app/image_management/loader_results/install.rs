@@ -137,6 +137,10 @@ impl ImageViewerApp {
             self.set_raw_metadata_for_index(idx, None, ctx);
         }
 
+        if !matches!(install_plan, ImageInstallPlan::Error { .. }) {
+            self.note_main_loader_install_success(idx);
+        }
+
         match install_plan {
             ImageInstallPlan::StaticSdr { decoded } => {
                 self.install_static_sdr_image(idx, decoded, ctx);

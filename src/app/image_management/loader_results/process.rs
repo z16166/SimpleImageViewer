@@ -162,9 +162,6 @@ impl ImageViewerApp {
         let sdr_upload_budget_bytes_this_frame =
             sdr_upload_budget_bytes_per_frame(self.hardware_tier);
         let mut yielded_background_outputs = Vec::new();
-        let mut current_refinement_pending = self
-            .hdr_in_flight_fallback_refinements
-            .contains(&self.current_index);
 
         // Merge channel results into the local queue before polling so a repushed neighbor
         // cannot block the current image result that is still waiting on rx.
@@ -277,20 +274,6 @@ impl ImageViewerApp {
                         yielded_background_outputs.push(LoaderOutput::Image(load_result));
                         continue;
                     }
-                    if should_yield_background_result_for_post_transition_refinement(
-                        is_current,
-                        self.transition_settled_at,
-                        current_refinement_pending,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield image install: idx={} current={} reason=current_refinement_pending",
-                            idx,
-                            self.current_index,
-                        );
-                        yielded_background_outputs.push(LoaderOutput::Image(load_result));
-                        continue;
-                    }
-
                     if should_defer_background_upload_during_transition(
                         is_current,
                         is_transitioning,
@@ -446,6 +429,12 @@ impl ImageViewerApp {
                     }
                     sdr_upload_bytes_this_frame =
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
+                    if !is_current
+                        && uploads_this_frame < background_upload_quota
+                        && self.flush_deferred_sdr_for_completed_prefetch_neighbor(idx, ctx)
+                    {
+                        uploads_this_frame += 1;
+                    }
 
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
@@ -472,20 +461,6 @@ impl ImageViewerApp {
                         yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
                         continue;
                     }
-                    if should_yield_background_result_for_post_transition_refinement(
-                        preview_is_current,
-                        self.transition_settled_at,
-                        current_refinement_pending,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield preview update: idx={} current={} reason=current_refinement_pending",
-                            preview_update.index,
-                            self.current_index
-                        );
-                        yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
-                        continue;
-                    }
-
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
                     let preview_has_sdr_upload = preview_result_has_sdr_upload(&preview_update);
@@ -569,154 +544,6 @@ impl ImageViewerApp {
                     }
                     self.handle_refined_notification(idx, ctx);
                 }
-
-                LoaderOutput::HdrSdrFallback(update) => {
-                    let is_current = update.index == self.current_index;
-                    if !result_gate::source_key_matches_index(
-                        &self.image_files,
-                        update.index,
-                        update.source_key,
-                    ) {
-                        self.hdr_in_flight_fallback_refinements
-                            .remove(&update.index);
-                        log::warn!(
-                            "[App] HDR SDR fallback discarded (source key mismatch): index={}",
-                            update.index
-                        );
-                        continue;
-                    }
-                    let display = self.display_requirements_for_index(update.index);
-                    if !crate::loader::profile_satisfies_display(&update.decode_profile, &display) {
-                        self.hdr_in_flight_fallback_refinements
-                            .remove(&update.index);
-                        continue;
-                    }
-                    if should_yield_background_result_for_pending_transition(
-                        is_current,
-                        self.pending_transition_target,
-                        self.current_index,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} reason=pending_transition_target",
-                            update.index,
-                            self.current_index
-                        );
-                        yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
-                        continue;
-                    }
-                    if should_yield_background_result_for_post_transition_refinement(
-                        is_current,
-                        self.transition_settled_at,
-                        current_refinement_pending,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} reason=current_refinement_pending",
-                            update.index,
-                            self.current_index
-                        );
-                        yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
-                        continue;
-                    }
-                    let estimated_sdr_upload_bytes =
-                        update.fallback.as_ref().map_or(0, |fallback| {
-                            decoded_rgba_bytes(fallback.width, fallback.height)
-                        });
-                    if should_defer_hdr_sdr_fallback_install(
-                        is_current,
-                        is_transitioning,
-                        self.transition_settled_at,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason={}",
-                            update.index,
-                            self.current_index,
-                            if is_transitioning {
-                                "transition"
-                            } else {
-                                "post_transition_settle"
-                            }
-                        );
-                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
-                        ctx.request_repaint();
-                        break;
-                    }
-                    if estimated_sdr_upload_bytes > 0
-                        && !should_upload_sdr_this_frame(
-                            is_current,
-                            sdr_upload_bytes_this_frame,
-                            estimated_sdr_upload_bytes,
-                            sdr_upload_budget_bytes_this_frame,
-                        )
-                    {
-                        preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
-                            update.index,
-                            self.current_index,
-                            sdr_upload_bytes_this_frame,
-                            estimated_sdr_upload_bytes,
-                            sdr_upload_budget_bytes_this_frame
-                        );
-                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
-                        ctx.request_repaint();
-                        break;
-                    }
-                    if !is_current && uploads_this_frame >= background_upload_quota {
-                        preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=global_upload_quota uploads_this_frame={} quota={}",
-                            update.index,
-                            self.current_index,
-                            uploads_this_frame,
-                            background_upload_quota
-                        );
-                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
-                        ctx.request_repaint();
-                        break;
-                    }
-                    if estimated_sdr_upload_bytes > 0
-                        && should_space_background_upload_after_transition(
-                            is_current,
-                            self.transition_settled_at,
-                            self.last_background_upload_at,
-                        )
-                    {
-                        preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} reason=post_transition_spacing",
-                            update.index,
-                            self.current_index
-                        );
-                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
-                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
-                        break;
-                    }
-                    preload_debug!(
-                        "[PreloadDebug] install hdr_sdr_fallback: idx={} current={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
-                        update.index,
-                        self.current_index,
-                        is_current,
-                        estimated_sdr_upload_bytes,
-                        uploads_this_frame,
-                        sdr_upload_bytes_this_frame
-                    );
-                    self.hdr_in_flight_fallback_refinements
-                        .remove(&update.index);
-                    if is_current {
-                        current_refinement_pending = false;
-                    }
-                    self.handle_hdr_sdr_fallback_update(update, ctx);
-                    uploads_this_frame += 1;
-                    if !is_current && estimated_sdr_upload_bytes > 0 {
-                        self.last_background_upload_at = Some(Instant::now());
-                    }
-                    sdr_upload_bytes_this_frame =
-                        sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
-                    if should_request_repaint_for_asset_update(
-                        AssetUpdateKind::ImageLoaded,
-                        is_current,
-                        false,
-                    ) {
-                        ctx.request_repaint();
-                    }
-                }
             }
 
             // Secondary quota check after each processed item.
@@ -730,6 +557,7 @@ impl ImageViewerApp {
             self.loader.repush_back(output);
         }
         self.try_start_pending_transition_if_ready();
+        self.maybe_schedule_neighbor_preloads_after_current_install();
         #[cfg(feature = "preload-debug")]
         {
             let frame_ms = crate::preload_debug::elapsed_ms(loaded_started);
@@ -770,7 +598,10 @@ impl ImageViewerApp {
         let Some(wgpu_state) = frame.wgpu_render_state() else {
             return abandon_preuploaded_planes(load_result);
         };
-        let Some(format) = self.hdr_callback_prewarm_target_format() else {
+        let Some(format) = self
+            .effective_hdr_target_format()
+            .or_else(|| self.hdr_callback_prewarm_target_format())
+        else {
             return abandon_preuploaded_planes(load_result);
         };
 
@@ -832,7 +663,8 @@ impl ImageViewerApp {
         #[allow(clippy::collapsible_if)]
         if let Some(resources) = renderer
             .callback_resources
-            .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
+            .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+            .and_then(|set| set.get_for_mut(format))
         {
             if !resources.register_preuploaded_binding(image_key, binding, self.current_device_id) {
                 // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.

@@ -116,11 +116,24 @@ pub fn profile_spawn_relation(
     }
 }
 
+/// Navigate inflight_reuse: same decode worker, only `LoadIntent` promoted NeighborPrefetch -> Current.
+fn is_inflight_intent_promotion_only(
+    worker_profile: &DecodeProfile,
+    registered_profile: &DecodeProfile,
+) -> bool {
+    worker_profile.load_intent == LoadIntent::NeighborPrefetch
+        && registered_profile.load_intent == LoadIntent::Current
+        && profile_decode_capabilities_equal(worker_profile, registered_profile)
+}
+
 /// True when an in-flight registration no longer matches a finished load worker profile.
 pub fn in_flight_profile_supersedes_load_result(
     spawn_profile: &DecodeProfile,
     in_flight: &DecodeProfile,
 ) -> bool {
+    if is_inflight_intent_promotion_only(spawn_profile, in_flight) {
+        return false;
+    }
     matches!(
         profile_spawn_relation(spawn_profile, in_flight),
         ProfileSpawnRelation::Downgrade | ProfileSpawnRelation::Upgrade
@@ -132,6 +145,9 @@ pub fn in_flight_profile_supersedes_hq_refinement(
     adoptee_profile: &DecodeProfile,
     in_flight: &DecodeProfile,
 ) -> bool {
+    if is_inflight_intent_promotion_only(adoptee_profile, in_flight) {
+        return false;
+    }
     profile_spawn_relation(adoptee_profile, in_flight) == ProfileSpawnRelation::Upgrade
 }
 
@@ -296,6 +312,21 @@ mod tests {
         let profile = base_profile();
         assert!(!in_flight_profile_supersedes_load_result(
             &profile, &profile
+        ));
+    }
+
+    #[test]
+    fn neighbor_prefetch_promoted_to_current_does_not_supersede_load_result() {
+        let worker = base_profile();
+        let in_flight = DecodeProfile {
+            load_intent: LoadIntent::Current,
+            ..base_profile()
+        };
+        assert!(!in_flight_profile_supersedes_load_result(
+            &worker, &in_flight
+        ));
+        assert!(!in_flight_profile_supersedes_hq_refinement(
+            &worker, &in_flight
         ));
     }
 

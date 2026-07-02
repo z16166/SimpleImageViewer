@@ -20,6 +20,8 @@ mod metadata;
 #[cfg(feature = "avif-native")]
 mod decode;
 #[cfg(feature = "avif-native")]
+mod embedded_sdr;
+#[cfg(feature = "avif-native")]
 mod gain_map;
 #[cfg(feature = "avif-native")]
 mod gain_map_probe;
@@ -30,20 +32,20 @@ mod sequence;
 #[cfg(feature = "avif-native")]
 mod strip_baseline;
 #[cfg(feature = "avif-native")]
-mod strip_compose;
-#[cfg(feature = "avif-native")]
 mod strip_fast;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use brand::is_avif_brand;
+pub(crate) use brand::{is_avif_brand, path_is_avif_image_sequence};
 pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes;
-#[cfg(feature = "avif-native")]
+#[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
+#[cfg(feature = "avif-native")]
+pub(crate) use decode::decode_avif_static_with_optional_embedded_sdr;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]
@@ -57,11 +59,11 @@ pub(crate) use orientation::{
     AVIF_TRANSFORM_IMIR_FLAG, AVIF_TRANSFORM_IROT_FLAG, avif_irot_imir_to_exif_orientation,
 };
 #[cfg(feature = "avif-native")]
-pub(crate) use sequence::try_decode_avif_image_sequence_hdr;
+pub(crate) use sequence::{AvifSequenceDecode, try_decode_avif_image_sequence_hdr_limited};
 #[cfg(feature = "avif-native")]
-pub(crate) use strip_baseline::decode_avif_strip_exif_thumbnail;
-#[cfg(feature = "avif-native")]
-pub(crate) use strip_compose::decode_avif_strip_iso_gain_map_composed;
+pub(crate) use strip_baseline::{
+    decode_avif_strip_exif_thumbnail, try_decode_avif_strip_primary_scaled,
+};
 #[cfg(feature = "avif-native")]
 pub(crate) use strip_fast::try_decode_avif_gain_map_strip_fast;
 

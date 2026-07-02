@@ -74,6 +74,47 @@ pub(super) fn draw_viewing_tab(
             });
         });
         ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(t!("label.hdr_gain_map_sdr_display"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                use crate::settings::HdrGainMapSdrDisplayMode;
+                let render_mode = crate::hdr::monitor::effective_render_output_mode(
+                    app.hdr_target_format,
+                    app.effective_hdr_monitor_selection().as_ref(),
+                );
+                let is_tone_mapped_sdr_output = matches!(
+                    render_mode,
+                    crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped
+                );
+                let old_mode = app.settings.hdr_gain_map_sdr_display;
+                let selected_text = app.settings.hdr_gain_map_sdr_display.label();
+                ui.add_enabled_ui(is_tone_mapped_sdr_output, |ui| {
+                    egui::ComboBox::from_id_salt("hdr_gain_map_sdr_display_combo")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            stable_selectable_value(
+                                ui,
+                                &mut app.settings.hdr_gain_map_sdr_display,
+                                HdrGainMapSdrDisplayMode::EmbeddedSdrMaster,
+                                HdrGainMapSdrDisplayMode::EmbeddedSdrMaster.label(),
+                            );
+                            stable_selectable_value(
+                                ui,
+                                &mut app.settings.hdr_gain_map_sdr_display,
+                                HdrGainMapSdrDisplayMode::HdrToneMapped,
+                                HdrGainMapSdrDisplayMode::HdrToneMapped.label(),
+                            );
+                        });
+                })
+                .response
+                .on_hover_text(t!("hint.hdr_gain_map_sdr_display"));
+                if old_mode != app.settings.hdr_gain_map_sdr_display {
+                    app.reload_after_hdr_gain_map_sdr_display_change();
+                    app.queue_save();
+                }
+            });
+        });
+        ui.add_space(6.0);
         if themed_labeled_toggle(
             ui,
             &mut app.settings.show_pixel_inspector,

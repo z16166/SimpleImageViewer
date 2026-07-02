@@ -20,6 +20,7 @@ mod exr;
 mod paths;
 mod radiance;
 mod tone_map;
+mod tone_map_simd;
 
 #[cfg(test)]
 mod tests;
@@ -43,3 +44,4 @@ pub(crate) use tone_map::{
 pub(crate) use constants::MAX_HDR_FALLBACK_DECODE_BYTES;
 #[cfg(test)]
 pub(crate) use constants::MAX_HDR_FALLBACK_PIXELS;
+pub(crate) use tone_map_simd::hdr_to_sdr_rgba8_strip_preview;

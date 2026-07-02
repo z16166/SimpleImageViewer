@@ -23,6 +23,7 @@ use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
     iso_gain_map_skips_forward_compose, parse_iso_gain_map_metadata, sample_gain_map_rgb,
 };
+use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
 use crate::hdr::jpegxl::{
     JxlGainMapBundleRef, decode_jxl_gain_map_from_bundle, read_jxl_gain_map_bundle, srgb_unit_to_u8,
@@ -62,6 +63,8 @@ pub(crate) enum JxlJhgmFrameOutcome {
     CpuComposed(HdrImageBuffer),
     /// ISO forward gain-map SDR baseline only (directory-tree strip fast path).
     IsoGainMapBaseline(Vec<u8>),
+    /// Embedded SDR master main load (baseline only, no gain-map codestream decode).
+    EmbeddedSdrMasterHdr(HdrImageBuffer),
 }
 
 /// Quantize libjxl primary floats into ISO gain-map baseline sRGB u8 samples.
@@ -225,6 +228,7 @@ pub(crate) fn finish_jxl_jhgm_frame(
     height: u32,
     metadata: &HdrImageMetadata,
     strip_baseline_only: bool,
+    embedded_sdr_master_load: bool,
 ) -> JxlJhgmFrameOutcome {
     let Some(jhgm_box) = jhgm_box else {
         return JxlJhgmFrameOutcome::Unprocessed;
@@ -252,11 +256,23 @@ pub(crate) fn finish_jxl_jhgm_frame(
 
     let color_space = metadata.color_space_hint();
     if strip_baseline_only {
-        return JxlJhgmFrameOutcome::IsoGainMapBaseline(jxl_rgba_f32_to_iso_sdr_baseline(
-            rgba,
-            color_space,
-            metadata,
-        ));
+        let baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba, color_space, metadata);
+        if embedded_sdr_master_load {
+            match attach_iso_embedded_sdr_master_only(
+                "JPEG XL",
+                width,
+                height,
+                baseline,
+                parsed.metadata,
+            ) {
+                Ok(hdr) => return JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(hdr),
+                Err(err) => {
+                    log::warn!("[HDR] JPEG XL embedded SDR master load failed: {err}");
+                    return JxlJhgmFrameOutcome::Unprocessed;
+                }
+            }
+        }
+        return JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline);
     }
     match apply_jxl_jhgm_gain_map_gpu_deferred(
         &parsed,
@@ -318,7 +334,7 @@ mod tests {
     fn jxl_gpu_deferred_without_jhgm_box_returns_unprocessed() {
         let rgba = vec![1.0_f32, 0.5, 0.25, 1.0];
         let meta = HdrImageMetadata::default();
-        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta, false);
+        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta, false, false);
         assert!(matches!(out, JxlJhgmFrameOutcome::Unprocessed));
     }
 

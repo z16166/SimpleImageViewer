@@ -44,7 +44,9 @@ use crate::hdr::types::{
 };
 #[cfg(test)]
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
-use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
+pub(crate) use crate::hdr::ultra_hdr_deferred::{
+    decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master,
+};
 
 #[cfg(test)]
 use crate::hdr::types::{HdrToneMapSettings, HdrTransferFunction};
@@ -115,11 +117,12 @@ fn hdr_metadata_for_ultra_hdr_gain_map(gain: GainMapMetadata) -> HdrImageMetadat
     metadata
 }
 
+#[cfg(test)]
 pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    decode_ultra_hdr_jpeg_deferred_bytes(bytes, target_hdr_capacity)
+    decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(bytes, target_hdr_capacity, 1, false, None)
 }
 
 #[cfg(test)]

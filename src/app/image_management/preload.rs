@@ -63,6 +63,9 @@ impl ImageViewerApp {
         if (current_has_asset && !current_missing_hdr_plane) || current_is_loading {
             return;
         }
+        if self.main_loader_failed_indices.contains(&cur) {
+            return;
+        }
 
         let path = self.image_files[cur].clone();
         self.loader.request_load(
@@ -126,8 +129,10 @@ impl ImageViewerApp {
             &self.hdr_image_cache,
             &self.hdr_tiled_source_cache,
         );
-        if (!current_has_asset && !current_is_loading)
-            || (current_missing_hdr_plane && !current_is_loading)
+        if !current_has_asset
+            && !current_is_loading
+            && !self.main_loader_failed_indices.contains(&cur)
+            || current_missing_hdr_plane && !current_is_loading
         {
             if current_missing_hdr_plane && current_has_asset {
                 preload_debug!(
@@ -227,67 +232,29 @@ impl ImageViewerApp {
             total_memory_mb
         );
 
-        // Determine the "primary" and "secondary" directions.
-        // Primary gets the larger budget; secondary gets the smaller one.
-        let strip_bootstrap = self.directory_tree_strip_bootstrap_after_scan
-            && self.directory_tree_list_previews_active();
+        // Schedule only indices inside the effective retention window so decode/GPU work
+        // is not discarded by `evict_distant_prefetch_caches` on the next navigation.
+        let window = self.prefetch_window_max_distance;
         let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
-            let primary_max = if strip_bootstrap {
-                n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)
-            } else {
-                MAX_PRELOAD_FORWARD
-            };
             (
-                primary_max,
+                window,
                 self.preload_budget_forward,
-                MAX_PRELOAD_BACKWARD,
+                window,
                 self.preload_budget_backward,
             )
         } else {
             (
-                MAX_PRELOAD_BACKWARD,
+                window,
                 self.preload_budget_backward,
-                MAX_PRELOAD_FORWARD,
+                window,
                 self.preload_budget_forward,
             )
         };
 
-        // Collect indices for each direction.
-        let primary_indices: Vec<usize> = if strip_bootstrap && forward {
-            let cap = n.min(crate::app::directory_tree::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP);
-            let mut ordered = Vec::with_capacity(cap);
-            let mut seen = std::collections::HashSet::new();
-            let mut push = |idx: usize| {
-                if idx < cap && seen.insert(idx) {
-                    ordered.push(idx);
-                }
-            };
-            push(cur);
-            for idx in 0..cap {
-                push(idx);
-            }
-            ordered
-        } else {
-            (1..=n.min(primary_max + 10))
-                .map(|i| {
-                    if forward {
-                        (cur + i) % n
-                    } else {
-                        (cur + n - i) % n
-                    }
-                })
-                .collect()
-        };
-
-        let secondary_indices: Vec<usize> = (1..=n.min(secondary_max + 10))
-            .map(|i| {
-                if forward {
-                    (cur + n - i) % n
-                } else {
-                    (cur + i) % n
-                }
-            })
-            .collect();
+        let primary_indices =
+            prefetch_retention::prefetch_window_neighbors_in_direction(cur, n, window, forward);
+        let secondary_indices =
+            prefetch_retention::prefetch_window_neighbors_in_direction(cur, n, window, !forward);
 
         preload_debug!(
             "[PreloadDebug] direction budgets: primary_max={} primary_budget={} secondary_max={} secondary_budget={}",
@@ -483,5 +450,29 @@ impl ImageViewerApp {
             return false;
         }
         true
+    }
+
+    /// After the current image finishes installing, kick neighbor preloads when idle.
+    pub(crate) fn maybe_schedule_neighbor_preloads_after_current_install(&mut self) {
+        if !self.settings.preload
+            || self.preload_deferred_for_hdr_capacity
+            || self.scanning
+            || self.image_files.is_empty()
+        {
+            return;
+        }
+        if self.transition_start.is_some() {
+            return;
+        }
+        let cur = self.current_index;
+        let current_has_asset = self.has_loaded_asset(cur);
+        let current_is_loading = self.loader.is_loading(cur);
+        if !current_has_asset
+            || current_is_loading
+            || should_defer_neighbor_work_for_current_main(current_has_asset, current_is_loading)
+        {
+            return;
+        }
+        self.schedule_preloads(true);
     }
 }

@@ -36,12 +36,7 @@ impl ImageLoader {
         ) -> bool,
     ) {
         let loading_snapshot = self.loading.lock().clone();
-        let keep_output = |output: &LoaderOutput| -> bool {
-            match output {
-                LoaderOutput::HdrSdrFallback(_) => true,
-                _ => keep(output, &loading_snapshot),
-            }
-        };
+        let keep_output = |output: &LoaderOutput| keep(output, &loading_snapshot);
 
         let mut retained = std::collections::VecDeque::new();
         for output in self.local_queue.drain(..) {

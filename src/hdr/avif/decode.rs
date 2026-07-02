@@ -108,33 +108,56 @@ pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifI
     Ok(unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) })
 }
 
-/// Deep-copy YUV + alpha planes (and gain-map metadata) for strip compose fallback without re-decode.
 #[cfg(feature = "avif-native")]
-pub(crate) fn avif_image_duplicate_for_strip_fallback(
-    src: &libavif_sys::AvifImageOwned,
-) -> Result<libavif_sys::AvifImageOwned, String> {
-    let dst = libavif_sys::AvifImageOwned::create_empty()
-        .ok_or_else(|| "avifImageCreateEmpty failed for strip fallback copy".to_string())?;
-    let planes = libavif_sys::AVIF_PLANES_YUV | libavif_sys::AVIF_PLANES_A;
-    // SAFETY: `dst` and `src` are valid `AvifImageOwned` pointers; `planes` requests YUV+A only.
-    // `avifImageCopy` allocates destination planes as needed; ownership stays with `dst`.
-    let copy = unsafe { libavif_sys::avifImageCopy(dst.as_ptr(), src.as_ptr(), planes) };
-    if copy != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!(
-            "avifImageCopy for strip fallback: {}",
-            libavif_result_to_string(copy)
-        ));
-    }
-    Ok(dst)
-}
-
-#[cfg(feature = "avif-native")]
+#[allow(dead_code)] // Used by AVIF unit tests via `super::`.
 pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
     let image = read_avif_decoder_image(bytes)?;
     super::avif_image_to_hdr_buffer(image.as_ptr(), target_hdr_capacity)
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
+    bytes: &[u8],
+    path: &std::path::Path,
+    decode_capacity: f32,
+    hdr_target_capacity: f32,
+    tone_map: &crate::hdr::types::HdrToneMapSettings,
+    try_embedded_sdr_master: bool,
+) -> Result<crate::loader::ImageData, String> {
+    use crate::loader::{
+        DecodedImage, apply_exif_orientation_to_hdr_pair, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    };
+    use super::embedded_sdr::try_avif_embedded_sdr_from_decoded_image;
+
+    let image = read_avif_decoder_image(bytes)?;
+    if try_embedded_sdr_master {
+        match try_avif_embedded_sdr_from_decoded_image(&image, path) {
+            Ok(image_data) => return Ok(image_data),
+            Err(err)
+                if crate::loader::embedded_sdr_fallback::avif_embedded_sdr_ineligible(&err) =>
+            {
+                crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
+                    "AVIF", path, &err,
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    let hdr = super::avif_image_to_hdr_buffer(image.as_ptr(), decode_capacity)?;
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, tone_map)?,
+    );
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    Ok(crate::loader::ImageData::Hdr {
+        hdr: Box::new(hdr),
+        fallback,
+    })
 }
 pub(crate) fn avif_image_icc_bytes(image: &libavif_sys::avifImage) -> &[u8] {
     if image.icc.data.is_null() || image.icc.size == 0 {

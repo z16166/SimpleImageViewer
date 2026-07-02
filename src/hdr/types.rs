@@ -118,7 +118,14 @@ pub struct HdrGainMapMetadata {
     pub iso_deferred: Option<IsoGainMapGpuSource>,
 }
 
+/// [`HdrGainMapMetadata::source`] tag for HEIF primary SDR shown as embedded master (no float plane).
+pub(crate) const HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE: &str = "HEIF:embedded_sdr_primary";
+
 impl HdrGainMapMetadata {
+    pub(crate) fn is_heif_embedded_sdr_primary_only(&self) -> bool {
+        self.source == HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE
+    }
+
     /// True when scene-linear [`HdrImageBuffer::rgba_f32`] must not be shown until GPU compose runs.
     pub(crate) fn gpu_compose_pending(&self) -> bool {
         self.iso_deferred.is_some() || self.apple_heic_deferred.is_some()
