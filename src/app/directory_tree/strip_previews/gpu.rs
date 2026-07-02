@@ -203,6 +203,7 @@ impl ImageViewerApp {
                 item.logical,
                 item.buffer_tag,
                 ctx,
+                true,
             );
             #[cfg(feature = "preload-debug")]
             {
@@ -274,6 +275,7 @@ impl ImageViewerApp {
         logical_size: Option<(u32, u32)>,
         buffer_tag: StripPreviewBufferTag,
         ctx: &egui::Context,
+        bypass_detach_queue: bool,
     ) {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
             return;
@@ -322,7 +324,7 @@ impl ImageViewerApp {
                 return;
             }
         }
-        if self.directory_tree_nav_is_detached() {
+        if self.directory_tree_nav_is_detached() && !bypass_detach_queue {
             self.queue_directory_tree_strip_gpu_upload(
                 index,
                 decoded.clone(),

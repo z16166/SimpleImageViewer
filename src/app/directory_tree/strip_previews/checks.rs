@@ -336,6 +336,20 @@ impl ImageViewerApp {
         false
     }
 
+    /// True when the main window already has an SDR texture for this index but the
+    /// directory-tree strip cache still needs a separate upload (detached nav viewport).
+    fn strip_needs_detached_decode_from_main_texture_cache(&self, index: usize) -> bool {
+        if !self.directory_tree_nav_is_detached() {
+            return false;
+        }
+        if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+            return !self
+                .directory_tree_strip_cache
+                .is_valid_for_logical(index, logical);
+        }
+        !self.directory_tree_strip_cache.contains(index)
+    }
+
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
@@ -360,6 +374,7 @@ impl ImageViewerApp {
         }
         if !self.strip_main_loader_sdr_unreliable_for_strip(index)
             && self.texture_cache.contains(index)
+            && !self.strip_needs_detached_decode_from_main_texture_cache(index)
         {
             return false;
         }
