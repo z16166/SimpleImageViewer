@@ -112,6 +112,7 @@ impl eframe::App for ImageViewerApp {
         self.background_threads
             .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);
         log::debug!("[on_exit] Background thread join finished");
+        crate::ipc::shutdown_ipc_server();
         self.directory_tree.join_workers();
         self.directory_tree
             .viewpaint_app
@@ -172,6 +173,9 @@ impl eframe::App for ImageViewerApp {
         }
         if pass.is_root() && self.needs_process_loaded_images() {
             self.process_loaded_images(ctx, &mut Some(frame));
+        }
+        if pass.is_root() {
+            self.poll_tray_commands(ctx);
         }
         if self.should_run_logic_shared() {
             self.logic_shared(ctx, frame);

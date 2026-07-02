@@ -17,17 +17,31 @@
 use crate::constants::*;
 use interprocess::ConnectWaitMode;
 use interprocess::local_socket::{
-    ConnectOptions, GenericNamespaced, ListenerOptions, Stream, prelude::*,
+    ConnectOptions, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions,
+    Stream, prelude::*,
 };
+use interprocess::local_socket::traits::Listener as ListenerTrait;
 use parking_lot::Mutex;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
 static IPC_WAKE_CTX: OnceLock<Mutex<Option<egui::Context>>> = OnceLock::new();
+
+const IPC_ACCEPT_POLL: Duration = Duration::from_millis(50);
+const IPC_SERVER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+struct IpcServerHandle {
+    shutdown: Arc<AtomicBool>,
+    join: Mutex<Option<JoinHandle<()>>>,
+}
+
+static IPC_SERVER: OnceLock<Mutex<Option<IpcServerHandle>>> = OnceLock::new();
 
 fn ipc_wake_slot() -> &'static Mutex<Option<egui::Context>> {
     IPC_WAKE_CTX.get_or_init(|| Mutex::new(None))
@@ -176,14 +190,7 @@ pub fn setup_or_forward_args(
 
     match ListenerOptions::new().name(sock_name).create_sync() {
         Ok(listener) => {
-            let res = std::thread::Builder::new()
-                .name("siv-ipc-server".to_string())
-                .spawn(move || {
-                    ipc_server_loop(listener, tx);
-                });
-            if let Err(e) = res {
-                log::error!("[IPC] Failed to spawn IPC listener thread: {}", e);
-            }
+            spawn_ipc_server(listener, tx);
         }
         Err(e) => {
             // On macOS/Linux with filesystem sockets, a stale socket file from a
@@ -206,14 +213,7 @@ pub fn setup_or_forward_args(
             match ListenerOptions::new().name(sock_name_retry).create_sync() {
                 Ok(listener) => {
                     log::info!("Successfully bound IPC socket after stale cleanup.");
-                    let res = std::thread::Builder::new()
-                        .name("siv-ipc-server".to_string())
-                        .spawn(move || {
-                            ipc_server_loop(listener, tx);
-                        });
-                    if let Err(e) = res {
-                        log::error!("[IPC] Failed to spawn IPC listener thread (retry): {}", e);
-                    }
+                    spawn_ipc_server(listener, tx);
                 }
                 Err(e2) => {
                     log::warn!(
@@ -228,63 +228,133 @@ pub fn setup_or_forward_args(
     false // Do not exit
 }
 
+fn spawn_ipc_server(listener: Listener, tx: crossbeam_channel::Sender<IpcMessage>) {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_thread = Arc::clone(&shutdown);
+    let res = std::thread::Builder::new()
+        .name("siv-ipc-server".to_string())
+        .spawn(move || ipc_server_loop(listener, tx, shutdown_for_thread));
+    match res {
+        Ok(join) => {
+            *IPC_SERVER.get_or_init(|| Mutex::new(None)).lock() = Some(IpcServerHandle {
+                shutdown,
+                join: Mutex::new(Some(join)),
+            });
+        }
+        Err(e) => {
+            log::error!("[IPC] Failed to spawn IPC listener thread: {}", e);
+        }
+    }
+}
+
+/// Stop the single-instance IPC accept loop before process exit.
+pub fn shutdown_ipc_server() {
+    let Some(server) = IPC_SERVER.get().and_then(|slot| slot.lock().take()) else {
+        return;
+    };
+    server.shutdown.store(true, Ordering::Release);
+    let Some(join) = server.join.lock().take() else {
+        return;
+    };
+    let deadline = Instant::now() + IPC_SERVER_JOIN_TIMEOUT;
+    while !join.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if join.is_finished() {
+        if let Err(e) = join.join() {
+            log::warn!("[IPC] Server thread panicked on join: {:?}", e);
+        }
+    } else {
+        log::warn!(
+            "[IPC] Server thread did not exit within {:?}; continuing shutdown",
+            IPC_SERVER_JOIN_TIMEOUT
+        );
+    }
+}
+
 /// The IPC server loop running on its own thread.
 /// Accepts connections, reads messages with a timeout, and forwards them to the UI.
 fn ipc_server_loop(
-    listener: interprocess::local_socket::Listener,
+    listener: Listener,
     tx: crossbeam_channel::Sender<IpcMessage>,
+    shutdown: Arc<AtomicBool>,
 ) {
-    for conn in listener.incoming().filter_map(Result::ok) {
-        // Set a read timeout to prevent a single bad connection from blocking the listener forever
-        if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_secs(2))) {
-            log::warn!("Failed to set read timeout on IPC connection: {}", e);
+    if let Err(e) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
+        log::warn!("[IPC] Failed to set nonblocking accept: {}", e);
+    }
+
+    while !shutdown.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok(conn) => handle_ipc_connection(conn, &tx),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(IPC_ACCEPT_POLL);
+            }
+            Err(e) if shutdown.load(Ordering::Acquire) => {
+                let _ = e;
+                break;
+            }
+            Err(e) => {
+                log::warn!("[IPC] Accept failed: {}", e);
+                std::thread::sleep(IPC_ACCEPT_POLL);
+            }
+        }
+    }
+    log::debug!("[IPC] Server loop exiting");
+}
+
+fn handle_ipc_connection(
+    conn: Stream,
+    tx: &crossbeam_channel::Sender<IpcMessage>,
+) {
+    // Set a read timeout to prevent a single bad connection from blocking the listener forever
+    if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_secs(2))) {
+        log::warn!("Failed to set read timeout on IPC connection: {}", e);
+    }
+
+    let mut s = String::new();
+    let mut conn = conn;
+
+    // Use .take(MAX + 1) to detect overflow. If we read more than MAX, the payload is invalid.
+    if std::io::Read::by_ref(&mut conn)
+        .take(MAX_IPC_PAYLOAD_SIZE + 1)
+        .read_to_string(&mut s)
+        .is_ok()
+    {
+        if s.len() > MAX_IPC_PAYLOAD_SIZE as usize {
+            log::warn!(
+                "IPC: Rejected oversized payload (limit: {} bytes)",
+                MAX_IPC_PAYLOAD_SIZE
+            );
+            return;
         }
 
-        let mut s = String::new();
-        let mut conn = conn;
+        let s = s.trim();
+        if s.is_empty() {
+            return;
+        }
 
-        // Use .take(MAX + 1) to detect overflow. If we read more than MAX, the payload is invalid.
-        if std::io::Read::by_ref(&mut conn)
-            .take(MAX_IPC_PAYLOAD_SIZE + 1)
-            .read_to_string(&mut s)
-            .is_ok()
-        {
-            if s.len() > MAX_IPC_PAYLOAD_SIZE as usize {
-                log::warn!(
-                    "IPC: Rejected oversized payload (limit: {} bytes)",
-                    MAX_IPC_PAYLOAD_SIZE
-                );
-                continue;
-            }
-
-            let s = s.trim();
-            if s.is_empty() {
-                continue;
-            }
-
-            let mut delivered = false;
-            if s.starts_with("OPEN_NR:") {
-                let path_str = s.trim_start_matches("OPEN_NR:").trim();
-                if !path_str.is_empty() {
-                    let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
-                    delivered = true;
-                }
-            } else if s.starts_with("OPEN:") {
-                let path_str = s.trim_start_matches("OPEN:").trim();
-                if !path_str.is_empty() {
-                    let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
-                    delivered = true;
-                }
-            } else if s == "FOCUS" {
-                let _ = tx.send(IpcMessage::Focus);
+        let mut delivered = false;
+        if s.starts_with("OPEN_NR:") {
+            let path_str = s.trim_start_matches("OPEN_NR:").trim();
+            if !path_str.is_empty() {
+                let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
                 delivered = true;
             }
-            if delivered {
-                wake_ui_from_ipc();
+        } else if s.starts_with("OPEN:") {
+            let path_str = s.trim_start_matches("OPEN:").trim();
+            if !path_str.is_empty() {
+                let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
+                delivered = true;
             }
+        } else if s == "FOCUS" {
+            let _ = tx.send(IpcMessage::Focus);
+            delivered = true;
         }
-        // Connection dropped here; continue accepting next connection
+        if delivered {
+            wake_ui_from_ipc();
+        }
     }
+    // Connection dropped here; continue accepting next connection
 }
 
 /// Best-effort timeout hint for local socket streams.

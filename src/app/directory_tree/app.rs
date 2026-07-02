@@ -386,6 +386,9 @@ impl ImageViewerApp {
             }) as crate::app::RootRedrawWake;
             self.root_redraw_wake = Some(Arc::clone(&wake));
             self.loader.set_root_redraw_wake(wake);
+            crate::app::tray_handlers::register_tray_logic_wake(Arc::clone(
+                self.root_redraw_wake.as_ref().expect("wake just set"),
+            ));
             return;
         }
         let wake = Arc::new(move || {
@@ -393,6 +396,9 @@ impl ImageViewerApp {
         }) as crate::app::RootRedrawWake;
         self.root_redraw_wake = Some(Arc::clone(&wake));
         self.loader.set_root_redraw_wake(wake);
+        crate::app::tray_handlers::register_tray_logic_wake(Arc::clone(
+            self.root_redraw_wake.as_ref().expect("wake just set"),
+        ));
     }
 
     pub(crate) fn wake_root_for_logic(&self) {

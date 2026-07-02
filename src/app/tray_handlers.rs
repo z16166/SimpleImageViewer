@@ -22,7 +22,9 @@
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
-use std::sync::{Once, RwLock};
+use std::sync::{Once, OnceLock, RwLock};
+
+use crate::app::RootRedrawWake;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -39,6 +41,27 @@ struct TrayMenuIds {
 
 static TRAY_MENU_IDS: RwLock<Option<TrayMenuIds>> = RwLock::new(None);
 static INSTALL_ONCE: Once = Once::new();
+static TRAY_LOGIC_WAKE: OnceLock<RwLock<Option<RootRedrawWake>>> = OnceLock::new();
+
+/// Register the same ROOT redraw hook used by the loader so tray clicks wake winit while hidden.
+pub fn register_tray_logic_wake(wake: RootRedrawWake) {
+    let slot = TRAY_LOGIC_WAKE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = slot.write() {
+        if guard.is_none() {
+            *guard = Some(wake);
+        }
+    }
+}
+
+fn wake_ui_for_tray(ctx: &egui::Context) {
+    ctx.request_repaint();
+    if let Some(slot) = TRAY_LOGIC_WAKE.get()
+        && let Ok(guard) = slot.read()
+        && let Some(wake) = guard.as_ref()
+    {
+        wake();
+    }
+}
 
 pub fn set_menu_ids(
     show: tray_icon::menu::MenuId,
@@ -80,7 +103,7 @@ fn install_tray_icon_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
         {
             crate::ipc::force_foreground_if_visible();
             let _ = tx.send(TrayCommand::ShowMainWindow);
-            wake_ctx.request_repaint();
+            wake_ui_for_tray(&wake_ctx);
         }
     }));
 }
@@ -107,7 +130,7 @@ fn install_tray_menu_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
                 crate::ipc::force_foreground_if_visible();
             }
             let _ = tx.send(cmd);
-            wake_ctx.request_repaint();
+            wake_ui_for_tray(&wake_ctx);
         },
     ));
 }
