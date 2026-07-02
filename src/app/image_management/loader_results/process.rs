@@ -162,7 +162,6 @@ impl ImageViewerApp {
         let sdr_upload_budget_bytes_this_frame =
             sdr_upload_budget_bytes_per_frame(self.hardware_tier);
         let mut yielded_background_outputs = Vec::new();
-        let current_refinement_pending = false;
 
         // Merge channel results into the local queue before polling so a repushed neighbor
         // cannot block the current image result that is still waiting on rx.
@@ -275,20 +274,6 @@ impl ImageViewerApp {
                         yielded_background_outputs.push(LoaderOutput::Image(load_result));
                         continue;
                     }
-                    if should_yield_background_result_for_post_transition_refinement(
-                        is_current,
-                        self.transition_settled_at,
-                        current_refinement_pending,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield image install: idx={} current={} reason=current_refinement_pending",
-                            idx,
-                            self.current_index,
-                        );
-                        yielded_background_outputs.push(LoaderOutput::Image(load_result));
-                        continue;
-                    }
-
                     if should_defer_background_upload_during_transition(
                         is_current,
                         is_transitioning,
@@ -476,20 +461,6 @@ impl ImageViewerApp {
                         yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
                         continue;
                     }
-                    if should_yield_background_result_for_post_transition_refinement(
-                        preview_is_current,
-                        self.transition_settled_at,
-                        current_refinement_pending,
-                    ) {
-                        preload_debug!(
-                            "[PreloadDebug] yield preview update: idx={} current={} reason=current_refinement_pending",
-                            preview_update.index,
-                            self.current_index
-                        );
-                        yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
-                        continue;
-                    }
-
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
                     let preview_has_sdr_upload = preview_result_has_sdr_upload(&preview_update);

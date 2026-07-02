@@ -193,22 +193,6 @@ fn should_yield_background_result_for_pending_transition(
     !is_current && pending_transition_target == Some(current_index)
 }
 
-fn should_yield_background_result_for_post_transition_refinement(
-    is_current: bool,
-    transition_settled_at: Option<std::time::Instant>,
-    current_refinement_pending: bool,
-) -> bool {
-    if is_current || !current_refinement_pending {
-        return false;
-    }
-    // Give the current image's own refinement a short priority lane after transition settle.
-    // 500ms is long enough for the queued current refinement to surface on busy folders, but
-    // short enough that neighboring previews resume before the next deliberate navigation.
-    const POST_TRANSITION_REFINEMENT_PRIORITY: std::time::Duration =
-        std::time::Duration::from_millis(500);
-    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_PRIORITY)
-}
-
 fn background_upload_quota_after_transition(
     default_quota: usize,
     transition_settled_at: Option<std::time::Instant>,

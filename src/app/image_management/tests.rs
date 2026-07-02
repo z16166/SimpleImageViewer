@@ -1031,32 +1031,6 @@ fn pending_transition_yields_background_results_until_current_is_ready() {
 }
 
 #[test]
-fn post_transition_yields_background_results_until_current_refinement_runs() {
-    assert!(
-        should_yield_background_result_for_post_transition_refinement(
-            false,
-            Some(std::time::Instant::now()),
-            true,
-        )
-    );
-    assert!(
-        !should_yield_background_result_for_post_transition_refinement(
-            true,
-            Some(std::time::Instant::now()),
-            true,
-        )
-    );
-    assert!(
-        !should_yield_background_result_for_post_transition_refinement(
-            false,
-            Some(std::time::Instant::now()),
-            false,
-        )
-    );
-    assert!(!should_yield_background_result_for_post_transition_refinement(false, None, true,));
-}
-
-#[test]
 fn post_transition_background_upload_quota_is_throttled() {
     assert_eq!(background_upload_quota_after_transition(3, None), 3);
     assert_eq!(

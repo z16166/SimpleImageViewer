@@ -493,11 +493,7 @@ pub(crate) fn load_heif_hdr_aware(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
         ) {
-            match crate::hdr::heif::load_heif_embedded_sdr_primary_from_bytes(
-                &mmap[..],
-                path,
-                diag,
-            ) {
+            match crate::hdr::heif::load_heif_embedded_sdr_primary_from_bytes(&mmap[..], diag) {
                 Ok(image) => return Ok(apply_exif_orientation_to_image_data(path, image)),
                 Err(err) => {
                     crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(

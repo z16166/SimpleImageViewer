@@ -34,7 +34,6 @@ use super::HeifHdrDecodeDiag;
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
     bytes: &[u8],
-    _path: &Path,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
     use super::embedded_sdr::build_heif_embedded_sdr_master_hdr;
@@ -58,7 +57,7 @@ pub(crate) fn load_heif_embedded_sdr_primary_from_bytes(
         let path_label = diag
             .path
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| _path.display().to_string());
+            .unwrap_or_else(|| "(unknown)".to_string());
         crate::preload_debug!(
             "[PreloadDebug][HEIF] embedded_sdr_primary total_ms={total_ms} idx={idx} path={path_label} size={}x{}",
             hdr.width,
@@ -80,7 +79,7 @@ pub(crate) fn load_heif_embedded_sdr_primary(
 ) -> Result<crate::loader::ImageData, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-    load_heif_embedded_sdr_primary_from_bytes(&mmap[..], path, diag)
+    load_heif_embedded_sdr_primary_from_bytes(&mmap[..], diag)
 }
 
 #[cfg(feature = "heif-native")]
