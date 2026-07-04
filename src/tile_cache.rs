@@ -16,7 +16,7 @@
 
 use eframe::egui::{self, TextureHandle};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -86,8 +86,7 @@ impl PendingTileKey {
 pub struct TilePixelCache {
     /// Key: (image_index, col, row)
     entries: HashMap<(usize, u32, u32), Arc<Vec<u8>>>,
-    /// LRU tracking
-    lru: VecDeque<(usize, u32, u32)>,
+    lru: crate::lru_order::LruOrder<(usize, u32, u32)>,
     current_bytes: usize,
     max_mb: usize,
 }
@@ -96,7 +95,7 @@ impl TilePixelCache {
     pub fn new(max_mb: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            lru: VecDeque::new(),
+            lru: crate::lru_order::LruOrder::default(),
             current_bytes: 0,
             max_mb,
         }
@@ -117,11 +116,7 @@ impl TilePixelCache {
     pub fn get(&mut self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
         let key = (index, coord.col, coord.row);
         if let Some(pixels) = self.entries.get(&key) {
-            // Update LRU
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
-            self.lru.push_back(key);
+            self.lru.touch(key);
             Some(Arc::clone(pixels))
         } else {
             None
@@ -134,7 +129,7 @@ impl TilePixelCache {
         // Handle duplicate insertions: remove old entry first to update memory accounting and LRU
         if let Some(old_pixels) = self.entries.remove(&key) {
             self.current_bytes -= old_pixels.len();
-            self.lru.retain(|&k| k != key);
+            self.lru.remove(key);
         }
 
         let bytes = pixels.len();
@@ -142,7 +137,7 @@ impl TilePixelCache {
 
         // Evict if needed
         while !self.lru.is_empty() && self.current_bytes + bytes > max_bytes {
-            if let Some(evicted_key) = self.lru.pop_front()
+            if let Some(evicted_key) = self.lru.pop_oldest()
                 && let Some(evicted_pixels) = self.entries.remove(&evicted_key)
             {
                 self.current_bytes -= evicted_pixels.len();
@@ -151,7 +146,7 @@ impl TilePixelCache {
 
         if self.current_bytes + bytes <= max_bytes {
             self.entries.insert(key, Arc::clone(&pixels));
-            self.lru.push_back(key);
+            self.lru.touch(key);
             self.current_bytes += bytes;
         }
     }
@@ -169,9 +164,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -191,9 +184,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -211,11 +202,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 let new_key = (to, key.1, key.2);
                 self.entries.insert(new_key, pixels);
-            }
-        }
-        for item in self.lru.iter_mut() {
-            if item.0 == from {
-                item.0 = to;
+                self.lru.rename(key, new_key);
             }
         }
     }
@@ -243,11 +230,18 @@ impl TilePixelCache {
                 self.entries.insert((new_idx, key.1, key.2), pixels);
             }
         }
-        for item in self.lru.iter_mut() {
-            if item.0 < old_to_new.len() {
-                item.0 = old_to_new[item.0];
+        self.lru.remap_ordered(|(idx, col, row)| {
+            if idx >= old_to_new.len() {
+                Some((idx, col, row))
+            } else {
+                let new_idx = old_to_new[idx];
+                if new_idx == idx {
+                    Some((idx, col, row))
+                } else {
+                    Some((new_idx, col, row))
+                }
             }
-        }
+        });
     }
 
     pub fn remove_images_except(&mut self, except_idx: usize) {
@@ -261,9 +255,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -403,8 +395,10 @@ pub struct TileManager {
     /// Tiles currently being decoded in the background.
     pub pending_tiles: HashSet<PendingTileKey>,
 
-    /// LRU ordering: most recently used tiles at the back.
-    lru_order: Vec<TileCoord>,
+    /// GPU tiles eligible for eviction (oldest first).
+    evictable_lru: crate::lru_order::LruOrder<TileCoord>,
+    /// GPU tiles in the current visible set; never evicted while pinned.
+    visible_pinned: HashSet<TileCoord>,
     /// Timestamps when each tile was uploaded to GPU (for cross-fading).
     ready_times: HashMap<TileCoord, Instant>,
 }
@@ -432,8 +426,56 @@ impl TileManager {
             source,
             tiles: HashMap::new(),
             pending_tiles: HashSet::new(),
-            lru_order: Vec::new(),
+            evictable_lru: crate::lru_order::LruOrder::default(),
+            visible_pinned: HashSet::new(),
             ready_times: HashMap::new(),
+        }
+    }
+
+    fn touch_gpu_lru(&mut self, coord: TileCoord, visible: bool) {
+        if visible {
+            self.evictable_lru.remove(coord);
+            self.visible_pinned.insert(coord);
+        } else {
+            self.visible_pinned.remove(&coord);
+            if self.tiles.contains_key(&coord) {
+                self.evictable_lru.touch(coord);
+            }
+        }
+    }
+
+    fn sync_gpu_visible_protection(&mut self, visible: &[TileCoord]) {
+        let visible_set: HashSet<TileCoord> = visible.iter().copied().collect();
+
+        for coord in &visible_set {
+            if self.tiles.contains_key(coord) {
+                self.evictable_lru.remove(*coord);
+                self.visible_pinned.insert(*coord);
+            }
+        }
+
+        let unpinned: Vec<_> = self
+            .visible_pinned
+            .iter()
+            .filter(|coord| !visible_set.contains(coord))
+            .copied()
+            .collect();
+        for coord in unpinned {
+            self.visible_pinned.remove(&coord);
+            if self.tiles.contains_key(&coord) {
+                self.evictable_lru.push_oldest(coord);
+            }
+        }
+    }
+
+    fn evict_gpu_tiles_over_limit(&mut self, limit: usize) {
+        while self.tiles.len() > limit {
+            let Some(evicted) = self.evictable_lru.pop_oldest() else {
+                break;
+            };
+            self.tiles.remove(&evicted);
+            self.ready_times.remove(&evicted);
+            self.visible_pinned.remove(&evicted);
         }
     }
 
@@ -533,16 +575,14 @@ impl TileManager {
         allow_upload: bool,
         visible_coords: &[TileCoord],
     ) -> (TileStatus, bool) {
-        // Touch LRU
-        if let Some(pos) = self.lru_order.iter().position(|c| *c == coord) {
-            self.lru_order.remove(pos);
-        }
-        self.lru_order.push(coord);
+        let is_visible = visible_coords.contains(&coord);
 
         // check if exists in GPU
-        if let Some(handle) = self.tiles.get(&coord) {
+        if self.tiles.contains_key(&coord) {
+            self.touch_gpu_lru(coord, is_visible);
+            let handle = self.tiles.get(&coord).expect("gpu tile").clone();
             let ready_at = self.ready_times.get(&coord).cloned();
-            return (TileStatus::Ready(handle.clone(), ready_at), false);
+            return (TileStatus::Ready(handle, ready_at), false);
         }
 
         // 1. Check Global Pixel Cache (CPU)
@@ -556,23 +596,8 @@ impl TileManager {
 
                 // Evict if over limit, but NEVER evict tiles currently in the visible set.
                 // This prevents the "circular hole" artifact on high-DPI screens.
-                while self.lru_order.len() > current_limit {
-                    let mut found_non_visible = false;
-                    for i in 0..self.lru_order.len() {
-                        let potential_evict = self.lru_order[i];
-                        if !visible_coords.contains(&potential_evict) {
-                            self.lru_order.remove(i);
-                            self.tiles.remove(&potential_evict);
-                            found_non_visible = true;
-                            break;
-                        }
-                    }
-                    if !found_non_visible {
-                        // All cached tiles are currently visible!
-                        // We must temporarily exceed the limit to maintain visual integrity.
-                        break;
-                    }
-                }
+                self.sync_gpu_visible_protection(visible_coords);
+                self.evict_gpu_tiles_over_limit(current_limit);
 
                 let ts = get_tile_size();
                 let tw = ts.min(self.full_width - coord.col * ts);
@@ -586,6 +611,7 @@ impl TileManager {
 
                 let now = Instant::now();
                 self.ready_times.insert(coord, now);
+                self.touch_gpu_lru(coord, is_visible);
 
                 // Remove from pending if it was there
                 self.pending_tiles.remove(&PendingTileKey::new(
@@ -613,7 +639,8 @@ impl TileManager {
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tiles.clear();
-        self.lru_order.clear();
+        self.evictable_lru.clear();
+        self.visible_pinned.clear();
         self.ready_times.clear();
         self.preview_texture = None;
         // The source's lifecycle is managed via Arc.

@@ -114,7 +114,7 @@ use eframe::{
 };
 use parking_lot::Mutex;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 

@@ -42,6 +42,7 @@ mod hotkeys;
 mod ipc;
 mod libtiff_loader;
 mod loader;
+mod lru_order;
 #[cfg(target_os = "macos")]
 mod macos_image_io;
 mod metadata_utils;
