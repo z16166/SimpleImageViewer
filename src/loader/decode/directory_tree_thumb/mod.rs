@@ -118,7 +118,7 @@ fn try_directory_tree_exif_thumb(
     if !preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
         return None;
     }
-    let decoded = downsample_decoded_to_max_side(exif.clone(), max_side).ok()?;
+    let decoded = downsample_decoded_for_strip(exif, max_side).ok()?;
     Some((decoded, logical))
 }
 
@@ -758,15 +758,15 @@ fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
 
 fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<DecodedImage, String> {
     match image_data {
-        ImageData::Static(image) => downsample_decoded_to_max_side(image.clone(), max_side),
+        ImageData::Static(image) => downsample_decoded_for_strip(image, max_side),
         ImageData::Hdr { hdr, fallback, .. } => {
             sdr_preview_for_hdr_fallback(hdr, fallback, max_side)
         }
         ImageData::Animated(frames) => frames
             .first()
             .map(|frame| {
-                downsample_decoded_to_max_side(
-                    DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
+                downsample_decoded_for_strip(
+                    &DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
                     max_side,
                 )
             })
@@ -777,7 +777,7 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
             let preview = tiled_source_preview(fallback.as_ref(), max_side)?;
             if preview.is_sdr_deferred_placeholder() {
                 let (width, height, rgba) = hdr.generate_sdr_preview(max_side, max_side)?;
-                downsample_decoded_to_max_side(DecodedImage::new(width, height, rgba), max_side)
+                downsample_decoded_for_strip(&DecodedImage::new(width, height, rgba), max_side)
             } else {
                 Ok(preview)
             }
@@ -814,13 +814,6 @@ fn tiled_source_preview(
         Ok(_) => Err("generate_full_image_preview returned empty preview".to_string()),
         Err(_) => Err("generate_full_image_preview panicked".to_string()),
     }
-}
-
-fn downsample_decoded_to_max_side(
-    decoded: DecodedImage,
-    max_side: u32,
-) -> Result<DecodedImage, String> {
-    downsample_decoded_for_strip(&decoded, max_side)
 }
 
 /// Try to produce a strip thumbnail from a baseline JPEG using DCT-domain scaling.
