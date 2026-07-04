@@ -176,6 +176,11 @@ impl DecodedImage {
         let arc = std::mem::replace(&mut self.pixels, Arc::new(Vec::new()));
         Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
     }
+
+    /// Take the pixel [`Arc`] for transforms that can read from a shared slice when not unique.
+    pub(crate) fn take_pixels_arc(&mut self) -> Arc<Vec<u8>> {
+        std::mem::replace(&mut self.pixels, Arc::new(Vec::new()))
+    }
 }
 
 impl From<image::RgbaImage> for DecodedImage {

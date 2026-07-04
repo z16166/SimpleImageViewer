@@ -96,27 +96,21 @@ pub(crate) fn extract_exif_thumbnail_from_mmap_probed(
 pub(crate) fn extract_exif_thumbnail_probed(
     path: &Path,
 ) -> (Option<DecodedImage>, ExifThumbProbe, ExifThumbProbeDetail) {
-    match crate::mmap_util::map_file(path) {
-        Ok(mmap) => return extract_exif_thumbnail_from_mmap_probed(&mmap, path),
-        Err(err) => {
-            log::debug!(
-                "EXIF thumbnail mmap failed for {:?}, falling back to File::open: {err}",
-                path.file_name().unwrap_or_default()
-            );
-        }
+    if let Ok(mmap) = crate::mmap_util::map_file(path) {
+        return extract_exif_thumbnail_from_mmap_probed(&mmap, path);
     }
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => {
-            return (
-                None,
-                ExifThumbProbe::ContainerUnreadable,
-                ExifThumbProbeDetail::default(),
-            );
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            use std::io::Cursor;
+            let mut reader = Cursor::new(bytes);
+            extract_exif_thumbnail_from_reader(&mut reader, path)
         }
-    };
-    let mut reader = std::io::BufReader::new(file);
-    extract_exif_thumbnail_from_reader(&mut reader, path)
+        Err(_) => (
+            None,
+            ExifThumbProbe::ContainerUnreadable,
+            ExifThumbProbeDetail::default(),
+        ),
+    }
 }
 
 fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(

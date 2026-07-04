@@ -39,6 +39,8 @@ pub(crate) const MAX_HDR_TILE_UPLOADS_PER_LOGIC: usize = 2;
 pub(crate) const MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC: usize = 1;
 
 /// Background ISO/Apple CPU compose jobs started per logic tick.
+/// OpenGL and resource-limited GPU paths defer HDR compose, RAW demosaic, and tone-map work
+/// here instead of blocking `prepare()`; the cap keeps UI logic responsive on degraded backends.
 pub(crate) const MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC: usize = 2;
 
 #[derive(Default)]

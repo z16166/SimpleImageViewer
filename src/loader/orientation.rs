@@ -83,8 +83,16 @@ pub(crate) fn apply_exif_orientation_to_image_data(
             }
             let w = img.width;
             let h = img.height;
-            let px = img.take_rgba_owned();
-            let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
+            let pixels_arc = img.take_pixels_arc();
+            let (ow, oh, opx) = match Arc::try_unwrap(pixels_arc) {
+                Ok(px) => crate::libtiff_loader::apply_orientation_buffer(px, w, h, o),
+                Err(arc) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
+                    arc.as_ref(),
+                    w,
+                    h,
+                    o,
+                ),
+            };
             img.set_rgba_buffer(ow, oh, opx);
             ImageData::Static(img)
         }
@@ -172,8 +180,16 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     let w = fallback.width;
     let h = fallback.height;
     let mut fallback = fallback;
-    let px = fallback.take_rgba_owned();
-    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
+    let pixels_arc = fallback.take_pixels_arc();
+    let (ow, oh, opx) = match Arc::try_unwrap(pixels_arc) {
+        Ok(px) => crate::libtiff_loader::apply_orientation_buffer(px, w, h, o),
+        Err(arc) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
+            arc.as_ref(),
+            w,
+            h,
+            o,
+        ),
+    };
     fallback.set_rgba_buffer_preserving_placeholder(ow, oh, opx, true);
     (hdr, fallback)
 }

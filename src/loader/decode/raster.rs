@@ -277,52 +277,15 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
     } else {
-        // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
-        // Decode on the refinement pool: `catch_exr_panic` contains unwinding panics; the pool
-        // reuses workers instead of spawning a new OS thread per file.
-
-        use crate::loader::preview_caps::REFINEMENT_POOL;
-        use std::sync::mpsc::sync_channel;
-
-        let (tx, rx) = sync_channel(1);
-        REFINEMENT_POOL.spawn(move || {
-            let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                let psd_file = psd::Psd::from_bytes(&mmap[..])
-                    .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-                let w = psd_file.width();
-                let h = psd_file.height();
-                let pixels = psd_file.rgba();
-                Ok((w, h, pixels))
-            });
-            let _ = tx.send(result);
-        });
-
-        match rx.recv() {
-            Ok(Ok((w, h, pixels))) => {
-                let img = DecodedImage::new(w, h, pixels);
-                Ok(apply_exif_orientation_to_image_data(
-                    path,
-                    make_image_data(img),
-                    None,
-                ))
-            }
-            Ok(Err(e)) => {
-                const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
-                if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
-                    log::error!(
-                        "[Loader] PSD decoder panicked for {}: {}",
-                        path.display(),
-                        msg
-                    );
-                    Err(format!(
-                        "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
-                    ))
-                } else {
-                    Err(e)
-                }
-            }
-            Err(_) => Err("PSD decode failed: refinement pool dropped the result".to_string()),
-        }
+        // PSD v1: return a tiled source immediately; full decode runs on REFINEMENT_POOL.
+        log::info!("Using async PSD v1 decode via psd crate");
+        let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
+            mmap,
+            path.to_path_buf(),
+            width,
+            height,
+        );
+        Ok(ImageData::Tiled(source))
     }
 }
 

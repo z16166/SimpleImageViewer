@@ -519,6 +519,162 @@ impl TiledImageSource for RawImageSource {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PSD v1 (async full decode on the refinement pool; placeholder until pixels land)
+// ---------------------------------------------------------------------------
+
+const PSD_V1_PLACEHOLDER_RGBA: [u8; 4] = [32, 32, 32, 255];
+
+pub(crate) struct PsdV1AsyncSource {
+    width: u32,
+    height: u32,
+    pixels: Arc<PLRwLock<Option<Arc<Vec<u8>>>>>,
+}
+
+impl PsdV1AsyncSource {
+    pub(crate) fn new(
+        mmap: memmap2::Mmap,
+        path: std::path::PathBuf,
+        width: u32,
+        height: u32,
+    ) -> Arc<Self> {
+        use crate::loader::preview_caps::REFINEMENT_POOL;
+        use crate::loader::{ImageData, apply_exif_orientation_to_image_data};
+
+        let mmap = Arc::new(mmap);
+        let pixels = Arc::new(PLRwLock::new(None));
+        let decode_mmap = Arc::clone(&mmap);
+        let decode_pixels = Arc::clone(&pixels);
+
+        REFINEMENT_POOL.spawn(move || {
+            let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
+                let psd_file = psd::Psd::from_bytes(&decode_mmap[..])
+                    .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+                Ok((
+                    psd_file.width(),
+                    psd_file.height(),
+                    psd_file.rgba(),
+                ))
+            });
+
+            match result {
+                Ok((w, h, px)) => {
+                    let img = DecodedImage::new(w, h, px);
+                    match apply_exif_orientation_to_image_data(
+                        &path,
+                        ImageData::Static(img),
+                        Some(&decode_mmap[..]),
+                    ) {
+                        ImageData::Static(oriented) => {
+                            *decode_pixels.write() = Some(oriented.into_arc_pixels());
+                        }
+                        ImageData::Tiled(source) => {
+                            *decode_pixels.write() = source.full_pixels();
+                        }
+                        other => {
+                            log::error!(
+                                "[Loader] PSD v1 unexpected oriented shape for {}: {:?}",
+                                path.display(),
+                                std::mem::discriminant(&other)
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
+                    if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
+                        log::error!(
+                            "[Loader] PSD decoder panicked for {}: {}",
+                            path.display(),
+                            msg
+                        );
+                    } else {
+                        log::error!("[Loader] PSD decode failed for {}: {e}", path.display());
+                    }
+                }
+            }
+        });
+
+        Arc::new(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+}
+
+impl TiledImageSource for PsdV1AsyncSource {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+        if let Some(px) = self.pixels.read().as_ref() {
+            let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
+            let stride = self.width as usize * 4;
+            for row in y..(y + h) {
+                let start = row as usize * stride + x as usize * 4;
+                let end = start + w as usize * 4;
+                if end <= px.len() {
+                    tile_pixels.extend_from_slice(&px[start..end]);
+                } else {
+                    tile_pixels.resize(tile_pixels.len() + w as usize * 4, 0);
+                }
+            }
+            return Arc::new(tile_pixels);
+        }
+        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            tile_pixels.extend_from_slice(&PSD_V1_PLACEHOLDER_RGBA);
+        }
+        Arc::new(tile_pixels)
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        if let Some(px) = self.pixels.read().as_ref() {
+            return memory_rgba_preview(self.width, self.height, px, max_w, max_h);
+        }
+        psd_v1_placeholder_preview(self.width, self.height, max_w, max_h)
+    }
+
+    fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        self.generate_preview(max_w, max_h)
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        self.pixels.read().clone()
+    }
+
+    fn defers_loader_hq_preview(&self) -> bool {
+        true
+    }
+}
+
+fn psd_v1_placeholder_preview(
+    full_w: u32,
+    full_h: u32,
+    max_w: u32,
+    max_h: u32,
+) -> (u32, u32, Vec<u8>) {
+    if full_w == 0 || full_h == 0 {
+        return (0, 0, Vec::new());
+    }
+    let scale = (max_w as f64 / full_w as f64)
+        .min(max_h as f64 / full_h as f64)
+        .min(1.0);
+    let out_w = (full_w as f64 * scale).round().max(1.0) as u32;
+    let out_h = (full_h as f64 * scale).round().max(1.0) as u32;
+    let mut pixels = Vec::with_capacity(out_w as usize * out_h as usize * 4);
+    for _ in 0..(out_w * out_h) {
+        pixels.extend_from_slice(&PSD_V1_PLACEHOLDER_RGBA);
+    }
+    (out_w, out_h, pixels)
+}
+
 #[cfg(test)]
 mod memory_preview_tests {
     use super::memory_rgba_preview;

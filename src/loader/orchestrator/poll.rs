@@ -37,45 +37,34 @@ impl ImageLoader {
         &mut self,
         keep: impl Fn(&LoaderOutput, &dyn Fn(usize) -> bool) -> bool,
     ) {
+        let mut pending: Vec<LoaderOutput> = self.local_queue.drain(..).collect();
+        while let Ok(output) = self.rx.try_recv() {
+            pending.push(output);
+        }
+
+        let loading = self.loading.lock();
+        let is_loading = |idx: usize| loading.contains_key(&idx);
+
         let mut retained = std::collections::VecDeque::new();
-        for output in self.local_queue.drain(..) {
-            let retain = {
-                let loading = self.loading.lock();
-                let is_loading = |idx: usize| loading.contains_key(&idx);
-                keep(&output, &is_loading)
-            };
-            if retain {
+        let mut finish_indices = Vec::new();
+        for output in pending {
+            if keep(&output, &is_loading) {
                 retained.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock();
                 if loading
                     .get(&r.index)
                     .is_some_and(|e| e.profile == r.decode_profile)
                 {
-                    loading.remove(&r.index);
+                    finish_indices.push(r.index);
                 }
             }
+        }
+        drop(loading);
+
+        for index in finish_indices {
+            self.loading.lock().remove(&index);
         }
         self.local_queue = retained;
-
-        while let Ok(output) = self.rx.try_recv() {
-            let retain = {
-                let loading = self.loading.lock();
-                let is_loading = |idx: usize| loading.contains_key(&idx);
-                keep(&output, &is_loading)
-            };
-            if retain {
-                self.local_queue.push_back(output);
-            } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock();
-                if loading
-                    .get(&r.index)
-                    .is_some_and(|e| e.profile == r.decode_profile)
-                {
-                    loading.remove(&r.index);
-                }
-            }
-        }
     }
 
     pub fn has_pending_outputs(&self) -> bool {

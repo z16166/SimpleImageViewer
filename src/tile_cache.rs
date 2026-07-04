@@ -693,38 +693,55 @@ impl TileManager {
         let start_row = min_row.min(total_rows.saturating_sub(1));
         let end_row = max_row.min(total_rows.saturating_sub(1));
 
-        for r in start_row..=end_row {
-            for c in start_col..=end_col {
-                let ts = get_tile_size();
-                let tile_x0 = c * ts;
-                let tile_y0 = r * ts;
-                let tile_w = ts.min(self.full_width - tile_x0);
-                let tile_h = ts.min(self.full_height - tile_y0);
+        let screen_center = screen_clip.center();
+        let ts = get_tile_size();
+        let rel_x = (screen_center.x - viewport.min.x) / viewport.width();
+        let rel_y = (screen_center.y - viewport.min.y) / viewport.height();
+        let center_col = (rel_x * self.full_width as f32 / ts as f32).floor() as i32;
+        let center_row = (rel_y * self.full_height as f32 / ts as f32).floor() as i32;
 
-                // Map tile pixel bounds to screen coordinates
-                let sx0 =
-                    viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
-                let sy0 =
-                    viewport.min.y + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
-                let sx1 = viewport.min.x
-                    + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
-                let sy1 = viewport.min.y
-                    + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+        let max_ring = (start_col..=end_col)
+            .flat_map(|c| (start_row..=end_row).map(move |r| (c, r)))
+            .map(|(c, r)| {
+                let dc = (c as i32 - center_col).unsigned_abs();
+                let dr = (r as i32 - center_row).unsigned_abs();
+                dc.max(dr)
+            })
+            .max()
+            .unwrap_or(0);
 
-                let tile_screen_rect =
-                    egui::Rect::from_min_max(egui::Pos2::new(sx0, sy0), egui::Pos2::new(sx1, sy1));
+        for ring in 0..=max_ring {
+            for r in start_row..=end_row {
+                for c in start_col..=end_col {
+                    let dc = (c as i32 - center_col).unsigned_abs();
+                    let dr = (r as i32 - center_row).unsigned_abs();
+                    if dc.max(dr) != ring {
+                        continue;
+                    }
 
-                let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                out.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                    let tile_x0 = c * ts;
+                    let tile_y0 = r * ts;
+                    let tile_w = ts.min(self.full_width - tile_x0);
+                    let tile_h = ts.min(self.full_height - tile_y0);
+
+                    let sx0 = viewport.min.x
+                        + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
+                    let sy0 = viewport.min.y
+                        + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
+                    let sx1 = viewport.min.x
+                        + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
+                    let sy1 = viewport.min.y
+                        + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+
+                    let tile_screen_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(sx0, sy0),
+                        egui::Pos2::new(sx1, sy1),
+                    );
+
+                    let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                    out.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                }
             }
         }
-
-        // Sort by distance from screen center (Center-Out Priority)
-        let screen_center = screen_clip.center();
-        out.sort_by_key(|(_, rect, _)| {
-            let dist_sq = (rect.center().x - screen_center.x).powi(2)
-                + (rect.center().y - screen_center.y).powi(2);
-            (dist_sq * 10.0) as i32
-        });
     }
 }

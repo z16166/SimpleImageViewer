@@ -371,8 +371,19 @@ impl ImageViewerApp {
             len > 0 && (window_indices.contains(&idx) || loading_indices.contains(&idx))
         };
 
-        // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too
         let mut distant_indices = std::collections::HashSet::new();
+        let mut all_prefetch_indices = self.prefetch_resource_indices.clone();
+        all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
+        all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());
+        all_prefetch_indices.extend(self.texture_cache.textures.keys().copied());
+        all_prefetch_indices.extend(self.animation_cache.keys().copied());
+        all_prefetch_indices.extend(self.hdr_image_cache.keys().copied());
+        all_prefetch_indices.extend(self.hdr_tiled_source_cache.keys().copied());
+        all_prefetch_indices.extend(
+            crate::tile_cache::PIXEL_CACHE
+                .lock()
+                .distinct_image_indices(),
+        );
 
         #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
         let mut record_eviction = |idx: usize, kind: &'static str| {
@@ -390,23 +401,7 @@ impl ImageViewerApp {
             );
         };
 
-        self.prefetched_tiles.retain(|&idx, _| {
-            let keep = should_retain(idx);
-            if !keep {
-                record_eviction(idx, "prefetched_tiles");
-            }
-            keep
-        });
-
-        self.deferred_sdr_uploads.retain(|&idx, _| {
-            let keep = should_retain(idx);
-            if !keep {
-                record_eviction(idx, "deferred_sdr");
-            }
-            keep
-        });
-
-        for &idx in &self.prefetch_resource_indices {
+        for idx in all_prefetch_indices {
             if !should_retain(idx) {
                 record_eviction(idx, "prefetch_resource");
             }
@@ -415,15 +410,28 @@ impl ImageViewerApp {
         #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
         let evicted_count = distant_indices.len();
 
-        if !distant_indices.is_empty() {
+        if distant_indices.is_empty() {
             preload_debug!(
-                "[PreloadDebug] prefetch eviction pixel_cache remove: indices={:?}",
-                distant_indices
+                "[PreloadDebug] prefetch eviction done: evicted_count={}",
+                evicted_count
             );
-            crate::tile_cache::PIXEL_CACHE
-                .lock()
-                .remove_images(&distant_indices);
+            return;
         }
+
+        preload_debug!(
+            "[PreloadDebug] prefetch eviction pixel_cache remove: indices={:?}",
+            distant_indices
+        );
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .remove_images(&distant_indices);
+
+        self.prefetched_tiles
+            .retain(|idx, _| !distant_indices.contains(idx));
+        self.deferred_sdr_uploads
+            .retain(|idx, _| !distant_indices.contains(idx));
+        self.prefetch_resource_indices
+            .retain(|idx| !distant_indices.contains(idx));
 
         for idx in distant_indices {
             self.texture_cache.remove(idx);
@@ -433,9 +441,6 @@ impl ImageViewerApp {
             self.remove_hdr_image_index(idx);
             self.maybe_unregister_prefetch_resource(idx);
         }
-
-        self.prefetch_resource_indices
-            .retain(|&idx| should_retain(idx));
 
         preload_debug!(
             "[PreloadDebug] prefetch eviction done: evicted_count={}",
