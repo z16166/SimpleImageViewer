@@ -120,6 +120,7 @@ impl ImageViewerApp {
                 stage: PreviewStage::Initial,
                 buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
                 cold_deferred_to_main_loader: false,
+                strip_max_side_used: max_side,
             };
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
@@ -223,6 +224,7 @@ impl ImageViewerApp {
                 stage,
                 buffer_tag,
                 cold_deferred_to_main_loader: false,
+                strip_max_side_used: max_side,
             };
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
@@ -541,6 +543,7 @@ impl ImageViewerApp {
                 stage,
                 buffer_tag,
                 cold_deferred_to_main_loader,
+                strip_max_side_used: max_side,
             };
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
@@ -648,6 +651,7 @@ impl ImageViewerApp {
                 stage: PreviewStage::Refined,
                 buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
                 cold_deferred_to_main_loader: false,
+                strip_max_side_used: max_side,
             };
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
@@ -659,5 +663,83 @@ impl ImageViewerApp {
                 send_strip_inflight_release(&release_tx, index);
             }
         });
+    }
+
+    /// Re-downsample strip pixels on the worker pool when the current `strip_max_side` no longer
+    /// matches what produced `decoded` (e.g. user changed list preview size before GPU flush).
+    pub(super) fn schedule_strip_pending_gpu_resample(
+        &mut self,
+        index: usize,
+        decoded: DecodedImage,
+        stage: PreviewStage,
+        logical: Option<(u32, u32)>,
+        buffer_tag: StripPreviewBufferTag,
+    ) -> bool {
+        if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+            return false;
+        }
+        if self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        let list_generation = match self.directory_tree.list.try_lock() {
+            Some(list) => list.image_list_generation,
+            None => self
+                .directory_tree
+                .list_snapshot
+                .load()
+                .image_list_generation,
+        };
+        self.directory_tree_strip_generate_inflight.insert(index);
+        let tx = self.directory_tree_strip_preview_tx.clone();
+        let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
+        let path = self.image_files[index].clone();
+        let max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        let root_wake = self.root_redraw_wake_handle();
+        let logical = logical.unwrap_or((decoded.width, decoded.height));
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] pool submit idx={} kind=pending_gpu_resample max_side={}",
+            index,
+            max_side
+        );
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let strip = match downsample_decoded_for_strip(&decoded, max_side) {
+                Ok(strip) => strip,
+                Err(err) => {
+                    log::warn!(
+                        "[DirectoryTree] Strip pending GPU resample failed for index {index}: {err}"
+                    );
+                    send_strip_inflight_release(&release_tx, index);
+                    return;
+                }
+            };
+            if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
+                send_strip_inflight_release(&release_tx, index);
+                return;
+            }
+            let job = DirectoryTreeStripPreviewJobResult {
+                index,
+                path,
+                image_list_generation: list_generation,
+                decoded: strip,
+                reusable_full_decoded: None,
+                logical,
+                stage,
+                buffer_tag,
+                cold_deferred_to_main_loader: false,
+                strip_max_side_used: max_side,
+            };
+            if tx.try_send(job).is_ok() {
+                if let Some(wake) = root_wake {
+                    wake();
+                }
+            } else {
+                send_strip_inflight_release(&release_tx, index);
+            }
+        });
+        true
     }
 }

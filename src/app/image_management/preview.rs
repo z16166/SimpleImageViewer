@@ -157,6 +157,7 @@ impl ImageViewerApp {
                     crate::loader::PreviewStage::Refined,
                     self.directory_tree_strip_logical_size(update.index),
                     crate::app::directory_tree_strip_cache::StripPreviewBufferTag::MainWindowTiledPreview,
+                    None,
                     ctx,
                     false,
                 );

@@ -19,7 +19,6 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
 
-use crate::loader::downsample_decoded_for_strip;
 use crate::loader::{DecodedImage, PreviewStage, preview_aspect_matches_logical};
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
@@ -85,6 +84,8 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub buffer_tag: StripPreviewBufferTag,
     /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
     pub cold_deferred_to_main_loader: bool,
+    /// `strip_max_side()` used when the worker last sized `decoded` for strip upload.
+    pub strip_max_side_used: u32,
 }
 
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
@@ -97,6 +98,9 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     /// Monotonic insertion-order sequence number so that flush can merge the
     /// per-stage queues in FIFO order.
     pub seq: u64,
+    /// Worker `strip_max_side` when known; `None` for sync paths (e.g. deferred SDR) that may
+    /// still need background downsample before GPU upload.
+    pub strip_max_side_used: Option<u32>,
 }
 
 /// Limit GPU texture uploads per paint pass (checklist #3).
@@ -120,6 +124,20 @@ pub(crate) struct StripDecodedUpsert<'a> {
     pub(crate) path: &'a std::path::Path,
     pub(crate) ctx: &'a egui::Context,
     pub(crate) strip_max_side: u32,
+    pub(crate) strip_max_side_used: Option<u32>,
+}
+
+/// Whether `decoded` already fits the current strip setting and can upload without paint-thread
+/// downsample (checklist #3).
+pub(crate) fn strip_decoded_ready_for_gpu_upload(
+    decoded: &DecodedImage,
+    strip_max_side: u32,
+    strip_max_side_used: Option<u32>,
+) -> bool {
+    if strip_max_side_used == Some(strip_max_side) {
+        return true;
+    }
+    decoded.width.max(decoded.height) <= strip_max_side
 }
 
 impl DirectoryTreeStripCache {
@@ -364,7 +382,12 @@ impl DirectoryTreeStripCache {
             path,
             ctx,
             strip_max_side,
+            strip_max_side_used,
         } = upsert;
+        debug_assert!(
+            strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used),
+            "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
+        );
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
         let cached_dims = self.preview_dimensions(index);
@@ -385,25 +408,11 @@ impl DirectoryTreeStripCache {
         }) {
             return;
         }
-        let thumb = match downsample_decoded_for_strip(decoded, strip_max_side) {
-            Ok(thumb) => thumb,
-            Err(err) => {
-                log::warn!(
-                    "[DirectoryTree] Strip thumbnail downsample failed for index {index}: {err}"
-                );
-                #[cfg(feature = "preload-debug")]
-                crate::preload_debug!(
-                    "[PreloadDebug][StripCache] upsert skip idx={} reason=downsample_err err={err}",
-                    index
-                );
-                return;
-            }
-        };
         let color_image = ColorImage::from_rgba_unmultiplied(
-            [thumb.width as usize, thumb.height as usize],
-            thumb.rgba(),
+            [decoded.width as usize, decoded.height as usize],
+            decoded.rgba(),
         );
-        let thumb_size = [thumb.width as usize, thumb.height as usize];
+        let thumb_size = [decoded.width as usize, decoded.height as usize];
         if self
             .textures
             .get(&index)
@@ -817,6 +826,22 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn strip_decoded_ready_for_gpu_upload_matches_worker_max_side() {
+        let decoded = DecodedImage::new(256, 128, vec![0; 256 * 128 * 4]);
+        assert!(strip_decoded_ready_for_gpu_upload(&decoded, 256, Some(256)));
+        assert!(!strip_decoded_ready_for_gpu_upload(&decoded, 128, Some(256)));
+    }
+
+    #[test]
+    fn strip_decoded_ready_for_gpu_upload_accepts_pixels_that_fit_current_setting() {
+        let small = DecodedImage::new(64, 48, vec![0; 64 * 48 * 4]);
+        assert!(strip_decoded_ready_for_gpu_upload(&small, 128, None));
+        assert!(strip_decoded_ready_for_gpu_upload(&small, 256, Some(128)));
+        let large = DecodedImage::new(256, 128, vec![0; 256 * 128 * 4]);
+        assert!(!strip_decoded_ready_for_gpu_upload(&large, 128, None));
+    }
+
+    #[test]
     fn downsample_decoded_for_strip_keeps_small_images_as_is() {
         let decoded = DecodedImage::new(64, 48, vec![0; 64 * 48 * 4]);
         let out = downsample_decoded_for_strip(&decoded, 128).expect("downsample");
@@ -886,6 +911,7 @@ mod tests {
                     path: Path::new("/test/strip.jpg"),
                     ctx: &ctx,
                     strip_max_side: 128,
+                    strip_max_side_used: Some(128),
                 },
             );
         }
@@ -943,6 +969,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
         assert!(cache.contains(0));
@@ -957,6 +984,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
         assert!(cache.contains(0));
@@ -978,6 +1006,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
         let first_id = cache.textures().get(&0).expect("initial texture").id();
@@ -993,6 +1022,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
 
@@ -1123,6 +1153,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
         assert!(cache.contains(0));
@@ -1171,6 +1202,7 @@ mod tests {
                     path: Path::new("/test/strip.jpg"),
                     ctx: &ctx,
                     strip_max_side: 128,
+                    strip_max_side_used: Some(128),
                 },
             );
         }
@@ -1197,6 +1229,7 @@ mod tests {
                 path: Path::new("/test/strip.jpg"),
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
         cache.relocate(0, 5);

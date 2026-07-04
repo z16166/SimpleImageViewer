@@ -286,6 +286,7 @@ impl ImageViewerApp {
                     PreviewStage::Initial,
                     self.directory_tree_strip_logical_size(index),
                     StripPreviewBufferTag::PreloadSdrFallback,
+                    None,
                 );
                 deferred_processed += 1;
             }

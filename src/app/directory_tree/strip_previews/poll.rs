@@ -155,6 +155,7 @@ impl ImageViewerApp {
             result.stage,
             Some(result.logical),
             result.buffer_tag,
+            Some(result.strip_max_side_used),
         );
         if !self
             .directory_tree_strip_cache
@@ -302,6 +303,7 @@ impl ImageViewerApp {
                 result.stage,
                 Some(result.logical),
                 result.buffer_tag,
+                Some(result.strip_max_side_used),
             );
             self.cache_reusable_strip_full_decode(result.index, result.logical, reusable_full);
             let cache_valid = self

@@ -365,6 +365,7 @@ impl ImageViewerApp {
             crate::loader::PreviewStage::Refined,
             Some((decoded.width, decoded.height)),
             crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+            None,
             ctx,
             false,
         );
@@ -492,6 +493,7 @@ impl ImageViewerApp {
                 strip_stage,
                 Some(strip_logical),
                 strip_tag,
+                None,
                 ctx,
                 false,
             );

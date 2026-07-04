@@ -3473,6 +3473,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
                 path: &paths[index],
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
     }
@@ -3509,6 +3510,7 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
             path: &old_files[0],
             ctx: &ctx,
             strip_max_side: 128,
+            strip_max_side_used: Some(128),
         },
     );
 
