@@ -21,6 +21,7 @@
 //! then half-size LibRaw develop when no embedded thumbnail exists.
 
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
@@ -129,8 +130,8 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
-    let mmap = crate::mmap_util::map_file(path).ok();
-    let (exif, exif_probe, exif_probe_detail) = match mmap.as_ref() {
+    let mmap = crate::mmap_util::map_file(path).ok().map(Arc::new);
+    let (exif, exif_probe, exif_probe_detail) = match mmap.as_deref() {
         Some(data) => extract_exif_thumbnail_from_mmap_probed(data, path),
         None => extract_exif_thumbnail_probed(path),
     };
@@ -185,12 +186,17 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     #[cfg(feature = "heif-native")]
     if super::modern::is_heif_path(path) {
         let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
-        let heif_outcome = match mmap.as_ref() {
+        let heif_outcome = match mmap.as_deref() {
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
                 .ok()
-                .map(|owned| {
-                    try_heif_directory_tree_strip(owned.as_ref(), max_side, allow_primary_sdr)
+                .map(Arc::new)
+                .and_then(|owned| {
+                    Some(try_heif_directory_tree_strip(
+                        owned.as_ref(),
+                        max_side,
+                        allow_primary_sdr,
+                    ))
                 })
                 .unwrap_or_else(|| HeifDirectoryTreeStripOutcome {
                     strip: None,
@@ -239,7 +245,11 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
 
-    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, max_side) {
+    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(
+        path,
+        mmap.as_ref(),
+        max_side,
+    ) {
         return fast.map(|(preview, logical_size)| {
             log_strip_decode_path(
                 path,
@@ -255,7 +265,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     if !options.defer_iso_gain_map_baseline {
         if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
             path,
-            mmap.as_ref().map(|data| data.as_ref()),
+            mmap.as_deref().map(|data| data.as_ref()),
             max_side,
         ) {
             match fast {
@@ -320,7 +330,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     // needs a fast SDR preview.  For a 4000×3000 → 256px strip this is ~10×
     // faster and 64× less peak memory than a full-resolution decode followed
     // by a software downsample.
-    if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_ref(), max_side) {
+    if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_deref(), max_side) {
         return result.map(|(preview, logical_size)| {
             log_strip_decode_path(
                 path,
@@ -340,7 +350,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         );
         return Err(STRIP_DEFER_SLOW_EMBEDDED_SDR.to_string());
     }
-    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_ref(), max_side) {
+    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_deref(), max_side) {
         match result {
             Ok(strip) => {
                 log_strip_decode_path(
@@ -361,7 +371,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_deref())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()

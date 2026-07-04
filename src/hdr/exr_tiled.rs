@@ -80,6 +80,32 @@ impl ExrTiledImageSource {
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
         let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+        Self::from_context(path, context, max_cache_bytes)
+    }
+
+    pub(crate) fn open_from_mmap(path: &Path, mmap: Arc<memmap2::Mmap>) -> Result<Self, String> {
+        Self::open_from_mmap_with_cache_budget(
+            path,
+            mmap,
+            configured_hdr_tile_cache_max_bytes(),
+        )
+    }
+
+    pub(crate) fn open_from_mmap_with_cache_budget(
+        path: &Path,
+        mmap: Arc<memmap2::Mmap>,
+        max_cache_bytes: usize,
+    ) -> Result<Self, String> {
+        let context =
+            crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
+        Self::from_context(path, context, max_cache_bytes)
+    }
+
+    fn from_context(
+        path: &Path,
+        context: crate::hdr::openexr_core_backend::OpenExrCoreReadContext,
+        max_cache_bytes: usize,
+    ) -> Result<Self, String> {
         let parts = exr_part_infos_from_context(&context)?;
         let part_index = default_display_part_index(&parts).unwrap_or(0);
         let part = context.part(part_index)?;

@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use memmap2::Mmap;
 use parking_lot::{Condvar, Mutex};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -64,61 +65,78 @@ unsafe impl Send for OpenExrCoreReadContext {}
 unsafe impl Sync for OpenExrCoreReadContext {}
 impl OpenExrCoreReadContext {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let filename = sys::imf_io::path_utf8_cstr(path)
-            .map_err(|err| format!("{err} for {}", path.display()))?;
-
-        let mut raw = ptr::null_mut();
-
         match crate::mmap_util::map_file(path) {
-            Ok(m) => {
-                let mut cookie = ExrMmapCookieGuard::new(m);
-                let ctxt_init = openexr_memory_map_initializer(cookie.as_mut_ptr());
-
-                let start_result =
-                    unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
-
-                match exr_result(start_result) {
-                    Ok(()) => {
-                        if raw.is_null() {
-                            return Err(format!(
-                                "OpenEXRCore returned a null context for {}",
-                                path.display()
-                            ));
-                        }
-                        cookie.mark_context_alive();
-                    }
-                    Err(e) => {
-                        // Do not fall back to file I/O here. The mmap reader already classified the
-                        // file and malformed EXR-like inputs previously crashed on Windows when this
-                        // error path retried through OpenEXRCore's native file reader.
-                        log::debug!(
-                            "EXR mmap read via OpenEXRCore failed ({}) for {}",
-                            e,
-                            path.display()
-                        );
-                        return Err(e);
-                    }
-                }
-            }
+            Ok(m) => Self::open_from_mmap(path, Arc::new(m)),
             Err(map_err) => {
                 log::debug!(
                     "EXR mmap unavailable ({}); using file-handle reader for {}",
                     map_err,
                     path.display()
                 );
-                let ctxt_init = openexr_file_initializer();
-                exr_result(unsafe {
-                    sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init)
-                })?;
+                Self::open_via_file_handle(path)
+            }
+        }
+    }
+
+    /// Open from caller-provided mmap (avoids a second file map per checklist #29).
+    pub(crate) fn open_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<Self, String> {
+        let raw = Self::start_mmap_read(path, mmap)?;
+        Self::finish_open(path, raw)
+    }
+
+    fn start_mmap_read(path: &Path, mmap: Arc<Mmap>) -> Result<sys::ExrContext, String> {
+        let filename = sys::imf_io::path_utf8_cstr(path)
+            .map_err(|err| format!("{err} for {}", path.display()))?;
+
+        let mut raw = ptr::null_mut();
+        let mut cookie = ExrMmapCookieGuard::from_shared(mmap);
+        let ctxt_init = openexr_memory_map_initializer(cookie.as_mut_ptr());
+
+        let start_result =
+            unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
+
+        match exr_result(start_result) {
+            Ok(()) => {
                 if raw.is_null() {
                     return Err(format!(
                         "OpenEXRCore returned a null context for {}",
                         path.display()
                     ));
                 }
+                cookie.mark_context_alive();
+                Ok(raw)
+            }
+            Err(e) => {
+                // Do not fall back to file I/O here. The mmap reader already classified the
+                // file and malformed EXR-like inputs previously crashed on Windows when this
+                // error path retried through OpenEXRCore's native file reader.
+                log::debug!(
+                    "EXR mmap read via OpenEXRCore failed ({}) for {}",
+                    e,
+                    path.display()
+                );
+                Err(e)
             }
         }
+    }
 
+    fn open_via_file_handle(path: &Path) -> Result<Self, String> {
+        let filename = sys::imf_io::path_utf8_cstr(path)
+            .map_err(|err| format!("{err} for {}", path.display()))?;
+
+        let mut raw = ptr::null_mut();
+        let ctxt_init = openexr_file_initializer();
+        exr_result(unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) })?;
+        if raw.is_null() {
+            return Err(format!(
+                "OpenEXRCore returned a null context for {}",
+                path.display()
+            ));
+        }
+        Self::finish_open(path, raw)
+    }
+
+    fn finish_open(path: &Path, mut raw: sys::ExrContext) -> Result<Self, String> {
         let mut part_count = 0;
         if let Err(err) =
             exr_result(unsafe { sys::exr_get_count(raw.cast_const(), &mut part_count) })
