@@ -74,6 +74,29 @@ pub(crate) fn zoom_pan_offset_for_screen_point(
     d * (1.0 - ratio) + pan_offset * ratio
 }
 
+/// Union of outgoing/incoming image bounds, clamped to the main canvas paint area.
+///
+/// Geometric transitions (page flip, curtain, ripple) use this as their animation limit so effects
+/// do not spill over embedded directory-tree navigation or other non-canvas UI.
+pub(crate) fn transition_union_rect(
+    canvas_rect: Rect,
+    final_dest: Rect,
+    prev_dest: Rect,
+    has_prev: bool,
+) -> Rect {
+    let image_union = if has_prev {
+        prev_dest.union(final_dest)
+    } else {
+        final_dest
+    };
+    let bounded = image_union.intersect(canvas_rect);
+    if bounded.width() > 0.0 && bounded.height() > 0.0 {
+        bounded
+    } else {
+        canvas_rect
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PlaneLayout {
     pub image_size: Vec2,
@@ -331,6 +354,18 @@ mod tests {
             zoom_pan_offset_for_screen_point(canvas.center(), canvas, ratio, pan),
             Vec2::ZERO
         );
+    }
+
+    #[test]
+    fn transition_union_rect_is_clamped_to_canvas() {
+        let canvas = Rect::from_min_max(Pos2::new(240.0, 0.0), Pos2::new(1000.0, 800.0));
+        let final_dest = Rect::from_center_size(canvas.center(), Vec2::new(400.0, 300.0));
+        let prev_dest = Rect::from_center_size(Pos2::new(500.0, 400.0), Vec2::new(400.0, 300.0));
+        let union = transition_union_rect(canvas, final_dest, prev_dest, true);
+        assert!(union.min.x >= canvas.min.x - f32::EPSILON);
+        assert!(union.max.x <= canvas.max.x + f32::EPSILON);
+        assert!(union.min.y >= canvas.min.y - f32::EPSILON);
+        assert!(union.max.y <= canvas.max.y + f32::EPSILON);
     }
 
     #[test]

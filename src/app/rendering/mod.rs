@@ -96,6 +96,7 @@ impl ImageViewerApp {
                 let (screen_rect, interact_rect) =
                     main_window_canvas_rects(available, grab, embedded_panel);
                 self.last_canvas_rect = Some(screen_rect);
+                ui.set_clip_rect(ui.clip_rect().intersect(screen_rect));
 
                 // Allocate the canvas for drag interaction and clicks early.
                 // If a modal is open, we sense nothing to block background clicks/drags.

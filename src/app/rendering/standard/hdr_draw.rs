@@ -411,16 +411,8 @@ impl ImageViewerApp {
             alpha,
         } = draw;
         if self.prev_texture.is_some() || self.prev_hdr_image.is_some() {
-            let p_size = self
-                .prev_hdr_image
-                .as_ref()
-                .map(|h| Vec2::new(h.width as f32, h.height as f32))
-                .or_else(|| self.prev_texture.as_ref().map(|t| t.size_vec2()))
-                .expect("either prev_hdr_image or prev_texture must be Some");
-            let p_dest = self
-                .prev_transition_rect
-                .unwrap_or_else(|| self.compute_display_rect(p_size, screen_rect));
-            let union_rect = p_dest.union(final_dest);
+            let (p_dest, union_rect, _has_prev) =
+                self.transition_prev_layout(screen_rect, final_dest);
 
             let elapsed = self
                 .transition_start
