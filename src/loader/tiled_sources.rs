@@ -54,6 +54,16 @@ fn memory_rgba_preview(
     let out_w = (width as f64 * scale).round().max(1.0) as u32;
     let out_h = (height as f64 * scale).round().max(1.0) as u32;
     let out = downsample_rgba8_box(pixels, width, height, out_w, out_h);
+    let Some(expected_out_bytes) = out_w
+        .checked_mul(out_h)
+        .and_then(|px| px.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return (0, 0, Vec::new());
+    };
+    if out.len() != expected_out_bytes {
+        return (0, 0, Vec::new());
+    }
     crate::preload_debug!(
         "[PreloadDebug][Strip] memory preview logical={}x{} max={}x{} -> {}x{}",
         width,

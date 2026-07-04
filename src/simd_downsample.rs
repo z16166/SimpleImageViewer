@@ -44,15 +44,9 @@ struct DownsampleSimdParams<'a> {
 /// its footprint.  Operates on a borrowed `&[u8]` slice — zero-copy of the source
 /// buffer.
 ///
-/// # Panics
-///
-/// In debug mode, panics (via `debug_assert!`) if `dst_w > src_w` or `dst_h > src_h`
-/// (upscaling not supported).  In release mode, the assertion is skipped and the
-/// function produces all-black pixels — empty source footprints yield `count == 0`,
-/// the guard at the end of the scalar loop skips the division, and the SIMD paths
-/// likewise leave the output pixel at zero.
-///
-/// Returns an empty `Vec<u8>` if any dimension is zero.
+/// Returns an empty `Vec<u8>` if any dimension is zero, if upscaling is
+/// requested (`dst_w > src_w` or `dst_h > src_h`), or if `src` is shorter than
+/// `src_w * src_h * 4` bytes.
 pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     // Zero dimensions would divide-by-zero in the scalar path and UB in SIMD
     // paths via get_unchecked.  Return empty — all callers guarantee non-zero
@@ -60,16 +54,19 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return Vec::new();
     }
-    debug_assert!(
-        dst_w <= src_w && dst_h <= src_h,
-        "downsample_rgba8_box does not support upscaling (src {src_w}x{src_h}, dst {dst_w}x{dst_h})"
-    );
-    debug_assert!(
-        src.len() >= src_w as usize * src_h as usize * 4,
-        "downsample_rgba8_box src buffer too short: {} bytes for {src_w}x{src_h} (need {})",
-        src.len(),
-        src_w as usize * src_h as usize * 4
-    );
+    if dst_w > src_w || dst_h > src_h {
+        return Vec::new();
+    }
+    let Some(expected_len) = src_w
+        .checked_mul(src_h)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Vec::new();
+    };
+    if src.len() < expected_len {
+        return Vec::new();
+    }
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
     // Pre-compute column-to-source-range mapping once — all SIMD kernels need
@@ -821,10 +818,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "upscaling"))]
-    fn upscale_panics_in_debug() {
+    fn upscale_returns_empty() {
         let src = make_patterned_rgba(10, 10);
-        let _result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+        let result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn short_src_buffer_returns_empty() {
+        let src = vec![0_u8; 16];
+        let result = downsample_rgba8_box(&src, 10, 10, 5, 5);
+        assert!(result.is_empty());
     }
 
     #[test]
