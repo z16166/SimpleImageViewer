@@ -50,62 +50,83 @@ pub(crate) fn decode_avif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
 
 #[cfg(feature = "avif-native")]
 pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifImageOwned, String> {
-    let strict_flags = libavif_sys::AVIF_STRICT_DISABLED;
-    let content_flag_attempts: [(u32, &'static str); 2] = [
-        (libavif_sys::AVIF_IMAGE_CONTENT_ALL, "color+alpha+gainmap"),
-        (
-            libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
-            "color+alpha",
-        ),
-    ];
-
-    let mut image_ptr: *mut libavif_sys::avifImage = std::ptr::null_mut();
-    let mut last_err: Option<String> = None;
-    for (attempt_idx, &(flags, label)) in content_flag_attempts.iter().enumerate() {
-        let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
-            return Err("Failed to create libavif decoder".to_string());
-        };
-        unsafe {
-            libavif_sys::siv_avif_decoder_set_strict_flags(decoder.as_ptr(), strict_flags);
-            libavif_sys::siv_avif_decoder_set_image_content_flags(decoder.as_ptr(), flags);
-        }
-        let Some(img) = libavif_sys::AvifImageOwned::create_empty() else {
-            return Err("Failed to create libavif image".to_string());
-        };
-        let result = unsafe {
-            libavif_sys::avifDecoderReadMemory(
-                decoder.as_ptr(),
-                img.as_ptr(),
-                bytes.as_ptr(),
-                bytes.len(),
-            )
-        };
-
-        if result == libavif_sys::AVIF_RESULT_OK {
-            if attempt_idx > 0 {
-                log::debug!(
-                    "[AVIF] decoded with imageContentToDecode={label} after first attempt failed"
-                );
-            }
-            image_ptr = img.into_raw();
-            break;
-        }
-
-        let msg = libavif_result_to_string(result);
-        if attempt_idx == 0 {
-            log::debug!(
-                "[AVIF] libavif decode with {} failed ({msg}); retrying with color+alpha only",
-                content_flag_attempts[0].1
-            );
-        }
-        last_err = Some(format!("libavif decode failed: {msg}"));
+    let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
+        return Err("Failed to create libavif decoder".to_string());
+    };
+    unsafe {
+        libavif_sys::siv_avif_decoder_set_strict_flags(
+            decoder.as_ptr(),
+            libavif_sys::AVIF_STRICT_DISABLED,
+        );
+        // Discover all advertised content (incl. gain map metadata) during parse.
+        libavif_sys::siv_avif_decoder_set_image_content_flags(
+            decoder.as_ptr(),
+            libavif_sys::AVIF_IMAGE_CONTENT_ALL,
+        );
     }
 
-    if image_ptr.is_null() {
-        return Err(last_err.unwrap_or_else(|| "libavif decode failed".to_string()));
+    let r = unsafe {
+        libavif_sys::avifDecoderSetIOMemory(decoder.as_ptr(), bytes.as_ptr(), bytes.len())
+    };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return Err(format!(
+            "libavif SetIOMemory: {}",
+            libavif_result_to_string(r)
+        ));
     }
 
-    Ok(unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) })
+    let r = unsafe { libavif_sys::avifDecoderParse(decoder.as_ptr()) };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return Err(format!(
+            "libavif parse failed: {}",
+            libavif_result_to_string(r)
+        ));
+    }
+
+    let meta_ptr = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
+    if meta_ptr.is_null() {
+        return Err("libavif decoder image is null after parse".to_string());
+    }
+    let decode_flags = if unsafe { (*meta_ptr).gainMap.is_null() } {
+        libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA
+    } else {
+        libavif_sys::AVIF_IMAGE_CONTENT_ALL
+    };
+    unsafe {
+        libavif_sys::siv_avif_decoder_set_image_content_flags(decoder.as_ptr(), decode_flags);
+    }
+
+    let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return Err(format!(
+            "libavif decode failed: {}",
+            libavif_result_to_string(r)
+        ));
+    }
+
+    let decoded_ptr = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
+    if decoded_ptr.is_null() {
+        return Err("libavif decoder image is null after decode".to_string());
+    }
+
+    let Some(owned) = libavif_sys::AvifImageOwned::create_empty() else {
+        return Err("Failed to create libavif image".to_string());
+    };
+    let r = unsafe {
+        libavif_sys::avifImageCopy(
+            owned.as_ptr(),
+            decoded_ptr,
+            libavif_sys::AVIF_PLANES_ALL,
+        )
+    };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return Err(format!(
+            "libavif image copy failed: {}",
+            libavif_result_to_string(r)
+        ));
+    }
+
+    Ok(owned)
 }
 
 #[cfg(feature = "avif-native")]
