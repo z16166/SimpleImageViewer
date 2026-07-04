@@ -47,9 +47,10 @@ static TRAY_LOGIC_WAKE: OnceLock<RwLock<Option<RootRedrawWake>>> = OnceLock::new
 pub fn register_tray_logic_wake(wake: RootRedrawWake) {
     let slot = TRAY_LOGIC_WAKE.get_or_init(|| RwLock::new(None));
     if let Ok(mut guard) = slot.write()
-        && guard.is_none() {
-            *guard = Some(wake);
-        }
+        && guard.is_none()
+    {
+        *guard = Some(wake);
+    }
 }
 
 fn wake_ui_for_tray(ctx: &egui::Context) {

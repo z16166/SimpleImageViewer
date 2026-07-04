@@ -54,9 +54,9 @@ impl ImageLoader {
                 && loading
                     .get(&r.index)
                     .is_some_and(|e| e.profile == r.decode_profile)
-                {
-                    finish_indices.push(r.index);
-                }
+            {
+                finish_indices.push(r.index);
+            }
         }
         drop(loading);
 

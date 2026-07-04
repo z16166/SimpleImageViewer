@@ -29,7 +29,6 @@ pub(crate) struct HdrCallbackResourcesSet {
     by_format: HashMap<wgpu::TextureFormat, HdrCallbackResources>,
 }
 
-
 impl HdrCallbackResourcesSet {
     pub(crate) fn get_for(&self, format: wgpu::TextureFormat) -> Option<&HdrCallbackResources> {
         self.by_format.get(&format)
@@ -221,10 +220,10 @@ pub(crate) fn hdr_callback_formats_to_prewarm(
     }
     if hdr_native_surface_enabled
         && let Some(candidate) = candidate_texture_format
-            && !formats.contains(&candidate)
-        {
-            formats.push(candidate);
-        }
+        && !formats.contains(&candidate)
+    {
+        formats.push(candidate);
+    }
     formats
 }
 

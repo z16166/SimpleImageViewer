@@ -436,16 +436,17 @@ mod tests {
         // Unknown probe: conservative `effective_render_output_mode` is `SdrToneMapped`, so HDR
         // sources still composite through WGSL tone-map (`PlaneBackendKind::Hdr`) rather than
         // native HDR — not the naive "SDR wallpaper" GPU path (`PlaneBackendKind::Sdr`).
-        let unknown_monitor_plan = super::build_render_plan_for_state(super::RenderPlanStateInput {
-            shape: super::RenderShape::Static,
-            has_hdr_plane: true,
-            has_sdr_fallback: true,
-            target_format: Some(wgpu::TextureFormat::Rgba16Float),
-            monitor_selection: None,
-            prefer_sdr_for_pending_gpu_demosaic: false,
-            force_hdr_plane_after_raw_demosaic: false,
-            prefer_embedded_iso_gain_map_sdr_master: false,
-        });
+        let unknown_monitor_plan =
+            super::build_render_plan_for_state(super::RenderPlanStateInput {
+                shape: super::RenderShape::Static,
+                has_hdr_plane: true,
+                has_sdr_fallback: true,
+                target_format: Some(wgpu::TextureFormat::Rgba16Float),
+                monitor_selection: None,
+                prefer_sdr_for_pending_gpu_demosaic: false,
+                force_hdr_plane_after_raw_demosaic: false,
+                prefer_embedded_iso_gain_map_sdr_master: false,
+            });
         assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             unknown_monitor_plan.transition_policy,

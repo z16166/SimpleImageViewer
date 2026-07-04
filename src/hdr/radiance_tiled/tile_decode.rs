@@ -284,8 +284,7 @@ pub(crate) fn decode_radiance_sdr_preview(
             }
         } else {
             for preview_y in 0..preview_height {
-                let mut row_rgba =
-                    decode_non_row_major_preview_row(row_ctx, raster, preview_y)?;
+                let mut row_rgba = decode_non_row_major_preview_row(row_ctx, raster, preview_y)?;
                 params.apply_to_pixels(&mut row_rgba);
                 let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                     preview_width,

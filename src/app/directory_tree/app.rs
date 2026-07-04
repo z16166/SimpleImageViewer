@@ -176,8 +176,7 @@ use embedded_side_panel_layout_diag::maybe_log_embedded_side_panel_layout;
 
 #[cfg(not(feature = "preload-debug"))]
 #[inline]
-fn maybe_log_embedded_side_panel_layout(_sample: EmbeddedSidePanelLayoutSample) {
-}
+fn maybe_log_embedded_side_panel_layout(_sample: EmbeddedSidePanelLayoutSample) {}
 
 fn embedded_side_panel_stable_rect_before_show(
     ui: &egui::Ui,

@@ -337,9 +337,9 @@ fn get_or_create_preview_gpu_cache(
             cache: None,
         });
         ToneMapPreviewGpuCache {
-                bind_group_layout,
-                pipeline,
-            }
+            bind_group_layout,
+            pipeline,
+        }
     });
     guard
 }

@@ -184,14 +184,11 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
             .gain_map
             .as_ref()
             .and_then(|gain_map| gain_map.iso_deferred.as_ref())
-        {
-            let decoded = crate::loader::DecodedImage::from_arc(
-                hdr.width,
-                hdr.height,
-                Arc::clone(&iso.sdr_rgba),
-            );
-            return downsample_decoded_for_strip(&decoded, max_side);
-        }
+    {
+        let decoded =
+            crate::loader::DecodedImage::from_arc(hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba));
+        return downsample_decoded_for_strip(&decoded, max_side);
+    }
 
     if !fallback.is_sdr_deferred_placeholder() {
         return downsample_decoded_for_strip(fallback, max_side);

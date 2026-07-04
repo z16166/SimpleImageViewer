@@ -626,10 +626,10 @@ impl ImageViewerApp {
                 .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
                 .and_then(|set| set.get_for_mut(item.target_format))
                 && resources.register_preuploaded_binding(item.key, binding, self.current_device_id)
-                {
-                    resources.set_image_binding_keep_resident(item.key, item.keep_resident);
-                    changed = true;
-                }
+            {
+                resources.set_image_binding_keep_resident(item.key, item.keep_resident);
+                changed = true;
+            }
             self.hdr_pending_work.clear_plane_upload_inflight(item.key);
         }
         if !defer.is_empty() {

@@ -378,7 +378,9 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         strip_baseline_only,
         embedded_sdr_master_load,
     } = input;
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{
+        JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+    };
 
     let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
         jhgm_box,
@@ -458,7 +460,9 @@ fn jxl_finish_static_frame_with_embedded_fallback(
     }
 
     if try_embedded_sdr_master {
-        use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+        use crate::hdr::jxl_gain_map_deferred::{
+            JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+        };
 
         match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
             jhgm_box,
@@ -559,7 +563,9 @@ fn jxl_build_hdr_animated_image_data(
     jhgm_box: Option<&[u8]>,
     decode_target_hdr_capacity: f32,
 ) -> Result<ImageData, String> {
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{
+        JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+    };
     use crate::loader::HdrAnimationFrame;
 
     let require_jhgm_processing = jhgm_box.is_some();
@@ -739,7 +745,7 @@ pub(crate) fn decode_jxl_embedded_sdr_master_bytes(bytes: &[u8]) -> Result<Image
         try_embedded_sdr_master: false,
         source_path: None,
     })
-        .map(|output| output.image)
+    .map(|output| output.image)
 }
 
 #[cfg(feature = "jpegxl")]
