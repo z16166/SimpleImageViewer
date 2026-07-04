@@ -60,12 +60,20 @@ pub(super) fn decode_static_raster_strip_from_bytes(
         logical = (logical.1, logical.0);
     }
 
-    let mut decoded = downsample_decoded_for_strip(&full, max_side)?;
-
-    decoded = apply_orientation_to_owned_decoded(decoded, orientation);
-    if reusable_full_allowed {
+    // When reusable full decode is kept, rotate `full` before downsampling so
+    // `downsample_decoded_for_strip`'s small-image Arc clone shares the rotated
+    // buffer instead of forcing a pixel memcpy in `take_rgba_owned`.
+    let decoded = if reusable_full_allowed && orientation > 1 {
         full = apply_orientation_to_owned_decoded(full, orientation);
-    }
+        downsample_decoded_for_strip(&full, max_side)?
+    } else {
+        let mut decoded = downsample_decoded_for_strip(&full, max_side)?;
+        decoded = apply_orientation_to_owned_decoded(decoded, orientation);
+        if reusable_full_allowed {
+            full = apply_orientation_to_owned_decoded(full, orientation);
+        }
+        decoded
+    };
 
     Ok(DirectoryTreeThumbDecode::new(
         decoded,
