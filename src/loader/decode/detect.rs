@@ -89,16 +89,14 @@ fn load_bmff_ftyp_container(
 
     #[cfg(target_os = "windows")]
     if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path, true, None) {
-        return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path, image, None,
-        ));
+        // WIC applies EXIF orientation during decode; do not chain apply_exif (double-rotate).
+        return Ok(image);
     }
 
     #[cfg(target_os = "macos")]
     if let Ok(image) = crate::macos_image_io::load_via_image_io(path, true, None) {
-        return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path, image, None,
-        ));
+        // ImageIO applies EXIF orientation during decode; do not chain apply_exif.
+        return Ok(image);
     }
 
     let _ = (hdr_target_capacity, hdr_tone_map);
@@ -198,9 +196,8 @@ pub(crate) fn recover_via_platform_and_content_detection(
             "[{}] Recovered via WIC after extension-first decode failed",
             file_name
         );
-        return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path, image, None,
-        ));
+        // WIC applies EXIF orientation during decode; do not chain apply_exif (double-rotate).
+        return Ok(image);
     }
     #[cfg(target_os = "macos")]
     if let Ok(image) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
@@ -208,9 +205,8 @@ pub(crate) fn recover_via_platform_and_content_detection(
             "[{}] Recovered via ImageIO after extension-first decode failed",
             file_name
         );
-        return Ok(crate::loader::apply_exif_orientation_to_image_data(
-            path, image, None,
-        ));
+        // ImageIO applies EXIF orientation during decode; do not chain apply_exif.
+        return Ok(image);
     }
 
     match load_via_content_detection(path, hdr_target_capacity, hdr_tone_map) {

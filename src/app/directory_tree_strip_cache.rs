@@ -119,6 +119,9 @@ pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
 /// O(1) LRU order for strip cache indices (touch, remove, pop-oldest).
+///
+/// Separate from [`crate::lru_order::LruOrder`] because strip cache compaction needs
+/// `retain` / `partial_remap` / `permute` without a full `remap_ordered` rebuild.
 #[derive(Default)]
 struct StripLruOrder {
     nodes: HashMap<usize, LruLinks>,

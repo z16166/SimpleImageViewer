@@ -793,6 +793,8 @@ impl ImageViewerApp {
                 continue;
             }
 
+            // Lock order: renderer -> gpu_writes (compose paths call submit_texture_write).
+            // Do not acquire renderer while holding gpu_writes elsewhere.
             let mut renderer = wgpu_state.renderer.write();
             let Some(resources) = renderer
                 .callback_resources

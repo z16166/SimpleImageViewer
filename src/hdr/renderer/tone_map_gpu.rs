@@ -190,6 +190,7 @@ struct ToneMapPreviewGpuCache {
     pipeline: wgpu::ComputePipeline,
 }
 
+/// Per-device-epoch GPU pipeline cache; stale epochs are dropped when the device changes.
 static PREVIEW_GPU_CACHE: OnceLock<Mutex<HashMap<u64, ToneMapPreviewGpuCache>>> = OnceLock::new();
 
 thread_local! {
@@ -279,6 +280,9 @@ fn get_or_create_preview_gpu_cache(
 ) -> parking_lot::MutexGuard<'static, HashMap<u64, ToneMapPreviewGpuCache>> {
     let cache = preview_gpu_cache();
     let mut guard = cache.lock();
+    if !guard.contains_key(&device_epoch) {
+        guard.clear();
+    }
     guard.entry(device_epoch).or_insert_with(|| {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group-layout"),
@@ -495,6 +499,7 @@ fn hdr_to_sdr_rgba8_gpu(
         .map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
+    // Loader thread only (not UI). Blocks until readback; upstream falls back to CPU on error.
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|err| format!("HDR preview tone-map device poll failed: {err:?}"))?;

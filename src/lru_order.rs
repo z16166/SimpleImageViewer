@@ -18,6 +18,9 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 /// O(1) LRU order (touch, remove, pop-oldest) via HashMap + doubly-linked list.
+///
+/// Internal `expect` calls are invariant assertions on HashMap <-> linked-list
+/// consistency; public API callers must preserve that invariant.
 pub(crate) struct LruOrder<K> {
     nodes: HashMap<K, LruLinks<K>>,
     head: Option<K>,
@@ -66,6 +69,10 @@ where
         self.nodes.is_empty()
     }
 
+    pub(crate) fn contains(&self, key: K) -> bool {
+        self.nodes.contains_key(&key)
+    }
+
     pub(crate) fn touch(&mut self, key: K) {
         self.unlink(key);
         self.link_at_tail(key);
@@ -88,7 +95,7 @@ where
     }
 
     pub(crate) fn rename(&mut self, from: K, to: K) {
-        if from == to {
+        if from == to || !self.contains(from) {
             return;
         }
         self.remove(to);
