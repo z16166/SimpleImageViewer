@@ -20,10 +20,9 @@ use std::path::Path;
 
 use crate::loader::{DecodedImage, preview_aspect_matches_logical};
 
-use super::decode::heif_try_decode_into;
+use super::decode::{heif_decode_primary_once, rgba8_from_decoded_heif};
 use super::orientation::heif_manual_geometry_decode_options;
 use super::session::{HeifCtxGuard, HeifPrimaryGuard, open_heif_primary_from_bytes};
-use super::ycbcr::ycbcr_linear_to_rgb;
 
 /// Outcome of a libheif container-thumbnail probe ([`preload-debug`] logs use [`label`](Self::label)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,9 +74,6 @@ type HeifStripThumbProbeResult = (
     HeifThumbProbe,
     HeifThumbProbeDetail,
 );
-
-type HeifInterleavedDecodeFn =
-    fn(*const libheif_sys::heif_image, u8) -> Result<DecodedImage, String>;
 
 /// One libheif open shared by container-thumb probe and primary-SDR strip fallback.
 #[cfg(feature = "heif-native")]
@@ -241,96 +237,8 @@ pub(crate) fn decode_heif_handle_to_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<DecodedImage, String> {
-    let attempts: &[(i32, i32, u8, HeifInterleavedDecodeFn)] = &[
-        (
-            libheif_sys::heif_colorspace_RGB,
-            libheif_sys::heif_chroma_interleaved_RGBA,
-            4,
-            interleaved_image_to_rgba8,
-        ),
-        (
-            libheif_sys::heif_colorspace_RGB,
-            libheif_sys::heif_chroma_interleaved_RGB,
-            3,
-            interleaved_image_to_rgba8,
-        ),
-    ];
-
-    let mut last_err = String::from("no decode attempts");
-    for &(cs, chroma, components, convert) in attempts {
-        match heif_try_decode_into(handle, cs, chroma, decode_options, "strip-thumb") {
-            Ok(raw) => match convert(raw.as_ptr(), components) {
-                Ok(decoded) => return Ok(decoded),
-                Err(err) => last_err = err,
-            },
-            Err(err) => last_err = super::decode::heif_err_to_plain(err),
-        }
-    }
-
-    match heif_try_decode_into(
-        handle,
-        libheif_sys::heif_colorspace_YCbCr,
-        libheif_sys::heif_chroma_420,
-        decode_options,
-        "strip-thumb-ycbcr",
-    ) {
-        Ok(raw) => ycbcr420_image_to_rgba8(handle, raw.as_ptr()),
-        Err(err) => Err(format!(
-            "YCbCr420 decode failed ({}); interleaved attempts: {last_err}",
-            super::decode::heif_err_to_plain(err)
-        )),
-    }
-}
-
-fn interleaved_image_to_rgba8(
-    image: *const libheif_sys::heif_image,
-    components: u8,
-) -> Result<DecodedImage, String> {
-    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image) };
-    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image) };
-    if width_i <= 0 || height_i <= 0 {
-        return Err("libheif thumbnail has zero size".to_string());
-    }
-    let width = width_i as u32;
-    let height = height_i as u32;
-
-    let mut stride = 0_usize;
-    let plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(
-            image,
-            libheif_sys::heif_channel_interleaved,
-            &mut stride,
-        )
-    };
-    if plane.is_null() {
-        return Err("libheif thumbnail missing interleaved plane".to_string());
-    }
-
-    if components != 3 && components != 4 {
-        return Err(format!(
-            "unsupported interleaved component count ({components})"
-        ));
-    }
-    let bytes_per_pixel = components as usize;
-    let row_bytes = width as usize * bytes_per_pixel;
-    if stride < row_bytes {
-        return Err(format!(
-            "libheif thumbnail stride too small: got {stride}, need {row_bytes}"
-        ));
-    }
-
-    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
-    for y in 0..height as usize {
-        let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
-        for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
-            let dst = (y * width as usize + x) * 4;
-            rgba[dst] = px[0];
-            rgba[dst + 1] = px[1];
-            rgba[dst + 2] = px[2];
-            rgba[dst + 3] = if components == 4 { px[3] } else { 255 };
-        }
-    }
-    Ok(DecodedImage::new(width, height, rgba))
+    let raw = heif_decode_primary_once(handle, decode_options)?;
+    rgba8_from_decoded_heif(handle, raw.as_ptr())
 }
 
 type HeifPrimaryStripResult = Option<Result<(DecodedImage, (u32, u32)), String>>;
@@ -470,98 +378,6 @@ pub(crate) fn try_heif_directory_tree_strip(
         thumb_probe: probe,
         thumb_detail: detail,
     }
-}
-
-fn ycbcr_matrix_from_heif_handle(
-    handle: *const libheif_sys::heif_image_handle,
-) -> super::ycbcr::HeifYcbcrMatrix {
-    use super::brand::heif_nclx_to_metadata;
-    use super::ycbcr::{HeifYcbcrMatrix, heif_ycbcr_matrix_from_nclx};
-
-    let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
-    let height = unsafe { libheif_sys::heif_image_handle_get_height(handle) }.max(0) as usize;
-    let mut nclx_ptr = std::ptr::null_mut();
-    let status =
-        unsafe { libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr) };
-    if status.code == libheif_sys::heif_error_Ok && !nclx_ptr.is_null() {
-        let nclx_guard = unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
-        let nclx = nclx_guard.as_ref();
-        let metadata = heif_nclx_to_metadata(
-            nclx.color_primaries as u16,
-            nclx.transfer_characteristics as u16,
-            nclx.matrix_coefficients as u16,
-            nclx.full_range_flag != 0,
-        );
-        return heif_ycbcr_matrix_from_nclx(&metadata, width, height);
-    }
-    HeifYcbcrMatrix::Bt709
-}
-
-fn ycbcr420_image_to_rgba8(
-    handle: *const libheif_sys::heif_image_handle,
-    image: *const libheif_sys::heif_image,
-) -> Result<DecodedImage, String> {
-    let y_w = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
-    let y_h = unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
-    if y_w <= 0 || y_h <= 0 {
-        return Err("libheif YCbCr thumbnail has zero luma size".to_string());
-    }
-    let width = y_w as u32;
-    let height = y_h as u32;
-
-    let mut y_stride = 0_usize;
-    let y_plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(
-            image,
-            libheif_sys::heif_channel_Y,
-            &mut y_stride,
-        )
-    };
-    let mut cb_stride = 0_usize;
-    let cb_plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(
-            image,
-            libheif_sys::heif_channel_Cb,
-            &mut cb_stride,
-        )
-    };
-    let mut cr_stride = 0_usize;
-    let cr_plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(
-            image,
-            libheif_sys::heif_channel_Cr,
-            &mut cr_stride,
-        )
-    };
-    if y_plane.is_null() || cb_plane.is_null() || cr_plane.is_null() {
-        return Err("libheif YCbCr thumbnail missing planes".to_string());
-    }
-
-    let matrix = ycbcr_matrix_from_heif_handle(handle);
-    let chroma_row_len = (width as usize).div_ceil(2);
-    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
-    for y in 0..height as usize {
-        let y_row =
-            unsafe { std::slice::from_raw_parts(y_plane.add(y * y_stride), width as usize) };
-        let cb_row = unsafe {
-            std::slice::from_raw_parts(cb_plane.add((y / 2) * cb_stride), chroma_row_len)
-        };
-        let cr_row = unsafe {
-            std::slice::from_raw_parts(cr_plane.add((y / 2) * cr_stride), chroma_row_len)
-        };
-        for x in 0..width as usize {
-            let yy = y_row[x] as f32 / 255.0;
-            let cb = cb_row[x / 2] as f32 / 255.0 - 0.5;
-            let cr = cr_row[x / 2] as f32 / 255.0 - 0.5;
-            let [r, g, b] = ycbcr_linear_to_rgb(yy, cb, cr, matrix);
-            let dst = (y * width as usize + x) * 4;
-            rgba[dst] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 2] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 3] = 255;
-        }
-    }
-    Ok(DecodedImage::new(width, height, rgba))
 }
 
 #[cfg(test)]

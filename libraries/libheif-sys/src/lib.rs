@@ -45,8 +45,13 @@ pub const heif_transform_mirror_direction_invalid: libc::c_int = -1;
 pub const heif_transform_mirror_direction_vertical: libc::c_int = 0;
 pub const heif_transform_mirror_direction_horizontal: libc::c_int = 1;
 /// Matches `enum heif_colorspace` / `enum heif_chroma` / `enum heif_channel` in upstream `heif_image.h`.
+pub const heif_colorspace_undefined: heif_colorspace = 99;
 pub const heif_colorspace_YCbCr: heif_colorspace = 0;
 pub const heif_colorspace_RGB: heif_colorspace = 1;
+pub const heif_colorspace_monochrome: heif_colorspace = 2;
+pub const heif_colorspace_nonvisual: heif_colorspace = 3;
+pub const heif_chroma_undefined: heif_chroma = 99;
+pub const heif_chroma_monochrome: heif_chroma = 0;
 pub const heif_chroma_420: heif_chroma = 1;
 pub const heif_chroma_422: heif_chroma = 2;
 pub const heif_chroma_444: heif_chroma = 3;
@@ -140,6 +145,12 @@ unsafe extern "C" {
     pub fn heif_image_handle_get_chroma_bits_per_pixel(
         handle: *const heif_image_handle,
     ) -> libc::c_int;
+    pub fn heif_image_handle_has_alpha_channel(handle: *const heif_image_handle) -> libc::c_int;
+    pub fn heif_image_handle_get_preferred_decoding_colorspace(
+        handle: *const heif_image_handle,
+        out_colorspace: *mut heif_colorspace,
+        out_chroma: *mut heif_chroma,
+    ) -> heif_error;
     pub fn heif_image_handle_get_raw_color_profile_size(
         handle: *const heif_image_handle,
     ) -> libc::size_t;
@@ -186,6 +197,8 @@ unsafe extern "C" {
         options: *const heif_decoding_options,
     ) -> heif_error;
     pub fn heif_image_release(image: *const heif_image);
+    pub fn heif_image_get_colorspace(image: *const heif_image) -> heif_colorspace;
+    pub fn heif_image_get_chroma_format(image: *const heif_image) -> heif_chroma;
     pub fn heif_image_get_primary_width(image: *const heif_image) -> libc::c_int;
     pub fn heif_image_get_primary_height(image: *const heif_image) -> libc::c_int;
     pub fn heif_image_get_bits_per_pixel_range(
