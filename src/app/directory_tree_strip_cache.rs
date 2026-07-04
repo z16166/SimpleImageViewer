@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
@@ -107,13 +107,156 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
+/// O(1) LRU order for strip cache indices (touch, remove, pop-oldest).
+#[derive(Default)]
+struct StripLruOrder {
+    nodes: HashMap<usize, LruLinks>,
+    head: Option<usize>,
+    tail: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct LruLinks {
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+impl StripLruOrder {
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.head = None;
+        self.tail = None;
+    }
+
+    fn touch(&mut self, index: usize) {
+        self.unlink(index);
+        self.link_at_tail(index);
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.unlink(index);
+    }
+
+    fn pop_oldest(&mut self) -> Option<usize> {
+        let oldest = self.head?;
+        self.unlink(oldest);
+        Some(oldest)
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.nodes.contains_key(&index)
+    }
+
+    fn rename(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        self.remove(to);
+        let Some(links) = self.nodes.remove(&from) else {
+            return;
+        };
+        if let Some(prev) = links.prev {
+            self.nodes.get_mut(&prev).expect("LRU prev").next = Some(to);
+        } else {
+            self.head = Some(to);
+        }
+        if let Some(next) = links.next {
+            self.nodes.get_mut(&next).expect("LRU next").prev = Some(to);
+        } else {
+            self.tail = Some(to);
+        }
+        self.nodes.insert(to, links);
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
+        let ordered = self.ordered_indices();
+        self.clear();
+        for index in ordered {
+            if keep(index) {
+                self.link_at_tail(index);
+            }
+        }
+    }
+
+    fn partial_remap(&mut self, old_to_new: &[usize]) {
+        let ordered = self.ordered_indices();
+        self.clear();
+        for index in ordered {
+            if index < old_to_new.len() {
+                let new_idx = old_to_new[index];
+                if new_idx != usize::MAX {
+                    self.link_at_tail(new_idx);
+                }
+            }
+        }
+    }
+
+    fn permute(&mut self, old_to_new: &[usize]) {
+        let ordered = self.ordered_indices();
+        self.clear();
+        for index in ordered {
+            if index < old_to_new.len() {
+                self.link_at_tail(old_to_new[index]);
+            }
+        }
+    }
+
+    fn ordered_indices(&self) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.nodes.len());
+        let mut cur = self.head;
+        while let Some(index) = cur {
+            out.push(index);
+            cur = self.nodes.get(&index).and_then(|links| links.next);
+        }
+        out
+    }
+
+    fn unlink(&mut self, index: usize) {
+        let Some(links) = self.nodes.remove(&index) else {
+            return;
+        };
+        match (links.prev, links.next) {
+            (None, None) => {
+                self.head = None;
+                self.tail = None;
+            }
+            (None, Some(next)) => {
+                self.head = Some(next);
+                self.nodes.get_mut(&next).expect("LRU head next").prev = None;
+            }
+            (Some(prev), None) => {
+                self.tail = Some(prev);
+                self.nodes.get_mut(&prev).expect("LRU tail prev").next = None;
+            }
+            (Some(prev), Some(next)) => {
+                self.nodes.get_mut(&prev).expect("LRU prev").next = Some(next);
+                self.nodes.get_mut(&next).expect("LRU next").prev = Some(prev);
+            }
+        }
+    }
+
+    fn link_at_tail(&mut self, index: usize) {
+        let links = LruLinks {
+            prev: self.tail,
+            next: None,
+        };
+        if let Some(tail) = self.tail {
+            self.nodes.get_mut(&tail).expect("LRU tail").next = Some(index);
+        } else {
+            self.head = Some(index);
+        }
+        self.tail = Some(index);
+        self.nodes.insert(index, links);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
     preview_buffer_tag: HashMap<usize, StripPreviewBufferTag>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
-    lru_order: VecDeque<usize>,
+    lru_order: StripLruOrder,
     gpu_revision: u64,
 }
 
@@ -146,10 +289,7 @@ impl DirectoryTreeStripCache {
     }
 
     fn touch_lru(&mut self, index: usize) {
-        if let Some(pos) = self.lru_order.iter().position(|&cached| cached == index) {
-            self.lru_order.remove(pos);
-        }
-        self.lru_order.push_back(index);
+        self.lru_order.touch(index);
     }
 
     pub(crate) fn remove_index(&mut self, index: usize) {
@@ -157,9 +297,7 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.remove(&index);
         self.preview_stage.remove(&index);
         self.logical_sizes.remove(&index);
-        if let Some(pos) = self.lru_order.iter().position(|&cached| cached == index) {
-            self.lru_order.remove(pos);
-        }
+        self.lru_order.remove(index);
     }
 
     pub(crate) fn textures(&self) -> &HashMap<usize, egui::TextureHandle> {
@@ -452,16 +590,12 @@ impl DirectoryTreeStripCache {
         if let Some(logical) = self.logical_sizes.remove(&from) {
             self.logical_sizes.insert(to, logical);
         }
-        self.lru_order.retain(|idx| *idx != to);
-        let mut found = false;
-        for entry in &mut self.lru_order {
-            if *entry == from {
-                *entry = to;
-                found = true;
-            }
-        }
-        if !found && self.textures.contains_key(&to) {
+        if self.lru_order.contains(from) {
+            self.lru_order.rename(from, to);
+        } else if self.textures.contains_key(&to) {
             self.touch_lru(to);
+        } else {
+            self.lru_order.remove(to);
         }
     }
 
@@ -471,16 +605,7 @@ impl DirectoryTreeStripCache {
         remap_partial_hashmap(&mut self.preview_buffer_tag, old_to_new);
         remap_partial_hashmap(&mut self.preview_stage, old_to_new);
         remap_partial_hashmap(&mut self.logical_sizes, old_to_new);
-        self.lru_order.retain_mut(|index| {
-            if *index < old_to_new.len() {
-                let new_idx = old_to_new[*index];
-                if new_idx != usize::MAX {
-                    *index = new_idx;
-                    return true;
-                }
-            }
-            false
-        });
+        self.lru_order.partial_remap(old_to_new);
     }
 
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
@@ -488,11 +613,7 @@ impl DirectoryTreeStripCache {
         permute_usize_hashmap(&mut self.preview_buffer_tag, old_to_new);
         permute_usize_hashmap(&mut self.preview_stage, old_to_new);
         permute_usize_hashmap(&mut self.logical_sizes, old_to_new);
-        for index in &mut self.lru_order {
-            if *index < old_to_new.len() {
-                *index = old_to_new[*index];
-            }
-        }
+        self.lru_order.permute(old_to_new);
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
@@ -500,7 +621,7 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.retain(|index, _| keep(*index));
         self.preview_stage.retain(|index, _| keep(*index));
         self.logical_sizes.retain(|index, _| keep(*index));
-        self.lru_order.retain(|index| keep(*index));
+        self.lru_order.retain(&mut keep);
     }
 
     /// Drop GPU-backed egui textures after a wgpu surface format hot-swap. CPU-side
@@ -525,7 +646,7 @@ impl DirectoryTreeStripCache {
     fn evict_if_needed(&mut self) {
         let mut evicted = false;
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
-            let Some(idx) = self.lru_order.pop_front() else {
+            let Some(idx) = self.lru_order.pop_oldest() else {
                 break;
             };
             if self.textures.contains_key(&idx) {
@@ -892,6 +1013,59 @@ mod tests {
             PreviewStage::Refined,
         );
         assert!(placeholder_rank < cached_rank);
+    }
+
+    #[test]
+    fn strip_cache_touch_preserves_lru_order_for_eviction() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        for index in 0..DIRECTORY_TREE_STRIP_CACHE_MAX {
+            let decoded = DecodedImage::new(16, 16, vec![index as u8; 16 * 16 * 4]);
+            cache.upsert_from_decoded(
+                index,
+                &decoded,
+                StripDecodedUpsert {
+                    stage: PreviewStage::Initial,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    logical_size: None,
+                    path: Path::new("/test/strip.jpg"),
+                    ctx: &ctx,
+                    strip_max_side: 128,
+                    strip_max_side_used: Some(128),
+                },
+            );
+        }
+        // Upgrade index 0 (oldest) to Refined so it is touched to MRU.
+        let touch = DecodedImage::new(16, 16, vec![255; 16 * 16 * 4]);
+        cache.upsert_from_decoded(
+            0,
+            &touch,
+            StripDecodedUpsert {
+                stage: PreviewStage::Refined,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: None,
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+                strip_max_side_used: Some(128),
+            },
+        );
+        let overflow = DecodedImage::new(16, 16, vec![128; 16 * 16 * 4]);
+        cache.upsert_from_decoded(
+            DIRECTORY_TREE_STRIP_CACHE_MAX,
+            &overflow,
+            StripDecodedUpsert {
+                stage: PreviewStage::Initial,
+                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                logical_size: None,
+                path: Path::new("/test/strip.jpg"),
+                ctx: &ctx,
+                strip_max_side: 128,
+                strip_max_side_used: Some(128),
+            },
+        );
+        assert!(cache.contains(0));
+        assert!(!cache.contains(1));
     }
 
     #[test]
