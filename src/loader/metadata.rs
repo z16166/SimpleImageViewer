@@ -96,8 +96,14 @@ pub(crate) fn extract_exif_thumbnail_from_mmap_probed(
 pub(crate) fn extract_exif_thumbnail_probed(
     path: &Path,
 ) -> (Option<DecodedImage>, ExifThumbProbe, ExifThumbProbeDetail) {
-    if let Ok(mmap) = crate::mmap_util::map_file(path) {
-        return extract_exif_thumbnail_from_mmap_probed(&mmap, path);
+    match crate::mmap_util::map_file(path) {
+        Ok(mmap) => return extract_exif_thumbnail_from_mmap_probed(&mmap, path),
+        Err(err) => {
+            log::debug!(
+                "EXIF thumbnail mmap failed for {:?}, falling back to File::open: {err}",
+                path.file_name().unwrap_or_default()
+            );
+        }
     }
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
