@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::raster::{load_gif, load_png, load_webp, process_animation_frames};
+use super::raster::{
+    load_gif, load_gif_from_mmap, load_png, load_png_from_mmap, load_webp, load_webp_from_mmap,
+    process_animation_frames,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RasterAnimationFormat {
@@ -35,6 +38,7 @@ pub(crate) enum RasterAnimationFormat {
 
 pub(crate) struct RasterAnimationRemainderJob {
     pub path: PathBuf,
+    pub mmap: Arc<[u8]>,
     pub format: RasterAnimationFormat,
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
@@ -67,12 +71,14 @@ fn image_frame_to_animation_frame(frame: image::Frame) -> AnimationFrame {
 
 fn raster_animation_remainder_job(
     path: &Path,
+    mmap: Arc<[u8]>,
     format: RasterAnimationFormat,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> RasterAnimationRemainderJob {
     RasterAnimationRemainderJob {
         path: path.to_path_buf(),
+        mmap,
         format,
         hdr_target_capacity,
         hdr_tone_map,
@@ -140,6 +146,7 @@ fn load_raster_animation_bootstrap(
                 image,
                 remainder: Some(raster_animation_remainder_job(
                     path,
+                    Arc::clone(&mmap),
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
@@ -200,6 +207,7 @@ fn load_raster_animation_bootstrap(
                 image,
                 remainder: Some(raster_animation_remainder_job(
                     path,
+                    Arc::clone(&mmap),
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
@@ -253,6 +261,7 @@ fn load_raster_animation_bootstrap(
                 image,
                 remainder: Some(raster_animation_remainder_job(
                     path,
+                    Arc::clone(&mmap),
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
@@ -317,15 +326,16 @@ pub(crate) fn spawn_raster_animation_remainder_decode(
     use crate::loader::{LoaderOutput, PreviewBundle};
 
     REFINEMENT_POOL.spawn(move || {
+        let mmap = job.mmap.as_ref();
         let image = match job.format {
             RasterAnimationFormat::Gif => {
-                load_gif(&job.path, job.hdr_target_capacity, job.hdr_tone_map)
+                load_gif_from_mmap(&job.path, mmap, job.hdr_target_capacity, job.hdr_tone_map)
             }
             RasterAnimationFormat::Apng => {
-                load_png(&job.path, job.hdr_target_capacity, job.hdr_tone_map)
+                load_png_from_mmap(&job.path, mmap, job.hdr_target_capacity, job.hdr_tone_map)
             }
             RasterAnimationFormat::Webp => {
-                load_webp(&job.path, job.hdr_target_capacity, job.hdr_tone_map)
+                load_webp_from_mmap(&job.path, mmap, job.hdr_target_capacity, job.hdr_tone_map)
             }
         };
         let Ok(image) = image else {

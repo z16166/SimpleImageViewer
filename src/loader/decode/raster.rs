@@ -120,8 +120,9 @@ pub(crate) fn process_animation_frames(
     ))
 }
 
-pub(crate) fn load_gif(
+pub(crate) fn load_gif_from_mmap(
     path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -129,8 +130,7 @@ pub(crate) fn load_gif(
     use image::codecs::gif::GifDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -140,14 +140,24 @@ pub(crate) fn load_gif(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
 }
 
-pub(crate) fn load_png(
+pub(crate) fn load_gif(
     path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_gif_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
+}
+
+pub(crate) fn load_png_from_mmap(
+    path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -155,12 +165,11 @@ pub(crate) fn load_png(
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
 
     if !decoder.is_apng().map_err(|e| e.to_string())? {
-        return load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map);
+        return load_static_from_mmap(path, mmap, hdr_target_capacity, hdr_tone_map);
     }
 
     let raw_frames = decoder
@@ -173,18 +182,28 @@ pub(crate) fn load_png(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
+}
+
+pub(crate) fn load_png(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_png_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
 // Animated WebP
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_webp(
+pub(crate) fn load_webp_from_mmap(
     path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -192,8 +211,7 @@ pub(crate) fn load_webp(
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -203,10 +221,19 @@ pub(crate) fn load_webp(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
+}
+
+pub(crate) fn load_webp(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_webp_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
