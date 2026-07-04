@@ -2007,6 +2007,14 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_bootstrap_frames: 0,
         strip_preload_cooldown_frames: 0,
         strip_stale_retain_last_generation: u64::MAX,
+        strip_cold_awaiting_scratch: Vec::new(),
+        strip_indices_scratch: Vec::new(),
+        strip_cold_candidates_scratch: Vec::with_capacity(
+            crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+        ),
+        strip_cold_seen_scratch: Vec::with_capacity(
+            crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+        ),
         current_image_res: None,
         canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),

@@ -578,6 +578,15 @@ pub struct ImageViewerApp {
     /// has shrunk; skipping it when the generation is unchanged avoids wasteful
     /// per-frame iteration over sets that can grow to directory-scale (10k+).
     pub(crate) strip_stale_retain_last_generation: u64,
+    /// Reused each strip-thumbnail frame to avoid per-frame Vec allocation when
+    /// releasing resolved cold-awaiting entries.
+    pub(crate) strip_cold_awaiting_scratch: Vec<usize>,
+    /// Reused each strip-thumbnail frame for tiled-index sync/generate and deferred SDR uploads.
+    pub(crate) strip_indices_scratch: Vec<usize>,
+    /// Reused each strip-thumbnail frame for cold candidate collection (output).
+    pub(crate) strip_cold_candidates_scratch: Vec<usize>,
+    /// Dedup guard for [`Self::strip_cold_candidates_scratch`] (at most 32 entries per frame).
+    pub(crate) strip_cold_seen_scratch: Vec<usize>,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,

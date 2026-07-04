@@ -501,6 +501,14 @@ impl ImageViewerApp {
             directory_tree_strip_bootstrap_frames: 0,
             strip_preload_cooldown_frames: 0,
             strip_stale_retain_last_generation: u64::MAX,
+            strip_cold_awaiting_scratch: Vec::new(),
+            strip_indices_scratch: Vec::new(),
+            strip_cold_candidates_scratch: Vec::with_capacity(
+                crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+            ),
+            strip_cold_seen_scratch: Vec::with_capacity(
+                crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+            ),
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),

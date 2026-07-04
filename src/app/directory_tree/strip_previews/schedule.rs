@@ -34,7 +34,6 @@ use crate::loader::{
 use super::super::workers::ensure_strip_worker_com_initialized;
 use super::{
     BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
-    MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
 };
 
 use super::send_strip_inflight_release;
@@ -357,73 +356,113 @@ impl ImageViewerApp {
         }
     }
 
+    fn try_push_cold_strip_candidate(
+        &mut self,
+        index: usize,
+        total: usize,
+        schedule_budget: usize,
+        bootstrap_visible: bool,
+        visible_row_range: Option<(usize, usize)>,
+    ) -> bool {
+        let in_visible_bootstrap = bootstrap_visible
+            && visible_row_range.is_some_and(|(start, end)| index >= start && index < end);
+        let bootstrap_bypass_defer = in_visible_bootstrap && index != self.current_index;
+        if self.should_defer_neighbor_strip_for_current_main(index) && !bootstrap_bypass_defer {
+            return false;
+        }
+        if index < total && !self.strip_cold_seen_scratch.contains(&index) {
+            self.strip_cold_seen_scratch.push(index);
+            if self.strip_index_needs_cold_thumbnail(index) {
+                self.strip_cold_candidates_scratch.push(index);
+            }
+        }
+        self.strip_cold_candidates_scratch.len() >= schedule_budget
+    }
+
     pub(super) fn collect_cold_strip_thumbnail_candidates(
-        &self,
+        &mut self,
         visible_row_range: Option<(usize, usize)>,
         scroll_to_current_pending: bool,
         bootstrap_visible: bool,
         schedule_budget: usize,
-    ) -> Vec<usize> {
+    ) -> usize {
+        self.strip_cold_candidates_scratch.clear();
+        self.strip_cold_seen_scratch.clear();
+
         let total = self.image_files.len();
         if total == 0 || schedule_budget == 0 {
-            return Vec::new();
+            return 0;
         }
         if scroll_to_current_pending && !bootstrap_visible {
-            return Vec::new();
+            return 0;
         }
         let current = self.current_index.min(total.saturating_sub(1));
-        let mut ordered =
-            Vec::with_capacity(schedule_budget.min(MAX_COLD_STRIP_SCHEDULE_PER_FRAME));
-        // Per-frame dedup guard: at most MAX_COLD_STRIP_SCHEDULE_PER_FRAME (32) items end up
-        // in this Vec — a linear scan is faster than the hash-table allocation + hashing overhead.
-        let mut seen = Vec::with_capacity(MAX_COLD_STRIP_SCHEDULE_PER_FRAME);
-        let mut try_push = |index: usize| -> bool {
-            let in_visible_bootstrap = bootstrap_visible
-                && visible_row_range.is_some_and(|(start, end)| index >= start && index < end);
-            let bootstrap_bypass_defer = in_visible_bootstrap && index != self.current_index;
-            if self.should_defer_neighbor_strip_for_current_main(index) && !bootstrap_bypass_defer {
-                return false;
-            }
-            if index < total && !seen.contains(&index) {
-                seen.push(index);
-                if self.strip_index_needs_cold_thumbnail(index) {
-                    ordered.push(index);
-                }
-            }
-            ordered.len() >= schedule_budget
-        };
 
         if bootstrap_visible {
             for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
-                if try_push(index) {
+                if self.try_push_cold_strip_candidate(
+                    index,
+                    total,
+                    schedule_budget,
+                    bootstrap_visible,
+                    visible_row_range,
+                ) {
                     break;
                 }
             }
-            return ordered;
+            return self.strip_cold_candidates_scratch.len();
         }
 
         if let Some((start, end)) = visible_row_range {
             for index in start..end.min(total) {
-                if try_push(index) {
-                    return ordered;
+                if self.try_push_cold_strip_candidate(
+                    index,
+                    total,
+                    schedule_budget,
+                    bootstrap_visible,
+                    visible_row_range,
+                ) {
+                    return self.strip_cold_candidates_scratch.len();
                 }
             }
         }
 
-        if !bootstrap_visible && try_push(current) {
-            return ordered;
+        if !bootstrap_visible
+            && self.try_push_cold_strip_candidate(
+                current,
+                total,
+                schedule_budget,
+                bootstrap_visible,
+                visible_row_range,
+            )
+        {
+            return self.strip_cold_candidates_scratch.len();
         }
 
         for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
-            if try_push(current.saturating_sub(delta)) {
-                return ordered;
+            if self.try_push_cold_strip_candidate(
+                current.saturating_sub(delta),
+                total,
+                schedule_budget,
+                bootstrap_visible,
+                visible_row_range,
+            ) {
+                return self.strip_cold_candidates_scratch.len();
             }
-            if current + delta < total && try_push(current + delta) {
-                return ordered;
+            if current + delta < total
+                && self.try_push_cold_strip_candidate(
+                    current + delta,
+                    total,
+                    schedule_budget,
+                    bootstrap_visible,
+                    visible_row_range,
+                )
+            {
+                return self.strip_cold_candidates_scratch.len();
             }
         }
 
-        ordered
+        self.strip_cold_candidates_scratch.len()
     }
 
     pub(crate) fn try_generate_cold_directory_tree_strip_thumbnail(&mut self, index: usize) {
