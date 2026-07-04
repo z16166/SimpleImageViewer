@@ -296,6 +296,8 @@ impl ImageViewerApp {
             candidates
         );
 
+        let mut in_flight = self.loader.in_flight_snapshot();
+
         for idx in candidates {
             if count >= max_count {
                 preload_debug!(
@@ -310,7 +312,7 @@ impl ImageViewerApp {
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
-            let is_loading = self.loader.is_loading(idx);
+            let is_loading = in_flight.contains(&idx);
             if has_asset || is_loading {
                 preload_debug!(
                     "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
@@ -325,12 +327,12 @@ impl ImageViewerApp {
             }
 
             if idx != self.current_index
-                && self.loader.active_load_count() >= MAX_CONCURRENT_DECODER_LOADS
+                && in_flight.len() >= MAX_CONCURRENT_DECODER_LOADS
             {
                 preload_debug!(
                     "[PreloadDebug] direction stop: name={} reason=decoder_concurrency in_flight={} max={}",
                     direction_name,
-                    self.loader.active_load_count(),
+                    in_flight.len(),
                     MAX_CONCURRENT_DECODER_LOADS
                 );
                 break;
@@ -411,6 +413,7 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),
             );
+            in_flight.insert(idx);
             count += 1;
             let budget_charge = if decode_budget_bytes > budget {
                 budget

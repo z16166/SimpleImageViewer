@@ -27,6 +27,11 @@ impl ImageLoader {
         self.loading.lock().len()
     }
 
+    /// Point-in-time snapshot of indices with registered in-flight decode jobs.
+    pub(crate) fn in_flight_snapshot(&self) -> std::collections::HashSet<usize> {
+        self.loading.lock().keys().copied().collect()
+    }
+
     /// Profile / window based pending output filter (generation-plan Phase A).
     pub fn discard_pending_stale_outputs_profile(
         &mut self,
