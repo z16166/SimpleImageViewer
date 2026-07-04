@@ -30,7 +30,7 @@ mod tests;
 pub use load::load_via_libtiff;
 #[cfg(test)]
 pub use load::peek_tiff_tags;
-pub(crate) use orientation::apply_orientation_buffer;
+pub(crate) use orientation::{apply_orientation_buffer, apply_orientation_buffer_from_slice};
 
 #[cfg(test)]
 pub(crate) use constants::*;
