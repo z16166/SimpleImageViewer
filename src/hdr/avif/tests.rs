@@ -228,6 +228,45 @@ fn avif_software_gain_map_decode_defers_compose_to_gpu() {
 
 #[cfg(feature = "avif-native")]
 #[test]
+fn decode_truncated_elementary_stream_8bpc_avif_when_sample_present() {
+    use crate::hdr::types::HdrToneMapSettings;
+
+    let path = std::path::Path::new(
+        r"F:\HDR\av1-avif\testFiles\Apple\edge_case_testing\non_compliant\truncated_elementary_stream.avif",
+    );
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(path).expect("read avif");
+    let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+    let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
+        .expect("decode truncated elementary stream avif");
+    let w = hdr.width as usize;
+    let h = hdr.height as usize;
+    let cx = w / 2;
+    let avg_r = |y0: usize, y1: usize| -> f32 {
+        let mut sum = 0.0_f32;
+        for y in y0..y1 {
+            sum += hdr.rgba_f32[(y * w + cx) * 4];
+        }
+        sum / (y1 - y0).max(1) as f32
+    };
+    let top_r = avg_r(0, h / 2);
+    let bot_r = avg_r(h / 2, h);
+    eprintln!("truncated_elementary_stream: top_avg_r={top_r:.3} bot_avg_r={bot_r:.3}");
+    assert!(
+        top_r > 0.05 && bot_r > 0.05,
+        "8bpc AVIF must use 16-bit RGB lanes; byte-packed u16 misread yields white top / black bottom"
+    );
+    assert!(
+        top_r < 1.5 && bot_r < 1.5,
+        "decoded red channel should stay in normalized float range"
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
 fn decode_mexico_yuv444_avif_metadata_when_sample_present() {
     use crate::hdr::types::HdrToneMapSettings;
     let path = std::path::Path::new(r"F:\HDR\av1-avif\testFiles\Microsoft\Mexico_YUV444.avif");

@@ -419,8 +419,14 @@ fn avif_yuv_to_rgb_params(
     snap: &AvifYuvRgbReformatSnap,
     image_ref: &libavif_sys::avifImage,
 ) -> AvifYuvToRgbParams {
+    // Always request 16-bit RGB lanes unless YCgCo-Re/Ro needs a reduced depth: our downstream
+    // path stores libavif output in `Vec<u16>` and normalizes by `rgb_out_depth`. With the default
+    // `avifRGBImageSetDefaults` depth (= source YUV, often 8), libavif writes 1 byte per channel;
+    // reading that layout as u16 skews chroma and can split the image (white top / black bottom).
+    let force_depth = avif_yuv_to_rgb_force_depth(snap.matrix_coefficients, snap.depth)
+        .or(Some(16));
     AvifYuvToRgbParams {
-        force_depth: avif_yuv_to_rgb_force_depth(snap.matrix_coefficients, snap.depth),
+        force_depth,
         avoid_libyuv: image_ref.transferCharacteristics
             == libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084
             && snap.depth >= 10,
