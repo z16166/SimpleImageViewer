@@ -147,7 +147,15 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
         if ext == "psd" || ext == "psb" {
-            return load_psd(path);
+            return load_psd(
+                path,
+                Some(crate::loader::tiled_sources::PsdV1LoadNotify {
+                    index,
+                    decode_profile: decode_profile.clone(),
+                    source_key: crate::loader::source_key_for_path(path),
+                    load_tx: tx.clone(),
+                }),
+            );
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);

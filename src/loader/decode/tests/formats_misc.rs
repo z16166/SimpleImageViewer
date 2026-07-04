@@ -53,7 +53,8 @@ fn optional_psd_libavif_sources_load_without_panic() {
         if !path.is_file() {
             continue;
         }
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_psd(&path)));
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_psd(&path, None)));
         assert!(
             outcome.is_ok(),
             "load_psd must not panic for {}",

@@ -224,6 +224,11 @@ pub trait TiledImageSource: Send + Sync {
     fn defers_loader_hq_preview(&self) -> bool {
         false
     }
+
+    /// Block until async pixel data is ready (PSD v1 bootstrap). Default: already ready.
+    fn wait_for_async_pixels(&self, _timeout: std::time::Duration) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A single frame of an animated image. RGBA8 lives in a shared [`Arc`] so frame lists and

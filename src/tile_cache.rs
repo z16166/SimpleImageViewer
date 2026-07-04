@@ -633,13 +633,18 @@ impl TileManager {
         (TileStatus::Pending(needs_request), false)
     }
 
-    /// Clear all cached tiles (e.g. when switching images).
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
+    /// Drop uploaded GPU tiles while keeping the bootstrap/HQ preview texture.
+    pub fn drop_gpu_tiles(&mut self) {
         self.tiles.clear();
         self.evictable_lru.clear();
         self.visible_pinned.clear();
         self.ready_times.clear();
+    }
+
+    /// Clear all cached tiles (e.g. when switching images).
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.drop_gpu_tiles();
         self.preview_texture = None;
         // The source's lifecycle is managed via Arc.
     }

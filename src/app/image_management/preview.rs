@@ -184,6 +184,11 @@ impl ImageViewerApp {
                         preview.width,
                         preview.height
                     );
+                    if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined {
+                        crate::tile_cache::PIXEL_CACHE.lock().remove_image(update.index);
+                        tm.pending_tiles.clear();
+                        tm.drop_gpu_tiles();
+                    }
                     tm.set_preview(preview.clone(), ctx);
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::PreviewUpgraded,
@@ -192,6 +197,13 @@ impl ImageViewerApp {
                     ) {
                         ctx.request_repaint();
                     }
+                }
+                if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined
+                    && self.tile_manager.as_ref().is_some_and(|tm| {
+                        refined_preview_applies_to_tile_manager(tm, &update, &display)
+                    })
+                {
+                    self.clear_cpu_raw_refinement_pending(update.index);
                 }
 
                 // 2. Update prefetched TileManagers

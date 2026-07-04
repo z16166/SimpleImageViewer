@@ -31,10 +31,11 @@ impl ImageViewerApp {
         }
 
         let display = self.display_requirements_for_index(idx);
-        let profile_ok = self
+        let active_profile = self
             .loader
             .in_flight_profile(idx)
-            .is_some_and(|p| crate::loader::profile_satisfies_display(&p, &display));
+            .unwrap_or_else(|| self.decode_profile_for_index(idx));
+        let profile_ok = crate::loader::profile_satisfies_display(&active_profile, &display);
         if idx == self.current_index && profile_ok {
             log::debug!("[App] Refined image notification for index={}", idx);
 
@@ -49,6 +50,7 @@ impl ImageViewerApp {
                 log::debug!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
                 tm.decode_profile = decode_profile;
                 tm.pending_tiles.clear();
+                tm.drop_gpu_tiles();
                 self.texture_cache.remove(idx);
                 let preserve_hdr_tiled = self.hdr_tiled_source_cache.contains_key(&idx);
                 if !preserve_hdr_tiled {

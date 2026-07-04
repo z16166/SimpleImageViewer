@@ -518,7 +518,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
-        return load_psd(path);
+        return load_psd(path, None);
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
@@ -802,6 +802,7 @@ fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
+    source.wait_for_async_pixels(std::time::Duration::from_secs(300))?;
     // SAFETY: panic in generate_full_image_preview is caught below; the caller thread
     // stays healthy without spawning a nested OS thread.
     let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
