@@ -56,8 +56,7 @@ fn finish_baseline_interim_strip(
         super::orientation::libavif_probe_logical_size_from_bytes(bytes).unwrap_or((width, height));
     let decoded = DecodedImage::new(width, height, baseline);
     let strip = downsample_decoded_for_strip(&decoded, max_side).map_err(|err| err.to_string())?;
-    let strip =
-        super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
+    let strip = super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
     if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
         return Err(format!(
             "gain-map strip aspect mismatch: {}x{} vs {}x{}",

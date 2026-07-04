@@ -50,8 +50,7 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
     if !preview_aspect_matches_logical(strip.width, strip.height, logical_w, logical_h) {
         return None;
     }
-    let strip =
-        super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
+    let strip = super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
     Some(Ok((strip, (logical_w, logical_h))))
 }
 

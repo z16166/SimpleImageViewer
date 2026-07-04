@@ -229,13 +229,11 @@ fn avif_software_gain_map_decode_defers_compose_to_gpu() {
 #[cfg(feature = "avif-native")]
 #[test]
 fn avif_kimono_rotate90_strip_applies_container_orientation_when_sample_present() {
-    use crate::loader::decode::{
+    use crate::loader::{
         DirectoryTreeThumbDecodeOptions, generate_directory_tree_thumb_decode_from_path,
     };
 
-    let path = std::path::Path::new(
-        r"F:\HDR\av1-avif\testFiles\Link-U\kimono.rotate90.avif",
-    );
+    let path = std::path::Path::new(r"F:\HDR\av1-avif\testFiles\Link-U\kimono.rotate90.avif");
     if !path.is_file() {
         eprintln!("skip: {}", path.display());
         return;

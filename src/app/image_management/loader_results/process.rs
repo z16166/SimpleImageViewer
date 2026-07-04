@@ -86,13 +86,7 @@ impl ImageViewerApp {
                         .animation
                         .as_ref()
                         .filter(|anim| anim.image_index == idx)
-                        .map(|anim| {
-                            (
-                                anim.current_frame,
-                                anim.frame_start,
-                                anim.textures.len(),
-                            )
-                        });
+                        .map(|anim| (anim.current_frame, anim.frame_start, anim.textures.len()));
 
                     let mut playback = AnimationPlayback {
                         image_index: idx,

@@ -16,7 +16,10 @@
 
 use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
-use super::upload::{validate_rgba8_upload_layout, validate_tile_upload_layout};
+use super::upload::{
+    pack_rows_for_texture_copy, rgba32f_as_bytes, validate_rgba8_upload_layout,
+    validate_tile_upload_layout,
+};
 use super::*;
 use crate::hdr::renderer::hdr_image_binding_is_eviction_candidate;
 use crate::hdr::tiled::HdrTileBuffer;
@@ -1000,6 +1003,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             keep_resident: false,
             raw_demosaic_baked_notify: None,
             pending_work: Some(Arc::clone(&pending_work)),
+            sync_plane_upload_on_cache_miss: false,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1076,6 +1080,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             keep_resident: false,
             raw_demosaic_baked_notify: None,
             pending_work: Some(Arc::clone(&pending_work)),
+            sync_plane_upload_on_cache_miss: false,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

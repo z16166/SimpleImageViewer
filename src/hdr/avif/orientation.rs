@@ -156,8 +156,7 @@ pub(crate) fn apply_avif_container_orientation_to_decoded(
     let w = decoded.width;
     let h = decoded.height;
     let pixels = decoded.take_rgba_owned();
-    let (ow, oh, opx) =
-        crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
     decoded.set_rgba_buffer(ow, oh, opx);
     decoded
 }

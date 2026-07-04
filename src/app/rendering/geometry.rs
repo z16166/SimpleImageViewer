@@ -209,9 +209,8 @@ impl ImageViewerApp {
         }
         embedded_directory_tree_panel_rect(ctx).or_else(|| {
             let width = self.embedded_nav_panel_width_estimate();
-            (width > 0.0).then(|| {
-                Rect::from_min_max(area.min, Pos2::new(area.min.x + width, area.max.y))
-            })
+            (width > 0.0)
+                .then(|| Rect::from_min_max(area.min, Pos2::new(area.min.x + width, area.max.y)))
         })
     }
 

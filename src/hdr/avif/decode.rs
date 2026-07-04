@@ -288,13 +288,11 @@ pub(crate) fn avif_unpack_rgba_bytes_to_u16_lanes(
 #[test]
 fn avif_unpack_rgba_bytes_to_u16_lanes_8_and_16_bit() {
     let bytes_8 = [10_u8, 20, 30, 40, 50, 60, 70, 80];
-    let u16_8 =
-        avif_unpack_rgba_bytes_to_u16_lanes(&bytes_8, 8, 2).expect("8-bit unpack");
+    let u16_8 = avif_unpack_rgba_bytes_to_u16_lanes(&bytes_8, 8, 2).expect("8-bit unpack");
     assert_eq!(u16_8, [10, 20, 30, 40, 50, 60, 70, 80]);
 
     let bytes_16 = [0x34, 0x12, 0x78, 0x56];
-    let u16_16 =
-        avif_unpack_rgba_bytes_to_u16_lanes(&bytes_16, 16, 1).expect("16-bit unpack");
+    let u16_16 = avif_unpack_rgba_bytes_to_u16_lanes(&bytes_16, 16, 1).expect("16-bit unpack");
     assert_eq!(u16_16, [0x1234, 0x5678]);
 }
 
@@ -481,10 +479,7 @@ fn avif_yuv_to_rgb_params(
 }
 
 #[cfg(feature = "avif-native")]
-fn avif_yuv_to_rgb_output_depth(
-    snap: &AvifYuvRgbReformatSnap,
-    params: &AvifYuvToRgbParams,
-) -> u32 {
+fn avif_yuv_to_rgb_output_depth(snap: &AvifYuvRgbReformatSnap, params: &AvifYuvToRgbParams) -> u32 {
     params.force_depth.unwrap_or(snap.depth)
 }
 
@@ -561,7 +556,8 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
     }
     match result {
         Ok(rgb_depth) => {
-            let rgba_u16 = avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)?;
+            let rgba_u16 =
+                avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)?;
             Ok((rgba_u16, rgb_depth))
         }
         Err(code) => Err(format!(
