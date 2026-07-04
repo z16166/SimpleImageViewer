@@ -647,7 +647,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn apply_directory_tree_image_list_sort(
+    pub(crate) fn apply_directory_tree_image_list_sort(
         &mut self,
         column: ImageListSortColumn,
         ascending: bool,
@@ -689,11 +689,36 @@ impl ImageViewerApp {
         if let Some(path) = current_path
             && let Some(index) = self.image_files.iter().position(|entry| entry == &path)
         {
-            self.current_index = index;
-            self.image_status.set_current_index(self.current_index);
-            self.raw_metadata.set_current_index(self.current_index);
+            self.set_current_index(index);
+        }
+        // Re-sort permutes `image_files` and calls `loader.cancel_all()`; restart the current
+        // image if scan-time preload already ran against pre-sort indices (see resort_after_scan).
+        if !self.defer_main_preload_for_directory_tree_list() {
+            self.schedule_current_image_load_if_needed();
         }
         true
+    }
+
+    /// Apply persisted list-column sort before main preload so `request_load` targets the file
+    /// at `current_index` after reorder (avoids cancel/restart races in `resort_after_scan`).
+    pub(crate) fn apply_directory_tree_list_sort_before_preload(&mut self) {
+        if self.image_files.len() <= 1 {
+            return;
+        }
+        let (sort_active, column, ascending) = {
+            let Some(list) = self.directory_tree.list.try_lock() else {
+                return;
+            };
+            (
+                list.image_list_sort_active,
+                list.image_list_sort_column,
+                list.image_list_sort_ascending,
+            )
+        };
+        if !sort_active {
+            return;
+        }
+        let _ = self.apply_directory_tree_image_list_sort(column, ascending);
     }
 
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {

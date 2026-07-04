@@ -866,6 +866,40 @@ fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
 }
 
 #[test]
+fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
+    use crate::app::directory_tree::ImageListSortColumn;
+    use crate::settings::BrowseMode;
+
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.image_files = vec![
+        PathBuf::from(r"F:\win7\2013\XMN_2332.NEF"),
+        PathBuf::from(r"F:\win7\2013\XMN_2333.NEF"),
+        PathBuf::from(r"F:\win7\2013\XMN_2334.NEF"),
+    ];
+    app.file_byte_len_by_index = vec![1, 2, 3];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 0;
+    app.loader.request_load(
+        0,
+        app.image_files[0].clone(),
+        app.settings.raw_high_quality,
+        app.settings.raw_demosaic_mode,
+    );
+    assert!(app.loader.is_loading(0));
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false,));
+    assert_eq!(app.current_index, 2);
+    assert_eq!(
+        app.image_files[app.current_index].file_name().unwrap(),
+        "XMN_2332.NEF"
+    );
+    assert!(!app.loader.is_loading(0));
+    assert!(app.loader.is_loading(2));
+}
+
+#[test]
 fn neighbor_image_install_yields_until_current_ready() {
     assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
     assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));

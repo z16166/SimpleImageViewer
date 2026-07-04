@@ -619,6 +619,7 @@ impl ImageViewerApp {
                         let count = self.image_files.len();
                         self.status_message =
                             t!("status.found", count = count.to_string()).to_string();
+                        self.apply_directory_tree_list_sort_before_preload();
                         if self.defer_main_preload_for_directory_tree_list() {
                             self.pending_preload_after_directory_scan = true;
                             self.pending_preload_after_scan_last_attempt = None;
