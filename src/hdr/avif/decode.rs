@@ -307,6 +307,15 @@ fn avif_matrix_fallback_for_yuv_to_rgb(
     }
 }
 
+#[cfg(feature = "avif-native")]
+fn avif_matrix_for_yuv_depth(depth: u32) -> libavif_sys::avifMatrixCoefficients {
+    if depth >= 10 {
+        libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
+    } else {
+        libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT709
+    }
+}
+
 /// Fields libavif consults in `avifPrepareReformatState` / `avifGetYUVColorSpaceInfo` that we may
 /// temporarily override. Snapshotted at decode entry because `image_ref` aliases `*image`.
 #[cfg(feature = "avif-native")]
@@ -339,10 +348,10 @@ unsafe fn avif_restore_reformat_snap(
     }
 }
 
-/// Work around `REFORMAT_FAILED` cases in libavif `reformat.c`: unspecified matrix, identity +
-/// chroma subsampling, YCgCo family + limited range, and matrices with no dedicated RGB path.
+/// Apply every image-side adjustment that libavif `avifGetYUVColorSpaceInfo` / `reformat.c` need
+/// before the first `avifImageYUVToRGB` call. Uses the **original** CICP snapshot from the file.
 #[cfg(feature = "avif-native")]
-unsafe fn avif_apply_full_reformat_relax(
+unsafe fn avif_apply_yuv_to_rgb_image_fixes(
     image: *mut libavif_sys::avifImage,
     snap: &AvifYuvRgbReformatSnap,
 ) {
@@ -351,22 +360,14 @@ unsafe fn avif_apply_full_reformat_relax(
         let snap_mc = snap.matrix_coefficients;
 
         if snap_mc == libavif_sys::AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED {
-            img.matrixCoefficients = if snap.depth >= 10 {
-                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
-            } else {
-                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT709
-            };
+            img.matrixCoefficients = avif_matrix_for_yuv_depth(snap.depth);
         }
 
         if snap_mc == libavif_sys::AVIF_MATRIX_COEFFICIENTS_IDENTITY
             && (snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV422
                 || snap.yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV420)
         {
-            img.matrixCoefficients = if snap.depth >= 10 {
-                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
-            } else {
-                libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT709
-            };
+            img.matrixCoefficients = avif_matrix_for_yuv_depth(snap.depth);
         }
 
         if matches!(
@@ -379,88 +380,77 @@ unsafe fn avif_apply_full_reformat_relax(
             img.yuvRange = libavif_sys::AVIF_RANGE_FULL;
         }
 
+        // Matrices without an RGB path (e.g. BT.2020 CL) must be substituted **before** conversion:
+        // libavif can return OK for MC=10 while using a non-NCL path, skewing chroma on mis-tagged
+        // NCL payloads (Chimera-class files).
         if let Some(fb) = avif_matrix_fallback_for_yuv_to_rgb(img.matrixCoefficients) {
             img.matrixCoefficients = fb;
+            log::debug!(
+                "[AVIF] YUV→RGB: matrixCoefficients {} → {} before conversion",
+                snap_mc,
+                fb
+            );
         }
     }
 }
 
+/// `rgb.depth` override required by `avifPrepareReformatState` for YCgCo-Re/Ro (original CICP).
 #[cfg(feature = "avif-native")]
-fn avif_yuv_to_rgb_option_grid(yuv_format: libavif_sys::avifPixelFormat) -> Vec<(bool, bool)> {
-    let subsampled = yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV420
-        || yuv_format == libavif_sys::AVIF_PIXEL_FORMAT_YUV422;
-    let mut v = vec![(false, false), (true, false)];
-    if subsampled {
-        v.push((false, true));
-        v.push((true, true));
-    }
-    v
-}
-
-/// Extra RGB conversion options. YCgCo-Re requires `rgb.depth == image.depth - 2` (libavif
-/// `reformat.c`); include those depths here using the **original** CICP matrix from the snapshot.
-#[cfg(feature = "avif-native")]
-fn rgb_depth_candidates(
+fn avif_yuv_to_rgb_force_depth(
     orig_matrix: libavif_sys::avifMatrixCoefficients,
     yuv_depth: u32,
-) -> Vec<Option<u32>> {
-    let mut out: Vec<Option<u32>> = Vec::new();
-    let mut push = |d: Option<u32>| {
-        if !out.contains(&d) {
-            out.push(d);
-        }
+) -> Option<u32> {
+    let bit_offset = match orig_matrix {
+        libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RE => 2,
+        libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RO => 1,
+        _ => return None,
     };
-    push(Some(16));
-    push(None);
-    match orig_matrix {
-        libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RE => {
-            if let Some(d) = yuv_depth.checked_sub(2)
-                && matches!(d, 8 | 10 | 12 | 16)
-            {
-                push(Some(d));
-            }
-        }
-        libavif_sys::AVIF_MATRIX_COEFFICIENTS_YCGCO_RO => {
-            if let Some(d) = yuv_depth.checked_sub(1)
-                && matches!(d, 8 | 10 | 12 | 16)
-            {
-                push(Some(d));
-            }
-        }
-        _ => {}
-    }
-    out
+    let d = yuv_depth.checked_sub(bit_offset)?;
+    matches!(d, 8 | 10 | 12 | 16).then_some(d)
+}
+
+/// RGB-side options derived from image metadata and libavif defaults (`avifRGBImageSetDefaults`).
+#[cfg(feature = "avif-native")]
+struct AvifYuvToRgbParams {
+    /// When `None`, keep `avifRGBImageSetDefaults` depth (= source YUV depth).
+    force_depth: Option<u32>,
+    /// PQ 10/12-bit: skip libyuv fast paths that skew subsampled HDR chroma (conformance samples).
+    avoid_libyuv: bool,
 }
 
 #[cfg(feature = "avif-native")]
-struct AvifYuvToRgbExtra {
-    ignore_alpha: bool,
-    chroma_nearest: bool,
-    avoid_libyuv: bool,
+fn avif_yuv_to_rgb_params(
+    snap: &AvifYuvRgbReformatSnap,
+    image_ref: &libavif_sys::avifImage,
+) -> AvifYuvToRgbParams {
+    AvifYuvToRgbParams {
+        force_depth: avif_yuv_to_rgb_force_depth(snap.matrix_coefficients, snap.depth),
+        avoid_libyuv: image_ref.transferCharacteristics
+            == libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084
+            && snap.depth >= 10,
+    }
 }
 
 #[cfg(feature = "avif-native")]
 fn try_avif_yuv_to_rgb_rgba(
     image: *const libavif_sys::avifImage,
     image_ref: &libavif_sys::avifImage,
-    force_depth: Option<u32>,
-    extra: AvifYuvToRgbExtra,
-) -> Result<(Vec<u16>, u32), libavif_sys::avifResult> {
+    rgba_u16: &mut [u16],
+    params: AvifYuvToRgbParams,
+) -> Result<u32, libavif_sys::avifResult> {
+    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    if rgba_u16.len() != pixel_count * 4 {
+        return Err(libavif_sys::AVIF_RESULT_REFORMAT_FAILED);
+    }
+
     let mut rgb = std::mem::MaybeUninit::<libavif_sys::avifRGBImage>::zeroed();
     unsafe { libavif_sys::avifRGBImageSetDefaults(rgb.as_mut_ptr(), image) };
     let mut rgb = unsafe { rgb.assume_init() };
     rgb.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
     rgb.isFloat = 0;
     rgb.maxThreads = 0;
-    rgb.ignoreAlpha = if extra.ignore_alpha { 1 } else { 0 };
-    rgb.avoidLibYUV = if extra.avoid_libyuv { 1 } else { 0 };
-    if extra.chroma_nearest
-        && (image_ref.yuvFormat == libavif_sys::AVIF_PIXEL_FORMAT_YUV420
-            || image_ref.yuvFormat == libavif_sys::AVIF_PIXEL_FORMAT_YUV422)
-    {
-        rgb.chromaUpsampling = libavif_sys::AVIF_CHROMA_UPSAMPLING_NEAREST;
-    }
-    if let Some(d) = force_depth {
+    rgb.avoidLibYUV = if params.avoid_libyuv { 1 } else { 0 };
+    if let Some(d) = params.force_depth {
         rgb.depth = d;
     }
     let depth_out = rgb.depth;
@@ -473,16 +463,13 @@ fn try_avif_yuv_to_rgb_rgba(
         .checked_mul(4 * channel_bytes as u32)
         .ok_or(libavif_sys::AVIF_RESULT_REFORMAT_FAILED)?;
     rgb.rowBytes = row_bytes;
-
-    let pixel_count = image_ref.width as usize * image_ref.height as usize;
-    let mut rgba_u16 = vec![0_u16; pixel_count * 4];
     rgb.pixels = rgba_u16.as_mut_ptr().cast::<u8>();
 
     let result = unsafe { libavif_sys::avifImageYUVToRGB(image, &mut rgb) };
     if result != libavif_sys::AVIF_RESULT_OK {
         return Err(result);
     }
-    Ok((rgba_u16, depth_out))
+    Ok(depth_out)
 }
 
 #[cfg(feature = "avif-native")]
@@ -493,92 +480,24 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
 ) -> Result<(Vec<u16>, u32), String> {
     let snap = avif_reformat_snapshot(image_ref);
     let image_const: *const libavif_sys::avifImage = image;
-    let mut last_err = String::new();
-
-    let depth_list = rgb_depth_candidates(snap.matrix_coefficients, snap.depth);
-    let opt_grid = avif_yuv_to_rgb_option_grid(snap.yuv_format);
-
-    // PQ + 10/12-bit BT.2020: try **non–libyuv** path first — libyuv fast paths have historically been
-    // a chroma source for HDR conformance samples (blue skew) when subsampled.
-    let prefer_software_yuv = image_ref.transferCharacteristics
-        == libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084
-        && image_ref.depth >= 10;
-    let avoid_libyuv_order = if prefer_software_yuv {
-        [true, false]
-    } else {
-        [false, true]
-    };
-
-    let run_attempts = |last_err: &mut String| -> Option<(Vec<u16>, u32)> {
-        for avoid_libyuv in avoid_libyuv_order {
-            for &(ignore_alpha, chroma_nearest) in &opt_grid {
-                for force_depth in &depth_list {
-                    match try_avif_yuv_to_rgb_rgba(
-                        image_const,
-                        image_ref,
-                        *force_depth,
-                        AvifYuvToRgbExtra {
-                            ignore_alpha,
-                            chroma_nearest,
-                            avoid_libyuv,
-                        },
-                    ) {
-                        Ok(ok) => return Some(ok),
-                        Err(code) => {
-                            *last_err = format!(
-                                "libavif RGB conversion failed: {}",
-                                result_to_string(code)
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        None
-    };
-
-    // Matrices in `avif_matrix_fallback_for_yuv_to_rgb` (e.g. BT.2020 **CL = 10**) must be
-    // substituted **before** the first attempt: libavif can return **OK** for MC=10 while using a
-    // non‑NCL RGB path, which skews chroma (often blue) on mis‑tagged NCL payloads (e.g. Chimera).
-    // Waiting until REFORMAT_FAILED to substitute is too late — we would already have returned bad RGB.
-    unsafe {
-        avif_restore_reformat_snap(image, &snap);
-        if let Some(mc) = avif_matrix_fallback_for_yuv_to_rgb(snap.matrix_coefficients) {
-            (*image).matrixCoefficients = mc;
-            log::debug!(
-                "[AVIF] YUV→RGB: matrixCoefficients {} → {} before reformat attempts",
-                snap.matrix_coefficients,
-                mc
-            );
-        }
-    }
-    if let Some(ok) = run_attempts(&mut last_err) {
-        unsafe {
-            avif_restore_reformat_snap(image, &snap);
-        }
-        return Ok(ok);
-    }
 
     unsafe {
-        avif_restore_reformat_snap(image, &snap);
-        avif_apply_full_reformat_relax(image, &snap);
+        avif_apply_yuv_to_rgb_image_fixes(image, &snap);
     }
-    log::debug!(
-        "[AVIF] YUV→RGB reformat: applying full CICP/range relaxations (matrix={} range={} format={} depth={})",
-        snap.matrix_coefficients,
-        snap.yuv_range,
-        snap.yuv_format,
-        snap.depth
-    );
-    if let Some(ok) = run_attempts(&mut last_err) {
-        unsafe {
-            avif_restore_reformat_snap(image, &snap);
-        }
-        return Ok(ok);
-    }
+    let params = avif_yuv_to_rgb_params(&snap, image_ref);
 
+    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    let mut rgba_u16 = vec![0_u16; pixel_count * 4];
+
+    let result = try_avif_yuv_to_rgb_rgba(image_const, image_ref, &mut rgba_u16, params);
     unsafe {
         avif_restore_reformat_snap(image, &snap);
     }
-    Err(last_err)
+    match result {
+        Ok(depth) => Ok((rgba_u16, depth)),
+        Err(code) => Err(format!(
+            "libavif RGB conversion failed: {}",
+            result_to_string(code)
+        )),
+    }
 }
