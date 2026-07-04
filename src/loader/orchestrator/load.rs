@@ -775,6 +775,38 @@ impl ImageLoader {
         true
     }
 
+    /// Cancel in-flight loads whose index falls outside the preload window.
+    ///
+    /// Scans only [`Self::loading`] (typically a handful of entries), not the full image list.
+    pub fn cancel_outside_prefetch_window(
+        &mut self,
+        current_index: usize,
+        image_count: usize,
+        max_distance: usize,
+    ) {
+        if image_count == 0 {
+            return;
+        }
+        let cancelled: Vec<usize> = {
+            let loading = self.loading.lock();
+            loading
+                .keys()
+                .copied()
+                .filter(|&idx| {
+                    super::preload_plan::index_outside_prefetch_window(
+                        current_index,
+                        image_count,
+                        idx,
+                        max_distance,
+                    )
+                })
+                .collect()
+        };
+        if !cancelled.is_empty() {
+            self.cancel_indices(cancelled);
+        }
+    }
+
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
         use std::collections::HashSet;
 

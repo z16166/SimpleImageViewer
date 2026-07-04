@@ -69,6 +69,24 @@ fn try_note_capacity_requeue_rejects_fourth_attempt() {
 }
 
 #[test]
+fn cancel_outside_prefetch_window_only_touches_inflight_outside_window() {
+    let mut loader = ImageLoader::new();
+    loader.test_register_inflight(0);
+    loader.test_register_inflight(3);
+    loader.test_register_inflight(50);
+    loader.test_register_inflight(99);
+
+    loader.cancel_outside_prefetch_window(50, 100, 2);
+
+    let loading = loader.loading.lock();
+    assert_eq!(loading.len(), 1);
+    assert!(loading.contains_key(&50));
+    assert!(!loading.contains_key(&0));
+    assert!(!loading.contains_key(&3));
+    assert!(!loading.contains_key(&99));
+}
+
+#[test]
 fn cancel_all_clears_capacity_requeue_counts() {
     let mut loader = ImageLoader::new();
     let index = 2;

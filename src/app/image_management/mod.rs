@@ -975,16 +975,11 @@ impl ImageViewerApp {
         if count == 0 {
             return;
         }
-        let max_distance = self.prefetch_window_max_distance;
-        let current = self.current_index;
-        let outside: Vec<usize> = (0..count)
-            .filter(|&idx| {
-                idx != current && !prefetch_window_contains(current, count, idx, max_distance)
-            })
-            .collect();
-        if !outside.is_empty() {
-            self.loader.cancel_indices(outside);
-        }
+        self.loader.cancel_outside_prefetch_window(
+            self.current_index,
+            count,
+            self.prefetch_window_max_distance,
+        );
     }
 
     pub(super) fn discard_stale_loader_outputs(&mut self) {

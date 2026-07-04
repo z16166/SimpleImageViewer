@@ -91,10 +91,23 @@ impl PreloadPlanSnapshot {
             return true;
         }
         let max_distance = self.max_distance();
-        let dist_forward = (idx + count - current) % count;
-        let dist_backward = (current + count - idx) % count;
-        dist_forward.min(dist_backward) <= max_distance
+        !index_outside_prefetch_window(current, count, idx, max_distance)
     }
+}
+
+/// Whether `idx` lies outside the circular preload window (never true for `current_index`).
+pub(crate) fn index_outside_prefetch_window(
+    current_index: usize,
+    image_count: usize,
+    idx: usize,
+    max_distance: usize,
+) -> bool {
+    if image_count == 0 || idx == current_index {
+        return false;
+    }
+    let dist_forward = (idx + image_count - current_index) % image_count;
+    let dist_backward = (current_index + image_count - idx) % image_count;
+    dist_forward.min(dist_backward) > max_distance
 }
 
 #[cfg(test)]
@@ -105,5 +118,14 @@ mod tests {
     fn index_in_window_before_navigation_published() {
         let plan = PreloadPlanSnapshot::new();
         assert!(plan.index_in_window(99));
+    }
+
+    #[test]
+    fn index_outside_prefetch_window_matches_circular_neighbors() {
+        assert!(!index_outside_prefetch_window(0, 100, 0, 2));
+        assert!(!index_outside_prefetch_window(0, 100, 2, 2));
+        assert!(index_outside_prefetch_window(0, 100, 3, 2));
+        assert!(!index_outside_prefetch_window(50, 100, 48, 2));
+        assert!(index_outside_prefetch_window(50, 100, 47, 2));
     }
 }
