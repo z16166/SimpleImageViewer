@@ -363,6 +363,8 @@ impl ImageViewerApp {
             std::sync::atomic::Ordering::Relaxed,
         );
         let available_ram_mb = sys.available_memory() / (1024 * 1024);
+        let total_ram_mb = sys.total_memory() / (1024 * 1024);
+        crate::system_memory::publish_startup_memory(available_ram_mb, total_ram_mb);
         let (cpu_cache_mb, hdr_tile_cache_mb) =
             crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
         crate::tile_cache::PIXEL_CACHE

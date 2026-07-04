@@ -34,7 +34,7 @@ pub(crate) const CACHE_SIZE: usize =
 pub(crate) const MAX_DEFERRED_SDR_UPLOADS: usize = 12;
 /// Avoid refreshing sysinfo RAM stats on every preload schedule during rapid navigation.
 pub(crate) const PRELOAD_MEMORY_REFRESH_MIN_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(1);
+    crate::system_memory::MEMORY_REFRESH_MIN_INTERVAL;
 
 /// Decode-time Ultra HDR headroom for loader spawn and cache invalidation.
 ///

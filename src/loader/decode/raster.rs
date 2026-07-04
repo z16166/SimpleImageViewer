@@ -249,11 +249,8 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
         crate::psb_reader::estimate_memory_from_bytes(&mmap)?;
     let estimated_mb = estimated_bytes / BYTES_PER_MB;
 
-    // Step 3: Check available RAM
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let available_mb = sys.available_memory() / BYTES_PER_MB;
+    // Step 3: Check available RAM (cached snapshot; refreshed on the logic thread / monitor changes).
+    let available_mb = crate::system_memory::available_memory_mb();
 
     // Reserve at least 1GB for the OS + app overhead
     let safe_available = available_mb.saturating_sub(BYTES_PER_GB / BYTES_PER_MB);
@@ -281,27 +278,26 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
         Ok(ImageData::Tiled(arc_source))
     } else {
         // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
-        // Decode on a dedicated thread: `join()` turns any unwinding panic into `Err`, which is
-        // more reliable than `catch_unwind` alone when the loader runs on worker pools / mixed stacks.
+        // Decode on the refinement pool: `catch_exr_panic` contains unwinding panics; the pool
+        // reuses workers instead of spawning a new OS thread per file.
 
-        let handle = std::thread::Builder::new()
-            .name("siv-psd-v1".to_string())
-            .spawn(move || {
-                // Must use the same panic-hook suppression as EXR: `setup_panic_hook` calls
-                // `process::exit(1)` on every panic; without suppression, a caught decoder panic
-                // still runs the hook and terminates before `join()` can turn it into `Err`.
-                crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                    let psd_file = psd::Psd::from_bytes(&mmap[..])
-                        .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-                    let w = psd_file.width();
-                    let h = psd_file.height();
-                    let pixels = psd_file.rgba();
-                    Ok((w, h, pixels))
-                })
-            })
-            .map_err(|e| format!("Failed to spawn PSD decoder thread: {e}"))?;
+        use crate::loader::preview_caps::REFINEMENT_POOL;
+        use std::sync::mpsc::sync_channel;
 
-        match handle.join() {
+        let (tx, rx) = sync_channel(1);
+        REFINEMENT_POOL.spawn(move || {
+            let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
+                let psd_file = psd::Psd::from_bytes(&mmap[..])
+                    .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+                let w = psd_file.width();
+                let h = psd_file.height();
+                let pixels = psd_file.rgba();
+                Ok((w, h, pixels))
+            });
+            let _ = tx.send(result);
+        });
+
+        match rx.recv() {
             Ok(Ok((w, h, pixels))) => {
                 let img = DecodedImage::new(w, h, pixels);
                 Ok(apply_exif_orientation_to_image_data(
@@ -325,23 +321,7 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
                     Err(e)
                 }
             }
-            Err(panic_payload) => {
-                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic in psd decode thread".to_string()
-                };
-                log::error!(
-                    "[Loader] PSD decode thread panicked for {}: {}",
-                    path.display(),
-                    msg
-                );
-                Err(format!(
-                    "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
-                ))
-            }
+            Err(_) => Err("PSD decode failed: refinement pool dropped the result".to_string()),
         }
     }
 }

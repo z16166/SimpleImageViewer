@@ -55,6 +55,7 @@ mod scanner;
 #[cfg(target_os = "windows")]
 mod seh_handler;
 mod settings;
+mod system_memory;
 pub mod theme;
 mod tile_cache;
 mod ui;

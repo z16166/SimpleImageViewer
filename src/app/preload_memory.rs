@@ -20,45 +20,23 @@
 //! ([`crate::app::ImageViewerApp::refresh_preload_memory_plan`]); hot paths read
 //! cached MB values without triggering sysinfo refresh.
 
-use std::time::Instant;
-
-use super::PRELOAD_MEMORY_REFRESH_MIN_INTERVAL;
-
-/// RAM stats for preload budgeting; refresh timestamp is private so callers cannot desync it.
-pub(crate) struct PreloadMemorySnapshot {
-    sys: sysinfo::System,
-    refreshed_at: Option<Instant>,
-}
+/// RAM stats for preload budgeting; delegates to [`crate::system_memory`].
+pub(crate) struct PreloadMemorySnapshot;
 
 impl PreloadMemorySnapshot {
     pub(crate) fn new() -> Self {
-        Self {
-            sys: sysinfo::System::new_with_specifics(
-                sysinfo::RefreshKind::nothing()
-                    .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
-            ),
-            refreshed_at: None,
-        }
+        Self
     }
 
     pub(crate) fn refresh_if_stale(&mut self) {
-        let now = Instant::now();
-        if self
-            .refreshed_at
-            .is_some_and(|at| now.duration_since(at) < PRELOAD_MEMORY_REFRESH_MIN_INTERVAL)
-        {
-            return;
-        }
-        self.sys
-            .refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
-        self.refreshed_at = Some(now);
+        crate::system_memory::refresh_if_stale();
     }
 
     pub(crate) fn available_memory_mb(&self) -> u64 {
-        self.sys.available_memory() / (1024 * 1024)
+        crate::system_memory::available_memory_mb()
     }
 
     pub(crate) fn total_memory_mb(&self) -> u64 {
-        self.sys.total_memory() / (1024 * 1024)
+        crate::system_memory::total_memory_mb()
     }
 }

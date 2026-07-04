@@ -61,6 +61,10 @@ pub fn refresh_hq_preview_monitor_cap(ctx: &eframe::egui::Context) {
         Some(cap.min(MAX_QUALITY_PREVIEW_SIZE))
     });
     if let Some(c) = cap {
+        let prev = MONITOR_PREVIEW_CAP.load(std::sync::atomic::Ordering::Relaxed);
+        if c != prev {
+            crate::system_memory::refresh_if_stale();
+        }
         MONITOR_PREVIEW_CAP.store(c, std::sync::atomic::Ordering::Relaxed);
     }
 }
