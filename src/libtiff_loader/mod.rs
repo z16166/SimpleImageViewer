@@ -21,6 +21,7 @@ mod load;
 mod mmap;
 mod orientation;
 mod scanline;
+mod scratch;
 mod thumbnail;
 mod tiled;
 
