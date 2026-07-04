@@ -23,7 +23,7 @@ use std::{cell::Cell, panic::AssertUnwindSafe};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, hdr_preview_from_tiled_source_nearest,
-    sdr_preview_from_hdr_preview,
+    sdr_preview_from_linear_rgba32f, sdr_preview_from_tiled_source_nearest,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
@@ -342,6 +342,7 @@ impl HdrTiledSource for ExrTiledImageSource {
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
+        let metadata = HdrImageMetadata::from_color_space(self.color_space);
         catch_exr_panic(&context, || {
             if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
                 && !self.has_subsampled_channels
@@ -351,34 +352,29 @@ impl HdrTiledSource for ExrTiledImageSource {
                     max_w,
                     max_h,
                 )?;
-                let hdr = HdrImageBuffer {
-                    width: preview.width,
-                    height: preview.height,
-                    format: HdrPixelFormat::Rgba32Float,
-                    color_space: self.color_space,
-                    metadata: HdrImageMetadata::from_color_space(self.color_space),
-                    rgba_f32: Arc::new(preview.rgba),
-                };
-                return sdr_preview_from_hdr_preview(&hdr);
+                return sdr_preview_from_linear_rgba32f(
+                    preview.width,
+                    preview.height,
+                    &preview.rgba,
+                    self.color_space,
+                    &metadata,
+                );
             }
             if self.storage == openexr_core_sys::EXR_STORAGE_TILED
                 && let Ok(preview) =
                     self.context
                         .extract_tiled_mip_rgba32f_preview(self.part_index, max_w, max_h)
             {
-                let hdr = HdrImageBuffer {
-                    width: preview.width,
-                    height: preview.height,
-                    format: HdrPixelFormat::Rgba32Float,
-                    color_space: self.color_space,
-                    metadata: HdrImageMetadata::from_color_space(self.color_space),
-                    rgba_f32: Arc::new(preview.rgba),
-                };
-                return sdr_preview_from_hdr_preview(&hdr);
+                return sdr_preview_from_linear_rgba32f(
+                    preview.width,
+                    preview.height,
+                    &preview.rgba,
+                    self.color_space,
+                    &metadata,
+                );
             }
 
-            let preview = hdr_preview_from_tiled_source_nearest(self, max_w, max_h)?;
-            sdr_preview_from_hdr_preview(&preview)
+            sdr_preview_from_tiled_source_nearest(self, max_w, max_h)
         })
     }
 

@@ -181,8 +181,131 @@ pub(crate) struct RadiancePreviewRequest<'a> {
 pub(crate) fn decode_radiance_sdr_preview(
     request: RadiancePreviewRequest<'_>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let preview = decode_radiance_hdr_preview(request)?;
-    crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
+    let RadiancePreviewRequest {
+        mmap,
+        logical_width,
+        logical_height,
+        raster,
+        params,
+        scanline_offsets,
+        max_w,
+        max_h,
+    } = request;
+    let (preview_width, preview_height) =
+        preview_dimensions(logical_width, logical_height, max_w, max_h);
+    if preview_width == 0 || preview_height == 0 {
+        return Err("Radiance SDR preview dimensions must be non-zero".to_string());
+    }
+
+    validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
+    let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    let mut pixels = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+
+    if raster.is_row_major_top_left() {
+        let inner_len = raster.inner_len as usize;
+        if preview_height >= PARALLEL_ROW_THRESHOLD {
+            let rows: Result<Vec<Vec<u8>>, String> = (0..preview_height)
+                .into_par_iter()
+                .map(|preview_y| {
+                    let mut row_rgba = decode_row_major_preview_row(
+                        mmap,
+                        scanline_offsets,
+                        inner_len,
+                        preview_y,
+                        preview_width,
+                        preview_height,
+                        logical_width,
+                        logical_height,
+                    )?;
+                    params.apply_to_pixels(&mut row_rgba);
+                    crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
+                        preview_width,
+                        row_rgba,
+                        HdrColorSpace::LinearSrgb,
+                        &metadata,
+                    )
+                })
+                .collect();
+            for row in rows? {
+                pixels.extend_from_slice(&row);
+            }
+        } else {
+            for preview_y in 0..preview_height {
+                let mut row_rgba = decode_row_major_preview_row(
+                    mmap,
+                    scanline_offsets,
+                    inner_len,
+                    preview_y,
+                    preview_width,
+                    preview_height,
+                    logical_width,
+                    logical_height,
+                )?;
+                params.apply_to_pixels(&mut row_rgba);
+                let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
+                    preview_width,
+                    row_rgba,
+                    HdrColorSpace::LinearSrgb,
+                    &metadata,
+                )?;
+                pixels.extend_from_slice(&row_u8);
+            }
+        }
+    } else {
+        let inner_len = raster.inner_len as usize;
+        if preview_height >= PARALLEL_ROW_THRESHOLD {
+            let rows: Result<Vec<Vec<u8>>, String> = (0..preview_height)
+                .into_par_iter()
+                .map(|preview_y| {
+                    let mut row_rgba = decode_non_row_major_preview_row(
+                        mmap,
+                        scanline_offsets,
+                        inner_len,
+                        raster,
+                        preview_y,
+                        preview_width,
+                        preview_height,
+                        logical_width,
+                        logical_height,
+                    )?;
+                    params.apply_to_pixels(&mut row_rgba);
+                    crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
+                        preview_width,
+                        row_rgba,
+                        HdrColorSpace::LinearSrgb,
+                        &metadata,
+                    )
+                })
+                .collect();
+            for row in rows? {
+                pixels.extend_from_slice(&row);
+            }
+        } else {
+            for preview_y in 0..preview_height {
+                let mut row_rgba = decode_non_row_major_preview_row(
+                    mmap,
+                    scanline_offsets,
+                    inner_len,
+                    raster,
+                    preview_y,
+                    preview_width,
+                    preview_height,
+                    logical_width,
+                    logical_height,
+                )?;
+                params.apply_to_pixels(&mut row_rgba);
+                let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
+                    preview_width,
+                    row_rgba,
+                    HdrColorSpace::LinearSrgb,
+                    &metadata,
+                )?;
+                pixels.extend_from_slice(&row_u8);
+            }
+        }
+    }
+
+    crate::hdr::tiled::finalize_sdr_preview_pixels(preview_width, preview_height, pixels)
 }
 
 pub(crate) fn decode_radiance_hdr_preview(

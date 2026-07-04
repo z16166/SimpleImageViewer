@@ -17,6 +17,8 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+use crate::hdr::renderer::hdr_to_sdr_rgba8_for_preview;
+
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, set_global_hdr_tile_cache_max_bytes_for_tests,
@@ -322,8 +324,10 @@ fn sdr_preview_keeps_visible_rgb_opaque_when_alpha_is_zero_everywhere() {
         rgba_f32: Arc::new(vec![0.25, 0.5, 1.0, 0.0]),
     };
 
+    let pixels = hdr_to_sdr_rgba8_for_preview(&preview, 0.0).expect("tone map preview");
     let (_width, _height, pixels) =
-        super::sdr_preview_from_hdr_preview(&preview).expect("generate SDR preview");
+        super::finalize_sdr_preview_pixels(preview.width, preview.height, pixels)
+            .expect("generate SDR preview");
 
     assert_ne!(
         pixels[3], 0,
@@ -393,8 +397,7 @@ impl HdrTiledSource for RecordingDiskBackedSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let preview = self.generate_hdr_preview(max_w, max_h)?;
-        super::sdr_preview_from_hdr_preview(&preview)
+        super::sdr_preview_from_tiled_source_nearest(self, max_w, max_h)
     }
 
     fn extract_tile_rgba32f_arc(

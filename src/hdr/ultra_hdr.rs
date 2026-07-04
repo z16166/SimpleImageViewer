@@ -19,6 +19,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use rayon::prelude::*;
+
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -368,8 +370,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let preview = self.generate_hdr_preview(max_w, max_h)?;
-        crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
+        downsample_ultra_hdr_sdr_base_nearest(self, max_w, max_h)
     }
 
     fn cached_tile_rgba32f_arc(
@@ -589,6 +590,135 @@ fn attribute_rgb_f32(text: &str, name: &str) -> Option<[f32; 3]> {
         [r, g, b] => Some([*r, *g, *b]),
         _ => None,
     }
+}
+
+fn downsample_ultra_hdr_sdr_base_nearest(
+    source: &UltraHdrTiledImageSource,
+    max_w: u32,
+    max_h: u32,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (preview_width, preview_height) =
+        crate::hdr::tiled::preview_dimensions(source.width, source.height, max_w, max_h);
+    if preview_width == 0 || preview_height == 0 {
+        return Err("Ultra HDR SDR preview dimensions must be non-zero".to_string());
+    }
+
+    let expected_physical_len = source.physical_width as usize
+        * source.physical_height as usize
+        * 4;
+    if source.sdr_rgba.len() < expected_physical_len {
+        return Err(format!(
+            "Ultra HDR base JPEG RGBA length mismatch: expected at least {expected_physical_len} bytes, got {}",
+            source.sdr_rgba.len()
+        ));
+    }
+
+    let pixels = if source.orientation == 1 {
+        simple_image_viewer::simd_downsample::downsample_rgba8_nearest(
+            &source.sdr_rgba,
+            source.physical_width,
+            source.physical_height,
+            preview_width,
+            preview_height,
+        )
+    } else {
+        downsample_oriented_ultra_hdr_sdr_base_nearest(source, preview_width, preview_height)?
+    };
+
+    if pixels.len() != preview_width as usize * preview_height as usize * 4 {
+        return Err(format!(
+            "Ultra HDR SDR preview buffer length mismatch: expected {} bytes, got {}",
+            preview_width as usize * preview_height as usize * 4,
+            pixels.len()
+        ));
+    }
+
+    crate::hdr::tiled::finalize_sdr_preview_pixels(preview_width, preview_height, pixels)
+}
+
+fn downsample_oriented_ultra_hdr_sdr_base_nearest(
+    source: &UltraHdrTiledImageSource,
+    preview_width: u32,
+    preview_height: u32,
+) -> Result<Vec<u8>, String> {
+    let sdr_rgba = Arc::clone(&source.sdr_rgba);
+    let physical_width = source.physical_width;
+    let physical_height = source.physical_height;
+    let display_width = source.width;
+    let display_height = source.height;
+    let orientation = source.orientation;
+
+    let rows: Vec<Vec<u8>> = if preview_height >= 8 {
+        (0..preview_height)
+            .into_par_iter()
+            .map(|preview_y| {
+                sample_oriented_ultra_hdr_sdr_preview_row(
+                    &sdr_rgba,
+                    preview_y,
+                    preview_width,
+                    preview_height,
+                    display_width,
+                    display_height,
+                    physical_width,
+                    physical_height,
+                    orientation,
+                )
+            })
+            .collect()
+    } else {
+        (0..preview_height)
+            .map(|preview_y| {
+                sample_oriented_ultra_hdr_sdr_preview_row(
+                    &sdr_rgba,
+                    preview_y,
+                    preview_width,
+                    preview_height,
+                    display_width,
+                    display_height,
+                    physical_width,
+                    physical_height,
+                    orientation,
+                )
+            })
+            .collect()
+    };
+
+    let mut pixels = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+    for row in rows {
+        pixels.extend_from_slice(&row);
+    }
+    Ok(pixels)
+}
+
+fn sample_oriented_ultra_hdr_sdr_preview_row(
+    sdr_rgba: &[u8],
+    preview_y: u32,
+    preview_width: u32,
+    preview_height: u32,
+    display_width: u32,
+    display_height: u32,
+    physical_width: u32,
+    physical_height: u32,
+    orientation: u16,
+) -> Vec<u8> {
+    let display_y =
+        crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, display_height);
+    let mut row = Vec::with_capacity(preview_width as usize * 4);
+    for preview_x in 0..preview_width {
+        let display_x =
+            crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, display_width);
+        let (physical_x, physical_y) = display_to_physical_pixel(
+            display_x,
+            display_y,
+            physical_width,
+            physical_height,
+            orientation,
+        );
+        let sdr_index =
+            (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
+        row.extend_from_slice(&sdr_rgba[sdr_index..sdr_index + 4]);
+    }
+    row
 }
 
 fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) {

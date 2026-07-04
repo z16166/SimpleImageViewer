@@ -262,8 +262,11 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let preview = self.generate_hdr_preview(max_w, max_h)?;
-        crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
+        let guard = self.buffer.read();
+        let image = guard
+            .as_ref()
+            .ok_or_else(|| "RAW HDR buffer not yet refined".to_string())?;
+        crate::hdr::tiled::sdr_preview_from_hdr_image_nearest(image, max_w, max_h)
     }
 
     fn extract_tile_rgba32f_arc(

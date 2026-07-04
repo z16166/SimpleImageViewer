@@ -102,8 +102,7 @@ impl HdrTiledSource for HdrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let preview = self.generate_hdr_preview(max_w, max_h)?;
-        crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
+        crate::hdr::tiled::sdr_preview_from_hdr_image_nearest(&self.image, max_w, max_h)
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
