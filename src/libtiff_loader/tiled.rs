@@ -28,6 +28,10 @@ use super::handle::create_tiff_handle;
 use super::scratch::with_tiled_extract_scratch;
 use super::thumbnail::extract_embedded_thumbnail;
 
+fn checked_tile_pixel_count(tile_width: u32, tile_height: u32) -> Option<usize> {
+    (tile_width as usize).checked_mul(tile_height as usize)
+}
+
 pub struct LibTiffTiledSource {
     pub(crate) path: PathBuf,
     pub(crate) mmap: Arc<Mmap>,
@@ -63,8 +67,11 @@ impl TiledImageSource for LibTiffTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let result_len = (w as usize) * (h as usize) * 4;
-        let tile_len = (self.tile_width as usize) * (self.tile_height as usize);
+        let result_len = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+            .unwrap_or(0);
+        let tile_len = checked_tile_pixel_count(self.tile_width, self.tile_height).unwrap_or(0);
 
         let ((), result) = with_tiled_extract_scratch(result_len, tile_len, |scratch| {
             let result = &mut scratch.result;
@@ -171,7 +178,20 @@ impl TiledImageSource for LibTiffTiledSource {
         let tif_ptr = handle.as_ptr();
         let tw = self.tile_width;
         let th = self.tile_height;
-        let mut tile_buf = vec![0u32; (tw * th) as usize];
+        let tile_len = match checked_tile_pixel_count(tw, th) {
+            Some(len) => len,
+            None => {
+                log::error!(
+                    "[{}] libtiff: tile buffer size overflow ({}x{})",
+                    self.path.display(),
+                    tw,
+                    th
+                );
+                self.release_handle(handle);
+                return (0, 0, vec![]);
+            }
+        };
+        let mut tile_buf = vec![0u32; tile_len];
         let mut last_tile_idx = u32::MAX;
 
         let stride_x_fp = ((self.width as u64) << 16) / pw as u64;

@@ -172,7 +172,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
 
         let pixel_count_pre = width as u64 * height as u64;
         if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp)
-            && pixel_count_pre <= 256 * 1024 * 1024
+            && pixel_count_pre <= MAX_STATIC_HDR_DECODE_PIXELS
         {
             let spp_use = if spp == 0 { 1 } else { spp };
             match decode_ieee_scene_linear_rgba32f(
@@ -231,7 +231,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         }
 
         if tiff_uint16_rgb_scene_linear_eligible(sample_format, bps, photo, spp, planar_config)
-            && pixel_count_pre <= 256 * 1024 * 1024
+            && pixel_count_pre <= MAX_STATIC_HDR_DECODE_PIXELS
             && !crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         {
             let spp_use = if spp == 0 { 3 } else { spp };
@@ -279,7 +279,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         }
 
         if tiff_logl_logluv_hdr_eligible(photo, planar_config)
-            && pixel_count_pre <= 256 * 1024 * 1024
+            && pixel_count_pre <= MAX_STATIC_HDR_DECODE_PIXELS
         {
             match decode_logl_logluv_scene_linear_rgba32f(LogLuvDecodeParams {
                 tif: handle.as_ptr(),
@@ -345,7 +345,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         // If orientation is complex (e.g. 90deg), force static decoding so we can rotate the full buffer,
         // UNLESS the image is huge (to prevent OOM). Most rotated images are from cameras and easily fit in static.
         // If it's a huge rotated image, it will fail static allocation limit and correctly fall back to WIC/ImageIO.
-        if orientation > 1 && pixel_count <= 256 * 1024 * 1024 {
+        if orientation > 1 && pixel_count <= MAX_STATIC_HDR_DECODE_PIXELS {
             force_static = true;
         }
 
@@ -365,6 +365,11 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 if tile_width == 0 || tile_height == 0 {
                     return Err("TIFF is tiled but tile dimensions are zero".to_string());
                 }
+                if tile_width > MAX_TIFF_TILE_DIMENSION || tile_height > MAX_TIFF_TILE_DIMENSION {
+                    return Err(format!(
+                        "TIFF tile dimensions {tile_width}x{tile_height} exceed maximum {MAX_TIFF_TILE_DIMENSION}"
+                    ));
+                }
 
                 return Ok(ImageData::Tiled(Arc::new(LibTiffTiledSource {
                     path: path.to_path_buf(),
@@ -383,10 +388,13 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     rps = height;
                 }
 
-                let strip_bytes = width as usize * rps as usize * 4;
-                let max_cached = if let Some(strip_bytes) = std::num::NonZeroUsize::new(strip_bytes)
+                let strip_bytes = (width as usize)
+                    .checked_mul(rps as usize)
+                    .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
+                let max_cached = if let Some(strip_bytes) =
+                    strip_bytes.and_then(std::num::NonZeroUsize::new)
                 {
-                    (256 * 1024 * 1024 / strip_bytes.get()).max(16)
+                    (STRIP_CACHE_BUDGET_BYTES / strip_bytes.get()).max(16)
                 } else {
                     64
                 };
@@ -406,7 +414,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         }
 
         let total_pixels = (width as usize) * (height as usize);
-        if total_pixels > 256 * 1024 * 1024 {
+        if total_pixels > MAX_STATIC_HDR_DECODE_PIXELS as usize {
             return Err("Static TIFF TOO LARGE for single pass decode".to_string());
         }
 

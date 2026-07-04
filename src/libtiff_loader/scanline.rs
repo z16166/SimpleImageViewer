@@ -512,6 +512,11 @@ pub(crate) unsafe fn manual_decode_scanline(
         r_map,
         g_map,
         b_map,
+        entries: if photo == PHOTO_PALETTE {
+            (1usize).checked_shl(bps.min(16) as u32).unwrap_or(0)
+        } else {
+            0
+        },
     };
     let mut actual_min = f64::MAX;
     let mut actual_max = f64::MIN;
