@@ -167,15 +167,23 @@ impl ImageLoader {
                             }
                         };
                         loop {
-                            std::thread::sleep(Duration::from_millis(50));
+                            if shutdown_worker.load(Ordering::Acquire) {
+                                return;
+                            }
                             let mut g = lock.lock();
+                            let wait_result = cvar.wait_for(&mut g, WORKER_SHUTDOWN_POLL);
+                            if shutdown_worker.load(Ordering::Acquire) {
+                                return;
+                            }
                             if let Some(newer) = g.take() {
                                 job = newer;
                                 drop(g);
                                 continue;
                             }
                             drop(g);
-                            break;
+                            if wait_result.timed_out() {
+                                break;
+                            }
                         }
 
                         {
@@ -1077,7 +1085,7 @@ impl ImageLoader {
             self.pool.spawn(run_worker);
         }
 
-        // Fallback: one shared worker sleeps 50ms then tries `do_load` if the pool task
+        // Fallback: one shared worker waits 50ms (condvar) then tries `do_load` if the pool task
         // did not claim first. Pending jobs are coalesced to a single slot (no per-request OS thread).
         let delayed_job = DelayedFallbackJob {
             index,
