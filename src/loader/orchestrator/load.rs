@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
     DelayedFallbackJob, ImageLoader, LoaderOutputSender, TileInFlightKey, TileRequest,
-    should_spawn_load_task,
+    WORKER_SHUTDOWN_POLL, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -31,14 +31,14 @@ use crate::loader::{
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
@@ -73,6 +73,7 @@ struct LoadWorkerInput {
 
 impl ImageLoader {
     pub fn new() -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, rx) = crossbeam_channel::unbounded();
         let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
             crossbeam_channel::unbounded();
@@ -136,19 +137,28 @@ impl ImageLoader {
         let embedded_iso_gain_map_sdr_master = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
-        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
+        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new(Arc::clone(
+            &shutdown,
+        )));
         {
             let state = Arc::clone(&delayed_fallback);
+            let shutdown_worker = Arc::clone(&shutdown);
             let _ = std::thread::Builder::new()
                 .name("loader-fallback".to_string())
                 .spawn(move || {
                     let (lock, cvar) = &*state;
                     loop {
+                        if shutdown_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let mut job = {
                             let mut g = lock.lock();
                             loop {
                                 while g.is_none() {
-                                    cvar.wait(&mut g);
+                                    if shutdown_worker.load(Ordering::Acquire) {
+                                        return;
+                                    }
+                                    cvar.wait_for(&mut g, WORKER_SHUTDOWN_POLL);
                                 }
                                 if let Some(j) = g.take() {
                                     break j;
@@ -240,6 +250,7 @@ impl ImageLoader {
             let tx = tx.clone();
             let plan_ref = Arc::clone(&preload_plan);
             let flight = Arc::clone(&in_flight);
+            let shutdown_worker = Arc::clone(&shutdown);
 
             std::thread::Builder::new()
                 .name(format!("tile-worker-{}", i))
@@ -248,11 +259,17 @@ impl ImageLoader {
                     let _com = crate::wic::ComGuard::new();
 
                     loop {
+                        if shutdown_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let request = {
                             let (lock, cvar) = &*queue;
                             let mut heap = lock.lock();
                             while heap.is_empty() {
-                                cvar.wait(&mut heap);
+                                if shutdown_worker.load(Ordering::Acquire) {
+                                    return;
+                                }
+                                cvar.wait_for(&mut heap, WORKER_SHUTDOWN_POLL);
                             }
                             if let Some(req) = heap.pop() {
                                 req
@@ -436,10 +453,19 @@ impl ImageLoader {
         // Start dedicated Background Refinement Worker (Throttled)
         let worker_tx = tx.clone();
         let worker_plan = Arc::clone(&preload_plan);
+        let shutdown_worker = Arc::clone(&shutdown);
         let _ = std::thread::Builder::new()
             .name("refinement-worker".to_string())
             .spawn(move || {
-                while let Ok(req) = refine_rx.recv() {
+                loop {
+                    if shutdown_worker.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let req = match refine_rx.recv_timeout(WORKER_SHUTDOWN_POLL) {
+                        Ok(req) => req,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
                     let snapshot_epoch = worker_plan.profile_epoch();
                     if req.decode_profile.profile_epoch < snapshot_epoch {
                         log::debug!(
@@ -619,6 +645,7 @@ impl ImageLoader {
             });
 
         Self {
+            shutdown,
             raw_open_prefetch,
             tx: LoaderOutputSender::new(tx),
             rx,

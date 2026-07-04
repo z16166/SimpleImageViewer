@@ -28,7 +28,11 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::time::Duration;
+
+/// Poll interval for worker threads waiting on condvars / channels during idle.
+pub(crate) const WORKER_SHUTDOWN_POLL: Duration = Duration::from_millis(50);
 
 use super::preload_plan::PreloadPlanSnapshot;
 
@@ -173,6 +177,8 @@ pub(crate) fn should_spawn_load_task(
 }
 
 pub struct ImageLoader {
+    /// When true, dedicated loader worker threads exit their idle wait loops.
+    pub(crate) shutdown: Arc<AtomicBool>,
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
@@ -209,4 +215,21 @@ pub struct ImageLoader {
     pub(crate) current_image_os_threads: Arc<std::sync::atomic::AtomicUsize>,
     /// Main-thread-only HDR capacity requeue storm cap (not shared with workers; no lock needed).
     pub(crate) capacity_requeue_counts: std::collections::HashMap<usize, u32>,
+}
+
+impl ImageLoader {
+    /// Wake all dedicated worker threads and tell them to exit idle waits.
+    pub(crate) fn signal_shutdown(&self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        {
+            let (_, cvar) = &*self.delayed_fallback;
+            cvar.notify_all();
+        }
+        {
+            let (_, cvar) = &*self.tile_queue;
+            cvar.notify_all();
+        }
+        self.raw_open_prefetch.wake_waiters();
+    }
 }

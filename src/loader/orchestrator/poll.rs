@@ -146,6 +146,7 @@ impl ImageLoader {
     /// Clears all registered loads via [`Self::cancel_all`]. This loader must not be reused
     /// after this call — it is only valid on the process-exit path.
     pub fn prepare_for_process_exit(&mut self) {
+        self.signal_shutdown();
         self.cancel_all();
         self.raw_open_prefetch.clear_all();
         drain_rayon_pool_for_exit(&self.pool, LOADER_EXIT_DRAIN_TIMEOUT);
@@ -193,4 +194,10 @@ fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> boo
         }
     }
     true
+}
+
+impl Drop for ImageLoader {
+    fn drop(&mut self) {
+        self.signal_shutdown();
+    }
 }
