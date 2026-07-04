@@ -20,8 +20,17 @@ use std::sync::Arc;
 use crate::hdr::tiled::HdrTiledSource;
 
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
+
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let source = crate::hdr::exr_tiled::ExrTiledImageSource::open(path)?;
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    decode_exr_display_image_from_mmap(path, mmap)
+}
+
+pub(crate) fn decode_exr_display_image_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<HdrImageBuffer, String> {
+    let source = crate::hdr::exr_tiled::ExrTiledImageSource::open_from_mmap(path, mmap)?;
     let (width, height) = (source.width(), source.height());
     super::tone_map::validate_hdr_fallback_budget(width, height)?;
     let tile = source.extract_tile_rgba32f_arc(0, 0, width, height)?;

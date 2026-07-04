@@ -93,7 +93,15 @@ pub fn load_via_libtiff(
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_via_libtiff_from_mmap(path, mmap, hdr_target_capacity, tone_map)
+}
 
+pub(crate) fn load_via_libtiff_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    hdr_target_capacity: f32,
+    tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     let mut ctx = Box::new(TiffMmapContext {
         mmap: mmap.clone(),
         offset: 0,

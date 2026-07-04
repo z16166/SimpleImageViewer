@@ -28,6 +28,7 @@ mod tiled;
 mod tests;
 
 pub use load::load_via_libtiff;
+pub(crate) use load::load_via_libtiff_from_mmap;
 #[cfg(test)]
 pub use load::peek_tiff_tags;
 pub(crate) use orientation::{apply_orientation_buffer, apply_orientation_buffer_from_slice};

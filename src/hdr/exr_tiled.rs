@@ -521,7 +521,16 @@ pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize>
 }
 
 pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
-    let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    exr_dimensions_unvalidated_from_mmap(path, mmap)
+}
+
+pub(crate) fn exr_dimensions_unvalidated_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<(u32, u32), String> {
+    let context =
+        crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
     let parts = exr_part_infos_from_context(&context)?;
     let part_index = default_display_part_index(&parts).unwrap_or(0);
     let part = context.part(part_index)?;
@@ -529,7 +538,16 @@ pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), Stri
 }
 
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    decode_deep_exr_image_from_mmap(path, mmap)
+}
+
+pub(crate) fn decode_deep_exr_image_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<HdrImageBuffer, String> {
+    let context =
+        crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
     let parts = exr_part_infos_from_context(&context)?;
     let part_index = default_display_part_index(&parts).unwrap_or(0);
     let part = context.part(part_index)?;

@@ -30,26 +30,29 @@ use crate::loader::tiled_sources::HdrSdrTiledFallbackSource;
 
 pub(crate) fn load_hdr(
     path: &Path,
-    _hdr_target_capacity: f32,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     if is_exr_path(path) {
         return load_detected_exr(path);
-    } else if let Some(image_data) = try_load_disk_backed_radiance_hdr(path, hdr_tone_map)? {
+    }
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_hdr_from_mmap(path, mmap, hdr_target_capacity, hdr_tone_map)
+}
+
+pub(crate) fn load_hdr_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    _hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    if let Some(image_data) =
+        try_load_disk_backed_radiance_hdr_from_mmap(path, Arc::clone(&mmap), hdr_tone_map)?
+    {
         return Ok(image_data);
     }
 
-    let hdr = match crate::hdr::decode::decode_hdr_image(path) {
-        Ok(hdr) => hdr,
-        Err(err) if is_exr_deep_data_unsupported_error(&err) => {
-            log::warn!(
-                "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
-                path.display()
-            );
-            return load_deep_exr(path);
-        }
-        Err(err) => return Err(err),
-    };
+    let hdr = crate::hdr::decode::decode_radiance_hdr_image_from_mmap(mmap.as_ref(), Some(path))?;
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
@@ -66,7 +69,15 @@ pub(crate) fn is_exr_path(path: &Path) -> bool {
 }
 
 pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
-    let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open(path) {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    try_load_disk_backed_exr_hdr_from_mmap(path, mmap)
+}
+
+pub(crate) fn try_load_disk_backed_exr_hdr_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<Option<ImageData>, String> {
+    let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open_from_mmap(path, mmap) {
         Ok(source) => source,
         Err(err) if is_exr_disk_backed_probe_fallback_error(&err) => {
             log::warn!(
@@ -77,22 +88,7 @@ pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageDa
         }
         Err(err) => return Err(err),
     };
-    let pixel_count = source.width() as u64 * source.height() as u64;
-    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-    let max_side = source.width().max(source.height());
-    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        return exr_tiled_source_to_static_hdr(path, source).map(Some);
-    }
-
-    let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-    let fallback: Arc<dyn TiledImageSource> =
-        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
-    log::info!(
-        "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
-        hdr.width(),
-        hdr.height()
-    );
-    Ok(Some(ImageData::HdrTiled { hdr, fallback }))
+    route_exr_tiled_source(path, source)
 }
 
 pub(crate) fn exr_tiled_source_to_static_hdr(
@@ -123,11 +119,42 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
+fn route_exr_tiled_source(
+    path: &Path,
+    source: crate::hdr::exr_tiled::ExrTiledImageSource,
+) -> Result<Option<ImageData>, String> {
+    let pixel_count = source.width() as u64 * source.height() as u64;
+    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let max_side = source.width().max(source.height());
+    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        return exr_tiled_source_to_static_hdr(path, source).map(Some);
+    }
+
+    let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
+    let fallback: Arc<dyn TiledImageSource> =
+        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
+    log::info!(
+        "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
+        hdr.width(),
+        hdr.height()
+    );
+    Ok(Some(ImageData::HdrTiled { hdr, fallback }))
+}
+
 pub(crate) fn try_load_disk_backed_radiance_hdr(
     path: &Path,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<Option<ImageData>, String> {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    try_load_disk_backed_radiance_hdr_from_mmap(path, mmap, hdr_tone_map)
+}
+
+pub(crate) fn try_load_disk_backed_radiance_hdr_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
     _hdr_tone_map: HdrToneMapSettings,
 ) -> Result<Option<ImageData>, String> {
-    let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open(path)?;
+    let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open_from_mmap(path, mmap)?;
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
@@ -157,7 +184,15 @@ pub(crate) fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
 }
 
 pub(crate) fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
-    match crate::hdr::exr_tiled::decode_deep_exr_image(path) {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_deep_exr_from_mmap(path, mmap)
+}
+
+pub(crate) fn load_deep_exr_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<ImageData, String> {
+    match crate::hdr::exr_tiled::decode_deep_exr_image_from_mmap(path, Arc::clone(&mmap)) {
         Ok(hdr) => {
             let fallback = DecodedImage::from_hdr_sdr_fallback(
                 hdr.width,
@@ -172,13 +207,21 @@ pub(crate) fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
                 "[Loader] Deep EXR compositing failed for {}: {err}; using visible placeholder",
                 path.display()
             );
-            make_deep_exr_placeholder(path)
+            make_deep_exr_placeholder_from_mmap(path, mmap)
         }
     }
 }
 
 pub(crate) fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
-    let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated(path)?;
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    make_deep_exr_placeholder_from_mmap(path, mmap)
+}
+
+fn make_deep_exr_placeholder_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<ImageData, String> {
+    let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated_from_mmap(path, mmap)?;
     let pixel_count = width
         .checked_mul(height)
         .ok_or_else(|| format!("Deep EXR placeholder dimensions overflow: {width}x{height}"))?;
@@ -208,18 +251,31 @@ pub(crate) fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String
 }
 
 pub(crate) fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
-    if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_detected_exr_from_mmap(path, mmap)
+}
+
+pub(crate) fn load_detected_exr_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<ImageData, String> {
+    if let Some(image_data) =
+        try_load_disk_backed_exr_hdr_from_mmap(path, Arc::clone(&mmap))?
+    {
         return Ok(image_data);
     }
 
-    let hdr = match crate::hdr::decode::decode_exr_display_image(path) {
+    let hdr = match crate::hdr::decode::decode_exr_display_image_from_mmap(
+        path,
+        Arc::clone(&mmap),
+    ) {
         Ok(hdr) => hdr,
         Err(err) if is_exr_deep_data_unsupported_error(&err) => {
             log::warn!(
                 "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return load_deep_exr(path);
+            return load_deep_exr_from_mmap(path, mmap);
         }
         Err(err) => return Err(err),
     };

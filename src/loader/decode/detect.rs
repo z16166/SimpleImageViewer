@@ -19,13 +19,15 @@
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::ImageData;
 use std::path::Path;
+use std::sync::Arc;
 
-use super::hdr_formats::{load_detected_exr, load_hdr};
-use super::jpeg::load_jpeg_with_target_capacity;
+use super::hdr_formats::{load_detected_exr_from_mmap, load_hdr_from_mmap};
+use super::jpeg::load_jpeg_from_mapped;
 use super::modern::{
-    load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
+    load_avif_with_target_capacity_from_mmap, load_heif_hdr_aware_from_mmap,
+    load_jxl_with_target_capacity_from_mmap,
 };
-use super::raster::{load_gif, load_png, load_static, load_webp};
+use super::raster::{load_gif_from_mmap, load_png_from_mmap, load_static_from_mmap, load_webp_from_mmap};
 
 const DETECTION_BUFFER_SIZE: usize = 16;
 
@@ -104,17 +106,65 @@ fn load_bmff_ftyp_container(
     ))
 }
 
-pub(crate) fn read_detection_header(
-    path: &Path,
-) -> Result<([u8; DETECTION_BUFFER_SIZE], usize), String> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut header = [0u8; DETECTION_BUFFER_SIZE];
-    let n = file.read(&mut header).map_err(|e| e.to_string())?;
-    if n == 0 {
+pub(crate) fn mmap_for_content_detection(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| e.to_string())?;
+    if mmap.is_empty() {
         return Err("empty file".to_string());
     }
-    Ok((header, n))
+    Ok(Arc::new(mmap))
+}
+
+fn load_by_image_format_from_mmap(
+    format: image::ImageFormat,
+    path: &Path,
+    mmap: &Arc<memmap2::Mmap>,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let bytes = mmap.as_ref();
+    match format {
+        image::ImageFormat::Png => load_png_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::Gif => load_gif_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::WebP => {
+            load_webp_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+        }
+        image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff_from_mmap(
+            path,
+            Arc::clone(mmap),
+            hdr_target_capacity,
+            hdr_tone_map,
+        ),
+        image::ImageFormat::Jpeg => load_jpeg_from_mapped(
+            path,
+            mmap.as_ref(),
+            hdr_target_capacity,
+            hdr_tone_map,
+            false,
+        ),
+        image::ImageFormat::Bmp
+        | image::ImageFormat::Ico
+        | image::ImageFormat::Pnm
+        | image::ImageFormat::Tga
+        | image::ImageFormat::Dds
+        | image::ImageFormat::Farbfeld
+        | image::ImageFormat::Qoi => load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::Avif => load_avif_with_target_capacity_from_mmap(
+            path,
+            mmap.as_ref(),
+            hdr_target_capacity,
+            hdr_tone_map,
+            false,
+        ),
+        image::ImageFormat::Hdr => {
+            load_hdr_from_mmap(path, Arc::clone(mmap), hdr_target_capacity, hdr_tone_map)
+        }
+        image::ImageFormat::OpenExr => load_detected_exr_from_mmap(path, Arc::clone(mmap)),
+        _ => Err(rust_i18n::t!(
+            "error.unsupported_detected_format",
+            format = format!("{:?}", format)
+        )
+        .to_string()),
+    }
 }
 
 /// After extension-first decode fails: platform decoder (WIC/ImageIO), then magic-byte routing.
@@ -202,69 +252,53 @@ pub(crate) fn load_primary_with_detection_fallback(
     }
 }
 
-pub(crate) fn load_by_image_format(
-    format: image::ImageFormat,
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
-    match format {
-        image::ImageFormat::Png => load_png(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Gif => load_gif(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::WebP => load_webp(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Tiff => {
-            crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map)
-        }
-        // Standard single-frame formats handled by load_static
-        image::ImageFormat::Jpeg => {
-            load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
-        }
-        image::ImageFormat::Bmp
-        | image::ImageFormat::Ico
-        | image::ImageFormat::Pnm
-        | image::ImageFormat::Tga
-        | image::ImageFormat::Dds
-        | image::ImageFormat::Farbfeld
-        | image::ImageFormat::Qoi => load_static(path, hdr_target_capacity, hdr_tone_map),
-        // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
-        image::ImageFormat::Avif => {
-            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
-        }
-        image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::OpenExr => load_detected_exr(path),
-        _ => Err(rust_i18n::t!(
-            "error.unsupported_detected_format",
-            format = format!("{:?}", format)
-        )
-        .to_string()),
-    }
-}
 
 pub(crate) fn load_via_content_detection(
     path: &Path,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let (header, n) = read_detection_header(path)?;
+    let mmap = mmap_for_content_detection(path)?;
+    let n = mmap.len().min(DETECTION_BUFFER_SIZE);
+    let header = &mmap[..n];
 
     // 1. Try standard image-rs detection
-    if let Ok(guessed) = image::guess_format(&header[..n]) {
-        return load_by_image_format(guessed, path, hdr_target_capacity, hdr_tone_map);
+    if let Ok(guessed) = image::guess_format(header) {
+        return load_by_image_format_from_mmap(
+            guessed,
+            path,
+            &mmap,
+            hdr_target_capacity,
+            hdr_tone_map,
+        );
     }
 
-    if crate::hdr::jpegxl::is_jxl_header(&header[..n]) {
-        return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
+    if crate::hdr::jpegxl::is_jxl_header(header) {
+        return load_jxl_with_target_capacity_from_mmap(
+            path,
+            mmap.as_ref(),
+            hdr_target_capacity,
+            hdr_tone_map,
+            false,
+        );
     }
 
     // 2. Manual BMFF detection (image-rs 0.25 does not guess HEIF/AVIF/QuickTime).
     if n >= 12 && &header[4..8] == b"ftyp" {
         let brand = &header[8..12];
         if crate::hdr::avif::is_avif_brand(brand) {
-            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false);
+            return load_avif_with_target_capacity_from_mmap(
+                path,
+                mmap.as_ref(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                false,
+            );
         }
         if crate::hdr::heif::is_heif_brand(brand) {
-            return load_heif_hdr_aware(
+            return load_heif_hdr_aware_from_mmap(
                 path,
+                mmap.as_ref(),
                 hdr_target_capacity,
                 hdr_tone_map,
                 crate::hdr::heif::HeifHdrDecodeDiag {

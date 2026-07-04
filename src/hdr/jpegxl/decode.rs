@@ -71,18 +71,17 @@ pub(crate) struct JxlHdrLoadOutput {
 }
 
 #[cfg(feature = "jpegxl")]
-pub(crate) fn load_jxl_hdr_with_target_capacity(
+pub(crate) fn load_jxl_hdr_with_target_capacity_from_bytes(
     path: &std::path::Path,
+    bytes: &[u8],
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
     try_embedded_sdr_master: bool,
 ) -> Result<JxlHdrLoadOutput, String> {
-    let bytes =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_bytes_to_image_data_impl(
-        bytes.as_ref(),
+        bytes,
         decode_target_hdr_capacity,
         display_hdr_target_capacity,
         tone_map,
