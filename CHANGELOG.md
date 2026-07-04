@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.5] - 2026-07-04
+
+### Improved
+- **Faster HDR previews on SDR displays**: Large HDR photos now use GPU tone mapping for quicker SDR previews while keeping full HDR output on compatible monitors.
+- **Faster AVIF, HEIF, and HDR loading**: The viewer decodes these formats in fewer passes and reuses file data more efficiently, so large photos open and appear sooner.
+- **Smoother navigation strip thumbnails**: File-list previews build with less redundant decoding, and thumbnail GPU work no longer blocks the main interface while you browse.
+- **Smoother browsing in large folders**: Smarter background preloading and cache retention keep nearby images ready longer, with lower memory overhead from reduced buffer copying.
+- **Faster TIFF, Radiance, and tiled image display**: Optimized tile decoding and scanline processing improve responsiveness for large TIFF, EXR, and HDR files.
+
+### Fixed
+- **EXIF rotation on Windows and macOS**: Images decoded through the system codecs no longer appear rotated twice when orientation metadata is present.
+- **Navigation strip preview orientation**: Thumbnails now match the main viewer orientation when a full decode is reused for the strip preview.
+- **HDR tiled viewing stability**: Fixed cases where HDR tile uploads could drop image data during fast panning and zooming.
+- **SDR preview paths for HDR photos**: SDR previews avoid unnecessary HDR processing, reducing memory use and startup delay on standard displays.
+- **Damaged or unusual files**: Improved handling of malformed PSB, TIFF, and Radiance files so the viewer fails gracefully instead of hanging or crashing.
+- **Cleaner shutdown**: Background loading workers now stop more reliably when you close the viewer.
+
 ## [2.8.4] - 2026-07-02
 
 ### Added
