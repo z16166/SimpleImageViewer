@@ -1613,6 +1613,22 @@ pub(super) fn wrapped_image_list_index(current: usize, delta: i32, len: usize) -
     if next == current { None } else { Some(next) }
 }
 
+pub(super) fn image_list_home_end_index(
+    current: usize,
+    key: egui::Key,
+    len: usize,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let target = match key {
+        egui::Key::Home => 0,
+        egui::Key::End => len - 1,
+        _ => return None,
+    };
+    if target == current { None } else { Some(target) }
+}
+
 fn apply_image_list_row_selection(chrome: &mut DirectoryTreeUiChrome, index: usize) {
     chrome.image_list_keyboard_active = true;
     chrome.current_index = index;
@@ -1645,6 +1661,10 @@ fn try_handle_image_list_arrow_keys(
             next = wrapped_image_list_index(current, 1, len);
         } else if input.key_pressed(egui::Key::ArrowUp) {
             next = wrapped_image_list_index(current, -1, len);
+        } else if input.key_pressed(egui::Key::Home) {
+            next = image_list_home_end_index(current, egui::Key::Home, len);
+        } else if input.key_pressed(egui::Key::End) {
+            next = image_list_home_end_index(current, egui::Key::End, len);
         }
     });
     let Some(index) = next else {
@@ -1654,6 +1674,8 @@ fn try_handle_image_list_arrow_keys(
     ui.input_mut(|input| {
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+        input.consume_key(egui::Modifiers::NONE, egui::Key::Home);
+        input.consume_key(egui::Modifiers::NONE, egui::Key::End);
     });
     apply_image_list_row_selection(chrome, index);
     send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(index));

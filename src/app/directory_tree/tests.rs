@@ -25,7 +25,7 @@ use super::ui::{
     directory_tree_panel_layout, filesystem_ancestor_chain, image_list_column_layout,
     image_list_modified_column, image_list_name_column, image_list_size_column,
     image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
-    unc_share_root, wrapped_image_list_index,
+    unc_share_root, wrapped_image_list_index, image_list_home_end_index,
 };
 use super::workers::read_child_directories;
 use super::*;
@@ -481,6 +481,21 @@ fn wrapped_image_list_index_loops_at_bounds() {
     assert!(wrapped_image_list_index(0, -1, 1).is_none());
     assert!(wrapped_image_list_index(0, 1, 1).is_none());
     assert!(wrapped_image_list_index(0, 1, 0).is_none());
+}
+
+#[test]
+fn image_list_home_end_index_jumps_to_bounds() {
+    assert_eq!(
+        image_list_home_end_index(4, egui::Key::Home, 10),
+        Some(0)
+    );
+    assert_eq!(
+        image_list_home_end_index(4, egui::Key::End, 10),
+        Some(9)
+    );
+    assert!(image_list_home_end_index(0, egui::Key::Home, 10).is_none());
+    assert!(image_list_home_end_index(9, egui::Key::End, 10).is_none());
+    assert!(image_list_home_end_index(0, egui::Key::Home, 0).is_none());
 }
 
 #[test]
