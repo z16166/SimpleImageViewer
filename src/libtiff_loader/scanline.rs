@@ -27,7 +27,7 @@ use std::path::PathBuf;
 
 use super::decode::{
     TiffPaletteMaps, TiffSampleDecodeParams, get_raw_value, process_scanline_contig,
-    process_scanline_separate,
+    process_scanline_separate, tiff_uint_default_sample_max,
 };
 use super::handle::create_tiff_handle;
 use super::thumbnail::extract_embedded_thumbnail;
@@ -295,6 +295,77 @@ const FORMAT_IEEEFP: u16 = 3;
 const CONFIG_CONTIG: u16 = 1; // Contiguous / Chunky format (e.g., RGBRGBRGB...)
 const CONFIG_SEPARATE: u16 = 2; // Planar format (e.g., RRR... GGG... BBB...)
 
+unsafe fn manual_decode_scanline_pass(
+    tif: *mut lib::TIFF,
+    buf: &mut [u8],
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    config: u16,
+    spp: u16,
+    samples_to_process: usize,
+    params: TiffSampleDecodeParams,
+    palette: TiffPaletteMaps,
+    track_range: bool,
+    actual_min: &mut f64,
+    actual_max: &mut f64,
+) {
+    if config == CONFIG_CONTIG {
+        for y in 0..height {
+            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
+                buf.fill(0);
+            }
+            if track_range {
+                let num_samples = width as usize * spp as usize;
+                for idx in 0..num_samples {
+                    let val = get_raw_value(buf, idx, params.bps, params.format);
+                    if val.is_finite() {
+                        *actual_min = actual_min.min(val);
+                        *actual_max = actual_max.max(val);
+                    }
+                }
+            }
+            let row_offset = y as usize * width as usize * 4;
+            process_scanline_contig(
+                buf,
+                &mut rgba[row_offset..],
+                width,
+                spp,
+                params,
+                palette,
+            );
+        }
+    } else {
+        for s in 0..samples_to_process {
+            for y in 0..height {
+                if unsafe {
+                    lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
+                } <= 0
+                {
+                    buf.fill(0);
+                }
+                if track_range {
+                    for idx in 0..width as usize {
+                        let val = get_raw_value(buf, idx, params.bps, params.format);
+                        if val.is_finite() {
+                            *actual_min = actual_min.min(val);
+                            *actual_max = actual_max.max(val);
+                        }
+                    }
+                }
+                let row_offset = y as usize * width as usize * 4;
+                process_scanline_separate(
+                    buf,
+                    &mut rgba[row_offset..],
+                    width,
+                    s,
+                    params,
+                );
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn manual_decode_scanline(
     tif: *mut lib::TIFF,
     width: u32,
@@ -372,8 +443,11 @@ pub(crate) unsafe fn manual_decode_scanline(
     let use_auto_scale = !smax_provided
         && photo != PHOTO_SEPARATED
         && (format == FORMAT_IEEEFP || bps == 16 || bps == 32 || bps == 64);
+    let use_integer_auto_scale = use_auto_scale && format != FORMAT_IEEEFP;
 
-    if use_auto_scale {
+    // IEEE float without SMax can exceed 1.0; a provisional decode would clamp before we
+    // know the range, so keep a dedicated min/max scan for that case only.
+    if use_auto_scale && format == FORMAT_IEEEFP {
         let mut actual_min = f64::MAX;
         let mut actual_max = f64::MIN;
 
@@ -397,12 +471,8 @@ pub(crate) unsafe fn manual_decode_scanline(
                     for idx in 0..num_samples {
                         let val = get_raw_value(&buf, idx, bps, format);
                         if val.is_finite() {
-                            if val < actual_min {
-                                actual_min = val;
-                            }
-                            if val > actual_max {
-                                actual_max = val;
-                            }
+                            actual_min = actual_min.min(val);
+                            actual_max = actual_max.max(val);
                         }
                     }
                 }
@@ -417,49 +487,60 @@ pub(crate) unsafe fn manual_decode_scanline(
         }
     }
 
-    if config == CONFIG_CONTIG {
-        // Contig
-        for y in 0..height {
-            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-                buf.fill(0);
-            }
-            let row_offset = y as usize * width as usize * 4;
-            process_scanline_contig(
-                &buf,
-                &mut rgba[row_offset..],
-                width,
-                spp,
-                TiffSampleDecodeParams {
-                    bps,
-                    photo,
-                    format,
-                    swapped,
-                    smin,
-                    smax,
-                },
-                TiffPaletteMaps {
-                    r_map,
-                    g_map,
-                    b_map,
-                },
-            );
-        }
-    } else {
-        // Separate
-        for s in 0..samples_to_process {
-            for y in 0..height {
-                if unsafe {
-                    lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
-                } <= 0
-                {
-                    buf.fill(0);
-                }
-                let row_offset = y as usize * width as usize * 4;
-                process_scanline_separate(
-                    &buf,
-                    &mut rgba[row_offset..],
+    let palette = TiffPaletteMaps {
+        r_map,
+        g_map,
+        b_map,
+    };
+    let mut actual_min = f64::MAX;
+    let mut actual_max = f64::MIN;
+    let decode_params = TiffSampleDecodeParams {
+        bps,
+        photo,
+        format,
+        swapped,
+        smin,
+        smax,
+    };
+
+    unsafe {
+        manual_decode_scanline_pass(
+            tif,
+            &mut buf,
+            &mut rgba,
+            width,
+            height,
+            config,
+            spp,
+            samples_to_process,
+            decode_params,
+            palette,
+            use_integer_auto_scale,
+            &mut actual_min,
+            &mut actual_max,
+        );
+    }
+
+    if use_integer_auto_scale && actual_max > actual_min {
+        let default_max = tiff_uint_default_sample_max(bps);
+        let final_smin = if smin_provided { smin } else { actual_min };
+        let final_smax = actual_max;
+        let needs_rescale = (!smin_provided && final_smin > 0.5)
+            || final_smax < default_max - 0.5;
+        if needs_rescale {
+            smin = final_smin;
+            smax = final_smax;
+            rgba.fill(255);
+            unsafe {
+                manual_decode_scanline_pass(
+                    tif,
+                    &mut buf,
+                    &mut rgba,
                     width,
-                    s,
+                    height,
+                    config,
+                    spp,
+                    samples_to_process,
                     TiffSampleDecodeParams {
                         bps,
                         photo,
@@ -468,9 +549,14 @@ pub(crate) unsafe fn manual_decode_scanline(
                         smin,
                         smax,
                     },
+                    palette,
+                    false,
+                    &mut actual_min,
+                    &mut actual_max,
                 );
             }
         }
     }
+
     Ok(rgba)
 }

@@ -469,6 +469,42 @@ fn read_uint16_sample(buf: &[u8], sample_index: usize) -> u16 {
     unsafe { std::ptr::read_unaligned(buf.as_ptr().add(sample_index * 2) as *const u16) }
 }
 
+#[inline]
+pub(crate) fn tiff_uint_default_sample_max(bps: u16) -> f64 {
+    match bps {
+        64 => 18446744073709551615.0,
+        32 => 4294967295.0,
+        24 => 16777215.0,
+        16 => 65535.0,
+        8 => 255.0,
+        _ => 1.0,
+    }
+}
+
+/// Re-normalize scene-linear f32 pixels after a provisional full-range decode.
+fn rescale_scene_linear_rgba32f(
+    out: &mut [f32],
+    provisional_smin: f64,
+    provisional_smax: f64,
+    final_smin: f64,
+    final_smax: f64,
+    rescale_alpha: bool,
+) {
+    let provisional_range = (provisional_smax - provisional_smin).max(1.0);
+    let final_range = (final_smax - final_smin).max(1.0);
+    if (final_smin - provisional_smin).abs() <= 1.0 && (final_smax - provisional_smax).abs() <= 1.0 {
+        return;
+    }
+    let scale = (provisional_range / final_range) as f32;
+    let offset = ((provisional_smin - final_smin) / final_range) as f32;
+    let channels = if rescale_alpha { 4 } else { 3 };
+    for px in out.chunks_exact_mut(4) {
+        for c in 0..channels {
+            px[c] = (px[c] * scale + offset).clamp(0.0, 1.0);
+        }
+    }
+}
+
 pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
     tif: *mut lib::TIFF,
     width: u32,
@@ -507,33 +543,16 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
         }
     }
 
-    if !smax_provided {
-        let mut actual_min = f64::MAX;
-        let mut actual_max = f64::MIN;
-        for y in 0..height {
-            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-                return Err(format!(
-                    "16-bit RGB TIFF: scan failed at row {y} (min/max pass)"
-                ));
-            }
-            for x in 0..width as usize {
-                let base = x * spp as usize;
-                for c in 0..3 {
-                    let val = read_uint16_sample(&buf, base + c) as f64;
-                    actual_min = actual_min.min(val);
-                    actual_max = actual_max.max(val);
-                }
-            }
-        }
-        if actual_max > actual_min {
-            if !smin_provided {
-                smin = actual_min;
-            }
-            smax = actual_max;
-        }
-    }
+    let provisional_smin = if smin_provided { smin } else { 0.0 };
+    let provisional_smax = if smax_provided {
+        smax
+    } else {
+        tiff_uint_default_sample_max(16)
+    };
+    let provisional_range = (provisional_smax - provisional_smin).max(1.0);
 
-    let range = (smax - smin).max(1.0);
+    let mut actual_min = f64::MAX;
+    let mut actual_max = f64::MIN;
     let mut out = vec![0.0_f32; width as usize * height as usize * 4];
     for y in 0..height {
         if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
@@ -546,16 +565,39 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
             let dst = x * 4;
             for c in 0..3 {
                 let val = read_uint16_sample(&buf, base + c) as f64;
-                row[dst + c] = (((val - smin) / range).clamp(0.0, 1.0)) as f32;
+                if !smax_provided {
+                    actual_min = actual_min.min(val);
+                    actual_max = actual_max.max(val);
+                }
+                row[dst + c] =
+                    (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32;
             }
             row[dst + 3] = if spp >= 4 {
-                (((read_uint16_sample(&buf, base + 3) as f64 - smin) / range).clamp(0.0, 1.0))
-                    as f32
+                let val = read_uint16_sample(&buf, base + 3) as f64;
+                if !smax_provided {
+                    actual_min = actual_min.min(val);
+                    actual_max = actual_max.max(val);
+                }
+                (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32
             } else {
                 1.0
             };
         }
     }
+
+    if !smax_provided && actual_max > actual_min {
+        let final_smin = if smin_provided { smin } else { actual_min };
+        let final_smax = actual_max;
+        rescale_scene_linear_rgba32f(
+            &mut out,
+            provisional_smin,
+            provisional_smax,
+            final_smin,
+            final_smax,
+            spp >= 4,
+        );
+    }
+
     Ok(out)
 }
 
