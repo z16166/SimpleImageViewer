@@ -266,9 +266,6 @@ impl CallbackTrait for HdrTilePlaneCallback {
                                         display_storage_view: display_storage,
                                     },
                                 );
-                            if !resources.image_bindings.is_empty() {
-                                resources.image_bindings.clear();
-                            }
                             let tone_map_buffer =
                                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                     label: Some(
@@ -315,9 +312,6 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         }
 
                         if let Some(pending_work) = self.pending_work.as_ref() {
-                            if !resources.image_bindings.is_empty() {
-                                resources.image_bindings.clear();
-                            }
                             let tone_map_buffer =
                                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                     label: Some(
@@ -397,9 +391,6 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             resources.tile_bindings.remove(tile_key);
                             return Vec::new();
                         }
-                        if !resources.image_bindings.is_empty() {
-                            resources.image_bindings.clear();
-                        }
                         let tone_map_buffer =
                             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                 label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
@@ -453,9 +444,6 @@ impl CallbackTrait for HdrTilePlaneCallback {
         } else if !resources.tile_bindings.contains(tile_key) {
             match upload_callback_tile(device, queue, &self.tile) {
                 Ok(uploaded) => {
-                    if !resources.image_bindings.is_empty() {
-                        resources.image_bindings.clear();
-                    }
                     let tone_map_buffer =
                         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                             label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
