@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::{ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
 
 use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
@@ -36,24 +36,18 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     }
 
     let mmap = crate::mmap_util::map_file(path)?;
-    let mut dimensions_reader = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
+    let reader = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
-    dimensions_reader.no_limits();
-    let (width, height) = dimensions_reader
-        .into_dimensions()
-        .map_err(|e| e.to_string())?;
+    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
     super::tone_map::validate_hdr_fallback_budget(width, height)?;
-
-    let mut decoder = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
 
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
-    decoder.limits(limits);
+    decoder.set_limits(limits).map_err(|e| e.to_string())?;
 
-    let image = decoder.decode().map_err(|e| e.to_string())?;
+    let image = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     let rgba = image.into_rgba32f();
 
     Ok(HdrImageBuffer {
@@ -75,7 +69,7 @@ mod tests {
             .find("validate_hdr_fallback_budget(width, height)")
             .expect("decode_hdr_image should validate HDR fallback dimensions");
         let decode_pos = source
-            .find("let image = decoder.decode()")
+            .find("DynamicImage::from_decoder(decoder)")
             .expect("decode_hdr_image should decode after budget validation");
         let convert_pos = source
             .find("let rgba = image.into_rgba32f()")
