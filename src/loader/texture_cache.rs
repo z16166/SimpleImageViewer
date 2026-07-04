@@ -42,7 +42,24 @@ pub struct TextureCache {
     original_res: HashMap<usize, (u32, u32)>,
     /// True when the index uses the tiled pyramid pipeline (PSB/EXR/large raster).
     needs_tile_manager: HashMap<usize, bool>,
+    /// Cached keys for bounded eviction scans (len <= max_size + 1).
+    cached_indices: Vec<usize>,
+    /// `(current_index, total_count)` for which `evict_furthest_idx` was computed.
+    evict_anchor: (usize, usize),
+    /// Index with greatest circular distance from `evict_anchor`.
+    evict_furthest_idx: Option<usize>,
+    evict_furthest_dist: usize,
     max_size: usize,
+}
+
+fn circular_distance(current_index: usize, total_count: usize, idx: usize) -> usize {
+    if total_count == 0 {
+        (idx as isize - current_index as isize).unsigned_abs()
+    } else {
+        let forward = (idx + total_count - current_index) % total_count;
+        let backward = (current_index + total_count - idx) % total_count;
+        forward.min(backward)
+    }
 }
 
 impl TextureCache {
@@ -51,6 +68,10 @@ impl TextureCache {
             textures: HashMap::new(),
             original_res: HashMap::new(),
             needs_tile_manager: HashMap::new(),
+            cached_indices: Vec::new(),
+            evict_anchor: (0, 0),
+            evict_furthest_idx: None,
+            evict_furthest_dist: 0,
             max_size,
         }
     }
@@ -61,11 +82,16 @@ impl TextureCache {
         handle: egui::TextureHandle,
         params: TextureCacheInsert,
     ) -> Option<usize> {
+        let is_new_key = !self.textures.contains_key(&index);
         self.textures.insert(index, handle);
         self.original_res
             .insert(index, (params.orig_w, params.orig_h));
         self.needs_tile_manager
             .insert(index, params.needs_tile_manager);
+        if is_new_key {
+            self.cached_indices.push(index);
+        }
+        self.refresh_evict_candidate(params.current_index, params.total_count, index);
         self.evict(params.current_index, params.total_count)
     }
 
@@ -83,6 +109,10 @@ impl TextureCache {
         self.textures.remove(&index);
         self.original_res.remove(&index);
         self.needs_tile_manager.remove(&index);
+        self.drop_cached_index(index);
+        if self.evict_furthest_idx == Some(index) {
+            self.evict_furthest_idx = None;
+        }
     }
 
     pub fn relocate(&mut self, from: usize, to: usize) {
@@ -98,12 +128,22 @@ impl TextureCache {
         if let Some(flag) = self.needs_tile_manager.remove(&from) {
             self.needs_tile_manager.insert(to, flag);
         }
+        if let Some(slot) = self.cached_indices.iter_mut().find(|i| **i == from) {
+            *slot = to;
+        }
+        self.evict_furthest_idx = None;
     }
 
     pub fn permute(&mut self, old_to_new: &[usize]) {
         permute_usize_hashmap(&mut self.textures, old_to_new);
         permute_usize_hashmap(&mut self.original_res, old_to_new);
         permute_usize_hashmap(&mut self.needs_tile_manager, old_to_new);
+        for idx in &mut self.cached_indices {
+            if *idx < old_to_new.len() {
+                *idx = old_to_new[*idx];
+            }
+        }
+        self.evict_furthest_idx = None;
     }
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
@@ -134,6 +174,44 @@ impl TextureCache {
         self.textures.clear();
         self.original_res.clear();
         self.needs_tile_manager.clear();
+        self.cached_indices.clear();
+        self.evict_furthest_idx = None;
+        self.evict_furthest_dist = 0;
+    }
+
+    fn drop_cached_index(&mut self, index: usize) {
+        self.cached_indices.retain(|&i| i != index);
+    }
+
+    fn consider_evict_candidate(&mut self, current_index: usize, total_count: usize, idx: usize) {
+        let dist = circular_distance(current_index, total_count, idx);
+        if self.evict_furthest_idx.is_none() || dist > self.evict_furthest_dist {
+            self.evict_furthest_dist = dist;
+            self.evict_furthest_idx = Some(idx);
+        }
+    }
+
+    fn rebuild_evict_candidate(&mut self, current_index: usize, total_count: usize) {
+        self.evict_anchor = (current_index, total_count);
+        self.evict_furthest_idx = None;
+        self.evict_furthest_dist = 0;
+        let indices = self.cached_indices.clone();
+        for idx in indices {
+            self.consider_evict_candidate(current_index, total_count, idx);
+        }
+    }
+
+    fn refresh_evict_candidate(
+        &mut self,
+        current_index: usize,
+        total_count: usize,
+        inserted: usize,
+    ) {
+        if self.evict_anchor != (current_index, total_count) || self.evict_furthest_idx.is_none() {
+            self.rebuild_evict_candidate(current_index, total_count);
+        } else {
+            self.consider_evict_candidate(current_index, total_count, inserted);
+        }
     }
 
     fn evict(&mut self, current_index: usize, total_count: usize) -> Option<usize> {
@@ -142,24 +220,13 @@ impl TextureCache {
         }
         // Evict the texture with the greatest CIRCULAR distance from current_index.
         // In a 100-image list, index 99 is distance 1 from index 0 (wrapping around).
-        let to_remove = self.textures.keys().copied().max_by_key(|&idx| {
-            if total_count == 0 {
-                (idx as isize - current_index as isize).unsigned_abs()
-            } else {
-                let forward = (idx + total_count - current_index) % total_count;
-                let backward = (current_index + total_count - idx) % total_count;
-                forward.min(backward)
-            }
-        });
-
-        if let Some(idx) = to_remove {
-            self.textures.remove(&idx);
-            self.original_res.remove(&idx);
-            self.needs_tile_manager.remove(&idx);
-            Some(idx)
-        } else {
-            None
-        }
+        let idx = self.evict_furthest_idx?;
+        self.textures.remove(&idx);
+        self.original_res.remove(&idx);
+        self.needs_tile_manager.remove(&idx);
+        self.drop_cached_index(idx);
+        self.rebuild_evict_candidate(current_index, total_count);
+        Some(idx)
     }
 }
 
@@ -197,5 +264,76 @@ mod tests {
         assert!(cache.contains(7));
         assert_eq!(cache.get_original_res(7), Some((100, 200)));
         assert!(cache.needs_tile_manager(7));
+    }
+
+    #[test]
+    fn texture_cache_evicts_furthest_circular_neighbor() {
+        let ctx = egui::Context::default();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+        let mut cache = TextureCache::new(2);
+        let total = 10;
+        let current = 0;
+
+        for idx in [0usize, 1, 5] {
+            let handle = ctx.load_texture(
+                format!("tex_{idx}"),
+                color_image.clone(),
+                egui::TextureOptions::LINEAR,
+            );
+            if let Some(evicted) = cache.insert(
+                idx,
+                handle,
+                TextureCacheInsert {
+                    orig_w: 1,
+                    orig_h: 1,
+                    needs_tile_manager: false,
+                    current_index: current,
+                    total_count: total,
+                },
+            ) {
+                assert_eq!(evicted, 5, "index 5 is furthest from current 0 in a ring of 10");
+            }
+        }
+
+        assert!(cache.contains(0));
+        assert!(cache.contains(1));
+        assert!(!cache.contains(5));
+    }
+
+    #[test]
+    fn texture_cache_wraparound_distance_prefers_nearby_over_wrapped() {
+        let ctx = egui::Context::default();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+        let mut cache = TextureCache::new(2);
+        let total = 10;
+        let current = 9;
+
+        for idx in [9usize, 0, 4] {
+            let handle = ctx.load_texture(
+                format!("tex_{idx}"),
+                color_image.clone(),
+                egui::TextureOptions::LINEAR,
+            );
+            if let Some(evicted) = cache.insert(
+                idx,
+                handle,
+                TextureCacheInsert {
+                    orig_w: 1,
+                    orig_h: 1,
+                    needs_tile_manager: false,
+                    current_index: current,
+                    total_count: total,
+                },
+            ) {
+                assert_eq!(
+                    evicted, 4,
+                    "index 4 is distance 5 from 9; 0 and 9 are distance 1"
+                );
+            }
+        }
+
+        assert!(cache.contains(9));
+        assert!(cache.contains(0));
+        assert!(!cache.contains(4));
     }
 }
