@@ -184,8 +184,12 @@ impl ImageViewerApp {
                         preview.width,
                         preview.height
                     );
-                    if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined {
-                        crate::tile_cache::PIXEL_CACHE.lock().remove_image(update.index);
+                    if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined
+                        && tm.preview_texture.is_some()
+                    {
+                        crate::tile_cache::PIXEL_CACHE
+                            .lock()
+                            .remove_image(update.index);
                         tm.pending_tiles.clear();
                         tm.drop_gpu_tiles();
                     }

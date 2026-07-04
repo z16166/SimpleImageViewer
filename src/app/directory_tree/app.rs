@@ -808,7 +808,7 @@ impl ImageViewerApp {
                     }
                     ctx.request_repaint();
                 }
-                DirectoryTreeCommand::SelectImage(index) => {
+                DirectoryTreeCommand::SelectImage(row_index) => {
                     if self
                         .directory_tree
                         .list
@@ -817,17 +817,24 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    if index < self.image_files.len() {
-                        self.pending_directory_tree_select_index = Some(index);
-                        let mut list = self.directory_tree.list.lock();
-                        list.current_index = index;
-                        list.scroll_image_list_to_current = true;
-                        list.mark_snapshot_dirty();
-                        ctx.request_repaint();
-                        self.request_directory_tree_viewport_repaint(ctx);
-                    }
+                    let file_index = {
+                        let list = self.directory_tree.list.lock();
+                        list.image_rows.get(row_index).and_then(|row| {
+                            self.image_files.iter().position(|path| path == &row.path)
+                        })
+                    };
+                    let Some(file_index) = file_index else {
+                        continue;
+                    };
+                    self.pending_directory_tree_select_index = Some(file_index);
+                    let mut list = self.directory_tree.list.lock();
+                    list.current_index = row_index;
+                    list.scroll_image_list_to_current = true;
+                    list.mark_snapshot_dirty();
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
                 }
-                DirectoryTreeCommand::SelectImageAndHideNav(index) => {
+                DirectoryTreeCommand::SelectImageAndHideNav(row_index) => {
                     if self
                         .directory_tree
                         .list
@@ -836,21 +843,28 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    if index < self.image_files.len() {
-                        if index != self.current_index {
-                            self.pending_directory_tree_select_index = Some(index);
-                        }
-                        {
-                            let mut list = self.directory_tree.list.lock();
-                            list.current_index = index;
-                            list.scroll_image_list_to_current = true;
-                        }
-                        // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
-                        // Settings can restore the panel without rewriting yaml.
-                        self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
-                        ctx.request_repaint();
-                        self.request_directory_tree_viewport_repaint(ctx);
+                    let file_index = {
+                        let list = self.directory_tree.list.lock();
+                        list.image_rows.get(row_index).and_then(|row| {
+                            self.image_files.iter().position(|path| path == &row.path)
+                        })
+                    };
+                    let Some(file_index) = file_index else {
+                        continue;
+                    };
+                    if file_index != self.current_index {
+                        self.pending_directory_tree_select_index = Some(file_index);
                     }
+                    {
+                        let mut list = self.directory_tree.list.lock();
+                        list.current_index = row_index;
+                        list.scroll_image_list_to_current = true;
+                    }
+                    // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
+                    // Settings can restore the panel without rewriting yaml.
+                    self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
                 }
                 DirectoryTreeCommand::SortImageList(column) => {
                     let (sort_column, sort_ascending) = {

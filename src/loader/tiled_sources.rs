@@ -589,9 +589,9 @@ impl PsdV1AsyncSource {
                         Some(&decode_mmap[..]),
                     ) {
                         ImageData::Static(oriented) => oriented.into_arc_pixels(),
-                        ImageData::Tiled(source) => source
-                            .full_pixels()
-                            .unwrap_or_else(|| Arc::new(Vec::new())),
+                        ImageData::Tiled(source) => {
+                            source.full_pixels().unwrap_or_else(|| Arc::new(Vec::new()))
+                        }
                         other => {
                             log::error!(
                                 "[Loader] PSD v1 unexpected oriented shape for {}: {:?}",
@@ -664,7 +664,6 @@ fn notify_psd_v1_decode_complete(
             raw_bootstrap_osd: None,
         }));
     }
-    let _ = notify.load_tx.send(LoaderOutput::Refined(notify.index));
 }
 
 impl TiledImageSource for PsdV1AsyncSource {
@@ -702,7 +701,9 @@ impl TiledImageSource for PsdV1AsyncSource {
         if let Some(px) = self.pixels.read().as_ref() {
             return memory_rgba_preview(self.width, self.height, px, max_w, max_h);
         }
-        psd_v1_placeholder_preview(self.width, self.height, max_w, max_h)
+        // Do not synthesize a solid-color bootstrap preview: the loader would upload it
+        // and the async HQ preview would flash gray -> image on the first frame.
+        (0, 0, Vec::new())
     }
 
     fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -741,27 +742,6 @@ impl TiledImageSource for PsdV1AsyncSource {
             }
         }
     }
-}
-
-fn psd_v1_placeholder_preview(
-    full_w: u32,
-    full_h: u32,
-    max_w: u32,
-    max_h: u32,
-) -> (u32, u32, Vec<u8>) {
-    if full_w == 0 || full_h == 0 {
-        return (0, 0, Vec::new());
-    }
-    let scale = (max_w as f64 / full_w as f64)
-        .min(max_h as f64 / full_h as f64)
-        .min(1.0);
-    let out_w = (full_w as f64 * scale).round().max(1.0) as u32;
-    let out_h = (full_h as f64 * scale).round().max(1.0) as u32;
-    let mut pixels = Vec::with_capacity(out_w as usize * out_h as usize * 4);
-    for _ in 0..(out_w * out_h) {
-        pixels.extend_from_slice(&PSD_V1_PLACEHOLDER_RGBA);
-    }
-    (out_w, out_h, pixels)
 }
 
 #[cfg(test)]
