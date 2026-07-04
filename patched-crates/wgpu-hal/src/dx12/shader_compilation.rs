@@ -159,6 +159,16 @@ struct FxcLib {
     d3dcompile_fn: D3DCompileFn,
 }
 
+struct FxcCompileInput<'a> {
+    source: &'a str,
+    source_name: Option<&'a CStr>,
+    raw_ep: &'a str,
+    full_stage: &'a str,
+    compile_flags: u32,
+    shader_data: &'a mut Option<ID3DBlob>,
+    error: &'a mut Option<ID3DBlob>,
+}
+
 impl FxcLib {
     const PATH: &str = "d3dcompiler_47.dll";
 
@@ -175,17 +185,16 @@ impl FxcLib {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn compile(
-        &self,
-        source: &str,
-        source_name: Option<&CStr>,
-        raw_ep: &str,
-        full_stage: &str,
-        compile_flags: u32,
-        shader_data: &mut Option<ID3DBlob>,
-        error: &mut Option<ID3DBlob>,
-    ) -> Result<windows_core::Result<()>, crate::DeviceError> {
+    fn compile(&self, input: FxcCompileInput<'_>) -> Result<windows_core::Result<()>, crate::DeviceError> {
+        let FxcCompileInput {
+            source,
+            source_name,
+            raw_ep,
+            full_stage,
+            compile_flags,
+            shader_data,
+            error,
+        } = input;
         unsafe {
             let raw_ep = alloc::ffi::CString::new(raw_ep).unwrap();
             let full_stage = alloc::ffi::CString::new(full_stage).unwrap();
@@ -241,15 +250,15 @@ fn compile_fxc(
 
     let mut shader_data = None;
     let mut error = None;
-    let hr = fxc.compile(
+    let hr = fxc.compile(FxcCompileInput {
         source,
         source_name,
         raw_ep,
         full_stage,
         compile_flags,
-        &mut shader_data,
-        &mut error,
-    )?;
+        shader_data: &mut shader_data,
+        error: &mut error,
+    })?;
 
     match hr {
         Ok(()) => {

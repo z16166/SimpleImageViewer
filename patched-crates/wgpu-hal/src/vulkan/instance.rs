@@ -191,6 +191,19 @@ impl super::InstanceShared {
     }
 }
 
+pub struct VulkanInstanceFromRawParams {
+    pub entry: ash::Entry,
+    pub raw_instance: ash::Instance,
+    pub instance_api_version: u32,
+    pub android_sdk_version: u32,
+    pub debug_utils_create_info: Option<super::DebugUtilsCreateInfo>,
+    pub extensions: Vec<&'static CStr>,
+    pub flags: wgt::InstanceFlags,
+    pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+    pub has_nv_optimus: bool,
+    pub drop_callback: Option<crate::DropCallback>,
+}
+
 impl super::Instance {
     pub fn shared_instance(&self) -> &super::InstanceShared {
         &self.shared
@@ -318,19 +331,19 @@ impl super::Instance {
     ///
     /// If `debug_utils_user_data` is `Some`, then the validation layer is
     /// available, so create a [`vk::DebugUtilsMessengerEXT`].
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn from_raw(
-        entry: ash::Entry,
-        raw_instance: ash::Instance,
-        instance_api_version: u32,
-        android_sdk_version: u32,
-        debug_utils_create_info: Option<super::DebugUtilsCreateInfo>,
-        extensions: Vec<&'static CStr>,
-        flags: wgt::InstanceFlags,
-        memory_budget_thresholds: wgt::MemoryBudgetThresholds,
-        has_nv_optimus: bool,
-        drop_callback: Option<crate::DropCallback>,
-    ) -> Result<Self, crate::InstanceError> {
+    pub unsafe fn from_raw(params: VulkanInstanceFromRawParams) -> Result<Self, crate::InstanceError> {
+        let VulkanInstanceFromRawParams {
+            entry,
+            raw_instance,
+            instance_api_version,
+            android_sdk_version,
+            debug_utils_create_info,
+            extensions,
+            flags,
+            memory_budget_thresholds,
+            has_nv_optimus,
+            drop_callback,
+        } = params;
         log::debug!("Instance version: 0x{instance_api_version:x}");
 
         let debug_utils = if let Some(debug_utils_create_info) = debug_utils_create_info {
@@ -833,18 +846,18 @@ impl super::Instance {
         };
 
         unsafe {
-            Self::from_raw(
+            Self::from_raw(VulkanInstanceFromRawParams {
                 entry,
-                vk_instance,
+                raw_instance: vk_instance,
                 instance_api_version,
                 android_sdk_version,
-                debug_utils,
+                debug_utils_create_info: debug_utils,
                 extensions,
-                desc.flags,
-                desc.memory_budget_thresholds,
+                flags: desc.flags,
+                memory_budget_thresholds: desc.memory_budget_thresholds,
                 has_nv_optimus,
-                None,
-            )
+                drop_callback: None,
+            })
         }
     }
 }
