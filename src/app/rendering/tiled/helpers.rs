@@ -305,33 +305,51 @@ pub(crate) fn hdr_tile_cache_key_for_coord(
     (tile_x, tile_y, tile_w, tile_h)
 }
 
-pub(crate) fn prioritize_tile_visits(
+pub(crate) fn prioritize_tile_visits_into(
+    out: &mut Vec<(TileCoord, Rect, Rect)>,
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
-) -> Vec<(TileCoord, Rect, Rect)> {
-    let mut ordered = primary_visible.to_vec();
+) {
+    out.clear();
+    out.extend_from_slice(primary_visible);
     let primary_coords = primary_visible
         .iter()
         .map(|(coord, _, _)| *coord)
         .collect::<HashSet<_>>();
-    ordered.extend(
+    out.extend(
         padded_visible
             .iter()
             .filter(|(coord, _, _)| !primary_coords.contains(coord))
             .copied(),
     );
-    ordered
 }
 
+pub(crate) fn tile_visits_for_backend_into(
+    plane_backend: PlaneBackendKind,
+    primary_visible: &[(TileCoord, Rect, Rect)],
+    padded_visible: &[(TileCoord, Rect, Rect)],
+    out: &mut Vec<(TileCoord, Rect, Rect)>,
+) {
+    match plane_backend {
+        PlaneBackendKind::Sdr => {
+            out.clear();
+            out.extend_from_slice(padded_visible);
+        }
+        PlaneBackendKind::Hdr => {
+            prioritize_tile_visits_into(out, primary_visible, padded_visible);
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn tile_visits_for_backend(
     plane_backend: PlaneBackendKind,
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
-    match plane_backend {
-        PlaneBackendKind::Sdr => padded_visible.to_vec(),
-        PlaneBackendKind::Hdr => prioritize_tile_visits(primary_visible, padded_visible),
-    }
+    let mut out = Vec::new();
+    tile_visits_for_backend_into(plane_backend, primary_visible, padded_visible, &mut out);
+    out
 }
 
 pub(crate) fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> f32 {
@@ -386,7 +404,7 @@ pub(crate) fn should_repaint_for_ready_tiles_for_backend(
 pub(crate) fn has_pending_visible_tiles_for_backend(
     plane_backend: PlaneBackendKind,
     pending_tiles: &HashSet<PendingTileKey>,
-    visible_coords: &[TileCoord],
+    visible_coords: &HashSet<TileCoord>,
 ) -> bool {
     if plane_backend != PlaneBackendKind::Hdr {
         return false;

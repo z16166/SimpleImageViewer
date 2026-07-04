@@ -326,7 +326,7 @@ mod tests {
             crate::loader::TilePixelKind::Sdr,
         ));
 
-        manager.retain_pending_tiles(&[TileCoord { col: 0, row: 0 }]);
+        manager.retain_pending_tiles(&HashSet::from([TileCoord { col: 0, row: 0 }]));
 
         assert!(manager.pending_tiles.contains(&PendingTileKey::new(
             TileCoord { col: 0, row: 0 },
@@ -444,10 +444,8 @@ impl TileManager {
         }
     }
 
-    fn sync_gpu_visible_protection(&mut self, visible: &[TileCoord]) {
-        let visible_set: HashSet<TileCoord> = visible.iter().copied().collect();
-
-        for coord in &visible_set {
+    fn sync_gpu_visible_protection(&mut self, visible: &HashSet<TileCoord>) {
+        for coord in visible {
             if self.tiles.contains_key(coord) {
                 self.evictable_lru.remove(*coord);
                 self.visible_pinned.insert(*coord);
@@ -457,7 +455,7 @@ impl TileManager {
         let unpinned: Vec<_> = self
             .visible_pinned
             .iter()
-            .filter(|coord| !visible_set.contains(coord))
+            .filter(|coord| !visible.contains(coord))
             .copied()
             .collect();
         for coord in unpinned {
@@ -488,14 +486,14 @@ impl TileManager {
         Arc::clone(&self.source)
     }
 
-    pub fn retain_pending_tiles(&mut self, visible_coords: &[TileCoord]) {
+    pub fn retain_pending_tiles(&mut self, visible_coords: &HashSet<TileCoord>) {
         self.pending_tiles
             .retain(|key| visible_coords.contains(&key.coord));
     }
 
     /// Returns counts for the current visible set using a non-blocking try_lock: (gpu, cpu_ready, pending)
     #[cfg(feature = "tile-debug")]
-    pub fn stats_for_visible(&self, visible: &[TileCoord]) -> (usize, usize, usize) {
+    pub fn stats_for_visible(&self, visible: &HashSet<TileCoord>) -> (usize, usize, usize) {
         let mut gpu = 0;
         let mut cpu = 0;
         let mut pending = 0;
@@ -529,7 +527,7 @@ impl TileManager {
     }
 
     /// Returns true if any of the visible tiles are in CPU cache but NOT in GPU.
-    pub fn has_ready_to_upload(&self, visible: &[TileCoord]) -> bool {
+    pub fn has_ready_to_upload(&self, visible: &HashSet<TileCoord>) -> bool {
         let cache = PIXEL_CACHE.lock();
 
         for coord in visible {
@@ -573,7 +571,7 @@ impl TileManager {
         coord: TileCoord,
         ctx: &egui::Context,
         allow_upload: bool,
-        visible_coords: &[TileCoord],
+        visible_coords: &HashSet<TileCoord>,
     ) -> (TileStatus, bool) {
         let is_visible = visible_coords.contains(&coord);
 
@@ -649,22 +647,22 @@ impl TileManager {
     /// Compute which tiles are visible given the current viewport mapping.
     /// `viewport` is the screen-space rectangle where the full image would be displayed.
     /// `screen_clip` is the visible screen area (to clip against).
-    /// Returns a list of (TileCoord, screen_rect, uv_rect) tuples.
-    pub fn visible_tiles(
+    /// Writes `(TileCoord, screen_rect, uv_rect)` tuples into `out` (reuses capacity).
+    pub fn visible_tiles_into(
         &self,
         viewport: egui::Rect,
         screen_clip: egui::Rect,
         padding: f32,
-    ) -> Vec<(TileCoord, egui::Rect, egui::Rect)> {
+        out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
+    ) {
+        out.clear();
         // Look-ahead padding: Inflate the visible area to trigger background requests
         // for neighbor tiles BEFORE they actually enter the screen.
         let visible_area = viewport.intersect(screen_clip.expand(padding));
 
         if visible_area.width() <= 0.0 || visible_area.height() <= 0.0 {
-            return Vec::new();
+            return;
         }
-
-        let mut result = Vec::new();
 
         // Compute UV bounds of the visible area relative to the full image viewport
         let uv_min_x = ((visible_area.min.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
@@ -717,18 +715,16 @@ impl TileManager {
                     egui::Rect::from_min_max(egui::Pos2::new(sx0, sy0), egui::Pos2::new(sx1, sy1));
 
                 let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                result.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                out.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
             }
         }
 
         // Sort by distance from screen center (Center-Out Priority)
         let screen_center = screen_clip.center();
-        result.sort_by_key(|(_, rect, _)| {
+        out.sort_by_key(|(_, rect, _)| {
             let dist_sq = (rect.center().x - screen_center.x).powi(2)
                 + (rect.center().y - screen_center.y).powi(2);
             (dist_sq * 10.0) as i32
         });
-
-        result
     }
 }

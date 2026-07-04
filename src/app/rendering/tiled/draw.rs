@@ -23,7 +23,7 @@ use super::helpers::{
     should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
     should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
     tile_decode_source_for_backend, tile_pending_key_for_backend, tile_plane_kind_for_backend,
-    tile_request_priority, tile_visits_for_backend, tiled_lookahead_padding,
+    tile_request_priority, tile_visits_for_backend_into, tiled_lookahead_padding,
     tiled_plane_threshold_for_backend,
 };
 use super::{BURST_UPLOAD_MAX_512, BURST_UPLOAD_MULT, FALLBACK_PREVIEW_SCALE};
@@ -299,23 +299,44 @@ impl ImageViewerApp {
             } else {
                 screen_rect
             };
-            let visible = self
-                .tile_manager()
-                .visible_tiles(unrotated_dest, tile_clip, padding);
-            let primary_visible = self
-                .tile_manager()
-                .visible_tiles(unrotated_dest, tile_clip, 0.0);
-            let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
+            if let Some(tm) = self.tile_manager.as_ref() {
+                tm.visible_tiles_into(
+                    unrotated_dest,
+                    tile_clip,
+                    padding,
+                    &mut self.tiled_visible_tiles_scratch,
+                );
+                tm.visible_tiles_into(
+                    unrotated_dest,
+                    tile_clip,
+                    0.0,
+                    &mut self.tiled_primary_visible_tiles_scratch,
+                );
+            }
+            tile_visits_for_backend_into(
+                plane_backend,
+                &self.tiled_primary_visible_tiles_scratch,
+                &self.tiled_visible_tiles_scratch,
+                &mut self.tiled_tile_visits_scratch,
+            );
+            let tile_visits = &self.tiled_tile_visits_scratch;
             self.tiled_primary_visible_scratch.clear();
-            self.tiled_primary_visible_scratch
-                .extend(primary_visible.iter().map(|(coord, _, _)| *coord));
+            self.tiled_primary_visible_scratch.extend(
+                self.tiled_primary_visible_tiles_scratch
+                    .iter()
+                    .map(|(coord, _, _)| *coord),
+            );
             self.tiled_visible_coords_scratch.clear();
-            self.tiled_visible_coords_scratch
-                .extend(visible.iter().map(|(c, _, _)| *c));
+            self.tiled_visible_coords_scratch.extend(
+                self.tiled_visible_tiles_scratch
+                    .iter()
+                    .map(|(c, _, _)| *c),
+            );
             let primary_visible_coords = &self.tiled_primary_visible_scratch;
             let visible_coords = &self.tiled_visible_coords_scratch;
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                let protected_keys: Vec<_> = primary_visible
+                let protected_keys: Vec<_> = self
+                    .tiled_primary_visible_tiles_scratch
                     .iter()
                     .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
                     .collect();
