@@ -127,7 +127,7 @@ impl RawOpenPrefetch {
                     }
                 }
                 Some(RawPrefetchEntry::InProgress) => {
-                    cvar.wait(&mut inner);
+                    cvar.wait_for(&mut inner, super::types::LOADER_WORKER_IDLE_POLL);
                 }
                 None => return None,
             }

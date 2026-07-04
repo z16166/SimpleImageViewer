@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
     DelayedFallbackJob, ImageLoader, LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey,
-    TileRequest, FALLBACK_DEBOUNCE, should_spawn_load_task,
+    TileRequest, FALLBACK_DEBOUNCE, LOADER_WORKER_IDLE_POLL, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -31,7 +31,7 @@ use crate::loader::{
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
@@ -153,7 +153,8 @@ impl ImageLoader {
         {
             let state = Arc::clone(&delayed_fallback);
             let shutdown_worker = Arc::clone(&shutdown);
-            let _ = std::thread::Builder::new()
+            let workers = Arc::clone(&worker_lifetime);
+            if let Ok(handle) = std::thread::Builder::new()
                 .name("loader-fallback".to_string())
                 .spawn(move || {
                     let (lock, cvar) = &*state;
@@ -168,7 +169,10 @@ impl ImageLoader {
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
                                     }
-                                    cvar.wait(&mut g);
+                                    cvar.wait_for(&mut g, LOADER_WORKER_IDLE_POLL);
+                                    if shutdown_worker.load(Ordering::Acquire) {
+                                        return;
+                                    }
                                 }
                                 if let Some(j) = g.take() {
                                     break j;
@@ -243,7 +247,10 @@ impl ImageLoader {
                             ),
                         });
                     }
-                });
+                })
+            {
+                workers.register_worker(handle);
+            }
         }
 
         // Shared set of tiles currently being decoded — prevents duplicate work across workers
@@ -268,8 +275,9 @@ impl ImageLoader {
             let plan_ref = Arc::clone(&preload_plan);
             let flight = Arc::clone(&in_flight);
             let shutdown_worker = Arc::clone(&shutdown);
+            let workers = Arc::clone(&worker_lifetime);
 
-            std::thread::Builder::new()
+            if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("tile-worker-{}", i))
                 .spawn(move || {
                     #[cfg(target_os = "windows")]
@@ -286,7 +294,10 @@ impl ImageLoader {
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;
                                 }
-                                cvar.wait(&mut heap);
+                                cvar.wait_for(&mut heap, LOADER_WORKER_IDLE_POLL);
+                                if shutdown_worker.load(Ordering::Acquire) {
+                                    return;
+                                }
                             }
                             if let Some(req) = heap.pop() {
                                 req
@@ -464,193 +475,209 @@ impl ImageLoader {
                         }));
                     }
                 })
-                .ok();
+            {
+                workers.register_worker(handle);
+            }
         }
 
         // Start dedicated Background Refinement Worker (Throttled)
         let worker_tx = tx.clone();
         let worker_plan = Arc::clone(&preload_plan);
-        let _ = std::thread::Builder::new()
+        let shutdown_worker = Arc::clone(&shutdown);
+        let workers = Arc::clone(&worker_lifetime);
+        if let Ok(handle) = std::thread::Builder::new()
             .name("refinement-worker".to_string())
             .spawn(move || {
-                while let Ok(req) = refine_rx.recv() {
-                    let snapshot_epoch = worker_plan.profile_epoch();
-                    if req.decode_profile.profile_epoch < snapshot_epoch {
-                        log::debug!(
-                            "[Refinement] Skipping stale profile epoch for {:?} ({} < {})",
-                            req.path.file_name().unwrap_or_default(),
-                            req.decode_profile.profile_epoch,
-                            snapshot_epoch
-                        );
-                        continue;
+                loop {
+                    if shutdown_worker.load(Ordering::Acquire) {
+                        break;
                     }
-                    if !worker_plan.index_in_window(req.index) {
-                        continue;
-                    }
-
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
-                        req.index,
-                        req.hdr_target_capacity,
-                        req.path.display()
-                    );
-
-                    // 2. Perform HQ demosaic at full develop resolution.
-                    let limit = hq_preview_max_side();
-                    log::debug!(
-                        "[Refinement] Starting HQ demosaic for {:?} (limit={})",
-                        req.path.file_name().unwrap_or_default(),
-                        limit,
-                    );
-                    let t0 = std::time::Instant::now();
-
-                    let mut processor = match RawProcessor::new() {
-                        Some(p) => p,
-                        None => {
-                            log::error!("[Refinement] Failed to create RawProcessor");
-                            continue;
-                        }
-                    };
-
-                    match processor.open(&req.path) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            log::error!(
-                                "[Refinement] Failed to open {:?}: {}",
-                                req.path.file_name().unwrap_or_default(),
-                                e
-                            );
-                            continue;
-                        }
-                    }
-
-                    let user_flip = req.orientation_override.unwrap_or(0);
-                    processor.set_user_flip(user_flip);
-                    if let Err(err) = processor.unpack() {
-                        log::error!(
-                            "[Refinement] Failed to unpack {:?}: {}",
-                            req.path.file_name().unwrap_or_default(),
-                            err
-                        );
-                        continue;
-                    }
-
-                    let develop_result = {
-                        let started = std::time::Instant::now();
-                        processor
-                            .develop_scene_linear_hdr()
-                            .and_then(|hdr| {
-                                finalize_raw_hq_hdr_buffer(
-                                    hdr,
-                                    req.logical_width,
-                                    req.logical_height,
-                                )
-                            })
-                            .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
-                    };
-
-                    match develop_result {
-                        Ok((hdr, cpu_demosaic_ms)) => {
-                            let elapsed = t0.elapsed();
-                            let preview_w = hdr.width;
-                            let preview_h = hdr.height;
-
+                    match refine_rx.recv_timeout(LOADER_WORKER_IDLE_POLL) {
+                        Ok(req) => {
                             let snapshot_epoch = worker_plan.profile_epoch();
                             if req.decode_profile.profile_epoch < snapshot_epoch {
                                 log::debug!(
-                                    "[Refinement] Discarding stale HQ HDR develop result for {:?} (epoch {} < {})",
+                                    "[Refinement] Skipping stale profile epoch for {:?} ({} < {})",
                                     req.path.file_name().unwrap_or_default(),
                                     req.decode_profile.profile_epoch,
                                     snapshot_epoch
                                 );
                                 continue;
                             }
-
-                            if let Some(slot) = req.hdr_developed_image.as_ref() {
-                                *slot.write() = Some(hdr.clone());
+                            if !worker_plan.index_in_window(req.index) {
+                                continue;
                             }
 
-                            let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
-                                Ok(fb) => fb,
+                            crate::preload_debug!(
+                                "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
+                                req.index,
+                                req.hdr_target_capacity,
+                                req.path.display()
+                            );
+
+                            // 2. Perform HQ demosaic at full develop resolution.
+                            let limit = hq_preview_max_side();
+                            log::debug!(
+                                "[Refinement] Starting HQ demosaic for {:?} (limit={})",
+                                req.path.file_name().unwrap_or_default(),
+                                limit,
+                            );
+                            let t0 = std::time::Instant::now();
+
+                            let mut processor = match RawProcessor::new() {
+                                Some(p) => p,
+                                None => {
+                                    log::error!("[Refinement] Failed to create RawProcessor");
+                                    continue;
+                                }
+                            };
+
+                            match processor.open(&req.path) {
+                                Ok(()) => {}
                                 Err(e) => {
                                     log::error!(
-                                        "[Refinement] HQ HDR SDR fallback failed for {:?}: {}",
+                                        "[Refinement] Failed to open {:?}: {}",
                                         req.path.file_name().unwrap_or_default(),
                                         e
                                     );
                                     continue;
                                 }
-                            };
-                            let preview = DecodedImage::from_hdr_sdr_fallback(
-                                hdr.width,
-                                hdr.height,
-                                fb,
-                            );
-                            let tile_pixels = preview.rgba().to_vec();
-                            let dynamic = match image::ImageBuffer::from_raw(
-                                hdr.width,
-                                hdr.height,
-                                tile_pixels,
-                            ) {
-                                Some(buf) => DynamicImage::ImageRgba8(buf),
-                                None => {
-                                    log::error!(
-                                        "[Refinement] Failed to build tile buffer from HQ HDR fallback"
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            {
-                                let mut dev_lock = req.developed_image.write();
-                                *dev_lock = Some(dynamic);
                             }
 
-                            let bundle = PreviewBundle::refined()
-                                .with_hdr(std::sync::Arc::new(hdr))
-                                .with_sdr(preview);
-                            let refine_osd = crate::loader::RawOsdInfo::refine_complete(
-                                preview_w,
-                                preview_h,
-                                cpu_demosaic_ms,
-                            );
-                            let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                index: req.index,
-                                decode_profile: req.decode_profile.clone(),
-                                source_key: req.source_key,
-                                preview_bundle: bundle,
-                                error: None,
-                                cpu_demosaic_ms: Some(cpu_demosaic_ms),
-                                raw_bootstrap_osd: Some(refine_osd),
-                            }));
-                            let _ =
-                                worker_tx.send(LoaderOutput::Refined(req.index));
-                            crate::preload_debug!(
-                                "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
-                                req.index,
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64(),
-                                req.path.display()
-                            );
-                            log::debug!(
-                                "[Refinement] HQ HDR completed {}x{} in {:.1}s",
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64()
-                            );
+                            let user_flip = req.orientation_override.unwrap_or(0);
+                            processor.set_user_flip(user_flip);
+                            if let Err(err) = processor.unpack() {
+                                log::error!(
+                                    "[Refinement] Failed to unpack {:?}: {}",
+                                    req.path.file_name().unwrap_or_default(),
+                                    err
+                                );
+                                continue;
+                            }
+
+                            let develop_result = {
+                                let started = std::time::Instant::now();
+                                processor
+                                    .develop_scene_linear_hdr()
+                                    .and_then(|hdr| {
+                                        finalize_raw_hq_hdr_buffer(
+                                            hdr,
+                                            req.logical_width,
+                                            req.logical_height,
+                                        )
+                                    })
+                                    .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
+                            };
+
+                            match develop_result {
+                                Ok((hdr, cpu_demosaic_ms)) => {
+                                    let elapsed = t0.elapsed();
+                                    let preview_w = hdr.width;
+                                    let preview_h = hdr.height;
+
+                                    let snapshot_epoch = worker_plan.profile_epoch();
+                                    if req.decode_profile.profile_epoch < snapshot_epoch {
+                                        log::debug!(
+                                            "[Refinement] Discarding stale HQ HDR develop result for {:?} (epoch {} < {})",
+                                            req.path.file_name().unwrap_or_default(),
+                                            req.decode_profile.profile_epoch,
+                                            snapshot_epoch
+                                        );
+                                        continue;
+                                    }
+
+                                    if let Some(slot) = req.hdr_developed_image.as_ref() {
+                                        *slot.write() = Some(hdr.clone());
+                                    }
+
+                                    let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
+                                        Ok(fb) => fb,
+                                        Err(e) => {
+                                            log::error!(
+                                                "[Refinement] HQ HDR SDR fallback failed for {:?}: {}",
+                                                req.path.file_name().unwrap_or_default(),
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let preview = DecodedImage::from_hdr_sdr_fallback(
+                                        hdr.width,
+                                        hdr.height,
+                                        fb,
+                                    );
+                                    let tile_pixels = preview.rgba().to_vec();
+                                    let dynamic = match image::ImageBuffer::from_raw(
+                                        hdr.width,
+                                        hdr.height,
+                                        tile_pixels,
+                                    ) {
+                                        Some(buf) => DynamicImage::ImageRgba8(buf),
+                                        None => {
+                                            log::error!(
+                                                "[Refinement] Failed to build tile buffer from HQ HDR fallback"
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    {
+                                        let mut dev_lock = req.developed_image.write();
+                                        *dev_lock = Some(dynamic);
+                                    }
+
+                                    let bundle = PreviewBundle::refined()
+                                        .with_hdr(std::sync::Arc::new(hdr))
+                                        .with_sdr(preview);
+                                    let refine_osd = crate::loader::RawOsdInfo::refine_complete(
+                                        preview_w,
+                                        preview_h,
+                                        cpu_demosaic_ms,
+                                    );
+                                    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+                                        index: req.index,
+                                        decode_profile: req.decode_profile.clone(),
+                                        source_key: req.source_key,
+                                        preview_bundle: bundle,
+                                        error: None,
+                                        cpu_demosaic_ms: Some(cpu_demosaic_ms),
+                                        raw_bootstrap_osd: Some(refine_osd),
+                                    }));
+                                    let _ =
+                                        worker_tx.send(LoaderOutput::Refined(req.index));
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
+                                        req.index,
+                                        preview_w,
+                                        preview_h,
+                                        elapsed.as_secs_f64(),
+                                        req.path.display()
+                                    );
+                                    log::debug!(
+                                        "[Refinement] HQ HDR completed {}x{} in {:.1}s",
+                                        preview_w,
+                                        preview_h,
+                                        elapsed.as_secs_f64()
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "[Refinement] LibRaw HQ develop failed for {:?} after {:.1}s: {}",
+                                        req.path.file_name().unwrap_or_default(),
+                                        t0.elapsed().as_secs_f64(),
+                                        e
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            log::error!(
-                                "[Refinement] LibRaw HQ develop failed for {:?} after {:.1}s: {}",
-                                req.path.file_name().unwrap_or_default(),
-                                t0.elapsed().as_secs_f64(),
-                                e
-                            );
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
-            });
+            })
+        {
+            workers.register_worker(handle);
+        }
 
         Self {
             worker_lifetime,

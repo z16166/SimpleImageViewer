@@ -29,10 +29,18 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Delayed fallback worker debounce before running `do_load` when the pool task has not claimed first.
 pub(crate) const FALLBACK_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// Periodic wake for dedicated loader workers blocked on an empty queue or channel recv.
+/// Avoids infinite condvar/recv waits when shutdown is never signaled (e.g. panic without drop).
+pub(crate) const LOADER_WORKER_IDLE_POLL: Duration = Duration::from_millis(500);
+
+/// Best-effort join budget for dedicated loader worker threads during [`LoaderWorkerLifetime`] drop.
+pub(crate) const LOADER_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// RAII shutdown for dedicated loader worker threads. Ensures `signal_shutdown` runs even if
 /// [`ImageLoader`] is dropped during stack unwinding (e.g. after `catch_unwind`).
@@ -42,6 +50,7 @@ pub(crate) struct LoaderWorkerLifetime {
     delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
     tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
     raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    worker_handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl LoaderWorkerLifetime {
@@ -59,8 +68,13 @@ impl LoaderWorkerLifetime {
             delayed_fallback,
             tile_queue,
             raw_open_prefetch,
+            worker_handles: Mutex::new(Vec::new()),
         };
         (lifetime, refine_tx)
+    }
+
+    pub(crate) fn register_worker(&self, handle: JoinHandle<()>) {
+        self.worker_handles.lock().push(handle);
     }
 
     pub(crate) fn signal_shutdown(&self) {
@@ -82,6 +96,40 @@ impl LoaderWorkerLifetime {
 impl Drop for LoaderWorkerLifetime {
     fn drop(&mut self) {
         self.signal_shutdown();
+        self.join_workers(LOADER_WORKER_JOIN_TIMEOUT);
+    }
+}
+
+impl LoaderWorkerLifetime {
+    fn join_workers(&mut self, timeout: Duration) {
+        let handles = std::mem::take(&mut *self.worker_handles.lock());
+        if handles.is_empty() {
+            return;
+        }
+        let total = handles.len();
+        let deadline = Instant::now() + timeout;
+        let mut pending = handles;
+        while !pending.is_empty() {
+            if Instant::now() >= deadline {
+                let remaining = pending.len();
+                log::warn!(
+                    "[Loader] Timed out after {:?} joining dedicated worker threads; detaching {remaining} of {total}",
+                    timeout
+                );
+                for handle in pending.drain(..) {
+                    if let Some(name) = handle.thread().name() {
+                        log::warn!("[Loader] Detaching unfinished loader worker thread {name}");
+                    } else {
+                        log::warn!("[Loader] Detaching unnamed loader worker thread");
+                    }
+                }
+                return;
+            }
+            let handle = pending.remove(0);
+            if handle.join().is_err() {
+                log::warn!("[Loader] Dedicated loader worker thread panicked on join");
+            }
+        }
     }
 }
 
