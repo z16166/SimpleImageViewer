@@ -146,6 +146,7 @@ impl ImageViewerApp {
         self.transition_start = None;
         self.tile_manager = None;
         self.prefetched_tiles.clear();
+        self.clear_prefetch_resource_indices();
         crate::tile_cache::PIXEL_CACHE.lock().clear();
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();

@@ -50,6 +50,7 @@ impl ImageViewerApp {
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.prefetched_tiles.clear();
+        self.clear_prefetch_resource_indices();
         self.animation = None;
         self.animation_cache.clear();
         self.pending_anim_frames.clear();
@@ -156,6 +157,7 @@ impl ImageViewerApp {
             pending.image_index = to;
             self.pending_anim_frames.insert(to, pending);
         }
+        self.relocate_prefetch_resource_index(from, to);
         if let Some(ref mut anim) = self.animation
             && anim.image_index == from
         {
@@ -302,6 +304,7 @@ impl ImageViewerApp {
         self.pending_anim_frames.remove(&evicted_idx);
         self.clear_installed_display_mode(evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
+        self.maybe_unregister_prefetch_resource(evicted_idx);
     }
 
     pub(super) fn clear_preloaded_assets_for_capacity_change(&mut self) {
@@ -403,45 +406,9 @@ impl ImageViewerApp {
             keep
         });
 
-        // Gather distant static HDR images
-        for idx in self.hdr_image_cache.keys().copied() {
+        for &idx in &self.prefetch_resource_indices {
             if !should_retain(idx) {
-                record_eviction(idx, "hdr_image");
-            }
-        }
-
-        // Gather distant tiled HDR image sources. This ensures tiled HDR sources (like gain-map JPEGs)
-        // are correctly evicted and do not leak in hdr_tiled_source_cache, which would cause
-        // subsequent visits to trigger has_loaded_asset() but fail to construct the TileManager,
-        // hanging the UI on loading.
-        for idx in self.hdr_tiled_source_cache.keys().copied() {
-            if !should_retain(idx) {
-                record_eviction(idx, "hdr_tiled_source");
-            }
-        }
-
-        // Gather distant uploaded SDR/static preview textures as well. These can be
-        // produced by background preload without a matching TileManager/HDR cache entry,
-        // so relying only on prefetched_tiles/HDR cleanup leaves stale GPU textures alive
-        // until the texture cache reaches its capacity.
-        for idx in self.texture_cache.textures.keys().copied() {
-            if !should_retain(idx) {
-                record_eviction(idx, "texture");
-            }
-        }
-
-        for idx in self.animation_cache.keys().copied() {
-            if !should_retain(idx) {
-                record_eviction(idx, "animation");
-            }
-        }
-
-        for idx in crate::tile_cache::PIXEL_CACHE
-            .lock()
-            .distinct_image_indices()
-        {
-            if !should_retain(idx) {
-                record_eviction(idx, "pixel_cache");
+                record_eviction(idx, "prefetch_resource");
             }
         }
 
@@ -464,7 +431,11 @@ impl ImageViewerApp {
             self.pending_anim_frames.remove(&idx);
             self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
+            self.maybe_unregister_prefetch_resource(idx);
         }
+
+        self.prefetch_resource_indices
+            .retain(|&idx| should_retain(idx));
 
         preload_debug!(
             "[PreloadDebug] prefetch eviction done: evicted_count={}",
@@ -518,6 +489,7 @@ impl ImageViewerApp {
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 
         self.raw_metadata.permute_indices(old_to_new);
+        permute_usize_set(&mut self.prefetch_resource_indices, old_to_new);
 
         for value in self.hdr_raw_gpu_demosaic_pending_key_index.values_mut() {
             if *value < old_to_new.len() {

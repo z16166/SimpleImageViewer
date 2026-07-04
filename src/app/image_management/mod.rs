@@ -39,6 +39,7 @@ mod hdr_state;
 mod image_install;
 mod loader_results;
 mod navigation;
+mod prefetch_resource_index;
 mod prefetch_retention;
 mod preload;
 mod preview;

@@ -92,6 +92,7 @@ impl ImageViewerApp {
         self.hq_tiled_preview_pending_indices.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
+        self.maybe_unregister_prefetch_resource(index);
         if self
             .current_hdr_image
             .as_ref()

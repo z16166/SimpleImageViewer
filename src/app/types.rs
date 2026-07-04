@@ -638,6 +638,8 @@ pub struct ImageViewerApp {
     // Tiled rendering instances decoded during prefetch (bounded by prefetch window; see
     // prefetch_retention::prefetched_tiles_steady_state_cap).
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
+    /// Indices with at least one prefetch eviction cache entry (see `prefetch_resource_index`).
+    pub(crate) prefetch_resource_indices: HashSet<usize>,
 
     // Theme state
     pub(crate) theme_cache: SystemThemeCache,

@@ -634,6 +634,7 @@ impl ImageViewerApp {
             tiled_primary_visible_scratch: HashSet::new(),
             tiled_visible_coords_scratch: Vec::new(),
             prefetched_tiles: std::collections::HashMap::new(),
+            prefetch_resource_indices: HashSet::new(),
             theme_cache,
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),

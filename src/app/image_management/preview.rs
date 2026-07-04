@@ -449,6 +449,7 @@ impl ImageViewerApp {
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
+        self.register_prefetch_resource(idx);
     }
 
     pub(super) fn cache_hdr_tiled_preview(

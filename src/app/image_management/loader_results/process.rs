@@ -111,6 +111,7 @@ impl ImageViewerApp {
                         });
                     }
                     self.animation_cache.insert(idx, playback);
+                    self.register_prefetch_resource(idx);
                 }
             } else if self.pending_anim_frames.contains_key(&pending_idx) {
                 ctx.request_repaint();
@@ -527,6 +528,7 @@ impl ImageViewerApp {
                 LoaderOutput::Tile(tile_result) => {
                     // Tile signals are free: pixels live in PIXEL_CACHE; GPU upload
                     // happens lazily in the tile rendering pass, not here.
+                    self.register_prefetch_resource(tile_result.index);
                     self.handle_tile_load_result(tile_result, ctx);
                 }
 

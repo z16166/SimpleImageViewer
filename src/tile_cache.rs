@@ -273,7 +273,12 @@ impl TilePixelCache {
         self.current_bytes = 0;
     }
 
-    /// Unique image indices with at least one cached tile (for preload eviction scans).
+    pub fn has_image(&self, image_index: usize) -> bool {
+        self.entries.keys().any(|(idx, _, _)| *idx == image_index)
+    }
+
+    /// Unique image indices with at least one cached tile (diagnostics / legacy scans).
+    #[allow(dead_code)]
     pub fn distinct_image_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = self.entries.keys().map(|(idx, _, _)| *idx).collect();
         indices.sort_unstable();

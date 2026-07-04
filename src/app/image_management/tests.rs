@@ -2036,6 +2036,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         tiled_primary_visible_scratch: HashSet::new(),
         tiled_visible_coords_scratch: Vec::new(),
         prefetched_tiles: HashMap::new(),
+        prefetch_resource_indices: HashSet::new(),
         theme_cache: SystemThemeCache::default(),
         cached_palette: ThemePalette::dark(),
         is_printing: Arc::new(std::sync::atomic::AtomicBool::new(false)),

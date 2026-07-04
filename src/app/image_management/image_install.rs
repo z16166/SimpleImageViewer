@@ -143,6 +143,7 @@ impl ImageViewerApp {
 
         if let Entry::Occupied(mut slot) = self.deferred_sdr_uploads.entry(idx) {
             *slot.get_mut() = decoded;
+            self.register_prefetch_resource(idx);
             return;
         }
         if self.deferred_sdr_uploads.len() >= crate::app::MAX_DEFERRED_SDR_UPLOADS {
@@ -155,9 +156,11 @@ impl ImageViewerApp {
                 .max_by_key(|&i| super::prefetch_circular_distance(current, total, i))
             {
                 self.deferred_sdr_uploads.remove(&evict_idx);
+                self.maybe_unregister_prefetch_resource(evict_idx);
             }
         }
         self.deferred_sdr_uploads.insert(idx, decoded);
+        self.register_prefetch_resource(idx);
     }
 
     pub(super) fn upload_static_sdr_texture(
@@ -185,6 +188,7 @@ impl ImageViewerApp {
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
+        self.register_prefetch_resource(idx);
         // Preload may have queued pixels for this index; GPU upload makes them redundant.
         self.deferred_sdr_uploads.remove(&idx);
     }
@@ -379,6 +383,7 @@ impl ImageViewerApp {
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+        self.register_prefetch_resource(idx);
         self.hdr_sdr_fallback_indices.insert(idx);
         if sdr_fallback_is_placeholder {
             self.hdr_placeholder_fallback_indices.insert(idx);
@@ -553,6 +558,8 @@ impl ImageViewerApp {
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
+
+        self.register_prefetch_resource(idx);
 
         if crate::preload_debug::path_is_raw(&self.image_files[idx]) {
             crate::preload_debug!(
