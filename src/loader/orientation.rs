@@ -31,7 +31,15 @@ pub(crate) fn hdr_gain_map_decode_capacity(
     hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
 }
 
-/// Apply display **Orientation** (JEITA/TIFF values 1–8) via [`metadata_utils::get_exif_orientation`] for
+fn resolve_exif_orientation(path: &Path, file_bytes: Option<&[u8]>) -> u16 {
+    match file_bytes {
+        Some(bytes) => crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path)),
+        None => crate::metadata_utils::get_exif_orientation(path),
+    }
+}
+
+/// Apply display **Orientation** (JEITA/TIFF values 1–8) via
+/// [`metadata_utils::get_exif_orientation_from_bytes`] / [`metadata_utils::get_exif_orientation`] for
 /// formats whose loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer,
 /// `image-rs` static decode / memory-backed tiling, …).
 ///
@@ -54,17 +62,22 @@ pub(crate) fn hdr_gain_map_decode_capacity(
 /// **`static` tiling** via [`crate::loader::tiled_sources::MemoryImageSource`]: rotates when
 /// [`TiledImageSource::exif_orientation_rotate_in_memory_rgba`] is true (non-HDR-fallback memory buffers only).
 /// Disk-backed TIFF/EXR tile sources omit EXIF rotation here by design ([`crate::libtiff_loader::LibTiffTiledSource`]).
-pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData) -> ImageData {
+pub(crate) fn apply_exif_orientation_to_image_data(
+    path: &Path,
+    data: ImageData,
+    file_bytes: Option<&[u8]>,
+) -> ImageData {
     match data {
         ImageData::Hdr { hdr, fallback } => {
-            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, *hdr, fallback);
+            let (hdr, fallback) =
+                apply_exif_orientation_to_hdr_pair(path, *hdr, fallback, file_bytes);
             ImageData::Hdr {
                 hdr: Box::new(hdr),
                 fallback,
             }
         }
         ImageData::Static(mut img) => {
-            let o = crate::metadata_utils::get_exif_orientation(path);
+            let o = resolve_exif_orientation(path, file_bytes);
             if o <= 1 {
                 return ImageData::Static(img);
             }
@@ -79,7 +92,7 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
             if !TiledImageSource::exif_orientation_rotate_in_memory_rgba(source.as_ref()) {
                 return ImageData::Tiled(source);
             }
-            let o = crate::metadata_utils::get_exif_orientation(path);
+            let o = resolve_exif_orientation(path, file_bytes);
             if o <= 1 {
                 return ImageData::Tiled(source);
             }
@@ -98,7 +111,7 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
             ImageData::Tiled(Arc::new(rebuilt))
         }
         ImageData::Animated(frames) => {
-            let o = crate::metadata_utils::get_exif_orientation(path);
+            let o = resolve_exif_orientation(path, file_bytes);
             if o <= 1 || frames.is_empty() {
                 return ImageData::Animated(frames);
             }
@@ -114,15 +127,19 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
             ImageData::Animated(out)
         }
         ImageData::HdrAnimated(frames) => {
-            let o = crate::metadata_utils::get_exif_orientation(path);
+            let o = resolve_exif_orientation(path, file_bytes);
             if o <= 1 || frames.is_empty() {
                 return ImageData::HdrAnimated(frames);
             }
             let out = frames
                 .into_iter()
                 .map(|frame| {
-                    let (hdr, fallback) =
-                        apply_exif_orientation_to_hdr_pair(path, frame.hdr, frame.fallback);
+                    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(
+                        path,
+                        frame.hdr,
+                        frame.fallback,
+                        file_bytes,
+                    );
                     HdrAnimationFrame::new(hdr, fallback, frame.delay)
                 })
                 .collect();
@@ -136,13 +153,15 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     path: &Path,
     hdr: crate::hdr::types::HdrImageBuffer,
     fallback: DecodedImage,
+    file_bytes: Option<&[u8]>,
 ) -> (crate::hdr::types::HdrImageBuffer, DecodedImage) {
     #[cfg(feature = "heif-native")]
-    let mut o = crate::metadata_utils::get_exif_orientation(path);
+    let mut o = resolve_exif_orientation(path, file_bytes);
     #[cfg(not(feature = "heif-native"))]
-    let o = crate::metadata_utils::get_exif_orientation(path);
+    let o = resolve_exif_orientation(path, file_bytes);
     #[cfg(feature = "heif-native")]
-    if crate::hdr::heif::decoded_pixels_match_swapped_ispe(path, hdr.width, hdr.height) {
+    if crate::hdr::heif::decoded_pixels_match_swapped_ispe(path, hdr.width, hdr.height, file_bytes)
+    {
         o = 1;
     }
     if o <= 1 {

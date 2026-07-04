@@ -131,8 +131,11 @@ fn load_raster_animation_bootstrap(
                 format,
                 path.display()
             );
-            let image =
-                apply_exif_orientation_to_image_data(path, ImageData::Animated(vec![first_anim]));
+            let image = apply_exif_orientation_to_image_data(
+                path,
+                ImageData::Animated(vec![first_anim]),
+                Some(mmap.as_ref()),
+            );
             Ok(RasterAnimationBootstrapOutcome {
                 image,
                 remainder: Some(raster_animation_remainder_job(
@@ -188,8 +191,11 @@ fn load_raster_animation_bootstrap(
                 format,
                 path.display()
             );
-            let image =
-                apply_exif_orientation_to_image_data(path, ImageData::Animated(vec![first_anim]));
+            let image = apply_exif_orientation_to_image_data(
+                path,
+                ImageData::Animated(vec![first_anim]),
+                Some(mmap.as_ref()),
+            );
             Ok(RasterAnimationBootstrapOutcome {
                 image,
                 remainder: Some(raster_animation_remainder_job(
@@ -238,8 +244,11 @@ fn load_raster_animation_bootstrap(
                 format,
                 path.display()
             );
-            let image =
-                apply_exif_orientation_to_image_data(path, ImageData::Animated(vec![first_anim]));
+            let image = apply_exif_orientation_to_image_data(
+                path,
+                ImageData::Animated(vec![first_anim]),
+                Some(mmap.as_ref()),
+            );
             Ok(RasterAnimationBootstrapOutcome {
                 image,
                 remainder: Some(raster_animation_remainder_job(

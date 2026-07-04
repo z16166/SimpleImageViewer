@@ -28,6 +28,7 @@ use crate::loader::{DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair}
 #[cfg(feature = "avif-native")]
 pub(crate) fn try_avif_embedded_sdr_from_decoded_image(
     image: &libavif_sys::AvifImageOwned,
+    bytes: &[u8],
     path: &Path,
 ) -> Result<ImageData, String> {
     let image_ref = unsafe { &*image.as_ptr() };
@@ -65,7 +66,7 @@ pub(crate) fn try_avif_embedded_sdr_from_decoded_image(
             .map(|iso| (*iso.sdr_rgba).clone())
             .ok_or_else(|| "AVIF embedded SDR master missing baseline pixels".to_string())?
     });
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(bytes));
 
     Ok(ImageData::Hdr {
         hdr: Box::new(hdr),
@@ -82,7 +83,7 @@ pub(crate) fn load_avif_embedded_sdr_master(path: &Path) -> Result<ImageData, St
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
     let image = read_avif_decoder_image(&mmap[..])?;
-    let image_data = try_avif_embedded_sdr_from_decoded_image(&image, path)?;
+    let image_data = try_avif_embedded_sdr_from_decoded_image(&image, &mmap[..], path)?;
 
     #[cfg(feature = "preload-debug")]
     {

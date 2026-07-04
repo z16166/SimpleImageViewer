@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
 
@@ -60,12 +59,39 @@ fn read_exif_orientation<R: BufRead + Seek>(reader: &mut R) -> u16 {
 /// Read EXIF Orientation from an in-memory byte buffer (e.g. mmap’d file data).
 ///
 /// Avoids re-opening the file when the caller already has the bytes in memory.
-/// Returns `0` when no valid **Orientation** tag is found.  Does **not** fall
-/// back to format-specific probes (`irot`/`imir`, JXL, etc.) — those require a
-/// file path.
-pub fn get_exif_orientation_from_bytes(data: &[u8]) -> u16 {
+/// When `path` is supplied, format-specific probes (HEIF **`irot`/`imir`**, AVIF
+/// container transform, JXL codestream orientation) use the extension hint.
+pub fn get_exif_orientation_from_bytes(data: &[u8], path: Option<&Path>) -> u16 {
+    #[cfg(feature = "heif-native")]
+    if path.is_some_and(is_heif_extension) {
+        return get_heif_display_orientation_from_bytes(data);
+    }
+
     let mut reader = BufReader::new(Cursor::new(data));
-    read_exif_orientation(&mut reader)
+    let o = read_exif_orientation(&mut reader);
+    if o != 0 {
+        return o;
+    }
+
+    #[cfg(feature = "avif-native")]
+    {
+        if path.is_some_and(is_avif_extension)
+            && let Some(o) = crate::hdr::avif::libavif_probe_exif_orientation_from_bytes(data)
+            && (1..=8).contains(&o)
+        {
+            return o;
+        }
+    }
+    #[cfg(feature = "jpegxl")]
+    {
+        if path.is_some_and(is_jxl_extension)
+            && let Some(o) = crate::hdr::jpegxl::libjxl_probe_orientation_from_bytes(data)
+            && (1..=8).contains(&o)
+        {
+            return o;
+        }
+    }
+    1
 }
 
 /// [`exif::Reader::read_from_container`] first (TIFF / HEIF BMFF scan). When that does not return an
@@ -79,57 +105,29 @@ pub fn get_exif_orientation_from_bytes(data: &[u8]) -> u16 {
 /// **JPEG XR `.jxr`/`.wdp`** do not carry HEIF **`irot`**; orientation for those relies on EXIF /
 /// WIC / ImageIO where applicable (`kamadak-exif`, …).
 pub fn get_exif_orientation(path: &Path) -> u16 {
-    #[cfg(feature = "heif-native")]
-    if is_heif_extension(path) {
-        return get_heif_display_orientation(path);
-    }
-    if let Ok(file) = File::open(path) {
-        let mut reader = BufReader::new(file);
-        let o = read_exif_orientation(&mut reader);
-        if o != 0 {
-            return o;
-        }
-    }
-    #[cfg(feature = "avif-native")]
-    {
-        if is_avif_extension(path)
-            && let Some(o) = crate::hdr::avif::libavif_probe_exif_orientation_from_path(path)
-            && (1..=8).contains(&o)
-        {
-            return o;
-        }
-    }
-    #[cfg(feature = "jpegxl")]
-    {
-        if is_jxl_extension(path)
-            && let Some(o) = crate::hdr::jpegxl::libjxl_probe_orientation_from_path(path)
-            && (1..=8).contains(&o)
-        {
-            return o;
-        }
-    }
-    1
+    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+        return 1;
+    };
+    get_exif_orientation_from_bytes(&mmap[..], Some(path))
 }
 
 /// HEIF display orientation: prefer primary **`irot`/`imir`** over Exif **Orientation=1** (Apple HEIC).
 #[cfg(feature = "heif-native")]
-fn get_heif_display_orientation(path: &Path) -> u16 {
-    if let Some(o) = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path)
+fn get_heif_display_orientation_from_bytes(bytes: &[u8]) -> u16 {
+    if let Some(o) = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(bytes)
         && o > 1
     {
         return o;
     }
-    if let Ok(file) = File::open(path) {
-        let mut reader = BufReader::new(file);
-        let o = read_exif_orientation(&mut reader);
-        if o > 1 {
-            return o;
-        }
+    let mut reader = BufReader::new(Cursor::new(bytes));
+    let o = read_exif_orientation(&mut reader);
+    if o > 1 {
+        return o;
     }
-    if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag(path)
+    if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag_from_bytes(bytes)
         && o > 1
     {
         return o;
     }
-    crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path).unwrap_or(1)
+    crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(bytes).unwrap_or(1)
 }

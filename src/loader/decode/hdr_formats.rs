@@ -55,7 +55,7 @@ pub(crate) fn load_hdr(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
         hdr.height,
         path.display()
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -164,7 +164,7 @@ pub(crate) fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
                 hdr.height,
                 hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
             );
-            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
             Ok(make_hdr_image_data(hdr, fallback))
         }
         Err(err) => {
@@ -228,6 +228,6 @@ pub(crate) fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
     Ok(make_hdr_image_data(hdr, fallback))
 }

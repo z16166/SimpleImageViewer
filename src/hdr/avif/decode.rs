@@ -132,7 +132,7 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
 
     let image = read_avif_decoder_image(bytes)?;
     if try_embedded_sdr_master {
-        match try_avif_embedded_sdr_from_decoded_image(&image, path) {
+        match try_avif_embedded_sdr_from_decoded_image(&image, bytes, path) {
             Ok(image_data) => return Ok(image_data),
             Err(err)
                 if crate::loader::embedded_sdr_fallback::avif_embedded_sdr_ineligible(&err) =>
@@ -151,7 +151,7 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(bytes));
     Ok(crate::loader::ImageData::Hdr {
         hdr: Box::new(hdr),
         fallback,

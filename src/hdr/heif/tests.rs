@@ -468,8 +468,9 @@ fn heif_display_orientation_prefers_irot_when_exif_normal() {
     use std::path::Path;
 
     let path = Path::new(r"F:\HDR\heif\2013\IMG_2603.HEIC");
-    let manual =
-        crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path).expect("irot");
+    let mmap = crate::mmap_util::map_file(path).expect("mmap heif");
+    let manual = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
+        .expect("irot");
     assert!(
         manual > 1,
         "Apple HEIC corpus should expose non-normal irot/imir geometry"

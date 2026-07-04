@@ -91,6 +91,7 @@ pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
 }
 
 #[cfg(feature = "jpegxl")]
+#[allow(dead_code)] // Path-based wrapper; production uses `libjxl_probe_orientation_from_bytes`.
 pub(crate) fn libjxl_probe_orientation_from_path(path: &std::path::Path) -> Option<u16> {
     let mmap = crate::mmap_util::map_file(path).ok()?;
     libjxl_probe_orientation_from_bytes(&mmap[..])

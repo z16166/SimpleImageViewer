@@ -232,8 +232,13 @@ fn load_via_wic_inner(
             .GetFrame(best_frame_idx)
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
-        let orientation = orientation_override
-            .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path));
+        let orientation = orientation_override.unwrap_or_else(|| {
+            crate::mmap_util::map_file(path)
+                .map(|mmap| {
+                    crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
+                })
+                .unwrap_or(1)
+        });
         let transform_options = match orientation {
             2 => WICBitmapTransformOptions(8),     // Flip Horizontal
             3 => WICBitmapTransformOptions(2),     // Rotate180

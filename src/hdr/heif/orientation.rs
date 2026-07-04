@@ -76,12 +76,18 @@ pub(crate) fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> O
 }
 
 /// Read [`exif::Tag::Orientation`] from libheif-attached `Exif` metadata items (works when pure ISOBMFF
-/// scanning in [`crate::metadata_utils::get_exif_orientation`] misses the `Exif` item).
+/// scanning in [`crate::metadata_utils::get_exif_orientation_from_bytes`] misses the `Exif` item).
 #[cfg(feature = "heif-native")]
+pub(crate) fn libheif_exif_orientation_tag_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let (_ctx, primary) = open_heif_primary_from_bytes(bytes).ok()?;
+    heif_exif_orientation_from_handle(&primary)
+}
+
+#[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Path-based wrapper; production uses `libheif_exif_orientation_tag_from_bytes`.
 pub(crate) fn libheif_exif_orientation_tag(path: &Path) -> Option<u16> {
     let mmap = crate::mmap_util::map_file(path).ok()?;
-    let (_ctx, primary) = open_heif_primary_from_bytes(&mmap[..]).ok()?;
-    heif_exif_orientation_from_handle(&primary)
+    libheif_exif_orientation_tag_from_bytes(&mmap[..])
 }
 
 /// JEITA Orientation chain helper: **`T(out) ≅ T(acc) ◦ T(next)`** (apply [`next`] to pixels after [`acc`]).
@@ -260,6 +266,7 @@ pub(crate) fn libheif_manual_geometry_exif_orientation_from_bytes(bytes: &[u8]) 
 }
 
 #[cfg(feature = "heif-native")]
+#[allow(dead_code)] // Path-based wrapper; production uses `libheif_manual_geometry_exif_orientation_from_bytes`.
 pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) -> Option<u16> {
     let mmap = crate::mmap_util::map_file(path).ok()?;
     libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
@@ -316,24 +323,12 @@ pub(crate) fn heif_manual_geometry_decode_options(
 /// decoder has already applied a 90°/270° HEIF transform on the pixel grid — suppress applying EXIF
 /// Orientation again to avoid double rotation.
 #[cfg(feature = "heif-native")]
-pub(crate) fn decoded_pixels_match_swapped_ispe(
-    path: &Path,
+pub(crate) fn decoded_pixels_match_swapped_ispe_bytes(
+    bytes: &[u8],
     decoded_w: u32,
     decoded_h: u32,
 ) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if ext != "heic" && ext != "heif" && ext != "hif" {
-        return false;
-    }
-    let mmap = match crate::mmap_util::map_file(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let (_ctx, primary) = match open_heif_primary_from_bytes(&mmap[..]) {
+    let (_ctx, primary) = match open_heif_primary_from_bytes(bytes) {
         Ok(x) => x,
         Err(_) => return false,
     };
@@ -349,5 +344,31 @@ pub(crate) fn decoded_pixels_match_swapped_ispe(
             return false;
         }
         decoded_w == ih && decoded_h == iw
+    }
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn decoded_pixels_match_swapped_ispe(
+    path: &Path,
+    decoded_w: u32,
+    decoded_h: u32,
+    file_bytes: Option<&[u8]>,
+) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "heic" && ext != "heif" && ext != "hif" {
+        return false;
+    }
+    match file_bytes {
+        Some(bytes) => decoded_pixels_match_swapped_ispe_bytes(bytes, decoded_w, decoded_h),
+        None => {
+            let Ok(mmap) = crate::mmap_util::map_file(path) else {
+                return false;
+            };
+            decoded_pixels_match_swapped_ispe_bytes(&mmap[..], decoded_w, decoded_h)
+        }
     }
 }

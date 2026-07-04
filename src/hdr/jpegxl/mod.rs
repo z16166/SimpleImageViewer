@@ -46,8 +46,11 @@ pub(crate) use probe::{
     JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,
     JXL_TRANSFER_FUNCTION_SRGB, jxl_color_encoding_to_metadata,
 };
+#[cfg(not(feature = "jpegxl"))]
+pub(crate) use probe::{is_jxl_header, libjxl_probe_logical_size_from_bytes};
+#[cfg(feature = "jpegxl")]
 pub(crate) use probe::{
-    is_jxl_header, libjxl_probe_logical_size_from_bytes, libjxl_probe_orientation_from_path,
+    is_jxl_header, libjxl_probe_logical_size_from_bytes, libjxl_probe_orientation_from_bytes,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use strip_baseline::decode_jxl_strip_preview_rgba8;

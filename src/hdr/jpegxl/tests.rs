@@ -481,6 +481,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_mean_not_washed_when_sample_prese
             tone,
         )
         .expect("decode"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, .. } = img else {
         panic!("expected ImageData::Hdr");
@@ -535,6 +536,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_matches_ref_png_when_sample_prese
             tone,
         )
         .expect("decode jxl"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
         panic!("expected ImageData::Hdr");
@@ -1218,6 +1220,7 @@ fn conformance_cmyk_layers_sdr_fallback_matches_ref_png_when_sample_present() {
             tone,
         )
         .expect("decode cmyk_layers"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
         panic!("expected ImageData::Hdr");
@@ -1312,6 +1315,7 @@ fn conformance_patches_sdr_fallback_matches_ref_png_when_sample_present() {
             HdrToneMapSettings::default(),
         )
         .expect("decode jxl"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
         panic!("unexpected ImageData variant");
@@ -1387,6 +1391,7 @@ fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present
             HdrToneMapSettings::default(),
         )
         .expect("decode jxl"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
         panic!("unexpected ImageData variant");
@@ -1517,6 +1522,7 @@ fn conformance_blendmodes_sdr_fallback_close_to_ref_png_when_sample_present() {
             HdrToneMapSettings::default(),
         )
         .expect("decode jxl"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
         panic!("unexpected ImageData variant");
@@ -1673,7 +1679,7 @@ fn diagnose_conformance_pair(name: &str, jxl_path: &std::path::Path, ref_path: &
         tone.target_hdr_capacity(),
         tone,
     ) {
-        Ok(img) => crate::loader::apply_exif_orientation_to_image_data(jxl_path, img),
+        Ok(img) => crate::loader::apply_exif_orientation_to_image_data(jxl_path, img, Some(&bytes)),
         Err(e) => {
             eprintln!("[{name}] decode failed: {e}");
             return;
@@ -1860,6 +1866,7 @@ fn diagnose_blendmodes_worst_pixels_when_sample_present() {
             HdrToneMapSettings::default(),
         )
         .expect("decode"),
+        Some(&bytes),
     );
     let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
         return;

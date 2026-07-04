@@ -613,11 +613,11 @@ fn open_image_data_for_directory_tree_thumb(
     {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img));
+            return Ok(apply_exif_orientation_to_image_data(path, img, None));
         }
         #[cfg(target_os = "macos")]
         if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img));
+            return Ok(apply_exif_orientation_to_image_data(path, img, None));
         }
     }
 
@@ -693,7 +693,7 @@ fn platform_still_image_fallback(
     {
         match crate::wic::load_via_wic(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img));
+                return Ok(apply_exif_orientation_to_image_data(path, img, None));
             }
             Err(wic_err) => {
                 log::debug!(
@@ -708,7 +708,7 @@ fn platform_still_image_fallback(
     {
         match crate::macos_image_io::load_via_image_io(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img));
+                return Ok(apply_exif_orientation_to_image_data(path, img, None));
             }
             Err(io_err) => {
                 log::debug!(

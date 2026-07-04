@@ -72,7 +72,7 @@ pub(super) fn decode_static_raster_strip_from_bytes(
     let (width, height) = rgba.dimensions();
     let mut full = DecodedImage::new(width, height, rgba.into_raw());
 
-    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes);
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes, None);
     if orientation > 4 {
         logical = (logical.1, logical.0);
     }

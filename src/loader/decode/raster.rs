@@ -60,6 +60,7 @@ pub(crate) fn load_static_from_mmap(
     Ok(apply_exif_orientation_to_image_data(
         path,
         make_image_data(DecodedImage::new(width, height, pixels)),
+        Some(mmap),
     ))
 }
 
@@ -115,6 +116,7 @@ pub(crate) fn process_animation_frames(
     Ok(apply_exif_orientation_to_image_data(
         path,
         ImageData::Animated(frames),
+        mmap,
     ))
 }
 
@@ -278,6 +280,7 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
                 Ok(apply_exif_orientation_to_image_data(
                     path,
                     make_image_data(img),
+                    None,
                 ))
             }
             Ok(Err(e)) => {

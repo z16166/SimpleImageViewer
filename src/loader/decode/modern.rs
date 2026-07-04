@@ -149,7 +149,11 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
         let Ok(frames) = frames else {
             return;
         };
-        let image = apply_exif_orientation_to_image_data(&job.path, ImageData::HdrAnimated(frames));
+        let image = apply_exif_orientation_to_image_data(
+            &job.path,
+            ImageData::HdrAnimated(frames),
+            Some(&job.bytes),
+        );
         log::info!(
             "[Loader] AVIF image sequence remainder: {} frames — {}",
             decode.total_frame_count,
@@ -183,6 +187,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
 
 fn hdr_animated_from_sequence_decode(
     path: &Path,
+    bytes: &[u8],
     decode: crate::hdr::avif::AvifSequenceDecode,
 ) -> Result<ImageData, String> {
     let frames: Vec<HdrAnimationFrame> = decode
@@ -205,6 +210,7 @@ fn hdr_animated_from_sequence_decode(
     Ok(apply_exif_orientation_to_image_data(
         path,
         ImageData::HdrAnimated(frames),
+        Some(bytes),
     ))
 }
 
@@ -261,7 +267,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                     } else {
                         None
                     };
-                let image = hdr_animated_from_sequence_decode(path, decode)?;
+                let image = hdr_animated_from_sequence_decode(path, bytes, decode)?;
                 return Ok(AvifLoadOutcome {
                     image,
                     sequence_remainder: remainder,
@@ -385,6 +391,8 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
             hdr_target_capacity,
         );
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
+        let mmap = crate::mmap_util::map_file(path)
+            .map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
         let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
             decode_capacity,
@@ -404,7 +412,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
             None
         };
         Ok(JxlLoadOutcome {
-            image: apply_exif_orientation_to_image_data(path, output.image),
+            image: apply_exif_orientation_to_image_data(path, output.image, Some(&mmap[..])),
             remainder_job,
         })
     }
@@ -483,7 +491,11 @@ pub(crate) fn load_heif_hdr_aware(
             diag,
             try_embedded,
         ) {
-            Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
+            Ok(image) => Ok(apply_exif_orientation_to_image_data(
+                path,
+                image,
+                Some(&mmap[..]),
+            )),
             Err(err) => {
                 log::warn!(
                     "[Loader] libheif decode failed for {}: {err}",

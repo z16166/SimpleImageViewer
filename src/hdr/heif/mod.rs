@@ -56,8 +56,8 @@ pub(crate) use load::{
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{
-    decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag,
-    libheif_manual_geometry_exif_orientation_from_path,
+    decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag_from_bytes,
+    libheif_manual_geometry_exif_orientation_from_bytes,
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use thumbnail::{
