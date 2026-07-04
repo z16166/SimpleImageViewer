@@ -84,6 +84,9 @@ impl ImageViewerApp {
     ) {
         match wheel_match.action {
             AppAction::Next | AppAction::Prev => {
+                // Wheel navigation on the main canvas takes over from image-list keyboard
+                // selection (set by clicking the list) so file-list sync can follow.
+                self.release_directory_tree_list_keyboard_capture();
                 let now = ctx.input(|i| i.time);
                 if now - self.last_mouse_wheel_nav > 0.2 {
                     match wheel_match.action {

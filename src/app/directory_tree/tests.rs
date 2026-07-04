@@ -454,6 +454,25 @@ fn sync_images_preserves_keyboard_list_selection_until_main_window_catches_up() 
 }
 
 #[test]
+fn sync_images_follows_main_index_after_list_keyboard_capture_released() {
+    let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+    let mut state = DirectoryTreeState::default();
+    state.list.image_rows = paths
+        .iter()
+        .map(|path| DirectoryTreeFileRow::new(path.clone(), directory_display_name(path), 0, None))
+        .collect();
+    state.list.current_index = 0;
+    state.list.image_list_keyboard_active = true;
+    state.list.scroll_image_list_to_current = false;
+
+    state.list.image_list_keyboard_active = false;
+    state.sync_images(&paths, &[0, 0], &[None, None], 1, false, String::new());
+
+    assert_eq!(state.list.current_index, 1);
+    assert!(state.list.scroll_image_list_to_current);
+}
+
+#[test]
 fn wrapped_image_list_index_loops_at_bounds() {
     assert_eq!(wrapped_image_list_index(0, -1, 10), Some(9));
     assert_eq!(wrapped_image_list_index(9, 1, 10), Some(0));
