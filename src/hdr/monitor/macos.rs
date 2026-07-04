@@ -59,6 +59,10 @@ pub(crate) fn macos_edr_selection_from_values(
     reference_edr_capacity: f32,
 ) -> HdrMonitorSelection {
     // Map probe results into HdrMonitorSelection — see module docs above for Apple sources.
+    // Apple: 1.0 = no EDR (SDR baseline). Strict `> 1.0` gates HDR *capability*
+    // (swapchain / decode); do not use `>= 1.0` here — that would treat SDR-only
+    // displays as HDR-capable. Per-frame tone-map uses `>= 1.0` on current headroom
+    // in `Settings::hdr_tone_map_settings_for_monitor` (valid SDR multiplier, not HDR on).
     let potential_cap =
         finite_positive_capacity(potential_edr_capacity).filter(|value| *value > 1.0);
     #[cfg(target_os = "macos")]
@@ -74,7 +78,7 @@ pub(crate) fn macos_edr_selection_from_values(
     } else {
         (None, None)
     };
-    // hdr_supported: potential > 1.0 and/or reference > 1.0 per Apple property semantics.
+    // hdr_supported: potential > 1.0 and/or reference > 1.0 (same 1.0 = no EDR rule).
     let hdr_supported = potential_cap.is_some()
         || finite_positive_capacity(reference_edr_capacity).is_some_and(|value| value > 1.0);
     HdrMonitorSelection {

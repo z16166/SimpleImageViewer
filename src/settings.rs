@@ -831,6 +831,9 @@ impl Settings {
         ) {
             if let Some(headroom) = monitor
                 .and_then(|selection| selection.current_edr_headroom)
+                // `>= 1.0`: headroom 1.0 is valid SDR peak (sdr_white * 1.0), not HDR on.
+                // Differs from `macos_edr_selection_from_values` which uses `> 1.0` for
+                // `hdr_supported` / potential capacity (Apple: 1.0 = no EDR).
                 .filter(|value| value.is_finite() && *value >= 1.0)
             {
                 max_display_nits = self.hdr_sdr_white_nits.max(1.0) * headroom;
