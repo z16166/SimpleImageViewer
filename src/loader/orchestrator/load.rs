@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, ImageLoader, LoaderOutputSender, TileInFlightKey, TileRequest,
-    WORKER_SHUTDOWN_POLL, should_spawn_load_task,
+    DelayedFallbackJob, ImageLoader, LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey,
+    TileRequest, FALLBACK_DEBOUNCE, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -31,7 +31,7 @@ use crate::loader::{
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
@@ -39,7 +39,6 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
 
 /// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
 struct CurrentImageOsThreadGuard(Arc<AtomicUsize>);
@@ -138,9 +137,19 @@ impl ImageLoader {
         let embedded_iso_gain_map_sdr_master = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
+        let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
+            Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new(Arc::clone(
             &shutdown,
         )));
+        let (worker_lifetime, refine_tx) = LoaderWorkerLifetime::new(
+            Arc::clone(&shutdown),
+            refine_tx,
+            Arc::clone(&delayed_fallback),
+            Arc::clone(&tile_queue),
+            Arc::clone(&raw_open_prefetch),
+        );
+        let worker_lifetime = Arc::new(worker_lifetime);
         {
             let state = Arc::clone(&delayed_fallback);
             let shutdown_worker = Arc::clone(&shutdown);
@@ -159,7 +168,7 @@ impl ImageLoader {
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
                                     }
-                                    cvar.wait_for(&mut g, WORKER_SHUTDOWN_POLL);
+                                    cvar.wait(&mut g);
                                 }
                                 if let Some(j) = g.take() {
                                     break j;
@@ -171,7 +180,7 @@ impl ImageLoader {
                                 return;
                             }
                             let mut g = lock.lock();
-                            let wait_result = cvar.wait_for(&mut g, WORKER_SHUTDOWN_POLL);
+                            let wait_result = cvar.wait_for(&mut g, FALLBACK_DEBOUNCE);
                             if shutdown_worker.load(Ordering::Acquire) {
                                 return;
                             }
@@ -237,8 +246,6 @@ impl ImageLoader {
                 });
         }
 
-        let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
-            Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
         // Shared set of tiles currently being decoded — prevents duplicate work across workers
         let in_flight: Arc<Mutex<std::collections::HashSet<TileInFlightKey>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -279,7 +286,7 @@ impl ImageLoader {
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;
                                 }
-                                cvar.wait_for(&mut heap, WORKER_SHUTDOWN_POLL);
+                                cvar.wait(&mut heap);
                             }
                             if let Some(req) = heap.pop() {
                                 req
@@ -463,19 +470,10 @@ impl ImageLoader {
         // Start dedicated Background Refinement Worker (Throttled)
         let worker_tx = tx.clone();
         let worker_plan = Arc::clone(&preload_plan);
-        let shutdown_worker = Arc::clone(&shutdown);
         let _ = std::thread::Builder::new()
             .name("refinement-worker".to_string())
             .spawn(move || {
-                loop {
-                    if shutdown_worker.load(Ordering::Acquire) {
-                        break;
-                    }
-                    let req = match refine_rx.recv_timeout(WORKER_SHUTDOWN_POLL) {
-                        Ok(req) => req,
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    };
+                while let Ok(req) = refine_rx.recv() {
                     let snapshot_epoch = worker_plan.profile_epoch();
                     if req.decode_profile.profile_epoch < snapshot_epoch {
                         log::debug!(
@@ -655,7 +653,8 @@ impl ImageLoader {
             });
 
         Self {
-            shutdown,
+            worker_lifetime,
+            refine_tx,
             raw_open_prefetch,
             tx: LoaderOutputSender::new(tx),
             rx,
@@ -663,7 +662,6 @@ impl ImageLoader {
             preload_plan,
             pool: Arc::new(pool),
             tile_queue,
-            refine_tx,
             local_queue: std::collections::VecDeque::new(),
             delayed_fallback,
             hdr_target_capacity_bits,
@@ -968,8 +966,8 @@ impl ImageLoader {
         let loading2 = Arc::clone(&self.loading);
         let claimed1 = Arc::clone(&claimed);
         let claimed2 = Arc::clone(&claimed);
-        let rtx1 = self.refine_tx.clone();
-        let rtx2 = self.refine_tx.clone();
+        let rtx1 = self.clone_refine_tx().expect("refinement channel closed");
+        let rtx2 = self.clone_refine_tx().expect("refinement channel closed");
         let hdr_target_capacity = self.hdr_target_capacity();
         let hdr_tone_map = self.hdr_tone_map_settings_snapshot();
         let raw_open_prefetch = Arc::clone(&self.raw_open_prefetch);

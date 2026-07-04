@@ -454,8 +454,8 @@ pub(crate) struct DirectoryTreeRuntime {
     pub(crate) last_list_publish_at: Mutex<std::time::Instant>,
     pub(crate) command_tx: Sender<DirectoryTreeCommand>,
     pub(crate) command_rx: Receiver<DirectoryTreeCommand>,
-    pub(crate) children_request_tx: Sender<DirectoryChildrenRequest>,
-    pub(crate) metadata_request_tx: Sender<FileMetadataRequest>,
+    children_request_tx: Mutex<Option<Sender<DirectoryChildrenRequest>>>,
+    metadata_request_tx: Mutex<Option<Sender<FileMetadataRequest>>>,
     pub(crate) result_rx: Receiver<DirectoryChildrenResult>,
     pub(crate) metadata_result_rx: Receiver<FileMetadataResult>,
     /// Raw pointer to the live [`super::ImageViewerApp`], set during ROOT `prepare_directory_tree_file_list_viewport`.
@@ -572,8 +572,8 @@ impl DirectoryTreeRuntime {
             last_list_publish_at: Mutex::new(std::time::Instant::now()),
             command_tx,
             command_rx,
-            children_request_tx,
-            metadata_request_tx,
+            children_request_tx: Mutex::new(Some(children_request_tx)),
+            metadata_request_tx: Mutex::new(Some(metadata_request_tx)),
             result_rx,
             metadata_result_rx,
             viewpaint_app: Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())),
@@ -585,6 +585,36 @@ impl DirectoryTreeRuntime {
 
     pub(crate) fn shutdown_workers(&self) {
         self.workers_shutdown.store(true, AtomicOrdering::Release);
+        self.children_request_tx.lock().take();
+        self.metadata_request_tx.lock().take();
+    }
+
+    pub(crate) fn try_send_children_request(
+        &self,
+        request: DirectoryChildrenRequest,
+    ) -> Result<(), crossbeam_channel::TrySendError<DirectoryChildrenRequest>> {
+        match self.children_request_tx.lock().as_ref() {
+            Some(tx) => tx.try_send(request),
+            None => Err(crossbeam_channel::TrySendError::Disconnected(request)),
+        }
+    }
+
+    pub(crate) fn try_send_metadata_request(
+        &self,
+        request: FileMetadataRequest,
+    ) -> bool {
+        match self.metadata_request_tx.lock().as_ref() {
+            Some(tx) => tx
+                .try_send(request)
+                .map_err(|err| {
+                    log::warn!("[DirectoryTree] file metadata request dropped: {err}");
+                })
+                .is_ok(),
+            None => {
+                log::debug!("[DirectoryTree] file metadata request dropped: workers shut down");
+                false
+            }
+        }
     }
 
     pub(crate) fn join_workers(&mut self) {

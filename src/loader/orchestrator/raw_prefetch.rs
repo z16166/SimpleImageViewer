@@ -23,8 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::types::WORKER_SHUTDOWN_POLL;
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RawOpenPhaseTimings {
     pub open_ms: u32,
@@ -129,7 +127,7 @@ impl RawOpenPrefetch {
                     }
                 }
                 Some(RawPrefetchEntry::InProgress) => {
-                    cvar.wait_for(&mut inner, WORKER_SHUTDOWN_POLL);
+                    cvar.wait(&mut inner);
                 }
                 None => return None,
             }

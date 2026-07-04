@@ -204,9 +204,3 @@ fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> boo
     }
     true
 }
-
-impl Drop for ImageLoader {
-    fn drop(&mut self) {
-        self.signal_shutdown();
-    }
-}

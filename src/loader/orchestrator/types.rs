@@ -31,8 +31,59 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::time::Duration;
 
-/// Poll interval for worker threads waiting on condvars / channels during idle.
-pub(crate) const WORKER_SHUTDOWN_POLL: Duration = Duration::from_millis(50);
+/// Delayed fallback worker debounce before running `do_load` when the pool task has not claimed first.
+pub(crate) const FALLBACK_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// RAII shutdown for dedicated loader worker threads. Ensures `signal_shutdown` runs even if
+/// [`ImageLoader`] is dropped during stack unwinding (e.g. after `catch_unwind`).
+pub(crate) struct LoaderWorkerLifetime {
+    shutdown: Arc<AtomicBool>,
+    refine_tx: Arc<Mutex<Option<Sender<RefinementRequest>>>>,
+    delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
+    tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
+    raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+}
+
+impl LoaderWorkerLifetime {
+    pub(crate) fn new(
+        shutdown: Arc<AtomicBool>,
+        refine_tx: Sender<RefinementRequest>,
+        delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
+        tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
+        raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    ) -> (Self, Arc<Mutex<Option<Sender<RefinementRequest>>>>) {
+        let refine_tx = Arc::new(Mutex::new(Some(refine_tx)));
+        let lifetime = Self {
+            shutdown,
+            refine_tx: Arc::clone(&refine_tx),
+            delayed_fallback,
+            tile_queue,
+            raw_open_prefetch,
+        };
+        (lifetime, refine_tx)
+    }
+
+    pub(crate) fn signal_shutdown(&self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.refine_tx.lock().take();
+        {
+            let (_, cvar) = &*self.delayed_fallback;
+            cvar.notify_all();
+        }
+        {
+            let (_, cvar) = &*self.tile_queue;
+            cvar.notify_all();
+        }
+        self.raw_open_prefetch.wake_waiters();
+    }
+}
+
+impl Drop for LoaderWorkerLifetime {
+    fn drop(&mut self) {
+        self.signal_shutdown();
+    }
+}
 
 use super::preload_plan::PreloadPlanSnapshot;
 
@@ -178,8 +229,9 @@ pub(crate) fn should_spawn_load_task(
 }
 
 pub struct ImageLoader {
-    /// When true, dedicated loader worker threads exit their idle wait loops.
-    pub(crate) shutdown: Arc<AtomicBool>,
+    /// Ensures worker threads are woken and channels closed when this loader is dropped.
+    pub(crate) worker_lifetime: Arc<LoaderWorkerLifetime>,
+    pub(crate) refine_tx: Arc<Mutex<Option<Sender<RefinementRequest>>>>,
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
@@ -190,8 +242,6 @@ pub struct ImageLoader {
     pub(crate) pool: Arc<rayon::ThreadPool>,
     /// Priority queue for tile requests.
     pub(crate) tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
-    /// Channel for background refinement tasks (LibRaw).
-    pub(crate) refine_tx: Sender<RefinementRequest>,
     /// Local deque for results that were polled but deferred due to per-frame
     /// upload quota. Drained before the crossbeam channel on the next frame.
     pub(crate) local_queue: std::collections::VecDeque<LoaderOutput>,
@@ -220,18 +270,13 @@ pub struct ImageLoader {
 }
 
 impl ImageLoader {
+    /// Clone the refinement channel sender when workers are still accepting jobs.
+    pub(crate) fn clone_refine_tx(&self) -> Option<Sender<RefinementRequest>> {
+        self.refine_tx.lock().clone()
+    }
+
     /// Wake all dedicated worker threads and tell them to exit idle waits.
     pub(crate) fn signal_shutdown(&self) {
-        self.shutdown
-            .store(true, std::sync::atomic::Ordering::Release);
-        {
-            let (_, cvar) = &*self.delayed_fallback;
-            cvar.notify_all();
-        }
-        {
-            let (_, cvar) = &*self.tile_queue;
-            cvar.notify_all();
-        }
-        self.raw_open_prefetch.wake_waiters();
+        self.worker_lifetime.signal_shutdown();
     }
 }

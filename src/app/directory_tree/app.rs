@@ -42,7 +42,7 @@ use super::{
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
     DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
     DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
-    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, FileMetadataRequest, ImageListSortColumn,
+    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, ImageListSortColumn,
     domains, embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
 };
 
@@ -214,18 +214,6 @@ impl ImageViewerApp {
             d.get_temp::<egui::Rect>(egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID))
         });
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
-    }
-
-    fn send_directory_tree_metadata_request(
-        metadata_tx: &crossbeam_channel::Sender<FileMetadataRequest>,
-        request: FileMetadataRequest,
-    ) -> bool {
-        metadata_tx
-            .try_send(request)
-            .map_err(|err| {
-                log::warn!("[DirectoryTree] file metadata request dropped: {err}");
-            })
-            .is_ok()
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
@@ -508,7 +496,7 @@ impl ImageViewerApp {
 
     fn send_directory_tree_children_request(&mut self, request: DirectoryChildrenRequest) {
         let namespace_path = request.namespace_path.clone();
-        if let Err(err) = self.directory_tree.children_request_tx.try_send(request) {
+        if let Err(err) = self.directory_tree.try_send_children_request(request) {
             log::warn!(
                 "[DirectoryTree] children request dropped for {}: {err}",
                 namespace_path.display()
@@ -1624,10 +1612,8 @@ impl ImageViewerApp {
         }
 
         for request in metadata_requests {
-            if !Self::send_directory_tree_metadata_request(
-                &self.directory_tree.metadata_request_tx,
-                request,
-            ) && let Some(mut list) = self.directory_tree.list.try_lock()
+            if !self.directory_tree.try_send_metadata_request(request)
+                && let Some(mut list) = self.directory_tree.list.try_lock()
             {
                 list.sync_warning = Some(t!("directory_tree.metadata_request_busy").to_string());
             }

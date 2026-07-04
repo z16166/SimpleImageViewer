@@ -18,11 +18,11 @@ use crate::constants::*;
 use interprocess::ConnectWaitMode;
 use interprocess::local_socket::traits::Listener as ListenerTrait;
 use interprocess::local_socket::{
-    ConnectOptions, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
+    ConnectOptions, GenericNamespaced, Listener, ListenerOptions, Stream,
     prelude::*,
 };
 use parking_lot::Mutex;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -33,7 +33,6 @@ use eframe::egui;
 
 static IPC_WAKE_CTX: OnceLock<Mutex<Option<egui::Context>>> = OnceLock::new();
 
-const IPC_ACCEPT_POLL: Duration = Duration::from_millis(50);
 const IPC_SERVER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct IpcServerHandle {
@@ -273,29 +272,22 @@ pub fn shutdown_ipc_server() {
 }
 
 /// The IPC server loop running on its own thread.
-/// Accepts connections, reads messages with a timeout, and forwards them to the UI.
+/// Accepts connections (blocking) and forwards messages to the UI.
 fn ipc_server_loop(
     listener: Listener,
     tx: crossbeam_channel::Sender<IpcMessage>,
     shutdown: Arc<AtomicBool>,
 ) {
-    if let Err(e) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
-        log::warn!("[IPC] Failed to set nonblocking accept: {}", e);
-    }
-
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok(conn) => handle_ipc_connection(conn, &tx),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                std::thread::sleep(IPC_ACCEPT_POLL);
-            }
             Err(e) if shutdown.load(Ordering::Acquire) => {
                 let _ = e;
                 break;
             }
             Err(e) => {
                 log::warn!("[IPC] Accept failed: {}", e);
-                std::thread::sleep(IPC_ACCEPT_POLL);
+                break;
             }
         }
     }
