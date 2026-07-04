@@ -494,7 +494,7 @@ impl ImageViewerApp {
 
                 let debug_text = format!(
                     "VIS: {} (GPU:{} RDY:{} PND:{}) | ALL: (GPU:{} MEM:{}) | SCALE: {:.3}",
-                    visible.len(),
+                    visible_coords.len(),
                     vis_gpu,
                     vis_ready,
                     vis_pending,
