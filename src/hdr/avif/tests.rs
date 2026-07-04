@@ -228,6 +228,33 @@ fn avif_software_gain_map_decode_defers_compose_to_gpu() {
 
 #[cfg(feature = "avif-native")]
 #[test]
+fn avif_kimono_rotate90_strip_applies_container_orientation_when_sample_present() {
+    use crate::loader::decode::{
+        DirectoryTreeThumbDecodeOptions, generate_directory_tree_thumb_decode_from_path,
+    };
+
+    let path = std::path::Path::new(
+        r"F:\HDR\av1-avif\testFiles\Link-U\kimono.rotate90.avif",
+    );
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let strip = generate_directory_tree_thumb_decode_from_path(
+        path,
+        128,
+        DirectoryTreeThumbDecodeOptions::default(),
+    )
+    .expect("kimono.rotate90 strip decode");
+    assert_eq!(strip.logical_size, (722, 1024));
+    assert!(
+        strip.preview.height > strip.preview.width,
+        "strip preview must apply irot so portrait logical size matches pixel layout"
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
 fn decode_truncated_elementary_stream_8bpc_avif_when_sample_present() {
     use crate::hdr::types::HdrToneMapSettings;
 
@@ -257,7 +284,7 @@ fn decode_truncated_elementary_stream_8bpc_avif_when_sample_present() {
     eprintln!("truncated_elementary_stream: top_avg_r={top_r:.3} bot_avg_r={bot_r:.3}");
     assert!(
         top_r > 0.05 && bot_r > 0.05,
-        "8bpc AVIF must use 16-bit RGB lanes; byte-packed u16 misread yields white top / black bottom"
+        "8bpc AVIF must unpack 1 byte/channel RGBA; misreading packed bytes as u16 yields white top / black bottom"
     );
     assert!(
         top_r < 1.5 && bot_r < 1.5,

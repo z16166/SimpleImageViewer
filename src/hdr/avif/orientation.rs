@@ -138,3 +138,26 @@ pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -
     let mmap = crate::mmap_util::map_file(path).ok()?;
     libavif_probe_exif_orientation_from_bytes(&mmap[..])
 }
+
+/// Apply container `irot` / `imir` (mapped to EXIF 1-8) to directory-tree strip pixels.
+///
+/// libavif decodes coded pixels without applying geometric properties; main-view loads use
+/// [`crate::loader::apply_exif_orientation_to_hdr_pair`]. Strip fast paths must mirror that.
+#[cfg(feature = "avif-native")]
+pub(crate) fn apply_avif_container_orientation_to_decoded(
+    bytes: &[u8],
+    path: &std::path::Path,
+    mut decoded: crate::loader::DecodedImage,
+) -> crate::loader::DecodedImage {
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path));
+    if orientation <= 1 {
+        return decoded;
+    }
+    let w = decoded.width;
+    let h = decoded.height;
+    let pixels = decoded.take_rgba_owned();
+    let (ow, oh, opx) =
+        crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+    decoded.set_rgba_buffer(ow, oh, opx);
+    decoded
+}

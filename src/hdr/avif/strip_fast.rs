@@ -43,6 +43,7 @@ fn finish_baseline_interim_strip(
     width: u32,
     height: u32,
     max_side: u32,
+    bytes: &[u8],
     path: &Path,
 ) -> Result<AvifGainMapStripFastResult, String> {
     if width == 0 || height == 0 {
@@ -51,17 +52,21 @@ fn finish_baseline_interim_strip(
             path.display()
         ));
     }
+    let logical =
+        super::orientation::libavif_probe_logical_size_from_bytes(bytes).unwrap_or((width, height));
     let decoded = DecodedImage::new(width, height, baseline);
     let strip = downsample_decoded_for_strip(&decoded, max_side).map_err(|err| err.to_string())?;
-    if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
+    let strip =
+        super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
+    if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
         return Err(format!(
-            "gain-map strip aspect mismatch: {}x{} vs {width}x{height}",
-            strip.width, strip.height
+            "gain-map strip aspect mismatch: {}x{} vs {}x{}",
+            strip.width, strip.height, logical.0, logical.1
         ));
     }
     Ok(AvifGainMapStripFastResult {
         preview: strip,
-        logical_size: (width, height),
+        logical_size: logical,
     })
 }
 
@@ -91,19 +96,21 @@ pub(crate) fn try_decode_avif_gain_map_strip_fast(
     };
 
     if iso_gain_map_skips_forward_compose(gain_metadata) {
-        return decode_avif_strip_precomposed_hdr_from_image(image, path, max_side).map(|opt| {
-            opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
-                preview,
-                logical_size,
-            })
-        });
+        return decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side).map(
+            |opt| {
+                opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
+                    preview,
+                    logical_size,
+                })
+            },
+        );
     }
 
     if let Some(Ok((baseline, width, height))) =
         decode_avif_strip_iso_gain_map_baseline_from_image(&image, path)
     {
         return Some(finish_baseline_interim_strip(
-            baseline, width, height, max_side, path,
+            baseline, width, height, max_side, bytes, path,
         ));
     }
     None

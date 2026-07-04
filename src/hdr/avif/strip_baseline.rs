@@ -50,6 +50,8 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
     if !preview_aspect_matches_logical(strip.width, strip.height, logical_w, logical_h) {
         return None;
     }
+    let strip =
+        super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
     Some(Ok((strip, (logical_w, logical_h))))
 }
 
@@ -137,6 +139,7 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline(
 #[cfg(feature = "avif-native")]
 pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
     image: libavif_sys::AvifImageOwned,
+    bytes: &[u8],
     path: &Path,
     max_side: u32,
 ) -> OptionalStripResult<StripWithLogicalSize> {
@@ -164,16 +167,25 @@ pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
             hdr.width, hdr.height
         )));
     }
-    let logical = (hdr.width, hdr.height);
+    let logical = super::orientation::libavif_probe_logical_size_from_bytes(bytes)
+        .unwrap_or((hdr.width, hdr.height));
     let (width, height, pixels) =
         match crate::loader::hdr_directory_tree_strip_sdr_at_max_side(&hdr, max_side) {
             Ok(ok) => ok,
             Err(err) => return Some(Err(format!("{path:?}: tone-map HDR strip: {err}"))),
         };
-    Some(Ok((
-        crate::loader::DecodedImage::new(width, height, pixels),
-        logical,
-    )))
+    let preview = super::orientation::apply_avif_container_orientation_to_decoded(
+        bytes,
+        path,
+        DecodedImage::new(width, height, pixels),
+    );
+    if !preview_aspect_matches_logical(preview.width, preview.height, logical.0, logical.1) {
+        return Some(Err(format!(
+            "{path:?}: precomposed AVIF strip aspect mismatch: {}x{} vs {}x{}",
+            preview.width, preview.height, logical.0, logical.1
+        )));
+    }
+    Some(Ok((preview, logical)))
 }
 
 /// Fast directory-tree strip for precomposed PQ/HLG AVIF (`base_hdr` layout).
@@ -195,7 +207,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
             )));
         }
     };
-    decode_avif_strip_precomposed_hdr_from_image(image, path, max_side)
+    decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side)
 }
 
 /// YUV scale + tone-mapped SDR strip for AVIF without an ISO gain map (avoids full [`ImageData`] load).
@@ -218,12 +230,13 @@ pub(crate) fn try_decode_avif_strip_primary_scaled(
             )));
         }
     };
-    decode_avif_strip_primary_scaled_from_image(image, path, max_side, logical)
+    decode_avif_strip_primary_scaled_from_image(image, bytes, path, max_side, logical)
 }
 
 #[cfg(feature = "avif-native")]
 fn decode_avif_strip_primary_scaled_from_image(
     image: libavif_sys::AvifImageOwned,
+    bytes: &[u8],
     path: &Path,
     max_side: u32,
     logical: Option<(u32, u32)>,
@@ -262,7 +275,11 @@ fn decode_avif_strip_primary_scaled_from_image(
             Ok(ok) => ok,
             Err(err) => return Some(Err(format!("{path:?}: AVIF strip SDR tone-map: {err}"))),
         };
-    let preview = DecodedImage::new(width, height, pixels);
+    let preview = super::orientation::apply_avif_container_orientation_to_decoded(
+        bytes,
+        path,
+        DecodedImage::new(width, height, pixels),
+    );
     if !preview_aspect_matches_logical(preview.width, preview.height, logical.0, logical.1) {
         return Some(Err(format!(
             "{path:?}: AVIF primary strip aspect mismatch: {}x{} vs {}x{}",
