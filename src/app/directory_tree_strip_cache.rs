@@ -88,6 +88,17 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub strip_max_side_used: u32,
 }
 
+pub(crate) struct StripThumbnailCacheRequest<'a> {
+    pub index: usize,
+    pub decoded: &'a DecodedImage,
+    pub stage: PreviewStage,
+    pub logical_size: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    pub strip_max_side_used: Option<u32>,
+    pub ctx: &'a egui::Context,
+    pub bypass_detach_queue: bool,
+}
+
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
 pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub index: usize,

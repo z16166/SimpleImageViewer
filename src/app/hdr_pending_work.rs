@@ -598,7 +598,7 @@ impl ImageViewerApp {
                 self.hdr_pending_work.clear_plane_upload_inflight(item.key);
                 continue;
             }
-            if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
+            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
                 defer.push(item);
                 continue;
             }
@@ -625,13 +625,11 @@ impl ImageViewerApp {
                 .callback_resources
                 .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
                 .and_then(|set| set.get_for_mut(item.target_format))
-            {
-                if resources.register_preuploaded_binding(item.key, binding, self.current_device_id)
+                && resources.register_preuploaded_binding(item.key, binding, self.current_device_id)
                 {
                     resources.set_image_binding_keep_resident(item.key, item.keep_resident);
                     changed = true;
                 }
-            }
             self.hdr_pending_work.clear_plane_upload_inflight(item.key);
         }
         if !defer.is_empty() {
@@ -663,7 +661,7 @@ impl ImageViewerApp {
                     .clear_tile_upload_inflight(item.tile_key);
                 continue;
             }
-            if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
+            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
                 defer.push(item);
                 continue;
             }
@@ -728,7 +726,7 @@ impl ImageViewerApp {
                     .clear_jpeg_tiled_source_upload_inflight(item.upload_key, item.target_format);
                 continue;
             }
-            if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
+            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
                 defer.push(item);
                 continue;
             }
@@ -790,7 +788,7 @@ impl ImageViewerApp {
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeWrite::AppleImage { .. } => continue,
             };
-            if !Self::ensure_hdr_resources(&wgpu_state, target_format) {
+            if !Self::ensure_hdr_resources(wgpu_state, target_format) {
                 defer.push(write);
                 continue;
             }
@@ -905,7 +903,7 @@ impl ImageViewerApp {
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeFailure::AppleImage { .. } => continue,
             };
-            if !Self::ensure_hdr_resources(&wgpu_state, format) {
+            if !Self::ensure_hdr_resources(wgpu_state, format) {
                 self.hdr_pending_work
                     .completed_compose_failures
                     .lock()

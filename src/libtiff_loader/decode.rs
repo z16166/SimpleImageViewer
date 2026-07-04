@@ -586,8 +586,8 @@ fn rescale_scene_linear_rgba32f(
     let offset = ((provisional_smin - final_smin) / final_range) as f32;
     let channels = if rescale_alpha { 4 } else { 3 };
     for px in out.chunks_exact_mut(4) {
-        for c in 0..channels {
-            px[c] = (px[c] * scale + offset).clamp(0.0, 1.0);
+        for channel in px.iter_mut().take(channels) {
+            *channel = (*channel * scale + offset).clamp(0.0, 1.0);
         }
     }
 }

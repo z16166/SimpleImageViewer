@@ -63,9 +63,7 @@ impl ImageViewerApp {
         if index != self.current_index {
             return None;
         }
-        if self.effective_hdr_display_output().is_none() {
-            return None;
-        }
+        self.effective_hdr_display_output()?;
         let has_hdr_plane = self
             .current_hdr_image
             .as_ref()
@@ -360,14 +358,17 @@ impl ImageViewerApp {
             );
         }
         self.cache_directory_tree_strip_thumbnail(
-            idx,
-            decoded,
-            crate::loader::PreviewStage::Refined,
-            Some((decoded.width, decoded.height)),
-            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-            None,
-            ctx,
-            false,
+            crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                index: idx,
+                decoded,
+                stage: crate::loader::PreviewStage::Refined,
+                logical_size: Some((decoded.width, decoded.height)),
+                buffer_tag:
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+                strip_max_side_used: None,
+                ctx,
+                bypass_detach_queue: false,
+            },
         );
     }
 
@@ -488,14 +489,16 @@ impl ImageViewerApp {
                 )
             };
             self.cache_directory_tree_strip_thumbnail(
-                idx,
-                &strip_preview,
-                strip_stage,
-                Some(strip_logical),
-                strip_tag,
-                None,
-                ctx,
-                false,
+                crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                    index: idx,
+                    decoded: &strip_preview,
+                    stage: strip_stage,
+                    logical_size: Some(strip_logical),
+                    buffer_tag: strip_tag,
+                    strip_max_side_used: None,
+                    ctx,
+                    bypass_detach_queue: false,
+                },
             );
         }
     }

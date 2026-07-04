@@ -53,8 +53,6 @@ pub(crate) const MAX_HDR_PENDING_GPU_WRITES: usize = 256;
 pub(crate) const MAX_HDR_GPU_WRITES_PER_LOGIC: usize = 8;
 
 pub(crate) struct PendingGpuWrite {
-    pub(crate) seq: u64,
-    pub(crate) stage: HdrGpuUploadStage,
     pub texture: Arc<wgpu::Texture>,
     pub bytes: Vec<u8>,
     pub bytes_per_row: u32,
@@ -68,7 +66,6 @@ pub(crate) struct HdrPendingGpuWriteQueues {
     tile_create: VecDeque<PendingGpuWrite>,
     compose_write: VecDeque<PendingGpuWrite>,
     aux_rgba8: VecDeque<PendingGpuWrite>,
-    next_seq: u64,
 }
 
 impl HdrPendingGpuWriteQueues {
@@ -102,11 +99,7 @@ impl HdrPendingGpuWriteQueues {
             let dropped = self.evict(pending_len.saturating_sub(MAX_HDR_PENDING_GPU_WRITES - 1));
             log::warn!("[HDR] Pending GPU write queue full; dropped {dropped} write(s)");
         }
-        let seq = self.next_seq;
-        self.next_seq += 1;
         self.queue_for_mut(stage).push_back(PendingGpuWrite {
-            seq,
-            stage,
             texture,
             bytes,
             bytes_per_row,

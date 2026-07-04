@@ -220,16 +220,28 @@ fn apply_jxl_jhgm_cpu_compose(
 }
 
 /// Shared static/animation path: GPU deferred, precomposed skip, or CPU ISO compose.
-pub(crate) fn finish_jxl_jhgm_frame(
-    jhgm_box: Option<&[u8]>,
-    target_hdr_capacity: f32,
-    rgba: &[f32],
-    width: u32,
-    height: u32,
-    metadata: &HdrImageMetadata,
-    strip_baseline_only: bool,
-    embedded_sdr_master_load: bool,
-) -> JxlJhgmFrameOutcome {
+pub(crate) struct JxlJhgmFrameInput<'a> {
+    pub jhgm_box: Option<&'a [u8]>,
+    pub target_hdr_capacity: f32,
+    pub rgba: &'a [f32],
+    pub width: u32,
+    pub height: u32,
+    pub metadata: &'a HdrImageMetadata,
+    pub strip_baseline_only: bool,
+    pub embedded_sdr_master_load: bool,
+}
+
+pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFrameOutcome {
+    let JxlJhgmFrameInput {
+        jhgm_box,
+        target_hdr_capacity,
+        rgba,
+        width,
+        height,
+        metadata,
+        strip_baseline_only,
+        embedded_sdr_master_load,
+    } = input;
     let Some(jhgm_box) = jhgm_box else {
         return JxlJhgmFrameOutcome::Unprocessed;
     };
@@ -334,7 +346,16 @@ mod tests {
     fn jxl_gpu_deferred_without_jhgm_box_returns_unprocessed() {
         let rgba = vec![1.0_f32, 0.5, 0.25, 1.0];
         let meta = HdrImageMetadata::default();
-        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta, false, false);
+        let out = finish_jxl_jhgm_frame(JxlJhgmFrameInput {
+            jhgm_box: None,
+            target_hdr_capacity: 4.0,
+            rgba: &rgba,
+            width: 1,
+            height: 1,
+            metadata: &meta,
+            strip_baseline_only: false,
+            embedded_sdr_master_load: false,
+        });
         assert!(matches!(out, JxlJhgmFrameOutcome::Unprocessed));
     }
 

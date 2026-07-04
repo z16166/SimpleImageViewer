@@ -22,7 +22,7 @@ use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripPendingGpuUpload, MAX_STRIP_GPU_UPLOADS_PER_PAINT,
     MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag, StripPreviewReplaceParams,
-    decide_strip_preview_replace, strip_decoded_ready_for_gpu_upload,
+    StripThumbnailCacheRequest, decide_strip_preview_replace, strip_decoded_ready_for_gpu_upload,
 };
 use crate::loader::{DecodedImage, PreviewStage, hdr_has_iso_deferred_gain_map};
 
@@ -198,16 +198,16 @@ impl ImageViewerApp {
         for item in batch {
             #[cfg(feature = "preload-debug")]
             let cache_before = self.directory_tree_strip_cache.contains(item.index);
-            self.cache_directory_tree_strip_thumbnail(
-                item.index,
-                &item.decoded,
-                item.stage,
-                item.logical,
-                item.buffer_tag,
-                item.strip_max_side_used,
+            self.cache_directory_tree_strip_thumbnail(StripThumbnailCacheRequest {
+                index: item.index,
+                decoded: &item.decoded,
+                stage: item.stage,
+                logical_size: item.logical,
+                buffer_tag: item.buffer_tag,
+                strip_max_side_used: item.strip_max_side_used,
                 ctx,
-                true,
-            );
+                bypass_detach_queue: true,
+            });
             #[cfg(feature = "preload-debug")]
             {
                 let cache_after = self.directory_tree_strip_cache.contains(item.index);
@@ -272,15 +272,18 @@ impl ImageViewerApp {
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
         &mut self,
-        index: usize,
-        decoded: &crate::loader::DecodedImage,
-        stage: crate::loader::PreviewStage,
-        logical_size: Option<(u32, u32)>,
-        buffer_tag: StripPreviewBufferTag,
-        strip_max_side_used: Option<u32>,
-        ctx: &egui::Context,
-        bypass_detach_queue: bool,
+        request: StripThumbnailCacheRequest<'_>,
     ) {
+        let StripThumbnailCacheRequest {
+            index,
+            decoded,
+            stage,
+            logical_size,
+            buffer_tag,
+            strip_max_side_used,
+            ctx,
+            bypass_detach_queue,
+        } = request;
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
             return;
         }

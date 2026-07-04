@@ -66,10 +66,6 @@ where
         self.nodes.is_empty()
     }
 
-    pub(crate) fn contains(&self, key: K) -> bool {
-        self.nodes.contains_key(&key)
-    }
-
     pub(crate) fn touch(&mut self, key: K) {
         self.unlink(key);
         self.link_at_tail(key);

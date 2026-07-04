@@ -152,14 +152,16 @@ impl ImageViewerApp {
         match (preview, preview_error) {
             (Some(preview), _) => {
                 self.cache_directory_tree_strip_thumbnail(
-                    update.index,
-                    &preview,
-                    crate::loader::PreviewStage::Refined,
-                    self.directory_tree_strip_logical_size(update.index),
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::MainWindowTiledPreview,
-                    None,
-                    ctx,
-                    false,
+                    crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                        index: update.index,
+                        decoded: &preview,
+                        stage: crate::loader::PreviewStage::Refined,
+                        logical_size: self.directory_tree_strip_logical_size(update.index),
+                        buffer_tag: crate::app::directory_tree_strip_cache::StripPreviewBufferTag::MainWindowTiledPreview,
+                        strip_max_side_used: None,
+                        ctx,
+                        bypass_detach_queue: false,
+                    },
                 );
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 if let Some(cpu_ms) = update.cpu_demosaic_ms

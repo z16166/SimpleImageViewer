@@ -25,6 +25,17 @@ use super::validate::validate_rgba32f_len;
 
 const PARALLEL_PREVIEW_ROW_THRESHOLD: u32 = 8;
 
+#[derive(Clone, Copy)]
+struct HdrImagePreviewRowSample<'a> {
+    rgba_f32: &'a [f32],
+    source_width: u32,
+    source_height: u32,
+    preview_width: u32,
+    preview_height: u32,
+    color_space: HdrColorSpace,
+    metadata: &'a HdrImageMetadata,
+}
+
 pub(crate) fn downsample_hdr_image_nearest(
     image: &HdrImageBuffer,
     max_w: u32,
@@ -122,36 +133,25 @@ pub(crate) fn sdr_preview_from_hdr_image_nearest(
     let source_width = image.width;
     let source_height = image.height;
     let rgba_f32 = Arc::clone(&image.rgba_f32);
+    let row_sample = HdrImagePreviewRowSample {
+        rgba_f32: &rgba_f32,
+        source_width,
+        source_height,
+        preview_width: width,
+        preview_height: height,
+        color_space,
+        metadata: &metadata,
+    };
 
     let rows = if height >= PARALLEL_PREVIEW_ROW_THRESHOLD {
         (0..height)
             .into_par_iter()
-            .map(|y| {
-                sample_hdr_image_preview_row_to_sdr_u8(
-                    &rgba_f32,
-                    source_width,
-                    source_height,
-                    y,
-                    width,
-                    height,
-                    color_space,
-                    &metadata,
-                )
-            })
+            .map(|y| sample_hdr_image_preview_row_to_sdr_u8(row_sample, y))
             .collect::<Result<Vec<_>, _>>()?
     } else {
         let mut rows = Vec::with_capacity(height as usize);
         for y in 0..height {
-            rows.push(sample_hdr_image_preview_row_to_sdr_u8(
-                &rgba_f32,
-                source_width,
-                source_height,
-                y,
-                width,
-                height,
-                color_space,
-                &metadata,
-            )?);
+            rows.push(sample_hdr_image_preview_row_to_sdr_u8(row_sample, y)?);
         }
         rows
     };
@@ -256,15 +256,18 @@ pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
 }
 
 fn sample_hdr_image_preview_row_to_sdr_u8(
-    rgba_f32: &[f32],
-    source_width: u32,
-    source_height: u32,
+    sample: HdrImagePreviewRowSample<'_>,
     preview_y: u32,
-    preview_width: u32,
-    preview_height: u32,
-    color_space: HdrColorSpace,
-    metadata: &HdrImageMetadata,
 ) -> Result<Vec<u8>, String> {
+    let HdrImagePreviewRowSample {
+        rgba_f32,
+        source_width,
+        source_height,
+        preview_width,
+        preview_height,
+        color_space,
+        metadata,
+    } = sample;
     let src_y = preview_sample_coord(preview_y, preview_height, source_height) as usize;
     let mut row_f32 = Vec::with_capacity(preview_width as usize * 4);
     for x in 0..preview_width {

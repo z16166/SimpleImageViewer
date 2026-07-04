@@ -199,7 +199,7 @@ impl ImageViewerApp {
             return;
         }
         let pixel_bytes = u64::from(full.width) * u64::from(full.height) * 4;
-        if pixel_bytes > u64::from(crate::hdr::decode::MAX_HDR_FALLBACK_DECODE_BYTES) {
+        if pixel_bytes > crate::hdr::decode::MAX_HDR_FALLBACK_DECODE_BYTES {
             return;
         }
         self.insert_deferred_sdr_upload(index, full);

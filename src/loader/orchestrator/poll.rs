@@ -50,14 +50,13 @@ impl ImageLoader {
         for output in pending {
             if keep(&output, &is_loading) {
                 retained.push_back(output);
-            } else if let LoaderOutput::Image(ref r) = output {
-                if loading
+            } else if let LoaderOutput::Image(ref r) = output
+                && loading
                     .get(&r.index)
                     .is_some_and(|e| e.profile == r.decode_profile)
                 {
                     finish_indices.push(r.index);
                 }
-            }
         }
         drop(loading);
 

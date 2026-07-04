@@ -178,8 +178,8 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
     }
 
     // ISO deferred: strip thumbnails use the embedded SDR baseline only (no gain-map compose).
-    if hdr_has_iso_deferred_gain_map(hdr) {
-        if let Some(iso) = hdr
+    if hdr_has_iso_deferred_gain_map(hdr)
+        && let Some(iso) = hdr
             .metadata
             .gain_map
             .as_ref()
@@ -192,7 +192,6 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
             );
             return downsample_decoded_for_strip(&decoded, max_side);
         }
-    }
 
     if !fallback.is_sdr_deferred_placeholder() {
         return downsample_decoded_for_strip(fallback, max_side);

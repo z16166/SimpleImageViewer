@@ -512,11 +512,6 @@ pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize>
         })
 }
 
-pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    exr_dimensions_unvalidated_from_mmap(path, mmap)
-}
-
 pub(crate) fn exr_dimensions_unvalidated_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
@@ -529,6 +524,7 @@ pub(crate) fn exr_dimensions_unvalidated_from_mmap(
     Ok((part.width, part.height))
 }
 
+#[cfg(test)]
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     decode_deep_exr_image_from_mmap(path, mmap)

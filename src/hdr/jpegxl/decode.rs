@@ -378,18 +378,18 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         strip_baseline_only,
         embedded_sdr_master_load,
     } = input;
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
-    let hdr = match finish_jxl_jhgm_frame(
+    let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
         jhgm_box,
-        decode_target_hdr_capacity,
-        &rgba,
+        target_hdr_capacity: decode_target_hdr_capacity,
+        rgba: &rgba,
         width,
         height,
-        &metadata,
+        metadata: &metadata,
         strip_baseline_only,
         embedded_sdr_master_load,
-    ) {
+    }) {
         JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
             return Ok(ImageData::Static(DecodedImage::new(
                 width, height, baseline,
@@ -458,18 +458,18 @@ fn jxl_finish_static_frame_with_embedded_fallback(
     }
 
     if try_embedded_sdr_master {
-        use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+        use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
 
-        match finish_jxl_jhgm_frame(
+        match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
             jhgm_box,
-            decode_target_hdr_capacity,
-            &rgba,
+            target_hdr_capacity: decode_target_hdr_capacity,
+            rgba: &rgba,
             width,
             height,
-            &metadata,
-            true,
-            true,
-        ) {
+            metadata: &metadata,
+            strip_baseline_only: true,
+            embedded_sdr_master_load: true,
+        }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
                 return Ok(ImageData::Static(DecodedImage::new(
                     width, height, baseline,
@@ -559,23 +559,23 @@ fn jxl_build_hdr_animated_image_data(
     jhgm_box: Option<&[u8]>,
     decode_target_hdr_capacity: f32,
 ) -> Result<ImageData, String> {
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
     use crate::loader::HdrAnimationFrame;
 
     let require_jhgm_processing = jhgm_box.is_some();
     let mut frames = Vec::with_capacity(captured_frames.len());
     for (rgba, ticks) in captured_frames {
         let frame_metadata = meta_base.clone();
-        let hdr = match finish_jxl_jhgm_frame(
+        let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
             jhgm_box,
-            decode_target_hdr_capacity,
-            &rgba,
-            info.xsize,
-            info.ysize,
-            &frame_metadata,
-            false,
-            false,
-        ) {
+            target_hdr_capacity: decode_target_hdr_capacity,
+            rgba: &rgba,
+            width: info.xsize,
+            height: info.ysize,
+            metadata: &frame_metadata,
+            strip_baseline_only: false,
+            embedded_sdr_master_load: false,
+        }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(_)
             | JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(_) => {
                 return Err("JPEG XL animated jhgm strip baseline is not supported".to_string());

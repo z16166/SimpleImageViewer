@@ -32,6 +32,17 @@ use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixe
 const PARALLEL_ROW_THRESHOLD: u32 = 8;
 
 #[derive(Clone, Copy)]
+struct RadiancePreviewRowContext<'a> {
+    mmap: &'a [u8],
+    scanline_offsets: &'a [usize],
+    inner_len: usize,
+    preview_width: u32,
+    preview_height: u32,
+    logical_width: u32,
+    logical_height: u32,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct RadianceTileWindow {
     pub(crate) tile_x: u32,
     pub(crate) tile_y: u32,
@@ -203,20 +214,20 @@ pub(crate) fn decode_radiance_sdr_preview(
 
     if raster.is_row_major_top_left() {
         let inner_len = raster.inner_len as usize;
+        let row_ctx = RadiancePreviewRowContext {
+            mmap,
+            scanline_offsets,
+            inner_len,
+            preview_width,
+            preview_height,
+            logical_width,
+            logical_height,
+        };
         if preview_height >= PARALLEL_ROW_THRESHOLD {
             let rows: Result<Vec<Vec<u8>>, String> = (0..preview_height)
                 .into_par_iter()
                 .map(|preview_y| {
-                    let mut row_rgba = decode_row_major_preview_row(
-                        mmap,
-                        scanline_offsets,
-                        inner_len,
-                        preview_y,
-                        preview_width,
-                        preview_height,
-                        logical_width,
-                        logical_height,
-                    )?;
+                    let mut row_rgba = decode_row_major_preview_row(row_ctx, preview_y)?;
                     params.apply_to_pixels(&mut row_rgba);
                     crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                         preview_width,
@@ -231,16 +242,7 @@ pub(crate) fn decode_radiance_sdr_preview(
             }
         } else {
             for preview_y in 0..preview_height {
-                let mut row_rgba = decode_row_major_preview_row(
-                    mmap,
-                    scanline_offsets,
-                    inner_len,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    logical_width,
-                    logical_height,
-                )?;
+                let mut row_rgba = decode_row_major_preview_row(row_ctx, preview_y)?;
                 params.apply_to_pixels(&mut row_rgba);
                 let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                     preview_width,
@@ -253,21 +255,21 @@ pub(crate) fn decode_radiance_sdr_preview(
         }
     } else {
         let inner_len = raster.inner_len as usize;
+        let row_ctx = RadiancePreviewRowContext {
+            mmap,
+            scanline_offsets,
+            inner_len,
+            preview_width,
+            preview_height,
+            logical_width,
+            logical_height,
+        };
         if preview_height >= PARALLEL_ROW_THRESHOLD {
             let rows: Result<Vec<Vec<u8>>, String> = (0..preview_height)
                 .into_par_iter()
                 .map(|preview_y| {
-                    let mut row_rgba = decode_non_row_major_preview_row(
-                        mmap,
-                        scanline_offsets,
-                        inner_len,
-                        raster,
-                        preview_y,
-                        preview_width,
-                        preview_height,
-                        logical_width,
-                        logical_height,
-                    )?;
+                    let mut row_rgba =
+                        decode_non_row_major_preview_row(row_ctx, raster, preview_y)?;
                     params.apply_to_pixels(&mut row_rgba);
                     crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                         preview_width,
@@ -282,17 +284,8 @@ pub(crate) fn decode_radiance_sdr_preview(
             }
         } else {
             for preview_y in 0..preview_height {
-                let mut row_rgba = decode_non_row_major_preview_row(
-                    mmap,
-                    scanline_offsets,
-                    inner_len,
-                    raster,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    logical_width,
-                    logical_height,
-                )?;
+                let mut row_rgba =
+                    decode_non_row_major_preview_row(row_ctx, raster, preview_y)?;
                 params.apply_to_pixels(&mut row_rgba);
                 let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                     preview_width,
@@ -332,21 +325,19 @@ pub(crate) fn decode_radiance_hdr_preview(
 
     if raster.is_row_major_top_left() {
         let inner_len = raster.inner_len as usize;
+        let row_ctx = RadiancePreviewRowContext {
+            mmap,
+            scanline_offsets,
+            inner_len,
+            preview_width,
+            preview_height,
+            logical_width,
+            logical_height,
+        };
         if preview_height >= PARALLEL_ROW_THRESHOLD {
             let rows: Result<Vec<Vec<f32>>, String> = (0..preview_height)
                 .into_par_iter()
-                .map(|preview_y| {
-                    decode_row_major_preview_row(
-                        mmap,
-                        scanline_offsets,
-                        inner_len,
-                        preview_y,
-                        preview_width,
-                        preview_height,
-                        logical_width,
-                        logical_height,
-                    )
-                })
+                .map(|preview_y| decode_row_major_preview_row(row_ctx, preview_y))
                 .collect();
             for (preview_y, row_rgba) in rows?.into_iter().enumerate() {
                 let base = preview_y * preview_width as usize * 4;
@@ -354,38 +345,26 @@ pub(crate) fn decode_radiance_hdr_preview(
             }
         } else {
             for preview_y in 0..preview_height {
-                let row_rgba = decode_row_major_preview_row(
-                    mmap,
-                    scanline_offsets,
-                    inner_len,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    logical_width,
-                    logical_height,
-                )?;
+                let row_rgba = decode_row_major_preview_row(row_ctx, preview_y)?;
                 let base = preview_y as usize * preview_width as usize * 4;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
         }
     } else {
         let inner_len = raster.inner_len as usize;
+        let row_ctx = RadiancePreviewRowContext {
+            mmap,
+            scanline_offsets,
+            inner_len,
+            preview_width,
+            preview_height,
+            logical_width,
+            logical_height,
+        };
         if preview_height >= PARALLEL_ROW_THRESHOLD {
             let rows: Result<Vec<Vec<f32>>, String> = (0..preview_height)
                 .into_par_iter()
-                .map(|preview_y| {
-                    decode_non_row_major_preview_row(
-                        mmap,
-                        scanline_offsets,
-                        inner_len,
-                        raster,
-                        preview_y,
-                        preview_width,
-                        preview_height,
-                        logical_width,
-                        logical_height,
-                    )
-                })
+                .map(|preview_y| decode_non_row_major_preview_row(row_ctx, raster, preview_y))
                 .collect();
             for (preview_y, row_rgba) in rows?.into_iter().enumerate() {
                 let base = preview_y * preview_width as usize * 4;
@@ -393,17 +372,7 @@ pub(crate) fn decode_radiance_hdr_preview(
             }
         } else {
             for preview_y in 0..preview_height {
-                let row_rgba = decode_non_row_major_preview_row(
-                    mmap,
-                    scanline_offsets,
-                    inner_len,
-                    raster,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    logical_width,
-                    logical_height,
-                )?;
+                let row_rgba = decode_non_row_major_preview_row(row_ctx, raster, preview_y)?;
                 let base = preview_y as usize * preview_width as usize * 4;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
@@ -423,15 +392,18 @@ pub(crate) fn decode_radiance_hdr_preview(
 }
 
 fn decode_row_major_preview_row(
-    mmap: &[u8],
-    scanline_offsets: &[usize],
-    inner_len: usize,
+    ctx: RadiancePreviewRowContext<'_>,
     preview_y: u32,
-    preview_width: u32,
-    preview_height: u32,
-    logical_width: u32,
-    logical_height: u32,
 ) -> Result<Vec<f32>, String> {
+    let RadiancePreviewRowContext {
+        mmap,
+        scanline_offsets,
+        inner_len,
+        preview_width,
+        preview_height,
+        logical_width,
+        logical_height,
+    } = ctx;
     let source_y = preview_sample_coord(preview_y, preview_height, logical_height);
     let mut reader = Cursor::new(mmap);
     reader.set_position(scanline_offsets[source_y as usize] as u64);
@@ -449,16 +421,19 @@ fn decode_row_major_preview_row(
 }
 
 fn decode_non_row_major_preview_row(
-    mmap: &[u8],
-    scanline_offsets: &[usize],
-    inner_len: usize,
+    ctx: RadiancePreviewRowContext<'_>,
     raster: RadianceRasterLayout,
     preview_y: u32,
-    preview_width: u32,
-    preview_height: u32,
-    logical_width: u32,
-    logical_height: u32,
 ) -> Result<Vec<f32>, String> {
+    let RadiancePreviewRowContext {
+        mmap,
+        scanline_offsets,
+        inner_len,
+        preview_width,
+        preview_height,
+        logical_width,
+        logical_height,
+    } = ctx;
     let mut reader = Cursor::new(mmap);
     let mut scanline = vec![Rgbe8Pixel::default(); inner_len];
     let mut last_outer_a: Option<u32> = None;

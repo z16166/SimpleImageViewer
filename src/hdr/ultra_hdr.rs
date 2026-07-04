@@ -647,38 +647,25 @@ fn downsample_oriented_ultra_hdr_sdr_base_nearest(
     let display_height = source.height;
     let orientation = source.orientation;
 
+    let row_sample = OrientedUltraHdrSdrPreviewSample {
+        sdr_rgba: &sdr_rgba,
+        preview_width,
+        preview_height,
+        display_width,
+        display_height,
+        physical_width,
+        physical_height,
+        orientation,
+    };
+
     let rows: Vec<Vec<u8>> = if preview_height >= 8 {
         (0..preview_height)
             .into_par_iter()
-            .map(|preview_y| {
-                sample_oriented_ultra_hdr_sdr_preview_row(
-                    &sdr_rgba,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    display_width,
-                    display_height,
-                    physical_width,
-                    physical_height,
-                    orientation,
-                )
-            })
+            .map(|preview_y| sample_oriented_ultra_hdr_sdr_preview_row(row_sample, preview_y))
             .collect()
     } else {
         (0..preview_height)
-            .map(|preview_y| {
-                sample_oriented_ultra_hdr_sdr_preview_row(
-                    &sdr_rgba,
-                    preview_y,
-                    preview_width,
-                    preview_height,
-                    display_width,
-                    display_height,
-                    physical_width,
-                    physical_height,
-                    orientation,
-                )
-            })
+            .map(|preview_y| sample_oriented_ultra_hdr_sdr_preview_row(row_sample, preview_y))
             .collect()
     };
 
@@ -689,9 +676,9 @@ fn downsample_oriented_ultra_hdr_sdr_base_nearest(
     Ok(pixels)
 }
 
-fn sample_oriented_ultra_hdr_sdr_preview_row(
-    sdr_rgba: &[u8],
-    preview_y: u32,
+#[derive(Clone, Copy)]
+struct OrientedUltraHdrSdrPreviewSample<'a> {
+    sdr_rgba: &'a [u8],
     preview_width: u32,
     preview_height: u32,
     display_width: u32,
@@ -699,7 +686,22 @@ fn sample_oriented_ultra_hdr_sdr_preview_row(
     physical_width: u32,
     physical_height: u32,
     orientation: u16,
+}
+
+fn sample_oriented_ultra_hdr_sdr_preview_row(
+    sample: OrientedUltraHdrSdrPreviewSample<'_>,
+    preview_y: u32,
 ) -> Vec<u8> {
+    let OrientedUltraHdrSdrPreviewSample {
+        sdr_rgba,
+        preview_width,
+        preview_height,
+        display_width,
+        display_height,
+        physical_width,
+        physical_height,
+        orientation,
+    } = sample;
     let display_y =
         crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, display_height);
     let mut row = Vec::with_capacity(preview_width as usize * 4);

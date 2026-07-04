@@ -190,14 +190,11 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
                 .ok()
-                .map(Arc::new)
-                .and_then(|owned| {
-                    Some(try_heif_directory_tree_strip(
+                .map(Arc::new).map(|owned| try_heif_directory_tree_strip(
                         owned.as_ref(),
                         max_side,
                         allow_primary_sdr,
                     ))
-                })
                 .unwrap_or_else(|| HeifDirectoryTreeStripOutcome {
                     strip: None,
                     thumb_probe: HeifThumbProbe::ContainerUnreadable,

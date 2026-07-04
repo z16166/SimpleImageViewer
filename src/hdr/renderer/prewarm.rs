@@ -24,17 +24,11 @@ use std::sync::Arc;
 pub(crate) struct HdrCallbackResourcesPrewarmSlot(pub Arc<HdrCallbackResourcesPrewarm>);
 
 /// One compiled pipeline bundle per swap-chain target format (avoids format ping-pong).
+#[derive(Default)]
 pub(crate) struct HdrCallbackResourcesSet {
     by_format: HashMap<wgpu::TextureFormat, HdrCallbackResources>,
 }
 
-impl Default for HdrCallbackResourcesSet {
-    fn default() -> Self {
-        Self {
-            by_format: HashMap::new(),
-        }
-    }
-}
 
 impl HdrCallbackResourcesSet {
     pub(crate) fn get_for(&self, format: wgpu::TextureFormat) -> Option<&HdrCallbackResources> {
@@ -225,13 +219,12 @@ pub(crate) fn hdr_callback_formats_to_prewarm(
     if let Some(live) = live_target_format {
         formats.push(live);
     }
-    if hdr_native_surface_enabled {
-        if let Some(candidate) = candidate_texture_format
+    if hdr_native_surface_enabled
+        && let Some(candidate) = candidate_texture_format
             && !formats.contains(&candidate)
         {
             formats.push(candidate);
         }
-    }
     formats
 }
 

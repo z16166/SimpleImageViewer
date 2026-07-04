@@ -279,7 +279,7 @@ fn get_or_create_preview_gpu_cache(
 ) -> parking_lot::MutexGuard<'static, HashMap<u64, ToneMapPreviewGpuCache>> {
     let cache = preview_gpu_cache();
     let mut guard = cache.lock();
-    if !guard.contains_key(&device_epoch) {
+    guard.entry(device_epoch).or_insert_with(|| {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group-layout"),
             entries: &[
@@ -332,14 +332,11 @@ fn get_or_create_preview_gpu_cache(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        guard.insert(
-            device_epoch,
-            ToneMapPreviewGpuCache {
+        ToneMapPreviewGpuCache {
                 bind_group_layout,
                 pipeline,
-            },
-        );
-    }
+            }
+    });
     guard
 }
 

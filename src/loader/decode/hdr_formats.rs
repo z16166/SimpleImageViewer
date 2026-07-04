@@ -69,6 +69,7 @@ pub(crate) fn is_exr_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
 }
 
+#[cfg(test)]
 pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     try_load_disk_backed_exr_hdr_from_mmap(path, mmap)
@@ -148,14 +149,6 @@ fn route_exr_tiled_source(
     Ok(Some(ImageData::HdrTiled { hdr, fallback }))
 }
 
-pub(crate) fn try_load_disk_backed_radiance_hdr(
-    path: &Path,
-    hdr_tone_map: HdrToneMapSettings,
-) -> Result<Option<ImageData>, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    try_load_disk_backed_radiance_hdr_from_mmap(path, mmap, hdr_tone_map)
-}
-
 pub(crate) fn try_load_disk_backed_radiance_hdr_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
@@ -191,11 +184,6 @@ pub(crate) fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
     err.contains("deep data not supported yet")
 }
 
-pub(crate) fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    load_deep_exr_from_mmap(path, mmap)
-}
-
 pub(crate) fn load_deep_exr_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
@@ -219,11 +207,6 @@ pub(crate) fn load_deep_exr_from_mmap(
             make_deep_exr_placeholder_from_mmap(path, mmap)
         }
     }
-}
-
-pub(crate) fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    make_deep_exr_placeholder_from_mmap(path, mmap)
 }
 
 fn make_deep_exr_placeholder_from_mmap(

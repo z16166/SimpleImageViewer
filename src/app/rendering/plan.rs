@@ -43,11 +43,34 @@ pub(crate) struct RenderPlan {
     pub(crate) transition_policy: RenderTransitionPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RenderPlanParams {
+    pub shape: RenderShape,
+    pub has_hdr_plane: bool,
+    pub has_sdr_fallback: bool,
+    pub target_format: Option<wgpu::TextureFormat>,
+    pub output_mode: HdrRenderOutputMode,
+    pub prefer_sdr_for_pending_gpu_demosaic: bool,
+    pub force_hdr_plane_after_raw_demosaic: bool,
+    pub prefer_embedded_iso_gain_map_sdr_master: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderPlanStateInput<'a> {
+    pub shape: RenderShape,
+    pub has_hdr_plane: bool,
+    pub has_sdr_fallback: bool,
+    pub target_format: Option<wgpu::TextureFormat>,
+    pub monitor_selection: Option<&'a HdrMonitorSelection>,
+    pub prefer_sdr_for_pending_gpu_demosaic: bool,
+    pub force_hdr_plane_after_raw_demosaic: bool,
+    pub prefer_embedded_iso_gain_map_sdr_master: bool,
+}
+
 impl RenderPlan {
     /// Convenience constructor used by unit tests — defaults `has_sdr_fallback = true` so
     /// existing test matrices still exercise the "cached SDR fast path" branch of
-    /// [`select_render_backend`]. Production code uses
-    /// [`RenderPlan::new_with_sdr_fallback`] directly.
+    /// [`select_render_backend`]. Production code uses [`RenderPlan::from_params`] directly.
     #[cfg(test)]
     pub(crate) fn new(
         shape: RenderShape,
@@ -55,28 +78,29 @@ impl RenderPlan {
         target_format: Option<wgpu::TextureFormat>,
         output_mode: HdrRenderOutputMode,
     ) -> Self {
-        Self::new_with_sdr_fallback(
+        Self::from_params(RenderPlanParams {
             shape,
             has_hdr_plane,
-            true,
+            has_sdr_fallback: true,
             target_format,
             output_mode,
-            false,
-            false,
-            false,
-        )
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        })
     }
 
-    pub(crate) fn new_with_sdr_fallback(
-        shape: RenderShape,
-        has_hdr_plane: bool,
-        has_sdr_fallback: bool,
-        target_format: Option<wgpu::TextureFormat>,
-        output_mode: HdrRenderOutputMode,
-        prefer_sdr_for_pending_gpu_demosaic: bool,
-        force_hdr_plane_after_raw_demosaic: bool,
-        prefer_embedded_iso_gain_map_sdr_master: bool,
-    ) -> Self {
+    pub(crate) fn from_params(params: RenderPlanParams) -> Self {
+        let RenderPlanParams {
+            shape,
+            has_hdr_plane,
+            has_sdr_fallback,
+            target_format,
+            output_mode,
+            prefer_sdr_for_pending_gpu_demosaic,
+            force_hdr_plane_after_raw_demosaic,
+            prefer_embedded_iso_gain_map_sdr_master,
+        } = params;
         let backend = select_render_backend(
             has_hdr_plane,
             has_sdr_fallback,
@@ -103,19 +127,20 @@ impl RenderPlan {
     }
 }
 
-pub(crate) fn build_render_plan_for_state(
-    shape: RenderShape,
-    has_hdr_plane: bool,
-    has_sdr_fallback: bool,
-    target_format: Option<wgpu::TextureFormat>,
-    monitor_selection: Option<&HdrMonitorSelection>,
-    prefer_sdr_for_pending_gpu_demosaic: bool,
-    force_hdr_plane_after_raw_demosaic: bool,
-    prefer_embedded_iso_gain_map_sdr_master: bool,
-) -> RenderPlan {
+pub(crate) fn build_render_plan_for_state(input: RenderPlanStateInput<'_>) -> RenderPlan {
+    let RenderPlanStateInput {
+        shape,
+        has_hdr_plane,
+        has_sdr_fallback,
+        target_format,
+        monitor_selection,
+        prefer_sdr_for_pending_gpu_demosaic,
+        force_hdr_plane_after_raw_demosaic,
+        prefer_embedded_iso_gain_map_sdr_master,
+    } = input;
     let output_mode =
         crate::hdr::monitor::effective_render_output_mode(target_format, monitor_selection);
-    RenderPlan::new_with_sdr_fallback(
+    RenderPlan::from_params(RenderPlanParams {
         shape,
         has_hdr_plane,
         has_sdr_fallback,
@@ -124,7 +149,7 @@ pub(crate) fn build_render_plan_for_state(
         prefer_sdr_for_pending_gpu_demosaic,
         force_hdr_plane_after_raw_demosaic,
         prefer_embedded_iso_gain_map_sdr_master,
-    )
+    })
 }
 
 impl ImageViewerApp {
@@ -149,16 +174,16 @@ impl ImageViewerApp {
                 self.current_index
             );
         }
-        build_render_plan_for_state(
+        build_render_plan_for_state(RenderPlanStateInput {
             shape,
             has_hdr_plane,
             has_sdr_fallback,
-            self.effective_hdr_target_format(),
-            self.effective_hdr_monitor_selection().as_ref(),
+            target_format: self.effective_hdr_target_format(),
+            monitor_selection: self.effective_hdr_monitor_selection().as_ref(),
             prefer_sdr_for_pending_gpu_demosaic,
-            self.raw_gpu_demosaic_await_hdr_present,
-            self.prefer_embedded_iso_gain_map_sdr_master(),
-        )
+            force_hdr_plane_after_raw_demosaic: self.raw_gpu_demosaic_await_hdr_present,
+            prefer_embedded_iso_gain_map_sdr_master: self.prefer_embedded_iso_gain_map_sdr_master(),
+        })
     }
 
     fn prefer_embedded_iso_gain_map_sdr_master(&self) -> bool {
@@ -292,32 +317,32 @@ mod tests {
     /// shader's `SdrToneMapped` path rather than leave the canvas blank.
     #[test]
     fn render_plan_upgrades_to_hdr_backend_when_sdr_fallback_is_missing() {
-        let plan = super::RenderPlan::new_with_sdr_fallback(
-            super::RenderShape::Tiled,
-            /* has_hdr_plane */ true,
-            /* has_sdr_fallback */ false,
-            Some(wgpu::TextureFormat::Bgra8Unorm),
-            HdrRenderOutputMode::SdrToneMapped,
-            false,
-            false,
-            false,
-        );
+        let plan = super::RenderPlan::from_params(super::RenderPlanParams {
+            shape: super::RenderShape::Tiled,
+            has_hdr_plane: true,
+            has_sdr_fallback: false,
+            target_format: Some(wgpu::TextureFormat::Bgra8Unorm),
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
         assert_eq!(plan.output_mode, HdrRenderOutputMode::SdrToneMapped);
 
         // Without an HDR plane the fallback cannot engage — we stay on the SDR backend and
         // accept a blank canvas instead of trying to shader-tone-map a non-existent image.
-        let plan_no_hdr = super::RenderPlan::new_with_sdr_fallback(
-            super::RenderShape::Tiled,
-            /* has_hdr_plane */ false,
-            /* has_sdr_fallback */ false,
-            Some(wgpu::TextureFormat::Bgra8Unorm),
-            HdrRenderOutputMode::SdrToneMapped,
-            false,
-            false,
-            false,
-        );
+        let plan_no_hdr = super::RenderPlan::from_params(super::RenderPlanParams {
+            shape: super::RenderShape::Tiled,
+            has_hdr_plane: false,
+            has_sdr_fallback: false,
+            target_format: Some(wgpu::TextureFormat::Bgra8Unorm),
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(plan_no_hdr.backend, PlaneBackendKind::Sdr);
 
         // With an HDR float plane + SDR output, bake-time CPU cache would ignore slider changes;
@@ -360,48 +385,48 @@ mod tests {
             ..crate::hdr::monitor::HdrMonitorSelection::new("", false)
         };
 
-        let sdr_plan = super::build_render_plan_for_state(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            Some(&non_hdr_monitor),
-            false,
-            false,
-            false,
-        );
+        let sdr_plan = super::build_render_plan_for_state(super::RenderPlanStateInput {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            monitor_selection: Some(&non_hdr_monitor),
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(sdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             sdr_plan.transition_policy,
             super::RenderTransitionPolicy::StaticHdrWithSdrComplexFallback
         );
 
-        let hdr_plan = super::build_render_plan_for_state(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            Some(&hdr_monitor),
-            false,
-            false,
-            false,
-        );
+        let hdr_plan = super::build_render_plan_for_state(super::RenderPlanStateInput {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            monitor_selection: Some(&hdr_monitor),
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             hdr_plan.transition_policy,
             super::RenderTransitionPolicy::StaticHdrWithSdrComplexFallback
         );
 
-        let tiled_plan = super::build_render_plan_for_state(
-            super::RenderShape::Tiled,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            Some(&hdr_monitor),
-            false,
-            false,
-            false,
-        );
+        let tiled_plan = super::build_render_plan_for_state(super::RenderPlanStateInput {
+            shape: super::RenderShape::Tiled,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            monitor_selection: Some(&hdr_monitor),
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(tiled_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             tiled_plan.transition_policy,
@@ -411,16 +436,16 @@ mod tests {
         // Unknown probe: conservative `effective_render_output_mode` is `SdrToneMapped`, so HDR
         // sources still composite through WGSL tone-map (`PlaneBackendKind::Hdr`) rather than
         // native HDR — not the naive "SDR wallpaper" GPU path (`PlaneBackendKind::Sdr`).
-        let unknown_monitor_plan = super::build_render_plan_for_state(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            None,
-            false,
-            false,
-            false,
-        );
+        let unknown_monitor_plan = super::build_render_plan_for_state(super::RenderPlanStateInput {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            monitor_selection: None,
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             unknown_monitor_plan.transition_policy,
@@ -430,48 +455,48 @@ mod tests {
 
     #[test]
     fn render_plan_prefers_sdr_while_gpu_raw_demosaic_is_pending() {
-        let plan = super::RenderPlan::new_with_sdr_fallback(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            HdrRenderOutputMode::NativeHdr,
-            true,
-            false,
-            false,
-        );
+        let plan = super::RenderPlan::from_params(super::RenderPlanParams {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            output_mode: HdrRenderOutputMode::NativeHdr,
+            prefer_sdr_for_pending_gpu_demosaic: true,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(plan.backend, PlaneBackendKind::Sdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
     }
 
     #[test]
     fn render_plan_stays_on_sdr_for_embedded_iso_gain_map_master_on_sdr_output() {
-        let plan = super::RenderPlan::new_with_sdr_fallback(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Bgra8Unorm),
-            HdrRenderOutputMode::SdrToneMapped,
-            false,
-            false,
-            true,
-        );
+        let plan = super::RenderPlan::from_params(super::RenderPlanParams {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Bgra8Unorm),
+            output_mode: HdrRenderOutputMode::SdrToneMapped,
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: false,
+            prefer_embedded_iso_gain_map_sdr_master: true,
+        });
         assert_eq!(plan.backend, PlaneBackendKind::Sdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
     }
 
     #[test]
     fn render_plan_forces_hdr_after_raw_demosaic_while_awaiting_present() {
-        let plan = super::RenderPlan::new_with_sdr_fallback(
-            super::RenderShape::Static,
-            true,
-            true,
-            Some(wgpu::TextureFormat::Rgba16Float),
-            HdrRenderOutputMode::NativeHdr,
-            false,
-            true,
-            false,
-        );
+        let plan = super::RenderPlan::from_params(super::RenderPlanParams {
+            shape: super::RenderShape::Static,
+            has_hdr_plane: true,
+            has_sdr_fallback: true,
+            target_format: Some(wgpu::TextureFormat::Rgba16Float),
+            output_mode: HdrRenderOutputMode::NativeHdr,
+            prefer_sdr_for_pending_gpu_demosaic: false,
+            force_hdr_plane_after_raw_demosaic: true,
+            prefer_embedded_iso_gain_map_sdr_master: false,
+        });
         assert_eq!(plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
     }

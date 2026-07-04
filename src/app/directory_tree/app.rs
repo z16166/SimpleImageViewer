@@ -61,6 +61,20 @@ struct DirectoryTreePanelRefs<'a> {
     allow_image_context_menu: bool,
 }
 
+#[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+struct EmbeddedSidePanelLayoutSample {
+    available_before: f32,
+    available_after: f32,
+    max_rect_width_before: f32,
+    panel_width: f32,
+    panel_left: f32,
+    panel_right: f32,
+    default_width: f32,
+    min_width: f32,
+    tree_embedded_width_before: f32,
+    chrome_embedded_width_after: Option<f32>,
+}
+
 #[cfg(feature = "preload-debug")]
 mod embedded_side_panel_layout_diag {
     use std::sync::OnceLock;
@@ -80,17 +94,20 @@ mod embedded_side_panel_layout_diag {
         OnceLock::new();
 
     pub(super) fn maybe_log_embedded_side_panel_layout(
-        available_before: f32,
-        available_after: f32,
-        max_rect_width_before: f32,
-        panel_width: f32,
-        panel_left: f32,
-        panel_right: f32,
-        default_width: f32,
-        min_width: f32,
-        tree_embedded_width_before: f32,
-        chrome_embedded_width_after: Option<f32>,
+        sample: super::EmbeddedSidePanelLayoutSample,
     ) {
+        let EmbeddedSidePanelLayoutSample {
+            available_before,
+            available_after,
+            max_rect_width_before,
+            panel_width,
+            panel_left,
+            panel_right,
+            default_width,
+            min_width,
+            tree_embedded_width_before,
+            chrome_embedded_width_after,
+        } = sample;
         const WIDTH_CHANGE_EPS: f32 = 2.0;
         const LOG_INTERVAL: Duration = Duration::from_millis(1000);
 
@@ -159,18 +176,7 @@ use embedded_side_panel_layout_diag::maybe_log_embedded_side_panel_layout;
 
 #[cfg(not(feature = "preload-debug"))]
 #[inline]
-fn maybe_log_embedded_side_panel_layout(
-    _available_before: f32,
-    _available_after: f32,
-    _max_rect_width_before: f32,
-    _panel_width: f32,
-    _panel_left: f32,
-    _panel_right: f32,
-    _default_width: f32,
-    _min_width: f32,
-    _tree_embedded_width_before: f32,
-    _chrome_embedded_width_after: Option<f32>,
-) {
+fn maybe_log_embedded_side_panel_layout(_sample: EmbeddedSidePanelLayoutSample) {
 }
 
 fn embedded_side_panel_stable_rect_before_show(
@@ -1784,18 +1790,18 @@ impl ImageViewerApp {
             .chrome
             .try_lock()
             .and_then(|chrome| chrome.embedded_nav_panel_width);
-        maybe_log_embedded_side_panel_layout(
+        maybe_log_embedded_side_panel_layout(EmbeddedSidePanelLayoutSample {
             available_before,
-            ui.available_width(),
+            available_after: ui.available_width(),
             max_rect_width_before,
-            panel_rect.width(),
-            panel_rect.left(),
-            panel_rect.right(),
+            panel_width: panel_rect.width(),
+            panel_left: panel_rect.left(),
+            panel_right: panel_rect.right(),
             default_width,
-            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+            min_width: DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
             tree_embedded_width_before,
             chrome_embedded_width_after,
-        );
+        });
     }
 
     /// Apply a directory-tree list selection queued in `process_directory_tree_events`.

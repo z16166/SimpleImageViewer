@@ -252,7 +252,6 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
                 tone_map_strip_simd_sse41(src, dst, pixel_count, ctx, &mut offset);
             }
             tone_map_strip_scalar_tail(src, dst, pixel_count, ctx, offset);
-            return;
         }
     }
     #[cfg(target_arch = "aarch64")]

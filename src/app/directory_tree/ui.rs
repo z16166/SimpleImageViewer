@@ -101,7 +101,7 @@ struct DirectoryTreePanelLayoutDiag {
 static DIRECTORY_TREE_PANEL_LAYOUT_DIAG: OnceLock<Mutex<DirectoryTreePanelLayoutDiag>> =
     OnceLock::new();
 
-fn maybe_log_directory_tree_panel_layout(
+struct DirectoryTreePanelLayoutSample {
     embedded: bool,
     viewport_width: f32,
     layout_left_w: f32,
@@ -110,7 +110,19 @@ fn maybe_log_directory_tree_panel_layout(
     stored_left_after: f32,
     splitter_dragged: bool,
     splitter_drag_delta_x: f32,
-) {
+}
+
+fn maybe_log_directory_tree_panel_layout(sample: DirectoryTreePanelLayoutSample) {
+    let DirectoryTreePanelLayoutSample {
+        embedded,
+        viewport_width,
+        layout_left_w,
+        layout_list_w,
+        stored_left_before,
+        stored_left_after,
+        splitter_dragged,
+        splitter_drag_delta_x,
+    } = sample;
     if !embedded {
         return;
     }
@@ -148,7 +160,7 @@ fn maybe_log_directory_tree_panel_layout(
     };
     let interval_elapsed = diag
         .last_log_at
-        .map_or(true, |last| now.saturating_duration_since(last) >= interval);
+        .is_none_or(|last| now.saturating_duration_since(last) >= interval);
 
     if interval_elapsed && (splitter_dragged || width_changed || left_clamped) {
         log::debug!(
@@ -752,16 +764,16 @@ fn draw_directory_tree_top_panels(
         chrome.panel_layout_dirty = true;
         ui.ctx().request_repaint();
     }
-    maybe_log_directory_tree_panel_layout(
+    maybe_log_directory_tree_panel_layout(DirectoryTreePanelLayoutSample {
         embedded,
         viewport_width,
-        left_w,
-        right_w,
+        layout_left_w: left_w,
+        layout_list_w: right_w,
         stored_left_before,
-        chrome.left_panel_width,
-        splitter_response.dragged(),
+        stored_left_after: chrome.left_panel_width,
+        splitter_dragged: splitter_response.dragged(),
         splitter_drag_delta_x,
-    );
+    });
     if splitter_response.hovered() || splitter_response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }

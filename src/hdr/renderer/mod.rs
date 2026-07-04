@@ -69,8 +69,7 @@ pub(crate) use self::pending_work::{
     HdrPendingIsoImageComposeRequest, HdrPendingIsoTileComposeRequest,
     HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
     HdrPendingTileUploadRequest, HdrPendingWorkQueues, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
-    MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
-    MAX_HDR_LOADER_PLANE_UPLOADS_INFLIGHT, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+    MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
     MAX_HDR_TILE_UPLOADS_PER_LOGIC,
 };
 
@@ -86,8 +85,7 @@ pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
 #[cfg(test)]
 pub(crate) use self::upload::test_upload_image_plane;
 pub(super) use self::upload::{
-    create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
-    rgba32f_as_bytes, validate_upload_layout, write_rgba32f_to_texture,
+    create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, validate_upload_layout, write_rgba32f_to_texture,
 };
 /// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
 pub(crate) use self::upload::{loader_background_upload_image_plane, upload_image_plane_with_sink};
