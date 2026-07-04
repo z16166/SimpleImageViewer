@@ -16,11 +16,11 @@
 
 use crate::constants::*;
 use interprocess::ConnectWaitMode;
-use interprocess::local_socket::{
-    ConnectOptions, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions,
-    Stream, prelude::*,
-};
 use interprocess::local_socket::traits::Listener as ListenerTrait;
+use interprocess::local_socket::{
+    ConnectOptions, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
+    prelude::*,
+};
 use parking_lot::Mutex;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -302,10 +302,7 @@ fn ipc_server_loop(
     log::debug!("[IPC] Server loop exiting");
 }
 
-fn handle_ipc_connection(
-    conn: Stream,
-    tx: &crossbeam_channel::Sender<IpcMessage>,
-) {
+fn handle_ipc_connection(conn: Stream, tx: &crossbeam_channel::Sender<IpcMessage>) {
     // Set a read timeout to prevent a single bad connection from blocking the listener forever
     if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_secs(2))) {
         log::warn!("Failed to set read timeout on IPC connection: {}", e);

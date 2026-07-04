@@ -491,8 +491,12 @@ mod tests {
 
     #[test]
     fn heif_sdr_capacity_still_decodes_float_plane_for_hdr_tone_map_mode() {
-        assert!(!crate::loader::should_use_embedded_sdr_master_load(false, 1.0));
-        assert!(crate::loader::should_use_embedded_sdr_master_load(true, 1.0));
+        assert!(!crate::loader::should_use_embedded_sdr_master_load(
+            false, 1.0
+        ));
+        assert!(crate::loader::should_use_embedded_sdr_master_load(
+            true, 1.0
+        ));
     }
 
     #[test]
