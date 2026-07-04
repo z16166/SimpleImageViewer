@@ -77,6 +77,9 @@ pub(crate) use self::pending_work::{
 mod pending_gpu_writes;
 pub(crate) use self::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage};
 
+mod tone_map_gpu;
+pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};
+
 pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;

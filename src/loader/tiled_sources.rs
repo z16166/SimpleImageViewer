@@ -263,14 +263,7 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let preview = self.generate_hdr_preview(max_w, max_h)?;
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
-        let image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            preview.width,
-            preview.height,
-            pixels,
-        )
-        .ok_or_else(|| "Failed to create RAW HDR SDR preview buffer".to_string())?;
-        Ok((image.width(), image.height(), image.into_raw()))
+        crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
     }
 
     fn extract_tile_rgba32f_arc(

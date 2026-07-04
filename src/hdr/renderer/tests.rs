@@ -1127,3 +1127,54 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         }
     }
 }
+
+#[test]
+fn gpu_preview_tone_map_matches_cpu_for_linear_srgb() {
+    let Some((_instance, _adapter, device, queue)) = pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: true,
+                compatible_surface: None,
+            })
+            .await
+            .ok()?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .ok()?;
+        Some((instance, adapter, device, queue))
+    }) else {
+        log::warn!("Skipping GPU preview tone-map test: no adapter available");
+        return;
+    };
+
+    let width = 256_u32;
+    let height = 256_u32;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let v = (x as f32 / width as f32) * 2.0;
+            rgba.extend_from_slice(&[v, v * 0.5, v * 0.25, 1.0]);
+            let _ = y;
+        }
+    }
+    let buffer = hdr_image(width, height, HdrPixelFormat::Rgba32Float, rgba);
+    let tone = HdrToneMapSettings::default();
+    let cpu = crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &tone)
+        .expect("cpu preview tone-map");
+    let gpu = with_preview_tone_map_gpu(Some(device), Some(queue), 1, || {
+        hdr_to_sdr_rgba8_for_preview(&buffer, 0.0)
+    })
+    .expect("gpu preview tone-map");
+
+    assert_eq!(cpu.len(), gpu.len());
+    for (idx, (c, g)) in cpu.iter().zip(gpu.iter()).enumerate() {
+        let delta = i32::from(*c) - i32::from(*g);
+        assert!(
+            delta.abs() <= 1,
+            "preview tone-map mismatch at byte {idx}: cpu={c} gpu={g}"
+        );
+    }
+}

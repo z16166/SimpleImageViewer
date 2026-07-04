@@ -156,8 +156,7 @@ pub(crate) fn decode_radiance_sdr_preview(
     request: RadiancePreviewRequest<'_>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let preview = decode_radiance_hdr_preview(request)?;
-    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
-    Ok((preview.width, preview.height, pixels))
+    crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
 }
 
 pub(crate) fn decode_radiance_hdr_preview(

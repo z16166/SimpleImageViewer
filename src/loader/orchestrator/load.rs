@@ -1150,7 +1150,7 @@ impl ImageLoader {
             hdr_tone_map,
             raw_open_prefetch,
             wgpu_device,
-            wgpu_queue: _,
+            wgpu_queue,
             wgpu_device_id_at_spawn,
             wgpu_is_opengl,
             wgpu_device_id_live,
@@ -1168,21 +1168,30 @@ impl ImageLoader {
         }
 
         let decode_profile_for_load = decode_profile.clone();
+        let wgpu_device_for_preview = wgpu_device.clone();
+        let wgpu_queue_for_preview = wgpu_queue.clone();
         let mut load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_image_file(ImageLoadRequest {
-                index,
-                path: &path,
-                tx: tx.clone(),
-                refine_tx: refine_tx.clone(),
-                decode_profile: decode_profile_for_load,
-                high_quality,
-                raw_demosaic_mode,
-                hdr_target_capacity,
-                hdr_tone_map,
-                raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
-                prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
-                    .load(std::sync::atomic::Ordering::Acquire),
-            })
+            crate::hdr::renderer::with_preview_tone_map_gpu(
+                wgpu_device_for_preview,
+                wgpu_queue_for_preview,
+                wgpu_device_id_at_spawn,
+                || {
+                    load_image_file(ImageLoadRequest {
+                        index,
+                        path: &path,
+                        tx: tx.clone(),
+                        refine_tx: refine_tx.clone(),
+                        decode_profile: decode_profile_for_load,
+                        high_quality,
+                        raw_demosaic_mode,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
+                        prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
+                            .load(std::sync::atomic::Ordering::Acquire),
+                    })
+                },
+            )
         }))
         .unwrap_or_else(|e| {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -1307,6 +1316,8 @@ impl ImageLoader {
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown")
                             .to_string();
+                        let wgpu_device_hq = wgpu_device.clone();
+                        let wgpu_queue_hq = wgpu_queue.clone();
                         REFINEMENT_POOL.spawn(move || {
                         if Self::hq_refinement_superseded(&loading_for_hq, index, &result_profile) {
                             return;
@@ -1315,6 +1326,11 @@ impl ImageLoader {
                         #[cfg(target_os = "windows")]
                         let _com = crate::wic::ComGuard::new();
 
+                        crate::hdr::renderer::with_preview_tone_map_gpu(
+                            wgpu_device_hq,
+                            wgpu_queue_hq,
+                            wgpu_device_id_at_spawn,
+                            || {
                         let limit = hq_preview_max_side();
                         let started_at = std::time::Instant::now();
                         let is_hdr_mode = !hdr_display_requests_sdr_preview(hdr_target_capacity);
@@ -1406,6 +1422,7 @@ impl ImageLoader {
                                 );
                             }
                         }
+                        });
                     });
                     }
                 }

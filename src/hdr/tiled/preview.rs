@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::hdr::renderer::hdr_to_sdr_rgba8_for_preview;
+
 use super::kind::HdrTiledSource;
 use super::validate::validate_rgba32f_len;
 
@@ -102,7 +104,7 @@ fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
 pub(crate) fn sdr_preview_from_hdr_preview(
     preview: &HdrImageBuffer,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    let mut pixels = hdr_to_sdr_rgba8_for_preview(preview, 0.0)?;
     make_visible_preview_opaque_if_alpha_is_empty(&mut pixels);
     let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
         .ok_or_else(|| "Failed to build SDR preview image from HDR preview".to_string())?;
