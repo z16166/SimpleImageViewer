@@ -18,8 +18,7 @@ use crate::constants::*;
 use interprocess::ConnectWaitMode;
 use interprocess::local_socket::traits::Listener as ListenerTrait;
 use interprocess::local_socket::{
-    ConnectOptions, GenericNamespaced, Listener, ListenerOptions, Stream,
-    prelude::*,
+    ConnectOptions, GenericNamespaced, Listener, ListenerOptions, Stream, prelude::*,
 };
 use parking_lot::Mutex;
 use std::io::{Read, Write};

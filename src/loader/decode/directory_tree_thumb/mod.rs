@@ -245,11 +245,9 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
 
-    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(
-        path,
-        mmap.as_ref(),
-        max_side,
-    ) {
+    if let Some(fast) =
+        super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, mmap.as_ref(), max_side)
+    {
         return fast.map(|(preview, logical_size)| {
             log_strip_decode_path(
                 path,

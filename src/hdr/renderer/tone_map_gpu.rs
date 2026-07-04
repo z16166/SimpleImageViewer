@@ -26,16 +26,14 @@ use std::sync::OnceLock;
 use parking_lot::Mutex;
 use wgpu::util::DeviceExt;
 
+use super::HdrRenderOutputMode;
 use super::pending_gpu_writes::GpuUploadSink;
 use super::tone_map_uniform::{
     ImageToneMapUniformParams, ToneMapCommonParams, image_tone_map_uniform,
     libavif_tone_map_native_display_scale,
 };
 use super::upload::{upload_callback_image, wgpu_copy_bytes_per_row};
-use super::HdrRenderOutputMode;
-use crate::hdr::decode::{
-    hdr_to_sdr_rgba8_strip_preview, hdr_to_sdr_rgba8_with_tone_settings,
-};
+use crate::hdr::decode::{hdr_to_sdr_rgba8_strip_preview, hdr_to_sdr_rgba8_with_tone_settings};
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings, HdrTransferFunction};
 use eframe::egui;
 
@@ -260,14 +258,7 @@ pub(crate) fn hdr_to_sdr_rgba8_for_preview(
     }
 
     if let Some((device, queue, device_epoch)) = current_preview_gpu_context() {
-        match hdr_to_sdr_rgba8_gpu(
-            &device,
-            &queue,
-            device_epoch,
-            buffer,
-            exposure_ev,
-            &tone,
-        ) {
+        match hdr_to_sdr_rgba8_gpu(&device, &queue, device_epoch, buffer, exposure_ev, &tone) {
             Ok(pixels) => return Ok(pixels),
             Err(err) => {
                 log::debug!("[HDR] GPU preview tone-map failed, CPU fallback: {err}");
@@ -481,11 +472,7 @@ fn hdr_to_sdr_rgba8_gpu(
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(
-            width.div_ceil(16),
-            height.div_ceil(16),
-            1,
-        );
+        pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
     }
     encoder.copy_texture_to_buffer(
         output_texture.as_image_copy(),
@@ -506,9 +493,11 @@ fn hdr_to_sdr_rgba8_gpu(
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     queue.submit(Some(encoder.finish()));
-    readback_buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
-    });
+    readback_buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|err| format!("HDR preview tone-map device poll failed: {err:?}"))?;

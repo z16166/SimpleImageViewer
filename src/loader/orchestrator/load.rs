@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, ImageLoader, LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey,
-    TileRequest, FALLBACK_DEBOUNCE, LOADER_WORKER_IDLE_POLL, should_spawn_load_task,
+    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_WORKER_IDLE_POLL,
+    LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey, TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;

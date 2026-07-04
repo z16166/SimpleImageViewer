@@ -15,19 +15,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::ImageViewerApp;
-use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels;
+use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 use crate::hdr::renderer::{
-    ensure_hdr_callback_resources, hdr_callback_resources_readiness, upload_callback_tile,
-    upload_image_plane_with_sink, upload_jpeg_tiled_source_textures, GpuUploadSink,
-    HdrCallbackResourcesReadiness, HdrCompletedComposeFailure, HdrCompletedComposeWrite,
-    HdrCompletedJpegTiledSourceUpload, HdrCompletedPlaneUpload, HdrCompletedTileUpload,
-    HdrGpuUploadStage, HdrImageBinding, HdrPendingAppleImageComposeRequest, HdrPendingIsoImageComposeRequest,
-    HdrPendingIsoTileComposeRequest, HdrPendingJpegTiledSourceUploadRequest,
-    HdrPendingPlaneUploadRequest, HdrPendingTileUploadRequest, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
+    GpuUploadSink, HdrCallbackResourcesReadiness, HdrCompletedComposeFailure,
+    HdrCompletedComposeWrite, HdrCompletedJpegTiledSourceUpload, HdrCompletedPlaneUpload,
+    HdrCompletedTileUpload, HdrGpuUploadStage, HdrImageBinding, HdrPendingAppleImageComposeRequest,
+    HdrPendingIsoImageComposeRequest, HdrPendingIsoTileComposeRequest,
+    HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
+    HdrPendingTileUploadRequest, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
     MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
-    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC, ensure_hdr_callback_resources,
+    hdr_callback_resources_readiness, upload_callback_tile, upload_image_plane_with_sink,
+    upload_jpeg_tiled_source_textures,
 };
 use crate::loader::REFINEMENT_POOL;
 use eframe::egui;
@@ -130,16 +131,19 @@ impl ImageViewerApp {
             &request.image,
         ) {
             Ok(uploaded) => {
-                completed.completed_plane_uploads.lock().push(HdrCompletedPlaneUpload {
-                    key,
-                    uploaded,
-                    image: request.image,
-                    target_format: request.target_format,
-                    tone_map: request.tone_map,
-                    output_mode: request.output_mode,
-                    keep_resident: request.keep_resident,
-                    device_id,
-                });
+                completed
+                    .completed_plane_uploads
+                    .lock()
+                    .push(HdrCompletedPlaneUpload {
+                        key,
+                        uploaded,
+                        image: request.image,
+                        target_format: request.target_format,
+                        tone_map: request.tone_map,
+                        output_mode: request.output_mode,
+                        keep_resident: request.keep_resident,
+                        device_id,
+                    });
             }
             Err(err) => {
                 log::warn!("[HDR] Background plane upload failed: {err}");
@@ -214,19 +218,22 @@ impl ImageViewerApp {
         };
         match upload_callback_tile(device, sink, &request.tile) {
             Ok(uploaded) => {
-                completed.completed_tile_uploads.lock().push(HdrCompletedTileUpload {
-                    tile_key,
-                    tile: request.tile,
-                    target_format: request.target_format,
-                    uploaded,
-                    tone_map: request.tone_map,
-                    output_mode: request.output_mode,
-                    rotation_steps: request.rotation_steps,
-                    alpha: request.alpha,
-                    uv_rect: request.uv_rect,
-                    device_id,
-                    staged_gpu_upload: true,
-                });
+                completed
+                    .completed_tile_uploads
+                    .lock()
+                    .push(HdrCompletedTileUpload {
+                        tile_key,
+                        tile: request.tile,
+                        target_format: request.target_format,
+                        uploaded,
+                        tone_map: request.tone_map,
+                        output_mode: request.output_mode,
+                        rotation_steps: request.rotation_steps,
+                        alpha: request.alpha,
+                        uv_rect: request.uv_rect,
+                        device_id,
+                        staged_gpu_upload: true,
+                    });
             }
             Err(err) => {
                 log::warn!("[HDR] Background tile upload failed: {err}");
@@ -309,17 +316,16 @@ impl ImageViewerApp {
             device.limits().max_texture_dimension_2d,
         ) {
             Ok((sdr, gain)) => {
-                completed
-                    .completed_jpeg_tiled_source_uploads
-                    .lock()
-                    .push(HdrCompletedJpegTiledSourceUpload {
+                completed.completed_jpeg_tiled_source_uploads.lock().push(
+                    HdrCompletedJpegTiledSourceUpload {
                         target_format,
                         upload_key,
                         sdr,
                         gain,
                         device_id,
                         staged_gpu_upload: true,
-                    });
+                    },
+                );
             }
             Err(err) => {
                 log::warn!("[HDR] Background JPEG tiled source upload failed: {err}");
@@ -386,14 +392,13 @@ impl ImageViewerApp {
                     }
                     Err(err) => {
                         log::warn!("[HDR] ISO CPU compose failed: {err}");
-                        queues
-                            .completed_compose_failures
-                            .lock()
-                            .push(HdrCompletedComposeFailure::IsoImage {
+                        queues.completed_compose_failures.lock().push(
+                            HdrCompletedComposeFailure::IsoImage {
                                 key,
                                 target_capacity_bits: bits,
                                 target_format: format,
-                            });
+                            },
+                        );
                     }
                 }
                 queues.clear_iso_image_compose_inflight(key, bits);
@@ -452,14 +457,13 @@ impl ImageViewerApp {
                     }
                     Err(err) => {
                         log::warn!("[HDR] Apple CPU compose failed: {err}");
-                        queues
-                            .completed_compose_failures
-                            .lock()
-                            .push(HdrCompletedComposeFailure::AppleImage {
+                        queues.completed_compose_failures.lock().push(
+                            HdrCompletedComposeFailure::AppleImage {
                                 key,
                                 target_capacity_bits: bits,
                                 target_format: format,
-                            });
+                            },
+                        );
                     }
                 }
                 queues.clear_apple_image_compose_inflight(key, bits);
@@ -505,11 +509,7 @@ impl ImageViewerApp {
                     .ok_or_else(|| "ISO deferred metadata missing".to_string())
                     .and_then(|deferred| {
                         crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
-                            deferred,
-                            &ctx,
-                            width,
-                            height,
-                            capacity,
+                            deferred, &ctx, width, height, capacity,
                         )
                     });
                 match result {
@@ -527,13 +527,12 @@ impl ImageViewerApp {
                     }
                     Err(err) => {
                         log::warn!("[HDR] ISO tile CPU compose failed: {err}");
-                        queues
-                            .completed_compose_failures
-                            .lock()
-                            .push(HdrCompletedComposeFailure::IsoTile {
+                        queues.completed_compose_failures.lock().push(
+                            HdrCompletedComposeFailure::IsoTile {
                                 tile_key,
                                 target_format: format,
-                            });
+                            },
+                        );
                     }
                 }
                 queues.clear_iso_tile_compose_inflight(tile_key, bits);
@@ -660,7 +659,8 @@ impl ImageViewerApp {
         let mut defer = Vec::new();
         for item in completed {
             if item.device_id != self.current_device_id {
-                self.hdr_pending_work.clear_tile_upload_inflight(item.tile_key);
+                self.hdr_pending_work
+                    .clear_tile_upload_inflight(item.tile_key);
                 continue;
             }
             if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
@@ -698,15 +698,25 @@ impl ImageViewerApp {
         changed
     }
 
-    fn register_completed_hdr_jpeg_tiled_source_uploads(&mut self, frame: &mut eframe::Frame) -> bool {
-        let completed: Vec<HdrCompletedJpegTiledSourceUpload> =
-            std::mem::take(&mut *self.hdr_pending_work.completed_jpeg_tiled_source_uploads.lock());
+    fn register_completed_hdr_jpeg_tiled_source_uploads(
+        &mut self,
+        frame: &mut eframe::Frame,
+    ) -> bool {
+        let completed: Vec<HdrCompletedJpegTiledSourceUpload> = std::mem::take(
+            &mut *self
+                .hdr_pending_work
+                .completed_jpeg_tiled_source_uploads
+                .lock(),
+        );
         if completed.is_empty() {
             return false;
         }
 
         let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.completed_jpeg_tiled_source_uploads.lock() = completed;
+            *self
+                .hdr_pending_work
+                .completed_jpeg_tiled_source_uploads
+                .lock() = completed;
             return false;
         };
 
@@ -714,10 +724,8 @@ impl ImageViewerApp {
         let mut defer = Vec::new();
         for item in completed {
             if item.device_id != self.current_device_id {
-                self.hdr_pending_work.clear_jpeg_tiled_source_upload_inflight(
-                    item.upload_key,
-                    item.target_format,
-                );
+                self.hdr_pending_work
+                    .clear_jpeg_tiled_source_upload_inflight(item.upload_key, item.target_format);
                 continue;
             }
             if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
@@ -743,10 +751,8 @@ impl ImageViewerApp {
                 resources.register_jpeg_tiled_source_upload(item.upload_key, item.sdr, item.gain);
                 changed = true;
             }
-            self.hdr_pending_work.clear_jpeg_tiled_source_upload_inflight(
-                item.upload_key,
-                item.target_format,
-            );
+            self.hdr_pending_work
+                .clear_jpeg_tiled_source_upload_inflight(item.upload_key, item.target_format);
         }
         if !defer.is_empty() {
             self.hdr_pending_work
@@ -892,16 +898,10 @@ impl ImageViewerApp {
         let mut changed = false;
         for failure in failures {
             let format = match failure {
-                HdrCompletedComposeFailure::IsoImage {
-                    target_format, ..
-                }
-                | HdrCompletedComposeFailure::IsoTile {
-                    target_format, ..
-                } => target_format,
+                HdrCompletedComposeFailure::IsoImage { target_format, .. }
+                | HdrCompletedComposeFailure::IsoTile { target_format, .. } => target_format,
                 #[cfg(feature = "heif-native")]
-                HdrCompletedComposeFailure::AppleImage {
-                    target_format, ..
-                } => target_format,
+                HdrCompletedComposeFailure::AppleImage { target_format, .. } => target_format,
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeFailure::AppleImage { .. } => continue,
             };

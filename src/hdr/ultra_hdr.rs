@@ -603,9 +603,8 @@ fn downsample_ultra_hdr_sdr_base_nearest(
         return Err("Ultra HDR SDR preview dimensions must be non-zero".to_string());
     }
 
-    let expected_physical_len = source.physical_width as usize
-        * source.physical_height as usize
-        * 4;
+    let expected_physical_len =
+        source.physical_width as usize * source.physical_height as usize * 4;
     if source.sdr_rgba.len() < expected_physical_len {
         return Err(format!(
             "Ultra HDR base JPEG RGBA length mismatch: expected at least {expected_physical_len} bytes, got {}",
@@ -714,8 +713,7 @@ fn sample_oriented_ultra_hdr_sdr_preview_row(
             physical_height,
             orientation,
         );
-        let sdr_index =
-            (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
+        let sdr_index = (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
         row.extend_from_slice(&sdr_rgba[sdr_index..sdr_index + 4]);
     }
     row

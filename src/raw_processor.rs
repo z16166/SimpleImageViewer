@@ -1301,7 +1301,8 @@ pub fn probe_libraw_can_open(path: &Path) -> bool {
 mod tests {
     use super::{
         RawDisplayMode, RawProcessor, is_raw_extension, probe_libraw_can_open,
-        probe_libraw_can_open_bytes, raw_scene_linear_metadata, unpack_libraw_rgb16_rows_to_rgba_f32,
+        probe_libraw_can_open_bytes, raw_scene_linear_metadata,
+        unpack_libraw_rgb16_rows_to_rgba_f32,
     };
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
     use std::path::Path;

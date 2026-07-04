@@ -27,7 +27,9 @@ use super::modern::{
     load_avif_with_target_capacity_from_mmap, load_heif_hdr_aware_from_mmap,
     load_jxl_with_target_capacity_from_mmap,
 };
-use super::raster::{load_gif_from_mmap, load_png_from_mmap, load_static_from_mmap, load_webp_from_mmap};
+use super::raster::{
+    load_gif_from_mmap, load_png_from_mmap, load_static_from_mmap, load_webp_from_mmap,
+};
 
 const DETECTION_BUFFER_SIZE: usize = 16;
 
@@ -123,8 +125,12 @@ fn load_by_image_format_from_mmap(
 ) -> Result<ImageData, String> {
     let bytes = mmap.as_ref();
     match format {
-        image::ImageFormat::Png => load_png_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Gif => load_gif_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::Png => {
+            load_png_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+        }
+        image::ImageFormat::Gif => {
+            load_gif_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+        }
         image::ImageFormat::WebP => {
             load_webp_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
         }
@@ -147,7 +153,9 @@ fn load_by_image_format_from_mmap(
         | image::ImageFormat::Tga
         | image::ImageFormat::Dds
         | image::ImageFormat::Farbfeld
-        | image::ImageFormat::Qoi => load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map),
+        | image::ImageFormat::Qoi => {
+            load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+        }
         image::ImageFormat::Avif => load_avif_with_target_capacity_from_mmap(
             path,
             mmap.as_ref(),
@@ -251,7 +259,6 @@ pub(crate) fn load_primary_with_detection_fallback(
         }
     }
 }
-
 
 pub(crate) fn load_via_content_detection(
     path: &Path,

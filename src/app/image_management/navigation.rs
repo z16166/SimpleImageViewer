@@ -408,7 +408,8 @@ impl ImageViewerApp {
             &mut self.tile_manager,
             &mut self.prefetched_tiles,
         );
-        if self.current_index != target_index && self.prefetched_tiles.contains_key(&self.current_index)
+        if self.current_index != target_index
+            && self.prefetched_tiles.contains_key(&self.current_index)
         {
             self.register_prefetch_resource(self.current_index);
         }

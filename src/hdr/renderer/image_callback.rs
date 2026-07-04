@@ -280,13 +280,14 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         self.tone_map.target_hdr_capacity()
                     )
                 );
-                let _ = pending_work.try_queue_iso_image_compose(HdrPendingIsoImageComposeRequest {
-                    key: image_key,
-                    target_capacity_bits,
-                    target_format: self.target_format,
-                    image: Arc::clone(&self.image),
-                    target_hdr_capacity: self.tone_map.target_hdr_capacity(),
-                });
+                let _ =
+                    pending_work.try_queue_iso_image_compose(HdrPendingIsoImageComposeRequest {
+                        key: image_key,
+                        target_capacity_bits,
+                        target_format: self.target_format,
+                        image: Arc::clone(&self.image),
+                        target_hdr_capacity: self.tone_map.target_hdr_capacity(),
+                    });
             } else {
                 log::debug!("[HDR] ISO CPU compose deferred: pending work queues unavailable");
             }
@@ -370,7 +371,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         },
                     );
                 } else {
-                    log::debug!("[HDR] Apple CPU compose deferred: pending work queues unavailable");
+                    log::debug!(
+                        "[HDR] Apple CPU compose deferred: pending work queues unavailable"
+                    );
                 }
             }
         }

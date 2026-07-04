@@ -1024,7 +1024,10 @@ impl ImageViewerApp {
                             return false;
                         }
                         let is_loading_idx = is_loading(r.index);
-                        if !gate_ctx.retention_for(r.index, is_loading_idx).should_retain() {
+                        if !gate_ctx
+                            .retention_for(r.index, is_loading_idx)
+                            .should_retain()
+                        {
                             return false;
                         }
                         crate::loader::profile_satisfies_display(
@@ -1040,7 +1043,10 @@ impl ImageViewerApp {
                             return false;
                         }
                         let is_loading_idx = is_loading(p.index);
-                        if !gate_ctx.retention_for(p.index, is_loading_idx).should_retain() {
+                        if !gate_ctx
+                            .retention_for(p.index, is_loading_idx)
+                            .should_retain()
+                        {
                             return false;
                         }
                         crate::loader::profile_satisfies_display(

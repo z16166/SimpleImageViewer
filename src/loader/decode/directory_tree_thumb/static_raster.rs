@@ -120,8 +120,8 @@ fn decode_png_strip_rgba(
     use std::io::Cursor;
 
     let decoder = PngDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let reusable_full_allowed = allow_reusable_full
-        && !decoder.is_apng().map_err(|e| e.to_string())?;
+    let reusable_full_allowed =
+        allow_reusable_full && !decoder.is_apng().map_err(|e| e.to_string())?;
     let rgba = DynamicImage::from_decoder(decoder)
         .map_err(|e| e.to_string())?
         .into_rgba8();
@@ -156,10 +156,7 @@ fn decode_generic_strip_rgba(
         .decode()
         .map_err(|e| e.to_string())?
         .into_rgba8();
-    let reusable_full_allowed = matches!(
-        format_hint,
-        Some("bmp" | "tga" | "ico" | "pnm" | "qoi")
-    );
+    let reusable_full_allowed = matches!(format_hint, Some("bmp" | "tga" | "ico" | "pnm" | "qoi"));
     Ok((rgba, reusable_full_allowed))
 }
 

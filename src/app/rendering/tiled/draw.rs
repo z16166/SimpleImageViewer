@@ -327,11 +327,8 @@ impl ImageViewerApp {
                     .map(|(coord, _, _)| *coord),
             );
             self.tiled_visible_coords_scratch.clear();
-            self.tiled_visible_coords_scratch.extend(
-                self.tiled_visible_tiles_scratch
-                    .iter()
-                    .map(|(c, _, _)| *c),
-            );
+            self.tiled_visible_coords_scratch
+                .extend(self.tiled_visible_tiles_scratch.iter().map(|(c, _, _)| *c));
             let primary_visible_coords = &self.tiled_primary_visible_scratch;
             let visible_coords = &self.tiled_visible_coords_scratch;
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {

@@ -407,9 +407,7 @@ fn get_sample_value(
             if !sample_bytes_in_buf(buf, idx, bps) {
                 0.0
             } else {
-                unsafe {
-                    std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
-                }
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64 }
             }
         }
         (24, _) => {
@@ -432,18 +430,14 @@ fn get_sample_value(
             if !sample_bytes_in_buf(buf, idx, bps) {
                 0.0
             } else {
-                unsafe {
-                    std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64
-                }
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64 }
             }
         }
         (32, 2) => {
             if !sample_bytes_in_buf(buf, idx, bps) {
                 0.0
             } else {
-                unsafe {
-                    std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64
-                }
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64 }
             }
         }
         (32, 3) => {
@@ -461,9 +455,7 @@ fn get_sample_value(
             if !sample_bytes_in_buf(buf, idx, bps) {
                 0.0
             } else {
-                unsafe {
-                    std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64
-                }
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64 }
             }
         }
         (64, 3) => {
@@ -586,7 +578,8 @@ fn rescale_scene_linear_rgba32f(
 ) {
     let provisional_range = (provisional_smax - provisional_smin).max(1.0);
     let final_range = (final_smax - final_smin).max(1.0);
-    if (final_smin - provisional_smin).abs() <= 1.0 && (final_smax - provisional_smax).abs() <= 1.0 {
+    if (final_smin - provisional_smin).abs() <= 1.0 && (final_smax - provisional_smax).abs() <= 1.0
+    {
         return;
     }
     let scale = (provisional_range / final_range) as f32;

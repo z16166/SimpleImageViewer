@@ -599,10 +599,7 @@ impl DirectoryTreeRuntime {
         }
     }
 
-    pub(crate) fn try_send_metadata_request(
-        &self,
-        request: FileMetadataRequest,
-    ) -> bool {
+    pub(crate) fn try_send_metadata_request(&self, request: FileMetadataRequest) -> bool {
         match self.metadata_request_tx.lock().as_ref() {
             Some(tx) => tx
                 .try_send(request)

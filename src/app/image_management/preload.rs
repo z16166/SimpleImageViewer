@@ -326,9 +326,7 @@ impl ImageViewerApp {
                 continue;
             }
 
-            if idx != self.current_index
-                && in_flight.len() >= MAX_CONCURRENT_DECODER_LOADS
-            {
+            if idx != self.current_index && in_flight.len() >= MAX_CONCURRENT_DECODER_LOADS {
                 preload_debug!(
                     "[PreloadDebug] direction stop: name={} reason=decoder_concurrency in_flight={} max={}",
                     direction_name,

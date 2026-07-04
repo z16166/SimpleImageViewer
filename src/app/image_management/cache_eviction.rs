@@ -360,11 +360,8 @@ impl ImageViewerApp {
             self.cached_available_memory_mb
         );
 
-        let window_indices = prefetch_retention::prefetch_window_index_set(
-            current_index,
-            len,
-            max_distance,
-        );
+        let window_indices =
+            prefetch_retention::prefetch_window_index_set(current_index, len, max_distance);
         let loading_indices: std::collections::HashSet<usize> =
             self.loader.loading.lock().keys().copied().collect();
         let should_retain = |idx: usize| {

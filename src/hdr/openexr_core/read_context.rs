@@ -92,8 +92,7 @@ impl OpenExrCoreReadContext {
         let mut cookie = ExrMmapCookieGuard::from_shared(mmap);
         let ctxt_init = openexr_memory_map_initializer(cookie.as_mut_ptr());
 
-        let start_result =
-            unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
+        let start_result = unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
 
         match exr_result(start_result) {
             Ok(()) => {

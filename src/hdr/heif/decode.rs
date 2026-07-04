@@ -30,8 +30,8 @@ pub(crate) fn decode_primary_heif_to_hdr(
     metadata: HdrImageMetadata,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
-    let img = heif_decode_primary_once(handle, decode_options)
-        .map_err(append_heif_unci_build_hint)?;
+    let img =
+        heif_decode_primary_once(handle, decode_options).map_err(append_heif_unci_build_hint)?;
     hdr_buffer_from_decoded_heif(handle, &metadata, img.as_ptr())
         .map_err(append_heif_unci_build_hint)
 }
@@ -129,9 +129,9 @@ pub(crate) fn hdr_buffer_from_decoded_heif(
         cs if cs == libheif_sys::heif_colorspace_monochrome => {
             hdr_buffer_from_monochrome(handle, metadata, image)
         }
-        cs if cs == libheif_sys::heif_colorspace_nonvisual => Err(
-            "HEIF primary uses non-visual colorspace (no displayable raster)".to_string(),
-        ),
+        cs if cs == libheif_sys::heif_colorspace_nonvisual => {
+            Err("HEIF primary uses non-visual colorspace (no displayable raster)".to_string())
+        }
         _ => Err(format!(
             "unsupported HEIF colorspace ({colorspace}); decoded chroma={}",
             heif_chroma_label(chroma)
@@ -178,9 +178,9 @@ pub(crate) fn rgba8_from_decoded_heif(
             )),
         },
         cs if cs == libheif_sys::heif_colorspace_monochrome => rgba8_from_monochrome(image),
-        cs if cs == libheif_sys::heif_colorspace_nonvisual => Err(
-            "HEIF item uses non-visual colorspace (no SDR preview raster)".to_string(),
-        ),
+        cs if cs == libheif_sys::heif_colorspace_nonvisual => {
+            Err("HEIF item uses non-visual colorspace (no SDR preview raster)".to_string())
+        }
         _ => Err(format!(
             "unsupported HEIF colorspace for SDR preview ({colorspace}); chroma={}",
             heif_chroma_label(chroma)
@@ -193,7 +193,11 @@ pub(crate) fn heif_decode_target_label(
     colorspace: libheif_sys::heif_colorspace,
     chroma: libheif_sys::heif_chroma,
 ) -> String {
-    format!("{} / {}", heif_colorspace_label(colorspace), heif_chroma_label(chroma))
+    format!(
+        "{} / {}",
+        heif_colorspace_label(colorspace),
+        heif_chroma_label(chroma)
+    )
 }
 
 #[cfg(feature = "heif-native")]
@@ -289,9 +293,8 @@ pub(crate) fn hdr_buffer_from_monochrome(
     }
 
     let mut stride = 0usize;
-    let plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Y, &mut stride)
-    };
+    let plane =
+        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Y, &mut stride) };
     if plane.is_null() {
         return Err("libheif monochrome image missing Y plane".to_string());
     }
@@ -299,8 +302,7 @@ pub(crate) fn hdr_buffer_from_monochrome(
     let width = width_i as u32;
     let height = height_i as u32;
     let span = planar_storage_span_bytes(image, heif_channel_Y);
-    let scale =
-        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
+    let scale = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
     let w = width as usize;
     let h = height as usize;
     if stride < span.saturating_mul(w.max(1)) {
@@ -518,11 +520,19 @@ fn rgba8_from_interleaved_rgb16(
         let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
             let dst = (y * width as usize + x) * 4;
-            rgba[dst] = (read_u16(px, 0) as f32 / maxv * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[dst + 1] = (read_u16(px, 2) as f32 / maxv * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[dst + 2] = (read_u16(px, 4) as f32 / maxv * 255.0).round().clamp(0.0, 255.0) as u8;
+            rgba[dst] = (read_u16(px, 0) as f32 / maxv * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            rgba[dst + 1] = (read_u16(px, 2) as f32 / maxv * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            rgba[dst + 2] = (read_u16(px, 4) as f32 / maxv * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             rgba[dst + 3] = if components == 4 {
-                (read_u16(px, 6) as f32 / maxv * 255.0).round().clamp(0.0, 255.0) as u8
+                (read_u16(px, 6) as f32 / maxv * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
             } else {
                 255
             };
@@ -533,8 +543,7 @@ fn rgba8_from_interleaved_rgb16(
 
 #[cfg(feature = "heif-native")]
 fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<DecodedImage, String> {
-    let width_i =
-        unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
+    let width_i = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
     let height_i =
         unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
     if width_i <= 0 || height_i <= 0 {
@@ -545,11 +554,7 @@ fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<Decode
 
     let mut stride = 0_usize;
     let plane = unsafe {
-        libheif_sys::heif_image_get_plane_readonly2(
-            image,
-            libheif_sys::heif_channel_Y,
-            &mut stride,
-        )
+        libheif_sys::heif_image_get_plane_readonly2(image, libheif_sys::heif_channel_Y, &mut stride)
     };
     if plane.is_null() || stride < width as usize {
         return Err("libheif monochrome image missing Y plane".to_string());
@@ -626,8 +631,11 @@ fn rgba8_from_planar_rgb444(
             None
         } else {
             let span_a = planar_storage_span_bytes(image, heif_channel_Alpha);
-            let scale_a =
-                planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Alpha)?);
+            let scale_a = planar_scale_from_depth(planar_semantic_depth_bits(
+                image,
+                handle,
+                heif_channel_Alpha,
+            )?);
             Some((ptr_a, stride_a, span_a, scale_a))
         }
     } else {
@@ -635,7 +643,9 @@ fn rgba8_from_planar_rgb444(
     };
 
     let sample_to_u8 = |value: u32, scale: f32| -> u8 {
-        (value as f32 / scale.max(1.0) * 255.0).round().clamp(0.0, 255.0) as u8
+        (value as f32 / scale.max(1.0) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
 
     let mut rgba = vec![0_u8; w * h * 4];
@@ -662,7 +672,6 @@ fn rgba8_from_planar_rgb444(
     }
     Ok(DecodedImage::new(width_i as u32, height_i as u32, rgba))
 }
-
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(

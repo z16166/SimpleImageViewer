@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
-use crate::hdr::types::IsoGainMapGpuSource;
 use crate::hdr::types::IsoDeferredTileContext;
+use crate::hdr::types::IsoGainMapGpuSource;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -244,9 +244,7 @@ impl HdrPendingWorkQueues {
 
     pub(crate) fn try_begin_loader_plane_upload(&self) -> bool {
         loop {
-            let current = self
-                .loader_plane_upload_inflight
-                .load(Ordering::Acquire);
+            let current = self.loader_plane_upload_inflight.load(Ordering::Acquire);
             if current >= MAX_HDR_LOADER_PLANE_UPLOADS_INFLIGHT {
                 return false;
             }
@@ -382,7 +380,11 @@ impl HdrPendingWorkQueues {
             .remove(&(upload_key, target_format));
     }
 
-    pub(crate) fn clear_iso_image_compose_inflight(&self, key: HdrImageKey, target_capacity_bits: u32) {
+    pub(crate) fn clear_iso_image_compose_inflight(
+        &self,
+        key: HdrImageKey,
+        target_capacity_bits: u32,
+    ) {
         self.inflight
             .lock()
             .iso_image_compose

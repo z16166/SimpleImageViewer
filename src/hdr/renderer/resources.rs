@@ -365,7 +365,8 @@ impl HdrCallbackResources {
         )?;
         binding.baked_jpeg_image_key = Some(key);
         binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-        self.failed_jpeg_image_compose.remove(&(key, target_capacity_bits));
+        self.failed_jpeg_image_compose
+            .remove(&(key, target_capacity_bits));
         Ok(())
     }
 
@@ -391,7 +392,8 @@ impl HdrCallbackResources {
         )?;
         binding.baked_apple_image_key = Some(key);
         binding.baked_apple_weight_bits = Some(target_capacity_bits);
-        self.failed_apple_image_compose.remove(&(key, target_capacity_bits));
+        self.failed_apple_image_compose
+            .remove(&(key, target_capacity_bits));
         Ok(())
     }
 
@@ -411,13 +413,7 @@ impl HdrCallbackResources {
             self.tile_bindings.remove(tile_key);
             return Err("HDR tile texture missing for CPU compose".to_string());
         };
-        super::write_rgba32f_to_texture(
-            sink,
-            Arc::clone(texture),
-            width,
-            height,
-            pixels,
-        )?;
+        super::write_rgba32f_to_texture(sink, Arc::clone(texture), width, height, pixels)?;
         binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
         Ok(())
     }
@@ -498,7 +494,11 @@ impl HdrCallbackResources {
         self.jpeg_tiled_gain_view = Some(gain.view);
     }
 
-    pub(crate) fn set_image_binding_keep_resident(&mut self, key: HdrImageKey, keep_resident: bool) {
+    pub(crate) fn set_image_binding_keep_resident(
+        &mut self,
+        key: HdrImageKey,
+        keep_resident: bool,
+    ) {
         if let Some(binding) = self.image_bindings.get_mut(&key) {
             binding.keep_resident = keep_resident;
         }
@@ -509,7 +509,8 @@ impl HdrCallbackResources {
         key: HdrImageKey,
         target_capacity_bits: u32,
     ) {
-        self.failed_jpeg_image_compose.insert((key, target_capacity_bits));
+        self.failed_jpeg_image_compose
+            .insert((key, target_capacity_bits));
         self.image_bindings.remove(&key);
     }
 
@@ -519,7 +520,8 @@ impl HdrCallbackResources {
         key: HdrImageKey,
         target_capacity_bits: u32,
     ) {
-        self.failed_apple_image_compose.insert((key, target_capacity_bits));
+        self.failed_apple_image_compose
+            .insert((key, target_capacity_bits));
         self.image_bindings.remove(&key);
     }
 

@@ -113,11 +113,7 @@ pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifI
         return Err("Failed to create libavif image".to_string());
     };
     let r = unsafe {
-        libavif_sys::avifImageCopy(
-            owned.as_ptr(),
-            decoded_ptr,
-            libavif_sys::AVIF_PLANES_ALL,
-        )
+        libavif_sys::avifImageCopy(owned.as_ptr(), decoded_ptr, libavif_sys::AVIF_PLANES_ALL)
     };
     if r != libavif_sys::AVIF_RESULT_OK {
         return Err(format!(

@@ -418,12 +418,10 @@ pub(crate) fn ycbcr_image_to_rgba8(
         let y_row =
             unsafe { std::slice::from_raw_parts(y_plane.add(y * y_stride), width as usize) };
         let cb_y = if subsample_v { y / 2 } else { y };
-        let cb_row = unsafe {
-            std::slice::from_raw_parts(cb_plane.add(cb_y * cb_stride), chroma_row_len)
-        };
-        let cr_row = unsafe {
-            std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len)
-        };
+        let cb_row =
+            unsafe { std::slice::from_raw_parts(cb_plane.add(cb_y * cb_stride), chroma_row_len) };
+        let cr_row =
+            unsafe { std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len) };
         for (x, &y_sample) in y_row.iter().enumerate().take(width as usize) {
             let xc = if subsample_h { x / 2 } else { x };
             let yy = y_sample as f32 / 255.0;

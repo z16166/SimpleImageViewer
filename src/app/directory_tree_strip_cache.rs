@@ -950,7 +950,11 @@ mod tests {
     fn strip_decoded_ready_for_gpu_upload_matches_worker_max_side() {
         let decoded = DecodedImage::new(256, 128, vec![0; 256 * 128 * 4]);
         assert!(strip_decoded_ready_for_gpu_upload(&decoded, 256, Some(256)));
-        assert!(!strip_decoded_ready_for_gpu_upload(&decoded, 128, Some(256)));
+        assert!(!strip_decoded_ready_for_gpu_upload(
+            &decoded,
+            128,
+            Some(256)
+        ));
     }
 
     #[test]

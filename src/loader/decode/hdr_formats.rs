@@ -58,7 +58,8 @@ pub(crate) fn load_hdr_from_mmap(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
+    let (hdr, fallback) =
+        apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -160,7 +161,8 @@ pub(crate) fn try_load_disk_backed_radiance_hdr_from_mmap(
     mmap: Arc<memmap2::Mmap>,
     _hdr_tone_map: HdrToneMapSettings,
 ) -> Result<Option<ImageData>, String> {
-    let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open_from_mmap(path, mmap)?;
+    let source =
+        crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open_from_mmap(path, mmap)?;
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
@@ -205,7 +207,8 @@ pub(crate) fn load_deep_exr_from_mmap(
                 hdr.height,
                 hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
             );
-            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
+            let (hdr, fallback) =
+                apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
             Ok(make_hdr_image_data(hdr, fallback))
         }
         Err(err) => {
@@ -265,16 +268,12 @@ pub(crate) fn load_detected_exr_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
 ) -> Result<ImageData, String> {
-    if let Some(image_data) =
-        try_load_disk_backed_exr_hdr_from_mmap(path, Arc::clone(&mmap))?
-    {
+    if let Some(image_data) = try_load_disk_backed_exr_hdr_from_mmap(path, Arc::clone(&mmap))? {
         return Ok(image_data);
     }
 
-    let hdr = match crate::hdr::decode::decode_exr_display_image_from_mmap(
-        path,
-        Arc::clone(&mmap),
-    ) {
+    let hdr = match crate::hdr::decode::decode_exr_display_image_from_mmap(path, Arc::clone(&mmap))
+    {
         Ok(hdr) => hdr,
         Err(err) if is_exr_deep_data_unsupported_error(&err) => {
             log::warn!(
@@ -290,6 +289,7 @@ pub(crate) fn load_detected_exr_from_mmap(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
+    let (hdr, fallback) =
+        apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
     Ok(make_hdr_image_data(hdr, fallback))
 }

@@ -119,7 +119,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
                     }
                     return Vec::new();
                 }
-                log::debug!("[HDR] JPEG tiled source upload deferred: pending work queues unavailable");
+                log::debug!(
+                    "[HDR] JPEG tiled source upload deferred: pending work queues unavailable"
+                );
                 return Vec::new();
             }
 

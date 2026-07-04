@@ -83,17 +83,15 @@ pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_t
 pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
-/// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
-pub(crate) use self::upload::{
-    loader_background_upload_image_plane, upload_image_plane_with_sink,
-};
 #[cfg(test)]
 pub(crate) use self::upload::test_upload_image_plane;
-pub(crate) use self::upload::{upload_callback_tile, upload_jpeg_tiled_source_textures};
 pub(super) use self::upload::{
     create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
     rgba32f_as_bytes, validate_upload_layout, write_rgba32f_to_texture,
 };
+/// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
+pub(crate) use self::upload::{loader_background_upload_image_plane, upload_image_plane_with_sink};
+pub(crate) use self::upload::{upload_callback_tile, upload_jpeg_tiled_source_textures};
 
 pub(super) mod image_callback;
 pub(super) use self::image_callback::HdrImagePlaneCallback;
@@ -191,8 +189,7 @@ impl HdrImageRenderer {
         self.uploaded_image = Some(UploadedHdrImage {
             size: layout.size,
             format: layout.format,
-            texture: Arc::try_unwrap(uploaded.base.texture)
-                .unwrap_or_else(|arc| (*arc).clone()),
+            texture: Arc::try_unwrap(uploaded.base.texture).unwrap_or_else(|arc| (*arc).clone()),
             view: uploaded.base.view,
             sampler,
         });

@@ -391,13 +391,12 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 let strip_bytes = (width as usize)
                     .checked_mul(rps as usize)
                     .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
-                let max_cached = if let Some(strip_bytes) =
-                    strip_bytes.and_then(std::num::NonZeroUsize::new)
-                {
-                    (STRIP_CACHE_BUDGET_BYTES / strip_bytes.get()).max(16)
-                } else {
-                    64
-                };
+                let max_cached =
+                    if let Some(strip_bytes) = strip_bytes.and_then(std::num::NonZeroUsize::new) {
+                        (STRIP_CACHE_BUDGET_BYTES / strip_bytes.get()).max(16)
+                    } else {
+                        64
+                    };
 
                 return Ok(ImageData::Tiled(Arc::new(LibTiffScanlineSource {
                     path: path.to_path_buf(),

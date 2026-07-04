@@ -550,11 +550,7 @@ impl PsdV1AsyncSource {
             let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
                 let psd_file = psd::Psd::from_bytes(&decode_mmap[..])
                     .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-                Ok((
-                    psd_file.width(),
-                    psd_file.height(),
-                    psd_file.rgba(),
-                ))
+                Ok((psd_file.width(), psd_file.height(), psd_file.rgba()))
             });
 
             match result {

@@ -42,8 +42,8 @@ use super::{
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
     DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
     DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
-    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, ImageListSortColumn,
-    domains, embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
+    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, ImageListSortColumn, domains,
+    embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
 };
 
 struct DirectoryTreePanelRefs<'a> {

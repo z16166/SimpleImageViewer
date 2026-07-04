@@ -291,7 +291,10 @@ mod tests {
                     total_count: total,
                 },
             ) {
-                assert_eq!(evicted, 5, "index 5 is furthest from current 0 in a ring of 10");
+                assert_eq!(
+                    evicted, 5,
+                    "index 5 is furthest from current 0 in a ring of 10"
+                );
             }
         }
 

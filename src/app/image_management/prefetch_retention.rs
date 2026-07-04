@@ -265,10 +265,7 @@ mod tests {
         let set = prefetch_window_index_set(0, 10, d);
         assert_eq!(set.len(), prefetch_window_index_cap(10, d));
         for idx in 0..10 {
-            assert_eq!(
-                set.contains(&idx),
-                prefetch_window_contains(0, 10, idx, d)
-            );
+            assert_eq!(set.contains(&idx), prefetch_window_contains(0, 10, idx, d));
         }
     }
 }

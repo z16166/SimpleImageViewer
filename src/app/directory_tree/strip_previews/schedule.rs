@@ -32,9 +32,7 @@ use crate::loader::{
 
 #[cfg(target_os = "windows")]
 use super::super::workers::ensure_strip_worker_com_initialized;
-use super::{
-    BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
-};
+use super::{BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS};
 
 use super::send_strip_inflight_release;
 
@@ -722,11 +720,12 @@ impl ImageViewerApp {
         }
         let list_generation = match self.directory_tree.list.try_lock() {
             Some(list) => list.image_list_generation,
-            None => self
-                .directory_tree
-                .list_snapshot
-                .load()
-                .image_list_generation,
+            None => {
+                self.directory_tree
+                    .list_snapshot
+                    .load()
+                    .image_list_generation
+            }
         };
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();

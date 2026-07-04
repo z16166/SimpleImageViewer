@@ -30,7 +30,9 @@ use super::decode::{
     process_scanline_separate, tiff_uint_default_sample_max,
 };
 use super::handle::create_tiff_handle;
-use super::scratch::{with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch};
+use super::scratch::{
+    with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
+};
 use super::thumbnail::extract_embedded_thumbnail;
 
 // --- Scanline Implementation (Mock Tiles from Strips) ---
@@ -88,7 +90,8 @@ impl LibTiffScanlineSource {
             let strip_buf = &mut scratch.strip;
             let rgba = &mut scratch.rgba;
             let decoded = unsafe {
-                lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr()) != 0
+                lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr())
+                    != 0
             };
 
             if !decoded {
@@ -268,11 +271,8 @@ impl TiledImageSource for LibTiffScanlineSource {
 
                 unsafe {
                     if strip_idx != last_strip_idx {
-                        if lib::TIFFReadRGBAStrip(
-                            tif_ptr,
-                            strip_idx * rps,
-                            strip_buf.as_mut_ptr(),
-                        ) != 0
+                        if lib::TIFFReadRGBAStrip(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr())
+                            != 0
                         {
                             last_strip_idx = strip_idx;
                         } else {
@@ -282,8 +282,8 @@ impl TiledImageSource for LibTiffScanlineSource {
 
                     for tx in 0..pw {
                         let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
-                        let src_idx = (rps - 1 - y_in_strip) as usize * self.width as usize
-                            + x as usize;
+                        let src_idx =
+                            (rps - 1 - y_in_strip) as usize * self.width as usize + x as usize;
                         if src_idx < strip_buf.len() {
                             let pixel = strip_buf[src_idx].to_ne_bytes();
                             let dst_idx = dst_y_offset + (tx as usize) * 4;
@@ -347,14 +347,7 @@ unsafe fn manual_decode_scanline_pass(
                 }
             }
             let row_offset = y as usize * width as usize * 4;
-            process_scanline_contig(
-                buf,
-                &mut rgba[row_offset..],
-                width,
-                spp,
-                params,
-                palette,
-            );
+            process_scanline_contig(buf, &mut rgba[row_offset..], width, spp, params, palette);
         }
     } else {
         for s in 0..samples_to_process {
@@ -375,13 +368,7 @@ unsafe fn manual_decode_scanline_pass(
                     }
                 }
                 let row_offset = y as usize * width as usize * 4;
-                process_scanline_separate(
-                    buf,
-                    &mut rgba[row_offset..],
-                    width,
-                    s,
-                    params,
-                );
+                process_scanline_separate(buf, &mut rgba[row_offset..], width, s, params);
             }
         }
     }
@@ -551,8 +538,7 @@ pub(crate) unsafe fn manual_decode_scanline(
         let default_max = tiff_uint_default_sample_max(bps);
         let final_smin = if smin_provided { smin } else { actual_min };
         let final_smax = actual_max;
-        let needs_rescale = (!smin_provided && final_smin > 0.5)
-            || final_smax < default_max - 0.5;
+        let needs_rescale = (!smin_provided && final_smin > 0.5) || final_smax < default_max - 0.5;
         if needs_rescale {
             smin = final_smin;
             smax = final_smax;

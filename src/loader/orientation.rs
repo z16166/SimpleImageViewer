@@ -183,12 +183,9 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     let pixels_arc = fallback.take_pixels_arc();
     let (ow, oh, opx) = match Arc::try_unwrap(pixels_arc) {
         Ok(px) => crate::libtiff_loader::apply_orientation_buffer(px, w, h, o),
-        Err(arc) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
-            arc.as_ref(),
-            w,
-            h,
-            o,
-        ),
+        Err(arc) => {
+            crate::libtiff_loader::apply_orientation_buffer_from_slice(arc.as_ref(), w, h, o)
+        }
     };
     fallback.set_rgba_buffer_preserving_placeholder(ow, oh, opx, true);
     (hdr, fallback)

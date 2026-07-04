@@ -747,15 +747,14 @@ fn compute_hdr_tiled_initial_preview(
                             "[{}] SDR preview paths failed; trying emergency tiled SDR preview fallback",
                             file_name
                         );
-                        let emergency_sdr = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || {
+                        let emergency_sdr =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 crate::hdr::tiled::sdr_preview_from_tiled_source_nearest(
                                     hdr.as_ref(),
                                     DEFAULT_PREVIEW_SIZE,
                                     DEFAULT_PREVIEW_SIZE,
                                 )
-                            },
-                        ));
+                            }));
                         match emergency_sdr {
                             Ok(Ok((pw, ph, p_pixels))) if pw > 0 && ph > 0 => {
                                 preview = Some(crate::loader::DecodedImage::new(pw, ph, p_pixels));

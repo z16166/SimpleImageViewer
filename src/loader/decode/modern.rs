@@ -77,8 +77,7 @@ pub(crate) fn load_avif_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
     load_avif_with_target_capacity_from_mmap(
         path,
         &mmap,
@@ -113,8 +112,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<AvifLoadOutcome, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
     load_avif_with_target_capacity_outcome_from_mmap(
         path,
         &mmap,
@@ -442,8 +440,8 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<JxlLoadOutcome, String> {
-    let mmap = crate::mmap_util::map_file(path)
-        .map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
     load_jxl_with_target_capacity_outcome_from_mmap(
         path,
         &mmap,

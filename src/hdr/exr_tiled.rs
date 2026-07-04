@@ -84,11 +84,7 @@ impl ExrTiledImageSource {
     }
 
     pub(crate) fn open_from_mmap(path: &Path, mmap: Arc<memmap2::Mmap>) -> Result<Self, String> {
-        Self::open_from_mmap_with_cache_budget(
-            path,
-            mmap,
-            configured_hdr_tile_cache_max_bytes(),
-        )
+        Self::open_from_mmap_with_cache_budget(path, mmap, configured_hdr_tile_cache_max_bytes())
     }
 
     pub(crate) fn open_from_mmap_with_cache_budget(

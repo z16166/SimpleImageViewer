@@ -643,11 +643,11 @@ pub struct ImageViewerApp {
     /// Reused each tiled draw frame to avoid per-frame HashSet/Vec allocations.
     pub(crate) tiled_primary_visible_scratch: HashSet<TileCoord>,
     pub(crate) tiled_visible_coords_scratch: HashSet<TileCoord>,
-    pub(crate) tiled_visible_tiles_scratch: Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
+    pub(crate) tiled_visible_tiles_scratch:
+        Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
     pub(crate) tiled_primary_visible_tiles_scratch:
         Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
-    pub(crate) tiled_tile_visits_scratch:
-        Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
+    pub(crate) tiled_tile_visits_scratch: Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
 
     // Tiled rendering instances decoded during prefetch (bounded by prefetch window; see
     // prefetch_retention::prefetched_tiles_steady_state_cap).

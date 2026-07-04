@@ -440,10 +440,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 counts.push(cnt);
             }
             let remaining = mmap.len().saturating_sub(cursor.position() as usize) as u64;
-            let row_counts_usize: Vec<usize> = counts
-                .iter()
-                .map(|&c| c as usize)
-                .collect();
+            let row_counts_usize: Vec<usize> = counts.iter().map(|&c| c as usize).collect();
             validate_rle_total_bytes(&row_counts_usize, remaining)?;
             let data_start = cursor.position();
             let mut running_offset = data_start;
@@ -747,7 +744,9 @@ fn checked_rgba_len(pixel_count: usize) -> Result<usize, String> {
 
 fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
     if len > i64::MAX as u64 {
-        return Err(format!("PSD/PSB section length {len} exceeds seekable range"));
+        return Err(format!(
+            "PSD/PSB section length {len} exceeds seekable range"
+        ));
     }
     r.seek(SeekFrom::Current(len as i64))
         .map_err(|e| format!("Seek error: {e}"))?;
