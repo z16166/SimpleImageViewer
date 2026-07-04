@@ -20,10 +20,10 @@ use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 use crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels;
 use crate::hdr::renderer::{
     ensure_hdr_callback_resources, hdr_callback_resources_readiness, upload_callback_tile,
-    upload_image_plane, upload_jpeg_tiled_source_textures, GpuUploadSink, HdrCallbackResourcesReadiness,
-    HdrCompletedComposeFailure, HdrCompletedComposeWrite, HdrCompletedJpegTiledSourceUpload,
-    HdrCompletedPlaneUpload, HdrCompletedTileUpload, HdrGpuUploadStage, HdrImageBinding,
-    HdrPendingAppleImageComposeRequest, HdrPendingIsoImageComposeRequest,
+    upload_image_plane_with_sink, upload_jpeg_tiled_source_textures, GpuUploadSink,
+    HdrCallbackResourcesReadiness, HdrCompletedComposeFailure, HdrCompletedComposeWrite,
+    HdrCompletedJpegTiledSourceUpload, HdrCompletedPlaneUpload, HdrCompletedTileUpload,
+    HdrGpuUploadStage, HdrImageBinding, HdrPendingAppleImageComposeRequest, HdrPendingIsoImageComposeRequest,
     HdrPendingIsoTileComposeRequest, HdrPendingJpegTiledSourceUploadRequest,
     HdrPendingPlaneUploadRequest, HdrPendingTileUploadRequest, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
     MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
@@ -85,45 +85,50 @@ impl ImageViewerApp {
         let device_id = self.current_device_id;
         let wgpu_is_opengl = self.wgpu_is_opengl_backend();
         let device = wgpu_state.device.clone();
-        let queue = wgpu_state.queue.clone();
         let completed = Arc::clone(&self.hdr_pending_work);
 
+        let (run_now, requeue): (Vec<_>, Vec<_>) = requests
+            .into_iter()
+            .enumerate()
+            .partition(|(idx, _)| *idx < MAX_HDR_PLANE_UPLOADS_PER_LOGIC);
+
         if wgpu_is_opengl {
-            let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-                .into_iter()
-                .enumerate()
-                .partition(|(idx, _)| *idx < MAX_HDR_PLANE_UPLOADS_PER_LOGIC);
             for (_, request) in run_now {
-                Self::finish_plane_upload(&completed, &device, &queue, request, device_id);
+                Self::finish_plane_upload(&completed, &device, request, device_id);
             }
-            if !requeue.is_empty() {
-                self.hdr_pending_work
-                    .plane_upload_requests
-                    .lock()
-                    .extend(requeue.into_iter().map(|(_, request)| request));
+        } else {
+            for (_, request) in run_now {
+                let completed = Arc::clone(&completed);
+                let device = device.clone();
+                REFINEMENT_POOL.spawn(move || {
+                    Self::finish_plane_upload(&completed, &device, request, device_id);
+                });
             }
-            return;
         }
 
-        for request in requests {
-            let completed = Arc::clone(&completed);
-            let device = device.clone();
-            let queue = queue.clone();
-            REFINEMENT_POOL.spawn(move || {
-                Self::finish_plane_upload(&completed, &device, &queue, request, device_id);
-            });
+        if !requeue.is_empty() {
+            self.hdr_pending_work
+                .plane_upload_requests
+                .lock()
+                .extend(requeue.into_iter().map(|(_, request)| request));
         }
     }
 
     fn finish_plane_upload(
         completed: &Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         request: HdrPendingPlaneUploadRequest,
         device_id: u64,
     ) {
         let key = request.key;
-        match upload_image_plane(device, queue, &request.image) {
+        match upload_image_plane_with_sink(
+            device,
+            GpuUploadSink::Pending {
+                queues: completed.as_ref(),
+                stage: HdrGpuUploadStage::PlaneCreate,
+            },
+            &request.image,
+        ) {
             Ok(uploaded) => {
                 completed.completed_plane_uploads.lock().push(HdrCompletedPlaneUpload {
                     key,
@@ -158,7 +163,6 @@ impl ImageViewerApp {
         let device_id = self.current_device_id;
         let wgpu_is_opengl = self.wgpu_is_opengl_backend();
         let device = wgpu_state.device.clone();
-        let queue = wgpu_state.queue.clone();
         let completed = Arc::clone(&self.hdr_pending_work);
 
         if wgpu_is_opengl {
@@ -167,7 +171,7 @@ impl ImageViewerApp {
                 .enumerate()
                 .partition(|(idx, _)| *idx < MAX_HDR_TILE_UPLOADS_PER_LOGIC);
             for (_, request) in run_now {
-                Self::finish_tile_upload(&completed, &device, &queue, request, device_id);
+                Self::finish_tile_upload(&completed, &device, request, device_id);
             }
             if !requeue.is_empty() {
                 self.hdr_pending_work
@@ -185,9 +189,8 @@ impl ImageViewerApp {
         for (_, request) in run_now {
             let completed = Arc::clone(&completed);
             let device = device.clone();
-            let queue = queue.clone();
             REFINEMENT_POOL.spawn(move || {
-                Self::finish_tile_upload(&completed, &device, &queue, request, device_id);
+                Self::finish_tile_upload(&completed, &device, request, device_id);
             });
         }
         if !requeue.is_empty() {
@@ -201,12 +204,14 @@ impl ImageViewerApp {
     fn finish_tile_upload(
         completed: &Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         request: HdrPendingTileUploadRequest,
         device_id: u64,
     ) {
         let tile_key = request.tile_key;
-        let sink = GpuUploadSink::Immediate(queue);
+        let sink = GpuUploadSink::Pending {
+            queues: completed.as_ref(),
+            stage: HdrGpuUploadStage::TileCreate,
+        };
         match upload_callback_tile(device, sink, &request.tile) {
             Ok(uploaded) => {
                 completed.completed_tile_uploads.lock().push(HdrCompletedTileUpload {
@@ -220,6 +225,7 @@ impl ImageViewerApp {
                     alpha: request.alpha,
                     uv_rect: request.uv_rect,
                     device_id,
+                    staged_gpu_upload: true,
                 });
             }
             Err(err) => {
@@ -244,7 +250,6 @@ impl ImageViewerApp {
         let device_id = self.current_device_id;
         let wgpu_is_opengl = self.wgpu_is_opengl_backend();
         let device = wgpu_state.device.clone();
-        let queue = wgpu_state.queue.clone();
         let completed = Arc::clone(&self.hdr_pending_work);
 
         if wgpu_is_opengl {
@@ -253,7 +258,7 @@ impl ImageViewerApp {
                 .enumerate()
                 .partition(|(idx, _)| *idx < MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC);
             for (_, request) in run_now {
-                Self::finish_jpeg_tiled_source_upload(&completed, &device, &queue, request, device_id);
+                Self::finish_jpeg_tiled_source_upload(&completed, &device, request, device_id);
             }
             if !requeue.is_empty() {
                 self.hdr_pending_work
@@ -271,9 +276,8 @@ impl ImageViewerApp {
         for (_, request) in run_now {
             let completed = Arc::clone(&completed);
             let device = device.clone();
-            let queue = queue.clone();
             REFINEMENT_POOL.spawn(move || {
-                Self::finish_jpeg_tiled_source_upload(&completed, &device, &queue, request, device_id);
+                Self::finish_jpeg_tiled_source_upload(&completed, &device, request, device_id);
             });
         }
         if !requeue.is_empty() {
@@ -287,13 +291,15 @@ impl ImageViewerApp {
     fn finish_jpeg_tiled_source_upload(
         completed: &Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         request: HdrPendingJpegTiledSourceUploadRequest,
         device_id: u64,
     ) {
         let upload_key = request.upload_key;
         let target_format = request.target_format;
-        let sink = GpuUploadSink::Immediate(queue);
+        let sink = GpuUploadSink::Pending {
+            queues: completed.as_ref(),
+            stage: HdrGpuUploadStage::AuxRgba8,
+        };
         match upload_jpeg_tiled_source_textures(
             device,
             sink,
@@ -312,6 +318,7 @@ impl ImageViewerApp {
                         sdr,
                         gain,
                         device_id,
+                        staged_gpu_upload: true,
                     });
             }
             Err(err) => {
@@ -597,6 +604,14 @@ impl ImageViewerApp {
                 continue;
             }
 
+            if !self
+                .hdr_pending_work
+                .flush_staged_writes_for_registration(&wgpu_state.queue)
+            {
+                defer.push(item);
+                continue;
+            }
+
             let binding = HdrImageBinding::from_uploaded(
                 &wgpu_state.device,
                 item.uploaded,
@@ -653,6 +668,15 @@ impl ImageViewerApp {
                 continue;
             }
 
+            if item.staged_gpu_upload
+                && !self
+                    .hdr_pending_work
+                    .flush_staged_writes_for_registration(&wgpu_state.queue)
+            {
+                defer.push(item);
+                continue;
+            }
+
             let mut renderer = wgpu_state.renderer.write();
             let tile_key = item.tile_key;
             if let Some(resources) = renderer
@@ -697,6 +721,15 @@ impl ImageViewerApp {
                 continue;
             }
             if !Self::ensure_hdr_resources(&wgpu_state, item.target_format) {
+                defer.push(item);
+                continue;
+            }
+
+            if item.staged_gpu_upload
+                && !self
+                    .hdr_pending_work
+                    .flush_staged_writes_for_registration(&wgpu_state.queue)
+            {
                 defer.push(item);
                 continue;
             }

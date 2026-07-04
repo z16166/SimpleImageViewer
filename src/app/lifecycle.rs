@@ -452,15 +452,18 @@ impl ImageViewerApp {
 
         let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
         let current_device_id = 1_u64;
+        let hdr_pending_work = crate::hdr::renderer::HdrPendingWorkQueues::new_shared();
         let loader_wgpu_device = cc.wgpu_render_state.as_ref().map(|s| s.device.clone());
         let loader = if let Some(state) = cc.wgpu_render_state.as_ref() {
-            ImageLoader::new().with_wgpu(
-                Some(state.device.clone()),
-                Some(state.queue.clone()),
-                current_device_id,
-            )
-        } else {
             ImageLoader::new()
+                .with_wgpu(
+                    Some(state.device.clone()),
+                    Some(state.queue.clone()),
+                    current_device_id,
+                )
+                .with_hdr_pending_gpu_writes(Arc::clone(&hdr_pending_work))
+        } else {
+            ImageLoader::new().with_hdr_pending_gpu_writes(Arc::clone(&hdr_pending_work))
         };
         // Defer neighbor/current preload until HDR output mode + decode headroom are known.
         // macOS EDR: uses NSScreen *potential* for decode (not dynamic *current*) — see
@@ -551,7 +554,7 @@ impl ImageViewerApp {
             main_loader_failed_indices: std::collections::HashSet::new(),
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
-            hdr_pending_work: crate::hdr::renderer::HdrPendingWorkQueues::new_shared(),
+            hdr_pending_work,
             cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
             hq_tiled_preview_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),

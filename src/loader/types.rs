@@ -520,6 +520,9 @@ pub struct LoadResult {
     pub uploaded_planes: Option<crate::hdr::renderer::ImagePlaneUpload>,
     /// [`ImageViewerApp::current_device_id`] under which `uploaded_planes` was created.
     pub device_id: Option<u64>,
+    /// True when plane bytes were enqueued into [`HdrPendingGpuWriteQueues`] instead of
+    /// flushed on the loader worker; main thread must flush before GPU bind.
+    pub staged_gpu_plane_upload: bool,
 }
 
 impl Clone for LoadResult {
@@ -542,6 +545,7 @@ impl Clone for LoadResult {
             raw_osd: self.raw_osd.clone(),
             uploaded_planes: None,
             device_id: self.device_id,
+            staged_gpu_plane_upload: false,
         }
     }
 }

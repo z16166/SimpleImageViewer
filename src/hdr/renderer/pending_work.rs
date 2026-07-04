@@ -20,10 +20,14 @@ use crate::hdr::types::IsoDeferredTileContext;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) use super::pending_gpu_writes::{
     HdrPendingGpuWriteQueues, MAX_HDR_GPU_WRITES_PER_LOGIC,
 };
+
+/// Max loader workers concurrently packing/enqueueing plane GPU writes.
+pub(crate) const MAX_HDR_LOADER_PLANE_UPLOADS_INFLIGHT: usize = 1;
 
 /// Main-thread plane uploads per logic tick (OpenGL backend cannot upload off-thread).
 pub(crate) const MAX_HDR_PLANE_UPLOADS_PER_LOGIC: usize = 1;
@@ -97,6 +101,7 @@ pub(crate) struct HdrCompletedTileUpload {
     pub alpha: f32,
     pub uv_rect: egui::Rect,
     pub device_id: u64,
+    pub staged_gpu_upload: bool,
 }
 
 pub(crate) struct HdrCompletedJpegTiledSourceUpload {
@@ -105,6 +110,7 @@ pub(crate) struct HdrCompletedJpegTiledSourceUpload {
     pub sdr: CallbackUpload,
     pub gain: CallbackUpload,
     pub device_id: u64,
+    pub staged_gpu_upload: bool,
 }
 
 pub(crate) struct HdrPendingIsoImageComposeRequest {
@@ -180,6 +186,7 @@ pub(crate) enum HdrCompletedComposeFailure {
 
 pub(crate) struct HdrPendingWorkQueues {
     inflight: Mutex<HdrPendingWorkInflight>,
+    loader_plane_upload_inflight: AtomicUsize,
     pub(crate) gpu_writes: Mutex<HdrPendingGpuWriteQueues>,
     pub(crate) plane_upload_requests: Mutex<Vec<HdrPendingPlaneUploadRequest>>,
     pub(crate) completed_plane_uploads: Mutex<Vec<HdrCompletedPlaneUpload>>,
@@ -198,6 +205,7 @@ impl HdrPendingWorkQueues {
     pub(crate) fn new_shared() -> Arc<Self> {
         Arc::new(Self {
             inflight: Mutex::new(HdrPendingWorkInflight::default()),
+            loader_plane_upload_inflight: AtomicUsize::new(0),
             gpu_writes: Mutex::new(HdrPendingGpuWriteQueues::default()),
             plane_upload_requests: Mutex::new(Vec::new()),
             completed_plane_uploads: Mutex::new(Vec::new()),
@@ -215,6 +223,44 @@ impl HdrPendingWorkQueues {
 
     pub(crate) fn flush_gpu_writes(&self, queue: &wgpu::Queue, quota: usize) -> usize {
         self.gpu_writes.lock().flush(queue, quota)
+    }
+
+    /// Drain staged GPU writes before binding pre-uploaded planes on the main thread.
+    pub(crate) fn flush_staged_writes_for_registration(&self, queue: &wgpu::Queue) -> bool {
+        const MAX_ROUNDS: usize = 32;
+        for _ in 0..MAX_ROUNDS {
+            if self.gpu_writes.lock().pending_len() == 0 {
+                return true;
+            }
+            let flushed = self.flush_gpu_writes(queue, MAX_HDR_GPU_WRITES_PER_LOGIC);
+            if flushed == 0 {
+                return false;
+            }
+        }
+        self.gpu_writes.lock().pending_len() == 0
+    }
+
+    pub(crate) fn try_begin_loader_plane_upload(&self) -> bool {
+        loop {
+            let current = self
+                .loader_plane_upload_inflight
+                .load(Ordering::Acquire);
+            if current >= MAX_HDR_LOADER_PLANE_UPLOADS_INFLIGHT {
+                return false;
+            }
+            if self
+                .loader_plane_upload_inflight
+                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    pub(crate) fn finish_loader_plane_upload(&self) {
+        self.loader_plane_upload_inflight
+            .fetch_sub(1, Ordering::AcqRel);
     }
 
     pub(crate) fn has_active_work(&self) -> bool {

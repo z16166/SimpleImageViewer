@@ -211,6 +211,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
+            staged_gpu_plane_upload: false,
         };
         let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
     });
@@ -541,6 +542,7 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
+            staged_gpu_plane_upload: false,
         };
         let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
     });

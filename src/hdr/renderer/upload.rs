@@ -369,12 +369,45 @@ pub(crate) fn upload_r16_uint_texture(
     })
 }
 
-pub(crate) fn upload_image_plane(
+#[cfg(test)]
+pub(crate) fn test_upload_image_plane(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
-    upload_image_plane_with_sink(device, GpuUploadSink::Immediate(queue), image)
+    let pending = super::pending_work::HdrPendingWorkQueues::new_shared();
+    let uploaded = upload_image_plane_with_sink(
+        device,
+        GpuUploadSink::Pending {
+            queues: pending.as_ref(),
+            stage: HdrGpuUploadStage::PlaneCreate,
+        },
+        image,
+    )?;
+    pending.flush_staged_writes_for_registration(queue);
+    Ok(uploaded)
+}
+
+/// Loader worker path: enqueue plane GPU writes and respect in-flight concurrency cap.
+pub(crate) fn loader_background_upload_image_plane(
+    device: &wgpu::Device,
+    pending_work: &super::pending_work::HdrPendingWorkQueues,
+    image: &HdrImageBuffer,
+) -> Result<Option<ImagePlaneUpload>, String> {
+    if !pending_work.try_begin_loader_plane_upload() {
+        return Ok(None);
+    }
+    let result = upload_image_plane_with_sink(
+        device,
+        GpuUploadSink::Pending {
+            queues: pending_work,
+            stage: HdrGpuUploadStage::PlaneCreate,
+        },
+        image,
+    )
+    .map(Some);
+    pending_work.finish_loader_plane_upload();
+    result
 }
 
 pub(crate) fn upload_image_plane_with_sink(

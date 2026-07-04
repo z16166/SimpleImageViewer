@@ -91,46 +91,20 @@ impl CallbackTrait for HdrImagePlaneCallback {
         };
 
         if binding_missing {
-            if let Some(pending_work) = self.pending_work.as_ref() {
-                log::debug!("[HDR] Cache miss, queued async plane upload");
-                let _ = pending_work.try_queue_plane_upload(HdrPendingPlaneUploadRequest {
-                    key: image_key,
-                    image: Arc::clone(&self.image),
-                    target_format: self.target_format,
-                    tone_map: self.tone_map,
-                    output_mode: self.output_mode,
-                    keep_resident: self.keep_resident,
-                });
+            let Some(pending_work) = self.pending_work.as_ref() else {
+                log::debug!("[HDR] Cache miss without pending work queues; deferring plane upload");
                 return Vec::new();
-            }
-            log::debug!("[HDR] Cache miss, performing synchronous upload (headless fallback)");
-            match upload_image_plane(device, queue, &self.image) {
-                Ok(uploaded) => {
-                    let binding = HdrImageBinding::from_uploaded(
-                        device,
-                        uploaded,
-                        &self.image,
-                        self.tone_map,
-                        self.target_format,
-                        self.output_mode,
-                        0,
-                    );
-                    resources.image_bindings.insert(image_key, binding);
-                }
-                Err(err) => {
-                    log::warn!("[HDR] Skipping HDR image plane upload: {err}");
-                    if raw_source.is_some() {
-                        resources.failed_raw_demosaic.insert(image_key);
-                        if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
-                            notify.lock().push(RawGpuDemosaicBakedNotice {
-                                key: image_key,
-                                demosaic_ms: u32::MAX,
-                            });
-                        }
-                    }
-                    return Vec::new();
-                }
-            }
+            };
+            log::debug!("[HDR] Cache miss, queued async plane upload");
+            let _ = pending_work.try_queue_plane_upload(HdrPendingPlaneUploadRequest {
+                key: image_key,
+                image: Arc::clone(&self.image),
+                target_format: self.target_format,
+                tone_map: self.tone_map,
+                output_mode: self.output_mode,
+                keep_resident: self.keep_resident,
+            });
+            return Vec::new();
         }
 
         let Some(binding) = resources.image_bindings.get_mut(&image_key) else {
@@ -314,52 +288,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     target_hdr_capacity: self.tone_map.target_hdr_capacity(),
                 });
             } else {
-                log::debug!(
-                    "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
-                    self.image.width,
-                    self.image.height,
-                    deferred.gain_width,
-                    deferred.gain_height,
-                    self.tone_map.target_hdr_capacity(),
-                    crate::hdr::gain_map::gain_map_weight(
-                        deferred.metadata,
-                        self.tone_map.target_hdr_capacity()
-                    )
-                );
-                match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
-                    self.image.width,
-                    self.image.height,
-                    deferred,
-                    self.tone_map.target_hdr_capacity(),
-                ) {
-                    Ok(composed) => {
-                        if let Err(err) = write_rgba32f_to_texture(
-                            GpuUploadSink::Immediate(queue),
-                            Arc::clone(&binding.uploaded_texture),
-                            self.image.width,
-                            self.image.height,
-                            &composed,
-                        ) {
-                            log::warn!("[HDR] ISO CPU compose upload failed: {err}");
-                            resources
-                                .failed_jpeg_image_compose
-                                .insert((image_key, target_capacity_bits));
-                            resources.image_bindings.remove(&image_key);
-                            return Vec::new();
-                        } else {
-                            binding.baked_jpeg_image_key = Some(image_key);
-                            binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!("[HDR] ISO CPU compose failed: {err}");
-                        resources
-                            .failed_jpeg_image_compose
-                            .insert((image_key, target_capacity_bits));
-                        resources.image_bindings.remove(&image_key);
-                        return Vec::new();
-                    }
-                }
+                log::debug!("[HDR] ISO CPU compose deferred: pending work queues unavailable");
             }
         }
 
@@ -441,38 +370,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         },
                     );
                 } else {
-                    match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
-                        &self.image,
-                        self.tone_map.target_hdr_capacity(),
-                    ) {
-                        Ok(composed) => {
-                            if let Err(err) = write_rgba32f_to_texture(
-                                GpuUploadSink::Immediate(queue),
-                                Arc::clone(&binding.uploaded_texture),
-                                self.image.width,
-                                self.image.height,
-                                &composed,
-                            ) {
-                                log::warn!("[HDR] Apple CPU compose upload failed: {err}");
-                                resources
-                                    .failed_apple_image_compose
-                                    .insert((image_key, target_capacity_bits));
-                                resources.image_bindings.remove(&image_key);
-                                return Vec::new();
-                            } else {
-                                binding.baked_apple_image_key = Some(image_key);
-                                binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("[HDR] Apple CPU compose failed: {err}");
-                            resources
-                                .failed_apple_image_compose
-                                .insert((image_key, target_capacity_bits));
-                            resources.image_bindings.remove(&image_key);
-                            return Vec::new();
-                        }
-                    }
+                    log::debug!("[HDR] Apple CPU compose deferred: pending work queues unavailable");
                 }
             }
         }

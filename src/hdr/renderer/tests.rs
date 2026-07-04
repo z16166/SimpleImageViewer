@@ -887,6 +887,53 @@ fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
     HdrTileBuffer::new(width, height, HdrColorSpace::LinearSrgb, Arc::new(rgba_f32))
 }
 
+fn drain_pending_plane_uploads_for_test(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pending: &Arc<HdrPendingWorkQueues>,
+    callback_resources: &mut egui_wgpu::CallbackResources,
+    target_format: wgpu::TextureFormat,
+    device_id: u64,
+) {
+    let requests = std::mem::take(&mut *pending.plane_upload_requests.lock());
+    for request in requests {
+        let key = request.key;
+        match upload_image_plane_with_sink(
+            device,
+            GpuUploadSink::Pending {
+                queues: pending.as_ref(),
+                stage: HdrGpuUploadStage::PlaneCreate,
+            },
+            &request.image,
+        ) {
+            Ok(uploaded) => {
+                let _ = pending.flush_staged_writes_for_registration(queue);
+                let binding = HdrImageBinding::from_uploaded(
+                    device,
+                    uploaded,
+                    &request.image,
+                    request.tone_map,
+                    request.target_format,
+                    request.output_mode,
+                    device_id,
+                );
+                if let Some(resources) = callback_resources
+                    .get_mut::<HdrCallbackResourcesSet>()
+                    .and_then(|set| set.get_for_mut(target_format))
+                {
+                    let _ = resources.register_preuploaded_binding(key, binding, device_id);
+                    resources.set_image_binding_keep_resident(key, request.keep_resident);
+                }
+                pending.clear_plane_upload_inflight(key);
+            }
+            Err(err) => {
+                log::warn!("[HDR] Test plane upload failed: {err}");
+                pending.clear_plane_upload_inflight(key);
+            }
+        }
+    }
+}
+
 #[test]
 fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     let Some((_instance, _adapter, device, queue)) = pollster::block_on(async {
@@ -933,6 +980,9 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         pixels_per_point: 1.0,
     };
 
+    let pending_work = HdrPendingWorkQueues::new_shared();
+    const TEST_DEVICE_ID: u64 = 0;
+
     // Prepare eight callbacks (sleeping so LRU timestamps are distinct).
     for (i, img) in images.iter().take(8).enumerate() {
         if i > 0 {
@@ -949,9 +999,28 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
-            pending_work: None,
+            pending_work: Some(Arc::clone(&pending_work)),
         };
 
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let cmds = callback.prepare(
+            &device,
+            &queue,
+            &screen_desc,
+            &mut encoder,
+            &mut callback_resources,
+        );
+        if !cmds.is_empty() {
+            queue.submit(cmds);
+        }
+        drain_pending_plane_uploads_for_test(
+            &device,
+            &queue,
+            &pending_work,
+            &mut callback_resources,
+            target_format,
+            TEST_DEVICE_ID,
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let cmds = callback.prepare(
             &device,
@@ -1006,9 +1075,28 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
-            pending_work: None,
+            pending_work: Some(Arc::clone(&pending_work)),
         };
 
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let cmds = callback.prepare(
+            &device,
+            &queue,
+            &screen_desc,
+            &mut encoder,
+            &mut callback_resources,
+        );
+        if !cmds.is_empty() {
+            queue.submit(cmds);
+        }
+        drain_pending_plane_uploads_for_test(
+            &device,
+            &queue,
+            &pending_work,
+            &mut callback_resources,
+            target_format,
+            TEST_DEVICE_ID,
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let cmds = callback.prepare(
             &device,

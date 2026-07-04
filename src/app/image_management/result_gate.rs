@@ -266,6 +266,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         };
         assert_eq!(
@@ -303,6 +304,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         };
         assert_eq!(
@@ -336,6 +338,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: Some(999),
         };
         assert_eq!(

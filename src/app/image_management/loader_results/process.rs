@@ -644,6 +644,14 @@ impl ImageViewerApp {
             return abandon_preuploaded_planes(load_result);
         }
 
+        if load_result.staged_gpu_plane_upload
+            && !self
+                .hdr_pending_work
+                .flush_staged_writes_for_registration(&wgpu_state.queue)
+        {
+            return self.finish_or_defer_hdr_preupload_registration(load_result);
+        }
+
         let Some(uploaded) = load_result.uploaded_planes.take() else {
             return true;
         };

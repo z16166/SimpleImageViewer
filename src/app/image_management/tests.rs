@@ -1650,6 +1650,7 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
@@ -1679,6 +1680,7 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         target_hdr_capacity: 3.478,
         raw_osd: Some(crate::loader::RawOsdInfo::empty()),
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 3.786));
@@ -1707,6 +1709,7 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
@@ -2780,6 +2783,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         })));
     app.process_loaded_images(&ctx, &mut None);
@@ -2821,7 +2825,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         ),
         rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
     };
-    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+    let uploaded = crate::hdr::renderer::test_upload_image_plane(&device, &queue, &hdr)
         .expect("background plane upload");
 
     let mut app = make_test_app();
@@ -2847,6 +2851,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: Some(uploaded),
+            staged_gpu_plane_upload: true,
             device_id: Some(999),
         })));
     app.process_loaded_images(&ctx, &mut None);
@@ -2868,7 +2873,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         ),
         rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
     };
-    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+    let uploaded = crate::hdr::renderer::test_upload_image_plane(&device, &queue, &hdr)
         .expect("background plane upload");
     app.loader.test_register_inflight(0);
     app.loader
@@ -2886,6 +2891,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: Some(uploaded),
+            staged_gpu_plane_upload: true,
             device_id: Some(app.current_device_id),
         })));
     app.process_loaded_images(&ctx, &mut None);

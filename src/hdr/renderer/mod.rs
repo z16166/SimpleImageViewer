@@ -70,7 +70,8 @@ pub(crate) use self::pending_work::{
     HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
     HdrPendingTileUploadRequest, HdrPendingWorkQueues, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
     MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
-    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+    MAX_HDR_LOADER_PLANE_UPLOADS_INFLIGHT, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+    MAX_HDR_TILE_UPLOADS_PER_LOGIC,
 };
 
 mod pending_gpu_writes;
@@ -80,7 +81,11 @@ pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
 /// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
-pub(crate) use self::upload::upload_image_plane;
+pub(crate) use self::upload::{
+    loader_background_upload_image_plane, upload_image_plane_with_sink,
+};
+#[cfg(test)]
+pub(crate) use self::upload::test_upload_image_plane;
 pub(crate) use self::upload::{upload_callback_tile, upload_jpeg_tiled_source_textures};
 pub(super) use self::upload::{
     create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
@@ -158,41 +163,17 @@ impl HdrImageRenderer {
         image: &HdrImageBuffer,
     ) -> Result<(), String> {
         let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
-        let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
-            rgba32f_as_bytes(image.rgba_f32.as_slice()),
-            image.width,
-            image.height,
-            std::mem::size_of::<f32>() as u32 * 4,
-        )
-        .map_err(|err| format!("HDR upload: {err}"))?;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("simple-image-viewer-hdr-image-plane"),
-            size: layout.size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: layout.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
+        let pending = HdrPendingWorkQueues::new_shared();
+        let uploaded = upload_image_plane_with_sink(
+            device,
+            GpuUploadSink::Pending {
+                queues: pending.as_ref(),
+                stage: HdrGpuUploadStage::PlaneCreate,
             },
-            &upload_bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(layout.size.height),
-            },
-            layout.size,
-        );
+            image,
+        )?;
+        pending.flush_staged_writes_for_registration(queue);
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -207,8 +188,9 @@ impl HdrImageRenderer {
         self.uploaded_image = Some(UploadedHdrImage {
             size: layout.size,
             format: layout.format,
-            texture,
-            view,
+            texture: Arc::try_unwrap(uploaded.base.texture)
+                .unwrap_or_else(|arc| (*arc).clone()),
+            view: uploaded.base.view,
             sampler,
         });
 
