@@ -443,6 +443,8 @@ pub struct ImageViewerApp {
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
+    /// Cross-thread queue for deferred HDR plane uploads and CPU gain-map composes.
+    pub(crate) hdr_pending_work: Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
     /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
     pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
     /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).

@@ -56,6 +56,7 @@ pub(crate) enum PlaneDrawSource {
         keep_resident: bool,
         raw_demosaic_baked_notify:
             Option<Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>>,
+        hdr_pending_work: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
@@ -64,6 +65,7 @@ pub(crate) enum PlaneDrawSource {
         output_mode: crate::hdr::renderer::HdrRenderOutputMode,
         rotation_steps: u32,
         alpha: f32,
+        hdr_pending_work: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
     },
 }
 
@@ -100,6 +102,7 @@ pub(crate) fn draw_plane(
             ripple,
             keep_resident,
             raw_demosaic_baked_notify,
+            hdr_pending_work,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -118,6 +121,7 @@ pub(crate) fn draw_plane(
                         ripple,
                         keep_resident,
                         raw_demosaic_baked_notify,
+                        pending_work: hdr_pending_work,
                     },
                 ));
         }
@@ -128,6 +132,7 @@ pub(crate) fn draw_plane(
             output_mode,
             rotation_steps,
             alpha,
+            hdr_pending_work,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -143,6 +148,7 @@ pub(crate) fn draw_plane(
                         rotation_steps,
                         alpha,
                         uv_rect: uv_subrect(uv, uv_rect),
+                        pending_work: hdr_pending_work,
                     },
                 ));
         }

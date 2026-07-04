@@ -949,6 +949,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1005,6 +1006,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

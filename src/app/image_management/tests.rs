@@ -1928,6 +1928,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
+        hdr_pending_work: crate::hdr::renderer::HdrPendingWorkQueues::new_shared(),
         cpu_raw_refinement_pending_indices: HashSet::new(),
         hq_tiled_preview_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),

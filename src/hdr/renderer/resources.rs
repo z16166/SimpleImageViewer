@@ -343,6 +343,95 @@ impl HdrCallbackResources {
             self.image_bindings.remove(&oldest_key);
         }
     }
+
+    pub(crate) fn apply_iso_image_cpu_compose(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: HdrImageKey,
+        target_capacity_bits: u32,
+        width: u32,
+        height: u32,
+        pixels: &[f32],
+    ) -> Result<(), String> {
+        let Some(binding) = self.image_bindings.get_mut(&key) else {
+            return Err("HDR image binding missing for CPU compose".to_string());
+        };
+        super::write_rgba32f_to_texture(queue, &binding.uploaded_texture, width, height, pixels)?;
+        binding.baked_jpeg_image_key = Some(key);
+        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+        self.failed_jpeg_image_compose.remove(&(key, target_capacity_bits));
+        Ok(())
+    }
+
+    #[cfg(feature = "heif-native")]
+    pub(crate) fn apply_apple_image_cpu_compose(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: HdrImageKey,
+        target_capacity_bits: u32,
+        width: u32,
+        height: u32,
+        pixels: &[f32],
+    ) -> Result<(), String> {
+        let Some(binding) = self.image_bindings.get_mut(&key) else {
+            return Err("HDR image binding missing for CPU compose".to_string());
+        };
+        super::write_rgba32f_to_texture(queue, &binding.uploaded_texture, width, height, pixels)?;
+        binding.baked_apple_image_key = Some(key);
+        binding.baked_apple_weight_bits = Some(target_capacity_bits);
+        self.failed_apple_image_compose.remove(&(key, target_capacity_bits));
+        Ok(())
+    }
+
+    pub(crate) fn apply_iso_tile_cpu_compose(
+        &mut self,
+        queue: &wgpu::Queue,
+        tile_key: HdrTileKey,
+        target_capacity_bits: u32,
+        width: u32,
+        height: u32,
+        pixels: &[f32],
+    ) -> Result<(), String> {
+        let Some(binding) = self.tile_bindings.binding_mut(tile_key) else {
+            return Err("HDR tile binding missing for CPU compose".to_string());
+        };
+        let Some(texture) = binding._texture.as_ref() else {
+            self.tile_bindings.remove(tile_key);
+            return Err("HDR tile texture missing for CPU compose".to_string());
+        };
+        super::write_rgba32f_to_texture(queue, texture, width, height, pixels)?;
+        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+        Ok(())
+    }
+
+    pub(crate) fn set_image_binding_keep_resident(&mut self, key: HdrImageKey, keep_resident: bool) {
+        if let Some(binding) = self.image_bindings.get_mut(&key) {
+            binding.keep_resident = keep_resident;
+        }
+    }
+
+    pub(crate) fn mark_iso_image_compose_failed(
+        &mut self,
+        key: HdrImageKey,
+        target_capacity_bits: u32,
+    ) {
+        self.failed_jpeg_image_compose.insert((key, target_capacity_bits));
+        self.image_bindings.remove(&key);
+    }
+
+    #[cfg(feature = "heif-native")]
+    pub(crate) fn mark_apple_image_compose_failed(
+        &mut self,
+        key: HdrImageKey,
+        target_capacity_bits: u32,
+    ) {
+        self.failed_apple_image_compose.insert((key, target_capacity_bits));
+        self.image_bindings.remove(&key);
+    }
+
+    pub(crate) fn mark_iso_tile_compose_failed(&mut self, tile_key: HdrTileKey) {
+        self.tile_bindings.remove(tile_key);
+    }
 }
 
 pub(crate) const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat =

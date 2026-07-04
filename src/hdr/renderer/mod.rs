@@ -62,10 +62,18 @@ pub(super) use self::tile_cache::{
     HdrTileBindings, HdrTileInsert, iso_deferred_tile_compose_views_reusable,
 };
 
+mod pending_work;
+pub(crate) use self::pending_work::{
+    HdrCompletedComposeFailure, HdrCompletedComposeWrite, HdrCompletedPlaneUpload,
+    HdrPendingAppleImageComposeRequest, HdrPendingIsoImageComposeRequest,
+    HdrPendingIsoTileComposeRequest, HdrPendingPlaneUploadRequest, HdrPendingWorkQueues,
+    MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+};
+
 pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
-/// Background HDR plane upload used by loader workers (`load.rs`) and sync cache misses (`prepare()`).
+/// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
 pub(crate) use self::upload::upload_image_plane;
 pub(super) use self::upload::{
     create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
@@ -225,6 +233,7 @@ pub fn hdr_image_plane_callback(
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: None,
         },
     )
 }
@@ -240,6 +249,7 @@ pub struct HdrImagePlaneCallbackParams {
     pub ripple: Option<(egui::Pos2, f32, f32, u32)>,
     pub keep_resident: bool,
     pub raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
+    pub pending_work: Option<Arc<HdrPendingWorkQueues>>,
 }
 
 pub fn hdr_image_plane_callback_with_uv(
@@ -257,6 +267,7 @@ pub fn hdr_image_plane_callback_with_uv(
         ripple,
         keep_resident,
         raw_demosaic_baked_notify,
+        pending_work,
     } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -271,6 +282,7 @@ pub fn hdr_image_plane_callback_with_uv(
             ripple,
             keep_resident,
             raw_demosaic_baked_notify,
+            pending_work,
         },
     ))
 }
@@ -295,6 +307,7 @@ pub fn hdr_tile_plane_callback(
             rotation_steps,
             alpha,
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            pending_work: None,
         },
     )
 }
@@ -308,6 +321,7 @@ pub struct HdrTilePlaneCallbackParams {
     pub rotation_steps: u32,
     pub alpha: f32,
     pub uv_rect: egui::Rect,
+    pub pending_work: Option<Arc<HdrPendingWorkQueues>>,
 }
 
 pub fn hdr_tile_plane_callback_with_uv(
@@ -322,6 +336,7 @@ pub fn hdr_tile_plane_callback_with_uv(
         rotation_steps,
         alpha,
         uv_rect,
+        pending_work,
     } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -333,6 +348,7 @@ pub fn hdr_tile_plane_callback_with_uv(
             rotation_steps: rotation_steps % 4,
             alpha,
             uv_rect,
+            pending_work,
         },
     ))
 }

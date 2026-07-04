@@ -16,6 +16,27 @@
 
 use super::*;
 
+fn queue_iso_tile_cpu_compose(
+    pending_work: &HdrPendingWorkQueues,
+    tile_key: HdrTileKey,
+    target_capacity_bits: u32,
+    target_format: wgpu::TextureFormat,
+    tile: &Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tile_ctx: crate::hdr::types::IsoDeferredTileContext,
+    target_hdr_capacity: f32,
+) {
+    let _ = pending_work.try_queue_iso_tile_compose(HdrPendingIsoTileComposeRequest {
+        tile_key,
+        target_capacity_bits,
+        target_format,
+        tile: Arc::clone(tile),
+        tile_ctx,
+        tile_width: tile.width,
+        tile_height: tile.height,
+        target_hdr_capacity,
+    });
+}
+
 pub(crate) struct HdrTilePlaneCallback {
     pub(super) tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     pub(super) tone_map: HdrToneMapSettings,
@@ -24,6 +45,7 @@ pub(crate) struct HdrTilePlaneCallback {
     pub(super) rotation_steps: u32,
     pub(super) alpha: f32,
     pub(super) uv_rect: egui::Rect,
+    pub(super) pending_work: Option<Arc<HdrPendingWorkQueues>>,
 }
 
 impl CallbackTrait for HdrTilePlaneCallback {
@@ -163,12 +185,23 @@ impl CallbackTrait for HdrTilePlaneCallback {
                     }
 
                     if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                        if let Some(pending_work) = self.pending_work.as_ref() {
+                            queue_iso_tile_cpu_compose(
+                                pending_work,
+                                tile_key,
+                                target_capacity_bits,
+                                self.target_format,
+                                &self.tile,
+                                ctx,
+                                self.tone_map.target_hdr_capacity(),
+                            );
+                            let _ = hdr_view;
+                            return Vec::new();
+                        }
                         let Some(texture) = binding._texture.as_ref() else {
                             resources.tile_bindings.remove(tile_key);
                             return Vec::new();
                         };
-                        // CPU fallback composes synchronously in the render callback; large tiles
-                        // can stall a frame. Move this work to a background task if it becomes visible.
                         let composed = match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
                             deferred,
                             &ctx,
@@ -281,8 +314,64 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             return vec![compose_command];
                         }
 
-                        // CPU fallback composes synchronously in the render callback; large tiles
-                        // can stall a frame. Move this work to a background task if it becomes visible.
+                        if let Some(pending_work) = self.pending_work.as_ref() {
+                            if !resources.image_bindings.is_empty() {
+                                resources.image_bindings.clear();
+                            }
+                            let tone_map_buffer =
+                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some(
+                                        "simple-image-viewer-hdr-tile-plane-tone-map-buffer",
+                                    ),
+                                    contents: bytemuck::bytes_of(&uniform),
+                                    usage: wgpu::BufferUsages::UNIFORM
+                                        | wgpu::BufferUsages::COPY_DST,
+                                });
+                            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+                                layout: &resources.bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &uploaded.view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &resources.dummy_gain_view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: tone_map_buffer.as_entire_binding(),
+                                    },
+                                ],
+                            });
+                            resources.tile_bindings.insert(
+                                tile_key,
+                                HdrTileInsert {
+                                    texture: uploaded.texture,
+                                    view: uploaded.view,
+                                    compose_storage_view: uploaded.storage_view,
+                                    tone_map_buffer,
+                                    bind_group,
+                                    baked_jpeg_weight_bits: None,
+                                },
+                            );
+                            queue_iso_tile_cpu_compose(
+                                pending_work,
+                                tile_key,
+                                target_capacity_bits,
+                                self.target_format,
+                                &self.tile,
+                                ctx,
+                                self.tone_map.target_hdr_capacity(),
+                            );
+                            return Vec::new();
+                        }
+
                         let composed = match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
                             deferred,
                             &ctx,

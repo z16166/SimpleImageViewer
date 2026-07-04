@@ -210,6 +210,7 @@ impl ImageViewerApp {
                     ripple: None,
                     keep_resident: self.hdr_plane_keep_resident(),
                     raw_demosaic_baked_notify: None,
+                    hdr_pending_work: Some(Arc::clone(&self.hdr_pending_work)),
                 },
             );
             hdr_preview_drawn = true;
@@ -398,6 +399,7 @@ impl ImageViewerApp {
                                 tone_map,
                                 alpha: tile_alpha,
                                 show_tile_debug_osd: self.settings.show_osd,
+                                hdr_pending_work: Arc::clone(&self.hdr_pending_work),
                             },
                         );
                         continue;

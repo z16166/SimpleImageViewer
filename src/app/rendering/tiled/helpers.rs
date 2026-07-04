@@ -488,6 +488,7 @@ pub(crate) struct HdrPlaneTileVisit<'a> {
     pub(crate) tone_map: crate::hdr::types::HdrToneMapSettings,
     pub(crate) alpha: f32,
     pub(crate) show_tile_debug_osd: bool,
+    pub(crate) hdr_pending_work: Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
 }
 
 pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVisit<'_>) {
@@ -511,6 +512,7 @@ pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVi
         alpha,
         #[cfg_attr(not(feature = "tile-debug"), allow(unused_variables))]
         show_tile_debug_osd,
+        hdr_pending_work,
     } = visit;
     let Some(hdr_source) = hdr_source_for_frame else {
         return;
@@ -558,6 +560,7 @@ pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVi
             output_mode: render_plan.output_mode,
             rotation_steps: rotation_steps as u32,
             alpha,
+            hdr_pending_work: Some(Arc::clone(&hdr_pending_work)),
         },
     );
 

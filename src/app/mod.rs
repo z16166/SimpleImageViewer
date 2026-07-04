@@ -21,6 +21,7 @@ mod directory_tree;
 mod directory_tree_strip_cache;
 pub(crate) mod folder_picker;
 mod hdr_prewarm;
+mod hdr_pending_work;
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;
