@@ -16,7 +16,7 @@
 
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct JpegTiledUploadKey {
     pub(super) sdr_ptr: usize,
     pub(super) gain_ptr: usize,
@@ -24,14 +24,14 @@ pub(crate) struct JpegTiledUploadKey {
 
 #[allow(dead_code)]
 pub(crate) struct HdrImageBinding {
-    pub(super) uploaded_texture: wgpu::Texture,
+    pub(super) uploaded_texture: Arc<wgpu::Texture>,
     pub(super) uploaded_view: wgpu::TextureView,
-    pub(super) uploaded_gain_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_gain_texture: Option<Arc<wgpu::Texture>>,
     pub(super) uploaded_gain_view: Option<wgpu::TextureView>,
-    pub(super) uploaded_sdr_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_sdr_texture: Option<Arc<wgpu::Texture>>,
     pub(super) uploaded_sdr_view: Option<wgpu::TextureView>,
     pub(super) uploaded_display_storage_view: Option<wgpu::TextureView>,
-    pub(super) uploaded_raw_pixels_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_raw_pixels_texture: Option<Arc<wgpu::Texture>>,
     pub(super) uploaded_raw_pixels_view: Option<wgpu::TextureView>,
     pub(super) uploaded_raw_green_plane_write_view: Option<wgpu::TextureView>,
     pub(super) uploaded_raw_green_plane_read_view: Option<wgpu::TextureView>,
@@ -87,9 +87,9 @@ pub(crate) struct HdrCallbackResources {
     /// (see `HdrImageBinding::jpeg_compose_uniform_buffer`) to avoid data races in concurrent drawing.
     pub(super) jpeg_compose_uniform_buffer: Option<wgpu::Buffer>,
     pub(super) jpeg_tiled_upload_key: Option<JpegTiledUploadKey>,
-    pub(super) jpeg_tiled_sdr_texture: Option<wgpu::Texture>,
+    pub(super) jpeg_tiled_sdr_texture: Option<Arc<wgpu::Texture>>,
     pub(super) jpeg_tiled_sdr_view: Option<wgpu::TextureView>,
-    pub(super) jpeg_tiled_gain_texture: Option<wgpu::Texture>,
+    pub(super) jpeg_tiled_gain_texture: Option<Arc<wgpu::Texture>>,
     pub(super) jpeg_tiled_gain_view: Option<wgpu::TextureView>,
     #[cfg(feature = "heif-native")]
     pub(super) compose_bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -117,7 +117,7 @@ pub(super) fn apple_compose_compute_supported(limits: &wgpu::Limits) -> bool {
 }
 
 pub(crate) struct CallbackUpload {
-    pub(super) texture: wgpu::Texture,
+    pub(super) texture: Arc<wgpu::Texture>,
     pub(super) view: wgpu::TextureView,
     pub(super) storage_view: Option<wgpu::TextureView>,
 }
@@ -346,7 +346,7 @@ impl HdrCallbackResources {
 
     pub(crate) fn apply_iso_image_cpu_compose(
         &mut self,
-        queue: &wgpu::Queue,
+        sink: super::pending_gpu_writes::GpuUploadSink<'_>,
         key: HdrImageKey,
         target_capacity_bits: u32,
         width: u32,
@@ -356,7 +356,13 @@ impl HdrCallbackResources {
         let Some(binding) = self.image_bindings.get_mut(&key) else {
             return Err("HDR image binding missing for CPU compose".to_string());
         };
-        super::write_rgba32f_to_texture(queue, &binding.uploaded_texture, width, height, pixels)?;
+        super::write_rgba32f_to_texture(
+            sink,
+            Arc::clone(&binding.uploaded_texture),
+            width,
+            height,
+            pixels,
+        )?;
         binding.baked_jpeg_image_key = Some(key);
         binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
         self.failed_jpeg_image_compose.remove(&(key, target_capacity_bits));
@@ -366,7 +372,7 @@ impl HdrCallbackResources {
     #[cfg(feature = "heif-native")]
     pub(crate) fn apply_apple_image_cpu_compose(
         &mut self,
-        queue: &wgpu::Queue,
+        sink: super::pending_gpu_writes::GpuUploadSink<'_>,
         key: HdrImageKey,
         target_capacity_bits: u32,
         width: u32,
@@ -376,7 +382,13 @@ impl HdrCallbackResources {
         let Some(binding) = self.image_bindings.get_mut(&key) else {
             return Err("HDR image binding missing for CPU compose".to_string());
         };
-        super::write_rgba32f_to_texture(queue, &binding.uploaded_texture, width, height, pixels)?;
+        super::write_rgba32f_to_texture(
+            sink,
+            Arc::clone(&binding.uploaded_texture),
+            width,
+            height,
+            pixels,
+        )?;
         binding.baked_apple_image_key = Some(key);
         binding.baked_apple_weight_bits = Some(target_capacity_bits);
         self.failed_apple_image_compose.remove(&(key, target_capacity_bits));
@@ -385,7 +397,7 @@ impl HdrCallbackResources {
 
     pub(crate) fn apply_iso_tile_cpu_compose(
         &mut self,
-        queue: &wgpu::Queue,
+        sink: super::pending_gpu_writes::GpuUploadSink<'_>,
         tile_key: HdrTileKey,
         target_capacity_bits: u32,
         width: u32,
@@ -399,9 +411,91 @@ impl HdrCallbackResources {
             self.tile_bindings.remove(tile_key);
             return Err("HDR tile texture missing for CPU compose".to_string());
         };
-        super::write_rgba32f_to_texture(queue, texture, width, height, pixels)?;
+        super::write_rgba32f_to_texture(
+            sink,
+            Arc::clone(texture),
+            width,
+            height,
+            pixels,
+        )?;
         binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
         Ok(())
+    }
+
+    pub(crate) fn register_completed_tile_upload(
+        &mut self,
+        device: &wgpu::Device,
+        item: super::pending_work::HdrCompletedTileUpload,
+    ) -> bool {
+        if self.tile_bindings.contains(item.tile_key) {
+            return false;
+        }
+        let native_display_scale = libavif_tone_map_native_display_scale(
+            &item.tile.metadata,
+            item.tile.color_space,
+            &item.tone_map,
+        );
+        let uniform = hdr_tile_tone_map_uniform(HdrTileToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: item.tone_map,
+                rotation_steps: item.rotation_steps,
+                alpha: item.alpha,
+                output_mode: item.output_mode,
+                framebuffer_format: item.target_format,
+                uv_rect: item.uv_rect,
+                native_display_scale,
+            },
+            tile: &item.tile,
+            jpeg_gpu_composed: false,
+        });
+        let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&item.uploaded.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.dummy_gain_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: tone_map_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.tile_bindings.insert(
+            item.tile_key,
+            HdrTileInsert {
+                texture: item.uploaded.texture,
+                view: item.uploaded.view,
+                compose_storage_view: item.uploaded.storage_view,
+                tone_map_buffer,
+                bind_group,
+                baked_jpeg_weight_bits: None,
+            },
+        );
+        true
+    }
+
+    pub(crate) fn register_jpeg_tiled_source_upload(
+        &mut self,
+        upload_key: JpegTiledUploadKey,
+        sdr: CallbackUpload,
+        gain: CallbackUpload,
+    ) {
+        self.jpeg_tiled_upload_key = Some(upload_key);
+        self.jpeg_tiled_sdr_texture = Some(sdr.texture);
+        self.jpeg_tiled_sdr_view = Some(sdr.view);
+        self.jpeg_tiled_gain_texture = Some(gain.texture);
+        self.jpeg_tiled_gain_view = Some(gain.view);
     }
 
     pub(crate) fn set_image_binding_keep_resident(&mut self, key: HdrImageKey, keep_resident: bool) {

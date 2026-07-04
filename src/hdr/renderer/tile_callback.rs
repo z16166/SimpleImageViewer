@@ -105,9 +105,23 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 gain_ptr: std::sync::Arc::as_ptr(&deferred.gain_rgba) as usize,
             };
             if resources.jpeg_tiled_upload_key != Some(upload_key) {
+                if let Some(pending_work) = self.pending_work.as_ref() {
+                    if let Some(deferred_owned) = iso_deferred.cloned() {
+                        let _ = pending_work.try_queue_jpeg_tiled_source_upload(
+                            HdrPendingJpegTiledSourceUploadRequest {
+                                target_format: self.target_format,
+                                upload_key,
+                                deferred: deferred_owned,
+                                physical_width: ctx.physical_width,
+                                physical_height: ctx.physical_height,
+                            },
+                        );
+                    }
+                    return Vec::new();
+                }
                 match upload_jpeg_tiled_source_textures(
                     device,
-                    queue,
+                    GpuUploadSink::Immediate(queue),
                     deferred,
                     ctx.physical_width,
                     ctx.physical_height,
@@ -217,8 +231,8 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             }
                         };
                         if let Err(err) = write_rgba32f_to_texture(
-                            queue,
-                            texture,
+                            GpuUploadSink::Immediate(queue),
+                            Arc::clone(texture),
                             self.tile.width,
                             self.tile.height,
                             &composed,
@@ -381,8 +395,8 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             }
                         };
                         if let Err(err) = write_rgba32f_to_texture(
-                            queue,
-                            &uploaded.texture,
+                            GpuUploadSink::Immediate(queue),
+                            Arc::clone(&uploaded.texture),
                             self.tile.width,
                             self.tile.height,
                             &composed,
@@ -442,7 +456,20 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 return Vec::new();
             }
         } else if !resources.tile_bindings.contains(tile_key) {
-            match upload_callback_tile(device, queue, &self.tile) {
+            if let Some(pending_work) = self.pending_work.as_ref() {
+                let _ = pending_work.try_queue_tile_upload(HdrPendingTileUploadRequest {
+                    tile_key,
+                    tile: Arc::clone(&self.tile),
+                    target_format: self.target_format,
+                    tone_map: self.tone_map,
+                    output_mode: self.output_mode,
+                    rotation_steps: self.rotation_steps,
+                    alpha: self.alpha,
+                    uv_rect: self.uv_rect,
+                });
+                return Vec::new();
+            }
+            match upload_callback_tile(device, GpuUploadSink::Immediate(queue), &self.tile) {
                 Ok(uploaded) => {
                     let tone_map_buffer =
                         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

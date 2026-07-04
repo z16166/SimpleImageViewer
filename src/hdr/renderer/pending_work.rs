@@ -15,13 +15,24 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
+use crate::hdr::types::IsoGainMapGpuSource;
 use crate::hdr::types::IsoDeferredTileContext;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+pub(crate) use super::pending_gpu_writes::{
+    HdrPendingGpuWriteQueues, MAX_HDR_GPU_WRITES_PER_LOGIC,
+};
+
 /// Main-thread plane uploads per logic tick (OpenGL backend cannot upload off-thread).
 pub(crate) const MAX_HDR_PLANE_UPLOADS_PER_LOGIC: usize = 1;
+
+/// Tile plane uploads started per logic tick.
+pub(crate) const MAX_HDR_TILE_UPLOADS_PER_LOGIC: usize = 2;
+
+/// Shared JPEG tiled SDR/gain source uploads per logic tick.
+pub(crate) const MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC: usize = 1;
 
 /// Background ISO/Apple CPU compose jobs started per logic tick.
 pub(crate) const MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC: usize = 2;
@@ -29,6 +40,8 @@ pub(crate) const MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC: usize = 2;
 #[derive(Default)]
 struct HdrPendingWorkInflight {
     plane_uploads: HashSet<HdrImageKey>,
+    tile_uploads: HashSet<HdrTileKey>,
+    jpeg_tiled_source_uploads: HashSet<(JpegTiledUploadKey, wgpu::TextureFormat)>,
     iso_image_compose: HashSet<(HdrImageKey, u32)>,
     apple_image_compose: HashSet<(HdrImageKey, u32)>,
     iso_tile_compose: HashSet<(HdrTileKey, u32)>,
@@ -43,6 +56,25 @@ pub(crate) struct HdrPendingPlaneUploadRequest {
     pub keep_resident: bool,
 }
 
+pub(crate) struct HdrPendingTileUploadRequest {
+    pub tile_key: HdrTileKey,
+    pub tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    pub target_format: wgpu::TextureFormat,
+    pub tone_map: HdrToneMapSettings,
+    pub output_mode: HdrRenderOutputMode,
+    pub rotation_steps: u32,
+    pub alpha: f32,
+    pub uv_rect: egui::Rect,
+}
+
+pub(crate) struct HdrPendingJpegTiledSourceUploadRequest {
+    pub target_format: wgpu::TextureFormat,
+    pub upload_key: JpegTiledUploadKey,
+    pub deferred: IsoGainMapGpuSource,
+    pub physical_width: u32,
+    pub physical_height: u32,
+}
+
 pub(crate) struct HdrCompletedPlaneUpload {
     pub key: HdrImageKey,
     pub uploaded: ImagePlaneUpload,
@@ -51,6 +83,27 @@ pub(crate) struct HdrCompletedPlaneUpload {
     pub tone_map: HdrToneMapSettings,
     pub output_mode: HdrRenderOutputMode,
     pub keep_resident: bool,
+    pub device_id: u64,
+}
+
+pub(crate) struct HdrCompletedTileUpload {
+    pub tile_key: HdrTileKey,
+    pub tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    pub target_format: wgpu::TextureFormat,
+    pub uploaded: CallbackUpload,
+    pub tone_map: HdrToneMapSettings,
+    pub output_mode: HdrRenderOutputMode,
+    pub rotation_steps: u32,
+    pub alpha: f32,
+    pub uv_rect: egui::Rect,
+    pub device_id: u64,
+}
+
+pub(crate) struct HdrCompletedJpegTiledSourceUpload {
+    pub target_format: wgpu::TextureFormat,
+    pub upload_key: JpegTiledUploadKey,
+    pub sdr: CallbackUpload,
+    pub gain: CallbackUpload,
     pub device_id: u64,
 }
 
@@ -127,8 +180,13 @@ pub(crate) enum HdrCompletedComposeFailure {
 
 pub(crate) struct HdrPendingWorkQueues {
     inflight: Mutex<HdrPendingWorkInflight>,
+    pub(crate) gpu_writes: Mutex<HdrPendingGpuWriteQueues>,
     pub(crate) plane_upload_requests: Mutex<Vec<HdrPendingPlaneUploadRequest>>,
     pub(crate) completed_plane_uploads: Mutex<Vec<HdrCompletedPlaneUpload>>,
+    pub(crate) tile_upload_requests: Mutex<Vec<HdrPendingTileUploadRequest>>,
+    pub(crate) completed_tile_uploads: Mutex<Vec<HdrCompletedTileUpload>>,
+    pub(crate) jpeg_tiled_source_requests: Mutex<Vec<HdrPendingJpegTiledSourceUploadRequest>>,
+    pub(crate) completed_jpeg_tiled_source_uploads: Mutex<Vec<HdrCompletedJpegTiledSourceUpload>>,
     pub(crate) iso_image_compose_requests: Mutex<Vec<HdrPendingIsoImageComposeRequest>>,
     pub(crate) apple_image_compose_requests: Mutex<Vec<HdrPendingAppleImageComposeRequest>>,
     pub(crate) iso_tile_compose_requests: Mutex<Vec<HdrPendingIsoTileComposeRequest>>,
@@ -140,8 +198,13 @@ impl HdrPendingWorkQueues {
     pub(crate) fn new_shared() -> Arc<Self> {
         Arc::new(Self {
             inflight: Mutex::new(HdrPendingWorkInflight::default()),
+            gpu_writes: Mutex::new(HdrPendingGpuWriteQueues::default()),
             plane_upload_requests: Mutex::new(Vec::new()),
             completed_plane_uploads: Mutex::new(Vec::new()),
+            tile_upload_requests: Mutex::new(Vec::new()),
+            completed_tile_uploads: Mutex::new(Vec::new()),
+            jpeg_tiled_source_requests: Mutex::new(Vec::new()),
+            completed_jpeg_tiled_source_uploads: Mutex::new(Vec::new()),
             iso_image_compose_requests: Mutex::new(Vec::new()),
             apple_image_compose_requests: Mutex::new(Vec::new()),
             iso_tile_compose_requests: Mutex::new(Vec::new()),
@@ -150,17 +213,28 @@ impl HdrPendingWorkQueues {
         })
     }
 
+    pub(crate) fn flush_gpu_writes(&self, queue: &wgpu::Queue, quota: usize) -> usize {
+        self.gpu_writes.lock().flush(queue, quota)
+    }
+
     pub(crate) fn has_active_work(&self) -> bool {
         let inflight = self.inflight.lock();
         !inflight.plane_uploads.is_empty()
+            || !inflight.tile_uploads.is_empty()
+            || !inflight.jpeg_tiled_source_uploads.is_empty()
             || !inflight.iso_image_compose.is_empty()
             || !inflight.apple_image_compose.is_empty()
             || !inflight.iso_tile_compose.is_empty()
+            || self.gpu_writes.lock().pending_len() > 0
             || !self.plane_upload_requests.lock().is_empty()
+            || !self.tile_upload_requests.lock().is_empty()
+            || !self.jpeg_tiled_source_requests.lock().is_empty()
             || !self.iso_image_compose_requests.lock().is_empty()
             || !self.apple_image_compose_requests.lock().is_empty()
             || !self.iso_tile_compose_requests.lock().is_empty()
             || !self.completed_plane_uploads.lock().is_empty()
+            || !self.completed_tile_uploads.lock().is_empty()
+            || !self.completed_jpeg_tiled_source_uploads.lock().is_empty()
             || !self.completed_compose_writes.lock().is_empty()
             || !self.completed_compose_failures.lock().is_empty()
     }
@@ -172,6 +246,30 @@ impl HdrPendingWorkQueues {
         }
         inflight.plane_uploads.insert(request.key);
         self.plane_upload_requests.lock().push(request);
+        true
+    }
+
+    pub(crate) fn try_queue_tile_upload(&self, request: HdrPendingTileUploadRequest) -> bool {
+        let mut inflight = self.inflight.lock();
+        if inflight.tile_uploads.contains(&request.tile_key) {
+            return false;
+        }
+        inflight.tile_uploads.insert(request.tile_key);
+        self.tile_upload_requests.lock().push(request);
+        true
+    }
+
+    pub(crate) fn try_queue_jpeg_tiled_source_upload(
+        &self,
+        request: HdrPendingJpegTiledSourceUploadRequest,
+    ) -> bool {
+        let key = (request.upload_key, request.target_format);
+        let mut inflight = self.inflight.lock();
+        if inflight.jpeg_tiled_source_uploads.contains(&key) {
+            return false;
+        }
+        inflight.jpeg_tiled_source_uploads.insert(key);
+        self.jpeg_tiled_source_requests.lock().push(request);
         true
     }
 
@@ -219,6 +317,21 @@ impl HdrPendingWorkQueues {
 
     pub(crate) fn clear_plane_upload_inflight(&self, key: HdrImageKey) {
         self.inflight.lock().plane_uploads.remove(&key);
+    }
+
+    pub(crate) fn clear_tile_upload_inflight(&self, key: HdrTileKey) {
+        self.inflight.lock().tile_uploads.remove(&key);
+    }
+
+    pub(crate) fn clear_jpeg_tiled_source_upload_inflight(
+        &self,
+        upload_key: JpegTiledUploadKey,
+        target_format: wgpu::TextureFormat,
+    ) {
+        self.inflight
+            .lock()
+            .jpeg_tiled_source_uploads
+            .remove(&(upload_key, target_format));
     }
 
     pub(crate) fn clear_iso_image_compose_inflight(&self, key: HdrImageKey, target_capacity_bits: u32) {

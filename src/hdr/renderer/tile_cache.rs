@@ -26,7 +26,7 @@ pub(crate) struct HdrTileBindings {
 }
 
 pub(crate) struct HdrTileInsert {
-    pub(crate) texture: wgpu::Texture,
+    pub(crate) texture: Arc<wgpu::Texture>,
     pub(crate) view: wgpu::TextureView,
     pub(crate) compose_storage_view: Option<wgpu::TextureView>,
     pub(crate) tone_map_buffer: wgpu::Buffer,
@@ -204,7 +204,7 @@ impl HdrTileBindings {
 }
 
 pub(crate) struct HdrTileBinding {
-    pub(super) _texture: Option<wgpu::Texture>,
+    pub(super) _texture: Option<Arc<wgpu::Texture>>,
     pub(super) _view: Option<wgpu::TextureView>,
     /// Storage view for ISO deferred tile GPU compose; reused across rebakes at the same tile size.
     pub(super) compose_storage_view: Option<wgpu::TextureView>,

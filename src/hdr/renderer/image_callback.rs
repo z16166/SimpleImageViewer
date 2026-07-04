@@ -334,8 +334,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 ) {
                     Ok(composed) => {
                         if let Err(err) = write_rgba32f_to_texture(
-                            queue,
-                            &binding.uploaded_texture,
+                            GpuUploadSink::Immediate(queue),
+                            Arc::clone(&binding.uploaded_texture),
                             self.image.width,
                             self.image.height,
                             &composed,
@@ -447,8 +447,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     ) {
                         Ok(composed) => {
                             if let Err(err) = write_rgba32f_to_texture(
-                                queue,
-                                &binding.uploaded_texture,
+                                GpuUploadSink::Immediate(queue),
+                                Arc::clone(&binding.uploaded_texture),
                                 self.image.width,
                                 self.image.height,
                                 &composed,
