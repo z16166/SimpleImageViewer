@@ -56,13 +56,15 @@ impl ImageViewerApp {
         let Some(wgpu_state) = frame.wgpu_render_state() else {
             return;
         };
-        let _flushed = self
+        let flushed = self
             .hdr_pending_work
             .flush_gpu_writes(&wgpu_state.queue, MAX_HDR_GPU_WRITES_PER_LOGIC);
         #[cfg(feature = "preload-debug")]
         if flushed > 0 {
             crate::preload_debug!("[PreloadDebug][HDR-GPU] flushed {flushed} staged write(s)");
         }
+        #[cfg(not(feature = "preload-debug"))]
+        let _ = flushed;
     }
 
     fn wgpu_is_opengl_backend(&self) -> bool {

@@ -82,6 +82,8 @@ mod embedded_side_panel_layout_diag {
 
     use parking_lot::Mutex;
 
+    use super::EmbeddedSidePanelLayoutSample;
+
     #[derive(Default)]
     struct EmbeddedSidePanelLayoutDiag {
         last_available_before: Option<f32>,
@@ -126,7 +128,7 @@ mod embedded_side_panel_layout_diag {
             .last_panel_width
             .map(|prev| panel_width - prev)
             .unwrap_or(0.0);
-        let chrome_embedded_delta = diag
+        let chrome_embedded_delta: f32 = diag
             .last_chrome_embedded_width
             .zip(chrome_embedded_width_after)
             .map(|(prev, now)| now - prev)
