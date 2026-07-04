@@ -69,9 +69,10 @@ pub(crate) use hdr_fallback::{
     hdr_has_embedded_sdr_master_display, hdr_has_iso_deferred_gain_map,
     hdr_raw_gpu_bootstrap_fallback_decoded, hdr_raw_gpu_demosaic_pending,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_or_placeholder,
-    hdr_tone_map_settings_for_directory_tree_strip, prefer_embedded_iso_gain_map_sdr_on_sdr_output,
-    raw_gpu_source_has_bootstrap_preview, should_use_embedded_sdr_master_load,
-    static_hdr_background_plane_upload_eligible,
+    hdr_supports_embedded_sdr_master_display, hdr_tone_map_plane_available_in_cache,
+    hdr_tone_map_settings_for_directory_tree_strip, index_hdr_gain_map_sdr_display_mode_affects,
+    prefer_embedded_iso_gain_map_sdr_on_sdr_output, raw_gpu_source_has_bootstrap_preview,
+    should_use_embedded_sdr_master_load, static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
     extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,

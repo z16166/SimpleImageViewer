@@ -900,6 +900,80 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
 }
 
 #[test]
+fn hdr_gain_map_sdr_display_change_refreshes_cached_heic_without_reload() {
+    use crate::hdr::types::{
+        HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer,
+        HdrImageMetadata, HdrPixelFormat,
+    };
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+
+    let mut metadata = HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+        target_hdr_capacity: None,
+        diagnostic: String::new(),
+        capped_display_referred: true,
+        apple_heic_deferred: None,
+        iso_deferred: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4032,
+        height: 3024,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_hdr_sdr_fallback_texture(
+        0,
+        &DecodedImage::new(64, 48, vec![128; 64 * 48 * 4]),
+        &ctx,
+    );
+    assert!(app.active_hdr_plane_displays_index(0));
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(app.hdr_image_cache.contains_key(&0));
+    assert!(!app.loader.is_loading(0));
+    assert!(!app.active_hdr_plane_displays_index(0));
+}
+
+#[test]
+fn hdr_gain_map_sdr_display_change_reloads_heif_marked_ultra_hdr_sensitive() {
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.ultra_hdr_capacity_sensitive_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_static_sdr_texture(
+        0,
+        &DecodedImage::new(64, 48, vec![128; 64 * 48 * 4]),
+        "img_0".into(),
+        &ctx,
+    );
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(!app.texture_cache.contains(0));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
 fn neighbor_image_install_yields_until_current_ready() {
     assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
     assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));
