@@ -999,7 +999,7 @@ impl ImageViewerApp {
         let settings_demosaic = self.settings.raw_demosaic_mode;
 
         self.loader
-            .discard_pending_stale_outputs_profile(|output, loading| {
+            .discard_pending_stale_outputs_profile(|output, is_loading| {
                 let demosaic_for = |idx: usize| {
                     if gpu_failed.contains(&idx) {
                         crate::settings::RawDemosaicMode::Cpu
@@ -1028,8 +1028,8 @@ impl ImageViewerApp {
                         {
                             return false;
                         }
-                        let is_loading = loading.contains_key(&r.index);
-                        if !gate_ctx.retention_for(r.index, is_loading).should_retain() {
+                        let is_loading_idx = is_loading(r.index);
+                        if !gate_ctx.retention_for(r.index, is_loading_idx).should_retain() {
                             return false;
                         }
                         crate::loader::profile_satisfies_display(
@@ -1044,8 +1044,8 @@ impl ImageViewerApp {
                         {
                             return false;
                         }
-                        let is_loading = loading.contains_key(&p.index);
-                        if !gate_ctx.retention_for(p.index, is_loading).should_retain() {
+                        let is_loading_idx = is_loading(p.index);
+                        if !gate_ctx.retention_for(p.index, is_loading_idx).should_retain() {
                             return false;
                         }
                         crate::loader::profile_satisfies_display(
@@ -1054,10 +1054,10 @@ impl ImageViewerApp {
                         )
                     }
                     LoaderOutput::Refined(idx) => gate_ctx
-                        .retention_for(*idx, loading.contains_key(idx))
+                        .retention_for(*idx, is_loading(*idx))
                         .should_retain(),
                     LoaderOutput::Tile(t) => gate_ctx
-                        .retention_for(t.index, loading.contains_key(&t.index))
+                        .retention_for(t.index, is_loading(t.index))
                         .should_retain(),
                 }
             });

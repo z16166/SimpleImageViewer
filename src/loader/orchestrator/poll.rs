@@ -30,17 +30,16 @@ impl ImageLoader {
     /// Profile / window based pending output filter (generation-plan Phase A).
     pub fn discard_pending_stale_outputs_profile(
         &mut self,
-        keep: impl Fn(
-            &LoaderOutput,
-            &std::collections::HashMap<usize, crate::loader::InFlightLoad>,
-        ) -> bool,
+        keep: impl Fn(&LoaderOutput, &dyn Fn(usize) -> bool) -> bool,
     ) {
-        let loading_snapshot = self.loading.lock().clone();
-        let keep_output = |output: &LoaderOutput| keep(output, &loading_snapshot);
-
         let mut retained = std::collections::VecDeque::new();
         for output in self.local_queue.drain(..) {
-            if keep_output(&output) {
+            let retain = {
+                let loading = self.loading.lock();
+                let is_loading = |idx: usize| loading.contains_key(&idx);
+                keep(&output, &is_loading)
+            };
+            if retain {
                 retained.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock();
@@ -55,7 +54,12 @@ impl ImageLoader {
         self.local_queue = retained;
 
         while let Ok(output) = self.rx.try_recv() {
-            if keep_output(&output) {
+            let retain = {
+                let loading = self.loading.lock();
+                let is_loading = |idx: usize| loading.contains_key(&idx);
+                keep(&output, &is_loading)
+            };
+            if retain {
                 self.local_queue.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock();
