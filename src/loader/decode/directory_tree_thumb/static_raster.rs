@@ -46,30 +46,13 @@ pub(super) fn decode_static_raster_strip_from_bytes(
     max_side: u32,
     format_hint: Option<&str>,
 ) -> Result<DirectoryTreeThumbDecode, String> {
-    use image::ImageReader;
-    use std::io::Cursor;
-
     if max_side == 0 {
         return Err("static raster strip max_side must be non-zero".to_string());
     }
 
-    let mut dimensions_reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    dimensions_reader.no_limits();
-    let mut logical = dimensions_reader
-        .into_dimensions()
-        .map_err(|e| e.to_string())?;
-
-    let mut decode_reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    decode_reader.no_limits();
-    let rgba = decode_reader
-        .decode()
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
+    let (rgba, reusable_full_allowed) = decode_static_raster_rgba(bytes, format_hint)?;
     let (width, height) = rgba.dimensions();
+    let mut logical = (width, height);
     let mut full = DecodedImage::new(width, height, rgba.into_raw());
 
     let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes, None);
@@ -78,7 +61,6 @@ pub(super) fn decode_static_raster_strip_from_bytes(
     }
 
     let mut decoded = downsample_decoded_for_strip(&full, max_side)?;
-    let reusable_full_allowed = reusable_static_raster_full_decode(bytes, format_hint);
 
     decoded = apply_orientation_to_owned_decoded(decoded, orientation);
     if reusable_full_allowed {
@@ -110,42 +92,93 @@ pub(super) fn apply_orientation_to_owned_decoded(
     DecodedImage::new(width, height, pixels)
 }
 
-fn reusable_static_raster_full_decode(bytes: &[u8], format_hint: Option<&str>) -> bool {
+fn decode_static_raster_rgba(
+    bytes: &[u8],
+    format_hint: Option<&str>,
+) -> Result<(image::RgbaImage, bool), String> {
     match format_hint {
-        Some("png") => png_bytes_are_static(bytes),
-        Some("webp") => webp_bytes_are_static(bytes),
-        Some("bmp" | "tga" | "ico" | "pnm" | "qoi") => true,
-        _ => false,
+        Some("png" | "apng") => decode_png_strip_rgba(bytes, format_hint == Some("png")),
+        Some("webp") => decode_webp_strip_rgba(bytes),
+        _ => decode_generic_strip_rgba(bytes, format_hint),
     }
 }
 
-pub(super) fn png_bytes_are_static(bytes: &[u8]) -> bool {
+fn decode_png_strip_rgba(
+    bytes: &[u8],
+    allow_reusable_full: bool,
+) -> Result<(image::RgbaImage, bool), String> {
+    use image::DynamicImage;
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
-    PngDecoder::new(Cursor::new(bytes))
-        .and_then(|decoder| decoder.is_apng())
-        .map(|is_apng| !is_apng)
-        .unwrap_or(false)
+    let decoder = PngDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let reusable_full_allowed = allow_reusable_full
+        && !decoder.is_apng().map_err(|e| e.to_string())?;
+    let rgba = DynamicImage::from_decoder(decoder)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    Ok((rgba, reusable_full_allowed))
 }
 
-pub(super) fn webp_bytes_are_static(bytes: &[u8]) -> bool {
+fn decode_webp_strip_rgba(bytes: &[u8]) -> Result<(image::RgbaImage, bool), String> {
+    use image::DynamicImage;
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
-    WebPDecoder::new(Cursor::new(bytes))
-        .map(|decoder| !decoder.has_animation())
-        .unwrap_or(false)
+    let decoder = WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let reusable_full_allowed = !decoder.has_animation();
+    let rgba = DynamicImage::from_decoder(decoder)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    Ok((rgba, reusable_full_allowed))
+}
+
+fn decode_generic_strip_rgba(
+    bytes: &[u8],
+    format_hint: Option<&str>,
+) -> Result<(image::RgbaImage, bool), String> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let mut decode_reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    decode_reader.no_limits();
+    let rgba = decode_reader
+        .decode()
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    let reusable_full_allowed = matches!(
+        format_hint,
+        Some("bmp" | "tga" | "ico" | "pnm" | "qoi")
+    );
+    Ok((rgba, reusable_full_allowed))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_orientation_to_owned_decoded, decode_static_raster_strip_from_bytes,
-        png_bytes_are_static, webp_bytes_are_static,
-    };
+    use super::{apply_orientation_to_owned_decoded, decode_static_raster_strip_from_bytes};
     use crate::loader::preview_aspect_matches_logical;
     use image::ImageEncoder;
+
+    fn png_bytes_are_static(bytes: &[u8]) -> bool {
+        use image::codecs::png::PngDecoder;
+        use std::io::Cursor;
+
+        PngDecoder::new(Cursor::new(bytes))
+            .and_then(|decoder| decoder.is_apng())
+            .map(|is_apng| !is_apng)
+            .unwrap_or(false)
+    }
+
+    fn webp_bytes_are_static(bytes: &[u8]) -> bool {
+        use image::codecs::webp::WebPDecoder;
+        use std::io::Cursor;
+
+        WebPDecoder::new(Cursor::new(bytes))
+            .map(|decoder| !decoder.has_animation())
+            .unwrap_or(false)
+    }
 
     fn encode_test_png(width: u32, height: u32) -> Vec<u8> {
         let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
