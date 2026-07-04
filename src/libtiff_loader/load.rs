@@ -453,7 +453,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         }
 
         if let Some(hdr) = try_camera_tiff_rgb8_hdr_upgrade(CameraTiffHdrUpgrade {
-            path,
+            file_bytes: mmap.as_ref(),
             hdr_target_capacity,
             tone_map: &tone_map,
             photo,

@@ -21,7 +21,6 @@ use crate::hdr::types::{
 use super::constants::*;
 use libtiff_viewer as lib;
 use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::loader::{DecodedImage, ImageData};
@@ -598,7 +597,7 @@ fn rgba8_to_scene_linear_hdr_buffer(
 }
 
 pub(crate) struct CameraTiffHdrUpgrade<'a> {
-    pub(crate) path: &'a Path,
+    pub(crate) file_bytes: &'a [u8],
     pub(crate) hdr_target_capacity: f32,
     #[allow(dead_code)]
     pub(crate) tone_map: &'a HdrToneMapSettings,
@@ -613,7 +612,7 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     input: CameraTiffHdrUpgrade<'_>,
 ) -> Result<Option<ImageData>, String> {
     let CameraTiffHdrUpgrade {
-        path,
+        file_bytes,
         hdr_target_capacity,
         tone_map: _,
         photo,
@@ -625,8 +624,12 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         || photo != PHOTO_RGB
         || bps != 8
-        || !crate::loader::tiff_may_be_camera_raw(path)
-        || crate::raw_processor::probe_libraw_can_open(path)
+        || !crate::loader::tiff_may_be_camera_raw_bytes(file_bytes)
+    {
+        return Ok(None);
+    }
+    if crate::loader::tiff_ifd0_suggests_libraw_raw(file_bytes)
+        && crate::raw_processor::probe_libraw_can_open_bytes(file_bytes)
     {
         return Ok(None);
     }

@@ -557,7 +557,11 @@ fn open_image_data_for_directory_tree_thumb(
         let tiff_is_raw = file_mmap
             .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
             .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
-        if tiff_is_raw && crate::raw_processor::probe_libraw_can_open(path) {
+        if tiff_is_raw
+            && file_mmap
+                .map(|data| crate::raw_processor::probe_libraw_can_open_bytes(data))
+                .unwrap_or_else(|| crate::raw_processor::probe_libraw_can_open(path))
+        {
             return open_raw_image_data_for_directory_tree_thumb(path);
         }
         return load_primary_with_detection_fallback(

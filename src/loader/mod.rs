@@ -86,4 +86,12 @@ pub(crate) fn tiff_may_be_camera_raw(path: &std::path::Path) -> bool {
     decode::tiff_may_be_camera_raw(path)
 }
 
+pub(crate) fn tiff_may_be_camera_raw_bytes(bytes: &[u8]) -> bool {
+    decode::tiff_may_be_camera_raw_bytes(bytes)
+}
+
+pub(crate) fn tiff_ifd0_suggests_libraw_raw(bytes: &[u8]) -> bool {
+    decode::tiff_ifd0_suggests_libraw_raw(bytes)
+}
+
 pub(crate) use decode::is_maybe_animated;
