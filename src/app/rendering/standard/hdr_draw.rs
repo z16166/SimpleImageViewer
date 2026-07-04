@@ -285,6 +285,7 @@ impl ImageViewerApp {
                 keep_resident: self.hdr_plane_keep_resident(),
                 raw_demosaic_baked_notify: Some(Arc::clone(&self.raw_demosaic_baked_notify)),
                 hdr_pending_work: Some(Arc::clone(&self.hdr_pending_work)),
+                sync_plane_upload_on_cache_miss: self.hdr_plane_sync_upload_on_cache_miss(),
             },
         );
     }

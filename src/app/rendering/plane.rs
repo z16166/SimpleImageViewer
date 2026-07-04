@@ -57,6 +57,7 @@ pub(crate) enum PlaneDrawSource {
         raw_demosaic_baked_notify:
             Option<Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>>,
         hdr_pending_work: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
+        sync_plane_upload_on_cache_miss: bool,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
@@ -103,6 +104,7 @@ pub(crate) fn draw_plane(
             keep_resident,
             raw_demosaic_baked_notify,
             hdr_pending_work,
+            sync_plane_upload_on_cache_miss,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -122,6 +124,7 @@ pub(crate) fn draw_plane(
                         keep_resident,
                         raw_demosaic_baked_notify,
                         pending_work: hdr_pending_work,
+                        sync_plane_upload_on_cache_miss,
                     },
                 ));
         }

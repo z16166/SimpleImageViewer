@@ -290,10 +290,14 @@ impl ImageViewerApp {
             || current_still_loading
             || self.folder_picker.in_flight()
             || awaiting_raw_hdr_present
-            || animation_active
             || animation_upload_pending
         {
             ctx.request_repaint();
+        } else if animation_active {
+            ctx.request_repaint_after(
+                self.next_animation_repaint_after()
+                    .unwrap_or(Duration::from_millis(100)),
+            );
         } else if is_music_playing {
             // Music only needs low-frequency polling for track-name updates (~2 fps)
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -317,11 +321,16 @@ impl ImageViewerApp {
         );
         self.ensure_root_redraw_wake(frame, ctx);
         if self.raw_async_work_needs_repaint_wake()
-            || self.animation_needs_repaint_wake()
             || self.animation_upload_pending_for_current()
             || self.needs_process_loaded_images()
         {
             ctx.request_repaint();
+            self.wake_root_for_logic();
+        } else if self.animation_needs_repaint_wake() {
+            ctx.request_repaint_after(
+                self.next_animation_repaint_after()
+                    .unwrap_or(Duration::from_millis(100)),
+            );
             self.wake_root_for_logic();
         }
         // Cache window placement (outer position, inner size, maximized) so

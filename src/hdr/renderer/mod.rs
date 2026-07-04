@@ -221,6 +221,7 @@ pub fn hdr_image_plane_callback(
             keep_resident: false,
             raw_demosaic_baked_notify: None,
             pending_work: None,
+            sync_plane_upload_on_cache_miss: false,
         },
     )
 }
@@ -237,6 +238,8 @@ pub struct HdrImagePlaneCallbackParams {
     pub keep_resident: bool,
     pub raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
     pub pending_work: Option<Arc<HdrPendingWorkQueues>>,
+    /// When true, upload missing plane bindings synchronously in `prepare()` (animated playback).
+    pub sync_plane_upload_on_cache_miss: bool,
 }
 
 pub fn hdr_image_plane_callback_with_uv(
@@ -255,6 +258,7 @@ pub fn hdr_image_plane_callback_with_uv(
         keep_resident,
         raw_demosaic_baked_notify,
         pending_work,
+        sync_plane_upload_on_cache_miss,
     } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -270,6 +274,7 @@ pub fn hdr_image_plane_callback_with_uv(
             keep_resident,
             raw_demosaic_baked_notify,
             pending_work,
+            sync_plane_upload_on_cache_miss,
         },
     ))
 }

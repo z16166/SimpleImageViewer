@@ -75,14 +75,26 @@ impl ImageViewerApp {
             }
 
             if pending_idx == self.current_index {
+                self.sync_active_animation_from_pending(pending_idx);
                 self.ensure_current_animation_playback();
             }
 
             if finished {
                 if let Some(pending) = self.pending_anim_frames.remove(&pending_idx) {
                     let idx = pending.image_index;
+                    let preserve = self
+                        .animation
+                        .as_ref()
+                        .filter(|anim| anim.image_index == idx)
+                        .map(|anim| {
+                            (
+                                anim.current_frame,
+                                anim.frame_start,
+                                anim.textures.len(),
+                            )
+                        });
 
-                    let playback = AnimationPlayback {
+                    let mut playback = AnimationPlayback {
                         image_index: idx,
                         textures: pending.textures,
                         hdr_frames: pending.hdr_frames.clone(),
@@ -91,10 +103,17 @@ impl ImageViewerApp {
                         frame_start: Instant::now(),
                         cpu_frames: Some(pending.frames.iter().map(|f| f.arc_pixels()).collect()),
                     };
+                    if let Some((prev_frame, prev_start, prev_len)) = preserve
+                        && prev_len > 0
+                        && playback.textures.len() > prev_len
+                    {
+                        playback.current_frame = prev_frame % playback.textures.len();
+                        playback.frame_start = prev_start;
+                    }
 
                     if idx == self.current_index {
                         if let Some(hdr_frames) = &playback.hdr_frames
-                            && let Some(hdr) = hdr_frames.first()
+                            && let Some(hdr) = hdr_frames.get(playback.current_frame)
                         {
                             self.current_hdr_image =
                                 Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
@@ -105,8 +124,8 @@ impl ImageViewerApp {
                             textures: playback.textures.clone(),
                             hdr_frames: playback.hdr_frames.clone(),
                             delays: playback.delays.clone(),
-                            current_frame: 0,
-                            frame_start: Instant::now(),
+                            current_frame: playback.current_frame,
+                            frame_start: playback.frame_start,
                             cpu_frames: playback.cpu_frames.clone(),
                         });
                     }

@@ -63,6 +63,22 @@ impl ImageViewerApp {
             })
     }
 
+    /// Time until the active animation frame should advance; used to schedule repaints.
+    pub(crate) fn next_animation_repaint_after(&self) -> Option<std::time::Duration> {
+        let anim = self.animation.as_ref()?;
+        if anim.image_index != self.current_index || anim.textures.len() <= 1 {
+            return None;
+        }
+        Some(
+            anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed()),
+        )
+    }
+
+    /// Animated HDR planes use synchronous GPU upload on cache miss (main-branch behavior).
+    pub(crate) fn hdr_plane_sync_upload_on_cache_miss(&self) -> bool {
+        self.animation_needs_repaint_wake()
+    }
+
     pub(crate) fn animation_upload_pending_for_current(&self) -> bool {
         self.index_uses_animated_pipeline(self.current_index)
             && self.pending_anim_frames.contains_key(&self.current_index)
@@ -148,6 +164,45 @@ impl ImageViewerApp {
                     .collect(),
             ),
         });
+    }
+
+    /// Extend active playback as deferred SDR textures finish uploading.
+    pub(crate) fn sync_active_animation_from_pending(&mut self, idx: usize) {
+        let Some(pending) = self.pending_anim_frames.get(&idx) else {
+            return;
+        };
+        if pending.textures.len() <= 1 {
+            return;
+        }
+        let Some(anim) = self.animation.as_mut() else {
+            return;
+        };
+        if anim.image_index != idx || pending.textures.len() <= anim.textures.len() {
+            return;
+        }
+        anim.textures = pending.textures.clone();
+        anim.delays = pending.delays.clone();
+        match anim.cpu_frames.as_mut() {
+            Some(cpu_frames) => {
+                cpu_frames.extend(
+                    pending
+                        .frames
+                        .iter()
+                        .skip(cpu_frames.len())
+                        .map(|frame| frame.arc_pixels()),
+                );
+            }
+            None => {
+                anim.cpu_frames = Some(
+                    pending
+                        .frames
+                        .iter()
+                        .take(pending.textures.len())
+                        .map(|frame| frame.arc_pixels())
+                        .collect(),
+                );
+            }
+        }
     }
 }
 
