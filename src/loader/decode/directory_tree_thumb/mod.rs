@@ -496,6 +496,7 @@ fn open_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    let file_bytes = file_mmap.map(|m| m.as_ref());
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -527,7 +528,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
-        return open_raw_image_data_for_directory_tree_thumb(path);
+        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
     }
 
     if path_has_extension(path, "jpg") || path_has_extension(path, "jpeg") {
@@ -562,7 +563,7 @@ fn open_image_data_for_directory_tree_thumb(
                 .map(|data| crate::raw_processor::probe_libraw_can_open_bytes(data))
                 .unwrap_or_else(|| crate::raw_processor::probe_libraw_can_open(path))
         {
-            return open_raw_image_data_for_directory_tree_thumb(path);
+            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
         }
         return load_primary_with_detection_fallback(
             path,
@@ -627,11 +628,11 @@ fn open_image_data_for_directory_tree_thumb(
     {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img, None));
+            return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
         #[cfg(target_os = "macos")]
         if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img, None));
+            return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
     }
 
@@ -650,7 +651,10 @@ fn open_image_data_for_directory_tree_thumb(
     )
 }
 
-fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData, String> {
+fn open_raw_image_data_for_directory_tree_thumb(
+    path: &Path,
+    file_mmap: Option<&memmap2::Mmap>,
+) -> Result<ImageData, String> {
     match open_raw_processor_with_preview(path) {
         Ok((processor, preview_opt, _, _)) => {
             if let Some(preview) = preview_opt {
@@ -665,14 +669,14 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData
                     height
                 );
             }
-            platform_still_image_fallback(path, Some(processor))
+            platform_still_image_fallback(path, Some(processor), file_mmap)
         }
         Err(err) => {
             log::debug!(
                 "[DirectoryTree] LibRaw open failed for {:?}: {err}; trying platform fallback",
                 path.file_name().unwrap_or_default()
             );
-            platform_still_image_fallback(path, None)
+            platform_still_image_fallback(path, None, file_mmap)
         }
     }
 }
@@ -702,12 +706,14 @@ fn raw_strip_libraw_fallback(
 fn platform_still_image_fallback(
     path: &Path,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
+    file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    let file_bytes = file_mmap.map(|m| m.as_ref());
     #[cfg(target_os = "windows")]
     {
         match crate::wic::load_via_wic(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img, None));
+                return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }
             Err(wic_err) => {
                 log::debug!(
@@ -722,7 +728,7 @@ fn platform_still_image_fallback(
     {
         match crate::macos_image_io::load_via_image_io(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img, None));
+                return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }
             Err(io_err) => {
                 log::debug!(

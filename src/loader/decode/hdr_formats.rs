@@ -58,7 +58,7 @@ pub(crate) fn load_hdr_from_mmap(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -77,7 +77,11 @@ pub(crate) fn try_load_disk_backed_exr_hdr_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
 ) -> Result<Option<ImageData>, String> {
-    let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open_from_mmap(path, mmap) {
+    let file_bytes = mmap.as_ref();
+    let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open_from_mmap(
+        path,
+        Arc::clone(&mmap),
+    ) {
         Ok(source) => source,
         Err(err) if is_exr_disk_backed_probe_fallback_error(&err) => {
             log::warn!(
@@ -88,12 +92,13 @@ pub(crate) fn try_load_disk_backed_exr_hdr_from_mmap(
         }
         Err(err) => return Err(err),
     };
-    route_exr_tiled_source(path, source)
+    route_exr_tiled_source(path, source, Some(file_bytes))
 }
 
 pub(crate) fn exr_tiled_source_to_static_hdr(
     path: &Path,
     source: crate::hdr::exr_tiled::ExrTiledImageSource,
+    file_bytes: Option<&[u8]>,
 ) -> Result<ImageData, String> {
     let tile = source.extract_tile_rgba32f_arc(0, 0, source.width(), source.height())?;
     let hdr = crate::hdr::types::HdrImageBuffer {
@@ -115,19 +120,20 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
         hdr.height,
         path.display()
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, file_bytes);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
 fn route_exr_tiled_source(
     path: &Path,
     source: crate::hdr::exr_tiled::ExrTiledImageSource,
+    file_bytes: Option<&[u8]>,
 ) -> Result<Option<ImageData>, String> {
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        return exr_tiled_source_to_static_hdr(path, source).map(Some);
+        return exr_tiled_source_to_static_hdr(path, source, file_bytes).map(Some);
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
@@ -199,7 +205,7 @@ pub(crate) fn load_deep_exr_from_mmap(
                 hdr.height,
                 hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
             );
-            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
             Ok(make_hdr_image_data(hdr, fallback))
         }
         Err(err) => {
@@ -284,6 +290,6 @@ pub(crate) fn load_detected_exr_from_mmap(
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
-    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, None);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(mmap.as_ref()));
     Ok(make_hdr_image_data(hdr, fallback))
 }

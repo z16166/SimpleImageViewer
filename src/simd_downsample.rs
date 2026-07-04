@@ -663,14 +663,6 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
 // Uses the same endpoint-inclusive coordinate mapping as
 // [`crate::hdr::tiled::preview_sample_coord`] (HDR/SDR preview pipelines).
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-struct NearestDownsampleRowParams<'a> {
-    src: &'a [u8],
-    src_row_base: usize,
-    src_x: &'a [u32],
-    dst_row: &'a mut [u8],
-}
-
 /// Nearest-neighbor RGBA8 downsample (endpoint-inclusive coordinate mapping).
 ///
 /// Returns an empty `Vec<u8>` under the same zero-dimension / buffer-length rules
@@ -704,8 +696,8 @@ pub fn downsample_rgba8_nearest(
     let row_stride = src_w as usize * 4;
 
     let mut src_x = vec![0_u32; dst_w_u];
-    for dx in 0..dst_w_u {
-        src_x[dx] = nearest_sample_coord(dx as u32, dst_w, src_w);
+    for (dx, slot) in src_x.iter_mut().enumerate() {
+        *slot = nearest_sample_coord(dx as u32, dst_w, src_w);
     }
 
     for dst_y in 0..dst_h {
@@ -713,52 +705,7 @@ pub fn downsample_rgba8_nearest(
         let src_row_base = src_y as usize * row_stride;
         let dst_row_start = dst_y as usize * dst_w_u * 4;
         let dst_row = &mut dst[dst_row_start..dst_row_start + dst_w_u * 4];
-
-        let mut used_simd = false;
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 detected via runtime feature check.
-                unsafe {
-                    downsample_rgba8_nearest_row_avx2(NearestDownsampleRowParams {
-                        src,
-                        src_row_base,
-                        src_x: &src_x,
-                        dst_row,
-                    });
-                }
-                used_simd = true;
-            } else if is_x86_feature_detected!("sse4.1") {
-                // SAFETY: SSE4.1 detected via runtime feature check.
-                unsafe {
-                    downsample_rgba8_nearest_row_sse41(NearestDownsampleRowParams {
-                        src,
-                        src_row_base,
-                        src_x: &src_x,
-                        dst_row,
-                    });
-                }
-                used_simd = true;
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is always available on aarch64.
-            unsafe {
-                downsample_rgba8_nearest_row_neon(NearestDownsampleRowParams {
-                    src,
-                    src_row_base,
-                    src_x: &src_x,
-                    dst_row,
-                });
-            }
-            used_simd = true;
-        }
-
-        if !used_simd {
-            downsample_rgba8_nearest_row_scalar(src, src_row_base, &src_x, dst_row);
-        }
+        downsample_rgba8_nearest_row(src, src_row_base, &src_x, dst_row);
     }
 
     dst
@@ -772,109 +719,32 @@ fn nearest_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: 
         as u32
 }
 
-fn downsample_rgba8_nearest_row_scalar(
+/// Scatter-gather nearest row copy. Scalar with loop unrolling — source indices are
+/// arbitrary per pixel, so SIMD gather would only help on wide rows with profiling.
+fn downsample_rgba8_nearest_row(
     src: &[u8],
     src_row_base: usize,
     src_x: &[u32],
     dst_row: &mut [u8],
 ) {
-    for (dx, &sx) in src_x.iter().enumerate() {
-        let si = src_row_base + sx as usize * 4;
+    const UNROLL: usize = 8;
+    let len = src_x.len();
+    let mut dx = 0usize;
+    while dx + UNROLL <= len {
+        for offset in 0..UNROLL {
+            let sx = src_x[dx + offset] as usize;
+            let si = src_row_base + sx * 4;
+            let di = (dx + offset) * 4;
+            dst_row[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+        dx += UNROLL;
+    }
+    while dx < len {
+        let sx = src_x[dx] as usize;
+        let si = src_row_base + sx * 4;
         let di = dx * 4;
         dst_row[di..di + 4].copy_from_slice(&src[si..si + 4]);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn downsample_rgba8_nearest_row_sse41(params: NearestDownsampleRowParams<'_>) {
-    unsafe {
-        let NearestDownsampleRowParams {
-            src,
-            src_row_base,
-            src_x,
-            dst_row,
-        } = params;
-        let mut dx = 0usize;
-        let len = src_x.len();
-        while dx + 4 <= len {
-            for offset in 0..4 {
-                let sx = src_x[dx + offset] as usize;
-                let si = src_row_base + sx * 4;
-                let di = (dx + offset) * 4;
-                core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            }
-            dx += 4;
-        }
-        while dx < len {
-            let sx = src_x[dx] as usize;
-            let si = src_row_base + sx * 4;
-            let di = dx * 4;
-            core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            dx += 1;
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn downsample_rgba8_nearest_row_avx2(params: NearestDownsampleRowParams<'_>) {
-    unsafe {
-        let NearestDownsampleRowParams {
-            src,
-            src_row_base,
-            src_x,
-            dst_row,
-        } = params;
-        let mut dx = 0usize;
-        let len = src_x.len();
-        while dx + 8 <= len {
-            for offset in 0..8 {
-                let sx = src_x[dx + offset] as usize;
-                let si = src_row_base + sx * 4;
-                let di = (dx + offset) * 4;
-                core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            }
-            dx += 8;
-        }
-        while dx < len {
-            let sx = src_x[dx] as usize;
-            let si = src_row_base + sx * 4;
-            let di = dx * 4;
-            core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            dx += 1;
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn downsample_rgba8_nearest_row_neon(params: NearestDownsampleRowParams<'_>) {
-    unsafe {
-        let NearestDownsampleRowParams {
-            src,
-            src_row_base,
-            src_x,
-            dst_row,
-        } = params;
-        let mut dx = 0usize;
-        let len = src_x.len();
-        while dx + 4 <= len {
-            for offset in 0..4 {
-                let sx = src_x[dx + offset] as usize;
-                let si = src_row_base + sx * 4;
-                let di = (dx + offset) * 4;
-                core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            }
-            dx += 4;
-        }
-        while dx < len {
-            let sx = src_x[dx] as usize;
-            let si = src_row_base + sx * 4;
-            let di = dx * 4;
-            core::ptr::copy_nonoverlapping(src.as_ptr().add(si), dst_row.as_mut_ptr().add(di), 4);
-            dx += 1;
-        }
+        dx += 1;
     }
 }
 

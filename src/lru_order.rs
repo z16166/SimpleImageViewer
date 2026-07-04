@@ -112,6 +112,11 @@ where
         self.nodes.insert(to, links);
     }
 
+    /// Rebuild keys in current LRU order via `f`, dropping keys mapped to `None`.
+    ///
+    /// **Complexity:** O(n) time and O(n) auxiliary allocation via [`Self::ordered_keys`].
+    /// Suitable for small caches (e.g. tile caches ≤512 entries); avoid on large hot paths
+    /// without profiling.
     pub(crate) fn remap_ordered<F>(&mut self, mut f: F)
     where
         F: FnMut(K) -> Option<K>,
