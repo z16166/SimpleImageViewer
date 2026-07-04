@@ -58,6 +58,22 @@ pub(crate) fn main_window_canvas_rects(
     )
 }
 
+/// Image paint area within the main window (excludes embedded directory-tree side panel).
+pub(crate) fn main_window_canvas_paint_rect(available: Rect, embedded_panel: Option<Rect>) -> Rect {
+    main_window_canvas_rects(available, 0.0, embedded_panel).0
+}
+
+/// Pan offset update for zoom-about-point; `canvas_rect` must match [`ImageViewerApp::compute_display_rect`].
+pub(crate) fn zoom_pan_offset_for_screen_point(
+    mouse: Pos2,
+    canvas_rect: Rect,
+    ratio: f32,
+    pan_offset: Vec2,
+) -> Vec2 {
+    let d = mouse - canvas_rect.center();
+    d * (1.0 - ratio) + pan_offset * ratio
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PlaneLayout {
     pub image_size: Vec2,
@@ -156,6 +172,26 @@ impl ImageViewerApp {
         PlaneLayout::from_dest(img_size, rotation, dest)
     }
 
+    /// Embedded side-panel bounds used to inset the main image canvas, if any.
+    ///
+    /// Returns `None` when navigation is hidden, detached, or auto-hidden so the canvas spans
+    /// the full main-window content area.
+    pub(crate) fn embedded_nav_panel_rect_for_area(
+        &self,
+        ctx: &Context,
+        area: Rect,
+    ) -> Option<Rect> {
+        if !self.directory_tree_settings_active() || !self.directory_tree_nav_is_embedded() {
+            return None;
+        }
+        embedded_directory_tree_panel_rect(ctx).or_else(|| {
+            let width = self.embedded_nav_panel_width_estimate();
+            (width > 0.0).then(|| {
+                Rect::from_min_max(area.min, Pos2::new(area.min.x + width, area.max.y))
+            })
+        })
+    }
+
     /// Layout rect for the image canvas. Prefer the last painted canvas area so navigation
     /// hold/transition geometry matches the embedded directory-tree side panel.
     pub(crate) fn canvas_rect_for_layout(&self, ctx: &Context) -> Rect {
@@ -163,21 +199,8 @@ impl ImageViewerApp {
             return rect;
         }
         let content = ctx.input(|i| i.content_rect());
-        if self.directory_tree_settings_active() && self.directory_tree_nav_is_embedded() {
-            if let Some(panel) = embedded_directory_tree_panel_rect(ctx) {
-                let min_x = panel.max.x;
-                if min_x < content.max.x {
-                    return Rect::from_min_max(Pos2::new(min_x, content.min.y), content.max);
-                }
-            } else {
-                let panel_width = self.embedded_nav_panel_width_estimate();
-                let min_x = content.min.x + panel_width;
-                if min_x < content.max.x {
-                    return Rect::from_min_max(Pos2::new(min_x, content.min.y), content.max);
-                }
-            }
-        }
-        content
+        let panel = self.embedded_nav_panel_rect_for_area(ctx, content);
+        main_window_canvas_paint_rect(content, panel)
     }
 
     /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.
@@ -193,7 +216,7 @@ impl ImageViewerApp {
             return;
         };
         let img_size = Vec2::new(res.0 as f32, res.1 as f32);
-        let screen_rect = ctx.input(|i| i.content_rect());
+        let screen_rect = self.canvas_rect_for_layout(ctx);
 
         // 2. Calculate current scale
         let old_rotation = self.current_rotation;
@@ -274,6 +297,40 @@ mod tests {
 
         let half_turn_rect = unrotated_draw_rect_for_display(rotated_bounds, 2);
         assert_eq!(half_turn_rect, rotated_bounds);
+    }
+
+    #[test]
+    fn main_window_canvas_paint_rect_without_panel_matches_content() {
+        let content = Rect::from_min_max(Pos2::ZERO, Pos2::new(1000.0, 800.0));
+        assert_eq!(main_window_canvas_paint_rect(content, None), content);
+    }
+
+    #[test]
+    fn main_window_canvas_paint_rect_with_embedded_panel_insets_left_edge() {
+        let content = Rect::from_min_max(Pos2::ZERO, Pos2::new(1000.0, 800.0));
+        let panel = Rect::from_min_max(Pos2::ZERO, Pos2::new(240.0, 800.0));
+        let paint = main_window_canvas_paint_rect(content, Some(panel));
+        assert_eq!(paint.min.x, 240.0);
+        assert_eq!(paint.center().x, 620.0);
+        assert_ne!(paint.center().x, content.center().x);
+    }
+
+    #[test]
+    fn zoom_pan_offset_anchors_to_canvas_center_not_full_window() {
+        let content = Rect::from_min_max(Pos2::ZERO, Pos2::new(1000.0, 800.0));
+        let panel = Rect::from_min_max(Pos2::ZERO, Pos2::new(200.0, 800.0));
+        let canvas = main_window_canvas_paint_rect(content, Some(panel));
+        let mouse = Pos2::new(600.0, 400.0);
+        let ratio = 2.0;
+        let pan = Vec2::ZERO;
+
+        let with_canvas_center = zoom_pan_offset_for_screen_point(mouse, canvas, ratio, pan);
+        let with_window_center = zoom_pan_offset_for_screen_point(mouse, content, ratio, pan);
+        assert_ne!(with_canvas_center, with_window_center);
+        assert_eq!(
+            zoom_pan_offset_for_screen_point(canvas.center(), canvas, ratio, pan),
+            Vec2::ZERO
+        );
     }
 
     #[test]
