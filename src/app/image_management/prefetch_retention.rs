@@ -119,6 +119,27 @@ pub(super) fn prefetched_tiles_steady_state_cap(image_count: usize, max_distance
     prefetch_window_index_cap(image_count, max_distance).saturating_sub(1)
 }
 
+/// Indices inside the circular preload window (includes current).
+pub(super) fn prefetch_window_index_set(
+    current_index: usize,
+    image_count: usize,
+    max_distance: usize,
+) -> std::collections::HashSet<usize> {
+    let mut indices = std::collections::HashSet::new();
+    if image_count == 0 {
+        return indices;
+    }
+    indices.insert(current_index);
+    if max_distance == 0 {
+        return indices;
+    }
+    for delta in 1..=max_distance {
+        indices.insert((current_index + delta) % image_count);
+        indices.insert((current_index + image_count - delta) % image_count);
+    }
+    indices
+}
+
 pub(super) fn prefetch_cache_retention(
     current_index: usize,
     image_count: usize,
@@ -236,5 +257,18 @@ mod tests {
     fn memory_guard_window_cap_is_current_index_only() {
         assert_eq!(prefetch_window_index_cap(100, 0), 1);
         assert_eq!(prefetched_tiles_steady_state_cap(100, 0), 0);
+    }
+
+    #[test]
+    fn prefetch_window_index_set_matches_contains() {
+        let d = PREFETCH_WINDOW_DISTANCE;
+        let set = prefetch_window_index_set(0, 10, d);
+        assert_eq!(set.len(), prefetch_window_index_cap(10, d));
+        for idx in 0..10 {
+            assert_eq!(
+                set.contains(&idx),
+                prefetch_window_contains(0, 10, idx, d)
+            );
+        }
     }
 }
