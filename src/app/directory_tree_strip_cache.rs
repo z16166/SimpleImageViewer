@@ -118,159 +118,13 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 
-/// O(1) LRU order for strip cache indices (touch, remove, pop-oldest).
-///
-/// Separate from [`crate::lru_order::LruOrder`] because strip cache compaction needs
-/// `retain` / `partial_remap` / `permute` without a full `remap_ordered` rebuild.
-#[derive(Default)]
-struct StripLruOrder {
-    nodes: HashMap<usize, LruLinks>,
-    head: Option<usize>,
-    tail: Option<usize>,
-}
-
-#[derive(Clone, Copy)]
-struct LruLinks {
-    prev: Option<usize>,
-    next: Option<usize>,
-}
-
-impl StripLruOrder {
-    fn clear(&mut self) {
-        self.nodes.clear();
-        self.head = None;
-        self.tail = None;
-    }
-
-    fn touch(&mut self, index: usize) {
-        self.unlink(index);
-        self.link_at_tail(index);
-    }
-
-    fn remove(&mut self, index: usize) {
-        self.unlink(index);
-    }
-
-    fn pop_oldest(&mut self) -> Option<usize> {
-        let oldest = self.head?;
-        self.unlink(oldest);
-        Some(oldest)
-    }
-
-    fn contains(&self, index: usize) -> bool {
-        self.nodes.contains_key(&index)
-    }
-
-    fn rename(&mut self, from: usize, to: usize) {
-        if from == to {
-            return;
-        }
-        self.remove(to);
-        let Some(links) = self.nodes.remove(&from) else {
-            return;
-        };
-        if let Some(prev) = links.prev {
-            self.nodes.get_mut(&prev).expect("LRU prev").next = Some(to);
-        } else {
-            self.head = Some(to);
-        }
-        if let Some(next) = links.next {
-            self.nodes.get_mut(&next).expect("LRU next").prev = Some(to);
-        } else {
-            self.tail = Some(to);
-        }
-        self.nodes.insert(to, links);
-    }
-
-    fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if keep(index) {
-                self.link_at_tail(index);
-            }
-        }
-    }
-
-    fn partial_remap(&mut self, old_to_new: &[usize]) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if index < old_to_new.len() {
-                let new_idx = old_to_new[index];
-                if new_idx != usize::MAX {
-                    self.link_at_tail(new_idx);
-                }
-            }
-        }
-    }
-
-    fn permute(&mut self, old_to_new: &[usize]) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if index < old_to_new.len() {
-                self.link_at_tail(old_to_new[index]);
-            }
-        }
-    }
-
-    fn ordered_indices(&self) -> Vec<usize> {
-        let mut out = Vec::with_capacity(self.nodes.len());
-        let mut cur = self.head;
-        while let Some(index) = cur {
-            out.push(index);
-            cur = self.nodes.get(&index).and_then(|links| links.next);
-        }
-        out
-    }
-
-    fn unlink(&mut self, index: usize) {
-        let Some(links) = self.nodes.remove(&index) else {
-            return;
-        };
-        match (links.prev, links.next) {
-            (None, None) => {
-                self.head = None;
-                self.tail = None;
-            }
-            (None, Some(next)) => {
-                self.head = Some(next);
-                self.nodes.get_mut(&next).expect("LRU head next").prev = None;
-            }
-            (Some(prev), None) => {
-                self.tail = Some(prev);
-                self.nodes.get_mut(&prev).expect("LRU tail prev").next = None;
-            }
-            (Some(prev), Some(next)) => {
-                self.nodes.get_mut(&prev).expect("LRU prev").next = Some(next);
-                self.nodes.get_mut(&next).expect("LRU next").prev = Some(prev);
-            }
-        }
-    }
-
-    fn link_at_tail(&mut self, index: usize) {
-        let links = LruLinks {
-            prev: self.tail,
-            next: None,
-        };
-        if let Some(tail) = self.tail {
-            self.nodes.get_mut(&tail).expect("LRU tail").next = Some(index);
-        } else {
-            self.head = Some(index);
-        }
-        self.tail = Some(index);
-        self.nodes.insert(index, links);
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct DirectoryTreeStripCache {
     textures: HashMap<usize, egui::TextureHandle>,
     preview_buffer_tag: HashMap<usize, StripPreviewBufferTag>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
-    lru_order: StripLruOrder,
+    lru_order: crate::lru_order::LruOrder<usize>,
     gpu_revision: u64,
 }
 
@@ -536,10 +390,13 @@ impl DirectoryTreeStripCache {
             strip_max_side,
             strip_max_side_used,
         } = upsert;
-        debug_assert!(
-            strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used),
-            "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
-        );
+        if !strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used) {
+            debug_assert!(
+                false,
+                "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
+            );
+            return;
+        }
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
         let cached_dims = self.preview_dimensions(index);

@@ -367,7 +367,15 @@ impl ImageViewerApp {
         };
 
         let mut distant_indices = std::collections::HashSet::new();
-        let mut all_prefetch_indices = self.prefetch_resource_indices.clone();
+        let prefetch_capacity = self.prefetch_resource_indices.len()
+            + self.prefetched_tiles.len()
+            + self.deferred_sdr_uploads.len()
+            + self.animation_cache.len()
+            + self.hdr_image_cache.len()
+            + self.hdr_tiled_source_cache.len();
+        let mut all_prefetch_indices =
+            std::collections::HashSet::with_capacity(prefetch_capacity);
+        all_prefetch_indices.extend(self.prefetch_resource_indices.iter().copied());
         all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
         all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());
         all_prefetch_indices.extend(self.texture_cache.indices());

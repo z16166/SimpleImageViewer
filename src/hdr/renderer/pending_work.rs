@@ -227,6 +227,10 @@ impl HdrPendingWorkQueues {
         self.gpu_writes.lock().flush(queue, quota)
     }
 
+    pub(crate) fn has_pending_gpu_writes(&self) -> bool {
+        self.gpu_writes.lock().pending_len() > 0
+    }
+
     /// Drain staged GPU writes before binding pre-uploaded planes on the main thread.
     pub(crate) fn flush_staged_writes_for_registration(&self, queue: &wgpu::Queue) -> bool {
         const MAX_ROUNDS: usize = 32;

@@ -47,7 +47,9 @@ impl ImageViewerApp {
         self.start_pending_hdr_tile_upload_jobs(frame);
         self.start_pending_hdr_jpeg_tiled_source_upload_jobs(frame);
         let applied = self.apply_completed_hdr_pending_work(frame);
-        self.flush_hdr_pending_gpu_writes(frame);
+        if self.hdr_pending_work.has_pending_gpu_writes() {
+            self.flush_hdr_pending_gpu_writes(frame);
+        }
         let still_active = self.hdr_pending_work.has_active_work();
         had_active || applied || still_active
     }

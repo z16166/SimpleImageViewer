@@ -2164,6 +2164,32 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
 }
 
 #[test]
+fn sync_images_refreshes_existing_rows_when_appending_during_scan() {
+    let mut state = DirectoryTreeState::default();
+    let path_a = PathBuf::from("/dir/a.jpg");
+    let path_b = PathBuf::from("/dir/b.jpg");
+    state.list.image_rows = vec![DirectoryTreeFileRow::new(
+        path_a.clone(),
+        "a".to_string(),
+        0,
+        None,
+    )];
+    let images = vec![path_a.clone(), path_b.clone()];
+    state.sync_images(
+        &images,
+        &[1024, 2048],
+        &[Some(100), None],
+        0,
+        true,
+        String::from("scanning"),
+    );
+    assert_eq!(state.list.image_rows.len(), 2);
+    assert_eq!(state.list.image_rows[0].size_bytes, 1024);
+    assert_eq!(state.list.image_rows[0].modified_unix, Some(100));
+    assert_eq!(state.list.image_rows[1].size_bytes, 2048);
+}
+
+#[test]
 fn sync_images_realigns_sizes_after_image_order_changes() {
     let mut state = DirectoryTreeState::default();
     let path_small = PathBuf::from("/dir/small.jpg");

@@ -1452,6 +1452,15 @@ impl DirectoryTreeListState {
                     .collect();
                 self.image_list_scroll_offset_y = 0.0;
             } else if images.len() > self.image_rows.len() {
+                for (index, row) in self.image_rows.iter_mut().enumerate() {
+                    if let Some(size) = sizes.get(index) {
+                        row.size_bytes = *size;
+                    }
+                    if let Some(Some(mtime)) = modified.get(index) {
+                        row.modified_unix = Some(*mtime);
+                    }
+                    row.refresh_display_cache();
+                }
                 let start = self.image_rows.len();
                 for (index, path) in images.iter().enumerate().skip(start) {
                     let mtime = modified.get(index).copied().flatten();
