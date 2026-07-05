@@ -19,9 +19,9 @@ use crate::app::ScaleMode;
 use crate::app::directory_tree::DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID;
 use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
-fn clamp_non_empty_canvas_rect(rect: Rect) -> Rect {
+fn clamp_non_empty_canvas_rect(rect: Rect, fallback: Rect) -> Rect {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        Rect::NOTHING
+        fallback
     } else {
         rect
     }
@@ -53,8 +53,8 @@ pub(crate) fn main_window_canvas_rects(
             .max(panel.max.x + resize_grab_radius_side);
     }
     (
-        clamp_non_empty_canvas_rect(paint_rect),
-        clamp_non_empty_canvas_rect(interact_rect),
+        clamp_non_empty_canvas_rect(paint_rect, available),
+        clamp_non_empty_canvas_rect(interact_rect, available),
     )
 }
 
@@ -335,6 +335,13 @@ mod tests {
         assert_eq!(paint.min.x, 240.0);
         assert_eq!(paint.center().x, 620.0);
         assert_ne!(paint.center().x, content.center().x);
+    }
+
+    #[test]
+    fn main_window_canvas_paint_rect_falls_back_when_panel_covers_content() {
+        let content = Rect::from_min_max(Pos2::ZERO, Pos2::new(400.0, 800.0));
+        let panel = Rect::from_min_max(Pos2::ZERO, Pos2::new(500.0, 800.0));
+        assert_eq!(main_window_canvas_paint_rect(content, Some(panel)), content);
     }
 
     #[test]

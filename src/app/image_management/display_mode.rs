@@ -69,7 +69,7 @@ impl ImageViewerApp {
         if anim.image_index != self.current_index || anim.textures.len() <= 1 {
             return None;
         }
-        Some(anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed()))
+        Some(anim.repaint_after())
     }
 
     /// Animated HDR planes use synchronous GPU upload on cache miss (main-branch behavior).

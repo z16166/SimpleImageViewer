@@ -42,7 +42,8 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
     max_side: u32,
 ) -> OptionalStripResult<StripWithLogicalSize> {
     let exif = crate::loader::extract_exif_thumbnail_from_bytes(bytes, path)?;
-    let (logical_w, logical_h) = super::orientation::libavif_probe_logical_size_from_bytes(bytes)?;
+    let layout = super::orientation::libavif_probe_container_layout(bytes)?;
+    let (logical_w, logical_h) = layout.logical_size;
     if !preview_aspect_matches_logical(exif.width, exif.height, logical_w, logical_h) {
         return None;
     }
@@ -50,7 +51,8 @@ pub(crate) fn decode_avif_strip_exif_thumbnail(
     if !preview_aspect_matches_logical(strip.width, strip.height, logical_w, logical_h) {
         return None;
     }
-    let strip = super::orientation::apply_avif_container_orientation_to_decoded(bytes, path, strip);
+    let strip =
+        super::orientation::apply_avif_orientation_to_decoded(strip, layout.exif_orientation);
     Some(Ok((strip, (logical_w, logical_h))))
 }
 
@@ -166,18 +168,27 @@ pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
             hdr.width, hdr.height
         )));
     }
-    let logical = super::orientation::libavif_probe_logical_size_from_bytes(bytes)
+    let layout = super::orientation::libavif_probe_container_layout(bytes);
+    let logical = layout
+        .map(|layout| layout.logical_size)
         .unwrap_or((hdr.width, hdr.height));
     let (width, height, pixels) =
         match crate::loader::hdr_directory_tree_strip_sdr_at_max_side(&hdr, max_side) {
             Ok(ok) => ok,
             Err(err) => return Some(Err(format!("{path:?}: tone-map HDR strip: {err}"))),
         };
-    let preview = super::orientation::apply_avif_container_orientation_to_decoded(
-        bytes,
-        path,
-        DecodedImage::new(width, height, pixels),
-    );
+    let preview = if let Some(layout) = layout {
+        super::orientation::apply_avif_orientation_to_decoded(
+            DecodedImage::new(width, height, pixels),
+            layout.exif_orientation,
+        )
+    } else {
+        super::orientation::apply_avif_container_orientation_to_decoded(
+            bytes,
+            path,
+            DecodedImage::new(width, height, pixels),
+        )
+    };
     if !preview_aspect_matches_logical(preview.width, preview.height, logical.0, logical.1) {
         return Some(Err(format!(
             "{path:?}: precomposed AVIF strip aspect mismatch: {}x{} vs {}x{}",
@@ -220,7 +231,7 @@ pub(crate) fn try_decode_avif_strip_primary_scaled(
         None | Some(super::gain_map_probe::AvifGainMapStripProbe::NoGainMap) => {}
         Some(_) => return None,
     }
-    let logical = super::orientation::libavif_probe_logical_size_from_bytes(bytes);
+    let layout = super::orientation::libavif_probe_container_layout(bytes);
     let image = match read_avif_decoder_image(bytes) {
         Ok(image) => image,
         Err(err) => {
@@ -229,7 +240,7 @@ pub(crate) fn try_decode_avif_strip_primary_scaled(
             )));
         }
     };
-    decode_avif_strip_primary_scaled_from_image(image, bytes, path, max_side, logical)
+    decode_avif_strip_primary_scaled_from_image(image, bytes, path, max_side, layout)
 }
 
 #[cfg(feature = "avif-native")]
@@ -238,7 +249,7 @@ fn decode_avif_strip_primary_scaled_from_image(
     bytes: &[u8],
     path: &Path,
     max_side: u32,
-    logical: Option<(u32, u32)>,
+    layout: Option<super::orientation::AvifContainerLayout>,
 ) -> OptionalStripResult<StripWithLogicalSize> {
     let image_ptr = image.as_ptr();
     let image_ref = unsafe { &*image_ptr };
@@ -252,7 +263,9 @@ fn decode_avif_strip_primary_scaled_from_image(
             "{path:?}: invalid AVIF strip dimensions {stored_w}x{stored_h} max_side={max_side}"
         )));
     }
-    let logical = logical.unwrap_or((stored_w, stored_h));
+    let logical = layout
+        .map(|layout| layout.logical_size)
+        .unwrap_or((stored_w, stored_h));
     let (strip_w, strip_h) =
         crate::hdr::tiled::preview_dimensions(stored_w, stored_h, max_side, max_side);
     if strip_w != stored_w || strip_h != stored_h {
@@ -274,11 +287,18 @@ fn decode_avif_strip_primary_scaled_from_image(
             Ok(ok) => ok,
             Err(err) => return Some(Err(format!("{path:?}: AVIF strip SDR tone-map: {err}"))),
         };
-    let preview = super::orientation::apply_avif_container_orientation_to_decoded(
-        bytes,
-        path,
-        DecodedImage::new(width, height, pixels),
-    );
+    let preview = if let Some(layout) = layout {
+        super::orientation::apply_avif_orientation_to_decoded(
+            DecodedImage::new(width, height, pixels),
+            layout.exif_orientation,
+        )
+    } else {
+        super::orientation::apply_avif_container_orientation_to_decoded(
+            bytes,
+            path,
+            DecodedImage::new(width, height, pixels),
+        )
+    };
     if !preview_aspect_matches_logical(preview.width, preview.height, logical.0, logical.1) {
         return Some(Err(format!(
             "{path:?}: AVIF primary strip aspect mismatch: {}x{} vs {}x{}",

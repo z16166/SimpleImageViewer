@@ -88,17 +88,30 @@ pub(crate) fn hdr_tone_map_plane_available_in_cache(hdr: &HdrImageBuffer) -> boo
     })
 }
 
+/// ISO deferred planes from [`crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only`]
+/// carry no gain-map texels; full HDR decode + compose uses non-zero gain dimensions.
+fn iso_deferred_is_embedded_sdr_master_only(iso: &crate::hdr::types::IsoGainMapGpuSource) -> bool {
+    iso.gain_width == 0 && iso.gain_height == 0 && iso.gain_rgba.is_empty()
+}
+
+fn gain_map_supports_embedded_sdr_master_display(
+    gain_map: &crate::hdr::types::HdrGainMapMetadata,
+) -> bool {
+    if gain_map.is_heif_embedded_sdr_primary_only() {
+        return true;
+    }
+    gain_map
+        .iso_deferred
+        .as_ref()
+        .is_some_and(iso_deferred_is_embedded_sdr_master_only)
+}
+
 /// Gain-map metadata supports embedded-SDR-master presentation (independent of float plane fill).
 pub(crate) fn hdr_supports_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool {
-    hdr.metadata.gain_map.as_ref().is_some_and(|gain_map| {
-        if gain_map.is_heif_embedded_sdr_primary_only() {
-            return true;
-        }
-        gain_map
-            .iso_deferred
-            .as_ref()
-            .is_some_and(iso_deferred_is_embedded_sdr_master_only)
-    })
+    hdr.metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(gain_map_supports_embedded_sdr_master_display)
 }
 
 /// Whether a preload-window index should react to [`crate::settings::HdrGainMapSdrDisplayMode`].
@@ -119,26 +132,15 @@ pub(crate) fn index_hdr_gain_map_sdr_display_mode_affects(
     heif_family_path(path) && has_sdr_fallback_cache
 }
 
-/// ISO deferred planes from [`crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only`]
-/// carry no gain-map texels; full HDR decode + compose uses non-zero gain dimensions.
-fn iso_deferred_is_embedded_sdr_master_only(iso: &crate::hdr::types::IsoGainMapGpuSource) -> bool {
-    iso.gain_width == 0 && iso.gain_height == 0 && iso.gain_rgba.is_empty()
-}
-
 /// True when the HDR buffer represents gain-map HDR shown via embedded SDR master (no float plane).
 pub(crate) fn hdr_has_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool {
     if !hdr.rgba_f32.is_empty() {
         return false;
     }
-    hdr.metadata.gain_map.as_ref().is_some_and(|gain_map| {
-        if gain_map.is_heif_embedded_sdr_primary_only() {
-            return true;
-        }
-        gain_map
-            .iso_deferred
-            .as_ref()
-            .is_some_and(iso_deferred_is_embedded_sdr_master_only)
-    })
+    hdr.metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(gain_map_supports_embedded_sdr_master_display)
 }
 
 /// True when ISO gain-map HDR should show the embedded SDR master on an SDR output path

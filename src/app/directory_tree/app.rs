@@ -223,6 +223,16 @@ impl ImageViewerApp {
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
     }
 
+    fn directory_tree_list_row_to_file_index(
+        &self,
+        list: &DirectoryTreeListState,
+        row_index: usize,
+    ) -> Option<usize> {
+        list.image_rows.get(row_index).and_then(|row| {
+            self.image_files.iter().position(|path| path == &row.path)
+        })
+    }
+
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
     pub(crate) fn publish_directory_tree_view_from_state(&mut self, force_list: bool) {
         let mut tree = self.directory_tree.tree.lock();
@@ -842,17 +852,13 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    let file_index = {
-                        let list = self.directory_tree.list.lock();
-                        list.image_rows.get(row_index).and_then(|row| {
-                            self.image_files.iter().position(|path| path == &row.path)
-                        })
-                    };
-                    let Some(file_index) = file_index else {
+                    let mut list = self.directory_tree.list.lock();
+                    let Some(file_index) =
+                        self.directory_tree_list_row_to_file_index(&list, row_index)
+                    else {
                         continue;
                     };
                     self.pending_directory_tree_select_index = Some(file_index);
-                    let mut list = self.directory_tree.list.lock();
                     list.current_index = row_index;
                     list.scroll_image_list_to_current = true;
                     list.mark_snapshot_dirty();
@@ -868,23 +874,18 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    let file_index = {
-                        let list = self.directory_tree.list.lock();
-                        list.image_rows.get(row_index).and_then(|row| {
-                            self.image_files.iter().position(|path| path == &row.path)
-                        })
-                    };
-                    let Some(file_index) = file_index else {
+                    let mut list = self.directory_tree.list.lock();
+                    let Some(file_index) =
+                        self.directory_tree_list_row_to_file_index(&list, row_index)
+                    else {
                         continue;
                     };
                     if file_index != self.current_index {
                         self.pending_directory_tree_select_index = Some(file_index);
                     }
-                    {
-                        let mut list = self.directory_tree.list.lock();
-                        list.current_index = row_index;
-                        list.scroll_image_list_to_current = true;
-                    }
+                    list.current_index = row_index;
+                    list.scroll_image_list_to_current = true;
+                    drop(list);
                     // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
                     // Settings can restore the panel without rewriting yaml.
                     self.auto_hide_directory_tree_nav_for_single_image_open(ctx);

@@ -1376,7 +1376,7 @@ impl DirectoryTreeTreeState {
 }
 
 fn image_rows_match_image_order(rows: &[DirectoryTreeFileRow], images: &[PathBuf]) -> bool {
-    rows.len() == images.len() && rows.iter().zip(images).all(|(row, path)| row.path == *path)
+    rows.len() <= images.len() && rows.iter().zip(images).all(|(row, path)| row.path == *path)
 }
 
 impl DirectoryTreeListState {
@@ -1394,48 +1394,87 @@ impl DirectoryTreeListState {
         let image_set: std::collections::HashSet<&PathBuf> = images.iter().collect();
         self.image_rows.retain(|row| image_set.contains(&row.path));
 
-        let order_matches = image_rows_match_image_order(&self.image_rows, images);
-        if !order_matches {
-            self.image_rows = images
+        if self.image_list_sort_active {
+            let image_index: std::collections::HashMap<&PathBuf, usize> = images
                 .iter()
                 .enumerate()
-                .map(|(index, path)| {
-                    let mtime = modified.get(index).copied().flatten();
-                    if mtime.is_none() && !scanning {
-                        paths_needing_meta.push(path.clone());
-                    }
-                    DirectoryTreeFileRow::new(
-                        path.clone(),
-                        directory_display_name(path),
-                        sizes.get(index).copied().unwrap_or(0),
-                        mtime,
-                    )
-                })
+                .map(|(index, path)| (path, index))
                 .collect();
-            self.image_list_scroll_offset_y = 0.0;
-        } else if images.len() > self.image_rows.len() {
-            let start = self.image_rows.len();
-            for (index, path) in images.iter().enumerate().skip(start) {
+            for row in &mut self.image_rows {
+                let Some(&index) = image_index.get(&row.path) else {
+                    continue;
+                };
+                if let Some(size) = sizes.get(index) {
+                    row.size_bytes = *size;
+                }
+                if let Some(mtime) = modified.get(index) {
+                    row.modified_unix = *mtime;
+                }
+                row.refresh_display_cache();
+            }
+            let existing_paths: std::collections::HashSet<&PathBuf> =
+                self.image_rows.iter().map(|row| &row.path).collect();
+            let mut new_rows = Vec::new();
+            for (index, path) in images.iter().enumerate() {
+                if existing_paths.contains(path) {
+                    continue;
+                }
                 let mtime = modified.get(index).copied().flatten();
                 if mtime.is_none() && !scanning {
                     paths_needing_meta.push(path.clone());
                 }
-                self.image_rows.push(DirectoryTreeFileRow::new(
+                new_rows.push(DirectoryTreeFileRow::new(
                     path.clone(),
                     directory_display_name(path),
                     sizes.get(index).copied().unwrap_or(0),
                     mtime,
                 ));
             }
+            self.image_rows.extend(new_rows);
         } else {
-            for (index, row) in self.image_rows.iter_mut().enumerate() {
-                if let Some(size) = sizes.get(index) {
-                    row.size_bytes = *size;
+            let order_matches = image_rows_match_image_order(&self.image_rows, images);
+            if !order_matches {
+                self.image_rows = images
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| {
+                        let mtime = modified.get(index).copied().flatten();
+                        if mtime.is_none() && !scanning {
+                            paths_needing_meta.push(path.clone());
+                        }
+                        DirectoryTreeFileRow::new(
+                            path.clone(),
+                            directory_display_name(path),
+                            sizes.get(index).copied().unwrap_or(0),
+                            mtime,
+                        )
+                    })
+                    .collect();
+                self.image_list_scroll_offset_y = 0.0;
+            } else if images.len() > self.image_rows.len() {
+                let start = self.image_rows.len();
+                for (index, path) in images.iter().enumerate().skip(start) {
+                    let mtime = modified.get(index).copied().flatten();
+                    if mtime.is_none() && !scanning {
+                        paths_needing_meta.push(path.clone());
+                    }
+                    self.image_rows.push(DirectoryTreeFileRow::new(
+                        path.clone(),
+                        directory_display_name(path),
+                        sizes.get(index).copied().unwrap_or(0),
+                        mtime,
+                    ));
                 }
-                if let Some(Some(mtime)) = modified.get(index) {
-                    row.modified_unix = Some(*mtime);
+            } else {
+                for (index, row) in self.image_rows.iter_mut().enumerate() {
+                    if let Some(size) = sizes.get(index) {
+                        row.size_bytes = *size;
+                    }
+                    if let Some(Some(mtime)) = modified.get(index) {
+                        row.modified_unix = Some(*mtime);
+                    }
+                    row.refresh_display_cache();
                 }
-                row.refresh_display_cache();
             }
         }
 

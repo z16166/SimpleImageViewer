@@ -2151,10 +2151,10 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
         String::new(),
     );
     assert_eq!(state.list.image_rows.len(), 3);
-    assert_eq!(state.list.image_rows[0].path, path_b);
-    assert_eq!(state.list.image_rows[0].size_bytes, 2);
-    assert_eq!(state.list.image_rows[1].path, path_a);
-    assert_eq!(state.list.image_rows[1].size_bytes, 1);
+    assert_eq!(state.list.image_rows[0].path, path_a);
+    assert_eq!(state.list.image_rows[0].size_bytes, 1);
+    assert_eq!(state.list.image_rows[1].path, path_b);
+    assert_eq!(state.list.image_rows[1].size_bytes, 2);
     assert_eq!(state.list.image_rows[2].path, path_c);
     assert_eq!(state.list.image_rows[2].size_bytes, 3);
     assert!(state.list.image_rows.iter().any(|row| row.path == path_c));

@@ -108,8 +108,15 @@ fn avif_display_dimensions(image: &libavif_sys::avifImage) -> (u32, u32) {
     (width, height)
 }
 
+/// Logical display size and container orientation from a single libavif container parse.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AvifContainerLayout {
+    pub logical_size: (u32, u32),
+    pub exif_orientation: u16,
+}
+
 #[cfg(feature = "avif-native")]
-pub(crate) fn libavif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn libavif_probe_container_layout(bytes: &[u8]) -> Option<AvifContainerLayout> {
     let decoder = libavif_parse_container_image(bytes)?;
     let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
     if img.is_null() {
@@ -117,19 +124,27 @@ pub(crate) fn libavif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32
     }
     let image = unsafe { &*img };
     let (width, height) = avif_display_dimensions(image);
-    (width > 0 && height > 0).then_some((width, height))
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let o = avif_transforms_to_exif_orientation(image);
+    let exif_orientation = if (1..=8).contains(&o) { o } else { 1 };
+    Some(AvifContainerLayout {
+        logical_size: (width, height),
+        exif_orientation,
+    })
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_logical_size_from_bytes(bytes: &[u8]) -> Option<(u32, u32)> {
+    libavif_probe_container_layout(bytes).map(|layout| layout.logical_size)
 }
 
 #[cfg(feature = "avif-native")]
 pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
-    let decoder = libavif_parse_container_image(bytes)?;
-    let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
-    if img.is_null() {
-        return None;
-    }
-    let image = unsafe { &*img };
-    let o = avif_transforms_to_exif_orientation(image);
-    ((1..=8).contains(&o)).then_some(o)
+    libavif_probe_container_layout(bytes)
+        .map(|layout| layout.exif_orientation)
+        .filter(|o| (1..=8).contains(o))
 }
 
 #[cfg(feature = "avif-native")]
@@ -137,6 +152,23 @@ pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<
 pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -> Option<u16> {
     let mmap = crate::mmap_util::map_file(path).ok()?;
     libavif_probe_exif_orientation_from_bytes(&mmap[..])
+}
+
+/// Apply a known EXIF/container orientation to decoded strip pixels.
+#[cfg(feature = "avif-native")]
+pub(crate) fn apply_avif_orientation_to_decoded(
+    mut decoded: crate::loader::DecodedImage,
+    orientation: u16,
+) -> crate::loader::DecodedImage {
+    if orientation <= 1 {
+        return decoded;
+    }
+    let w = decoded.width;
+    let h = decoded.height;
+    let pixels = decoded.take_rgba_owned();
+    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+    decoded.set_rgba_buffer(ow, oh, opx);
+    decoded
 }
 
 /// Apply container `irot` / `imir` (mapped to EXIF 1-8) to directory-tree strip pixels.
@@ -147,16 +179,12 @@ pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -
 pub(crate) fn apply_avif_container_orientation_to_decoded(
     bytes: &[u8],
     path: &std::path::Path,
-    mut decoded: crate::loader::DecodedImage,
+    decoded: crate::loader::DecodedImage,
 ) -> crate::loader::DecodedImage {
-    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path));
-    if orientation <= 1 {
-        return decoded;
-    }
-    let w = decoded.width;
-    let h = decoded.height;
-    let pixels = decoded.take_rgba_owned();
-    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
-    decoded.set_rgba_buffer(ow, oh, opx);
-    decoded
+    let orientation = if let Some(layout) = libavif_probe_container_layout(bytes) {
+        layout.exif_orientation
+    } else {
+        crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path))
+    };
+    apply_avif_orientation_to_decoded(decoded, orientation)
 }

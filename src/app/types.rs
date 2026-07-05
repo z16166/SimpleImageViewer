@@ -133,6 +133,13 @@ pub(crate) struct AnimationPlayback {
     /// Per-frame raw CPU pixel buffers (zero-copy clone of Arc handles).
     pub(crate) cpu_frames: Option<Vec<std::sync::Arc<Vec<u8>>>>,
 }
+
+impl AnimationPlayback {
+    pub(crate) fn repaint_after(&self) -> Duration {
+        self.delays[self.current_frame].saturating_sub(self.frame_start.elapsed())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
     Low,

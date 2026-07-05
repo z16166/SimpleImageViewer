@@ -291,9 +291,9 @@ fn avif_unpack_rgba_bytes_to_u16_lanes_8_and_16_bit() {
     let u16_8 = avif_unpack_rgba_bytes_to_u16_lanes(&bytes_8, 8, 2).expect("8-bit unpack");
     assert_eq!(u16_8, [10, 20, 30, 40, 50, 60, 70, 80]);
 
-    let bytes_16 = [0x34, 0x12, 0x78, 0x56];
+    let bytes_16 = [0x34, 0x12, 0x78, 0x56, 0xBC, 0x9A, 0xDE, 0xF0];
     let u16_16 = avif_unpack_rgba_bytes_to_u16_lanes(&bytes_16, 16, 1).expect("16-bit unpack");
-    assert_eq!(u16_16, [0x1234, 0x5678]);
+    assert_eq!(u16_16, [0x1234, 0x5678, 0x9ABC, 0xF0DE]);
 }
 
 /// Maximum channel value for libavif RGB packed in `u16` lanes (`depth` in {8,10,12,16}).

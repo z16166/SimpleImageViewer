@@ -136,9 +136,24 @@ impl ImageViewerApp {
         }
 
         let current = self.current_index;
-        if sensitive.contains(&current)
-            && self.try_refresh_hdr_gain_map_sdr_display_from_cache(current)
-        {
+        let cache_fast_path = sensitive
+            .iter()
+            .all(|&idx| self.hdr_gain_map_sdr_display_refreshable_from_cache(idx));
+
+        if cache_fast_path {
+            log::info!(
+                "[HDR] hdr_gain_map_sdr_display -> {}; refreshed {} gain-map cache(s) in preload window (idx={} current)",
+                self.settings.hdr_gain_map_sdr_display.label(),
+                sensitive.len(),
+                current
+            );
+            for &idx in &sensitive {
+                self.apply_hdr_gain_map_sdr_display_from_cache(idx);
+                self.texture_cache.remove(idx);
+                self.prefetched_tiles.remove(&idx);
+                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            }
+            self.schedule_preloads(true);
             self.wake_root_for_logic();
             return;
         }
@@ -201,14 +216,14 @@ impl ImageViewerApp {
     }
 
     /// Switch SDR gain-map presentation using cached planes when both routes are already resident.
-    fn try_refresh_hdr_gain_map_sdr_display_from_cache(&mut self, idx: usize) -> bool {
-        let Some(hdr) = self.hdr_image_cache.get(&idx).cloned() else {
+    fn hdr_gain_map_sdr_display_refreshable_from_cache(&self, idx: usize) -> bool {
+        let Some(hdr) = self.hdr_image_cache.get(&idx) else {
             return false;
         };
         let Some(path) = self.image_files.get(idx) else {
             return false;
         };
-        if !crate::loader::hdr_gain_map_sdr_display_mode_affects_image(&hdr, path) {
+        if !crate::loader::hdr_gain_map_sdr_display_mode_affects_image(hdr, path) {
             return false;
         }
         let output_mode = crate::hdr::monitor::effective_render_output_mode(
@@ -222,25 +237,22 @@ impl ImageViewerApp {
         let want_embedded = self.settings.hdr_gain_map_sdr_display
             == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
         let has_sdr_fallback = self.index_has_sdr_fallback_resident(idx);
-        let has_tone_map_plane = crate::loader::hdr_tone_map_plane_available_in_cache(&hdr);
+        let has_tone_map_plane = crate::loader::hdr_tone_map_plane_available_in_cache(hdr);
         if want_embedded {
-            if !crate::loader::hdr_supports_embedded_sdr_master_display(&hdr) || !has_sdr_fallback {
-                return false;
-            }
-        } else if !has_tone_map_plane {
-            return false;
+            crate::loader::hdr_supports_embedded_sdr_master_display(hdr) && has_sdr_fallback
+        } else {
+            has_tone_map_plane
         }
+    }
 
-        log::info!(
-            "[HDR] hdr_gain_map_sdr_display -> {}; refreshed cached presentation for idx={}",
-            self.settings.hdr_gain_map_sdr_display.label(),
-            idx
-        );
+    fn apply_hdr_gain_map_sdr_display_from_cache(&mut self, idx: usize) {
+        let Some(hdr) = self.hdr_image_cache.get(&idx).cloned() else {
+            return;
+        };
         if idx == self.current_index {
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, hdr));
             self.refresh_hdr_view_status();
         }
-        true
     }
 
     pub(crate) fn reload_current(&mut self) {
