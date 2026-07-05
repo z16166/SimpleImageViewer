@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Home and End in the file list**: Keyboard Home and End now jump to the first and last image in the navigation list.
+- **File list selection after canvas wheel**: Scrolling through images with the mouse wheel on the canvas keeps the highlighted row in the file list in sync.
+- **HEIC gain-map SDR display toggle**: Switching embedded-SDR vs tone-mapped presentation for HEIC gain-map photos now refreshes correctly from cached planes.
+- **Reload after folder scan resort**: When a background scan re-sorts the file list, the currently open image reloads reliably instead of staying on stale data.
+- **File list size drift**: The navigation list and internal image index stay aligned when files are added or removed during scanning.
+- **PSD navigation strip previews**: Large PSD files no longer flash a blank placeholder in the file list while decoding finishes in the background.
+- **PSD previews refresh when ready**: Strip thumbnails update once background PSD decoding completes instead of staying blank.
+- **PSD strip decode reliability**: Restored dependable strip previews for PSD files after an async-decode regression.
+- **Page transitions stay on canvas**: Cross-fade and slide transitions no longer spill outside the main viewing area.
+- **Zoom and rotate anchor**: Mouse-wheel zoom and rotation stay centered on the main canvas instead of drifting with window chrome.
+- **Animated AVIF timing**: Frame pacing for animated AVIF files is correct again after HDR GPU uploads complete.
+- **AVIF strip thumbnail orientation**: Navigation strip thumbnails respect AVIF container orientation metadata.
+- **AVIF color on 8-bit sources**: 8-bit AVIF images display with smoother gradients instead of banding from an incorrect color conversion path.
+
 ## [2.8.5] - 2026-07-04
 
 ### Improved

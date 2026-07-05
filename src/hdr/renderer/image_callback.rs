@@ -34,6 +34,70 @@ pub(crate) struct HdrImagePlaneCallback {
     pub(super) sync_plane_upload_on_cache_miss: bool,
 }
 
+impl HdrImagePlaneCallback {
+    /// Insert a GPU binding on cache miss. Returns `false` when `prepare` should bail out early.
+    fn ensure_image_binding_on_cache_miss(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        resources: &mut HdrCallbackResources,
+        image_key: HdrImageKey,
+    ) -> bool {
+        if self.sync_plane_upload_on_cache_miss {
+            log::debug!("[HDR] Cache miss, performing synchronous upload for animated frame");
+            match upload_image_plane_with_sink(
+                device,
+                GpuUploadSink::Immediate(queue),
+                &self.image,
+            ) {
+                Ok(uploaded) => {
+                    let binding = HdrImageBinding::from_uploaded(
+                        device,
+                        uploaded,
+                        &self.image,
+                        self.tone_map,
+                        self.target_format,
+                        self.output_mode,
+                        0,
+                    );
+                    resources.image_bindings.insert(image_key, binding);
+                    true
+                }
+                Err(err) => {
+                    log::warn!("[HDR] Skipping HDR image plane upload: {err}");
+                    if self.image.metadata.raw_gpu_source.is_some() {
+                        resources.failed_raw_demosaic.insert(image_key);
+                        if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                            notify.lock().push(RawGpuDemosaicBakedNotice {
+                                key: image_key,
+                                demosaic_ms: u32::MAX,
+                            });
+                        }
+                    }
+                    false
+                }
+            }
+        } else {
+            let Some(pending_work) = self.pending_work.as_ref() else {
+                log::debug!(
+                    "[HDR] Cache miss without pending work queues; deferring plane upload"
+                );
+                return false;
+            };
+            log::debug!("[HDR] Cache miss, queued async plane upload");
+            let _ = pending_work.try_queue_plane_upload(HdrPendingPlaneUploadRequest {
+                key: image_key,
+                image: Arc::clone(&self.image),
+                target_format: self.target_format,
+                tone_map: self.tone_map,
+                output_mode: self.output_mode,
+                keep_resident: self.keep_resident,
+            });
+            false
+        }
+    }
+}
+
 impl CallbackTrait for HdrImagePlaneCallback {
     fn prepare(
         &self,
@@ -91,58 +155,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
             None
         };
 
-        if binding_missing {
-            if self.sync_plane_upload_on_cache_miss {
-                log::debug!("[HDR] Cache miss, performing synchronous upload for animated frame");
-                match upload_image_plane_with_sink(
-                    device,
-                    GpuUploadSink::Immediate(queue),
-                    &self.image,
-                ) {
-                    Ok(uploaded) => {
-                        let binding = HdrImageBinding::from_uploaded(
-                            device,
-                            uploaded,
-                            &self.image,
-                            self.tone_map,
-                            self.target_format,
-                            self.output_mode,
-                            0,
-                        );
-                        resources.image_bindings.insert(image_key, binding);
-                    }
-                    Err(err) => {
-                        log::warn!("[HDR] Skipping HDR image plane upload: {err}");
-                        if raw_source.is_some() {
-                            resources.failed_raw_demosaic.insert(image_key);
-                            if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
-                                notify.lock().push(RawGpuDemosaicBakedNotice {
-                                    key: image_key,
-                                    demosaic_ms: u32::MAX,
-                                });
-                            }
-                        }
-                        return Vec::new();
-                    }
-                }
-            } else {
-                let Some(pending_work) = self.pending_work.as_ref() else {
-                    log::debug!(
-                        "[HDR] Cache miss without pending work queues; deferring plane upload"
-                    );
-                    return Vec::new();
-                };
-                log::debug!("[HDR] Cache miss, queued async plane upload");
-                let _ = pending_work.try_queue_plane_upload(HdrPendingPlaneUploadRequest {
-                    key: image_key,
-                    image: Arc::clone(&self.image),
-                    target_format: self.target_format,
-                    tone_map: self.tone_map,
-                    output_mode: self.output_mode,
-                    keep_resident: self.keep_resident,
-                });
-                return Vec::new();
-            }
+        if binding_missing && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key) {
+            return Vec::new();
         }
 
         let Some(binding) = resources.image_bindings.get_mut(&image_key) else {

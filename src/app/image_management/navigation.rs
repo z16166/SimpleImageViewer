@@ -182,18 +182,21 @@ impl ImageViewerApp {
         self.wake_root_for_logic();
     }
 
+    fn index_has_sdr_fallback_resident(&self, idx: usize) -> bool {
+        self.hdr_sdr_fallback_indices.contains(&idx)
+            || self.texture_cache.contains(idx)
+            || self.deferred_sdr_uploads.contains_key(&idx)
+    }
+
     fn index_sensitive_to_hdr_gain_map_sdr_display(&self, idx: usize) -> bool {
         let Some(path) = self.image_files.get(idx) else {
             return false;
         };
-        let has_sdr_fallback_cache = self.hdr_sdr_fallback_indices.contains(&idx)
-            || self.texture_cache.contains(idx)
-            || self.deferred_sdr_uploads.contains_key(&idx);
         crate::loader::index_hdr_gain_map_sdr_display_mode_affects(
             path,
             self.hdr_image_cache.get(&idx).map(|entry| entry.as_ref()),
             self.ultra_hdr_capacity_sensitive_indices.contains(&idx),
-            has_sdr_fallback_cache,
+            self.index_has_sdr_fallback_resident(idx),
         )
     }
 
@@ -218,9 +221,7 @@ impl ImageViewerApp {
 
         let want_embedded = self.settings.hdr_gain_map_sdr_display
             == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
-        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&idx)
-            || self.texture_cache.contains(idx)
-            || self.deferred_sdr_uploads.contains_key(&idx);
+        let has_sdr_fallback = self.index_has_sdr_fallback_resident(idx);
         let has_tone_map_plane = crate::loader::hdr_tone_map_plane_available_in_cache(&hdr);
         if want_embedded {
             if !crate::loader::hdr_supports_embedded_sdr_master_display(&hdr) || !has_sdr_fallback {

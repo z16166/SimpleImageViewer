@@ -609,8 +609,8 @@ impl ImageViewerApp {
                 image_index: idx,
                 hdr_frames: None,
                 frames: frames.to_vec(),
-                textures: Vec::new(),
-                delays: Vec::new(),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -696,8 +696,8 @@ impl ImageViewerApp {
                 image_index: idx,
                 hdr_frames: Some(hdr_frames),
                 frames: sdr_frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );

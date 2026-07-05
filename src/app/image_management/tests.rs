@@ -118,9 +118,9 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         1,
         AnimationPlayback {
             image_index: 1,
-            textures: Vec::new(),
+            textures: std::sync::Arc::new(Vec::new()),
             hdr_frames: Some(vec![Arc::clone(&anim_hdr)]),
-            delays: Vec::new(),
+            delays: std::sync::Arc::new(Vec::new()),
             current_frame: 0,
             frame_start: Instant::now(),
             cpu_frames: None,
@@ -136,8 +136,8 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         image_index: 2,
         hdr_frames: Some(vec![Arc::clone(&pending_hdr)]),
         frames: Vec::new(),
-        textures: Vec::new(),
-        delays: Vec::new(),
+        textures: std::sync::Arc::new(Vec::new()),
+        delays: std::sync::Arc::new(Vec::new()),
         next_frame: 0,
     };
     let mut pending_map = HashMap::new();

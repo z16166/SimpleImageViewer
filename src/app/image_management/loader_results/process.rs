@@ -66,8 +66,8 @@ impl ImageViewerApp {
                     );
                     let name = format!("anim_{}_{}", pending.image_index, i);
                     let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    pending.textures.push(handle);
-                    pending.delays.push(frame.delay);
+                    std::sync::Arc::make_mut(&mut pending.textures).push(handle);
+                    std::sync::Arc::make_mut(&mut pending.delays).push(frame.delay);
                     pending.next_frame += 1;
                     uploaded += 1;
                 }
@@ -115,9 +115,9 @@ impl ImageViewerApp {
                         self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
                             image_index: playback.image_index,
-                            textures: playback.textures.clone(),
+                            textures: std::sync::Arc::clone(&playback.textures),
                             hdr_frames: playback.hdr_frames.clone(),
-                            delays: playback.delays.clone(),
+                            delays: std::sync::Arc::clone(&playback.delays),
                             current_frame: playback.current_frame,
                             frame_start: playback.frame_start,
                             cpu_frames: playback.cpu_frames.clone(),

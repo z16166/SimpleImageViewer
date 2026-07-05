@@ -123,6 +123,11 @@ fn try_directory_tree_exif_thumb(
     Some((decoded, logical))
 }
 
+/// Builds a navigation-strip thumbnail decode for `path`.
+///
+/// May block up to [`PSD_V1_ASYNC_DECODE_TIMEOUT`] while PSD v1 pixels finish decoding.
+/// **Must run on a strip worker thread** (`DIRECTORY_TREE_STRIP_POOL` in
+/// `strip_previews/schedule.rs`); never call from the UI `logic()` / `ui()` path.
 pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     path: &Path,
     max_side: u32,
@@ -799,6 +804,8 @@ fn sdr_preview_for_hdr_fallback(
     crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side)
 }
 
+/// Strip preview for a tiled source. Blocking wait runs on the caller worker thread only
+/// (see [`generate_directory_tree_thumb_decode_from_path`]).
 fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,

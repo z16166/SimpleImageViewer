@@ -128,9 +128,9 @@ impl ImageViewerApp {
                 }
                 self.animation = Some(crate::app::AnimationPlayback {
                     image_index: cached.image_index,
-                    textures: cached.textures.clone(),
+                    textures: std::sync::Arc::clone(&cached.textures),
                     hdr_frames: cached.hdr_frames.clone(),
-                    delays: cached.delays.clone(),
+                    delays: std::sync::Arc::clone(&cached.delays),
                     current_frame: 0,
                     frame_start: std::time::Instant::now(),
                     cpu_frames: cached.cpu_frames.clone(),
@@ -148,9 +148,9 @@ impl ImageViewerApp {
         let uploaded = pending.textures.len();
         self.animation = Some(crate::app::AnimationPlayback {
             image_index: pending.image_index,
-            textures: pending.textures.clone(),
+            textures: std::sync::Arc::clone(&pending.textures),
             hdr_frames: pending.hdr_frames.clone(),
-            delays: pending.delays.clone(),
+            delays: std::sync::Arc::clone(&pending.delays),
             current_frame: 0,
             frame_start: std::time::Instant::now(),
             cpu_frames: Some(
@@ -178,8 +178,8 @@ impl ImageViewerApp {
         if anim.image_index != idx || pending.textures.len() <= anim.textures.len() {
             return;
         }
-        anim.textures = pending.textures.clone();
-        anim.delays = pending.delays.clone();
+        anim.textures = std::sync::Arc::clone(&pending.textures);
+        anim.delays = std::sync::Arc::clone(&pending.delays);
         match anim.cpu_frames.as_mut() {
             Some(cpu_frames) => {
                 cpu_frames.extend(
@@ -314,8 +314,8 @@ mod tests {
                     AnimationFrame::new(1, 1, vec![0; 4], Duration::from_millis(100)),
                     AnimationFrame::new(1, 1, vec![1; 4], Duration::from_millis(100)),
                 ],
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -338,8 +338,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -375,8 +375,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
