@@ -32,7 +32,7 @@ use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::tile_cache::TileStatus;
+use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
@@ -373,6 +373,7 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
+            let mut uploaded_coords_scratch: Vec<TileCoord> = Vec::new();
             let mut tile_request_budget = TileRequestBudget::new(
                 tile_visits.len(),
                 crate::tile_cache::get_tile_size(),
@@ -430,6 +431,7 @@ impl ImageViewerApp {
 
                     if just_uploaded {
                         newly_uploaded += 1;
+                        uploaded_coords_scratch.push(*coord);
                     }
 
                     match status {
@@ -483,6 +485,12 @@ impl ImageViewerApp {
                             }
                         }
                     }
+                }
+
+                // GPU textures are authoritative after upload; drop redundant CPU copies
+                // in one write-lock batch rather than per-tile inside get_or_create_tile.
+                if !uploaded_coords_scratch.is_empty() {
+                    tm.release_cpu_pixels_for_coords(&uploaded_coords_scratch);
                 }
             }
 

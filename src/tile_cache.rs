@@ -117,6 +117,18 @@ impl TilePixelCache {
         self.entries.contains_key(&(index, coord.col, coord.row))
     }
 
+    /// Remove one tile entry. Returns true if an entry was removed.
+    pub fn remove_tile(&mut self, index: usize, coord: TileCoord) -> bool {
+        let key = (index, coord.col, coord.row);
+        if let Some(pixels) = self.entries.remove(&key) {
+            self.current_bytes -= pixels.len();
+            self.lru.lock().remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get(&self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
         let key = (index, coord.col, coord.row);
         if let Some(pixels) = self.entries.get(&key) {
@@ -371,6 +383,11 @@ mod tests {
         cache.remove_images_except(5);
         assert!(cache.get(5, TileCoord { col: 3, row: 4 }).is_some());
         assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_none());
+
+        // Test remove_tile
+        assert!(cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
+        assert!(!cache.contains_tile(5, TileCoord { col: 3, row: 4 }));
+        assert!(!cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
     }
 }
 
@@ -531,7 +548,9 @@ impl TileManager {
 
     /// Returns true if any of the visible tiles are in CPU cache but NOT in GPU.
     pub fn has_ready_to_upload(&self, visible: &HashSet<TileCoord>) -> bool {
-        let cache = PIXEL_CACHE.read();
+        let Some(cache) = PIXEL_CACHE.try_read() else {
+            return false;
+        };
 
         for coord in visible {
             if !self.tiles.contains_key(coord) && cache.contains_tile(self.image_index, *coord) {
@@ -539,6 +558,19 @@ impl TileManager {
             }
         }
         false
+    }
+
+    /// Drop CPU pixel buffers for tiles already resident on GPU.
+    /// Called after upload bursts so redundant CPU copies can be freed without
+    /// affecting on-screen tiles (GPU textures remain authoritative).
+    pub fn release_cpu_pixels_for_coords(&self, coords: &[TileCoord]) {
+        if coords.is_empty() {
+            return;
+        }
+        let mut cache = PIXEL_CACHE.write();
+        for coord in coords {
+            cache.remove_tile(self.image_index, *coord);
+        }
     }
 
     pub fn set_preview(&mut self, preview: crate::loader::DecodedImage, ctx: &egui::Context) {
