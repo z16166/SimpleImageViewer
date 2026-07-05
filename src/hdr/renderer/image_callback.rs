@@ -492,6 +492,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
+        // prepare-only scheduling (e.g. GPU RAW demosaic bake with alpha=0) must not submit a draw.
+        if self.alpha <= 0.0 {
+            return;
+        }
         let Some(resources) = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(self.target_format))
