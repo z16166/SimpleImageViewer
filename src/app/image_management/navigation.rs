@@ -814,6 +814,58 @@ impl ImageViewerApp {
         self.refresh_current_file_name();
     }
 
+    /// Rebind main-canvas presentation to whatever file now occupies `current_index` after a
+    /// cache-preserving directory-tree list reorder.
+    pub(crate) fn refresh_current_image_presentation_after_list_reorder(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let idx = self.current_index.min(self.image_files.len().saturating_sub(1));
+
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prev_texture = None;
+        self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
+        self.tile_manager = None;
+        self.pixel_data_source = None;
+        self.pixel_hover_cache = None;
+        self.animation = None;
+
+        self.refresh_current_file_name();
+        self.current_hdr_image = self
+            .first_cached_hdr_still_for_index(idx)
+            .map(|image| crate::app::CurrentHdrImage::new(idx, image));
+        self.current_hdr_tiled_image = self
+            .hdr_tiled_source_cache
+            .get(&idx)
+            .cloned()
+            .map(|source| crate::app::CurrentHdrTiledImage::new(idx, source));
+        self.current_hdr_tiled_preview = self
+            .hdr_tiled_preview_cache
+            .get(&idx)
+            .cloned()
+            .map(|image| crate::app::CurrentHdrImage::new(idx, image));
+
+        if self.texture_cache.contains(idx) {
+            if let Some((w, h)) = self.texture_cache.get_original_res(idx) {
+                self.set_current_image_resolution(Some((w, h)));
+            } else if let Some(texture) = self.texture_cache.get(idx) {
+                let size = texture.size();
+                self.set_current_image_resolution(Some((size[0] as u32, size[1] as u32)));
+            }
+        } else {
+            self.set_current_image_resolution(None);
+        }
+
+        self.ensure_current_animation_playback();
+        self.refresh_pixel_data_source_for_current_index();
+        self.refresh_hdr_view_status();
+        self.error_message = None;
+        self.is_font_error = false;
+        self.canvas_display_timing.on_navigate();
+    }
+
     pub(crate) fn refresh_pixel_data_source_for_current_index(&mut self) {
         if self.image_files.is_empty() {
             self.pixel_data_source = None;

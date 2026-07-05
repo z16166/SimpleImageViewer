@@ -2145,10 +2145,10 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
         String::new(),
     );
     assert_eq!(state.list.image_rows.len(), 3);
-    assert_eq!(state.list.image_rows[0].path, path_a);
-    assert_eq!(state.list.image_rows[0].size_bytes, 1);
-    assert_eq!(state.list.image_rows[1].path, path_b);
-    assert_eq!(state.list.image_rows[1].size_bytes, 2);
+    assert_eq!(state.list.image_rows[0].path, path_b);
+    assert_eq!(state.list.image_rows[0].size_bytes, 2);
+    assert_eq!(state.list.image_rows[1].path, path_a);
+    assert_eq!(state.list.image_rows[1].size_bytes, 1);
     assert_eq!(state.list.image_rows[2].path, path_c);
     assert_eq!(state.list.image_rows[2].size_bytes, 3);
     assert!(state.list.image_rows.iter().any(|row| row.path == path_c));
@@ -2187,6 +2187,25 @@ fn sync_images_refreshes_existing_rows_when_appending_during_scan() {
     assert_eq!(state.list.image_rows[0].size_bytes, 1024);
     assert_eq!(state.list.image_rows[0].modified_unix, Some(100));
     assert_eq!(state.list.image_rows[1].size_bytes, 2048);
+}
+
+#[test]
+fn sync_images_sort_active_realigns_rows_after_image_order_changes() {
+    let mut state = DirectoryTreeState::default();
+    state.list.image_list_sort_active = true;
+    let path_small = PathBuf::from("/dir/small.jpg");
+    let path_large = PathBuf::from("/dir/large.jpg");
+    state.list.image_rows = vec![
+        DirectoryTreeFileRow::new(path_small.clone(), "small".to_string(), 100, None),
+        DirectoryTreeFileRow::new(path_large.clone(), "large".to_string(), 200, None),
+    ];
+    let images = vec![path_large.clone(), path_small.clone()];
+    let sizes = vec![4_637_379_310_u64, 7_962_624_u64];
+    state.sync_images(&images, &sizes, &[None, None], 0, false, String::new());
+    assert_eq!(state.list.image_rows[0].path, path_large);
+    assert_eq!(state.list.image_rows[0].size_bytes, 4_637_379_310);
+    assert_eq!(state.list.image_rows[1].path, path_small);
+    assert_eq!(state.list.image_rows[1].size_bytes, 7_962_624);
 }
 
 #[test]

@@ -76,6 +76,16 @@ impl ImageViewerApp {
         );
     }
 
+    /// Rebuild the ring preload queue around `current_index` after a cache-preserving list
+    /// reorder (directory-tree column sort).
+    pub(crate) fn reschedule_preloads_after_image_list_reorder(&mut self) {
+        self.sync_loader_preload_plan();
+        self.evict_distant_prefetch_caches();
+        self.cancel_outside_prefetch_window_loader_tasks();
+        self.schedule_preloads(true);
+        self.discard_stale_loader_outputs();
+    }
+
     pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, force_neighbors: bool) {
         let n = self.image_files.len();
         if n == 0 {

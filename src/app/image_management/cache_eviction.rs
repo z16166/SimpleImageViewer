@@ -562,12 +562,6 @@ impl ImageViewerApp {
             .write()
             .permute_images(old_to_new);
 
-        if self.current_index < old_to_new.len() {
-            self.current_index = old_to_new[self.current_index];
-            self.image_status.set_current_index(self.current_index);
-            self.raw_metadata.set_current_index(self.current_index);
-        }
-
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
         permute_usize_set(

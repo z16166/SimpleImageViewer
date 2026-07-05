@@ -1006,9 +1006,69 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
     assert!(app.loader.is_loading(0));
 
     assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false,));
-    assert_eq!(app.current_index, 2);
-    assert!(!app.loader.is_loading(0));
-    assert!(app.loader.is_loading(2));
+    assert_eq!(app.current_index, 0);
+    assert!(
+        app.image_files[0]
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("2334"))
+    );
+    assert!(!app.loader.is_loading(2));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
+fn directory_tree_list_sort_reschedules_neighbor_preloads_after_permute() {
+    use crate::app::directory_tree::ImageListSortColumn;
+
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.cached_available_memory_mb = 8192;
+    app.cached_total_memory_mb = 16384;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg", "c.jpg"]);
+    app.file_byte_len_by_index = vec![100, 200, 300];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 1;
+    app.hdr_image_cache.insert(
+        1,
+        std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
+            rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
+        }),
+    );
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false));
+    assert_eq!(app.current_index, 1);
+    assert!(
+        app.loader.is_loading(0) || app.loader.is_loading(2),
+        "expected neighbor preloads to restart after list reorder"
+    );
+}
+
+#[test]
+fn directory_tree_list_sort_bootstraps_visible_strip_thumbnails() {
+    use crate::app::directory_tree::ImageListSortColumn;
+    use crate::settings::BrowseMode;
+
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_show_list_previews = true;
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg", "c.jpg"]);
+    app.file_byte_len_by_index = vec![100, 200, 300];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 0;
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false));
+    assert!(app.directory_tree_strip_bootstrap_after_scan);
+    assert_eq!(app.directory_tree_strip_bootstrap_frames, 0);
 }
 
 #[test]

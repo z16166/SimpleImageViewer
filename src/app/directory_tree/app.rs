@@ -657,6 +657,19 @@ impl ImageViewerApp {
         }
     }
 
+    fn apply_directory_tree_file_metadata_to_image_files(
+        &mut self,
+        result: &super::FileMetadataResult,
+    ) {
+        for (path, modified_unix) in result.paths.iter().zip(result.modified_unix.iter()) {
+            if let Some(index) = self.image_files.iter().position(|entry| entry == path)
+                && index < self.file_modified_unix_by_index.len()
+            {
+                self.file_modified_unix_by_index[index] = *modified_unix;
+            }
+        }
+    }
+
     pub(crate) fn apply_directory_tree_image_list_sort(
         &mut self,
         column: ImageListSortColumn,
@@ -688,7 +701,7 @@ impl ImageViewerApp {
             return false;
         }
 
-        let current_path = self.image_files.get(self.current_index).cloned();
+        let pinned_index = self.current_index.min(len.saturating_sub(1));
         let mut old_to_new = vec![0usize; len];
         for (new_idx, &old_idx) in order.iter().enumerate() {
             old_to_new[old_idx] = new_idx;
@@ -696,14 +709,12 @@ impl ImageViewerApp {
 
         self.permute_image_file_arrays(&order);
         self.permute_index_keyed_caches(&old_to_new);
-        if let Some(path) = current_path
-            && let Some(index) = self.image_files.iter().position(|entry| entry == &path)
-        {
-            self.set_current_index(index);
-        }
-        // Re-sort permutes `image_files` and calls `loader.cancel_all()`; restart the current
-        // image even when list-preview deferral would skip ordinary scan-time preload.
-        self.schedule_current_image_load_if_needed();
+        self.prepare_directory_tree_strip_scheduling_after_list_reorder(&old_to_new);
+        self.set_current_index(pinned_index);
+        self.refresh_current_image_presentation_after_list_reorder();
+        // Re-sort permutes `image_files`, cancels in-flight loads, and remaps caches; rebuild the
+        // ring preload queue around the pinned index (same as navigation housekeeping).
+        self.reschedule_preloads_after_image_list_reorder();
         true
     }
 
@@ -780,7 +791,12 @@ impl ImageViewerApp {
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
-            let metadata_repaint = {
+            let generation_ok = self.directory_tree.list.lock().file_metadata_generation
+                == result.generation;
+            if generation_ok {
+                self.apply_directory_tree_file_metadata_to_image_files(&result);
+            }
+            let (metadata_repaint, resort_modified) = {
                 let mut list = self.directory_tree.list.lock();
                 let visible = list.image_list_visible_row_range;
                 let metadata_repaint = super::visibility::metadata_paths_affect_visible_list(
@@ -789,8 +805,28 @@ impl ImageViewerApp {
                     visible,
                 );
                 list.apply_metadata_result(result);
-                metadata_repaint
+                let resort_modified = generation_ok
+                    && !self.scanning
+                    && list.image_list_sort_active
+                    && list.image_list_sort_column == ImageListSortColumn::Modified;
+                (metadata_repaint, resort_modified)
             };
+            if resort_modified
+                && self.apply_directory_tree_image_list_sort(
+                    ImageListSortColumn::Modified,
+                    {
+                        let list = self.directory_tree.list.lock();
+                        list.image_list_sort_ascending
+                    },
+                )
+            {
+                if let Some(mut list) = self.directory_tree.list.try_lock() {
+                    let _ = self.sync_directory_tree_list_images(&mut list);
+                    list.image_list_generation = list.image_list_generation.wrapping_add(1);
+                    list.current_index = self.current_index;
+                    list.scroll_image_list_to_current = true;
+                }
+            }
             if metadata_repaint {
                 ctx.request_repaint();
                 self.request_directory_tree_viewport_repaint(ctx);
@@ -922,6 +958,7 @@ impl ImageViewerApp {
                     }
                     if changed {
                         self.sync_directory_tree_file_list_state(ctx);
+                        self.ensure_directory_tree_strip_thumbnails(ctx);
                         self.wake_root_for_logic();
                     }
                     ctx.request_repaint();
@@ -1636,11 +1673,12 @@ impl ImageViewerApp {
             (repaint, resort_after_scan, resort_column, resort_ascending)
         };
 
-        if request_viewport_repaint.1
+        let resort_changed = request_viewport_repaint.1
             && self.apply_directory_tree_image_list_sort(
                 request_viewport_repaint.2,
                 request_viewport_repaint.3,
-            )
+            );
+        if resort_changed
             && let (Some(_tree), Some(mut list)) = (
                 self.directory_tree.tree.try_lock(),
                 self.directory_tree.list.try_lock(),
@@ -1654,6 +1692,9 @@ impl ImageViewerApp {
             list.current_index = self.current_index;
             list.image_list_col_widths_dirty = true;
             list.scroll_image_list_to_current = true;
+        }
+        if resort_changed {
+            self.ensure_directory_tree_strip_thumbnails(ctx);
         }
 
         for request in metadata_requests {

@@ -448,6 +448,22 @@ impl ImageViewerApp {
         );
     }
 
+    /// After a cache-preserving column sort: remap pending GPU uploads, refresh the preview
+    /// snapshot, and enter bootstrap mode so visible list rows reschedule strip thumbnails.
+    pub(crate) fn prepare_directory_tree_strip_scheduling_after_list_reorder(
+        &mut self,
+        old_to_new: &[usize],
+    ) {
+        if !self.directory_tree_list_previews_active() {
+            return;
+        }
+        self.permute_directory_tree_strip_pending_gpu(old_to_new);
+        domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
+        self.directory_tree_strip_bootstrap_after_scan = true;
+        self.directory_tree_strip_bootstrap_frames = 0;
+        self.strip_preload_cooldown_frames = 0;
+    }
+
     // Path-based list diff for F5 refresh strip cache realignment.
 
     pub(crate) fn reorder_directory_tree_strip_after_image_list_change(

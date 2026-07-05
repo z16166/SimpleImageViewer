@@ -501,11 +501,14 @@ impl ImageViewerApp {
         if scroll_to_current_pending && !bootstrap_visible {
             return Vec::new();
         }
+        if bootstrap_visible {
+            if let Some((start, end)) = visible_row_range {
+                return (start..end.min(total)).collect();
+            }
+            return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
+        }
         if let Some((start, end)) = visible_row_range {
             return (start..end.min(total)).collect();
-        }
-        if bootstrap_visible {
-            return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
         }
         Vec::new()
     }

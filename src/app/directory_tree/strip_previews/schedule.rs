@@ -397,6 +397,19 @@ impl ImageViewerApp {
         let current = self.current_index.min(total.saturating_sub(1));
 
         if bootstrap_visible {
+            if let Some((start, end)) = visible_row_range {
+                for index in start..end.min(total) {
+                    if self.try_push_cold_strip_candidate(
+                        index,
+                        total,
+                        schedule_budget,
+                        bootstrap_visible,
+                        visible_row_range,
+                    ) {
+                        return self.strip_cold_candidates_scratch.len();
+                    }
+                }
+            }
             for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
                 if self.try_push_cold_strip_candidate(
                     index,
@@ -405,7 +418,7 @@ impl ImageViewerApp {
                     bootstrap_visible,
                     visible_row_range,
                 ) {
-                    break;
+                    return self.strip_cold_candidates_scratch.len();
                 }
             }
             return self.strip_cold_candidates_scratch.len();

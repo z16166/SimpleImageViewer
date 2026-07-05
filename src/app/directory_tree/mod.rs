@@ -1392,6 +1392,42 @@ fn image_rows_match_image_order(rows: &[DirectoryTreeFileRow], images: &[PathBuf
     rows.len() <= images.len() && rows.iter().zip(images).all(|(row, path)| row.path == *path)
 }
 
+/// When list sort is active, `image_files` is permuted in place; rows must follow the same order
+/// for the UI to match the sort key (size / modified / name).
+fn realign_image_rows_to_image_order(
+    rows: &mut Vec<DirectoryTreeFileRow>,
+    images: &[PathBuf],
+    sizes: &[u64],
+    modified: &[Option<i64>],
+) {
+    if rows.len() != images.len() || image_rows_match_image_order(rows, images) {
+        return;
+    }
+    let mut rows_by_path: std::collections::HashMap<PathBuf, DirectoryTreeFileRow> = rows
+        .drain(..)
+        .map(|row| (row.path.clone(), row))
+        .collect();
+    rows.reserve(images.len());
+    for (index, path) in images.iter().enumerate() {
+        let mut row = rows_by_path.remove(path).unwrap_or_else(|| {
+            DirectoryTreeFileRow::new(
+                path.clone(),
+                directory_display_name(path),
+                sizes.get(index).copied().unwrap_or(0),
+                modified.get(index).copied().flatten(),
+            )
+        });
+        if let Some(size) = sizes.get(index) {
+            row.size_bytes = *size;
+        }
+        if let Some(mtime) = modified.get(index) {
+            row.modified_unix = *mtime;
+        }
+        row.refresh_display_cache();
+        rows.push(row);
+    }
+}
+
 impl DirectoryTreeListState {
     pub(crate) fn sync_images(
         &mut self,
@@ -1444,6 +1480,12 @@ impl DirectoryTreeListState {
                 ));
             }
             self.image_rows.extend(new_rows);
+            realign_image_rows_to_image_order(
+                &mut self.image_rows,
+                images,
+                sizes,
+                modified,
+            );
         } else {
             let order_matches = image_rows_match_image_order(&self.image_rows, images);
             if !order_matches {
