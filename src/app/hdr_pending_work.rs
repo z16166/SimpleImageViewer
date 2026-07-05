@@ -245,6 +245,7 @@ impl ImageViewerApp {
             request.physical_width,
             request.physical_height,
             device.limits().max_texture_dimension_2d,
+            None,
         ) {
             Ok((sdr, gain)) => {
                 completed.completed_jpeg_tiled_source_uploads.lock().push(
