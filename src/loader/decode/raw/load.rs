@@ -327,12 +327,10 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         path.file_name().unwrap_or_default()
     );
 
-    let (width, height) = {
-        if high_quality {
-            processor.unpack()?;
-        }
-        processor.developed_output_dimensions()
-    };
+    // Resolve develop grid from identify-time sizes without unpacking the full CFA.
+    // Demosaic paths call `RawProcessor::unpack` lazily; embedded-preview bootstrap
+    // (CPU tiled refine) never needs sensor data on the loader thread.
+    let (width, height) = processor.developed_output_dimensions();
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let osd_ctx = RawOsdContext::new(

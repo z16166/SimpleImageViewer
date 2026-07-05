@@ -374,6 +374,11 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
+    pub(crate) fn is_sensor_data_unpacked(&self) -> bool {
+        self.is_unpacked
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_color_diag_after_unpack(
         &self,
     ) -> (

@@ -102,6 +102,32 @@ fn epson_rd1_erf_embedded_does_not_skip_hq_demosaic_when_file_present() {
 }
 
 #[test]
+fn open_with_embedded_preview_defers_sensor_unpack() {
+    let path = PathBuf::from(r"F:\win7\raws\epson\rd1\RAW_EPSON_RD1.ERF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+
+    let (processor, preview, _, _) =
+        open_raw_processor_with_preview(&path).expect("open_raw_processor_with_preview");
+    assert!(
+        preview.is_some(),
+        "sample must have embedded preview for this probe"
+    );
+    assert!(
+        !processor.is_sensor_data_unpacked(),
+        "embedded preview must not allocate full CFA buffer"
+    );
+    let (width, height) = processor.developed_output_dimensions();
+    assert_eq!((width, height), (3040, 2024));
+    assert!(
+        !processor.is_sensor_data_unpacked(),
+        "developed_output_dimensions must not trigger libraw_unpack"
+    );
+}
+
+#[test]
 fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
     use crossbeam_channel::unbounded;
 
