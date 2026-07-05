@@ -247,6 +247,7 @@ fn emit_raw_hq_bootstrap_preview(
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd,
+        sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
     }));
 }
 

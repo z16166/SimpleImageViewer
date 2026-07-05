@@ -123,7 +123,19 @@ fn is_inflight_intent_promotion_only(
 ) -> bool {
     worker_profile.load_intent == LoadIntent::NeighborPrefetch
         && registered_profile.load_intent == LoadIntent::Current
-        && profile_decode_capabilities_equal(worker_profile, registered_profile)
+        && profile_decode_capabilities_equal_except_render_shape(worker_profile, registered_profile)
+}
+
+fn profile_decode_capabilities_equal_except_render_shape(
+    old: &DecodeProfile,
+    new: &DecodeProfile,
+) -> bool {
+    old.raw_high_quality == new.raw_high_quality
+        && old.raw_demosaic_mode == new.raw_demosaic_mode
+        && old.output_mode == new.output_mode
+        && (old.ultra_hdr_decode_capacity - new.ultra_hdr_decode_capacity).abs()
+            <= HDR_CAPACITY_MATCH_EPSILON
+        && old.profile_epoch == new.profile_epoch
 }
 
 /// True when an in-flight registration no longer matches a finished load worker profile.
@@ -326,6 +338,26 @@ mod tests {
             &worker, &in_flight
         ));
         assert!(!in_flight_profile_supersedes_hq_refinement(
+            &worker, &in_flight
+        ));
+    }
+
+    #[test]
+    fn neighbor_prefetch_promoted_with_render_shape_stamp_does_not_supersede_hq_refinement() {
+        let worker = DecodeProfile {
+            load_intent: LoadIntent::NeighborPrefetch,
+            render_shape: RenderShape::Tiled,
+            ..base_profile()
+        };
+        let in_flight = DecodeProfile {
+            load_intent: LoadIntent::Current,
+            render_shape: RenderShape::Unknown,
+            ..base_profile()
+        };
+        assert!(!in_flight_profile_supersedes_hq_refinement(
+            &worker, &in_flight
+        ));
+        assert!(!in_flight_profile_supersedes_load_result(
             &worker, &in_flight
         ));
     }

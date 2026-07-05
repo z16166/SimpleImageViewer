@@ -548,7 +548,13 @@ impl ImageViewerApp {
                 );
             }
         } else if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
-            if self.index_uses_tiled_pipeline(self.current_index) {
+            if self.index_requires_tile_manager(self.current_index) {
+                if self.installed_display_mode(self.current_index) != Some(crate::loader::RenderShape::Tiled) {
+                    self.record_installed_display_mode(
+                        self.current_index,
+                        crate::loader::RenderShape::Tiled,
+                    );
+                }
                 tm.decode_profile = self.decode_profile_for_index(self.current_index);
                 self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
@@ -624,31 +630,28 @@ impl ImageViewerApp {
                 self.tile_manager.is_some()
             );
             self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
-            let needs_tile_manager_rebuild = (self.index_uses_tiled_pipeline(self.current_index)
-                || self
-                    .hdr_tiled_source_cache
-                    .contains_key(&self.current_index))
+            let needs_tile_manager_rebuild = self.index_requires_tile_manager(self.current_index)
                 && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
-                if self.index_uses_tiled_pipeline(self.current_index) {
-                    if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
-                        self.set_current_image_resolution(Some((w, h)));
-                    }
-                    self.loader.request_load(
-                        self.current_index,
-                        self.image_files[self.current_index].clone(),
-                        self.settings.raw_high_quality,
-                        self.raw_demosaic_mode_for_index(self.current_index),
-                    );
+                if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                    self.set_current_image_resolution(Some((w, h)));
+                } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                    self.set_current_image_resolution(Some((hdr.width, hdr.height)));
                 } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
                     self.set_current_image_resolution(Some((src.width(), src.height())));
-                    self.loader.request_load(
-                        self.current_index,
-                        self.image_files[self.current_index].clone(),
-                        self.settings.raw_high_quality,
-                        self.raw_demosaic_mode_for_index(self.current_index),
-                    );
                 }
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] navigate tile_manager_rebuild idx={} display_mode={:?} needs_tile_mgr_flag={}",
+                    self.current_index,
+                    self.installed_display_mode(self.current_index),
+                    self.texture_cache.needs_tile_manager(self.current_index),
+                );
+                self.loader.request_load(
+                    self.current_index,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(self.current_index),
+                );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {

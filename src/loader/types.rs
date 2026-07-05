@@ -425,6 +425,44 @@ pub enum PreviewStage {
     Refined,
 }
 
+/// Provenance of pixels stored in the main-window [`crate::loader::TextureCache`].
+///
+/// HQ/sync decisions use tag + stage, not decoded or GPU texture dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexturePreviewBufferTag {
+    MainWindowSdr,
+    TiledBootstrap,
+    TiledRefinedLoader,
+    /// `ImageLoader::trigger_hq_tiled_sdr_preview`; not a substitute for loader HDR refine.
+    TiledOnDemandSdr,
+    HdrSdrFallback,
+    RawGpuBootstrap,
+}
+
+impl TexturePreviewBufferTag {
+    const PREVIEW_STAGE_COUNT: u16 = 2;
+
+    pub fn quality_rank(self, stage: PreviewStage) -> u16 {
+        let base = match self {
+            Self::RawGpuBootstrap => 0,
+            Self::HdrSdrFallback => 1,
+            Self::MainWindowSdr => 2,
+            Self::TiledBootstrap => 3,
+            Self::TiledOnDemandSdr => 4,
+            Self::TiledRefinedLoader => 5,
+        };
+        let stage_bonus = match stage {
+            PreviewStage::Initial => 0,
+            PreviewStage::Refined => 1,
+        };
+        base * Self::PREVIEW_STAGE_COUNT + stage_bonus
+    }
+
+    pub fn satisfies_tiled_sdr_hq(self, stage: PreviewStage) -> bool {
+        matches!((self, stage), (Self::TiledRefinedLoader, PreviewStage::Refined))
+    }
+}
+
 #[derive(Clone)]
 pub enum PreviewPlane {
     Sdr(DecodedImage),
@@ -617,6 +655,8 @@ pub struct PreviewResult {
     pub cpu_demosaic_ms: Option<u32>,
     /// Partial RAW OSD for HQ bootstrap previews before the full `LoadResult` arrives.
     pub raw_bootstrap_osd: Option<RawOsdInfo>,
+    /// Tag for SDR pixels when written into `TextureCache`; None uses loader-refined default.
+    pub sdr_texture_tag: Option<TexturePreviewBufferTag>,
 }
 
 impl PreviewResult {
@@ -625,6 +665,7 @@ impl PreviewResult {
         decode_profile: DecodeProfile,
         source_key: SourceKey,
         result: Result<DecodedImage, String>,
+        sdr_texture_tag: TexturePreviewBufferTag,
     ) -> Self {
         let (preview_bundle, error) = match result {
             Ok(preview) => (PreviewBundle::refined().with_sdr(preview), None),
@@ -638,7 +679,13 @@ impl PreviewResult {
             error,
             cpu_demosaic_ms: None,
             raw_bootstrap_osd: None,
+            sdr_texture_tag: Some(sdr_texture_tag),
         }
+    }
+
+    pub fn effective_sdr_texture_tag(&self) -> TexturePreviewBufferTag {
+        self.sdr_texture_tag
+            .unwrap_or(TexturePreviewBufferTag::TiledRefinedLoader)
     }
 }
 

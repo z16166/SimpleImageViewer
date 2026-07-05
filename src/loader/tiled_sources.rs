@@ -662,6 +662,7 @@ fn notify_psd_v1_decode_complete(
             error: None,
             cpu_demosaic_ms: None,
             raw_bootstrap_osd: None,
+            sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
         }));
     }
 }

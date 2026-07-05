@@ -47,6 +47,36 @@ impl ImageViewerApp {
         self.installed_display_mode(index) == Some(RenderShape::Tiled)
     }
 
+    /// True when an index needs a live [`TileManager`], including after prefetch eviction
+    /// cleared `installed_display_modes` but the texture cache still marks tiled pyramids.
+    pub(crate) fn index_requires_tile_manager(&self, index: usize) -> bool {
+        self.index_uses_tiled_pipeline(index)
+            || self.texture_cache.needs_tile_manager(index)
+            || self.hdr_tiled_source_cache.contains_key(&index)
+    }
+
+    /// Whether tiled HQ sync can stop (loader refine satisfied, not on-demand SDR alone).
+    pub(crate) fn tiled_hq_preview_requirement_met(&self, index: usize) -> bool {
+        let display = self.display_requirements_for_index(index);
+        if crate::loader::output_mode_is_hdr(display.output_mode)
+            && self.hdr_tiled_preview_cache.contains_key(&index)
+        {
+            return true;
+        }
+        if self.texture_cache.satisfies_tiled_sdr_hq(index) {
+            return true;
+        }
+        self.tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == index)
+            .and_then(|tm| tm.preview_texture.as_ref())
+            .is_some()
+            && self
+                .texture_cache
+                .cached_preview_stage(index)
+                .is_some_and(|stage| stage == crate::loader::PreviewStage::Refined)
+    }
+
     pub(crate) fn index_uses_animated_pipeline(&self, index: usize) -> bool {
         self.installed_display_mode(index) == Some(RenderShape::Animated)
     }
@@ -288,6 +318,8 @@ mod tests {
                 orig_w: 1,
                 orig_h: 1,
                 needs_tile_manager: false,
+                buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                stage: crate::loader::PreviewStage::Refined,
                 current_index: 0,
                 total_count: 1,
             },

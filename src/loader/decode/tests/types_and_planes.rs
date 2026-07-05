@@ -167,6 +167,7 @@ fn preview_result_exposes_refined_sdr_preview_bundle() {
         crate::loader::decode_profile_stub(),
         99,
         Ok(preview.clone()),
+        crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
     );
 
     assert!(update.error.is_none());
@@ -199,6 +200,7 @@ fn preview_result_exposes_refined_hdr_preview_bundle() {
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd: None,
+        sdr_texture_tag: None,
     };
 
     assert!(update.error.is_none());

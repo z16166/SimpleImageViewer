@@ -523,10 +523,20 @@ impl ImageViewerApp {
                         break;
                     }
                     preload_debug!(
-                        "[PreloadDebug] install preview: idx={} current={} is_current={} uploads_before={}",
+                        "[PreloadDebug] install preview: idx={} current={} is_current={} stage={:?} hdr_dims={:?} sdr_dims={:?} epoch={} uploads_before={}",
                         preview_update.index,
                         self.current_index,
                         preview_is_current,
+                        preview_update.preview_bundle.stage(),
+                        preview_update
+                            .preview_bundle
+                            .hdr()
+                            .map(|h| (h.width, h.height)),
+                        preview_update
+                            .preview_bundle
+                            .sdr()
+                            .map(|s| (s.width, s.height)),
+                        preview_update.decode_profile.profile_epoch,
                         uploads_this_frame
                     );
                     self.handle_preview_update(preview_update, ctx);

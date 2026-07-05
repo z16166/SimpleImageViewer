@@ -69,22 +69,26 @@ fn preserve_current_tile_manager_for_navigation(
 
 fn should_upload_tiled_bootstrap_preview(
     cache_contains_index: bool,
-    cached_preview_max_side: Option<u32>,
-    bootstrap_max_side: u32,
+    cached_tag: Option<crate::loader::TexturePreviewBufferTag>,
+    cached_stage: Option<crate::loader::PreviewStage>,
 ) -> bool {
     should_cache_tiled_sdr_preview(
         cache_contains_index,
         true,
-        cached_preview_max_side,
-        bootstrap_max_side,
+        cached_tag,
+        cached_stage,
+        crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+        crate::loader::PreviewStage::Initial,
     )
 }
 
 fn should_cache_tiled_sdr_preview(
     cache_contains_index: bool,
     needs_tile_manager: bool,
-    cached_preview_max_side: Option<u32>,
-    preview_max_side: u32,
+    cached_tag: Option<crate::loader::TexturePreviewBufferTag>,
+    cached_stage: Option<crate::loader::PreviewStage>,
+    incoming_tag: crate::loader::TexturePreviewBufferTag,
+    incoming_stage: crate::loader::PreviewStage,
 ) -> bool {
     if !cache_contains_index {
         return true;
@@ -92,14 +96,12 @@ fn should_cache_tiled_sdr_preview(
     if !needs_tile_manager {
         return false;
     }
-    cached_preview_max_side.is_none_or(|cached_max| preview_max_side > cached_max)
-}
-
-fn should_cache_tiled_hdr_preview(
-    cached_preview_max_side: Option<u32>,
-    preview_max_side: u32,
-) -> bool {
-    cached_preview_max_side.is_none_or(|cached_max| preview_max_side > cached_max)
+    match (cached_tag, cached_stage) {
+        (Some(tag), Some(stage)) => {
+            incoming_tag.quality_rank(incoming_stage) > tag.quality_rank(stage)
+        }
+        _ => true,
+    }
 }
 
 fn tiled_existing_preview_stage(
@@ -110,14 +112,7 @@ fn tiled_existing_preview_stage(
     if !has_preview_texture {
         return None;
     }
-    if texture_cache
-        .cached_preview_max_side(index)
-        .is_some_and(|max| max > crate::constants::DEFAULT_PREVIEW_SIZE)
-    {
-        Some(crate::loader::PreviewStage::Refined)
-    } else {
-        Some(crate::loader::PreviewStage::Initial)
-    }
+    texture_cache.cached_preview_stage(index)
 }
 
 fn refined_preview_applies_to_tile_manager(
@@ -353,7 +348,15 @@ fn cache_hdr_tiled_preview_state(
     let cached_preview_max_side = cache
         .get(&idx)
         .map(|cached| cached.width.max(cached.height));
-    if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
+    if cached_preview_max_side.is_some_and(|cached_max| preview_max_side <= cached_max) {
+        crate::preload_debug!(
+            "[PreloadDebug][HdrPreview] ignore idx={} incoming={}x{} cached_max_side={:?} current={}",
+            idx,
+            preview.width,
+            preview.height,
+            cached_preview_max_side,
+            current_index,
+        );
         log::debug!(
             "[App] [{}] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
             file_name,
@@ -1040,19 +1043,39 @@ impl ImageViewerApp {
                             .get(p.index)
                             .is_some_and(|path| source_key_for_path(path) == p.source_key)
                         {
+                            crate::preload_debug!(
+                                "[PreloadDebug][Stale] discard_preview idx={} stage={:?} reason=source_key_mismatch epoch={}",
+                                p.index,
+                                p.preview_bundle.stage(),
+                                p.decode_profile.profile_epoch,
+                            );
                             return false;
                         }
                         let is_loading_idx = is_loading(p.index);
-                        if !gate_ctx
-                            .retention_for(p.index, is_loading_idx)
-                            .should_retain()
-                        {
+                        let retention = gate_ctx.retention_for(p.index, is_loading_idx);
+                        if !retention.should_retain() {
+                            crate::preload_debug!(
+                                "[PreloadDebug][Stale] discard_preview idx={} stage={:?} reason=retention_window current={} epoch={}",
+                                p.index,
+                                p.preview_bundle.stage(),
+                                current,
+                                p.decode_profile.profile_epoch,
+                            );
                             return false;
                         }
-                        crate::loader::profile_satisfies_display(
+                        let profile_ok = crate::loader::profile_satisfies_display(
                             &p.decode_profile,
                             &display_for(p.index),
-                        )
+                        );
+                        if !profile_ok {
+                            crate::preload_debug!(
+                                "[PreloadDebug][Stale] discard_preview idx={} stage={:?} reason=profile_mismatch epoch={}",
+                                p.index,
+                                p.preview_bundle.stage(),
+                                p.decode_profile.profile_epoch,
+                            );
+                        }
+                        profile_ok
                     }
                     LoaderOutput::Refined(idx) => gate_ctx
                         .retention_for(*idx, is_loading(*idx))
@@ -1216,6 +1239,7 @@ mod tiled_hq_preview_apply_tests {
             error: None,
             cpu_demosaic_ms: None,
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
         };
         assert!(refined_preview_applies_to_tile_manager(
             &tm,
@@ -1237,6 +1261,8 @@ mod tiled_hq_preview_apply_tests {
                 orig_w: 69_536,
                 orig_h: 22_230,
                 needs_tile_manager: true,
+                buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+                stage: PreviewStage::Initial,
                 current_index: 0,
                 total_count: 10,
             },
@@ -1245,6 +1271,15 @@ mod tiled_hq_preview_apply_tests {
             tiled_existing_preview_stage(&cache, 0, true),
             Some(PreviewStage::Initial)
         );
+    }
+
+    #[test]
+    fn on_demand_sdr_tag_does_not_satisfy_tiled_hq_gate() {
+        use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+        assert!(!TexturePreviewBufferTag::TiledOnDemandSdr
+            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
+        assert!(TexturePreviewBufferTag::TiledRefinedLoader
+            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
     }
 
     #[test]
@@ -1261,6 +1296,8 @@ mod tiled_hq_preview_apply_tests {
                 orig_w: 69_536,
                 orig_h: 22_230,
                 needs_tile_manager: true,
+                buffer_tag: crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
+                stage: PreviewStage::Refined,
                 current_index: 0,
                 total_count: 10,
             },

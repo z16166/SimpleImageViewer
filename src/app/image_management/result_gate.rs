@@ -361,6 +361,7 @@ mod tests {
             source_key: source_key_for_path(&files[0]),
             preview_bundle: crate::loader::PreviewBundle::initial(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };
@@ -395,6 +396,7 @@ mod tests {
             source_key: source_key_for_path(&files[40]),
             preview_bundle: crate::loader::PreviewBundle::refined(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };
@@ -497,6 +499,7 @@ mod tests {
             source_key: source_key_for_path(&files[40]),
             preview_bundle: crate::loader::PreviewBundle::initial(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };

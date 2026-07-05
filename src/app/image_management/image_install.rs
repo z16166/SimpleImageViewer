@@ -166,6 +166,8 @@ impl ImageViewerApp {
         idx: usize,
         decoded: &DecodedImage,
         texture_name: String,
+        buffer_tag: crate::loader::TexturePreviewBufferTag,
+        stage: crate::loader::PreviewStage,
         ctx: &egui::Context,
     ) {
         let color_image = ColorImage::from_rgba_unmultiplied(
@@ -180,6 +182,8 @@ impl ImageViewerApp {
                 orig_w: decoded.width,
                 orig_h: decoded.height,
                 needs_tile_manager: false,
+                buffer_tag,
+                stage,
                 current_index: self.current_index,
                 total_count: self.image_files.len(),
             },
@@ -197,7 +201,14 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.upload_static_sdr_texture(idx, decoded, raw_gpu_bootstrap_texture_name(idx), ctx);
+        self.upload_static_sdr_texture(
+            idx,
+            decoded,
+            raw_gpu_bootstrap_texture_name(idx),
+            crate::loader::TexturePreviewBufferTag::RawGpuBootstrap,
+            crate::loader::PreviewStage::Initial,
+            ctx,
+        );
         self.raw_gpu_embedded_bootstrap_indices.insert(idx);
     }
 
@@ -207,7 +218,14 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.upload_static_sdr_texture(idx, decoded, hdr_sdr_fallback_texture_name(idx), ctx);
+        self.upload_static_sdr_texture(
+            idx,
+            decoded,
+            hdr_sdr_fallback_texture_name(idx),
+            crate::loader::TexturePreviewBufferTag::HdrSdrFallback,
+            crate::loader::PreviewStage::Refined,
+            ctx,
+        );
         self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
     }
 
@@ -245,7 +263,14 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         if idx == self.current_index {
-            self.upload_static_sdr_texture(idx, decoded, texture_name, ctx);
+            self.upload_static_sdr_texture(
+                idx,
+                decoded,
+                texture_name,
+                crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                crate::loader::PreviewStage::Refined,
+                ctx,
+            );
         } else {
             self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
@@ -303,7 +328,14 @@ impl ImageViewerApp {
         if is_hdr_fallback {
             self.upload_hdr_sdr_fallback_texture(index, &decoded, ctx);
         } else {
-            self.upload_static_sdr_texture(index, &decoded, format!("img_{index}"), ctx);
+            self.upload_static_sdr_texture(
+                index,
+                &decoded,
+                format!("img_{index}"),
+                crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                crate::loader::PreviewStage::Refined,
+                ctx,
+            );
         }
         if index == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
@@ -517,6 +549,10 @@ impl ImageViewerApp {
         } = install;
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Tiled);
         self.remove_hdr_image_resources(idx);
+        #[cfg(feature = "preload-debug")]
+        let bootstrap_dims = sdr_preview.map(|p| (p.width, p.height));
+        #[cfg(feature = "preload-debug")]
+        let bootstrap_hdr_dims = hdr_preview.as_ref().map(|h| (h.width, h.height));
         if let Some(hdr_source) = hdr_source.as_ref() {
             self.hdr_tiled_source_cache
                 .insert(idx, Arc::clone(hdr_source));
@@ -533,6 +569,14 @@ impl ImageViewerApp {
 
         if !source.defers_loader_hq_preview() {
             self.hq_tiled_preview_pending_indices.insert(idx);
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Install] hq_pending_set idx={} current={} bootstrap={:?} hdr_preview={:?}",
+                idx,
+                self.current_index,
+                bootstrap_dims,
+                bootstrap_hdr_dims,
+            );
         }
 
         let mut tm = build_tiled_manager_with_best_preview(

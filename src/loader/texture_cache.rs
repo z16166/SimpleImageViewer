@@ -19,6 +19,8 @@
 use eframe::egui;
 use std::collections::HashMap;
 
+use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+
 fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
     let taken = std::mem::take(map);
     for (old_idx, value) in taken {
@@ -32,6 +34,8 @@ pub struct TextureCacheInsert {
     pub orig_w: u32,
     pub orig_h: u32,
     pub needs_tile_manager: bool,
+    pub buffer_tag: TexturePreviewBufferTag,
+    pub stage: PreviewStage,
     pub current_index: usize,
     pub total_count: usize,
 }
@@ -42,6 +46,8 @@ pub struct TextureCache {
     original_res: HashMap<usize, (u32, u32)>,
     /// True when the index uses the tiled pyramid pipeline (PSB/EXR/large raster).
     needs_tile_manager: HashMap<usize, bool>,
+    preview_buffer_tag: HashMap<usize, TexturePreviewBufferTag>,
+    preview_stage: HashMap<usize, PreviewStage>,
     /// Cached keys for bounded eviction scans (len <= max_size + 1).
     cached_indices: Vec<usize>,
     /// `(current_index, total_count)` for which `evict_furthest_idx` was computed.
@@ -68,6 +74,8 @@ impl TextureCache {
             textures: HashMap::new(),
             original_res: HashMap::new(),
             needs_tile_manager: HashMap::new(),
+            preview_buffer_tag: HashMap::new(),
+            preview_stage: HashMap::new(),
             cached_indices: Vec::new(),
             evict_anchor: (0, 0),
             evict_furthest_idx: None,
@@ -88,6 +96,9 @@ impl TextureCache {
             .insert(index, (params.orig_w, params.orig_h));
         self.needs_tile_manager
             .insert(index, params.needs_tile_manager);
+        self.preview_buffer_tag
+            .insert(index, params.buffer_tag);
+        self.preview_stage.insert(index, params.stage);
         if is_new_key {
             self.cached_indices.push(index);
         }
@@ -109,6 +120,8 @@ impl TextureCache {
         self.textures.remove(&index);
         self.original_res.remove(&index);
         self.needs_tile_manager.remove(&index);
+        self.preview_buffer_tag.remove(&index);
+        self.preview_stage.remove(&index);
         self.drop_cached_index(index);
         if self.evict_furthest_idx == Some(index) {
             self.evict_furthest_idx = None;
@@ -128,6 +141,12 @@ impl TextureCache {
         if let Some(flag) = self.needs_tile_manager.remove(&from) {
             self.needs_tile_manager.insert(to, flag);
         }
+        if let Some(tag) = self.preview_buffer_tag.remove(&from) {
+            self.preview_buffer_tag.insert(to, tag);
+        }
+        if let Some(stage) = self.preview_stage.remove(&from) {
+            self.preview_stage.insert(to, stage);
+        }
         if let Some(slot) = self.cached_indices.iter_mut().find(|i| **i == from) {
             *slot = to;
         }
@@ -138,6 +157,8 @@ impl TextureCache {
         permute_usize_hashmap(&mut self.textures, old_to_new);
         permute_usize_hashmap(&mut self.original_res, old_to_new);
         permute_usize_hashmap(&mut self.needs_tile_manager, old_to_new);
+        permute_usize_hashmap(&mut self.preview_buffer_tag, old_to_new);
+        permute_usize_hashmap(&mut self.preview_stage, old_to_new);
         for idx in &mut self.cached_indices {
             if *idx < old_to_new.len() {
                 *idx = old_to_new[*idx];
@@ -161,8 +182,26 @@ impl TextureCache {
             .unwrap_or(false)
     }
 
+    pub fn cached_buffer_tag(&self, index: usize) -> Option<TexturePreviewBufferTag> {
+        self.preview_buffer_tag.get(&index).copied()
+    }
+
+    pub fn cached_preview_stage(&self, index: usize) -> Option<PreviewStage> {
+        self.preview_stage.get(&index).copied()
+    }
+
+    pub fn satisfies_tiled_sdr_hq(&self, index: usize) -> bool {
+        match (
+            self.cached_buffer_tag(index),
+            self.cached_preview_stage(index),
+        ) {
+            (Some(tag), Some(stage)) => tag.satisfies_tiled_sdr_hq(stage),
+            _ => false,
+        }
+    }
+
     /// Longer side of the **uploaded** preview texture in pixels (not the full-image logical size).
-    /// Used to avoid replacing a stage-2 HQ preview with a stage-1 bootstrap when re-opening a file.
+    /// Used only to pick the larger GPU handle when promoting into an active tile manager.
     pub fn cached_preview_max_side(&self, index: usize) -> Option<u32> {
         self.textures.get(&index).map(|h| {
             let s = h.size();
@@ -174,6 +213,8 @@ impl TextureCache {
         self.textures.clear();
         self.original_res.clear();
         self.needs_tile_manager.clear();
+        self.preview_buffer_tag.clear();
+        self.preview_stage.clear();
         self.cached_indices.clear();
         self.evict_furthest_idx = None;
         self.evict_furthest_dist = 0;
@@ -224,6 +265,8 @@ impl TextureCache {
         self.textures.remove(&idx);
         self.original_res.remove(&idx);
         self.needs_tile_manager.remove(&idx);
+        self.preview_buffer_tag.remove(&idx);
+        self.preview_stage.remove(&idx);
         self.drop_cached_index(idx);
         self.rebuild_evict_candidate(current_index, total_count);
         Some(idx)
@@ -248,6 +291,8 @@ mod tests {
                 orig_w: 100,
                 orig_h: 200,
                 needs_tile_manager: true,
+                buffer_tag: TexturePreviewBufferTag::TiledBootstrap,
+                stage: PreviewStage::Initial,
                 current_index: 3,
                 total_count: 10,
             },
@@ -287,6 +332,8 @@ mod tests {
                     orig_w: 1,
                     orig_h: 1,
                     needs_tile_manager: false,
+                    buffer_tag: TexturePreviewBufferTag::MainWindowSdr,
+                    stage: PreviewStage::Refined,
                     current_index: current,
                     total_count: total,
                 },
@@ -324,6 +371,8 @@ mod tests {
                     orig_w: 1,
                     orig_h: 1,
                     needs_tile_manager: false,
+                    buffer_tag: TexturePreviewBufferTag::MainWindowSdr,
+                    stage: PreviewStage::Refined,
                     current_index: current,
                     total_count: total,
                 },

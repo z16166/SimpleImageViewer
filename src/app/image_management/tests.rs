@@ -174,16 +174,26 @@ fn navigation_preserves_current_tile_manager_for_restore() {
 }
 
 #[test]
-fn tiled_bootstrap_preview_replaces_only_missing_or_smaller_cached_preview() {
-    assert!(should_upload_tiled_bootstrap_preview(false, None, 512));
-    assert!(should_upload_tiled_bootstrap_preview(true, None, 512));
-    assert!(should_upload_tiled_bootstrap_preview(true, Some(128), 512));
+fn tiled_bootstrap_preview_replaces_only_lower_rank_cached_preview() {
+    use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+
+    assert!(should_upload_tiled_bootstrap_preview(false, None, None));
+    assert!(should_upload_tiled_bootstrap_preview(true, None, None));
+    assert!(should_upload_tiled_bootstrap_preview(
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+    ));
     assert!(!should_upload_tiled_bootstrap_preview(
         true,
-        Some(1024),
-        512
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
     ));
-    assert!(!should_upload_tiled_bootstrap_preview(true, Some(512), 512));
+    assert!(!should_upload_tiled_bootstrap_preview(
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+    ));
 }
 
 #[test]
@@ -378,11 +388,23 @@ fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
 }
 
 #[test]
-fn tiled_hdr_preview_replaces_only_missing_or_smaller_cached_preview() {
-    assert!(should_cache_tiled_hdr_preview(None, 4096));
-    assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
-    assert!(!should_cache_tiled_hdr_preview(Some(4096), 1024));
-    assert!(!should_cache_tiled_hdr_preview(Some(4096), 4096));
+fn tiled_hdr_preview_buffer_cache_still_compares_dimensions() {
+    // Float HDR preview buffers are not tagged in `TextureCache`; size guards remain here.
+    let mut cache = HashMap::<usize, Arc<crate::hdr::types::HdrImageBuffer>>::new();
+    let small = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1024,
+        height: 512,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![0.0; 4]),
+    });
+    cache.insert(0, small);
+    let cached_max = cache.get(&0).map(|cached| cached.width.max(cached.height));
+    assert!(cached_max.is_none_or(|max| 4096 > max));
+    assert!(!cached_max.is_none_or(|max| 1024 > max));
 }
 
 #[test]
@@ -448,13 +470,57 @@ fn current_hdr_tiled_preview_updates_only_when_larger_preview_is_cached() {
 }
 
 #[test]
-fn tiled_sdr_preview_cache_policy_preserves_full_images_and_larger_previews() {
-    assert!(should_cache_tiled_sdr_preview(false, false, None, 512));
-    assert!(!should_cache_tiled_sdr_preview(true, false, Some(128), 512));
-    assert!(should_cache_tiled_sdr_preview(true, true, None, 512));
-    assert!(should_cache_tiled_sdr_preview(true, true, Some(128), 512));
-    assert!(!should_cache_tiled_sdr_preview(true, true, Some(512), 512));
-    assert!(!should_cache_tiled_sdr_preview(true, true, Some(1024), 512));
+fn tiled_sdr_preview_cache_policy_uses_tag_rank_not_dimensions() {
+    use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+
+    assert!(should_cache_tiled_sdr_preview(
+        false,
+        false,
+        None,
+        None,
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        false,
+        Some(TexturePreviewBufferTag::MainWindowSdr),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(should_cache_tiled_sdr_preview(
+        true,
+        true,
+        None,
+        None,
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledOnDemandSdr,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledBootstrap,
+        PreviewStage::Initial,
+    ));
 }
 
 #[test]
@@ -963,6 +1029,8 @@ fn hdr_gain_map_sdr_display_change_reloads_heif_marked_ultra_hdr_sensitive() {
         0,
         &DecodedImage::new(64, 48, vec![128; 64 * 48 * 4]),
         "img_0".into(),
+        crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+        crate::loader::PreviewStage::Refined,
         &ctx,
     );
 
@@ -1178,6 +1246,7 @@ fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd: None,
+        sdr_texture_tag: None,
     };
 
     assert!(!preview_result_has_sdr_upload(&result));
@@ -2502,6 +2571,8 @@ fn evict_distant_prefetch_caches_evicts_all_distant_prefetched_tiled_and_hdr_res
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
             current_index: 0,
             total_count: 7,
         },
@@ -2551,6 +2622,8 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2562,6 +2635,8 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2599,6 +2674,8 @@ fn evict_distant_prefetch_caches_retains_outside_window_while_loading() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2725,6 +2802,8 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
             orig_w: 2048,
             orig_h: 1536,
             needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
             current_index: 0,
             total_count: 2,
         },
@@ -2741,6 +2820,41 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     app.navigate_to(1, &ctx);
 
     assert_eq!(app.current_image_res, Some((2048, 1536)));
+    assert!(app.loader.is_loading(1));
+}
+
+#[test]
+fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
+    use eframe::egui;
+
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.exr")];
+    app.current_index = 0;
+
+    let ctx = egui::Context::default();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([4, 2], &[0u8; 32]);
+    let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
+    app.texture_cache.insert(
+        1,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: 24576,
+            orig_h: 12288,
+            needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
+            current_index: 0,
+            total_count: 2,
+        },
+    );
+
+    assert!(app.texture_cache.needs_tile_manager(1));
+    assert!(app.installed_display_mode(1).is_none());
+    assert!(app.tile_manager.is_none());
+
+    app.navigate_to(1, &ctx);
+
+    assert_eq!(app.current_image_res, Some((24576, 12288)));
     assert!(app.loader.is_loading(1));
 }
 
