@@ -699,7 +699,14 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
 
     // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
-    ensure_tiff_scanline_size(scanline_size, width, spp, 16, CONFIG_CONTIG, "16-bit RGB TIFF")?;
+    ensure_tiff_scanline_size(
+        scanline_size,
+        width,
+        spp,
+        16,
+        CONFIG_CONTIG,
+        "16-bit RGB TIFF",
+    )?;
     let mut buf = vec![0u8; scanline_size as usize];
 
     let mut smin = 0.0_f64;
