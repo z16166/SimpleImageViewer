@@ -27,9 +27,9 @@ use std::path::PathBuf;
 
 use super::decode::{
     TiffPaletteMaps, TiffSampleDecodeParams, ensure_tiff_scanline_size,
-    finalize_ieee_float_linear_scratch_to_rgba, get_raw_value, process_scanline_contig,
-    process_scanline_separate, tiff_uint_default_sample_max,
-    write_ieee_contig_scanline_linear_scratch, write_ieee_separate_scanline_linear_scratch,
+    finalize_linear_scratch_to_rgba, process_scanline_contig,
+    process_scanline_separate,
+    write_contig_scanline_linear_scratch, write_separate_scanline_linear_scratch,
 };
 use super::scratch::{
     with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
@@ -322,9 +322,8 @@ struct ManualScanlineDecodePass<'a> {
     samples_to_process: usize,
     params: TiffSampleDecodeParams,
     palette: TiffPaletteMaps,
-    track_range: bool,
-    ieee_deferred_scale: bool,
-    ieee_linear_scratch: Option<&'a mut [f32]>,
+    linear_deferred_scale: bool,
+    linear_scratch: Option<&'a mut [f32]>,
     actual_min: &'a mut f64,
     actual_max: &'a mut f64,
 }
@@ -343,25 +342,24 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
         samples_to_process,
         params,
         palette,
-        track_range,
-        ieee_deferred_scale,
-        mut ieee_linear_scratch,
+        linear_deferred_scale,
+        mut linear_scratch,
         actual_min,
         actual_max,
     } = pass;
     let TiffSampleDecodeParams { bps, format, .. } = params;
     if config == CONFIG_CONTIG {
-        if ieee_deferred_scale {
-            let scratch = ieee_linear_scratch
+        if linear_deferred_scale {
+            let scratch = linear_scratch
                 .as_deref_mut()
-                .expect("IEEE deferred scale requires linear scratch");
+                .expect("deferred linear scale requires scratch");
             for y in 0..height {
                 if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0
                 {
                     buf.fill(0);
                 }
                 let row_offset = y as usize * width as usize * 4;
-                write_ieee_contig_scanline_linear_scratch(
+                write_contig_scanline_linear_scratch(
                     buf,
                     &mut scratch[row_offset..row_offset + width as usize * 4],
                     width,
@@ -378,24 +376,14 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                 {
                     buf.fill(0);
                 }
-                if track_range {
-                    let num_samples = width as usize * spp as usize;
-                    for idx in 0..num_samples {
-                        let val = get_raw_value(buf, idx, bps, format);
-                        if val.is_finite() {
-                            *actual_min = actual_min.min(val);
-                            *actual_max = actual_max.max(val);
-                        }
-                    }
-                }
                 let row_offset = y as usize * width as usize * 4;
                 process_scanline_contig(buf, &mut rgba[row_offset..], width, spp, params, palette);
             }
         }
-    } else if ieee_deferred_scale {
-        let scratch = ieee_linear_scratch
+    } else if linear_deferred_scale {
+        let scratch = linear_scratch
             .as_deref_mut()
-            .expect("IEEE deferred scale requires linear scratch");
+            .expect("deferred linear scale requires scratch");
         for s in 0..samples_to_process {
             for y in 0..height {
                 if unsafe {
@@ -405,7 +393,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                     buf.fill(0);
                 }
                 let row_offset = y as usize * width as usize * 4;
-                write_ieee_separate_scanline_linear_scratch(
+                write_separate_scanline_linear_scratch(
                     buf,
                     &mut scratch[row_offset..row_offset + width as usize * 4],
                     width,
@@ -425,15 +413,6 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                 } <= 0
                 {
                     buf.fill(0);
-                }
-                if track_range {
-                    for idx in 0..width as usize {
-                        let val = get_raw_value(buf, idx, bps, format);
-                        if val.is_finite() {
-                            *actual_min = actual_min.min(val);
-                            *actual_max = actual_max.max(val);
-                        }
-                    }
                 }
                 let row_offset = y as usize * width as usize * 4;
                 process_scanline_separate(buf, &mut rgba[row_offset..], width, s, params);
@@ -507,7 +486,6 @@ pub(crate) unsafe fn manual_decode_scanline(
         _ => 1,
     });
 
-    // Determine if we need a two-pass normalization for floats or large integers
     let mut smax_provided = false;
     let mut smin_provided = false;
     // SAFETY: read-only tag queries; out-parameters are stack locals.
@@ -524,12 +502,12 @@ pub(crate) unsafe fn manual_decode_scanline(
         }
     }
 
-    // Auto-scale HDR formats if SMax is missing, excluding CMYK which has absolute values
-    let use_auto_scale = !smax_provided
+    // When SMaxSampleValue is present, trust it (and SMINSAMPLEVALUE when present) and decode once.
+    // When SMax is missing for high-depth integer or IEEE float samples, read each scanline once,
+    // cache raw samples in `linear_scratch`, then normalize on CPU (no min/max pre-scan pass).
+    let use_linear_deferred_scale = !smax_provided
         && photo != PHOTO_SEPARATED
         && (format == FORMAT_IEEEFP || bps == 16 || bps == 32 || bps == 64);
-    let use_integer_auto_scale = use_auto_scale && format != FORMAT_IEEEFP;
-    let use_ieee_float_deferred_scale = use_auto_scale && format == FORMAT_IEEEFP && !smax_provided;
 
     let palette = TiffPaletteMaps {
         r_map,
@@ -543,7 +521,7 @@ pub(crate) unsafe fn manual_decode_scanline(
     };
     let mut actual_min = f64::MAX;
     let mut actual_max = f64::MIN;
-    let mut ieee_linear_scratch = if use_ieee_float_deferred_scale {
+    let mut linear_scratch = if use_linear_deferred_scale {
         Some(vec![0.0_f32; width as usize * height as usize * 4])
     } else {
         None
@@ -569,63 +547,24 @@ pub(crate) unsafe fn manual_decode_scanline(
             samples_to_process,
             params: decode_params,
             palette,
-            track_range: use_integer_auto_scale,
-            ieee_deferred_scale: use_ieee_float_deferred_scale,
-            ieee_linear_scratch: ieee_linear_scratch.as_deref_mut(),
+            linear_deferred_scale: use_linear_deferred_scale,
+            linear_scratch: linear_scratch.as_deref_mut(),
             actual_min: &mut actual_min,
             actual_max: &mut actual_max,
         });
     }
 
-    if use_ieee_float_deferred_scale {
+    if use_linear_deferred_scale {
         if actual_max > actual_min {
             if !smin_provided {
                 smin = actual_min;
             }
             smax = actual_max;
         }
-        if let Some(scratch) = ieee_linear_scratch.as_ref() {
-            finalize_ieee_float_linear_scratch_to_rgba(
+        if let Some(scratch) = linear_scratch.as_ref() {
+            finalize_linear_scratch_to_rgba(
                 scratch, &mut rgba, width, height, spp, photo, smin, smax,
             );
-        }
-    }
-
-    if use_integer_auto_scale && actual_max > actual_min {
-        let default_max = tiff_uint_default_sample_max(bps);
-        let final_smin = if smin_provided { smin } else { actual_min };
-        let final_smax = actual_max;
-        let needs_rescale = (!smin_provided && final_smin > 0.5) || final_smax < default_max - 0.5;
-        if needs_rescale {
-            smin = final_smin;
-            smax = final_smax;
-            rgba.fill(255);
-            unsafe {
-                manual_decode_scanline_pass(ManualScanlineDecodePass {
-                    tif,
-                    buf: &mut buf,
-                    rgba: &mut rgba,
-                    width,
-                    height,
-                    config,
-                    spp,
-                    samples_to_process,
-                    params: TiffSampleDecodeParams {
-                        bps,
-                        photo,
-                        format,
-                        swapped,
-                        smin,
-                        smax,
-                    },
-                    palette,
-                    track_range: false,
-                    ieee_deferred_scale: false,
-                    ieee_linear_scratch: None,
-                    actual_min: &mut actual_min,
-                    actual_max: &mut actual_max,
-                });
-            }
         }
     }
 

@@ -124,6 +124,13 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
         return 0.0;
     }
     match (bps, format) {
+        (16, FORMAT_IEEEFP) => {
+            // SAFETY: `sample_bytes_in_buf` verified the sample span lies in `buf`.
+            let bits = unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16)
+            };
+            half::f16::from_bits(bits).to_f64()
+        }
         (16, _) => {
             // SAFETY: `sample_bytes_in_buf` verified `idx * 2 .. idx * 2 + 2` lies in `buf`.
             // Unaligned read is required because TIFF sample offsets are not guaranteed aligned.
@@ -343,6 +350,16 @@ mod tests {
         process_scanline_contig(&src, &mut dst, 2, 3, rgb8_params(), empty_palette());
 
         assert_eq!(dst, [10, 20, 30, 255, 40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn get_raw_value_reads_ieee_half_float_bits() {
+        let bits = half::f16::from_f32(2.5).to_bits();
+        let buf = bits.to_ne_bytes();
+        let got = get_raw_value(&buf, 0, 16, FORMAT_IEEEFP);
+        assert!((got - 2.5).abs() < 1.0e-3);
+        let as_uint = get_raw_value(&buf, 0, 16, FORMAT_UINT);
+        assert_ne!(as_uint, got);
     }
 
     #[test]
@@ -952,8 +969,9 @@ fn finalize_miniswhite_float_inversion(out: &mut [f32], width: u32, height: u32,
     }
 }
 
-/// Store raw IEEE float samples in a row of `scratch` (RGBA layout) and track file-wide min/max.
-pub(crate) fn write_ieee_contig_scanline_linear_scratch(
+/// Store raw high-depth samples (integer or IEEE float) in a row of `scratch` (RGBA layout)
+/// and track file-wide min/max during the single scanline read pass.
+pub(crate) fn write_contig_scanline_linear_scratch(
     buf: &[u8],
     scratch_row: &mut [f32],
     width: u32,
@@ -977,8 +995,8 @@ pub(crate) fn write_ieee_contig_scanline_linear_scratch(
     }
 }
 
-/// Store one IEEE float plane in a row of `scratch` (RGBA layout) and track file-wide min/max.
-pub(crate) fn write_ieee_separate_scanline_linear_scratch(
+/// Store one high-depth plane in a row of `scratch` (RGBA layout) and track file-wide min/max.
+pub(crate) fn write_separate_scanline_linear_scratch(
     buf: &[u8],
     scratch_row: &mut [f32],
     width: u32,
@@ -1001,8 +1019,8 @@ pub(crate) fn write_ieee_separate_scanline_linear_scratch(
     }
 }
 
-/// Normalize deferred IEEE float scratch (single I/O pass) into display RGBA8.
-pub(crate) fn finalize_ieee_float_linear_scratch_to_rgba(
+/// Normalize deferred linear scratch (single I/O pass) into display RGBA8.
+pub(crate) fn finalize_linear_scratch_to_rgba(
     scratch: &[f32],
     rgba: &mut [u8],
     width: u32,
