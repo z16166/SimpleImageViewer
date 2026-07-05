@@ -175,8 +175,7 @@ pub(crate) fn try_load_disk_backed_radiance_hdr_from_mmap(
 }
 
 pub(crate) fn is_exr_disk_backed_probe_fallback_error(err: &str) -> bool {
-    err.contains("channel subsampling not supported yet")
-        || err.contains("EXR layer does not contain required")
+    err.contains("EXR layer does not contain required")
         || err.contains("deep data not supported yet")
 }
 
