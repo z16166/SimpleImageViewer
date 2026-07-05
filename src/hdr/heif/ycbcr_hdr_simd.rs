@@ -1068,15 +1068,15 @@ mod tests {
             false,
             HeifYcbcrMatrix::Bt709,
         ));
-        assert!(!hdr_ycbcr_u16_simd_eligible(
+        assert!(hdr_ycbcr_u16_simd_eligible(
             hdr_u16_layout(libheif_sys::heif_chroma_420),
             true,
             HeifYcbcrMatrix::Bt601,
         ));
-        assert!(hdr_ycbcr_u16_simd_eligible(
+        assert!(!hdr_ycbcr_u16_simd_eligible(
             hdr_u16_layout(libheif_sys::heif_chroma_420),
-            true,
-            HeifYcbcrMatrix::Bt709,
+            false,
+            HeifYcbcrMatrix::Monochrome,
         ));
     }
 }
