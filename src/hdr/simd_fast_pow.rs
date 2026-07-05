@@ -16,8 +16,9 @@
 
 //! Four-lane `x^e` helper used from tone-map and gain-map SIMD kernels (SSE4.1 / NEON).
 //!
-//! Callers must be compiled with `#[target_feature(enable = "...")]` and invoked only after
-//! runtime feature detection (or unconditionally on aarch64).
+//! Uses vectorized natural log / exp (Cephes-style minimax, sse_mathfun) so all four lanes
+//! stay in SIMD. Callers must be compiled with `#[target_feature(enable = "...")]` and invoked
+//! only after runtime feature detection (or unconditionally on aarch64).
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -32,39 +33,256 @@ pub(crate) fn fast_powf_positive(base: f32, exponent: f32) -> f32 {
 }
 
 #[cfg(target_arch = "x86_64")]
+mod x86 {
+    use super::*;
+
+    const INV_MANT_MASK: i32 = !0x7f80_0000_u32 as i32;
+    const EXP_BIAS: i32 = 0x7f;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
+    const LOG2EF: f32 = 1.442_695_040_888_963_4;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    unsafe fn log_ps(x: __m128) -> __m128 {
+        let one = _mm_set1_ps(1.0);
+        let half = _mm_set1_ps(0.5);
+        let min_norm = _mm_set1_ps(f32::MIN_POSITIVE);
+        let mut x = _mm_max_ps(x, min_norm);
+
+        let mut imm0 = _mm_srli_epi32(_mm_castps_si128(x), 23);
+        x = _mm_and_ps(x, _mm_castsi128_ps(_mm_set1_epi32(INV_MANT_MASK)));
+        x = _mm_or_ps(x, half);
+        imm0 = _mm_sub_epi32(imm0, _mm_set1_epi32(EXP_BIAS));
+        let mut e = _mm_add_ps(_mm_cvtepi32_ps(imm0), one);
+
+        let mask = _mm_cmplt_ps(x, _mm_set1_ps(SQRTHF));
+        let tmp = _mm_and_ps(x, mask);
+        x = _mm_sub_ps(x, one);
+        e = _mm_sub_ps(e, _mm_and_ps(one, mask));
+        x = _mm_add_ps(x, tmp);
+
+        let z = _mm_mul_ps(x, x);
+        let mut y = _mm_set1_ps(7.037_683_629_2e-2);
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.151_461_031_0e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.167_699_874_0e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.242_014_084_6e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.424_932_278_7e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.666_805_766_5e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(2.000_071_476_5e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-2.499_999_399_3e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(3.333_333_117_4e-1));
+        y = _mm_mul_ps(_mm_mul_ps(y, x), z);
+
+        let mut tmp = _mm_mul_ps(e, _mm_set1_ps(LOG_Q1));
+        y = _mm_add_ps(y, tmp);
+        tmp = _mm_mul_ps(z, half);
+        y = _mm_sub_ps(y, tmp);
+        tmp = _mm_mul_ps(e, _mm_set1_ps(LOG_Q2));
+        x = _mm_add_ps(x, y);
+        _mm_add_ps(x, tmp)
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    unsafe fn exp_ps(x: __m128) -> __m128 {
+        let one = _mm_set1_ps(1.0);
+        let half = _mm_set1_ps(0.5);
+        let mut x = _mm_min_ps(_mm_max_ps(x, _mm_set1_ps(EXP_LO)), _mm_set1_ps(EXP_HI));
+
+        let mut fx = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(LOG2EF)), half);
+        let tmp = _mm_cvtepi32_ps(_mm_cvttps_epi32(fx));
+        let mask = _mm_cmpgt_ps(tmp, fx);
+        fx = _mm_sub_ps(tmp, _mm_and_ps(mask, one));
+
+        let tmp = _mm_mul_ps(fx, _mm_set1_ps(EXP_C1));
+        let z = _mm_mul_ps(fx, _mm_set1_ps(EXP_C2));
+        x = _mm_sub_ps(x, tmp);
+        x = _mm_sub_ps(x, z);
+        let z2 = _mm_mul_ps(x, x);
+
+        let mut y = _mm_set1_ps(1.987_569_150_0e-4);
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.398_199_950_7e-3));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(8.333_451_907_3e-3));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(4.166_579_589_4e-2));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.666_666_545_9e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(5.000_000_120_1e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, z2), x);
+        y = _mm_add_ps(y, one);
+
+        let imm0 = _mm_slli_epi32(
+            _mm_add_epi32(_mm_cvttps_epi32(fx), _mm_set1_epi32(EXP_BIAS)),
+            23,
+        );
+        _mm_mul_ps(y, _mm_castsi128_ps(imm0))
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    unsafe fn pow_ps(base: __m128, exponent: f32) -> __m128 {
+        let zero = _mm_setzero_ps();
+        let positive = _mm_cmpgt_ps(base, zero);
+        let exp_vec = _mm_set1_ps(exponent);
+        let pow = exp_ps(_mm_mul_ps(exp_vec, log_ps(base)));
+        _mm_and_ps(pow, positive)
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    pub(super) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
+        pow_ps(base, exponent)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 #[inline]
 pub(crate) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
-    let mut lanes = [0.0_f32; 4];
-    unsafe {
-        _mm_storeu_ps(lanes.as_mut_ptr(), base);
+    unsafe { x86::pow4_sse41(base, exponent) }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod arm {
+    use super::*;
+
+    const INV_MANT_MASK: u32 = !0x7f80_0000;
+    const EXP_BIAS: i32 = 0x7f;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
+    const LOG2EF: f32 = 1.442_695_040_888_963_4;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    unsafe fn log_ps(x: float32x4_t) -> float32x4_t {
+        let one = vdupq_n_f32(1.0);
+        let half = vdupq_n_f32(0.5);
+        let min_norm = vdupq_n_f32(f32::MIN_POSITIVE);
+        let mut x = vmaxq_f32(x, min_norm);
+
+        let bits = vreinterpretq_s32_f32(x);
+        let mut imm0 = vshrq_n_s32(bits, 23);
+        x = vreinterpretq_f32_s32(vandq_s32(
+            bits,
+            vreinterpretq_s32_u32(vdupq_n_u32(INV_MANT_MASK)),
+        ));
+        x = vorrq_f32(x, half);
+        imm0 = vsubq_s32(imm0, vdupq_n_s32(EXP_BIAS));
+        let mut e = vaddq_f32(vcvtq_f32_s32(imm0), one);
+
+        let mask = vcltq_f32(x, vdupq_n_f32(SQRTHF));
+        let tmp = vreinterpretq_f32_u32(vandq_u32(
+            vreinterpretq_u32_f32(x),
+            vreinterpretq_u32_f32(mask),
+        ));
+        x = vsubq_f32(x, one);
+        e = vsubq_f32(
+            e,
+            vreinterpretq_f32_u32(vandq_u32(
+                vreinterpretq_u32_f32(one),
+                vreinterpretq_u32_f32(mask),
+            )),
+        );
+        x = vaddq_f32(x, tmp);
+
+        let z = vmulq_f32(x, x);
+        let mut y = vdupq_n_f32(7.037_683_629_2e-2);
+        y = vmlaq_f32(vdupq_n_f32(-1.151_461_031_0e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(1.167_699_874_0e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(-1.242_014_084_6e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(1.424_932_278_7e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(-1.666_805_766_5e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(2.000_071_476_5e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(-2.499_999_399_3e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(3.333_333_117_4e-1), y, x);
+        y = vmulq_f32(vmulq_f32(y, x), z);
+
+        let mut tmp = vmulq_f32(e, vdupq_n_f32(LOG_Q1));
+        y = vaddq_f32(y, tmp);
+        tmp = vmulq_f32(z, half);
+        y = vsubq_f32(y, tmp);
+        tmp = vmulq_f32(e, vdupq_n_f32(LOG_Q2));
+        x = vaddq_f32(x, y);
+        vaddq_f32(x, tmp)
     }
-    for lane in &mut lanes {
-        *lane = if *lane <= 0.0 {
-            0.0
-        } else {
-            lane.powf(exponent)
-        };
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    unsafe fn exp_ps(x: float32x4_t) -> float32x4_t {
+        let one = vdupq_n_f32(1.0);
+        let half = vdupq_n_f32(0.5);
+        let mut x = vminq_f32(
+            vmaxq_f32(x, vdupq_n_f32(EXP_LO)),
+            vdupq_n_f32(EXP_HI),
+        );
+
+        let mut fx = vaddq_f32(vmulq_f32(x, vdupq_n_f32(LOG2EF)), half);
+        let tmp = vcvtq_f32_s32(vcvtq_s32_f32(fx));
+        let mask = vcgtq_f32(tmp, fx);
+        fx = vsubq_f32(
+            tmp,
+            vreinterpretq_f32_u32(vandq_u32(
+                vreinterpretq_u32_f32(one),
+                vreinterpretq_u32_f32(mask),
+            )),
+        );
+
+        let tmp = vmulq_f32(fx, vdupq_n_f32(EXP_C1));
+        let z = vmulq_f32(fx, vdupq_n_f32(EXP_C2));
+        x = vsubq_f32(x, tmp);
+        x = vsubq_f32(x, z);
+        let z2 = vmulq_f32(x, x);
+
+        let mut y = vdupq_n_f32(1.987_569_150_0e-4);
+        y = vmlaq_f32(vdupq_n_f32(1.398_199_950_7e-3), y, x);
+        y = vmlaq_f32(vdupq_n_f32(8.333_451_907_3e-3), y, x);
+        y = vmlaq_f32(vdupq_n_f32(4.166_579_589_4e-2), y, x);
+        y = vmlaq_f32(vdupq_n_f32(1.666_666_545_9e-1), y, x);
+        y = vmlaq_f32(vdupq_n_f32(5.000_000_120_1e-1), y, x);
+        y = vaddq_f32(vmulq_f32(y, z2), x);
+        y = vaddq_f32(y, one);
+
+        let imm0 = vshlq_n_s32(
+            vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(EXP_BIAS)),
+            23,
+        );
+        vmulq_f32(y, vreinterpretq_f32_s32(imm0))
     }
-    unsafe { _mm_loadu_ps(lanes.as_ptr()) }
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    unsafe fn pow_ps(base: float32x4_t, exponent: f32) -> float32x4_t {
+        let zero = vdupq_n_f32(0.0);
+        let positive = vcgtq_f32(base, zero);
+        let exp_vec = vdupq_n_f32(exponent);
+        let pow = exp_ps(vmulq_f32(exp_vec, log_ps(base)));
+        vreinterpretq_f32_u32(vandq_u32(
+            vreinterpretq_u32_f32(pow),
+            vreinterpretq_u32_f32(positive),
+        ))
+    }
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    pub(super) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
+        pow_ps(base, exponent)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
 pub(crate) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
-    let mut lanes = [0.0_f32; 4];
-    unsafe {
-        vst1q_f32(lanes.as_mut_ptr(), base);
-    }
-    for lane in &mut lanes {
-        *lane = if *lane <= 0.0 {
-            0.0
-        } else {
-            lane.powf(exponent)
-        };
-    }
-    unsafe { vld1q_f32(lanes.as_ptr()) }
+    unsafe { arm::pow4_neon(base, exponent) }
 }
 
 #[cfg(test)]
@@ -103,7 +321,7 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn pow4_sse41_matches_scalar_fast_powf() {
+    fn pow4_sse41_matches_std_powf() {
         if !std::arch::is_x86_feature_detected!("sse4.1") {
             return;
         }
@@ -115,7 +333,7 @@ mod tests {
                     if v <= 0.0 {
                         0.0
                     } else {
-                        fast_powf_positive(v, exp)
+                        v.powf(exp)
                     }
                 });
                 let got = unsafe {
@@ -132,7 +350,7 @@ mod tests {
                         g - e
                     };
                     assert!(
-                        rel <= 2.0e-5,
+                        rel <= 2.0e-4,
                         "lane={lane} x={} exp={exp} got={g} expected={e}",
                         lanes[lane]
                     );
@@ -144,7 +362,7 @@ mod tests {
 
     #[cfg(target_arch = "aarch64")]
     #[test]
-    fn pow4_neon_matches_scalar_fast_powf() {
+    fn pow4_neon_matches_std_powf() {
         for exp in EXPONENTS {
             let mut x = 0.0_f32;
             while x <= 1.0 {
@@ -153,7 +371,7 @@ mod tests {
                     if v <= 0.0 {
                         0.0
                     } else {
-                        fast_powf_positive(v, exp)
+                        v.powf(exp)
                     }
                 });
                 let got = unsafe {
@@ -170,7 +388,7 @@ mod tests {
                         g - e
                     };
                     assert!(
-                        rel <= 2.0e-5,
+                        rel <= 2.0e-4,
                         "lane={lane} x={} exp={exp} got={g} expected={e}",
                         lanes[lane]
                     );
