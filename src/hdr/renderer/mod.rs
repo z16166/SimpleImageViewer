@@ -82,6 +82,8 @@ pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool, Textur
 mod tone_map_gpu;
 pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};
 
+mod compose_bind_group;
+
 pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;

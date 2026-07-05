@@ -417,29 +417,15 @@ pub(super) fn ensure_jpeg_compose_bind_group<'a>(
             .jpeg_compose_uniform_buffer
             .as_ref()
             .expect("jpeg compose uniform buffer");
-        binding.jpeg_compose_bind_group =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("simple-image-viewer-hdr-jpeg-compose-bind-group"),
-                layout: bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(sdr_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(gain_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(display_storage_view),
-                    },
-                ],
-            }));
+        binding.jpeg_compose_bind_group = Some(super::compose_bind_group::create_compose_bind_group(
+            device,
+            bind_group_layout,
+            "simple-image-viewer-hdr-jpeg-compose-bind-group",
+            super::compose_bind_group::ComposePrimaryBinding::TextureView(sdr_view),
+            gain_view,
+            uniform_buffer,
+            display_storage_view,
+        ));
     }
     binding
         .jpeg_compose_bind_group
@@ -497,28 +483,15 @@ pub(super) fn ensure_jpeg_tile_compose_bind_group<'a>(
 ) -> &'a wgpu::BindGroup {
     if tile_binding.jpeg_compose_bind_group.is_none() {
         tile_binding.jpeg_compose_bind_group =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("simple-image-viewer-hdr-jpeg-compose-tile-bind-group"),
-                layout: bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(sdr_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(gain_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(display_storage_view),
-                    },
-                ],
-            }));
+            Some(super::compose_bind_group::create_compose_bind_group(
+                device,
+                bind_group_layout,
+                "simple-image-viewer-hdr-jpeg-compose-tile-bind-group",
+                super::compose_bind_group::ComposePrimaryBinding::TextureView(sdr_view),
+                gain_view,
+                uniform_buffer,
+                display_storage_view,
+            ));
     }
     tile_binding
         .jpeg_compose_bind_group
