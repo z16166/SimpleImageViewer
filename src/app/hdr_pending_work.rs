@@ -330,7 +330,6 @@ impl ImageViewerApp {
                             );
                         }
                     }
-                    queues.clear_iso_image_compose_inflight(key, bits);
                 });
             },
         );
@@ -393,7 +392,6 @@ impl ImageViewerApp {
                             );
                         }
                     }
-                    queues.clear_apple_image_compose_inflight(key, bits);
                 });
             },
         );
@@ -455,12 +453,12 @@ impl ImageViewerApp {
                             queues.completed_compose_failures.lock().push(
                                 HdrCompletedComposeFailure::IsoTile {
                                     tile_key,
+                                    target_capacity_bits: bits,
                                     target_format: format,
                                 },
                             );
                         }
                     }
-                    queues.clear_iso_tile_compose_inflight(tile_key, bits);
                 });
             },
         );
@@ -714,7 +712,15 @@ impl ImageViewerApp {
                 #[cfg(feature = "heif-native")]
                 HdrCompletedComposeWrite::AppleImage { target_format, .. } => *target_format,
                 #[cfg(not(feature = "heif-native"))]
-                HdrCompletedComposeWrite::AppleImage { .. } => continue,
+                HdrCompletedComposeWrite::AppleImage {
+                    key,
+                    target_capacity_bits,
+                    ..
+                } => {
+                    self.hdr_pending_work
+                        .clear_apple_image_compose_inflight(key, target_capacity_bits);
+                    continue;
+                }
             };
             if !Self::ensure_hdr_resources(wgpu_state, target_format) {
                 defer.push(write);
@@ -741,20 +747,24 @@ impl ImageViewerApp {
                     height,
                     pixels,
                     ..
-                } => match resources.apply_iso_image_cpu_compose(
-                    compose_sink,
-                    key,
-                    target_capacity_bits,
-                    width,
-                    height,
-                    &pixels,
-                ) {
-                    Ok(()) => changed = true,
-                    Err(err) => {
-                        log::warn!("[HDR] ISO CPU compose upload failed: {err}");
-                        resources.mark_iso_image_compose_failed(key, target_capacity_bits);
+                } => {
+                    match resources.apply_iso_image_cpu_compose(
+                        compose_sink,
+                        key,
+                        target_capacity_bits,
+                        width,
+                        height,
+                        &pixels,
+                    ) {
+                        Ok(()) => changed = true,
+                        Err(err) => {
+                            log::warn!("[HDR] ISO CPU compose upload failed: {err}");
+                            resources.mark_iso_image_compose_failed(key, target_capacity_bits);
+                        }
                     }
-                },
+                    self.hdr_pending_work
+                        .clear_iso_image_compose_inflight(key, target_capacity_bits);
+                }
                 #[cfg(feature = "heif-native")]
                 HdrCompletedComposeWrite::AppleImage {
                     key,
@@ -763,20 +773,24 @@ impl ImageViewerApp {
                     height,
                     pixels,
                     ..
-                } => match resources.apply_apple_image_cpu_compose(
-                    compose_sink,
-                    key,
-                    target_capacity_bits,
-                    width,
-                    height,
-                    &pixels,
-                ) {
-                    Ok(()) => changed = true,
-                    Err(err) => {
-                        log::warn!("[HDR] Apple CPU compose upload failed: {err}");
-                        resources.mark_apple_image_compose_failed(key, target_capacity_bits);
+                } => {
+                    match resources.apply_apple_image_cpu_compose(
+                        compose_sink,
+                        key,
+                        target_capacity_bits,
+                        width,
+                        height,
+                        &pixels,
+                    ) {
+                        Ok(()) => changed = true,
+                        Err(err) => {
+                            log::warn!("[HDR] Apple CPU compose upload failed: {err}");
+                            resources.mark_apple_image_compose_failed(key, target_capacity_bits);
+                        }
                     }
-                },
+                    self.hdr_pending_work
+                        .clear_apple_image_compose_inflight(key, target_capacity_bits);
+                }
                 HdrCompletedComposeWrite::IsoTile {
                     tile_key,
                     target_capacity_bits,
@@ -784,20 +798,24 @@ impl ImageViewerApp {
                     height,
                     pixels,
                     ..
-                } => match resources.apply_iso_tile_cpu_compose(
-                    compose_sink,
-                    tile_key,
-                    target_capacity_bits,
-                    width,
-                    height,
-                    &pixels,
-                ) {
-                    Ok(()) => changed = true,
-                    Err(err) => {
-                        log::warn!("[HDR] ISO tile CPU compose upload failed: {err}");
-                        resources.mark_iso_tile_compose_failed(tile_key);
+                } => {
+                    match resources.apply_iso_tile_cpu_compose(
+                        compose_sink,
+                        tile_key,
+                        target_capacity_bits,
+                        width,
+                        height,
+                        &pixels,
+                    ) {
+                        Ok(()) => changed = true,
+                        Err(err) => {
+                            log::warn!("[HDR] ISO tile CPU compose upload failed: {err}");
+                            resources.mark_iso_tile_compose_failed(tile_key);
+                        }
                     }
-                },
+                    self.hdr_pending_work
+                        .clear_iso_tile_compose_inflight(tile_key, target_capacity_bits);
+                }
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeWrite::AppleImage { .. } => {}
             }
@@ -825,13 +843,21 @@ impl ImageViewerApp {
 
         let mut changed = false;
         for failure in failures {
-            let format = match failure {
+            let format = match &failure {
                 HdrCompletedComposeFailure::IsoImage { target_format, .. }
-                | HdrCompletedComposeFailure::IsoTile { target_format, .. } => target_format,
+                | HdrCompletedComposeFailure::IsoTile { target_format, .. } => *target_format,
                 #[cfg(feature = "heif-native")]
-                HdrCompletedComposeFailure::AppleImage { target_format, .. } => target_format,
+                HdrCompletedComposeFailure::AppleImage { target_format, .. } => *target_format,
                 #[cfg(not(feature = "heif-native"))]
-                HdrCompletedComposeFailure::AppleImage { .. } => continue,
+                HdrCompletedComposeFailure::AppleImage {
+                    key,
+                    target_capacity_bits,
+                    ..
+                } => {
+                    self.hdr_pending_work
+                        .clear_apple_image_compose_inflight(key, target_capacity_bits);
+                    continue;
+                }
             };
             if !Self::ensure_hdr_resources(wgpu_state, format) {
                 self.hdr_pending_work
@@ -856,6 +882,8 @@ impl ImageViewerApp {
                 } => {
                     resources.mark_iso_image_compose_failed(key, target_capacity_bits);
                     changed = true;
+                    self.hdr_pending_work
+                        .clear_iso_image_compose_inflight(key, target_capacity_bits);
                 }
                 #[cfg(feature = "heif-native")]
                 HdrCompletedComposeFailure::AppleImage {
@@ -865,10 +893,18 @@ impl ImageViewerApp {
                 } => {
                     resources.mark_apple_image_compose_failed(key, target_capacity_bits);
                     changed = true;
+                    self.hdr_pending_work
+                        .clear_apple_image_compose_inflight(key, target_capacity_bits);
                 }
-                HdrCompletedComposeFailure::IsoTile { tile_key, .. } => {
+                HdrCompletedComposeFailure::IsoTile {
+                    tile_key,
+                    target_capacity_bits,
+                    ..
+                } => {
                     resources.mark_iso_tile_compose_failed(tile_key);
                     changed = true;
+                    self.hdr_pending_work
+                        .clear_iso_tile_compose_inflight(tile_key, target_capacity_bits);
                 }
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeFailure::AppleImage { .. } => {}

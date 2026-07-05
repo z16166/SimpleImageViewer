@@ -182,6 +182,7 @@ pub(crate) enum HdrCompletedComposeFailure {
     },
     IsoTile {
         tile_key: HdrTileKey,
+        target_capacity_bits: u32,
         target_format: wgpu::TextureFormat,
     },
 }
