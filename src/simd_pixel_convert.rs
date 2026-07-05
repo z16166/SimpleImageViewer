@@ -1,0 +1,640 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! SIMD-accelerated pixel lane unpack and u16 -> f32 normalization.
+//!
+//! Dispatch follows [`crate::simd_swizzle`]: runtime feature detection on x86_64
+//! (AVX2 -> SSE4.1 -> scalar), NEON on aarch64, scalar fallback.
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::*;
+
+const LANES_PER_AVX2_STEP: usize = 16;
+const LANES_PER_SSE41_STEP: usize = 8;
+const F32S_PER_SSE41_STEP: usize = 4;
+
+#[cfg(target_arch = "aarch64")]
+const LANES_PER_NEON_STEP: usize = 8;
+
+#[cfg(target_arch = "aarch64")]
+const F32S_PER_NEON_STEP: usize = 4;
+
+/// Zero-extend packed u8 samples into u16 lanes (one lane per channel sample).
+pub fn unpack_u8_to_u16_lanes(dst: &mut [u16], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
+    let mut i = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                unpack_u8_to_u16_lanes_avx2(dst, src, &mut i);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                unpack_u8_to_u16_lanes_sse41(dst, src, &mut i);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            unpack_u8_to_u16_lanes_neon(dst, src, &mut i);
+        }
+    }
+
+    while i < src.len() {
+        dst[i] = src[i] as u16;
+        i += 1;
+    }
+}
+
+/// Copy little-endian u16 pairs from `src` bytes into `dst` lanes.
+pub fn copy_le_u16_lanes(dst: &mut [u16], src: &[u8]) {
+    debug_assert_eq!(dst.len() * 2, src.len());
+    let mut i = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                copy_le_u16_lanes_avx2(dst, src, &mut i);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                copy_le_u16_lanes_sse41(dst, src, &mut i);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            copy_le_u16_lanes_neon(dst, src, &mut i);
+        }
+    }
+
+    while i < dst.len() {
+        let byte = i * 2;
+        dst[i] = u16::from_le_bytes([src[byte], src[byte + 1]]);
+        i += 1;
+    }
+}
+
+/// Normalize u16 lanes to f32 in `[0, 1]` via `lane * inv_scale`.
+pub fn u16_lanes_to_f32(dst: &mut [f32], src: &[u16], inv_scale: f32) {
+    debug_assert_eq!(dst.len(), src.len());
+    let mut i = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                u16_lanes_to_f32_sse41(dst, src, inv_scale, &mut i);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            u16_lanes_to_f32_neon(dst, src, inv_scale, &mut i);
+        }
+    }
+
+    while i < src.len() {
+        dst[i] = src[i] as f32 * inv_scale;
+        i += 1;
+    }
+}
+
+/// Normalize one 16-bit RGB/RGBA scanline into scene-linear RGBA f32 row pixels.
+///
+/// `src` is contiguous sample data (`spp` u16 samples per pixel, native endian).
+/// `dst` receives `width * 4` floats. Alpha is `1.0` when `spp < 4`.
+pub fn normalize_uint16_rgb_scanline_to_rgba32f(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    spp: usize,
+    smin: f32,
+    inv_range: f32,
+) {
+    debug_assert!(matches!(spp, 3 | 4));
+    debug_assert_eq!(dst.len(), width * 4);
+    debug_assert!(src.len() >= width * spp * 2);
+
+    let mut x = 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && spp == 3 {
+            unsafe {
+                normalize_uint16_rgb3_scanline_avx2(src, dst, width, smin, inv_range, &mut x);
+            }
+        } else if is_x86_feature_detected!("sse4.1") && spp == 3 {
+            unsafe {
+                normalize_uint16_rgb3_scanline_sse41(src, dst, width, smin, inv_range, &mut x);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if spp == 3 {
+            unsafe {
+                normalize_uint16_rgb3_scanline_neon(src, dst, width, smin, inv_range, &mut x);
+            }
+        }
+    }
+
+    while x < width {
+        let src_base = x * spp * 2;
+        let dst_base = x * 4;
+        for c in 0..3 {
+            let sample = read_native_u16(src, src_base + c * 2);
+            dst[dst_base + c] = ((sample as f32 - smin) * inv_range).clamp(0.0, 1.0);
+        }
+        dst[dst_base + 3] = if spp >= 4 {
+            let sample = read_native_u16(src, src_base + 6);
+            ((sample as f32 - smin) * inv_range).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        x += 1;
+    }
+}
+
+#[inline]
+fn store_normalized_rgb_pixels(
+    dst: &mut [f32],
+    x: usize,
+    r: [f32; 4],
+    g: [f32; 4],
+    b: [f32; 4],
+    count: usize,
+) {
+    for i in 0..count {
+        let base = (x + i) * 4;
+        dst[base] = r[i];
+        dst[base + 1] = g[i];
+        dst[base + 2] = b[i];
+        dst[base + 3] = 1.0;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn store_m128_rgb_pixels(dst: &mut [f32], x: usize, r: __m128, g: __m128, b: __m128, count: usize) {
+    let mut rf = [0.0_f32; 4];
+    let mut gf = [0.0_f32; 4];
+    let mut bf = [0.0_f32; 4];
+    unsafe {
+        _mm_storeu_ps(rf.as_mut_ptr(), r);
+        _mm_storeu_ps(gf.as_mut_ptr(), g);
+        _mm_storeu_ps(bf.as_mut_ptr(), b);
+    }
+    store_normalized_rgb_pixels(dst, x, rf, gf, bf, count);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn store_m256_rgb_pixels(
+    dst: &mut [f32],
+    x: usize,
+    r: __m256,
+    g: __m256,
+    b: __m256,
+    count: usize,
+) {
+    let mut rf = [0.0_f32; 4];
+    let mut gf = [0.0_f32; 4];
+    let mut bf = [0.0_f32; 4];
+    unsafe {
+        _mm_storeu_ps(rf.as_mut_ptr(), _mm256_castps256_ps128(r));
+        _mm_storeu_ps(gf.as_mut_ptr(), _mm256_castps256_ps128(g));
+        _mm_storeu_ps(bf.as_mut_ptr(), _mm256_castps256_ps128(b));
+    }
+    store_normalized_rgb_pixels(dst, x, rf, gf, bf, count);
+}
+
+#[inline]
+fn read_native_u16(buf: &[u8], byte_offset: usize) -> u16 {
+    debug_assert!(byte_offset + 1 < buf.len());
+    unsafe { std::ptr::read_unaligned(buf.as_ptr().add(byte_offset) as *const u16) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_u8_to_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_AVX2_STEP <= src.len() {
+        let bytes = _mm_loadu_si128(src.as_ptr().add(*i) as *const __m128i);
+        let widened = _mm256_cvtepu8_epi16(bytes);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, widened);
+        *i += LANES_PER_AVX2_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn unpack_u8_to_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_SSE41_STEP <= src.len() {
+        let bytes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
+        let widened = _mm_cvtepu8_epi16(bytes);
+        _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, widened);
+        *i += LANES_PER_SSE41_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn unpack_u8_to_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_NEON_STEP <= src.len() {
+        let bytes = vld1_u8(src.as_ptr().add(*i));
+        let widened = vmovl_u8(bytes);
+        vst1q_u16(dst.as_mut_ptr().add(*i), widened);
+        *i += LANES_PER_NEON_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn copy_le_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_AVX2_STEP <= dst.len() {
+        let chunk = _mm256_loadu_si256(src.as_ptr().add(*i * 2) as *const __m256i);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, chunk);
+        *i += LANES_PER_AVX2_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn copy_le_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_SSE41_STEP <= dst.len() {
+        let chunk = _mm_loadu_si128(src.as_ptr().add(*i * 2) as *const __m128i);
+        _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, chunk);
+        *i += LANES_PER_SSE41_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn copy_le_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
+    unsafe {
+    while *i + LANES_PER_NEON_STEP <= dst.len() {
+        let chunk = vld1q_u16(src.as_ptr().add(*i * 2) as *const u16);
+        vst1q_u16(dst.as_mut_ptr().add(*i), chunk);
+        *i += LANES_PER_NEON_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn u16_lanes_to_f32_sse41(dst: &mut [f32], src: &[u16], inv_scale: f32, i: &mut usize) {
+    unsafe {
+    let scale = _mm_set1_ps(inv_scale);
+    while *i + F32S_PER_SSE41_STEP <= src.len() {
+        let lanes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
+        let widened = _mm_cvtepu16_epi32(lanes);
+        let floats = _mm_mul_ps(_mm_cvtepi32_ps(widened), scale);
+        _mm_storeu_ps(dst.as_mut_ptr().add(*i), floats);
+        *i += F32S_PER_SSE41_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn u16_lanes_to_f32_neon(dst: &mut [f32], src: &[u16], inv_scale: f32, i: &mut usize) {
+    unsafe {
+    let scale = vdupq_n_f32(inv_scale);
+    while *i + F32S_PER_NEON_STEP <= src.len() {
+        let lanes = vld1_u16(src.as_ptr().add(*i));
+        let widened = vmovl_u16(lanes);
+        let floats = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(widened))), scale);
+        vst1q_f32(dst.as_mut_ptr().add(*i), floats);
+        *i += F32S_PER_NEON_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn normalize_uint16_rgb3_scanline_avx2(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    smin: f32,
+    inv_range: f32,
+    x: &mut usize,
+) {
+    unsafe {
+    let smin_v = _mm256_set1_ps(smin);
+    let inv_v = _mm256_set1_ps(inv_range);
+    let zero = _mm256_setzero_ps();
+    let one = _mm256_set1_ps(1.0);
+
+    while *x + 4 <= width {
+        let base = *x * 6;
+        let words = src.as_ptr().add(base) as *const u16;
+        let r = _mm_setr_epi16(
+            *words.add(0) as i16,
+            *words.add(3) as i16,
+            *words.add(6) as i16,
+            *words.add(9) as i16,
+            0,
+            0,
+            0,
+            0,
+        );
+        let g = _mm_setr_epi16(
+            *words.add(1) as i16,
+            *words.add(4) as i16,
+            *words.add(7) as i16,
+            *words.add(10) as i16,
+            0,
+            0,
+            0,
+            0,
+        );
+        let b = _mm_setr_epi16(
+            *words.add(2) as i16,
+            *words.add(5) as i16,
+            *words.add(8) as i16,
+            *words.add(11) as i16,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        let rf = _mm256_min_ps(
+            _mm256_max_ps(
+                _mm256_mul_ps(
+                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(r)), smin_v),
+                    inv_v,
+                ),
+                zero,
+            ),
+            one,
+        );
+        let gf = _mm256_min_ps(
+            _mm256_max_ps(
+                _mm256_mul_ps(
+                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(g)), smin_v),
+                    inv_v,
+                ),
+                zero,
+            ),
+            one,
+        );
+        let bf = _mm256_min_ps(
+            _mm256_max_ps(
+                _mm256_mul_ps(
+                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(b)), smin_v),
+                    inv_v,
+                ),
+                zero,
+            ),
+            one,
+        );
+
+        store_m256_rgb_pixels(dst, *x, rf, gf, bf, 4);
+        *x += 4;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn normalize_uint16_rgb3_scanline_sse41(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    smin: f32,
+    inv_range: f32,
+    x: &mut usize,
+) {
+    unsafe {
+    let smin_v = _mm_set1_ps(smin);
+    let inv_v = _mm_set1_ps(inv_range);
+    let zero = _mm_setzero_ps();
+    let one = _mm_set1_ps(1.0);
+
+    while *x + 2 <= width {
+        let base = *x * 6;
+        let words = src.as_ptr().add(base) as *const u16;
+        let r = _mm_setr_epi16(*words.add(0) as i16, *words.add(3) as i16, 0, 0, 0, 0, 0, 0);
+        let g = _mm_setr_epi16(*words.add(1) as i16, *words.add(4) as i16, 0, 0, 0, 0, 0, 0);
+        let b = _mm_setr_epi16(*words.add(2) as i16, *words.add(5) as i16, 0, 0, 0, 0, 0, 0);
+
+        let rf = _mm_min_ps(
+            _mm_max_ps(
+                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(r)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+        let gf = _mm_min_ps(
+            _mm_max_ps(
+                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(g)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+        let bf = _mm_min_ps(
+            _mm_max_ps(
+                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(b)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+
+        store_m128_rgb_pixels(dst, *x, rf, gf, bf, 2);
+        *x += 2;
+    }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn normalize_uint16_rgb3_scanline_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    smin: f32,
+    inv_range: f32,
+    x: &mut usize,
+) {
+    unsafe {
+    let smin_v = vdupq_n_f32(smin);
+    let inv_v = vdupq_n_f32(inv_range);
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+
+    while *x + 2 <= width {
+        let base = *x * 6;
+        let words = src.as_ptr().add(base) as *const u16;
+        let r_u16 = vcombine_u16(*words.add(0), *words.add(3));
+        let g_u16 = vcombine_u16(*words.add(1), *words.add(4));
+        let b_u16 = vcombine_u16(*words.add(2), *words.add(5));
+
+        let rf = vminq_f32(
+            vmaxq_f32(
+                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(r_u16)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+        let gf = vminq_f32(
+            vmaxq_f32(
+                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(g_u16)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+        let bf = vminq_f32(
+            vmaxq_f32(
+                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(b_u16)), smin_v), inv_v),
+                zero,
+            ),
+            one,
+        );
+
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        vst1q_f32(r.as_mut_ptr(), rf);
+        vst1q_f32(g.as_mut_ptr(), gf);
+        vst1q_f32(b.as_mut_ptr(), bf);
+        store_normalized_rgb_pixels(dst, *x, r, g, b, 2);
+        *x += 2;
+    }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unpack_u8_scalar(dst: &mut [u16], src: &[u8]) {
+        for (lane, &byte) in dst.iter_mut().zip(src.iter()) {
+            *lane = byte as u16;
+        }
+    }
+
+    fn copy_le_u16_scalar(dst: &mut [u16], src: &[u8]) {
+        for (i, lane) in dst.iter_mut().enumerate() {
+            let byte = i * 2;
+            *lane = u16::from_le_bytes([src[byte], src[byte + 1]]);
+        }
+    }
+
+    fn u16_to_f32_scalar(dst: &mut [f32], src: &[u16], inv_scale: f32) {
+        for (out, &lane) in dst.iter_mut().zip(src.iter()) {
+            *out = lane as f32 * inv_scale;
+        }
+    }
+
+    fn normalize_rgb3_scalar(
+        src: &[u8],
+        dst: &mut [f32],
+        width: usize,
+        smin: f32,
+        inv_range: f32,
+    ) {
+        for x in 0..width {
+            let src_base = x * 6;
+            let dst_base = x * 4;
+            for c in 0..3 {
+                let sample = read_native_u16(src, src_base + c * 2);
+                dst[dst_base + c] = ((sample as f32 - smin) * inv_range).clamp(0.0, 1.0);
+            }
+            dst[dst_base + 3] = 1.0;
+        }
+    }
+
+    const PARITY_LENGTHS: &[usize] = &[0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64];
+
+    #[test]
+    fn unpack_u8_to_u16_lanes_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let src: Vec<u8> = (0..*len).map(|i| ((i * 13 + 7) % 256) as u8).collect();
+            let mut simd_dst = vec![0_u16; *len];
+            let mut scalar_dst = vec![0_u16; *len];
+            unpack_u8_to_u16_lanes(&mut simd_dst, &src);
+            unpack_u8_scalar(&mut scalar_dst, &src);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn copy_le_u16_lanes_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let src: Vec<u8> = (0..len * 2)
+                .map(|i| ((i * 17 + 3) % 256) as u8)
+                .collect();
+            let mut simd_dst = vec![0_u16; *len];
+            let mut scalar_dst = vec![0_u16; *len];
+            copy_le_u16_lanes(&mut simd_dst, &src);
+            copy_le_u16_scalar(&mut scalar_dst, &src);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn u16_lanes_to_f32_matches_scalar() {
+        let inv_scale = 1.0 / 65535.0;
+        for len in PARITY_LENGTHS {
+            let src: Vec<u16> = (0..*len).map(|i| (i * 997 + 13) as u16).collect();
+            let mut simd_dst = vec![0.0_f32; *len];
+            let mut scalar_dst = vec![0.0_f32; *len];
+            u16_lanes_to_f32(&mut simd_dst, &src, inv_scale);
+            u16_to_f32_scalar(&mut scalar_dst, &src, inv_scale);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn normalize_uint16_rgb_scanline_matches_scalar() {
+        for width in [0, 1, 2, 3, 4, 7, 8, 9, 16] {
+            let src: Vec<u8> = (0..width * 6)
+                .map(|i| ((i * 11 + 5) % 256) as u8)
+                .collect();
+            let mut simd_dst = vec![0.0_f32; width * 4];
+            let mut scalar_dst = vec![0.0_f32; width * 4];
+            let smin = 100.0_f32;
+            let inv_range = 1.0 / 60000.0_f32;
+            normalize_uint16_rgb_scanline_to_rgba32f(&src, &mut simd_dst, width, 3, smin, inv_range);
+            normalize_rgb3_scalar(&src, &mut scalar_dst, width, smin, inv_range);
+            assert_eq!(simd_dst, scalar_dst, "width={width}");
+        }
+    }
+}

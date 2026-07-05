@@ -43,6 +43,8 @@ mod session;
 mod thumbnail;
 #[cfg(feature = "heif-native")]
 mod ycbcr;
+#[cfg(feature = "heif-native")]
+mod ycbcr_simd;
 
 #[cfg(test)]
 mod tests;

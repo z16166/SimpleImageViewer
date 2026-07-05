@@ -16,4 +16,5 @@
 
 //! Library surface for isolated unit tests and shared modules.
 pub mod simd_downsample;
+pub mod simd_pixel_convert;
 pub mod simd_swizzle;

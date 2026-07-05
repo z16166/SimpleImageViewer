@@ -273,13 +273,9 @@ pub(crate) fn avif_unpack_rgba_bytes_to_u16_lanes(
     }
     let mut rgba_u16 = vec![0_u16; pixel_count * 4];
     if depth_out == 8 {
-        for (lane, &byte) in rgba_u16.iter_mut().zip(rgba_bytes.iter()) {
-            *lane = byte as u16;
-        }
+        simple_image_viewer::simd_pixel_convert::unpack_u8_to_u16_lanes(&mut rgba_u16, rgba_bytes);
     } else {
-        for (lane, chunk) in rgba_u16.iter_mut().zip(rgba_bytes.chunks_exact(2)) {
-            *lane = u16::from_le_bytes([chunk[0], chunk[1]]);
-        }
+        simple_image_viewer::simd_pixel_convert::copy_le_u16_lanes(&mut rgba_u16, rgba_bytes);
     }
     Ok(rgba_u16)
 }

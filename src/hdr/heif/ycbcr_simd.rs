@@ -1,0 +1,583 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! SIMD YCbCr full-range BT.709 -> RGBA8 for libheif 8-bit planar output.
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::*;
+
+const U8_TO_F32_SCALE: f32 = 1.0 / 255.0;
+const CHROMA_CENTER: f32 = 0.5;
+const BT709_PR_TO_R: f32 = 1.5748;
+const BT709_PB_TO_G: f32 = -0.187_324;
+const BT709_PR_TO_G: f32 = -0.468_124;
+const BT709_PB_TO_B: f32 = 1.8556;
+const RGBA_ALPHA: u8 = 255;
+
+const PIXELS_PER_SSE41_STEP: usize = 4;
+const PIXELS_PER_NEON_STEP: usize = 4;
+const PIXELS_PER_AVX2_STEP: usize = 8;
+
+/// Full-range BT.709 YCbCr 4:4:4 row -> RGBA8. Returns bytes written (`width * 4`).
+pub(crate) fn ycbcr_full_range_bt709_row_444_to_rgba8(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> usize {
+    debug_assert!(y_row.len() >= width);
+    debug_assert!(cb_row.len() >= width);
+    debug_assert!(cr_row.len() >= width);
+    debug_assert!(dst.len() >= width * 4);
+
+    let mut x = 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                ycbcr_full_range_bt709_row_444_avx2(y_row, cb_row, cr_row, dst, width, &mut x);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                ycbcr_full_range_bt709_row_444_sse41(y_row, cb_row, cr_row, dst, width, &mut x);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            ycbcr_full_range_bt709_row_444_neon(y_row, cb_row, cr_row, dst, width, &mut x);
+        }
+    }
+
+    while x < width {
+        write_bt709_pixel(dst, x, y_row[x], cb_row[x], cr_row[x]);
+        x += 1;
+    }
+    width * 4
+}
+
+/// Full-range BT.709 YCbCr 4:2:0 row -> RGBA8 (`chroma_row_len = width.div_ceil(2)`).
+pub(crate) fn ycbcr_full_range_bt709_row_420_to_rgba8(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> usize {
+    debug_assert!(y_row.len() >= width);
+    let chroma_len = width.div_ceil(2);
+    debug_assert!(cb_row.len() >= chroma_len);
+    debug_assert!(cr_row.len() >= chroma_len);
+    debug_assert!(dst.len() >= width * 4);
+
+    let mut x = 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                ycbcr_full_range_bt709_row_420_avx2(y_row, cb_row, cr_row, dst, width, &mut x);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                ycbcr_full_range_bt709_row_420_sse41(y_row, cb_row, cr_row, dst, width, &mut x);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            ycbcr_full_range_bt709_row_420_neon(y_row, cb_row, cr_row, dst, width, &mut x);
+        }
+    }
+
+    while x < width {
+        let xc = x / 2;
+        write_bt709_pixel(dst, x, y_row[x], cb_row[xc], cr_row[xc]);
+        x += 1;
+    }
+    width * 4
+}
+
+#[inline]
+fn write_bt709_pixel(dst: &mut [u8], x: usize, y: u8, cb: u8, cr: u8) {
+    let yy = y as f32 * U8_TO_F32_SCALE;
+    let pb = cb as f32 * U8_TO_F32_SCALE - CHROMA_CENTER;
+    let pr = cr as f32 * U8_TO_F32_SCALE - CHROMA_CENTER;
+    let r = (yy + BT709_PR_TO_R * pr).clamp(0.0, 1.0);
+    let g = (yy + BT709_PB_TO_G * pb + BT709_PR_TO_G * pr).clamp(0.0, 1.0);
+    let b = (yy + BT709_PB_TO_B * pb).clamp(0.0, 1.0);
+    let base = x * 4;
+    dst[base] = (r * 255.0).round() as u8;
+    dst[base + 1] = (g * 255.0).round() as u8;
+    dst[base + 2] = (b * 255.0).round() as u8;
+    dst[base + 3] = RGBA_ALPHA;
+}
+
+#[inline]
+fn store_bt709_f32x4_to_rgba8(dst: &mut [u8], x: usize, r: [f32; 4], g: [f32; 4], b: [f32; 4]) {
+    for i in 0..4 {
+        let base = (x + i) * 4;
+        dst[base] = (r[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+        dst[base + 1] = (g[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+        dst[base + 2] = (b[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+        dst[base + 3] = RGBA_ALPHA;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ycbcr_full_range_bt709_row_444_sse41(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    let scale = _mm_set1_ps(U8_TO_F32_SCALE);
+    let center = _mm_set1_ps(CHROMA_CENTER);
+    let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
+    let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
+    let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
+    let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
+    let zero = _mm_setzero_ps();
+    let one = _mm_set1_ps(1.0);
+
+    while *x + PIXELS_PER_SSE41_STEP <= width {
+        let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+            y_row.as_ptr().add(*x) as *const __m128i,
+        )));
+        let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+            cb_row.as_ptr().add(*x) as *const __m128i,
+        )));
+        let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+            cr_row.as_ptr().add(*x) as *const __m128i,
+        )));
+
+        let yy = _mm_mul_ps(y, scale);
+        let pb = _mm_sub_ps(_mm_mul_ps(cb, scale), center);
+        let pr = _mm_sub_ps(_mm_mul_ps(cr, scale), center);
+
+        let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
+        let gf = _mm_min_ps(
+            _mm_max_ps(
+                _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
+                zero,
+            ),
+            one,
+        );
+        let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        _mm_storeu_ps(r.as_mut_ptr(), rf);
+        _mm_storeu_ps(g.as_mut_ptr(), gf);
+        _mm_storeu_ps(b.as_mut_ptr(), bf);
+        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+        *x += PIXELS_PER_SSE41_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ycbcr_full_range_bt709_row_420_sse41(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    while *x + PIXELS_PER_SSE41_STEP <= width {
+        let xc = *x / 2;
+        let cb = [cb_row[xc], cb_row[xc + 1]];
+        let cr = [cr_row[xc], cr_row[xc + 1]];
+        let y = _mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i);
+        let cbv = _mm_setr_epi8(
+            cb[0] as i8,
+            cb[0] as i8,
+            cb[1] as i8,
+            cb[1] as i8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        let crv = _mm_setr_epi8(
+            cr[0] as i8,
+            cr[0] as i8,
+            cr[1] as i8,
+            cr[1] as i8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        bt709_convert_u8x4_sse41(y, cbv, crv, dst, *x);
+        *x += PIXELS_PER_SSE41_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn bt709_convert_u8x4_sse41(
+    y: __m128i,
+    cb: __m128i,
+    cr: __m128i,
+    dst: &mut [u8],
+    x: usize,
+) {
+    unsafe {
+    let scale = _mm_set1_ps(U8_TO_F32_SCALE);
+    let center = _mm_set1_ps(CHROMA_CENTER);
+    let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
+    let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
+    let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
+    let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
+    let zero = _mm_setzero_ps();
+    let one = _mm_set1_ps(1.0);
+
+    let yy = _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(y)), scale);
+    let pb = _mm_sub_ps(_mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cb)), scale), center);
+    let pr = _mm_sub_ps(_mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cr)), scale), center);
+
+    let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
+    let gf = _mm_min_ps(
+        _mm_max_ps(
+            _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
+            zero,
+        ),
+        one,
+    );
+    let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+
+    let mut r = [0.0_f32; 4];
+    let mut g = [0.0_f32; 4];
+    let mut b = [0.0_f32; 4];
+    _mm_storeu_ps(r.as_mut_ptr(), rf);
+    _mm_storeu_ps(g.as_mut_ptr(), gf);
+    _mm_storeu_ps(b.as_mut_ptr(), bf);
+    store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn ycbcr_full_range_bt709_row_444_avx2(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    while *x + PIXELS_PER_AVX2_STEP <= width {
+        let y_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+        let cb_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x) as *const __m128i));
+        let cr_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x) as *const __m128i));
+        let y_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+        let cb_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x + 4) as *const __m128i));
+        let cr_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x + 4) as *const __m128i));
+
+        store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
+        store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
+        *x += PIXELS_PER_AVX2_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn ycbcr_full_range_bt709_row_420_avx2(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    while *x + PIXELS_PER_AVX2_STEP <= width {
+        let xc = *x / 2;
+        let cb = _mm_loadl_epi64(cb_row.as_ptr().add(xc) as *const __m128i);
+        let cr = _mm_loadl_epi64(cr_row.as_ptr().add(xc) as *const __m128i);
+        let cb_dup = _mm_shuffle_epi8(
+            cb,
+            _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
+        );
+        let cr_dup = _mm_shuffle_epi8(
+            cr,
+            _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
+        );
+        let y_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+        let y_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+        let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
+        let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
+        let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
+        let cr_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cr_dup, 4));
+
+        store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
+        store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
+        *x += PIXELS_PER_AVX2_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn store_bt709_u8x4_from_i32(
+    dst: &mut [u8],
+    x: usize,
+    y: __m256i,
+    cb: __m256i,
+    cr: __m256i,
+) {
+    unsafe {
+    let scale = _mm256_set1_ps(U8_TO_F32_SCALE);
+    let center = _mm256_set1_ps(CHROMA_CENTER);
+    let yy = _mm256_mul_ps(_mm256_cvtepi32_ps(y), scale);
+    let pb = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cb), scale), center);
+    let pr = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cr), scale), center);
+
+    let rf = bt709_rgb_channel_avx2(yy, pb, pr, 0.0, BT709_PR_TO_R);
+    let gf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_G, BT709_PR_TO_G);
+    let bf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_B, 0.0);
+
+    let mut r = [0.0_f32; 4];
+    let mut g = [0.0_f32; 4];
+    let mut b = [0.0_f32; 4];
+    _mm_storeu_ps(r.as_mut_ptr(), _mm256_castps256_ps128(rf));
+    _mm_storeu_ps(g.as_mut_ptr(), _mm256_castps256_ps128(gf));
+    _mm_storeu_ps(b.as_mut_ptr(), _mm256_castps256_ps128(bf));
+    store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn bt709_rgb_channel_avx2(
+    yy: __m256,
+    pb: __m256,
+    pr: __m256,
+    k_pb: f32,
+    k_pr: f32,
+) -> __m256 {
+    let zero = _mm256_setzero_ps();
+    let one = _mm256_set1_ps(1.0);
+    let mut out = yy;
+    if k_pb != 0.0 {
+        out = _mm256_add_ps(out, _mm256_mul_ps(_mm256_set1_ps(k_pb), pb));
+    }
+    if k_pr != 0.0 {
+        out = _mm256_add_ps(out, _mm256_mul_ps(_mm256_set1_ps(k_pr), pr));
+    }
+    _mm256_min_ps(_mm256_max_ps(out, zero), one)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ycbcr_full_range_bt709_row_444_neon(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    let scale = vdupq_n_f32(U8_TO_F32_SCALE);
+    let center = vdupq_n_f32(CHROMA_CENTER);
+    let k_pr_r = vdupq_n_f32(BT709_PR_TO_R);
+    let k_pb_g = vdupq_n_f32(BT709_PB_TO_G);
+    let k_pr_g = vdupq_n_f32(BT709_PR_TO_G);
+    let k_pb_b = vdupq_n_f32(BT709_PB_TO_B);
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+
+    while *x + PIXELS_PER_NEON_STEP <= width {
+        let y = vld1_u8(y_row.as_ptr().add(*x));
+        let cb = vld1_u8(cb_row.as_ptr().add(*x));
+        let cr = vld1_u8(cr_row.as_ptr().add(*x));
+
+        let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
+        let pb = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale), center);
+        let pr = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale), center);
+
+        let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
+        let gf = vminq_f32(
+            vmaxq_f32(
+                vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)),
+                zero,
+            ),
+            one,
+        );
+        let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
+
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        vst1q_f32(r.as_mut_ptr(), rf);
+        vst1q_f32(g.as_mut_ptr(), gf);
+        vst1q_f32(b.as_mut_ptr(), bf);
+        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+        *x += PIXELS_PER_NEON_STEP;
+    }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ycbcr_full_range_bt709_row_420_neon(
+    y_row: &[u8],
+    cb_row: &[u8],
+    cr_row: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+    while *x + PIXELS_PER_NEON_STEP <= width {
+        let xc = *x / 2;
+        let y = vld1_u8(y_row.as_ptr().add(*x));
+        let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
+        let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
+        let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
+        let cr = vcombine_u8(vdup_lane_u8(cr_pair, 0), vdup_lane_u8(cr_pair, 1));
+
+        let scale = vdupq_n_f32(U8_TO_F32_SCALE);
+        let center = vdupq_n_f32(CHROMA_CENTER);
+        let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
+        let pb = vsubq_f32(
+            vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale),
+            center,
+        );
+        let pr = vsubq_f32(
+            vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale),
+            center,
+        );
+
+        let rf = vminq_f32(
+            vmaxq_f32(vaddq_f32(yy, vmulq_f32(vdupq_n_f32(BT709_PR_TO_R), pr)), vdupq_n_f32(0.0)),
+            vdupq_n_f32(1.0),
+        );
+        let gf = vminq_f32(
+            vmaxq_f32(
+                vaddq_f32(
+                    vaddq_f32(yy, vmulq_f32(vdupq_n_f32(BT709_PB_TO_G), pb)),
+                    vmulq_f32(vdupq_n_f32(BT709_PR_TO_G), pr),
+                ),
+                vdupq_n_f32(0.0),
+            ),
+            vdupq_n_f32(1.0),
+        );
+        let bf = vminq_f32(
+            vmaxq_f32(vaddq_f32(yy, vmulq_f32(vdupq_n_f32(BT709_PB_TO_B), pb)), vdupq_n_f32(0.0)),
+            vdupq_n_f32(1.0),
+        );
+
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        vst1q_f32(r.as_mut_ptr(), rf);
+        vst1q_f32(g.as_mut_ptr(), gf);
+        vst1q_f32(b.as_mut_ptr(), bf);
+        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+        *x += PIXELS_PER_NEON_STEP;
+    }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar_row_444(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
+        let mut dst = vec![0_u8; width * 4];
+        for x in 0..width {
+            write_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[x], cr_row[x]);
+        }
+        dst
+    }
+
+    fn scalar_row_420(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
+        let mut dst = vec![0_u8; width * 4];
+        for x in 0..width {
+            let xc = x / 2;
+            write_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[xc], cr_row[xc]);
+        }
+        dst
+    }
+
+    #[test]
+    fn ycbcr_full_range_bt709_444_matches_scalar() {
+        for width in [0_usize, 1, 3, 4, 7, 8, 9, 16] {
+            let y: Vec<u8> = (0..width).map(|i| ((i * 17 + 11) % 256) as u8).collect();
+            let cb: Vec<u8> = (0..width).map(|i| ((i * 23 + 31) % 256) as u8).collect();
+            let cr: Vec<u8> = (0..width).map(|i| ((i * 29 + 43) % 256) as u8).collect();
+            let expected = scalar_row_444(&y, &cb, &cr, width);
+            let mut simd = vec![0_u8; width * 4];
+            ycbcr_full_range_bt709_row_444_to_rgba8(&y, &cb, &cr, &mut simd, width);
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+
+    #[test]
+    fn ycbcr_full_range_bt709_420_matches_scalar() {
+        for width in [0_usize, 1, 2, 3, 4, 7, 8, 9, 16] {
+            let chroma_len = width.div_ceil(2);
+            let y: Vec<u8> = (0..width).map(|i| ((i * 13 + 7) % 256) as u8).collect();
+            let cb: Vec<u8> = (0..chroma_len)
+                .map(|i| ((i * 19 + 5) % 256) as u8)
+                .collect();
+            let cr: Vec<u8> = (0..chroma_len)
+                .map(|i| ((i * 31 + 3) % 256) as u8)
+                .collect();
+            let expected = scalar_row_420(&y, &cb, &cr, width);
+            let mut simd = vec![0_u8; width * 4];
+            ycbcr_full_range_bt709_row_420_to_rgba8(&y, &cb, &cr, &mut simd, width);
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+}

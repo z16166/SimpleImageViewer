@@ -657,28 +657,30 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
         }
         let row_off = y as usize * width as usize * 4;
         let row = &mut out[row_off..row_off + width as usize * 4];
-        for x in 0..width as usize {
-            let base = x * spp as usize;
-            let dst = x * 4;
-            for c in 0..3 {
-                let val = read_uint16_sample(&buf, base + c) as f64;
-                if !smax_provided {
+        let inv_range = (1.0 / provisional_range) as f32;
+        let smin_f32 = provisional_smin as f32;
+        simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
+            &buf,
+            row,
+            width as usize,
+            spp as usize,
+            smin_f32,
+            inv_range,
+        );
+        if !smax_provided {
+            for x in 0..width as usize {
+                let base = x * spp as usize;
+                for c in 0..3 {
+                    let val = read_uint16_sample(&buf, base + c) as f64;
                     actual_min = actual_min.min(val);
                     actual_max = actual_max.max(val);
                 }
-                row[dst + c] =
-                    (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32;
+                if spp >= 4 {
+                    let val = read_uint16_sample(&buf, base + 3) as f64;
+                    actual_min = actual_min.min(val);
+                    actual_max = actual_max.max(val);
+                }
             }
-            row[dst + 3] = if spp >= 4 {
-                let val = read_uint16_sample(&buf, base + 3) as f64;
-                if !smax_provided {
-                    actual_min = actual_min.min(val);
-                    actual_max = actual_max.max(val);
-                }
-                (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32
-            } else {
-                1.0
-            };
         }
     }
 

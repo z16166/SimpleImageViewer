@@ -185,10 +185,9 @@ pub(crate) fn avif_image_to_hdr_buffer(
     // Normalize using the **output** `avifRGBImage.depth` libavif used (8/10/12/16), not the
     // source YUV bit depth: 8-bit RGB output must use 255, while 16-bit full-range uses 65535.
     let scale = rgb_channel_max_f(rgb_out_depth);
-    let mut rgba_f32 = rgba_u16
-        .into_iter()
-        .map(|value| value as f32 / scale)
-        .collect::<Vec<_>>();
+    let inv_scale = 1.0 / scale;
+    let mut rgba_f32 = vec![0.0_f32; rgba_u16.len()];
+    simple_image_viewer::simd_pixel_convert::u16_lanes_to_f32(&mut rgba_f32, &rgba_u16, inv_scale);
 
     // Honour an embedded ICC profile when present (e.g. `paris_icc_exif_xmp.avif`, Display P3
     // photo). Without this we'd treat DP3-encoded pixels as sRGB primaries → desaturated colours.

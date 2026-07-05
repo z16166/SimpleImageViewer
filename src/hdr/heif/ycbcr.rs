@@ -417,6 +417,7 @@ pub(crate) fn ycbcr_image_to_rgba8(
         width as usize
     };
     let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+    let simd_bt709_full_range = matrix == HeifYcbcrMatrix::Bt709 && !nclx_studio_swing;
     for y in 0..height as usize {
         let y_row =
             unsafe { std::slice::from_raw_parts(y_plane.add(y * y_stride), width as usize) };
@@ -425,6 +426,29 @@ pub(crate) fn ycbcr_image_to_rgba8(
             unsafe { std::slice::from_raw_parts(cb_plane.add(cb_y * cb_stride), chroma_row_len) };
         let cr_row =
             unsafe { std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len) };
+        let row_dst = &mut rgba[y * width as usize * 4..][..width as usize * 4];
+
+        if simd_bt709_full_range && subsample_v && subsample_h {
+            super::ycbcr_simd::ycbcr_full_range_bt709_row_420_to_rgba8(
+                y_row,
+                cb_row,
+                cr_row,
+                row_dst,
+                width as usize,
+            );
+            continue;
+        }
+        if simd_bt709_full_range && !subsample_h {
+            super::ycbcr_simd::ycbcr_full_range_bt709_row_444_to_rgba8(
+                y_row,
+                cb_row,
+                cr_row,
+                row_dst,
+                width as usize,
+            );
+            continue;
+        }
+
         for (x, &y_sample) in y_row.iter().enumerate().take(width as usize) {
             let xc = if subsample_h { x / 2 } else { x };
             let [r, g, b] = if nclx_studio_swing {
