@@ -35,6 +35,7 @@ const BT709_PB_TO_B: f32 = 1.8556;
 const RGBA_ALPHA: u8 = 255;
 
 const PIXELS_PER_SSE41_STEP: usize = 4;
+#[cfg(target_arch = "aarch64")]
 const PIXELS_PER_NEON_STEP: usize = 4;
 const PIXELS_PER_AVX2_STEP: usize = 8;
 

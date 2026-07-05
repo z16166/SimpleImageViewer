@@ -576,26 +576,6 @@ fn try_avif_yuv_to_rgb_rgba(
 }
 
 #[cfg(feature = "avif-native")]
-fn avif_rgba_bytes_to_u16_lanes(
-    rgba_bytes: Vec<u8>,
-    rgb_depth: u32,
-    pixel_count: usize,
-) -> Result<Vec<u16>, String> {
-    if rgb_depth == 8 {
-        avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)
-    } else if cfg!(target_endian = "little") {
-        bytemuck::try_cast_vec(rgba_bytes).map_err(|(_err, bytes)| {
-            format!(
-                "AVIF RGBA cast to u16 lanes failed (byte len={})",
-                bytes.len()
-            )
-        })
-    } else {
-        avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)
-    }
-}
-
-#[cfg(feature = "avif-native")]
 fn decode_avif_image_rgba_bytes<F: Fn(libavif_sys::avifResult) -> String>(
     image: *mut libavif_sys::avifImage,
     image_ref: &libavif_sys::avifImage,

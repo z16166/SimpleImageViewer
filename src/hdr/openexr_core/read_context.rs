@@ -28,13 +28,13 @@ type ScanlinePreviewRowsByChunk =
     std::collections::BTreeMap<i32, (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>)>;
 
 use super::channels::{
-    DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming,
-    OpenExrCoreDecodedChunkFetch, OpenExrCoreTileGrid, assign_channel_roles,
-    budgeted_scanline_preview_source_y, channel_sample_f32, channel_sample_f32_filtered,
-    configured_decoded_chunk_cache_max_bytes, copy_channels, copy_decoded_chunk_to_tile,
-    decode_pipeline_channels, decoded_chunk_key, exr_result, extent_from_window_axis,
-    sample_decoded_scanline_chunk_into_preview, scanline_preview_decode_parallelism,
-    scanline_preview_dimensions, scanline_preview_source_row_budget, validate_tile_bounds,
+    DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreDecodedChunkFetch,
+    OpenExrCoreTileGrid, assign_channel_roles, budgeted_scanline_preview_source_y,
+    channel_sample_f32, channel_sample_f32_filtered, configured_decoded_chunk_cache_max_bytes,
+    copy_channels, copy_decoded_chunk_to_tile, decode_pipeline_channels, decoded_chunk_key,
+    exr_result, extent_from_window_axis, sample_decoded_scanline_chunk_into_preview,
+    scanline_preview_decode_parallelism, scanline_preview_dimensions,
+    scanline_preview_source_row_budget, validate_tile_bounds,
 };
 #[cfg(feature = "tile-debug")]
 use super::channels::{compression_name, storage_name};
@@ -792,24 +792,6 @@ impl OpenExrCoreReadContext {
             width: out_w,
             height: out_h,
             rgba: preview,
-        })
-    }
-
-    fn decode_chunk_to_tile(
-        &self,
-        part_index: i32,
-        chunk: &sys::ExrChunkInfo,
-        chunk_origin: (u32, u32),
-        tile: (u32, u32, u32, u32),
-        rgba: &mut [f32],
-    ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
-        let fetched = self.fetch_decoded_chunk(part_index, chunk, chunk_origin)?;
-        let copy_ms = copy_decoded_chunk_to_tile(&fetched.decoded, tile, rgba)?;
-
-        Ok(OpenExrCoreChunkDecodeTiming {
-            decode_ms: fetched.decode_ms,
-            copy_ms,
-            cache_hit: fetched.cache_hit,
         })
     }
 

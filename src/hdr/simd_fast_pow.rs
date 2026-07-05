@@ -26,6 +26,7 @@ use core::arch::aarch64::*;
 use core::arch::x86_64::*;
 
 /// Scalar reference for tests; positive bases only.
+#[cfg(test)]
 #[inline]
 pub(crate) fn fast_powf_positive(base: f32, exponent: f32) -> f32 {
     debug_assert!(base > 0.0);
@@ -128,14 +129,14 @@ mod x86 {
         let zero = _mm_setzero_ps();
         let positive = _mm_cmpgt_ps(base, zero);
         let exp_vec = _mm_set1_ps(exponent);
-        let pow = exp_ps(_mm_mul_ps(exp_vec, log_ps(base)));
+        let pow = unsafe { exp_ps(_mm_mul_ps(exp_vec, log_ps(base))) };
         _mm_and_ps(pow, positive)
     }
 
     #[target_feature(enable = "sse4.1")]
     #[inline]
     pub(super) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
-        pow_ps(base, exponent)
+        unsafe { pow_ps(base, exponent) }
     }
 }
 

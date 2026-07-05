@@ -71,6 +71,7 @@ pub(crate) struct AvifSequenceRemainderJob {
     pub hdr_tone_map: HdrToneMapSettings,
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_avif_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
@@ -107,6 +108,7 @@ pub(crate) fn load_avif_with_target_capacity_from_mmap(
     .map(|outcome| outcome.image)
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_avif_with_target_capacity_outcome(
     path: &Path,
     hdr_target_capacity: f32,
@@ -551,6 +553,7 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
     });
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_heif_hdr_aware(
     path: &Path,
     hdr_target_capacity: f32,

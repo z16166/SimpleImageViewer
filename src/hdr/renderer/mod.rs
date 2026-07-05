@@ -79,7 +79,7 @@ pub(crate) use self::pending_gpu_writes::{
 };
 
 mod texture_pool;
-pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool, TexturePoolKey};
+pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool};
 
 mod tone_map_gpu;
 pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};

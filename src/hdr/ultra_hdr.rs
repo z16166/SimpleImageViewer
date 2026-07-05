@@ -25,14 +25,15 @@ use rayon::prelude::*;
 use std::cell::Cell;
 
 use crate::hdr::gain_map::{
-    GainMapMetadata, compose_gain_map_pixel, gain_map_metadata_diagnostic, iso_gain_map_metadata,
-    iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map, sample_gain_map_rgb,
-    validate_gain_map_metadata,
+    GainMapMetadata, compose_gain_map_pixel, iso_gain_map_metadata, luminance_hints_from_gain_map,
+    sample_gain_map_rgb, validate_gain_map_metadata,
 };
 #[cfg(test)]
 use crate::hdr::gain_map::{
     append_hdr_pixel_from_sdr_and_gain, gain_map_weight, recover_hdr_channel_from_sdr_and_gain,
 };
+#[cfg(test)]
+use crate::hdr::gain_map::{gain_map_metadata_diagnostic, iso_gain_map_skips_forward_compose};
 #[cfg(test)]
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
 use crate::hdr::jpeg_gain_map_gpu::{
@@ -69,6 +70,7 @@ thread_local! {
     static BASE_JPEG_DECODE_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
+#[cfg(test)]
 fn decode_base_jpeg_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     #[cfg(test)]
     BASE_JPEG_DECODE_COUNT.with(|count| count.set(count.get() + 1));
@@ -247,6 +249,7 @@ pub struct UltraHdrTiledImageSource {
 }
 
 impl UltraHdrTiledImageSource {
+    #[cfg(test)]
     pub(crate) fn open_with_target_capacity(
         path: PathBuf,
         orientation: u16,
@@ -803,6 +806,7 @@ fn sample_oriented_ultra_hdr_sdr_preview_row(
     row
 }
 
+#[cfg(test)]
 fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) {
     if (5..=8).contains(&orientation) {
         (height, width)

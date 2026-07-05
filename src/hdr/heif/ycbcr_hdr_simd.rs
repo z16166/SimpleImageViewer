@@ -27,6 +27,7 @@ use core::arch::aarch64::*;
 const CHROMA_CENTER: f32 = 0.5;
 const PIXELS_PER_SSE41_STEP: usize = 4;
 const PIXELS_PER_AVX2_STEP: usize = 4;
+#[cfg(target_arch = "aarch64")]
 const PIXELS_PER_NEON_STEP: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -116,8 +117,7 @@ pub(crate) fn hdr_ycbcr_u16_simd_eligible(
     _studio_swing: bool,
     matrix: HeifYcbcrMatrix,
 ) -> bool {
-    hdr_ycbcr_u16_tight_row_eligible(layout)
-        && matrix != HeifYcbcrMatrix::Monochrome
+    hdr_ycbcr_u16_tight_row_eligible(layout) && matrix != HeifYcbcrMatrix::Monochrome
 }
 
 /// Tight u16 row layout for SIMD or inline scalar conversion (420/422/444).

@@ -27,12 +27,14 @@ use std::sync::Arc;
 
 /// Registers `idx` on creation; on drop, syncs the denormalized index unless [`Self::commit`]
 /// was called after a successful cache install.
+#[allow(dead_code)]
 pub(crate) struct PrefetchResourceGuard<'a> {
     app: &'a mut ImageViewerApp,
     idx: usize,
     armed: bool,
 }
 
+#[allow(dead_code)]
 impl<'a> PrefetchResourceGuard<'a> {
     pub fn new(app: &'a mut ImageViewerApp, idx: usize) -> Self {
         app.track_prefetch_resource(idx);

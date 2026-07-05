@@ -28,6 +28,7 @@ mod tiled;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 pub use load::load_via_libtiff;
 pub(crate) use load::load_via_libtiff_from_mmap;
 #[cfg(test)]

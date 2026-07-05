@@ -52,6 +52,7 @@ pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn load_jpeg_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,

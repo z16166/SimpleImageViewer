@@ -518,9 +518,9 @@ pub(super) struct JpegTileComposePass<'a> {
     pub(super) tile_width: u32,
     pub(super) tile_height: u32,
     pub(super) tone_map: &'a HdrToneMapSettings,
-    pub(super) sdr_view: &'a wgpu::TextureView,
-    pub(super) gain_view: &'a wgpu::TextureView,
-    pub(super) display_storage_view: &'a wgpu::TextureView,
+    pub(super) _sdr_view: &'a wgpu::TextureView,
+    pub(super) _gain_view: &'a wgpu::TextureView,
+    pub(super) _display_storage_view: &'a wgpu::TextureView,
     pub(super) compose_bind_group: &'a wgpu::BindGroup,
 }
 
@@ -536,9 +536,9 @@ pub(super) fn encode_tile_compose_compute_pass(
         tile_width,
         tile_height,
         tone_map,
-        sdr_view: _,
-        gain_view: _,
-        display_storage_view: _,
+        _sdr_view: _,
+        _gain_view: _,
+        _display_storage_view: _,
         compose_bind_group,
     } = pass_params;
     let tile_pipeline = resources

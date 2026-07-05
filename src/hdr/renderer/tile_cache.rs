@@ -80,7 +80,7 @@ impl HdrTileBindings {
         &mut self,
         key: HdrTileKey,
         tile: HdrTileInsert,
-        mut texture_pool: Option<&mut GpuTexturePool>,
+        texture_pool: Option<&mut GpuTexturePool>,
     ) {
         let HdrTileInsert {
             texture,

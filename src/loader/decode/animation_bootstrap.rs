@@ -25,8 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::raster::{
-    load_gif, load_gif_from_mmap, load_png, load_png_from_mmap, load_webp, load_webp_from_mmap,
-    process_animation_frames,
+    load_gif_from_mmap, load_png_from_mmap, load_webp_from_mmap, process_animation_frames,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,25 +82,6 @@ fn raster_animation_remainder_job(
         hdr_target_capacity,
         hdr_tone_map,
     }
-}
-
-fn load_raster_animation_bootstrap(
-    path: &Path,
-    format: RasterAnimationFormat,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-) -> Result<RasterAnimationBootstrapOutcome, String> {
-    let file = crate::mmap_util::map_file(path)?;
-    let mmap: Arc<[u8]> = Arc::from(file.as_ref());
-    load_raster_animation_bootstrap_from_bytes(
-        path,
-        mmap,
-        format,
-        hdr_target_capacity,
-        hdr_tone_map,
-        bootstrap_animation,
-    )
 }
 
 fn load_raster_animation_bootstrap_from_bytes(
@@ -337,51 +317,6 @@ pub(crate) fn load_webp_with_bootstrap_from_bytes(
     load_raster_animation_bootstrap_from_bytes(
         path,
         mmap,
-        RasterAnimationFormat::Webp,
-        hdr_target_capacity,
-        hdr_tone_map,
-        bootstrap_animation,
-    )
-}
-
-pub(crate) fn load_gif_with_bootstrap(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-) -> Result<RasterAnimationBootstrapOutcome, String> {
-    load_raster_animation_bootstrap(
-        path,
-        RasterAnimationFormat::Gif,
-        hdr_target_capacity,
-        hdr_tone_map,
-        bootstrap_animation,
-    )
-}
-
-pub(crate) fn load_png_with_bootstrap(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-) -> Result<RasterAnimationBootstrapOutcome, String> {
-    load_raster_animation_bootstrap(
-        path,
-        RasterAnimationFormat::Apng,
-        hdr_target_capacity,
-        hdr_tone_map,
-        bootstrap_animation,
-    )
-}
-
-pub(crate) fn load_webp_with_bootstrap(
-    path: &Path,
-    hdr_target_capacity: f32,
-    hdr_tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-) -> Result<RasterAnimationBootstrapOutcome, String> {
-    load_raster_animation_bootstrap(
-        path,
         RasterAnimationFormat::Webp,
         hdr_target_capacity,
         hdr_tone_map,

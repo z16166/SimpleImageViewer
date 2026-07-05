@@ -171,7 +171,7 @@ pub fn sample_hover_pixel(
             let row = y / tile_size;
             let coord = TileCoord { col, row };
 
-            if let Some(mut cache) = PIXEL_CACHE.try_write()
+            if let Some(cache) = PIXEL_CACHE.try_write()
                 && let Some(tile_pixels) = cache.get(image_index, coord)
             {
                 let tile_x = x % tile_size;

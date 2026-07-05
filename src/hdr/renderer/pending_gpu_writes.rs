@@ -22,6 +22,7 @@ use std::sync::Arc;
 /// stage shared ownership without an extra `Vec` clone when rows are already WGSL-aligned.
 pub(crate) enum TextureUploadBytes<'a> {
     Cow(Cow<'a, [u8]>),
+    #[allow(dead_code)]
     Arc(Arc<[u8]>),
     /// Row-aligned RGBA32F plane backed by `Arc<Vec<f32>>` (zero-copy pending queue).
     Rgba32f(Arc<Vec<f32>>),
@@ -47,7 +48,7 @@ impl<'a> TextureUploadBytes<'a> {
 }
 
 #[derive(Clone)]
-enum StagedTextureBytes {
+pub(crate) enum StagedTextureBytes {
     Bytes(Arc<[u8]>),
     Rgba32f(Arc<Vec<f32>>),
 }

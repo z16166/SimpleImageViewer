@@ -87,6 +87,7 @@ pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     }
 }
 
+#[cfg(test)]
 pub fn load_via_libtiff(
     path: &Path,
     hdr_target_capacity: f32,

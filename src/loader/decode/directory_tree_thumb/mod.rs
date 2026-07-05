@@ -40,14 +40,9 @@ use crate::loader::{
 use super::assemble::make_image_data;
 use super::detect::{
     PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
-    primary_with_retainable_mmap,
 };
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
-use super::jpeg::load_jpeg_primary_attempt;
-use super::modern::{
-    load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
-};
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
 
