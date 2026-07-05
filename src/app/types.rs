@@ -346,8 +346,12 @@ pub struct ImageViewerApp {
     pub(crate) cached_image_strip_path_index: Option<(u64, HashMap<PathBuf, usize>)>,
     /// AVIF gain-map strip probe by path, keyed to `image_list_generation`.
     #[cfg(feature = "avif-native")]
-    pub(crate) cached_avif_strip_probe:
-        parking_lot::Mutex<Option<(u64, HashMap<PathBuf, crate::hdr::avif::AvifGainMapStripProbe>)>>,
+    pub(crate) cached_avif_strip_probe: parking_lot::Mutex<
+        Option<(
+            u64,
+            HashMap<PathBuf, crate::hdr::avif::AvifGainMapStripProbe>,
+        )>,
+    >,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
     /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).

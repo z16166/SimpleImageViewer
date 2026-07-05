@@ -25,23 +25,25 @@ use rayon::prelude::*;
 use std::cell::Cell;
 
 use crate::hdr::gain_map::{
-    GainMapMetadata, compose_gain_map_pixel, gain_map_metadata_diagnostic,
-    iso_gain_map_metadata, iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
-    sample_gain_map_rgb, validate_gain_map_metadata,
+    GainMapMetadata, compose_gain_map_pixel, gain_map_metadata_diagnostic, iso_gain_map_metadata,
+    iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map, sample_gain_map_rgb,
+    validate_gain_map_metadata,
 };
 #[cfg(test)]
-use crate::hdr::gain_map::{append_hdr_pixel_from_sdr_and_gain, gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
+use crate::hdr::gain_map::{
+    append_hdr_pixel_from_sdr_and_gain, gain_map_weight, recover_hdr_channel_from_sdr_and_gain,
+};
 #[cfg(test)]
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
 use crate::hdr::jpeg_gain_map_gpu::{
     attach_iso_deferred_tile_metadata, iso_deferred_from_metadata,
 };
-use crate::hdr::types::IsoGainMapGpuSource;
 use crate::hdr::mpf::{extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
+use crate::hdr::types::IsoGainMapGpuSource;
 use crate::hdr::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
 };

@@ -412,12 +412,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             high_quality,
             || {
                 primary_with_retainable_mmap(path, |mmap| {
-                    load_static_from_mmap(
-                        path,
-                        mmap.as_ref(),
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                    )
+                    load_static_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
                 })
             },
         );

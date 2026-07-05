@@ -87,12 +87,7 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
     for preview_y in 0..height {
         let src_y = src_ys[preview_y as usize];
         let (strip, row_in_strip) = &source_rows[&src_y];
-        let row = sample_preview_row_from_source_strip(
-            strip,
-            *row_in_strip,
-            width,
-            source.width(),
-        );
+        let row = sample_preview_row_from_source_strip(strip, *row_in_strip, width, source.width());
         rgba_f32.extend(row);
     }
 
@@ -305,8 +300,7 @@ pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
     } else {
         let mut rows = Vec::with_capacity(height as usize);
         for preview_y in 0..height {
-            let row_f32 =
-                sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
+            let row_f32 = sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
             rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
                 width,
                 row_f32,

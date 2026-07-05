@@ -173,8 +173,7 @@ mod tests {
             ]),
         };
         let gain = vec![128u8; 2 * 2 * 4];
-        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0)
-            .expect("attach");
+        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
     }

@@ -27,8 +27,7 @@ use std::path::PathBuf;
 
 use super::decode::{
     TiffPaletteMaps, TiffSampleDecodeParams, ensure_tiff_scanline_size,
-    finalize_linear_scratch_to_rgba, process_scanline_contig,
-    process_scanline_separate,
+    finalize_linear_scratch_to_rgba, process_scanline_contig, process_scanline_separate,
     write_contig_scanline_linear_scratch, write_separate_scanline_linear_scratch,
 };
 use super::scratch::{

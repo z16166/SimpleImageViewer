@@ -42,11 +42,11 @@ use crate::hdr::decode::{
     bt709_nonlinear_channel_to_linear, decode_transfer_to_display_linear,
     linear_primary_to_linear_srgb,
 };
-use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
-#[cfg(target_arch = "x86_64")]
-use crate::hdr::simd_fast_pow::pow4_sse41;
 #[cfg(target_arch = "aarch64")]
 use crate::hdr::simd_fast_pow::pow4_neon;
+#[cfg(target_arch = "x86_64")]
+use crate::hdr::simd_fast_pow::pow4_sse41;
+use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;

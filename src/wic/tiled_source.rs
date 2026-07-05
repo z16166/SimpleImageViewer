@@ -427,7 +427,9 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             Height: h as i32,
                         };
                         if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
-                            log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
+                            log::warn!(
+                                "[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}"
+                            );
                         }
                     }
                 });

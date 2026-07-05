@@ -50,8 +50,7 @@ impl HdrImagePlaneCallback {
                 GpuUploadSink::Immediate(queue),
                 &self.image,
                 Some(&resources.texture_pool),
-            )
-            {
+            ) {
                 Ok(uploaded) => {
                     let binding = HdrImageBinding::from_uploaded(
                         device,
@@ -358,10 +357,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         apple_compose_used_cpu = true;
                     }
                     Ok(()) => {
-                        let gain_view = binding
-                            .uploaded_gain_view
-                            .clone()
-                            .expect("gain view");
+                        let gain_view = binding.uploaded_gain_view.clone().expect("gain view");
                         let display_storage = binding
                             .uploaded_display_storage_view
                             .clone()

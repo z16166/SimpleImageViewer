@@ -348,11 +348,13 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     let hdr_studio_simd = if nclx_studio_swing
         && super::ycbcr_hdr_simd::hdr_ycbcr_u16_simd_eligible(u16_layout, true, yuv_matrix)
     {
-        studio_swing.map(|(swing_y, swing_cb, _)| super::ycbcr_hdr_simd::HdrYcbcrStudioSwingParams {
-            luma_floor: swing_y.luma_floor,
-            luma_inv_span: 1.0 / swing_y.luma_span,
-            chroma_mid: swing_cb.chroma_mid,
-            chroma_inv_span: 1.0 / swing_cb.chroma_span,
+        studio_swing.map(|(swing_y, swing_cb, _)| {
+            super::ycbcr_hdr_simd::HdrYcbcrStudioSwingParams {
+                luma_floor: swing_y.luma_floor,
+                luma_inv_span: 1.0 / swing_y.luma_span,
+                chroma_mid: swing_cb.chroma_mid,
+                chroma_inv_span: 1.0 / swing_cb.chroma_span,
+            }
         })
     } else {
         None

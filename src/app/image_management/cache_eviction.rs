@@ -373,8 +373,7 @@ impl ImageViewerApp {
             + self.animation_cache.len()
             + self.hdr_image_cache.len()
             + self.hdr_tiled_source_cache.len();
-        let mut all_prefetch_indices =
-            std::collections::HashSet::with_capacity(prefetch_capacity);
+        let mut all_prefetch_indices = std::collections::HashSet::with_capacity(prefetch_capacity);
         all_prefetch_indices.extend(self.prefetch_resource_indices.iter().copied());
         all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
         all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());

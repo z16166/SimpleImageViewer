@@ -222,9 +222,7 @@ impl LruOrder<usize> {
 
     /// Rebuild keys via `old_to_new`, dropping indices outside the remap table.
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
-        self.remap_ordered(|index| {
-            (index < old_to_new.len()).then_some(old_to_new[index])
-        });
+        self.remap_ordered(|index| (index < old_to_new.len()).then_some(old_to_new[index]));
     }
 }
 

@@ -126,9 +126,7 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
     match (bps, format) {
         (16, FORMAT_IEEEFP) => {
             // SAFETY: `sample_bytes_in_buf` verified the sample span lies in `buf`.
-            let bits = unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16)
-            };
+            let bits = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) };
             half::f16::from_bits(bits).to_f64()
         }
         (16, _) => {

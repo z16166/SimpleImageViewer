@@ -263,15 +263,18 @@ fn orient_arc_rgba8(
     if orientation <= 1 {
         return (width, height);
     }
-    let (out_w, out_h, oriented) = match Arc::try_unwrap(std::mem::replace(slot, Arc::new(Vec::new()))) {
-        Ok(owned) => crate::libtiff_loader::apply_orientation_buffer(owned, width, height, orientation),
-        Err(shared) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
-            shared.as_ref(),
-            width,
-            height,
-            orientation,
-        ),
-    };
+    let (out_w, out_h, oriented) =
+        match Arc::try_unwrap(std::mem::replace(slot, Arc::new(Vec::new()))) {
+            Ok(owned) => {
+                crate::libtiff_loader::apply_orientation_buffer(owned, width, height, orientation)
+            }
+            Err(shared) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
+                shared.as_ref(),
+                width,
+                height,
+                orientation,
+            ),
+        };
     *slot = Arc::new(oriented);
     (out_w, out_h)
 }
@@ -291,8 +294,12 @@ pub(crate) fn apply_orientation_to_iso_deferred_hdr_buffer(
         return buffer;
     };
 
-    let (out_w, out_h) =
-        orient_arc_rgba8(&mut deferred.sdr_rgba, buffer.width, buffer.height, orientation);
+    let (out_w, out_h) = orient_arc_rgba8(
+        &mut deferred.sdr_rgba,
+        buffer.width,
+        buffer.height,
+        orientation,
+    );
     let (gain_w, gain_h) = orient_arc_rgba8(
         &mut deferred.gain_rgba,
         deferred.gain_width,

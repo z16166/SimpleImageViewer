@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::*;
 use super::tile_cache::HdrTileBinding;
+use super::*;
 
 fn queue_iso_tile_cpu_compose(
     pending_work: &HdrPendingWorkQueues,

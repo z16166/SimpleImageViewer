@@ -375,17 +375,14 @@ impl OpenExrCoreReadContext {
 
                 let fetched = chunk_work
                     .par_iter()
-                    .map(|(chunk, ox, oy)| {
-                        self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy))
-                    })
+                    .map(|(chunk, ox, oy)| self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy)))
                     .collect::<Result<Vec<_>, String>>()?;
 
                 let tile_rect = (x, y, width, height);
                 for (i, fetch) in fetched.iter().enumerate() {
                     #[cfg(not(feature = "tile-debug"))]
                     let _ = i;
-                    let copy_ms =
-                        copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
+                    let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {
                         let (chunk, chunk_origin_x, chunk_origin_y) = &chunk_work[i];

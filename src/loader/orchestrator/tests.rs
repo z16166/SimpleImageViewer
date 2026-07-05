@@ -65,11 +65,7 @@ fn should_spawn_load_task_rejects_neighbor_prefetch_at_soft_cap() {
     };
 
     for index in 0..MAX_IMG_LOADER_THREADS {
-        assert!(should_spawn_load_task(
-            &mut loading,
-            index,
-            neighbor()
-        ));
+        assert!(should_spawn_load_task(&mut loading, index, neighbor()));
     }
     assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
 

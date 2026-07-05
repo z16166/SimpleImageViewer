@@ -40,11 +40,11 @@ pub(crate) mod linux_admission;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_diag;
 pub(crate) mod logluv_decode;
-pub(crate) mod simd_fast_pow;
 pub mod monitor;
 pub(crate) mod mpf;
 pub(crate) mod openexr_core;
 pub(crate) mod raw_demosaic_gpu;
+pub(crate) mod simd_fast_pow;
 pub(crate) mod openexr_core_backend {
     pub(crate) use super::openexr_core::*;
 }

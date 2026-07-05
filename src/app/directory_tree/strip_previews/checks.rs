@@ -38,9 +38,8 @@ impl ImageViewerApp {
             .try_lock()
             .map(|list| list.image_list_generation);
         let mut cache = self.cached_avif_strip_probe.lock();
-        if current_gen.is_none_or(|generation| {
-            cache.as_ref().is_none_or(|(g, _)| *g != generation)
-        }) {
+        if current_gen.is_none_or(|generation| cache.as_ref().is_none_or(|(g, _)| *g != generation))
+        {
             *cache = Some((current_gen.unwrap_or(0), HashMap::new()));
         }
         let (_, map) = cache.as_mut().expect("just inserted");

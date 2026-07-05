@@ -25,14 +25,14 @@ use super::tone_map::{
     encode_linear_display_referred_srgb8, encode_sdr_rgb8, hdr_to_sdr_rgba8_with_tone_settings,
     should_use_iec61966_tone_map_fallback,
 };
+#[cfg(target_arch = "aarch64")]
+use crate::hdr::simd_fast_pow::pow4_neon;
+#[cfg(target_arch = "x86_64")]
+use crate::hdr::simd_fast_pow::pow4_sse41;
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrToneMapSettings,
     HdrTransferFunction,
 };
-#[cfg(target_arch = "x86_64")]
-use crate::hdr::simd_fast_pow::pow4_sse41;
-#[cfg(target_arch = "aarch64")]
-use crate::hdr::simd_fast_pow::pow4_neon;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;

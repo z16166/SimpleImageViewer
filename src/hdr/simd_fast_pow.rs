@@ -20,10 +20,10 @@
 //! stay in SIMD. Callers must be compiled with `#[target_feature(enable = "...")]` and invoked
 //! only after runtime feature detection (or unconditionally on aarch64).
 
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 
 /// Scalar reference for tests; positive bases only.
 #[inline]
@@ -220,10 +220,7 @@ mod arm {
     unsafe fn exp_ps(x: float32x4_t) -> float32x4_t {
         let one = vdupq_n_f32(1.0);
         let half = vdupq_n_f32(0.5);
-        let mut x = vminq_f32(
-            vmaxq_f32(x, vdupq_n_f32(EXP_LO)),
-            vdupq_n_f32(EXP_HI),
-        );
+        let mut x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(EXP_LO)), vdupq_n_f32(EXP_HI));
 
         let mut fx = vaddq_f32(vmulq_f32(x, vdupq_n_f32(LOG2EF)), half);
         let tmp = vcvtq_f32_s32(vcvtq_s32_f32(fx));
@@ -251,10 +248,7 @@ mod arm {
         y = vaddq_f32(vmulq_f32(y, z2), x);
         y = vaddq_f32(y, one);
 
-        let imm0 = vshlq_n_s32(
-            vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(EXP_BIAS)),
-            23,
-        );
+        let imm0 = vshlq_n_s32(vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(EXP_BIAS)), 23);
         vmulq_f32(y, vreinterpretq_f32_s32(imm0))
     }
 
@@ -289,14 +283,7 @@ pub(crate) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t 
 mod tests {
     use super::*;
 
-    const EXPONENTS: [f32; 6] = [
-        1.0 / 2.4,
-        2.4,
-        1.0 / 0.45,
-        1.0 / 2.2,
-        5.0,
-        0.25,
-    ];
+    const EXPONENTS: [f32; 6] = [1.0 / 2.4, 2.4, 1.0 / 0.45, 1.0 / 2.2, 5.0, 0.25];
 
     #[test]
     fn scalar_fast_powf_matches_std_powf_on_tone_map_range() {
@@ -328,14 +315,13 @@ mod tests {
         for exp in EXPONENTS {
             let mut x = 0.0_f32;
             while x <= 1.0 {
-                let lanes = [x, (x + 0.01).min(1.0), (x + 0.02).min(1.0), (x + 0.03).min(1.0)];
-                let expected: [f32; 4] = lanes.map(|v| {
-                    if v <= 0.0 {
-                        0.0
-                    } else {
-                        v.powf(exp)
-                    }
-                });
+                let lanes = [
+                    x,
+                    (x + 0.01).min(1.0),
+                    (x + 0.02).min(1.0),
+                    (x + 0.03).min(1.0),
+                ];
+                let expected: [f32; 4] = lanes.map(|v| if v <= 0.0 { 0.0 } else { v.powf(exp) });
                 let got = unsafe {
                     let base = _mm_set_ps(lanes[3], lanes[2], lanes[1], lanes[0]);
                     let out = pow4_sse41(base, exp);
@@ -344,11 +330,7 @@ mod tests {
                     buf
                 };
                 for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
-                    let rel = if e > 1.0e-8 {
-                        (g - e).abs() / e
-                    } else {
-                        g - e
-                    };
+                    let rel = if e > 1.0e-8 { (g - e).abs() / e } else { g - e };
                     assert!(
                         rel <= 2.0e-4,
                         "lane={lane} x={} exp={exp} got={g} expected={e}",
@@ -366,14 +348,13 @@ mod tests {
         for exp in EXPONENTS {
             let mut x = 0.0_f32;
             while x <= 1.0 {
-                let lanes = [x, (x + 0.01).min(1.0), (x + 0.02).min(1.0), (x + 0.03).min(1.0)];
-                let expected: [f32; 4] = lanes.map(|v| {
-                    if v <= 0.0 {
-                        0.0
-                    } else {
-                        v.powf(exp)
-                    }
-                });
+                let lanes = [
+                    x,
+                    (x + 0.01).min(1.0),
+                    (x + 0.02).min(1.0),
+                    (x + 0.03).min(1.0),
+                ];
+                let expected: [f32; 4] = lanes.map(|v| if v <= 0.0 { 0.0 } else { v.powf(exp) });
                 let got = unsafe {
                     let base = vld1q_f32(lanes.as_ptr());
                     let out = pow4_neon(base, exp);
@@ -382,11 +363,7 @@ mod tests {
                     buf
                 };
                 for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
-                    let rel = if e > 1.0e-8 {
-                        (g - e).abs() / e
-                    } else {
-                        g - e
-                    };
+                    let rel = if e > 1.0e-8 { (g - e).abs() / e } else { g - e };
                     assert!(
                         rel <= 2.0e-4,
                         "lane={lane} x={} exp={exp} got={g} expected={e}",
