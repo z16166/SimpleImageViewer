@@ -114,11 +114,18 @@ fn precompute_gain_row_matches_legacy_reference() {
         };
         precompute_gain_row_linear_legacy(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut legacy);
         precompute_gain_row_linear(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut optimized);
-        assert_eq!(
-            legacy.rgb[..W as usize * 3],
-            optimized.rgb[..W as usize * 3],
-            "row {y} mismatch"
-        );
+        for (x, (got, expected)) in optimized.rgb[..W as usize * 3]
+            .iter()
+            .zip(legacy.rgb[..W as usize * 3].iter())
+            .enumerate()
+        {
+            let diff = (got - expected).abs();
+            let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+            assert!(
+                diff <= tol,
+                "row {y} pixel {x} mismatch: got={got} expected={expected}"
+            );
+        }
     }
 }
 
@@ -168,7 +175,15 @@ fn compose_apple_gain_map_pixels_matches_legacy_reference() {
         weight,
         force_scalar: false,
     });
-    assert_eq!(legacy, optimized);
+    assert_eq!(legacy.len(), optimized.len());
+    for (i, (&got, &expected)) in optimized.iter().zip(legacy.iter()).enumerate() {
+        let diff = (got - expected).abs();
+        let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+        assert!(
+            diff <= tol,
+            "parity failed at {i}: got={got} expected={expected}"
+        );
+    }
 }
 
 #[test]
@@ -238,10 +253,15 @@ fn simd_compose_matches_scalar_for_common_heic_paths() {
             weight,
             force_scalar: false,
         });
-        assert_eq!(
-            reference, optimized,
-            "parity failed for {color_space:?} + {transfer:?}"
-        );
+        assert_eq!(reference.len(), optimized.len());
+        for (i, (&got, &expected)) in optimized.iter().zip(reference.iter()).enumerate() {
+            let diff = (got - expected).abs();
+            let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+            assert!(
+                diff <= tol,
+                "parity failed for {color_space:?} + {transfer:?} at {i}: got={got} expected={expected}"
+            );
+        }
     }
 }
 

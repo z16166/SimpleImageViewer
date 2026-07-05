@@ -362,15 +362,19 @@ unsafe fn ycbcr_studio_swing_row_420_u16_sse41(
         while *x < row.width {
             if *x + PIXELS_PER_SSE41_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len)
             {
+                let xc = *x / 2;
+                let cb0 = row.cb[xc];
+                let cb1 = row.cb[xc + 1];
+                let cr0 = row.cr[xc];
+                let cr1 = row.cr[xc + 1];
                 let y = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
                     row.y.as_ptr().add(*x) as *const __m128i,
                 )));
-                let xc = *x / 2;
-                let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
-                    row.cb.as_ptr().add(xc) as *const __m128i,
+                let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_setr_epi16(
+                    cb0 as i16, cb0 as i16, cb1 as i16, cb1 as i16, 0, 0, 0, 0,
                 )));
-                let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
-                    row.cr.as_ptr().add(xc) as *const __m128i,
+                let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_setr_epi16(
+                    cr0 as i16, cr0 as i16, cr1 as i16, cr1 as i16, 0, 0, 0, 0,
                 )));
 
                 let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
@@ -479,10 +483,18 @@ unsafe fn ycbcr_studio_swing_row_420_u16_neon(
     let chroma_len = row.width.div_ceil(2);
     while *x < row.width {
         if *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len) {
-            let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
             let xc = *x / 2;
-            let cb = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cb.as_ptr().add(xc)))));
-            let cr = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cr.as_ptr().add(xc)))));
+            let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
+            let cb_pair = vld1_u16(row.cb.as_ptr().add(xc));
+            let cr_pair = vld1_u16(row.cr.as_ptr().add(xc));
+            let cb = vcvtq_f32_u32(vmovl_u16(vcombine_u16(
+                vdup_lane_u16(cb_pair, 0),
+                vdup_lane_u16(cb_pair, 1),
+            )));
+            let cr = vcvtq_f32_u32(vmovl_u16(vcombine_u16(
+                vdup_lane_u16(cr_pair, 0),
+                vdup_lane_u16(cr_pair, 1),
+            )));
 
             let yy = vmulq_f32(vsubq_f32(y, luma_floor), luma_inv);
             let pb = vmulq_f32(vsubq_f32(cb, chroma_mid), chroma_inv);

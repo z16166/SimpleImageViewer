@@ -115,4 +115,28 @@ impl DirectoryTreeNodeArena {
             .iter()
             .map(|(path, &id)| (path, &self.entries[id as usize]))
     }
+
+    pub(crate) fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&PathBuf) -> bool,
+    {
+        let kept: Vec<(PathBuf, DirectoryTreeNode)> = self
+            .path_index
+            .iter()
+            .filter_map(|(path, &id)| {
+                if keep(path) {
+                    Some((path.clone(), self.entries[id as usize].clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.entries.clear();
+        self.path_index.clear();
+        for (path, node) in kept {
+            let id = u32::try_from(self.entries.len()).expect("retain cannot overflow arena ids");
+            self.entries.push(node);
+            self.path_index.insert(path, id);
+        }
+    }
 }

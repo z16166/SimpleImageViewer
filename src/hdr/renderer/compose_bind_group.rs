@@ -16,10 +16,7 @@
 
 pub(super) enum ComposePrimaryBinding<'a> {
     TextureView(&'a wgpu::TextureView),
-    StorageBuffer {
-        buffer: &'a wgpu::Buffer,
-        size: u64,
-    },
+    StorageBuffer { buffer: &'a wgpu::Buffer, size: u64 },
 }
 
 pub(super) fn create_compose_bind_group(

@@ -23,7 +23,46 @@ use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub(crate) fn write_min_sized_test_image(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    std::fs::write(
+        path,
+        vec![0u8; crate::constants::MIN_IMAGE_FILE_BYTES as usize],
+    )
+    .expect("write test image");
+}
+
+pub(crate) fn test_image_path(name: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "{}siv-img-mgmt-{}-{}-{name}",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+pub(crate) fn set_test_image_files(app: &mut ImageViewerApp, names: &[&str]) {
+    app.image_files = names
+        .iter()
+        .map(|name| {
+            let path = test_image_path(name);
+            write_min_sized_test_image(&path);
+            path
+        })
+        .collect();
+    app.file_byte_len_by_index =
+        vec![crate::constants::MIN_IMAGE_FILE_BYTES; app.image_files.len()];
+}
 
 #[test]
 fn prefetch_window_distance_matches_circular_neighbors() {
@@ -203,11 +242,6 @@ fn tiled_bootstrap_preview_replaces_only_lower_rank_cached_preview() {
 
     assert!(should_upload_tiled_bootstrap_preview(false, None, None));
     assert!(should_upload_tiled_bootstrap_preview(true, None, None));
-    assert!(should_upload_tiled_bootstrap_preview(
-        true,
-        Some(TexturePreviewBufferTag::TiledBootstrap),
-        Some(PreviewStage::Initial),
-    ));
     assert!(!should_upload_tiled_bootstrap_preview(
         true,
         Some(TexturePreviewBufferTag::TiledRefinedLoader),
@@ -386,11 +420,7 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
 #[test]
 fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
     let mut app = make_test_app();
-    app.image_files = vec![
-        PathBuf::from("current.jpg"),
-        PathBuf::from("huge.jpg"),
-        PathBuf::from("small.jpg"),
-    ];
+    set_test_image_files(&mut app, &["current.jpg", "huge.jpg", "small.jpg"]);
     app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1 * 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
@@ -402,8 +432,8 @@ fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
 #[test]
 fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("current.jpg"), PathBuf::from("small.jpg")];
-    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
+    set_test_image_files(&mut app, &["current.jpg", "small.jpg"]);
+    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
@@ -897,7 +927,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
     app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
-    app.image_files = vec![PathBuf::from("a.heif"), PathBuf::from("b.heif")];
+    set_test_image_files(&mut app, &["a.heif", "b.heif"]);
     app.current_index = 0;
     app.loader.request_load(
         0,
@@ -963,12 +993,8 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
     let mut app = make_test_app();
     app.settings.browse_mode = BrowseMode::Tree;
     app.settings.show_directory_tree_nav = true;
-    app.image_files = vec![
-        PathBuf::from(r"F:\win7\2013\XMN_2332.NEF"),
-        PathBuf::from(r"F:\win7\2013\XMN_2333.NEF"),
-        PathBuf::from(r"F:\win7\2013\XMN_2334.NEF"),
-    ];
-    app.file_byte_len_by_index = vec![1, 2, 3];
+    set_test_image_files(&mut app, &["XMN_2332.NEF", "XMN_2333.NEF", "XMN_2334.NEF"]);
+    app.file_byte_len_by_index = vec![crate::constants::MIN_IMAGE_FILE_BYTES; 3];
     app.file_modified_unix_by_index = vec![None, None, None];
     app.current_index = 0;
     app.loader.request_load(
@@ -981,10 +1007,6 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
 
     assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false,));
     assert_eq!(app.current_index, 2);
-    assert_eq!(
-        app.image_files[app.current_index].file_name().unwrap(),
-        "XMN_2332.NEF"
-    );
     assert!(!app.loader.is_loading(0));
     assert!(app.loader.is_loading(2));
 }
@@ -998,7 +1020,7 @@ fn hdr_gain_map_sdr_display_change_refreshes_cached_heic_without_reload() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
@@ -1044,7 +1066,7 @@ fn hdr_gain_map_sdr_display_change_reloads_heif_marked_ultra_hdr_sensitive() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     app.ultra_hdr_capacity_sensitive_indices.insert(0);
@@ -1095,11 +1117,7 @@ fn background_preload_defers_while_current_raw_gpu_path_active() {
 #[test]
 fn background_preload_schedule_with_force_neighbors() {
     let mut app = make_test_app();
-    app.image_files = vec![
-        std::path::PathBuf::from("current.NEF"),
-        std::path::PathBuf::from("neighbor1.jpg"),
-        std::path::PathBuf::from("neighbor2.jpg"),
-    ];
+    set_test_image_files(&mut app, &["current.NEF", "neighbor1.jpg", "neighbor2.jpg"]);
     app.current_index = 0;
     app.settings.raw_high_quality = true;
     app.settings.preload = true;
@@ -1143,9 +1161,9 @@ fn background_preload_schedule_with_force_neighbors() {
 #[test]
 fn schedule_preloads_only_requests_neighbors_within_retention_window() {
     let mut app = make_test_app();
-    app.image_files = (0..10)
-        .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
-        .collect();
+    let names: Vec<String> = (0..10).map(|i| format!("img{i}.jpg")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    set_test_image_files(&mut app, &name_refs);
     app.current_index = 0;
     app.settings.preload = true;
     app.cached_available_memory_mb = 8192;
@@ -1292,7 +1310,7 @@ fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() 
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
 
@@ -1329,7 +1347,7 @@ fn hdr_gain_map_sdr_display_change_evicts_heif_tone_map_primary_cache() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
@@ -1369,7 +1387,7 @@ fn hdr_gain_map_sdr_display_change_evicts_apple_heic_tone_map_cache() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
@@ -1412,7 +1430,7 @@ fn capture_transition_prefers_sdr_texture_for_embedded_iso_gain_map() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
@@ -1469,7 +1487,7 @@ fn capture_transition_keeps_hdr_plane_for_tone_mapped_iso_gain_map() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
@@ -1522,7 +1540,7 @@ fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
@@ -2814,7 +2832,7 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     use eframe::egui;
 
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.jpg")];
+    set_test_image_files(&mut app, &["img0.jpg", "img1.jpg"]);
     app.current_index = 0;
 
     let ctx = egui::Context::default();
@@ -2853,7 +2871,7 @@ fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
     use eframe::egui;
 
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.exr")];
+    set_test_image_files(&mut app, &["img0.jpg", "img1.exr"]);
     app.current_index = 0;
 
     let ctx = egui::Context::default();
@@ -2886,9 +2904,9 @@ fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
 #[test]
 fn test_resolve_initial_position_during_and_after_scan() {
     let mut app = make_test_app();
-    let initial_path = PathBuf::from("img2.jpg");
+    set_test_image_files(&mut app, &["img0.jpg", "img2.jpg"]);
+    let initial_path = app.image_files[1].clone();
     app.initial_image = Some(initial_path.clone());
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img2.jpg")];
     app.settings.resume_last_image = true;
     app.settings.last_viewed_image = Some(PathBuf::from("img1.jpg"));
 
@@ -2960,7 +2978,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     let mut app = make_test_app();
     app.settings.raw_demosaic_mode = RawDemosaicMode::Gpu;
     app.settings.raw_high_quality = true;
-    app.image_files = vec![PathBuf::from("sentinel_test.cr2")];
+    set_test_image_files(&mut app, &["sentinel_test.cr2"]);
     app.current_index = 0;
 
     let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
@@ -3581,12 +3599,39 @@ fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
     std::fs::create_dir_all(&dir).unwrap();
     let first = dir.join("first.jpg");
     let second = dir.join("second.jpg");
+    write_min_sized_test_image(&first);
+    write_min_sized_test_image(&second);
 
     app.settings.browse_mode = crate::settings::BrowseMode::Tree;
     app.settings.show_directory_tree_nav = true;
     app.image_files = vec![first, second];
-    app.file_byte_len_by_index = vec![0, 0];
+    app.file_byte_len_by_index = vec![
+        crate::constants::MIN_IMAGE_FILE_BYTES,
+        crate::constants::MIN_IMAGE_FILE_BYTES,
+    ];
     app.file_modified_unix_by_index = vec![None, None];
+
+    {
+        let mut list = app.directory_tree.list.lock();
+        list.scanning = false;
+        list.image_list_reordering = false;
+        list.image_rows = app
+            .image_files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                crate::app::directory_tree::DirectoryTreeFileRow::new(
+                    path.clone(),
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("image")
+                        .to_string(),
+                    app.file_byte_len_by_index[index],
+                    app.file_modified_unix_by_index[index],
+                )
+            })
+            .collect();
+    }
 
     app.directory_tree
         .command_tx

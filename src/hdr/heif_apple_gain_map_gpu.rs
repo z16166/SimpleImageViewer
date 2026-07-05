@@ -154,6 +154,14 @@ mod tests {
         DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrPixelFormat, HdrTransferFunction,
     };
 
+    static COMPOSE_PARITY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn compose_parity_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        COMPOSE_PARITY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn attach_deferred_populates_gain_map_metadata() {
         let hdr = HdrImageBuffer {
@@ -200,6 +208,7 @@ mod tests {
 
     #[test]
     fn compose_deferred_matches_apply_path_pixel_exact() {
+        let _lock = compose_parity_test_lock();
         let primary = vec![
             0.5, 0.25, 0.125, 1.0, //
             0.0, 0.0, 0.0, 1.0, //
@@ -462,6 +471,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_non_trivial_gain_map() {
+        let _lock = compose_parity_test_lock();
         // 8×6 primary with 4×3 gain map — exercises bilinear with different dims.
         const PW: u32 = 8;
         const PH: u32 = 6;
@@ -543,6 +553,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_linear_srgb_identity() {
+        let _lock = compose_parity_test_lock();
         // LinearSrgb + Linear transfer — both color-space and transfer are identity.
         const PW: u32 = 10;
         const PH: u32 = 4;
@@ -601,6 +612,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_same_size_gain_map() {
+        let _lock = compose_parity_test_lock();
         // Same-size gain map — edge case where bilinear coordinates are integer.
         const N: u32 = 6;
         let mut primary = Vec::with_capacity(N as usize * N as usize * 4);

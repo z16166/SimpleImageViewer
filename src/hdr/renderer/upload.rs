@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage, submit_texture_write};
+use super::pending_gpu_writes::{
+    GpuUploadSink, HdrGpuUploadStage, TextureUploadBytes, submit_texture_write,
+};
 use super::{SharedGpuTexturePool, *};
 use std::sync::Arc;
 
@@ -78,13 +80,9 @@ pub(crate) fn upload_callback_tile(
     texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
-        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
-        tile.width,
-        tile.height,
-        std::mem::size_of::<f32>() as u32 * 4,
-    )
-    .map_err(|err| format!("HDR tile upload: {err}"))?;
+    let (upload_bytes, bytes_per_row) =
+        pack_rgba32f_for_texture_upload(&tile.rgba_f32, tile.width, tile.height)
+            .map_err(|err| format!("HDR tile upload: {err}"))?;
     let texture = create_poolable_texture(
         device,
         texture_pool,
@@ -141,7 +139,7 @@ pub(crate) fn write_rgba32f_to_texture(
     submit_texture_write(
         sink,
         texture,
-        upload_bytes,
+        TextureUploadBytes::Cow(upload_bytes),
         bytes_per_row,
         height,
         wgpu::Extent3d {
@@ -159,13 +157,9 @@ pub(crate) fn upload_callback_image(
     texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
-        rgba32f_as_bytes(image.rgba_f32.as_slice()),
-        image.width,
-        image.height,
-        std::mem::size_of::<f32>() as u32 * 4,
-    )
-    .map_err(|err| format!("HDR upload: {err}"))?;
+    let (upload_bytes, bytes_per_row) =
+        pack_rgba32f_for_texture_upload(&image.rgba_f32, image.width, image.height)
+            .map_err(|err| format!("HDR upload: {err}"))?;
     let texture = create_poolable_texture(
         device,
         texture_pool,
@@ -207,6 +201,44 @@ pub(crate) fn upload_callback_image(
 
 pub(crate) fn wgpu_copy_bytes_per_row(unpadded_bytes_per_row: u32) -> u32 {
     wgpu::util::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+/// Pack RGBA32F rows for texture upload, sharing the source `Arc<Vec<f32>>` when WGSL row
+/// alignment already matches the tight layout (common for full image/tile plane uploads).
+pub(crate) fn pack_rgba32f_for_texture_upload(
+    rgba_f32: &Arc<Vec<f32>>,
+    width: u32,
+    height: u32,
+) -> Result<(TextureUploadBytes<'_>, u32), String> {
+    let bytes_per_pixel = std::mem::size_of::<f32>() as u32 * 4;
+    let unpadded_bytes_per_row = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(unpadded_bytes_per_row);
+    let expected_len = unpadded_bytes_per_row
+        .checked_mul(height)
+        .map(|len| len as usize)
+        .ok_or_else(|| format!("tight buffer length overflows for {width}x{height}"))?;
+    let tight = rgba32f_as_bytes(rgba_f32.as_slice());
+    if tight.len() != expected_len {
+        return Err(format!(
+            "RGBA32F byte length mismatch: expected {expected_len} bytes for {width}x{height}, got {}",
+            tight.len()
+        ));
+    }
+    if bytes_per_row == unpadded_bytes_per_row {
+        return Ok((
+            TextureUploadBytes::Rgba32f(Arc::clone(rgba_f32)),
+            bytes_per_row,
+        ));
+    }
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(rgba_f32.as_slice()),
+        width,
+        height,
+        bytes_per_pixel,
+    )?;
+    Ok((TextureUploadBytes::Cow(upload_bytes), bytes_per_row))
 }
 
 /// Pack tightly laid-out RGBA rows into the pitch required by [`wgpu::Queue::write_texture`].
@@ -321,7 +353,7 @@ pub(crate) fn upload_rgba8_texture(
     submit_texture_write(
         sink,
         Arc::clone(&texture),
-        upload_bytes,
+        TextureUploadBytes::Cow(upload_bytes),
         bytes_per_row,
         layout.size.height,
         layout.size,
@@ -381,7 +413,7 @@ pub(crate) fn upload_r16_uint_texture(
             },
         },
         Arc::clone(&texture),
-        upload_bytes,
+        TextureUploadBytes::Cow(upload_bytes),
         bytes_per_row,
         height,
         wgpu::Extent3d {

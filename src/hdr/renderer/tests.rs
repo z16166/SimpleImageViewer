@@ -850,7 +850,8 @@ fn shader_averages_hdr_texels_when_downscaling() {
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sample_hdr_for_display"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn bilinear_load_hdr"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("premultiply_hdr_rgba"));
-    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_SAMPLE_GRID"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_LIGHT_SAMPLE_GRID"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_HEAVY_SAMPLE_GRID"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("dpdx(uv)"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("sum += premultiply_hdr_rgba"));
 }
@@ -966,9 +967,10 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     set.insert_format(create_callback_resources(&device, target_format, None));
     callback_resources.insert(set);
 
-    let images: Vec<_> = (1..=9)
+    let max_bindings = crate::hdr::renderer::resources::MAX_HDR_IMAGE_PLANE_BINDINGS;
+    let images: Vec<_> = (1..=max_bindings + 1)
         .map(|i| {
-            let size = i * 10;
+            let size = i as u32 * 10;
             let pixels = (size * size * 4) as usize;
             Arc::new(hdr_image(
                 size,
@@ -987,8 +989,8 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     let pending_work = HdrPendingWorkQueues::new_shared();
     const TEST_DEVICE_ID: u64 = 0;
 
-    // Prepare eight callbacks (sleeping so LRU timestamps are distinct).
-    for (i, img) in images.iter().take(8).enumerate() {
+    // Prepare callbacks up to the binding cap (sleeping so LRU timestamps are distinct).
+    for (i, img) in images.iter().take(max_bindings).enumerate() {
         if i > 0 {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -1039,38 +1041,38 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         }
     }
 
-    // Verify that we have exactly eight bindings in resources and they are independent
+    // Verify that we have exactly `max_bindings` bindings in resources and they are independent
     {
         let resources = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(target_format))
             .unwrap();
-        assert_eq!(resources.image_bindings.len(), 8);
+        assert_eq!(resources.image_bindings.len(), max_bindings);
 
         let key0 = HdrImageKey::from_image(&images[0]);
         let key1 = HdrImageKey::from_image(&images[1]);
-        let key7 = HdrImageKey::from_image(&images[7]);
+        let key_last = HdrImageKey::from_image(&images[max_bindings - 1]);
 
         let b0 = resources.image_bindings.get(&key0).unwrap();
         let b1 = resources.image_bindings.get(&key1).unwrap();
-        let b7 = resources.image_bindings.get(&key7).unwrap();
+        let b_last = resources.image_bindings.get(&key_last).unwrap();
 
         assert!(b0.bind_group.is_some());
         assert!(b1.bind_group.is_some());
-        assert!(b7.bind_group.is_some());
+        assert!(b_last.bind_group.is_some());
 
         assert_eq!(b0.uploaded_texture.width(), 10);
         assert_eq!(b1.uploaded_texture.width(), 20);
-        assert_eq!(b7.uploaded_texture.width(), 80);
+        assert_eq!(b_last.uploaded_texture.width(), (max_bindings as u32) * 10);
     }
 
-    // Age out the oldest binding past the eviction-protect window, then insert a ninth image.
+    // Age out the oldest binding past the eviction-protect window, then insert one more image.
     std::thread::sleep(std::time::Duration::from_millis(60));
 
-    // Now prepare the 9th image callback. This should trigger eviction of the oldest (the 1st one)
+    // Now prepare the extra image callback. This should trigger eviction of the oldest (the 1st one)
     {
         let callback = HdrImagePlaneCallback {
-            image: Arc::clone(&images[8]),
+            image: Arc::clone(&images[max_bindings]),
             tone_map: HdrToneMapSettings::default(),
             target_format,
             output_mode: HdrRenderOutputMode::SdrToneMapped,
@@ -1116,13 +1118,13 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         }
     }
 
-    // Verify that resources has size 8 and images[0] has been evicted
+    // Verify that resources is at capacity and images[0] has been evicted
     {
         let resources = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(target_format))
             .unwrap();
-        assert_eq!(resources.image_bindings.len(), 8);
+        assert_eq!(resources.image_bindings.len(), max_bindings);
 
         let key_evicted = HdrImageKey::from_image(&images[0]);
         assert!(!resources.image_bindings.contains_key(&key_evicted));
@@ -1191,11 +1193,14 @@ fn test_has_active_work_detects_completed_and_request_queues() {
     assert!(!pending.has_active_work());
 
     let image = hdr_image(1, 1, HdrPixelFormat::Rgba32Float, vec![0.0; 4]);
-    pending.completed_compose_failures.lock().push(HdrCompletedComposeFailure::IsoImage {
-        key: HdrImageKey::from_image(&image),
-        target_capacity_bits: 16,
-        target_format: wgpu::TextureFormat::Rgba16Float,
-    });
+    pending
+        .completed_compose_failures
+        .lock()
+        .push(HdrCompletedComposeFailure::IsoImage {
+            key: HdrImageKey::from_image(&image),
+            target_capacity_bits: 16,
+            target_format: wgpu::TextureFormat::Rgba16Float,
+        });
     assert!(pending.has_active_work());
 
     *pending.completed_compose_failures.lock() = Vec::new();

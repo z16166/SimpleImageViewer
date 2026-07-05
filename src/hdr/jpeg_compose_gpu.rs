@@ -406,26 +406,36 @@ pub(super) fn ensure_jpeg_compose_bind_group<'a>(
     bind_group_layout: &wgpu::BindGroupLayout,
     binding: &'a mut super::resources::HdrImageBinding,
 ) -> &'a wgpu::BindGroup {
+    let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
+    let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
+    let display_storage_view = binding
+        .uploaded_display_storage_view
+        .as_ref()
+        .expect("jpeg display storage view");
+    let view_fingerprint = (
+        sdr_view as *const _ as usize,
+        gain_view as *const _ as usize,
+        display_storage_view as *const _ as usize,
+    );
+    if binding.jpeg_compose_bind_group_views != Some(view_fingerprint) {
+        binding.jpeg_compose_bind_group = None;
+        binding.jpeg_compose_bind_group_views = Some(view_fingerprint);
+    }
     if binding.jpeg_compose_bind_group.is_none() {
-        let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-        let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
-        let display_storage_view = binding
-            .uploaded_display_storage_view
-            .as_ref()
-            .expect("jpeg display storage view");
         let uniform_buffer = binding
             .jpeg_compose_uniform_buffer
             .as_ref()
             .expect("jpeg compose uniform buffer");
-        binding.jpeg_compose_bind_group = Some(super::compose_bind_group::create_compose_bind_group(
-            device,
-            bind_group_layout,
-            "simple-image-viewer-hdr-jpeg-compose-bind-group",
-            super::compose_bind_group::ComposePrimaryBinding::TextureView(sdr_view),
-            gain_view,
-            uniform_buffer,
-            display_storage_view,
-        ));
+        binding.jpeg_compose_bind_group =
+            Some(super::compose_bind_group::create_compose_bind_group(
+                device,
+                bind_group_layout,
+                "simple-image-viewer-hdr-jpeg-compose-bind-group",
+                super::compose_bind_group::ComposePrimaryBinding::TextureView(sdr_view),
+                gain_view,
+                uniform_buffer,
+                display_storage_view,
+            ));
     }
     binding
         .jpeg_compose_bind_group

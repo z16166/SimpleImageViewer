@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -43,6 +43,8 @@ const MAX_IDLE_TEXTURES_PER_KEY: usize = 4;
 #[derive(Default)]
 pub(crate) struct GpuTexturePool {
     idle: HashMap<TexturePoolKey, Vec<Arc<wgpu::Texture>>>,
+    /// `Arc::as_ptr` addresses for textures handed out by [`Self::acquire`].
+    issued: HashSet<usize>,
 }
 
 impl GpuTexturePool {
@@ -52,15 +54,22 @@ impl GpuTexturePool {
         desc: &wgpu::TextureDescriptor<'_>,
     ) -> Arc<wgpu::Texture> {
         let key = TexturePoolKey::from_descriptor(desc);
-        if let Some(stack) = self.idle.get_mut(&key)
+        let texture = if let Some(stack) = self.idle.get_mut(&key)
             && let Some(texture) = stack.pop()
         {
-            return texture;
-        }
-        Arc::new(device.create_texture(desc))
+            texture
+        } else {
+            Arc::new(device.create_texture(desc))
+        };
+        self.issued.insert(Arc::as_ptr(&texture) as usize);
+        texture
     }
 
     pub(crate) fn release(&mut self, texture: Arc<wgpu::Texture>) {
+        let ptr = Arc::as_ptr(&texture) as usize;
+        if !self.issued.remove(&ptr) {
+            return;
+        }
         let key = TexturePoolKey {
             width: texture.width(),
             height: texture.height(),

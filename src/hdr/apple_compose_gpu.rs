@@ -329,6 +329,7 @@ pub(super) fn ensure_encoded_primary_buffer(
     if needs_new {
         binding.encoded_primary_buffer = Some(create_encoded_primary_buffer(device, byte_len)?);
         binding.encoded_primary_buffer_bytes = byte_len as usize;
+        binding.apple_compose_bind_groups.clear();
     }
     if binding.encoded_primary_buffer.is_some() {
         Ok(())

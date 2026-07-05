@@ -73,7 +73,8 @@ impl ImageViewerApp {
         // master draws the 8-bit fallback texture; routing the outgoing frame through the HDR
         // float plane re-composes and looks noticeably dimmer for one or more frames.
         if hdr.as_ref().is_some_and(|buffer| {
-            self.hdr_prefers_embedded_sdr_master_on_output(buffer) && texture.is_some()
+            self.hdr_prefers_embedded_sdr_master_on_output(buffer)
+                && (texture.is_some() || self.hdr_sdr_fallback_indices.contains(&index))
         }) {
             hdr = None;
         }

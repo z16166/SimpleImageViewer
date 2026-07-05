@@ -702,10 +702,8 @@ impl ImageViewerApp {
             self.set_current_index(index);
         }
         // Re-sort permutes `image_files` and calls `loader.cancel_all()`; restart the current
-        // image if scan-time preload already ran against pre-sort indices (see resort_after_scan).
-        if !self.defer_main_preload_for_directory_tree_list() {
-            self.schedule_current_image_load_if_needed();
-        }
+        // image even when list-preview deferral would skip ordinary scan-time preload.
+        self.schedule_current_image_load_if_needed();
         true
     }
 

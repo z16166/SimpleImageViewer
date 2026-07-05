@@ -707,6 +707,7 @@ impl DirectoryTreeTreeState {
     pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
         self.generation = self.generation.wrapping_add(1);
         self.mark_snapshot_dirty();
+        let mut valid_keys = std::collections::HashSet::new();
         self.places_loaded = true;
         self.known_folders = places.known_folders;
         self.network_label = places.network_label;
@@ -739,8 +740,10 @@ impl DirectoryTreeTreeState {
                 error: None,
             },
         );
+        valid_keys.insert(this_pc_namespace_path());
 
         for entry in self.known_folders.clone() {
+            valid_keys.insert(entry.namespace_path.clone());
             self.insert_tree_node(
                 entry.namespace_path.clone(),
                 DirectoryTreeNode {
@@ -757,6 +760,12 @@ impl DirectoryTreeTreeState {
 
         for drive in places.drives {
             let namespace_path = namespace::drive_mount_namespace_path(&drive.fs_path);
+            valid_keys.insert(namespace_path.clone());
+            if let Some(existing) = self.nodes.get(&namespace_path) {
+                for child in &existing.children {
+                    valid_keys.insert(child.clone());
+                }
+            }
             self.or_insert_tree_node(namespace_path, || {
                 directory_tree_node(drive.display_name, drive.fs_path)
             });
@@ -769,6 +778,7 @@ impl DirectoryTreeTreeState {
                 .map(|entry| namespace::network_share_namespace_path(&entry.fs_path))
                 .collect();
             self.network_visible = true;
+            valid_keys.insert(network_namespace_path());
             self.insert_tree_node(
                 network_namespace_path(),
                 DirectoryTreeNode {
@@ -783,11 +793,14 @@ impl DirectoryTreeTreeState {
             );
             for entry in places.network_locations {
                 let namespace_path = namespace::network_share_namespace_path(&entry.fs_path);
+                valid_keys.insert(namespace_path.clone());
                 self.or_insert_tree_node(namespace_path, || {
                     directory_tree_node(entry.display_name, entry.fs_path)
                 });
             }
         }
+
+        self.nodes.retain(|key| valid_keys.contains(key));
     }
 
     pub(crate) fn ensure_network_visible(&mut self) {

@@ -158,7 +158,15 @@ pub(crate) fn prefer_embedded_iso_gain_map_sdr_on_sdr_output(
     {
         return false;
     }
-    hdr.is_some_and(hdr_supports_embedded_sdr_master_display)
+    let Some(hdr) = hdr else {
+        return false;
+    };
+    if hdr_supports_embedded_sdr_master_display(hdr) {
+        return true;
+    }
+    // ISO/AVIF/JPEG-R deferred gain maps: Embedded SDR master mode shows the baseline
+    // `sdr_rgba` fallback instead of routing through the HDR compose plane on SDR output.
+    hdr_has_iso_deferred_gain_map(hdr)
 }
 
 #[inline]

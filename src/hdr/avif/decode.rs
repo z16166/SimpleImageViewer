@@ -675,6 +675,12 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
             } else {
                 rgb_depth
             };
+            if depth_out == 8 && rgb_depth == 16 {
+                let rgba_bytes = bytemuck::cast_slice::<u16, u8>(&rgba_u16);
+                let u8_pixels =
+                    avif_quantize_rgba_bytes_to_u8(rgba_bytes.to_vec(), 16, pixel_count)?;
+                rgba_u16 = avif_unpack_rgba_bytes_to_u16_lanes(&u8_pixels, 8, pixel_count)?;
+            }
             Ok((rgba_u16, reported_depth))
         }
         Err(code) => Err(format!(

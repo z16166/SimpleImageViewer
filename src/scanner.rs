@@ -742,7 +742,8 @@ mod tests {
         }
 
         fn touch(&self, name: &str) {
-            std::fs::write(self.path.join(name), b"image").expect("write test file");
+            let bytes = vec![0u8; crate::constants::MIN_IMAGE_FILE_BYTES as usize];
+            std::fs::write(self.path.join(name), bytes).expect("write test file");
         }
 
         fn path(&self) -> &Path {

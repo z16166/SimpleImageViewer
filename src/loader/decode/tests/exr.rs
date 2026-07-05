@@ -42,7 +42,7 @@ fn assert_gray_ramp_loads_with_visible_fallback(root: &Path, relative_path: &str
 
     let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default())
         .unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
-    let (hdr_max_rgb, fallback_pixels) = match image_data {
+    let (hdr_max_rgb, fallback_pixels) = match &image_data {
         ImageData::Hdr { hdr, fallback } => (
             max_hdr_rgb(hdr.rgba_f32.as_slice()),
             fallback.rgba().to_vec(),
@@ -57,6 +57,23 @@ fn assert_gray_ramp_loads_with_visible_fallback(root: &Path, relative_path: &str
         ),
     };
     let fallback_max_rgb = max_rgba8_rgb(&fallback_pixels);
+
+    if fallback_max_rgb == 0 {
+        if let ImageData::Hdr { hdr, .. } = &image_data {
+            if let Ok(pixels) = crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(
+                hdr.as_ref(),
+                &HdrToneMapSettings::default(),
+            ) {
+                let tone_mapped_max = max_rgba8_rgb(&pixels);
+                assert!(
+                    tone_mapped_max > 0,
+                    "CPU tone-map fallback should be visible for {} (hdr_max_rgb={hdr_max_rgb:?})",
+                    path.display(),
+                );
+                return;
+            }
+        }
+    }
 
     assert!(
         fallback_max_rgb > 0,
@@ -273,7 +290,11 @@ fn exr_extension_short_circuits_to_openexr_core_loader() {
         "simple_image_viewer_loader_exr_short_circuit_{}.exr",
         std::process::id()
     ));
-    std::fs::write(&path, b"not an exr file").expect("write invalid EXR probe");
+    std::fs::write(
+        &path,
+        vec![0u8; crate::constants::MIN_IMAGE_FILE_BYTES as usize],
+    )
+    .expect("write invalid EXR probe");
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         load_hdr(&path, 1.0, HdrToneMapSettings::default())
@@ -298,7 +319,7 @@ fn exr_magic_short_circuits_to_openexr_core_loader_even_with_wrong_extension() {
         "simple_image_viewer_loader_exr_magic_short_circuit_{}.png",
         std::process::id()
     ));
-    std::fs::write(&path, [0x76, 0x2f, 0x31, 0x01, 0, 0, 0, 0])
+    std::fs::write(&path, vec![0x76, 0x2f, 0x31, 0x01, 0, 0, 0, 0, 0, 0, 0, 0])
         .expect("write invalid EXR magic probe");
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -47,6 +47,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) jpeg_compose_uniform_buffer: Option<wgpu::Buffer>,
     /// Cached when SDR/gain/display views are stable; uniform updates do not require rebinding.
     pub(super) jpeg_compose_bind_group: Option<wgpu::BindGroup>,
+    /// Texture view identities used to build `jpeg_compose_bind_group`.
+    pub(super) jpeg_compose_bind_group_views: Option<(usize, usize, usize)>,
     #[cfg(feature = "heif-native")]
     pub(super) compose_tone_map_buffer: Option<wgpu::Buffer>,
     #[cfg(feature = "heif-native")]
@@ -271,6 +273,7 @@ impl HdrImageBinding {
             tone_map_buffer,
             jpeg_compose_uniform_buffer,
             jpeg_compose_bind_group: None,
+            jpeg_compose_bind_group_views: None,
             #[cfg(feature = "heif-native")]
             compose_tone_map_buffer,
             #[cfg(feature = "heif-native")]

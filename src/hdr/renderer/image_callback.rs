@@ -396,6 +396,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         binding.encoded_primary_buffer = None;
                         binding.encoded_primary_buffer_bytes = 0;
                         binding.encoded_primary_source_ptr = None;
+                        binding.apple_compose_bind_groups.clear();
                     }
                 }
             }

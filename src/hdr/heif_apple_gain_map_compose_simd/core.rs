@@ -104,12 +104,8 @@ pub(crate) struct GainRowLinear {
 impl GainRowLinear {
     pub(crate) fn ensure_capacity(&mut self, width: usize) {
         let needed = width * 3;
-        if self.encoded.len() < needed {
-            self.encoded.resize(needed, 0.0);
-        }
-        if self.rgb.len() < needed {
-            self.rgb.resize(needed, 0.0);
-        }
+        self.encoded.resize(needed, 0.0);
+        self.rgb.resize(needed, 0.0);
     }
 }
 
