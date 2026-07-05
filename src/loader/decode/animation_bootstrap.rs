@@ -92,10 +92,28 @@ fn load_raster_animation_bootstrap(
     hdr_tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
 ) -> Result<RasterAnimationBootstrapOutcome, String> {
-    use image::AnimationDecoder;
-
     let file = crate::mmap_util::map_file(path)?;
     let mmap: Arc<[u8]> = Arc::from(file.as_ref());
+    load_raster_animation_bootstrap_from_bytes(
+        path,
+        mmap,
+        format,
+        hdr_target_capacity,
+        hdr_tone_map,
+        bootstrap_animation,
+    )
+}
+
+fn load_raster_animation_bootstrap_from_bytes(
+    path: &Path,
+    mmap: Arc<[u8]>,
+    format: RasterAnimationFormat,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    bootstrap_animation: bool,
+) -> Result<RasterAnimationBootstrapOutcome, String> {
+    use image::AnimationDecoder;
+
     let reader = Cursor::new(mmap.as_ref());
 
     match format {
@@ -103,7 +121,7 @@ fn load_raster_animation_bootstrap(
             use image::codecs::gif::GifDecoder;
             let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image = load_gif(path, hdr_target_capacity, hdr_tone_map)?;
+                let image = load_gif_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -157,14 +175,14 @@ fn load_raster_animation_bootstrap(
             use image::codecs::png::PngDecoder;
             let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
             if !decoder.is_apng().map_err(|e| e.to_string())? {
-                let image = load_png(path, hdr_target_capacity, hdr_tone_map)?;
+                let image = load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
             if !bootstrap_animation {
-                let image = load_png(path, hdr_target_capacity, hdr_tone_map)?;
+                let image = load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -218,7 +236,7 @@ fn load_raster_animation_bootstrap(
             use image::codecs::webp::WebPDecoder;
             let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image = load_webp(path, hdr_target_capacity, hdr_tone_map)?;
+                let image = load_webp_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -269,6 +287,57 @@ fn load_raster_animation_bootstrap(
             })
         }
     }
+}
+
+pub(crate) fn load_gif_with_bootstrap_from_bytes(
+    path: &Path,
+    mmap: Arc<[u8]>,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    bootstrap_animation: bool,
+) -> Result<RasterAnimationBootstrapOutcome, String> {
+    load_raster_animation_bootstrap_from_bytes(
+        path,
+        mmap,
+        RasterAnimationFormat::Gif,
+        hdr_target_capacity,
+        hdr_tone_map,
+        bootstrap_animation,
+    )
+}
+
+pub(crate) fn load_png_with_bootstrap_from_bytes(
+    path: &Path,
+    mmap: Arc<[u8]>,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    bootstrap_animation: bool,
+) -> Result<RasterAnimationBootstrapOutcome, String> {
+    load_raster_animation_bootstrap_from_bytes(
+        path,
+        mmap,
+        RasterAnimationFormat::Apng,
+        hdr_target_capacity,
+        hdr_tone_map,
+        bootstrap_animation,
+    )
+}
+
+pub(crate) fn load_webp_with_bootstrap_from_bytes(
+    path: &Path,
+    mmap: Arc<[u8]>,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    bootstrap_animation: bool,
+) -> Result<RasterAnimationBootstrapOutcome, String> {
+    load_raster_animation_bootstrap_from_bytes(
+        path,
+        mmap,
+        RasterAnimationFormat::Webp,
+        hdr_target_capacity,
+        hdr_tone_map,
+        bootstrap_animation,
+    )
 }
 
 pub(crate) fn load_gif_with_bootstrap(

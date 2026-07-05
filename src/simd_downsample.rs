@@ -840,6 +840,12 @@ mod tests {
     ];
 
     #[test]
+    fn simd_box_accumulator_overflow_detects_extreme_ratio() {
+        assert!(simd_box_accumulator_would_overflow(4096, 4096, 1, 1));
+        assert!(!simd_box_accumulator_would_overflow(256, 256, 64, 64));
+    }
+
+    #[test]
     fn simd_downsample_box_matches_scalar() {
         for &(sw, sh, dw, dh) in TEST_SIZES {
             let src = make_patterned_rgba(sw, sh);

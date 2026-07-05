@@ -80,14 +80,28 @@ impl TiffHandlePool {
         if let Some(handle) = self.pool.lock().pop() {
             return Ok(handle);
         }
-        if self.live_handles.load(Ordering::Acquire) >= MAX_TIFF_HANDLE_POOL_SIZE {
-            return Err(format!(
-                "TIFF handle pool capacity ({MAX_TIFF_HANDLE_POOL_SIZE}) exceeded"
-            ));
+        loop {
+            let current = self.live_handles.load(Ordering::Acquire);
+            if current >= MAX_TIFF_HANDLE_POOL_SIZE {
+                return Err(format!(
+                    "TIFF handle pool capacity ({MAX_TIFF_HANDLE_POOL_SIZE}) exceeded"
+                ));
+            }
+            if self
+                .live_handles
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
         }
-        let handle = create_tiff_handle(mmap, path)?;
-        self.live_handles.fetch_add(1, Ordering::AcqRel);
-        Ok(handle)
+        match create_tiff_handle(mmap, path) {
+            Ok(handle) => Ok(handle),
+            Err(e) => {
+                self.live_handles.fetch_sub(1, Ordering::AcqRel);
+                Err(e)
+            }
+        }
     }
 
     pub(crate) fn release(&self, handle: TiffHandle) {

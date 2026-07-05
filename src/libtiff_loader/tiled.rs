@@ -24,7 +24,7 @@ use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::scratch::with_tiled_extract_scratch;
+use super::scratch::{with_tiled_decode_scratch, with_tiled_extract_scratch};
 use super::thumbnail::extract_embedded_thumbnail;
 
 fn checked_tile_pixel_count(tile_width: u32, tile_height: u32) -> Option<usize> {
@@ -40,7 +40,7 @@ pub struct LibTiffTiledSource {
     pub(crate) tile_height: u32,
     pub(crate) handle_pool: TiffHandlePool,
     pub(crate) tile_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
-    pub(crate) cache_order: Mutex<Vec<u32>>,
+    pub(crate) tile_lru: Mutex<crate::lru_order::LruOrder<u32>>,
     pub(crate) max_cached_tiles: usize,
 }
 
@@ -68,11 +68,7 @@ impl LibTiffTiledSource {
         {
             let cache = self.tile_cache.lock();
             if let Some(data) = cache.get(&tile_idx) {
-                let mut order = self.cache_order.lock();
-                if let Some(pos) = order.iter().position(|&k| k == tile_idx) {
-                    order.remove(pos);
-                }
-                order.push(tile_idx);
+                self.tile_lru.lock().touch(tile_idx);
                 return Some(Arc::clone(data));
             }
         }
@@ -81,45 +77,45 @@ impl LibTiffTiledSource {
         let th = self.tile_height;
         let tile_len = checked_tile_pixel_count(tw, th)?;
         let rgba_len = tile_len.checked_mul(crate::constants::RGBA_CHANNELS)?;
-
-        let mut tile_buf = vec![0u32; tile_len];
-        let mut rgba = vec![0u8; rgba_len];
         let curr_tx = tile_col * tw;
         let curr_ty = tile_row * th;
 
-        unsafe {
-            if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr()) == 0
-            {
-                return None;
-            }
-        }
-
-        for ty_in_p in 0..th {
-            for tx_in_p in 0..tw {
-                let src_idx = (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
-                let dst_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
-                if src_idx < tile_buf.len() && dst_idx + 4 <= rgba.len() {
-                    let pixel = tile_buf[src_idx].to_ne_bytes();
-                    rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+        let rgba = with_tiled_decode_scratch(tile_len, rgba_len, |tile_buf, rgba| {
+            unsafe {
+                if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr())
+                    == 0
+                {
+                    return None;
                 }
             }
-        }
+
+            for ty_in_p in 0..th {
+                for tx_in_p in 0..tw {
+                    let src_idx = (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
+                    let dst_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
+                    if src_idx < tile_buf.len() && dst_idx + 4 <= rgba.len() {
+                        let pixel = tile_buf[src_idx].to_ne_bytes();
+                        rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                    }
+                }
+            }
+            Some(rgba.to_vec())
+        })?;
 
         let data = Arc::new(rgba);
 
         {
             let mut cache = self.tile_cache.lock();
-            let mut order = self.cache_order.lock();
+            let mut lru = self.tile_lru.lock();
 
-            while order.len() >= self.max_cached_tiles {
-                if let Some(oldest) = order.first().copied() {
-                    order.remove(0);
+            while lru.len() >= self.max_cached_tiles {
+                if let Some(oldest) = lru.pop_oldest() {
                     cache.remove(&oldest);
                 }
             }
 
             cache.insert(tile_idx, Arc::clone(&data));
-            order.push(tile_idx);
+            lru.touch(tile_idx);
         }
 
         Some(data)

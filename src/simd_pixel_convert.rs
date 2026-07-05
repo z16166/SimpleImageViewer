@@ -338,7 +338,7 @@ unsafe fn u16_lanes_to_f32_neon(dst: &mut [f32], src: &[u16], inv_scale: f32, i:
     while *i + F32S_PER_NEON_STEP <= src.len() {
         let lanes = vld1_u16(src.as_ptr().add(*i));
         let widened = vmovl_u16(lanes);
-        let floats = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(widened))), scale);
+        let floats = vmulq_f32(vcvtq_f32_u32(widened), scale);
         vst1q_f32(dst.as_mut_ptr().add(*i), floats);
         *i += F32S_PER_NEON_STEP;
     }
@@ -502,9 +502,9 @@ unsafe fn normalize_uint16_rgb3_scanline_neon(
     while *x + 2 <= width {
         let base = *x * 6;
         let words = src.as_ptr().add(base) as *const u16;
-        let r_u16 = vcombine_u16(*words.add(0), *words.add(3));
-        let g_u16 = vcombine_u16(*words.add(1), *words.add(4));
-        let b_u16 = vcombine_u16(*words.add(2), *words.add(5));
+        let r_u16 = vcreate_u16(u64::from(*words.add(0)) | (u64::from(*words.add(3)) << 16));
+        let g_u16 = vcreate_u16(u64::from(*words.add(1)) | (u64::from(*words.add(4)) << 16));
+        let b_u16 = vcreate_u16(u64::from(*words.add(2)) | (u64::from(*words.add(5)) << 16));
 
         let rf = vminq_f32(
             vmaxq_f32(

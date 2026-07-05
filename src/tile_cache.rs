@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use eframe::egui::{self, TextureHandle};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -86,7 +86,7 @@ impl PendingTileKey {
 pub struct TilePixelCache {
     /// Key: (image_index, col, row)
     entries: HashMap<(usize, u32, u32), Arc<Vec<u8>>>,
-    lru: crate::lru_order::LruOrder<(usize, u32, u32)>,
+    lru: Mutex<crate::lru_order::LruOrder<(usize, u32, u32)>>,
     current_bytes: usize,
     max_mb: usize,
 }
@@ -95,7 +95,7 @@ impl TilePixelCache {
     pub fn new(max_mb: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            lru: crate::lru_order::LruOrder::default(),
+            lru: Mutex::new(crate::lru_order::LruOrder::default()),
             current_bytes: 0,
             max_mb,
         }
@@ -118,10 +118,10 @@ impl TilePixelCache {
             .contains_key(&(index, coord.col, coord.row))
     }
 
-    pub fn get(&mut self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
+    pub fn get(&self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
         let key = (index, coord.col, coord.row);
         if let Some(pixels) = self.entries.get(&key) {
-            self.lru.touch(key);
+            self.lru.lock().touch(key);
             Some(Arc::clone(pixels))
         } else {
             None
@@ -134,15 +134,16 @@ impl TilePixelCache {
         // Handle duplicate insertions: remove old entry first to update memory accounting and LRU
         if let Some(old_pixels) = self.entries.remove(&key) {
             self.current_bytes -= old_pixels.len();
-            self.lru.remove(key);
+            self.lru.lock().remove(key);
         }
 
         let bytes = pixels.len();
         let max_bytes = self.max_mb * 1024 * 1024;
+        let mut lru = self.lru.lock();
 
         // Evict if needed
-        while !self.lru.is_empty() && self.current_bytes + bytes > max_bytes {
-            if let Some(evicted_key) = self.lru.pop_oldest()
+        while !lru.is_empty() && self.current_bytes + bytes > max_bytes {
+            if let Some(evicted_key) = lru.pop_oldest()
                 && let Some(evicted_pixels) = self.entries.remove(&evicted_key)
             {
                 self.current_bytes -= evicted_pixels.len();
@@ -151,7 +152,7 @@ impl TilePixelCache {
 
         if self.current_bytes + bytes <= max_bytes {
             self.entries.insert(key, Arc::clone(&pixels));
-            self.lru.touch(key);
+            lru.touch(key);
             self.current_bytes += bytes;
         }
     }
@@ -169,7 +170,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            self.lru.remove(key);
+            self.lru.lock().remove(key);
         }
     }
 
@@ -189,7 +190,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            self.lru.remove(key);
+            self.lru.lock().remove(key);
         }
     }
 
@@ -203,11 +204,12 @@ impl TilePixelCache {
             .filter(|&&(idx, _, _)| idx == from)
             .copied()
             .collect();
+        let mut lru = self.lru.lock();
         for key in keys_to_relocate {
             if let Some(pixels) = self.entries.remove(&key) {
                 let new_key = (to, key.1, key.2);
                 self.entries.insert(new_key, pixels);
-                self.lru.rename(key, new_key);
+                lru.rename(key, new_key);
             }
         }
     }
@@ -235,7 +237,7 @@ impl TilePixelCache {
                 self.entries.insert((new_idx, key.1, key.2), pixels);
             }
         }
-        self.lru.remap_ordered(|(idx, col, row)| {
+        self.lru.lock().remap_ordered(|(idx, col, row)| {
             if idx >= old_to_new.len() {
                 Some((idx, col, row))
             } else {
@@ -260,13 +262,13 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            self.lru.remove(key);
+            self.lru.lock().remove(key);
         }
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.lru.clear();
+        self.lru.lock().clear();
         self.current_bytes = 0;
     }
 
@@ -584,8 +586,7 @@ impl TileManager {
         }
 
         // 1. Check Global Pixel Cache (CPU)
-        let cached_pixels: Option<Arc<Vec<u8>>> =
-            PIXEL_CACHE.write().get(self.image_index, coord);
+        let cached_pixels: Option<Arc<Vec<u8>>> = PIXEL_CACHE.read().get(self.image_index, coord);
 
         if let Some(pixels) = cached_pixels {
             if allow_upload {

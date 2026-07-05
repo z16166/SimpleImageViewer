@@ -63,6 +63,19 @@ thread_local! {
     };
 }
 
+pub(crate) fn with_tiled_decode_scratch<R>(
+    tile_len: usize,
+    rgba_len: usize,
+    f: impl FnOnce(&mut [u32], &mut [u8]) -> R,
+) -> R {
+    TILED_EXTRACT_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        prepare_uninit(&mut scratch.tile, tile_len);
+        prepare_uninit(&mut scratch.rgba, rgba_len);
+        f(&mut scratch.tile, &mut scratch.rgba)
+    })
+}
+
 pub(crate) fn with_tiled_extract_scratch<R>(
     result_len: usize,
     tile_len: usize,

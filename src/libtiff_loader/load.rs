@@ -390,7 +390,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     tile_height,
                     handle_pool: TiffHandlePool::new(handle),
                     tile_cache: Mutex::new(std::collections::HashMap::new()),
-                    cache_order: Mutex::new(Vec::new()),
+                    tile_lru: Mutex::new(crate::lru_order::LruOrder::default()),
                     max_cached_tiles: max_cached,
                 })));
             } else {

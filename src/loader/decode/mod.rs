@@ -48,6 +48,7 @@ use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{
     DecodedImage, ImageData, LoadResult, PreviewBundle, PreviewStage, RefinementRequest,
@@ -59,16 +60,19 @@ use super::{
 };
 
 use animation_bootstrap::{
-    load_gif_with_bootstrap, load_png_with_bootstrap, load_webp_with_bootstrap,
-    spawn_raster_animation_remainder_decode,
+    load_gif_with_bootstrap_from_bytes, load_png_with_bootstrap_from_bytes,
+    load_webp_with_bootstrap_from_bytes, spawn_raster_animation_remainder_decode,
 };
 use assemble::{make_hdr_image_data, make_image_data};
-use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection, PrimaryDecodeAttempt};
+use detect::{
+    load_primary_with_detection_fallback, primary_with_retainable_mmap,
+    recover_via_platform_and_content_detection, PrimaryDecodeAttempt,
+};
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_primary_attempt;
 use modern::{
-    load_avif_with_target_capacity_outcome, load_heif_hdr_aware,
-    load_jxl_with_target_capacity_outcome, spawn_avif_sequence_remainder_decode,
+    load_avif_with_target_capacity_outcome_from_mmap, load_heif_hdr_aware_from_mmap,
+    load_jxl_with_target_capacity_outcome_from_mmap, spawn_avif_sequence_remainder_decode,
     spawn_jxl_animation_remainder_decode,
 };
 use raster::{load_psd, load_static};
@@ -229,11 +233,14 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    PrimaryDecodeAttempt::from_result(crate::libtiff_loader::load_via_libtiff(
-                        path,
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                    ))
+                    primary_with_retainable_mmap(path, |mmap| {
+                        crate::libtiff_loader::load_via_libtiff_from_mmap(
+                            path,
+                            mmap,
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                        )
+                    })
                 },
             );
         }
@@ -246,25 +253,27 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    let outcome = load_avif_with_target_capacity_outcome(
-                        path,
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                        prefer_embedded_sdr_master,
-                        true,
-                    );
-                    let result = outcome.map(|outcome| {
-                        if let Some(job) = outcome.sequence_remainder {
-                            spawn_avif_sequence_remainder_decode(
-                                job,
-                                tx.clone(),
-                                index,
-                                decode_profile.clone(),
-                            );
-                        }
-                        outcome.image
-                    });
-                    PrimaryDecodeAttempt::from_result(result)
+                    primary_with_retainable_mmap(path, |mmap| {
+                        load_avif_with_target_capacity_outcome_from_mmap(
+                            path,
+                            mmap.as_ref(),
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            prefer_embedded_sdr_master,
+                            true,
+                        )
+                        .map(|outcome| {
+                            if let Some(job) = outcome.sequence_remainder {
+                                spawn_avif_sequence_remainder_decode(
+                                    job,
+                                    tx.clone(),
+                                    index,
+                                    decode_profile.clone(),
+                                );
+                            }
+                            outcome.image
+                        })
+                    })
                 },
             );
         }
@@ -277,25 +286,27 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    let outcome = load_jxl_with_target_capacity_outcome(
-                        path,
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                        prefer_embedded_sdr_master,
-                        true,
-                    );
-                    let result = outcome.map(|outcome| {
-                        if let Some(job) = outcome.remainder_job {
-                            spawn_jxl_animation_remainder_decode(
-                                job,
-                                tx.clone(),
-                                index,
-                                decode_profile.clone(),
-                            );
-                        }
-                        outcome.image
-                    });
-                    PrimaryDecodeAttempt::from_result(result)
+                    primary_with_retainable_mmap(path, |mmap| {
+                        load_jxl_with_target_capacity_outcome_from_mmap(
+                            path,
+                            mmap.as_ref(),
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            prefer_embedded_sdr_master,
+                            true,
+                        )
+                        .map(|outcome| {
+                            if let Some(job) = outcome.remainder_job {
+                                spawn_jxl_animation_remainder_decode(
+                                    job,
+                                    tx.clone(),
+                                    index,
+                                    decode_profile.clone(),
+                                );
+                            }
+                            outcome.image
+                        })
+                    })
                 },
             );
         }
@@ -308,16 +319,19 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    PrimaryDecodeAttempt::from_result(load_heif_hdr_aware(
-                        path,
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                        crate::hdr::heif::HeifHdrDecodeDiag {
-                            idx: Some(index),
-                            path: Some(path),
-                        },
-                        prefer_embedded_sdr_master,
-                    ))
+                    primary_with_retainable_mmap(path, |mmap| {
+                        load_heif_hdr_aware_from_mmap(
+                            path,
+                            mmap.as_ref(),
+                            hdr_target_capacity,
+                            hdr_tone_map,
+                            crate::hdr::heif::HeifHdrDecodeDiag {
+                                idx: Some(index),
+                                path: Some(path),
+                            },
+                            prefer_embedded_sdr_master,
+                        )
+                    })
                 },
             );
         }
@@ -341,19 +355,32 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    let outcome = match ext.as_str() {
-                        "gif" => {
-                            load_gif_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
-                        }
-                        "png" | "apng" => {
-                            load_png_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
-                        }
-                        "webp" => {
-                            load_webp_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
-                        }
-                        _ => unreachable!("matched gif/png/apng/webp above"),
-                    };
-                    let result = outcome.and_then(|outcome| {
+                    primary_with_retainable_mmap(path, |mmap| {
+                        let bytes: Arc<[u8]> = Arc::from(mmap.as_ref().as_ref());
+                        let outcome = match ext.as_str() {
+                            "gif" => load_gif_with_bootstrap_from_bytes(
+                                path,
+                                bytes,
+                                hdr_target_capacity,
+                                hdr_tone_map,
+                                true,
+                            ),
+                            "png" | "apng" => load_png_with_bootstrap_from_bytes(
+                                path,
+                                bytes,
+                                hdr_target_capacity,
+                                hdr_tone_map,
+                                true,
+                            ),
+                            "webp" => load_webp_with_bootstrap_from_bytes(
+                                path,
+                                bytes,
+                                hdr_target_capacity,
+                                hdr_tone_map,
+                                true,
+                            ),
+                            _ => unreachable!("matched gif/png/apng/webp above"),
+                        }?;
                         if let Some(job) = outcome.remainder {
                             spawn_raster_animation_remainder_decode(
                                 job,
@@ -363,8 +390,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             );
                         }
                         Ok(outcome.image)
-                    });
-                    PrimaryDecodeAttempt::from_result(result)
+                    })
                 },
             );
         }

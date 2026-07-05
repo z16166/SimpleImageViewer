@@ -200,6 +200,32 @@ impl PrimaryDecodeAttempt {
     }
 }
 
+/// Map `path` once and pass the mmap to `decode` for recovery-path reuse on failure.
+pub(crate) fn primary_with_retainable_mmap(
+    path: &Path,
+    decode: impl FnOnce(Arc<memmap2::Mmap>) -> Result<ImageData, String>,
+) -> PrimaryDecodeAttempt {
+    match crate::mmap_util::map_file(path) {
+        Ok(mmap) => {
+            let arc = Arc::new(mmap);
+            PrimaryDecodeAttempt::with_mmap(decode(Arc::clone(&arc)), Some(arc))
+        }
+        Err(e) => PrimaryDecodeAttempt::from_result(Err(e.to_string())),
+    }
+}
+
+/// Reuse `existing` when already mapped (e.g. directory-tree thumb prefetch), else map once.
+pub(crate) fn primary_with_optional_mmap(
+    existing: Option<Arc<memmap2::Mmap>>,
+    path: &Path,
+    decode: impl FnOnce(Arc<memmap2::Mmap>) -> Result<ImageData, String>,
+) -> PrimaryDecodeAttempt {
+    match existing {
+        Some(arc) => PrimaryDecodeAttempt::with_mmap(decode(Arc::clone(&arc)), Some(arc)),
+        None => primary_with_retainable_mmap(path, decode),
+    }
+}
+
 /// After extension-first decode fails: platform decoder (WIC/ImageIO), then magic-byte routing.
 pub(crate) fn recover_via_platform_and_content_detection(
     path: &Path,
