@@ -116,6 +116,11 @@ pub(crate) fn process_scanline_contig(
         return;
     }
 
+    let dst_len = width as usize * 4;
+    if rgba_row.len() < dst_len {
+        return;
+    }
+
     let TiffSampleDecodeParams { photo, .. } = params;
     let is_palette = photo == PHOTO_PALETTE;
     for x in 0..width as usize {
@@ -359,6 +364,11 @@ fn get_sample_value(
         let bit_offset = idx * bps as usize;
         let byte_idx = bit_offset / 8;
         if byte_idx >= buf.len() {
+            return 0;
+        }
+        let bits_end = bit_offset + bps as usize;
+        let last_byte_needed = bits_end.saturating_sub(1) / 8;
+        if last_byte_needed >= buf.len() {
             return 0;
         }
         let bit_in_byte = bit_offset % 8;
@@ -883,6 +893,21 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
     if scanline_size <= 0 {
         return Err("IEEE TIFF: invalid scanline size".to_string());
     }
+    if matches!(photo, PHOTO_RGB | PHOTO_MINISBLACK | PHOTO_MINISWHITE) {
+        let expected_min = if config == CONFIG_CONTIG {
+            width as usize * spp as usize * bytes_per_sample
+        } else if config == CONFIG_SEPARATE {
+            width as usize * bytes_per_sample
+        } else {
+            0
+        };
+        if expected_min > 0 && (scanline_size as usize) < expected_min {
+            return Err(format!(
+                "IEEE TIFF: TIFFScanlineSize={scanline_size} smaller than required {expected_min} \
+                 (width={width}, spp={spp}, bps={bps})"
+            ));
+        }
+    }
     let mut buf = vec![0u8; scanline_size as usize];
 
     let miniswhite_ref: Option<f32> = if photo == PHOTO_MINISWHITE {
@@ -1021,17 +1046,6 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
         return Err(format!(
             "IEEE TIFF: unsupported PlanarConfiguration {config}"
         ));
-    }
-
-    let expected_min = width as usize * spp as usize * bytes_per_sample;
-    if (photo == PHOTO_RGB || photo == PHOTO_MINISBLACK || photo == PHOTO_MINISWHITE)
-        && (scanline_size as usize) < expected_min
-    {
-        log::warn!(
-            "[libtiff_loader] IEEE HDR: TIFFScanlineSize={} smaller than width*spp*bps ({}) — file may be malformed",
-            scanline_size,
-            expected_min
-        );
     }
 
     Ok(out)

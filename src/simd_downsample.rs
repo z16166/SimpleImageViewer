@@ -82,6 +82,11 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
             .min(src_w as u64) as u32;
     }
 
+    if simd_box_accumulator_would_overflow(src_w, src_h, dst_w, dst_h) {
+        downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
+        return dst;
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
@@ -98,9 +103,7 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                     x1: &x1,
                 });
             }
-            return dst;
-        }
-        if is_x86_feature_detected!("sse4.1") {
+        } else if is_x86_feature_detected!("sse4.1") {
             // SAFETY: SSE4.1 detected via runtime feature check.
             unsafe {
                 downsample_rgba8_box_sse41(DownsampleSimdParams {
@@ -114,7 +117,8 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                     x1: &x1,
                 });
             }
-            return dst;
+        } else {
+            downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
         }
     }
 
@@ -133,25 +137,36 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                 x1: &x1,
             });
         }
-        // Fall through to `dst` — no early return here (unlike the x86_64
-        // blocks above which use runtime feature detection and may or may not
-        // return).  This keeps the function exit point unambiguous on aarch64
-        // and avoids the unreachable_code warning.
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         downsample_rgba8_box_scalar(src, src_w, src_h, &mut dst, dst_w, dst_h);
     }
     dst
 }
 
-// ── Scalar fallback ───────────────────────────────────────────────────────────
-// Only compiled on architectures where runtime feature detection may fall through
-// (x86_64 without AVX2/SSE4.1, and non-aarch64/non-x86_64).  On aarch64, NEON is
-// always available and the scalar path is never called.
+/// True when the largest box footprint would overflow SIMD per-channel accumulators.
+fn simd_box_accumulator_would_overflow(
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> bool {
+    let col_span = (src_w as u64).div_ceil(dst_w as u64);
+    let row_span = (src_h as u64).div_ceil(dst_h as u64);
+    let footprint = col_span.saturating_mul(row_span);
+    #[cfg(target_arch = "aarch64")]
+    let accum_budget = u32::MAX as u64;
+    #[cfg(not(target_arch = "aarch64"))]
+    let accum_budget = i32::MAX as u64;
+    footprint.saturating_mul(255) > accum_budget
+}
 
-#[cfg(not(target_arch = "aarch64"))]
+// ── Scalar fallback ───────────────────────────────────────────────────────────
+// u64 accumulators; used when SIMD is unavailable or the box footprint exceeds
+// SIMD per-channel accumulator range.
+
 fn downsample_rgba8_box_scalar(
     pixels: &[u8],
     src_w: u32,

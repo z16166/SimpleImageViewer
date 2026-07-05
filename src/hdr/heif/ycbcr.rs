@@ -54,12 +54,11 @@ pub(crate) fn heif_ycbcr_matrix_from_nclx(
             // encoder meant “unspecified”. Interpreting that as monochrome destroys colour — use a
             // simple SD vs HD **luma resolution** split (common broadcast rule of thumb).
             0 | 2 => {
-                let hdish = y_width >= 1280 || y_height >= 720;
-                if hdish {
-                    HeifYcbcrMatrix::Bt709
-                } else {
-                    HeifYcbcrMatrix::Bt601
-                }
+                log::warn!(
+                    "[heif] CICP matrix_coefficients={mc} unspecified for still image \
+                     ({y_width}x{y_height}); defaulting to BT.709 YCbCr matrix"
+                );
+                HeifYcbcrMatrix::Bt709
             }
             5 | 6 => HeifYcbcrMatrix::Bt601,
             9 | 10 | 12 => HeifYcbcrMatrix::Bt2020Ncl,

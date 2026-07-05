@@ -272,7 +272,11 @@ fn heif_nclx_maps_matrix_coefficients_to_ycbcr_matrix() {
 
     assert_eq!(
         heif_ycbcr_matrix_from_nclx(&meta(0), 640, 480),
-        HeifYcbcrMatrix::Bt601
+        HeifYcbcrMatrix::Bt709
+    );
+    assert_eq!(
+        heif_ycbcr_matrix_from_nclx(&meta(2), 640, 480),
+        HeifYcbcrMatrix::Bt709
     );
     assert_eq!(
         heif_ycbcr_matrix_from_nclx(&meta(0), 1920, 1080),
