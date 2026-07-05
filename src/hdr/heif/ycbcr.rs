@@ -69,9 +69,9 @@ pub(crate) fn heif_ycbcr_matrix_from_nclx(
             matrix_coefficients: mc,
             ..
         } => match *mc {
-            // H.273 matrix 0 = RGB identity (non‑YCbCr); **HEIF stills** sometimes tag 0 / 2 when the
-            // encoder meant “unspecified”. Interpreting that as monochrome destroys colour — use a
-            // simple SD vs HD **luma resolution** split (common broadcast rule of thumb).
+            // H.273 matrix 0 = RGB identity (non-YCbCr); HEIF stills sometimes tag 0 / 2 when the
+            // encoder meant "unspecified". Interpreting that as monochrome destroys colour, so we
+            // default to BT.709 and log a warning (y_width/y_height are kept for diagnostics only).
             0 | 2 => {
                 log::warn!(
                     "[heif] CICP matrix_coefficients={mc} unspecified for still image \

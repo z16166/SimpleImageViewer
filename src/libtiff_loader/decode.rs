@@ -194,6 +194,12 @@ pub(crate) fn process_scanline_contig(
 
     let dst_len = width as usize * 4;
     if rgba_row.len() < dst_len {
+        #[cfg(debug_assertions)]
+        log::warn!(
+            "[libtiff_loader] process_scanline_contig: rgba_row buffer too small ({} < {})",
+            rgba_row.len(),
+            dst_len
+        );
         return;
     }
 

@@ -87,6 +87,12 @@ impl LibTiffTiledSource {
                 if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr())
                     == 0
                 {
+                    log::warn!(
+                        "[{}] libtiff: TIFFReadRGBATile failed at tile ({}, {})",
+                        self.path.display(),
+                        tile_col,
+                        tile_row
+                    );
                     return None;
                 }
             }
@@ -282,6 +288,12 @@ impl TiledImageSource for LibTiffTiledSource {
                         {
                             last_tile_idx = tile_idx;
                         } else {
+                            log::warn!(
+                                "[{}] libtiff: TIFFReadRGBATile failed at tile ({}, {})",
+                                self.path.display(),
+                                tile_col,
+                                tile_row
+                            );
                             continue;
                         }
                     }
