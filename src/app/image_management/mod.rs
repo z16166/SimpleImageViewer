@@ -104,6 +104,37 @@ fn should_cache_tiled_sdr_preview(
     }
 }
 
+fn tiled_sdr_texture_tag_for_stage(
+    stage: crate::loader::PreviewStage,
+) -> crate::loader::TexturePreviewBufferTag {
+    match stage {
+        crate::loader::PreviewStage::Initial => crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+        crate::loader::PreviewStage::Refined => {
+            crate::loader::TexturePreviewBufferTag::TiledRefinedLoader
+        }
+    }
+}
+
+fn tiled_sdr_preview_applies_to_manager(
+    tm: &TileManager,
+    index: usize,
+    decode_profile: &crate::loader::DecodeProfile,
+    preview_stage: crate::loader::PreviewStage,
+    display: &crate::loader::DisplayRequirements,
+) -> bool {
+    if tm.image_index != index {
+        return false;
+    }
+    if decode_profile == &tm.decode_profile {
+        return true;
+    }
+    if preview_stage != crate::loader::PreviewStage::Refined {
+        return false;
+    }
+    crate::loader::profile_satisfies_display(decode_profile, display)
+        && crate::loader::profile_satisfies_display(&tm.decode_profile, display)
+}
+
 fn tiled_existing_preview_stage(
     texture_cache: &crate::loader::TextureCache,
     index: usize,

@@ -454,6 +454,7 @@ impl ImageViewerApp {
         let current_device_id = 1_u64;
         let hdr_pending_work = crate::hdr::renderer::HdrPendingWorkQueues::new_shared();
         let loader_wgpu_device = cc.wgpu_render_state.as_ref().map(|s| s.device.clone());
+        let loader_wgpu_queue = cc.wgpu_render_state.as_ref().map(|s| s.queue.clone());
         let loader = if let Some(state) = cc.wgpu_render_state.as_ref() {
             ImageLoader::new()
                 .with_wgpu(
@@ -518,6 +519,7 @@ impl ImageViewerApp {
             wgpu_adapter_info,
             current_device_id,
             loader_wgpu_device,
+            loader_wgpu_queue,
             hdr_callback_resources_prewarm,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(

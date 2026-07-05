@@ -1867,4 +1867,123 @@ impl ImageLoader {
             }
         });
     }
+
+    /// Regenerate an HQ HDR preview for a tiled source when bootstrap-only remains in cache.
+    pub fn trigger_hq_tiled_hdr_preview(
+        &self,
+        index: usize,
+        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+        decode_profile: DecodeProfile,
+        source_key: u64,
+    ) {
+        if source.defers_loader_hq_preview() {
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] skip_on_demand_hdr idx={} reason=async_raw_refinement",
+                index,
+            );
+            return;
+        }
+        let tx = self.tx.clone();
+        let refine_limit = hq_preview_max_side();
+        let wgpu_device = self.wgpu_device.clone();
+        let wgpu_queue = self.wgpu_queue.clone();
+        let wgpu_device_id_at_spawn = self
+            .wgpu_device_id
+            .load(std::sync::atomic::Ordering::Acquire);
+        crate::preload_debug!(
+            "[PreloadDebug][Refine] on_demand_hdr_spawn idx={} epoch={} limit={} source={}x{}",
+            index,
+            decode_profile.profile_epoch,
+            refine_limit,
+            source.width(),
+            source.height(),
+        );
+        REFINEMENT_POOL.spawn(move || {
+            #[cfg(target_os = "windows")]
+            let _com = crate::wic::ComGuard::new();
+
+            let limit = refine_limit;
+            let started_at = std::time::Instant::now();
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] on_demand_hdr_decode_start idx={} limit={}",
+                index,
+                limit,
+            );
+            let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::hdr::renderer::with_preview_tone_map_gpu(
+                    wgpu_device,
+                    wgpu_queue,
+                    wgpu_device_id_at_spawn,
+                    || source.generate_hdr_preview(limit, limit),
+                )
+            }));
+
+            match r_result {
+                Ok(Ok(hdr)) if hdr.width > 0 && hdr.height > 0 => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_done idx={} {}x{} elapsed_ms={}",
+                        index,
+                        hdr.width,
+                        hdr.height,
+                        crate::preload_debug::elapsed_ms(started_at),
+                    );
+                    log::debug!(
+                        "[Loader] On-demand HQ HDR preview generated: {}x{} (source {}x{}) idx={}",
+                        hdr.width,
+                        hdr.height,
+                        source.width(),
+                        source.height(),
+                        index,
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_send_preview idx={} stage=Refined epoch={} {}x{}",
+                        index,
+                        decode_profile.profile_epoch,
+                        hdr.width,
+                        hdr.height,
+                    );
+                    let _ = tx.send(LoaderOutput::Preview(PreviewResult {
+                        index,
+                        decode_profile: decode_profile.clone(),
+                        source_key,
+                        preview_bundle: PreviewBundle::refined().with_hdr(Arc::new(hdr)),
+                        error: None,
+                        cpu_demosaic_ms: None,
+                        raw_bootstrap_osd: None,
+                        sdr_texture_tag: None,
+                    }));
+                }
+                Ok(Err(err)) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_failed idx={} elapsed_ms={} err={err}",
+                        index,
+                        crate::preload_debug::elapsed_ms(started_at),
+                    );
+                    log::error!(
+                        "[Loader] On-demand HQ HDR preview failed idx={}: {err}",
+                        index,
+                    );
+                }
+                Err(e) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_panicked idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(started_at),
+                    );
+                    log::error!(
+                        "[Loader] On-demand HQ HDR preview PANICKED idx={}: {:?}",
+                        index,
+                        e
+                    );
+                }
+                _ => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_empty idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(started_at),
+                    );
+                }
+            }
+        });
+    }
 }

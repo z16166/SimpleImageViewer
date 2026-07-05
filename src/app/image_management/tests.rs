@@ -2065,6 +2065,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         wgpu_adapter_info: None,
         current_device_id: 1,
         loader_wgpu_device: None,
+        loader_wgpu_queue: None,
         hdr_callback_resources_prewarm:
             crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared(),
         hdr_target_format: None,

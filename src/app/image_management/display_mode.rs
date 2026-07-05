@@ -58,10 +58,9 @@ impl ImageViewerApp {
     /// Whether tiled HQ sync can stop (loader refine satisfied, not on-demand SDR alone).
     pub(crate) fn tiled_hq_preview_requirement_met(&self, index: usize) -> bool {
         let display = self.display_requirements_for_index(index);
-        if crate::loader::output_mode_is_hdr(display.output_mode)
-            && self.hdr_tiled_preview_cache.contains_key(&index)
-        {
-            return true;
+        if crate::loader::output_mode_is_hdr(display.output_mode) {
+            return self.hdr_tiled_preview_cache.contains_key(&index)
+                && self.texture_cache.satisfies_tiled_sdr_hq(index);
         }
         if self.texture_cache.satisfies_tiled_sdr_hq(index) {
             return true;
@@ -303,6 +302,52 @@ mod tests {
             Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
         ));
         assert!(!app.should_draw_tiled_canvas());
+    }
+
+    #[test]
+    fn hdr_tiled_hq_requires_tone_mapped_sdr_texture() {
+        use crate::hdr::types::{
+            HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+        };
+        use crate::loader::{PreviewStage, TextureCacheInsert, TexturePreviewBufferTag};
+        use std::sync::Arc;
+
+        let mut app = app_with_mode(0, RenderShape::Tiled);
+        app.hdr_capabilities.output_mode = crate::hdr::types::HdrOutputMode::WindowsScRgb;
+        app.hdr_tiled_preview_cache.insert(
+            0,
+            Arc::new(HdrImageBuffer {
+                width: 64,
+                height: 32,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::default(),
+                rgba_f32: Arc::new(vec![1.0; 64 * 32 * 4]),
+            }),
+        );
+        assert!(
+            !app.tiled_hq_preview_requirement_met(0),
+            "HDR cache alone must not satisfy HQ gate"
+        );
+
+        let ctx = eframe::egui::Context::default();
+        let color_image =
+            eframe::egui::ColorImage::from_rgba_unmultiplied([64, 32], &vec![128u8; 64 * 32 * 4]);
+        let handle = ctx.load_texture("hq", color_image, eframe::egui::TextureOptions::LINEAR);
+        app.texture_cache.insert(
+            0,
+            handle,
+            TextureCacheInsert {
+                orig_w: 4096,
+                orig_h: 2048,
+                needs_tile_manager: true,
+                buffer_tag: TexturePreviewBufferTag::TiledRefinedLoader,
+                stage: PreviewStage::Refined,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
+        assert!(app.tiled_hq_preview_requirement_met(0));
     }
 
     #[test]

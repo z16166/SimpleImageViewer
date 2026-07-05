@@ -79,8 +79,18 @@ impl ImageViewerApp {
         }
 
         self.loader_wgpu_device = Some(device.clone());
+        self.loader_wgpu_queue = Some(queue.clone());
         self.loader
             .set_wgpu_context(Some(device), Some(queue), self.current_device_id);
+    }
+
+    pub(crate) fn with_loader_preview_tone_map_gpu<R>(&self, f: impl FnOnce() -> R) -> R {
+        crate::hdr::renderer::with_preview_tone_map_gpu(
+            self.loader_wgpu_device.clone(),
+            self.loader_wgpu_queue.clone(),
+            self.current_device_id,
+            f,
+        )
     }
 
     pub(crate) fn sync_hdr_callback_resources_prewarm(&mut self, frame: &eframe::Frame) {

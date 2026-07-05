@@ -366,6 +366,7 @@ pub struct ImageViewerApp {
     pub(crate) current_device_id: u64,
     /// Last `wgpu::Device` instance pushed to [`ImageLoader`] (detects Device rebuild).
     pub(crate) loader_wgpu_device: Option<wgpu::Device>,
+    pub(crate) loader_wgpu_queue: Option<wgpu::Queue>,
     pub(crate) hdr_callback_resources_prewarm:
         std::sync::Arc<crate::hdr::renderer::HdrCallbackResourcesPrewarm>,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,

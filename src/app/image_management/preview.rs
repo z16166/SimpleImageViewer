@@ -168,6 +168,14 @@ impl ImageViewerApp {
             if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined {
                 self.hq_tiled_preview_pending_indices.remove(&update.index);
             }
+            if crate::loader::output_mode_is_hdr(display.output_mode) {
+                let _ = self.try_upload_tiled_sdr_from_hdr_cache(
+                    update.index,
+                    ctx,
+                    update.preview_bundle.stage(),
+                    &update.decode_profile,
+                );
+            }
             if should_request_repaint_for_asset_update(
                 AssetUpdateKind::PreviewUpgraded,
                 update.index == self.current_index,
@@ -450,6 +458,52 @@ impl ImageViewerApp {
                 .map(|p| p.as_path())
                 .unwrap_or(std::path::Path::new("")),
         );
+        let display = self.display_requirements_for_index(idx);
+        if crate::loader::output_mode_is_hdr(display.output_mode) {
+            if self.hdr_tiled_preview_cache.contains_key(&idx) {
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] tone_map_sdr idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
+                    idx,
+                    cached_tag,
+                    cached_stage,
+                    tm_max,
+                    profile.profile_epoch,
+                    self.current_index,
+                );
+                if self.try_upload_tiled_sdr_from_hdr_cache(
+                    idx,
+                    ctx,
+                    crate::loader::PreviewStage::Refined,
+                    &profile,
+                ) {
+                    self.hq_tiled_preview_pending_indices.remove(&idx);
+                }
+                return;
+            }
+            if let Some(hdr_source) = self.hdr_tiled_source_cache.get(&idx).cloned() {
+                self.hq_tiled_preview_pending_indices.insert(idx);
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] trigger_hdr_refine idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
+                    idx,
+                    cached_tag,
+                    cached_stage,
+                    tm_max,
+                    profile.profile_epoch,
+                    self.current_index,
+                );
+                self.loader.trigger_hq_tiled_hdr_preview(
+                    idx,
+                    hdr_source,
+                    profile,
+                    source_key,
+                );
+                log::debug!(
+                    "[App] Triggered on-demand HQ HDR tiled preview for idx={}",
+                    idx
+                );
+                return;
+            }
+        }
         self.hq_tiled_preview_pending_indices.insert(idx);
         crate::preload_debug!(
             "[PreloadDebug][SyncHq] trigger_on_demand idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
@@ -463,6 +517,198 @@ impl ImageViewerApp {
         self.loader
             .trigger_hq_tiled_sdr_preview(idx, source, profile, source_key);
         log::debug!("[App] Triggered on-demand HQ tiled preview for idx={}", idx);
+    }
+
+    /// Tone-map a cached HDR tiled preview to SDR and install it on tile managers / texture cache.
+    pub(super) fn try_upload_tiled_sdr_from_hdr_cache(
+        &mut self,
+        idx: usize,
+        ctx: &egui::Context,
+        preview_stage: crate::loader::PreviewStage,
+        decode_profile: &crate::loader::DecodeProfile,
+    ) -> bool {
+        let Some(hdr) = self.hdr_tiled_preview_cache.get(&idx).cloned() else {
+            return false;
+        };
+        let texture_tag = tiled_sdr_texture_tag_for_stage(preview_stage);
+        let needs_tile_manager = self.texture_cache.needs_tile_manager(idx)
+            || self.index_requires_tile_manager(idx);
+        if !should_cache_tiled_sdr_preview(
+            self.texture_cache.contains(idx),
+            needs_tile_manager,
+            self.texture_cache.cached_buffer_tag(idx),
+            self.texture_cache.cached_preview_stage(idx),
+            texture_tag,
+            preview_stage,
+        ) {
+            return false;
+        }
+
+        let exposure = self.effective_hdr_tone_map_settings().exposure_ev;
+        let pixels = match self.with_loader_preview_tone_map_gpu(|| {
+            crate::hdr::renderer::hdr_to_sdr_rgba8_for_preview(&hdr, exposure)
+        }) {
+            Ok(pixels) => pixels,
+            Err(err) => {
+                log::error!(
+                    "[App] HDR tiled preview tone-map failed for index {}: {err}",
+                    idx
+                );
+                return false;
+            }
+        };
+        let preview = DecodedImage::new(hdr.width, hdr.height, pixels);
+        self.apply_tiled_sdr_preview_upload(
+            idx,
+            ctx,
+            preview,
+            texture_tag,
+            preview_stage,
+            decode_profile,
+        );
+        true
+    }
+
+    fn apply_tiled_sdr_preview_upload(
+        &mut self,
+        idx: usize,
+        ctx: &egui::Context,
+        preview: DecodedImage,
+        texture_tag: crate::loader::TexturePreviewBufferTag,
+        texture_stage: crate::loader::PreviewStage,
+        decode_profile: &crate::loader::DecodeProfile,
+    ) {
+        let display = self.display_requirements_for_index(idx);
+        let current_tile_profile = self.decode_profile_for_index(idx);
+        if texture_stage == crate::loader::PreviewStage::Refined {
+            self.cache_directory_tree_strip_thumbnail(
+                crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                    index: idx,
+                    decoded: &preview,
+                    stage: crate::loader::PreviewStage::Refined,
+                    logical_size: self.directory_tree_strip_logical_size(idx),
+                    buffer_tag:
+                        crate::app::directory_tree_strip_cache::StripPreviewBufferTag::MainWindowTiledPreview,
+                    strip_max_side_used: None,
+                    ctx,
+                    bypass_detach_queue: false,
+                },
+            );
+        }
+        self.upload_static_raw_gpu_bootstrap_preview_if_needed(idx, &preview, ctx);
+
+        if let Some(ref mut tm) = self.tile_manager
+            && tiled_sdr_preview_applies_to_manager(
+                tm,
+                idx,
+                decode_profile,
+                texture_stage,
+                &display,
+            )
+        {
+            if decode_profile != &tm.decode_profile {
+                tm.decode_profile = current_tile_profile.clone();
+            }
+            log::debug!(
+                "[App] Tone-mapped tiled preview applied for current index {} ({}x{})",
+                idx,
+                preview.width,
+                preview.height
+            );
+            if texture_stage == crate::loader::PreviewStage::Refined && tm.preview_texture.is_some()
+            {
+                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                tm.pending_tiles.clear();
+                tm.drop_gpu_tiles();
+            }
+            tm.set_preview(preview.clone(), ctx);
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::PreviewUpgraded,
+                true,
+                false,
+            ) {
+                ctx.request_repaint();
+            }
+        }
+        if texture_stage == crate::loader::PreviewStage::Refined
+            && self.tile_manager.as_ref().is_some_and(|tm| {
+                tiled_sdr_preview_applies_to_manager(
+                    tm,
+                    idx,
+                    decode_profile,
+                    texture_stage,
+                    &display,
+                )
+            })
+        {
+            self.clear_cpu_raw_refinement_pending(idx);
+        }
+
+        if let Some(tm) = self.prefetched_tiles.get_mut(&idx)
+            && tiled_sdr_preview_applies_to_manager(
+                tm,
+                idx,
+                decode_profile,
+                texture_stage,
+                &display,
+            )
+        {
+            if decode_profile != &tm.decode_profile {
+                tm.decode_profile = current_tile_profile.clone();
+            }
+            log::debug!(
+                "[App] Tone-mapped tiled preview applied for prefetched index {} ({}x{})",
+                idx,
+                preview.width,
+                preview.height
+            );
+            tm.set_preview(preview.clone(), ctx);
+        }
+        self.hq_tiled_preview_pending_indices.remove(&idx);
+
+        let preview_targets_tiled_canvas = self.prefetched_tiles.contains_key(&idx)
+            || self
+                .tile_manager
+                .as_ref()
+                .is_some_and(|tm| tm.image_index == idx);
+        if preview_targets_tiled_canvas
+            && !self.index_uses_animated_pipeline(idx)
+            && should_cache_tiled_sdr_preview(
+                self.texture_cache.contains(idx),
+                self.texture_cache.needs_tile_manager(idx),
+                self.texture_cache.cached_buffer_tag(idx),
+                self.texture_cache.cached_preview_stage(idx),
+                texture_tag,
+                texture_stage,
+            )
+        {
+            let (orig_w, orig_h) = self
+                .texture_cache
+                .get_original_res(idx)
+                .unwrap_or((preview.width, preview.height));
+
+            let name = format!("img_hq_preview_{}", idx);
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                [preview.width as usize, preview.height as usize],
+                preview.rgba(),
+            );
+            let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
+            if let Some(evicted_idx) = self.texture_cache.insert(
+                idx,
+                handle,
+                crate::loader::TextureCacheInsert {
+                    orig_w,
+                    orig_h,
+                    needs_tile_manager: true,
+                    buffer_tag: texture_tag,
+                    stage: texture_stage,
+                    current_index: self.current_index,
+                    total_count: self.image_files.len(),
+                },
+            ) {
+                self.handle_texture_cache_eviction(evicted_idx);
+            }
+        }
     }
 
     pub(crate) fn log_large_image(&self, idx: usize, w: u32, h: u32) {
