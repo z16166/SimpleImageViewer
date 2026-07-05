@@ -1184,3 +1184,32 @@ fn gpu_preview_tone_map_matches_cpu_for_linear_srgb() {
         );
     }
 }
+
+#[test]
+fn test_has_active_work_detects_completed_and_request_queues() {
+    let pending = HdrPendingWorkQueues::new_shared();
+    assert!(!pending.has_active_work());
+
+    let image = hdr_image(1, 1, HdrPixelFormat::Rgba32Float, vec![0.0; 4]);
+    pending.completed_compose_failures.lock().push(HdrCompletedComposeFailure::IsoImage {
+        key: HdrImageKey::from_image(&image),
+        target_capacity_bits: 16,
+        target_format: wgpu::TextureFormat::Rgba16Float,
+    });
+    assert!(pending.has_active_work());
+
+    *pending.completed_compose_failures.lock() = Vec::new();
+    assert!(!pending.has_active_work());
+
+    pending
+        .iso_image_compose_requests
+        .lock()
+        .push(HdrPendingIsoImageComposeRequest {
+            key: HdrImageKey::from_image(&image),
+            target_capacity_bits: 16,
+            target_format: wgpu::TextureFormat::Rgba16Float,
+            image: Arc::new(image),
+            target_hdr_capacity: 1.0,
+        });
+    assert!(pending.has_active_work());
+}
