@@ -1432,19 +1432,19 @@ impl ImageLoader {
                         let wgpu_device_hq = wgpu_device.clone();
                         let wgpu_queue_hq = wgpu_queue.clone();
                         let refine_limit = hq_preview_max_side();
-                        let refine_epoch = result_profile.profile_epoch;
-                        let refine_source_w = source.width();
-                        let refine_source_h = source.height();
+                        let _refine_epoch = result_profile.profile_epoch;
+                        let _refine_source_w = source.width();
+                        let _refine_source_h = source.height();
                         let refine_hdr_mode =
                             !hdr_display_requests_sdr_preview(hdr_target_capacity);
                         crate::preload_debug!(
                             "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
                             index,
-                            refine_epoch,
+                            _refine_epoch,
                             refine_limit,
                             refine_hdr_mode,
-                            refine_source_w,
-                            refine_source_h,
+                            _refine_source_w,
+                            _refine_source_h,
                             file_name,
                         );
                         REFINEMENT_POOL.spawn(move || {
@@ -1461,11 +1461,11 @@ impl ImageLoader {
                         crate::preload_debug!(
                             "[PreloadDebug][Refine] worker_start idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
                             index,
-                            refine_epoch,
+                            _refine_epoch,
                             refine_limit,
                             refine_hdr_mode,
-                            refine_source_w,
-                            refine_source_h,
+                            _refine_source_w,
+                            _refine_source_h,
                             file_name,
                         );
 
@@ -1533,7 +1533,7 @@ impl ImageLoader {
                                     (0, 0)
                                 };
                                 let preview_kind = if is_hdr_mode { "HDR" } else { "SDR" };
-                                let has_hdr = hdr.is_some();
+                                let _has_hdr = hdr.is_some();
                                 let has_sdr = sdr.is_some();
                                 crate::preload_debug!(
                                     "[PreloadDebug][Refine] decode_done idx={} kind={} {}x{} elapsed_ms={} path={}",
@@ -1567,7 +1567,7 @@ impl ImageLoader {
                                     "[PreloadDebug][Refine] send_preview idx={} stage=Refined epoch={} hdr={} sdr={} {}x{} path={}",
                                     index,
                                     result_profile.profile_epoch,
-                                    has_hdr,
+                                    _has_hdr,
                                     has_sdr,
                                     pw,
                                     ph,
@@ -1633,7 +1633,7 @@ impl ImageLoader {
                     } else {
                         let loading_sdr_hq = Arc::clone(&loading_ref);
                         let refine_limit = hq_preview_max_side();
-                        let refine_epoch = result_profile.profile_epoch;
+                        let _refine_epoch = result_profile.profile_epoch;
                         let file_name = path
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -1642,7 +1642,7 @@ impl ImageLoader {
                         crate::preload_debug!(
                             "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode=false source={}x{} path={}",
                             index,
-                            refine_epoch,
+                            _refine_epoch,
                             refine_limit,
                             source.width(),
                             source.height(),
@@ -1668,7 +1668,7 @@ impl ImageLoader {
                             let _com = crate::wic::ComGuard::new();
 
                             let limit = refine_limit;
-                            let started_at = std::time::Instant::now();
+                            let _started_at = std::time::Instant::now();
                             crate::preload_debug!(
                                 "[PreloadDebug][Refine] decode_start idx={} limit={} hdr_mode=false path={}",
                                 index,
@@ -1702,7 +1702,7 @@ impl ImageLoader {
                                         index,
                                         pw,
                                         ph,
-                                        crate::preload_debug::elapsed_ms(started_at),
+                                        crate::preload_debug::elapsed_ms(_started_at),
                                         file_name,
                                     );
                                     log::debug!(
@@ -1735,7 +1735,7 @@ impl ImageLoader {
                                         "[PreloadDebug][Refine] decode_panicked idx={} limit={} elapsed_ms={} path={}",
                                         index,
                                         limit,
-                                        crate::preload_debug::elapsed_ms(started_at),
+                                        crate::preload_debug::elapsed_ms(_started_at),
                                         file_name,
                                     );
                                     log::error!(
@@ -1748,7 +1748,7 @@ impl ImageLoader {
                                         "[PreloadDebug][Refine] decode_empty idx={} limit={} elapsed_ms={} path={}",
                                         index,
                                         limit,
-                                        crate::preload_debug::elapsed_ms(started_at),
+                                        crate::preload_debug::elapsed_ms(_started_at),
                                         file_name,
                                     );
                                 }
@@ -1789,11 +1789,11 @@ impl ImageLoader {
         }
         let tx = self.tx.clone();
         let refine_limit = hq_preview_max_side();
-        let refine_epoch = decode_profile.profile_epoch;
+        let _refine_epoch = decode_profile.profile_epoch;
         crate::preload_debug!(
             "[PreloadDebug][Refine] on_demand_spawn idx={} epoch={} limit={} source={}x{}",
             index,
-            refine_epoch,
+            _refine_epoch,
             refine_limit,
             source.width(),
             source.height(),
@@ -1803,7 +1803,7 @@ impl ImageLoader {
             let _com = crate::wic::ComGuard::new();
 
             let limit = refine_limit;
-            let started_at = std::time::Instant::now();
+            let _started_at = std::time::Instant::now();
             crate::preload_debug!(
                 "[PreloadDebug][Refine] on_demand_decode_start idx={} limit={}",
                 index,
@@ -1820,7 +1820,7 @@ impl ImageLoader {
                         index,
                         pw,
                         ph,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                     log::debug!(
                         "[Loader] On-demand HQ preview generated: {}x{} (source {}x{}) idx={}",
@@ -1849,7 +1849,7 @@ impl ImageLoader {
                     crate::preload_debug!(
                         "[PreloadDebug][Refine] on_demand_decode_panicked idx={} elapsed_ms={}",
                         index,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                     log::error!(
                         "[Loader] On-demand HQ preview PANICKED idx={}: {:?}",
@@ -1861,7 +1861,7 @@ impl ImageLoader {
                     crate::preload_debug!(
                         "[PreloadDebug][Refine] on_demand_decode_empty idx={} elapsed_ms={}",
                         index,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                 }
             }
@@ -1903,7 +1903,7 @@ impl ImageLoader {
             let _com = crate::wic::ComGuard::new();
 
             let limit = refine_limit;
-            let started_at = std::time::Instant::now();
+            let _started_at = std::time::Instant::now();
             crate::preload_debug!(
                 "[PreloadDebug][Refine] on_demand_hdr_decode_start idx={} limit={}",
                 index,
@@ -1925,7 +1925,7 @@ impl ImageLoader {
                         index,
                         hdr.width,
                         hdr.height,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                     log::debug!(
                         "[Loader] On-demand HQ HDR preview generated: {}x{} (source {}x{}) idx={}",
@@ -1957,7 +1957,7 @@ impl ImageLoader {
                     crate::preload_debug!(
                         "[PreloadDebug][Refine] on_demand_hdr_decode_failed idx={} elapsed_ms={} err={err}",
                         index,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                     log::error!(
                         "[Loader] On-demand HQ HDR preview failed idx={}: {err}",
@@ -1968,7 +1968,7 @@ impl ImageLoader {
                     crate::preload_debug!(
                         "[PreloadDebug][Refine] on_demand_hdr_decode_panicked idx={} elapsed_ms={}",
                         index,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                     log::error!(
                         "[Loader] On-demand HQ HDR preview PANICKED idx={}: {:?}",
@@ -1980,7 +1980,7 @@ impl ImageLoader {
                     crate::preload_debug!(
                         "[PreloadDebug][Refine] on_demand_hdr_decode_empty idx={} elapsed_ms={}",
                         index,
-                        crate::preload_debug::elapsed_ms(started_at),
+                        crate::preload_debug::elapsed_ms(_started_at),
                     );
                 }
             }

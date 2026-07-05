@@ -353,8 +353,8 @@ impl ImageViewerApp {
                 })
             });
         let cached_max = self.texture_cache.cached_preview_max_side(idx);
-        let cached_tag = self.texture_cache.cached_buffer_tag(idx);
-        let cached_stage = self.texture_cache.cached_preview_stage(idx);
+        let _cached_tag = self.texture_cache.cached_buffer_tag(idx);
+        let _cached_stage = self.texture_cache.cached_preview_stage(idx);
 
         if cached_max.is_some_and(|c| tm_max.is_none_or(|t| c > t))
             && let Some(handle) = self.texture_cache.get(idx)
@@ -387,8 +387,8 @@ impl ImageViewerApp {
                 crate::preload_debug!(
                     "[PreloadDebug][SyncHq] reload idx={} reason=hq_cache_without_tile_manager tag={:?} stage={:?} tm_max={:?} current={}",
                     idx,
-                    cached_tag,
-                    cached_stage,
+                    _cached_tag,
+                    _cached_stage,
                     tm_max,
                     self.current_index,
                 );
@@ -402,8 +402,8 @@ impl ImageViewerApp {
                 crate::preload_debug!(
                     "[PreloadDebug][SyncHq] skip idx={} reason=hq_requirement_met tag={:?} stage={:?} tm_max={:?} current={}",
                     idx,
-                    cached_tag,
-                    cached_stage,
+                    _cached_tag,
+                    _cached_stage,
                     tm_max,
                     self.current_index,
                 );
@@ -464,8 +464,8 @@ impl ImageViewerApp {
                 crate::preload_debug!(
                     "[PreloadDebug][SyncHq] tone_map_sdr idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
                     idx,
-                    cached_tag,
-                    cached_stage,
+                    _cached_tag,
+                    _cached_stage,
                     tm_max,
                     profile.profile_epoch,
                     self.current_index,
@@ -485,8 +485,8 @@ impl ImageViewerApp {
                 crate::preload_debug!(
                     "[PreloadDebug][SyncHq] trigger_hdr_refine idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
                     idx,
-                    cached_tag,
-                    cached_stage,
+                    _cached_tag,
+                    _cached_stage,
                     tm_max,
                     profile.profile_epoch,
                     self.current_index,
@@ -508,8 +508,8 @@ impl ImageViewerApp {
         crate::preload_debug!(
             "[PreloadDebug][SyncHq] trigger_on_demand idx={} tag={:?} stage={:?} tm_max={:?} epoch={} current={}",
             idx,
-            cached_tag,
-            cached_stage,
+            _cached_tag,
+            _cached_stage,
             tm_max,
             profile.profile_epoch,
             self.current_index,
