@@ -169,9 +169,11 @@ pub(crate) fn draw_hdr_image_plane(
         return;
     };
     params.uv_rect = uv_subrect(uv, uv_rect);
-    ui.painter().add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
-        clipped_rect, params,
-    ));
+    ui.painter()
+        .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
+            clipped_rect,
+            params,
+        ));
 }
 
 fn uv_subrect(base: Rect, clipped: Rect) -> Rect {

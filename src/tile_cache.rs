@@ -335,14 +335,9 @@ mod tests {
             height: 4096,
         });
         let manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
-        let viewport = egui::Rect::from_min_max(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(800.0, 600.0),
-        );
-        let screen_clip = egui::Rect::from_min_max(
-            egui::pos2(100.0, 50.0),
-            egui::pos2(700.0, 550.0),
-        );
+        let viewport = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+        let screen_clip =
+            egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(700.0, 550.0));
         let padding = 64.0;
 
         let mut padded = Vec::new();
@@ -361,20 +356,8 @@ mod tests {
 
         let mut padded_only = Vec::new();
         let mut primary_only = Vec::new();
-        manager.visible_tiles_into(
-            viewport,
-            screen_clip,
-            padding,
-            &mut padded_only,
-            None,
-        );
-        manager.visible_tiles_into(
-            viewport,
-            screen_clip,
-            0.0,
-            &mut primary_only,
-            None,
-        );
+        manager.visible_tiles_into(viewport, screen_clip, padding, &mut padded_only, None);
+        manager.visible_tiles_into(viewport, screen_clip, 0.0, &mut primary_only, None);
         assert_eq!(padded, padded_only);
         assert_eq!(primary, primary_only);
     }
@@ -826,10 +809,7 @@ impl TileManager {
                     if let (Some(primary), Some((p_start_col, p_end_col, p_start_row, p_end_row))) =
                         (primary_out.as_deref_mut(), primary_bounds)
                     {
-                        if c >= p_start_col
-                            && c <= p_end_col
-                            && r >= p_start_row
-                            && r <= p_end_row
+                        if c >= p_start_col && c <= p_end_col && r >= p_start_row && r <= p_end_row
                         {
                             primary.push((coord, tile_screen_rect, uv));
                         }
