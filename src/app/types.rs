@@ -421,10 +421,14 @@ pub struct ImageViewerApp {
     /// Startup: defer directory preloads until the first runtime HDR capacity refresh.
     pub(crate) preload_deferred_for_hdr_capacity: bool,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
+    /// Per-index static HDR CPU planes. No in-map LRU; eviction is window-based in
+    /// [`crate::app::image_management::cache_eviction`] (see [`crate::app::image_management::prefetch_retention`]).
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
+    /// Tiled HDR sources; same index-window eviction as [`Self::hdr_image_cache`].
     pub(crate) hdr_tiled_source_cache: HashMap<usize, Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
     pub(crate) current_hdr_tiled_preview: Option<CurrentHdrImage>,
+    /// Tiled HDR preview planes; same index-window eviction as [`Self::hdr_image_cache`].
     pub(crate) hdr_tiled_preview_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// HDR indices whose current SDR fallback texture is a temporary black placeholder.
