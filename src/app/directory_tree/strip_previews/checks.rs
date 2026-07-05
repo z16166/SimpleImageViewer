@@ -28,33 +28,92 @@ use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
     #[cfg(feature = "avif-native")]
+    fn avif_strip_probe_cache_generation(&self) -> u64 {
+        self.directory_tree
+            .list
+            .try_lock()
+            .map(|list| list.image_list_generation)
+            .unwrap_or(0)
+    }
+
+    #[cfg(feature = "avif-native")]
+    fn schedule_avif_gain_map_strip_probe(&self, path: &std::path::Path) {
+        use crate::loader::DIRECTORY_TREE_STRIP_POOL;
+
+        let path_buf = path.to_path_buf();
+        {
+            let cache = self.cached_avif_strip_probe.lock();
+            if let Some((generation, map)) = cache.as_ref()
+                && *generation == self.avif_strip_probe_cache_generation()
+                && map.contains_key(&path_buf)
+            {
+                return;
+            }
+        }
+        {
+            let mut inflight = self.avif_strip_probe_inflight.lock();
+            if !inflight.insert(path_buf.clone()) {
+                return;
+            }
+        }
+
+        let generation = self.avif_strip_probe_cache_generation();
+        let tx = self.avif_strip_probe_result_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let probe = (|| -> Option<Option<crate::hdr::avif::AvifGainMapStripProbe>> {
+                let mmap = crate::mmap_util::map_file(&path_buf).ok()?;
+                if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
+                    return Some(None);
+                }
+                Some(crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()))
+            })()
+            .flatten();
+            let _ = tx.send(crate::app::types::AvifStripProbeJobResult {
+                path: path_buf,
+                image_list_generation: generation,
+                probe,
+            });
+            if let Some(wake) = root_wake {
+                wake();
+            }
+        });
+    }
+
+    #[cfg(feature = "avif-native")]
+    pub(crate) fn poll_avif_strip_probe_results(&mut self) {
+        while let Ok(result) = self.avif_strip_probe_result_rx.try_recv() {
+            let current_gen = self.avif_strip_probe_cache_generation();
+            if result.image_list_generation != current_gen {
+                continue;
+            }
+            let mut cache = self.cached_avif_strip_probe.lock();
+            if cache.as_ref().is_none_or(|(g, _)| *g != current_gen) {
+                *cache = Some((current_gen, HashMap::new()));
+            }
+            let (_, map) = cache.as_mut().expect("just inserted");
+            map.insert(result.path.clone(), result.probe);
+            self.avif_strip_probe_inflight.lock().remove(&result.path);
+        }
+    }
+
+    #[cfg(feature = "avif-native")]
     fn cached_avif_gain_map_strip_probe(
         &self,
         path: &std::path::Path,
     ) -> Option<crate::hdr::avif::AvifGainMapStripProbe> {
-        let current_gen = self
-            .directory_tree
-            .list
-            .try_lock()
-            .map(|list| list.image_list_generation);
-        let mut cache = self.cached_avif_strip_probe.lock();
-        if current_gen.is_none_or(|generation| cache.as_ref().is_none_or(|(g, _)| *g != generation))
+        let current_gen = self.avif_strip_probe_cache_generation();
         {
-            *cache = Some((current_gen.unwrap_or(0), HashMap::new()));
+            let cache = self.cached_avif_strip_probe.lock();
+            if let Some((generation, map)) = cache.as_ref()
+                && *generation == current_gen
+                && let Some(probe) = map.get(path)
+            {
+                return *probe;
+            }
         }
-        let (_, map) = cache.as_mut().expect("just inserted");
-        if let Some(probe) = map.get(path) {
-            return Some(*probe);
-        }
-        let Ok(mmap) = crate::mmap_util::map_file(path) else {
-            return None;
-        };
-        if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
-            return None;
-        }
-        let probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref())?;
-        map.insert(path.to_path_buf(), probe);
-        Some(probe)
+        self.schedule_avif_gain_map_strip_probe(path);
+        None
     }
 
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {

@@ -291,41 +291,7 @@ impl HdrPendingWorkQueues {
     }
 
     pub(crate) fn has_active_work(&self) -> bool {
-        if self.active_work_count.load(Ordering::Acquire) > 0 {
-            return true;
-        }
-        if self.gpu_writes.lock().pending_len() > 0 {
-            return true;
-        }
-        let inflight = self.inflight.lock();
-        if !inflight.plane_uploads.is_empty()
-            || !inflight.tile_uploads.is_empty()
-            || !inflight.jpeg_tiled_source_uploads.is_empty()
-            || !inflight.iso_image_compose.is_empty()
-            || !inflight.apple_image_compose.is_empty()
-            || !inflight.iso_tile_compose.is_empty()
-        {
-            return true;
-        }
-        drop(inflight);
-        self.has_pending_completed_work() || self.has_pending_request_work()
-    }
-
-    fn has_pending_completed_work(&self) -> bool {
-        !self.completed_plane_uploads.lock().is_empty()
-            || !self.completed_tile_uploads.lock().is_empty()
-            || !self.completed_jpeg_tiled_source_uploads.lock().is_empty()
-            || !self.completed_compose_writes.lock().is_empty()
-            || !self.completed_compose_failures.lock().is_empty()
-    }
-
-    fn has_pending_request_work(&self) -> bool {
-        !self.plane_upload_requests.lock().is_empty()
-            || !self.tile_upload_requests.lock().is_empty()
-            || !self.jpeg_tiled_source_requests.lock().is_empty()
-            || !self.iso_image_compose_requests.lock().is_empty()
-            || !self.apple_image_compose_requests.lock().is_empty()
-            || !self.iso_tile_compose_requests.lock().is_empty()
+        self.active_work_count.load(Ordering::Acquire) > 0
     }
 
     pub(crate) fn try_queue_plane_upload(&self, request: HdrPendingPlaneUploadRequest) -> bool {

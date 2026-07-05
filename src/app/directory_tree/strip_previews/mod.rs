@@ -97,6 +97,7 @@ impl ImageViewerApp {
             return;
         }
 
+        self.poll_avif_strip_probe_results();
         self.poll_directory_tree_strip_preview_results(ctx);
         self.release_resolved_strip_cold_awaiting_main_loader();
 

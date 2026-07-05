@@ -27,6 +27,13 @@ use eframe::egui::{self, Pos2, Rect, Vec2};
 /// Calls [`winit::window::Window::request_redraw`] on the root viewport window.
 pub(crate) type RootRedrawWake = Arc<dyn Fn() + Send + Sync>;
 
+#[cfg(feature = "avif-native")]
+pub(crate) struct AvifStripProbeJobResult {
+    pub path: PathBuf,
+    pub image_list_generation: u64,
+    pub probe: Option<crate::hdr::avif::AvifGainMapStripProbe>,
+}
+
 use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
 use crate::directory_tree_places::DirectoryTreePlaces;
@@ -345,13 +352,17 @@ pub struct ImageViewerApp {
     /// invalidates it without touching individual mutation sites.
     pub(crate) cached_image_strip_path_index: Option<(u64, HashMap<PathBuf, usize>)>,
     /// AVIF gain-map strip probe by path, keyed to `image_list_generation`.
+    /// `None` in the map means probed and not a gain-map strip candidate.
     #[cfg(feature = "avif-native")]
     pub(crate) cached_avif_strip_probe: parking_lot::Mutex<
-        Option<(
-            u64,
-            HashMap<PathBuf, crate::hdr::avif::AvifGainMapStripProbe>,
-        )>,
+        Option<(u64, HashMap<PathBuf, Option<crate::hdr::avif::AvifGainMapStripProbe>>)>,
     >,
+    #[cfg(feature = "avif-native")]
+    pub(crate) avif_strip_probe_inflight: parking_lot::Mutex<std::collections::HashSet<PathBuf>>,
+    #[cfg(feature = "avif-native")]
+    pub(crate) avif_strip_probe_result_tx: crossbeam_channel::Sender<AvifStripProbeJobResult>,
+    #[cfg(feature = "avif-native")]
+    pub(crate) avif_strip_probe_result_rx: crossbeam_channel::Receiver<AvifStripProbeJobResult>,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
     /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).

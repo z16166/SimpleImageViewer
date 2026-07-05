@@ -227,6 +227,38 @@ pub(crate) fn chroma_row_index(
 }
 
 #[cfg(feature = "heif-native")]
+#[inline]
+fn fill_row_alpha_u16(
+    row_alpha: Option<*const u8>,
+    alpha_stride: usize,
+    span_alpha: usize,
+    scale_alpha: f32,
+    y_w: usize,
+    row_dst: &mut [f32],
+) -> Result<(), String> {
+    let Some(ar) = row_alpha else {
+        for x_px in 0..y_w {
+            row_dst[x_px * 4 + 3] = 1.0;
+        }
+        return Ok(());
+    };
+    if span_alpha == 2 && alpha_stride >= y_w * 2 {
+        let a_row = unsafe { std::slice::from_raw_parts(ar as *const u16, y_w) };
+        let inv = 1.0 / scale_alpha.max(1.0);
+        for (x_px, &sample) in a_row.iter().enumerate().take(y_w) {
+            row_dst[x_px * 4 + 3] = (sample as f32 * inv).clamp(0.0, 1.0);
+        }
+        return Ok(());
+    }
+    for x_px in 0..y_w {
+        let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
+            / scale_alpha.max(1.0);
+        row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "heif-native")]
 /// Planar YCbCr from libheif. NCLX `full_range: false` uses studio swing; full-pack path uses
 /// `Cb/Cr` normalized to `[0, 1]` minus `0.5`. Matrix from CICP: 0 mono, 5/6 BT.601, 9/10 BT.2020 NCL,
 /// else BT.709; ICC-only defaults to BT.709.
@@ -418,11 +450,14 @@ pub(crate) fn hdr_buffer_from_ycbcr(
                 );
             }
             if let Some(ar) = row_alpha {
-                for x_px in 0..y_w {
-                    let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
-                        / scale_alpha.max(1.0);
-                    row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
-                }
+                fill_row_alpha_u16(
+                    Some(ar),
+                    alpha_stride,
+                    span_alpha,
+                    scale_alpha,
+                    y_w,
+                    row_dst,
+                )?;
             }
             return Ok(());
         }
@@ -441,12 +476,60 @@ pub(crate) fn hdr_buffer_from_ycbcr(
                 );
             }
             if let Some(ar) = row_alpha {
-                for x_px in 0..y_w {
-                    let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
-                        / scale_alpha.max(1.0);
-                    row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
-                }
+                fill_row_alpha_u16(
+                    Some(ar),
+                    alpha_stride,
+                    span_alpha,
+                    scale_alpha,
+                    y_w,
+                    row_dst,
+                )?;
             }
+            return Ok(());
+        }
+
+        if super::ycbcr_hdr_simd::hdr_ycbcr_u16_tight_row_eligible(u16_layout)
+            && yuv_matrix != HeifYcbcrMatrix::Monochrome
+        {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            let subsamp_h = chroma != libheif_sys::heif_chroma_444;
+            for x_px in 0..y_w {
+                let y_raw = y_u16[x_px] as u32;
+                let xc = if subsamp_h {
+                    (x_px / 2).min(cb_w.saturating_sub(1))
+                } else {
+                    x_px.min(cb_w.saturating_sub(1))
+                };
+                let cb_raw = cb_u16[xc] as u32;
+                let cr_raw = cr_u16[xc] as u32;
+
+                let [r_, g_, b_] = if let Some((swing_y, swing_cb, swing_cr)) = studio_swing {
+                    let ey = studio_luma_to_normalized(y_raw, swing_y);
+                    let ecb = studio_chroma_to_normalized(cb_raw, swing_cb);
+                    let ecr = studio_chroma_to_normalized(cr_raw, swing_cr);
+                    ycbcr_linear_to_rgb(ey, ecb, ecr, yuv_matrix)
+                } else {
+                    let yv = y_raw as f32 / scale_y.max(1.0);
+                    let cbv = cb_raw as f32 / scale_cb.max(1.0);
+                    let crv = cr_raw as f32 / scale_cr.max(1.0);
+                    ycbcr_linear_to_rgb(yv, cbv - 0.5, crv - 0.5, yuv_matrix)
+                };
+
+                let out_idx = x_px * 4;
+                row_dst[out_idx] = r_.clamp(0.0, 1.0);
+                row_dst[out_idx + 1] = g_.clamp(0.0, 1.0);
+                row_dst[out_idx + 2] = b_.clamp(0.0, 1.0);
+            }
+            fill_row_alpha_u16(
+                row_alpha,
+                alpha_stride,
+                span_alpha,
+                scale_alpha,
+                y_w,
+                row_dst,
+            )?;
             return Ok(());
         }
 

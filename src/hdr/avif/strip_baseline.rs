@@ -143,6 +143,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
     bytes: &[u8],
     path: &Path,
     max_side: u32,
+    layout: Option<super::orientation::AvifContainerLayout>,
 ) -> OptionalStripResult<StripWithLogicalSize> {
     let image_ptr = image.as_ptr();
     let image_ref = unsafe { &*image_ptr };
@@ -168,7 +169,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr_from_image(
             hdr.width, hdr.height
         )));
     }
-    let layout = super::orientation::libavif_probe_container_layout(bytes);
+    let layout = layout.or_else(|| super::orientation::libavif_probe_container_layout(bytes));
     let logical = layout
         .map(|layout| layout.logical_size)
         .unwrap_or((hdr.width, hdr.height));
@@ -217,7 +218,7 @@ pub(crate) fn decode_avif_strip_precomposed_hdr(
             )));
         }
     };
-    decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side)
+    decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side, None)
 }
 
 /// YUV scale + tone-mapped SDR strip for AVIF without an ISO gain map (avoids full [`ImageData`] load).

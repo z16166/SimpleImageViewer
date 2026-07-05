@@ -260,7 +260,7 @@ pub(crate) fn jxl_find_black_extra_channel_index(
 /// or lcms internal error) leaves `rgba` untouched and logs a warning so the
 /// caller can fall back to the existing native-HDR / SDR-grading path.
 #[cfg(feature = "jpegxl")]
-fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -> bool {
+fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &mut [f32], source_icc: &[u8]) -> bool {
     let pixel_count = rgba.len() / 4;
     if pixel_count != k.len() {
         log::warn!(
@@ -276,14 +276,15 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
 
     // Pack interleaved CMYK into `rgba` in lcms2's native PostScript units (0..100,
     // 0 = no ink, 100 = max ink). libjxl uses (0 = max ink, 1 = white), so the
-    // scale is `100 - 100*v`. Alpha is saved and restored after the in-place transform.
-    let mut alpha = Vec::<f32>::with_capacity(pixel_count);
-    for (px, &k_val) in rgba.chunks_exact_mut(4).zip(k.iter()) {
-        alpha.push(px[3]);
+    // scale is `100 - 100*v`. Alpha is staged in the K plane buffer during transform.
+    for (px, k_slot) in rgba.chunks_exact_mut(4).zip(k.iter_mut()) {
+        let alpha = px[3];
+        let k_val = *k_slot;
         px[0] = 100.0 - 100.0 * px[0].clamp(0.0, 1.0);
         px[1] = 100.0 - 100.0 * px[1].clamp(0.0, 1.0);
         px[2] = 100.0 - 100.0 * px[2].clamp(0.0, 1.0);
         px[3] = 100.0 - 100.0 * k_val.clamp(0.0, 1.0);
+        *k_slot = alpha;
     }
     let Some(in_profile) = libjxl_sys::CmsProfile::open_from_mem(source_icc) else {
         log::warn!("[JXL] lcms2 could not parse embedded CMYK ICC; skipping CMS transform");
@@ -313,8 +314,8 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
         pixel_count as u32,
     );
 
-    for (px, &a) in rgba.chunks_exact_mut(4).zip(alpha.iter()) {
-        px[3] = a;
+    for (px, k_slot) in rgba.chunks_exact_mut(4).zip(k.iter()) {
+        px[3] = *k_slot;
     }
     true
 }
@@ -1033,7 +1034,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 if k_extra_channel_index.is_some() && !k_f32.is_empty() {
                     let cmyk_converted =
-                        apply_cmyk_to_srgb_via_lcms(&mut rgba, &k_f32, &cmyk_source_icc);
+                        apply_cmyk_to_srgb_via_lcms(&mut rgba, &mut k_f32, &cmyk_source_icc);
                     if cmyk_converted {
                         // After lcms2 CMYK→sRGB the float buffer holds sRGB-
                         // ENCODED values in 0..1 (PostScript-style 0..100 input

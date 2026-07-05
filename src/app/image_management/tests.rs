@@ -2095,6 +2095,15 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         cached_image_strip_path_index: None,
         #[cfg(feature = "avif-native")]
         cached_avif_strip_probe: parking_lot::Mutex::new(None),
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_inflight: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_result_tx: {
+            let (tx, _rx) = crossbeam_channel::bounded(1);
+            tx
+        },
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_result_rx: crossbeam_channel::never(),
         file_byte_len_by_index: Vec::new(),
         file_modified_unix_by_index: Vec::new(),
         current_index: 0,

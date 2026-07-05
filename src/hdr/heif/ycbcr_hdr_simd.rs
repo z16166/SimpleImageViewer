@@ -116,9 +116,12 @@ pub(crate) fn hdr_ycbcr_u16_simd_eligible(
     _studio_swing: bool,
     matrix: HeifYcbcrMatrix,
 ) -> bool {
-    if matrix == HeifYcbcrMatrix::Monochrome {
-        return false;
-    }
+    hdr_ycbcr_u16_tight_row_eligible(layout)
+        && matrix != HeifYcbcrMatrix::Monochrome
+}
+
+/// Tight u16 row layout for SIMD or inline scalar conversion (420/422/444).
+pub(crate) fn hdr_ycbcr_u16_tight_row_eligible(layout: HdrYcbcrU16RowLayout) -> bool {
     if layout.span_y != 2 || layout.span_cb != 2 || layout.span_cr != 2 {
         return false;
     }
@@ -130,7 +133,9 @@ pub(crate) fn hdr_ycbcr_u16_simd_eligible(
     }
     matches!(
         layout.chroma,
-        c if c == libheif_sys::heif_chroma_444 || c == libheif_sys::heif_chroma_420
+        c if c == libheif_sys::heif_chroma_444
+            || c == libheif_sys::heif_chroma_420
+            || c == libheif_sys::heif_chroma_422
     )
 }
 
