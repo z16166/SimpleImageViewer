@@ -39,3 +39,6 @@ pub(crate) const TILE_CACHE_BUDGET_BYTES: usize = STRIP_CACHE_BUDGET_BYTES;
 
 /// Maximum pixel count for static full-image HDR decode paths (256 megapixels).
 pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
+
+/// Upper bound on concurrent libtiff handles per tiled/scanline source (2x img-loader threads).
+pub(crate) const MAX_TIFF_HANDLE_POOL_SIZE: usize = crate::loader::MAX_IMG_LOADER_THREADS * 2;

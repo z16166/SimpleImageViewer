@@ -17,14 +17,13 @@
 use libtiff_viewer as lib;
 use std::sync::Arc;
 
-use super::handle::TiffHandle;
+use super::handle::{TiffHandle, TiffHandlePool};
 use crate::loader::TiledImageSource;
 
 use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::handle::create_tiff_handle;
 use super::scratch::with_tiled_extract_scratch;
 use super::thumbnail::extract_embedded_thumbnail;
 
@@ -39,7 +38,7 @@ pub struct LibTiffTiledSource {
     pub(crate) height: u32,
     pub(crate) tile_width: u32,
     pub(crate) tile_height: u32,
-    pub(crate) pool: Mutex<Vec<TiffHandle>>,
+    pub(crate) handle_pool: TiffHandlePool,
     pub(crate) tile_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
     pub(crate) cache_order: Mutex<Vec<u32>>,
     pub(crate) max_cached_tiles: usize,
@@ -47,17 +46,11 @@ pub struct LibTiffTiledSource {
 
 impl LibTiffTiledSource {
     fn acquire_handle(&self) -> Result<TiffHandle, String> {
-        {
-            let mut pool = self.pool.lock();
-            if let Some(handle) = pool.pop() {
-                return Ok(handle);
-            }
-        }
-        create_tiff_handle(self.mmap.clone(), &self.path)
+        self.handle_pool.acquire(self.mmap.clone(), &self.path)
     }
 
     fn release_handle(&self, handle: TiffHandle) {
-        self.pool.lock().push(handle);
+        self.handle_pool.release(handle);
     }
 
     fn tile_index(&self, tile_col: u32, tile_row: u32) -> u32 {

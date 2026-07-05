@@ -15,10 +15,14 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use libtiff_viewer as lib;
 use memmap2::Mmap;
+use parking_lot::Mutex;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use super::constants::MAX_TIFF_HANDLE_POOL_SIZE;
 
 use super::mmap::{
     TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
@@ -58,10 +62,50 @@ impl TiffHandle {
 // thread uses each handle at a time.
 unsafe impl Send for TiffHandle {}
 
+/// Mutex-backed pool of [`TiffHandle`] with a hard cap on live handles.
+pub(crate) struct TiffHandlePool {
+    pool: Mutex<Vec<TiffHandle>>,
+    live_handles: AtomicUsize,
+}
+
+impl TiffHandlePool {
+    pub(crate) fn new(initial: TiffHandle) -> Self {
+        Self {
+            pool: Mutex::new(vec![initial]),
+            live_handles: AtomicUsize::new(1),
+        }
+    }
+
+    pub(crate) fn acquire(&self, mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
+        if let Some(handle) = self.pool.lock().pop() {
+            return Ok(handle);
+        }
+        if self.live_handles.load(Ordering::Acquire) >= MAX_TIFF_HANDLE_POOL_SIZE {
+            return Err(format!(
+                "TIFF handle pool capacity ({MAX_TIFF_HANDLE_POOL_SIZE}) exceeded"
+            ));
+        }
+        let handle = create_tiff_handle(mmap, path)?;
+        self.live_handles.fetch_add(1, Ordering::AcqRel);
+        Ok(handle)
+    }
+
+    pub(crate) fn release(&self, handle: TiffHandle) {
+        let mut pool = self.pool.lock();
+        if pool.len() < MAX_TIFF_HANDLE_POOL_SIZE {
+            pool.push(handle);
+        } else {
+            drop(handle);
+            self.live_handles.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
 pub(crate) fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
     let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
 
     unsafe {
+        // SAFETY: `ctx` outlives the TIFF handle; I/O callbacks use the mmap-backed context.
         let c_path = path_to_tiff_name(path);
         let c_mode = match CString::new("r") {
             Ok(c) => c,

@@ -32,7 +32,7 @@ pub(crate) fn decode_primary_heif_to_hdr(
 ) -> Result<HdrImageBuffer, String> {
     let img =
         heif_decode_primary_once(handle, decode_options).map_err(append_heif_unci_build_hint)?;
-    hdr_buffer_from_decoded_heif(handle, &metadata, img.as_ptr())
+    hdr_buffer_from_decoded_heif(handle, metadata, img.as_ptr())
         .map_err(append_heif_unci_build_hint)
 }
 
@@ -89,7 +89,7 @@ pub(crate) fn heif_decode_primary_once(
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_decoded_heif(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
 ) -> Result<HdrImageBuffer, String> {
     let colorspace = unsafe { libheif_sys::heif_image_get_colorspace(image) };
@@ -150,7 +150,8 @@ pub(crate) fn rgba8_from_decoded_heif(
 
     match colorspace {
         cs if cs == libheif_sys::heif_colorspace_YCbCr => {
-            super::ycbcr::ycbcr_image_to_rgba8(handle, image, chroma)
+            let convert = super::ycbcr::ycbcr_matrix_from_heif_handle(handle);
+            super::ycbcr::ycbcr_image_to_rgba8(image, chroma, convert)
         }
         cs if cs == libheif_sys::heif_colorspace_RGB => match chroma {
             c if c == libheif_sys::heif_chroma_444 => rgba8_from_planar_rgb444(handle, image),
@@ -281,7 +282,7 @@ pub(crate) fn heif_err_to_plain(err: libheif_sys::heif_error) -> String {
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_monochrome(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
 ) -> Result<HdrImageBuffer, String> {
     use libheif_sys::heif_channel_Y;
@@ -329,7 +330,7 @@ pub(crate) fn hdr_buffer_from_monochrome(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -337,7 +338,7 @@ pub(crate) fn hdr_buffer_from_monochrome(
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
     components: u8,
     big_endian: bool,
@@ -406,7 +407,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -676,7 +677,7 @@ fn rgba8_from_planar_rgb444(
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
     components: u8,
 ) -> Result<HdrImageBuffer, String> {
@@ -737,7 +738,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -805,7 +806,7 @@ pub(crate) fn planar_read_sample(
 #[cfg(feature = "heif-native")]
 pub(crate) fn hdr_buffer_from_planar_rgb444(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
 ) -> Result<HdrImageBuffer, String> {
     use libheif_sys::{heif_channel_Alpha, heif_channel_B, heif_channel_G, heif_channel_R};
@@ -922,7 +923,7 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
         height: height_i as u32,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }

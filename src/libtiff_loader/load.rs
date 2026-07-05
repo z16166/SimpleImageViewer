@@ -34,7 +34,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::handle::{TiffHandle, path_to_tiff_name};
+use super::handle::{TiffHandle, TiffHandlePool, path_to_tiff_name};
 use super::mmap::{
     TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
@@ -388,7 +388,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     height,
                     tile_width,
                     tile_height,
-                    pool: Mutex::new(vec![handle]),
+                    handle_pool: TiffHandlePool::new(handle),
                     tile_cache: Mutex::new(std::collections::HashMap::new()),
                     cache_order: Mutex::new(Vec::new()),
                     max_cached_tiles: max_cached,
@@ -417,7 +417,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     width,
                     height,
                     rows_per_strip: rps,
-                    pool: Mutex::new(vec![handle]),
+                    handle_pool: TiffHandlePool::new(handle),
                     strip_cache: Mutex::new(std::collections::HashMap::new()),
                     cache_order: Mutex::new(Vec::new()),
                     max_cached_strips: max_cached,

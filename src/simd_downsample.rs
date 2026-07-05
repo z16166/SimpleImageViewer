@@ -589,14 +589,7 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
                         let mask_lt = vcgtq_u32(x1_v, sx_v);
                         let active = vandq_u32(mask_ge, mask_lt);
 
-                        // Check if any lane is active via horizontal OR reduction.
-                        let or_low_high = vorr_u32(vget_low_u32(active), vget_high_u32(active));
-                        let any_active = vget_lane_u32::<0>(vorr_u32(
-                            or_low_high,
-                            vreinterpret_u32_u64(vshr_n_u64::<32>(vreinterpret_u64_u32(
-                                or_low_high,
-                            ))),
-                        )) != 0;
+                        let any_active = vmaxvq_u32(active) != 0;
 
                         if !any_active {
                             continue;

@@ -40,6 +40,25 @@ pub(crate) enum HeifYcbcrMatrix {
 }
 
 #[cfg(feature = "heif-native")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HeifYcbcrConvertParams {
+    pub matrix: HeifYcbcrMatrix,
+    pub nclx_studio_swing: bool,
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn ycbcr_matrix_from_metadata(
+    metadata: &HdrImageMetadata,
+    width: usize,
+    height: usize,
+) -> HeifYcbcrConvertParams {
+    HeifYcbcrConvertParams {
+        matrix: heif_ycbcr_matrix_from_nclx(metadata, width, height),
+        nclx_studio_swing: nclx_limited_range_from_metadata(metadata),
+    }
+}
+
+#[cfg(feature = "heif-native")]
 pub(crate) fn heif_ycbcr_matrix_from_nclx(
     metadata: &HdrImageMetadata,
     y_width: usize,
@@ -181,7 +200,7 @@ pub(crate) fn chroma_row_index(
 /// else BT.709; ICC-only defaults to BT.709.
 pub(crate) fn hdr_buffer_from_ycbcr(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
     chroma: libheif_sys::heif_chroma,
 ) -> Result<HdrImageBuffer, String> {
@@ -252,7 +271,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     let sem_y = planar_semantic_depth_bits(image, handle, heif_channel_Y)?;
     let sem_cb = planar_semantic_depth_bits(image, handle, heif_channel_Cb)?;
     let sem_cr = planar_semantic_depth_bits(image, handle, heif_channel_Cr)?;
-    let nclx_studio_swing = nclx_limited_range_from_metadata(metadata);
+    let nclx_studio_swing = nclx_limited_range_from_metadata(&metadata);
 
     let span_alpha = if alpha_valid {
         planar_storage_span_bytes(image, heif_channel_Alpha)
@@ -269,7 +288,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         1.0
     };
 
-    let yuv_matrix = heif_ycbcr_matrix_from_nclx(metadata, y_w, y_h);
+    let yuv_matrix = heif_ycbcr_matrix_from_nclx(&metadata, y_w, y_h);
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -333,7 +352,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         height: y_h as u32,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -341,7 +360,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
 #[cfg(feature = "heif-native")]
 pub(crate) fn ycbcr_matrix_from_heif_handle(
     handle: *const libheif_sys::heif_image_handle,
-) -> (HeifYcbcrMatrix, bool) {
+) -> HeifYcbcrConvertParams {
     use super::brand::heif_nclx_to_metadata;
 
     let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
@@ -358,20 +377,20 @@ pub(crate) fn ycbcr_matrix_from_heif_handle(
             nclx.matrix_coefficients as u16,
             nclx.full_range_flag != 0,
         );
-        return (
-            heif_ycbcr_matrix_from_nclx(&metadata, width, height),
-            nclx_limited_range_from_metadata(&metadata),
-        );
+        return ycbcr_matrix_from_metadata(&metadata, width, height);
     }
     // No NCLX: assume full-range JPEG-style pack (common HEIF still default).
-    (HeifYcbcrMatrix::Bt709, false)
+    HeifYcbcrConvertParams {
+        matrix: HeifYcbcrMatrix::Bt709,
+        nclx_studio_swing: false,
+    }
 }
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn ycbcr_image_to_rgba8(
-    handle: *const libheif_sys::heif_image_handle,
     image: *const libheif_sys::heif_image,
     chroma: libheif_sys::heif_chroma,
+    convert: HeifYcbcrConvertParams,
 ) -> Result<crate::loader::DecodedImage, String> {
     let y_w = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
     let y_h = unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
@@ -409,7 +428,10 @@ pub(crate) fn ycbcr_image_to_rgba8(
         return Err("libheif YCbCr image missing planes".to_string());
     }
 
-    let (matrix, nclx_studio_swing) = ycbcr_matrix_from_heif_handle(handle);
+    let HeifYcbcrConvertParams {
+        matrix,
+        nclx_studio_swing,
+    } = convert;
     let subsample_h = chroma != libheif_sys::heif_chroma_444;
     let subsample_v = chroma == libheif_sys::heif_chroma_420;
     let chroma_row_len = if subsample_h {

@@ -18,7 +18,7 @@ use libtiff_viewer as lib;
 use std::os::raw::c_void;
 use std::sync::Arc;
 
-use super::handle::TiffHandle;
+use super::handle::{TiffHandle, TiffHandlePool};
 use crate::loader::TiledImageSource;
 
 use memmap2::Mmap;
@@ -31,7 +31,6 @@ use super::decode::{
     tiff_uint_default_sample_max, write_ieee_contig_scanline_linear_scratch,
     write_ieee_separate_scanline_linear_scratch,
 };
-use super::handle::create_tiff_handle;
 use super::scratch::{
     with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
 };
@@ -45,7 +44,7 @@ pub struct LibTiffScanlineSource {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) rows_per_strip: u32,
-    pub(crate) pool: Mutex<Vec<TiffHandle>>,
+    pub(crate) handle_pool: TiffHandlePool,
     pub(crate) strip_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
     pub(crate) cache_order: Mutex<Vec<u32>>,
     pub(crate) max_cached_strips: usize,
@@ -53,17 +52,11 @@ pub struct LibTiffScanlineSource {
 
 impl LibTiffScanlineSource {
     fn acquire_handle(&self) -> Result<TiffHandle, String> {
-        {
-            let mut pool = self.pool.lock();
-            if let Some(handle) = pool.pop() {
-                return Ok(handle);
-            }
-        }
-        create_tiff_handle(self.mmap.clone(), &self.path)
+        self.handle_pool.acquire(self.mmap.clone(), &self.path)
     }
 
     fn release_handle(&self, handle: TiffHandle) {
-        self.pool.lock().push(handle);
+        self.handle_pool.release(handle);
     }
 
     fn get_or_decode_strip(&self, strip_idx: u32, handle: &TiffHandle) -> Option<Arc<Vec<u8>>> {
@@ -91,9 +84,12 @@ impl LibTiffScanlineSource {
         let (decoded, rgba) = with_scanline_strip_scratch(strip_len, rgba_len, |scratch| {
             let strip_buf = &mut scratch.strip;
             let rgba = &mut scratch.rgba;
-            let decoded = unsafe {
-                lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr())
-                    != 0
+            let decoded = {
+                // SAFETY: `handle` is pool-exclusive; `strip_buf` matches libtiff RGBA strip length.
+                unsafe {
+                    lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr())
+                        != 0
+                }
             };
 
             if !decoded {
@@ -337,6 +333,8 @@ struct ManualScanlineDecodePass<'a> {
 }
 
 unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
+    // SAFETY (caller contract): `tif` is a valid libtiff handle opened by this loader and is not
+    // shared across threads. `buf` is sized to `TIFFScanlineSize(tif)`; `rgba` fits `width * height * 4`.
     let ManualScanlineDecodePass {
         tif,
         buf,
@@ -452,6 +450,7 @@ pub(crate) unsafe fn manual_decode_scanline(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
+    // SAFETY (caller contract): `tif` is a valid, exclusive libtiff handle for one image.
     let mut bps: u16 = 0;
     let mut spp: u16 = 0;
     let mut photo: u16 = 0;
@@ -462,6 +461,7 @@ pub(crate) unsafe fn manual_decode_scanline(
     let swapped: bool;
     let mut smin: f64 = 0.0;
     let mut smax: f64 = 1.0;
+    // SAFETY: read-only tag queries; out-parameters are stack locals.
     unsafe {
         lib::TIFFGetField(tif, lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
         lib::TIFFGetField(tif, lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
@@ -474,6 +474,7 @@ pub(crate) unsafe fn manual_decode_scanline(
         swapped = lib::TIFFIsByteSwapped(tif) != 0;
     }
 
+    // SAFETY: `tif` is valid; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {
         return Err("Invalid scanline size".to_string());
@@ -487,17 +488,25 @@ pub(crate) unsafe fn manual_decode_scanline(
     let mut g_map: *mut u16 = std::ptr::null_mut();
     let mut b_map: *mut u16 = std::ptr::null_mut();
     if photo == PHOTO_PALETTE
-        && unsafe {
-            lib::TIFFGetField(
-                tif,
-                lib::TIFFTAG_COLORMAP,
-                &mut r_map,
-                &mut g_map,
-                &mut b_map,
-            )
+        && {
+            // SAFETY: colormap pointers are filled by libtiff and live until the handle closes.
+            unsafe {
+                lib::TIFFGetField(
+                    tif,
+                    lib::TIFFTAG_COLORMAP,
+                    &mut r_map,
+                    &mut g_map,
+                    &mut b_map,
+                )
+            }
         } == 0
     {
         return Err("Palette image missing colormap".to_string());
+    }
+    if photo == PHOTO_SEPARATED && config == CONFIG_SEPARATE && spp != 4 {
+        return Err(format!(
+            "Planar CMYK TIFF requires SamplesPerPixel=4, got {spp}"
+        ));
     }
     let samples_to_process = (spp as usize).min(match photo {
         PHOTO_RGB | PHOTO_SEPARATED => 4, // RGB(A) and CMYK
@@ -507,6 +516,7 @@ pub(crate) unsafe fn manual_decode_scanline(
     // Determine if we need a two-pass normalization for floats or large integers
     let mut smax_provided = false;
     let mut smin_provided = false;
+    // SAFETY: read-only tag queries; out-parameters are stack locals.
     unsafe {
         let mut smin_v: f64 = 0.0;
         let mut smax_v: f64 = 0.0;

@@ -59,28 +59,47 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
         return 0.0;
     }
     match (bps, format) {
-        (16, _) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
-        },
-        (32, FORMAT_UINT) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64
-        },
-        (32, FORMAT_INT) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64
-        },
-        (32, FORMAT_IEEEFP) => unsafe {
-            f32::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(idx * 4) as *const u32
-            )) as f64
-        },
-        (64, FORMAT_UINT) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64
-        },
-        (64, FORMAT_IEEEFP) => unsafe {
-            f64::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(idx * 8) as *const u64
-            ))
-        },
+        (16, _) => {
+            // SAFETY: `sample_bytes_in_buf` verified `idx * 2 .. idx * 2 + 2` lies in `buf`.
+            // Unaligned read is required because TIFF sample offsets are not guaranteed aligned.
+            unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
+            }
+        }
+        (32, FORMAT_UINT) => {
+            // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
+            unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64
+            }
+        }
+        (32, FORMAT_INT) => {
+            // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
+            unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64
+            }
+        }
+        (32, FORMAT_IEEEFP) => {
+            // SAFETY: bounds checked above; unaligned read for packed IEEE float samples.
+            unsafe {
+                f32::from_bits(std::ptr::read_unaligned(
+                    buf.as_ptr().add(idx * 4) as *const u32
+                )) as f64
+            }
+        }
+        (64, FORMAT_UINT) => {
+            // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
+            unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64
+            }
+        }
+        (64, FORMAT_IEEEFP) => {
+            // SAFETY: bounds checked above; unaligned read for packed IEEE double samples.
+            unsafe {
+                f64::from_bits(std::ptr::read_unaligned(
+                    buf.as_ptr().add(idx * 8) as *const u64
+                ))
+            }
+        }
         _ => 0.0,
     }
 }
@@ -171,6 +190,8 @@ pub(crate) fn process_scanline_contig(
                 {
                     continue;
                 }
+                // SAFETY: `idx < palette.entries` checked above; colormap pointers come from libtiff
+                // and remain valid for the duration of this scanline decode.
                 unsafe {
                     let r_ptr = palette.r_map.add(idx);
                     let g_ptr = palette.g_map.add(idx);
@@ -562,6 +583,8 @@ fn read_uint16_sample(buf: &[u8], sample_index: usize) -> u16 {
     if !sample_bytes_in_buf(buf, sample_index, 16) {
         return 0;
     }
+    // SAFETY: `sample_bytes_in_buf` verified `sample_index * 2 .. +2` lies in `buf`.
+    // Unaligned read is required because TIFF scanlines are byte-packed.
     unsafe { std::ptr::read_unaligned(buf.as_ptr().add(sample_index * 2) as *const u16) }
 }
 
@@ -617,6 +640,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
         ));
     }
 
+    // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {
         return Err("16-bit RGB TIFF: invalid scanline size".to_string());
@@ -627,6 +651,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
     let mut smax = 65535.0_f64;
     let mut smin_provided = false;
     let mut smax_provided = false;
+    // SAFETY: `tif` is a valid libtiff handle; TIFFGetField only writes tag out-parameters.
     unsafe {
         let mut smin_v: f64 = 0.0;
         let mut smax_v: f64 = 0.0;
@@ -652,6 +677,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
     let mut actual_max = f64::MIN;
     let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
     for y in 0..height {
+        // SAFETY: `tif` is valid and exclusive; `buf` is sized to `TIFFScanlineSize(tif)`.
         if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
             return Err(format!("16-bit RGB TIFF: scan failed at row {y}"));
         }
@@ -793,29 +819,40 @@ fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
     }
     let v = match bps {
         16 => {
+            // SAFETY: `sample_bytes_in_buf` verified the sample span lies in `buf`.
             let bits = unsafe {
                 std::ptr::read_unaligned(buf.as_ptr().add(sample_index * 2) as *const u16)
             };
             half::f16::from_bits(bits).to_f32()
         }
-        32 => unsafe {
-            f32::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(sample_index * 4) as *const u32
-            ))
-        },
-        64 => unsafe {
-            f64::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(sample_index * 8) as *const u64
-            )) as f32
-        },
+        32 => {
+            // SAFETY: bounds checked above; unaligned read for packed IEEE float samples.
+            unsafe {
+                f32::from_bits(std::ptr::read_unaligned(
+                    buf.as_ptr().add(sample_index * 4) as *const u32
+                ))
+            }
+        }
+        64 => {
+            // SAFETY: bounds checked above; unaligned read for packed IEEE double samples.
+            unsafe {
+                f64::from_bits(std::ptr::read_unaligned(
+                    buf.as_ptr().add(sample_index * 8) as *const u64
+                )) as f32
+            }
+        }
         _ => 0.0_f32,
     };
     if v.is_finite() { v } else { 0.0 }
 }
 
 /// `TIFFTAG_SMAXSAMPLEVALUE` — libtiff passes this tag as a `double` out-parameter, not `double**`.
+///
+/// # Safety
+/// `tif` must be a valid libtiff handle.
 unsafe fn tiff_tag_smax_sample_value_f64(tif: *mut lib::TIFF) -> Option<f64> {
     let mut v: f64 = 0.0;
+    // SAFETY: read-only tag query; `v` is a stack out-parameter.
     unsafe {
         if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut v) != 0 && v.is_finite() {
             return Some(v);
@@ -969,6 +1006,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
     }
     let bytes_per_sample = (bps / 8) as usize;
 
+    // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {
         return Err("IEEE TIFF: invalid scanline size".to_string());
@@ -1010,6 +1048,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
 
     if config == CONFIG_CONTIG {
         for y in 0..height {
+            // SAFETY: `tif` is valid and exclusive; `buf` is sized to `TIFFScanlineSize(tif)`.
             if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
                 return Err(format!("IEEE TIFF: TIFFReadScanline failed at row {y}"));
             }
@@ -1085,6 +1124,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
         };
         for c in 0..comp_count {
             for y in 0..height {
+                // SAFETY: `tif` is valid and exclusive; `buf` fits one planar sample row (`sample=c`).
                 if unsafe {
                     lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, c as u16)
                 } <= 0
@@ -1194,6 +1234,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
         sample_format,
     } = params;
     let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
+    // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {
         return Err("LogL/LogLuv: invalid TIFFScanlineSize".to_string());
@@ -1215,6 +1256,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
             ));
         }
         for y in 0..height {
+            // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
             if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                 <= 0
             {
@@ -1249,6 +1291,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
+                // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
                 if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                     <= 0
                 {
@@ -1273,6 +1316,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
+                // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
                 if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                     <= 0
                 {
