@@ -341,7 +341,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
 #[cfg(feature = "heif-native")]
 pub(crate) fn ycbcr_matrix_from_heif_handle(
     handle: *const libheif_sys::heif_image_handle,
-) -> HeifYcbcrMatrix {
+) -> (HeifYcbcrMatrix, bool) {
     use super::brand::heif_nclx_to_metadata;
 
     let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
@@ -358,9 +358,13 @@ pub(crate) fn ycbcr_matrix_from_heif_handle(
             nclx.matrix_coefficients as u16,
             nclx.full_range_flag != 0,
         );
-        return heif_ycbcr_matrix_from_nclx(&metadata, width, height);
+        return (
+            heif_ycbcr_matrix_from_nclx(&metadata, width, height),
+            nclx_limited_range_from_metadata(&metadata),
+        );
     }
-    HeifYcbcrMatrix::Bt709
+    // No NCLX: assume full-range JPEG-style pack (common HEIF still default).
+    (HeifYcbcrMatrix::Bt709, false)
 }
 
 #[cfg(feature = "heif-native")]
@@ -405,7 +409,7 @@ pub(crate) fn ycbcr_image_to_rgba8(
         return Err("libheif YCbCr image missing planes".to_string());
     }
 
-    let matrix = ycbcr_matrix_from_heif_handle(handle);
+    let (matrix, nclx_studio_swing) = ycbcr_matrix_from_heif_handle(handle);
     let subsample_h = chroma != libheif_sys::heif_chroma_444;
     let subsample_v = chroma == libheif_sys::heif_chroma_420;
     let chroma_row_len = if subsample_h {
@@ -424,10 +428,17 @@ pub(crate) fn ycbcr_image_to_rgba8(
             unsafe { std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len) };
         for (x, &y_sample) in y_row.iter().enumerate().take(width as usize) {
             let xc = if subsample_h { x / 2 } else { x };
-            let yy = y_sample as f32 / 255.0;
-            let cb = cb_row[xc] as f32 / 255.0 - 0.5;
-            let cr = cr_row[xc] as f32 / 255.0 - 0.5;
-            let [r, g, b] = ycbcr_linear_to_rgb(yy, cb, cr, matrix);
+            let [r, g, b] = if nclx_studio_swing {
+                let yy = studio_digital_sample_to_normalized(y_sample as u32, 8, true)?;
+                let cb = studio_digital_sample_to_normalized(cb_row[xc] as u32, 8, false)?;
+                let cr = studio_digital_sample_to_normalized(cr_row[xc] as u32, 8, false)?;
+                ycbcr_linear_to_rgb(yy, cb, cr, matrix)
+            } else {
+                let yy = y_sample as f32 / 255.0;
+                let cb = cb_row[xc] as f32 / 255.0 - 0.5;
+                let cr = cr_row[xc] as f32 / 255.0 - 0.5;
+                ycbcr_linear_to_rgb(yy, cb, cr, matrix)
+            };
             let dst = (y * width as usize + x) * 4;
             rgba[dst] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
             rgba[dst + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;

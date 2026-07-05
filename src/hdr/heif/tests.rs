@@ -186,6 +186,36 @@ fn heif_auxiliary_type_classifies_gain_map_and_tmap_evidence() {
 
 #[cfg(feature = "heif-native")]
 #[test]
+fn heif_studio_swing_8bit_limited_range_black_and_white_bt709() {
+    use super::{HeifYcbcrMatrix, studio_digital_sample_to_normalized, ycbcr_linear_to_rgb};
+
+    let ecb = studio_digital_sample_to_normalized(128, 8, false).unwrap();
+    let ecr = studio_digital_sample_to_normalized(128, 8, false).unwrap();
+    assert!(ecb.abs() < 1e-5 && ecr.abs() < 1e-5);
+
+    let ey_black = studio_digital_sample_to_normalized(16, 8, true).unwrap();
+    assert!(ey_black.abs() < 1e-5);
+    let [r, g, b] = ycbcr_linear_to_rgb(ey_black, ecb, ecr, HeifYcbcrMatrix::Bt709);
+    assert!(
+        r.abs() < 1e-4 && g.abs() < 1e-4 && b.abs() < 1e-4,
+        "studio black should map to 0, got ({r},{g},{b})"
+    );
+
+    let ey_white = studio_digital_sample_to_normalized(235, 8, true).unwrap();
+    assert!((ey_white - 1.0).abs() < 1e-5);
+    let [r, g, b] = ycbcr_linear_to_rgb(ey_white, ecb, ecr, HeifYcbcrMatrix::Bt709);
+    assert!(
+        (r - 1.0).abs() < 1e-4 && (g - 1.0).abs() < 1e-4 && (b - 1.0).abs() < 1e-4,
+        "studio white should map to 1, got ({r},{g},{b})"
+    );
+
+    // Full-range misread would lift black and compress white.
+    assert!((16.0_f32 / 255.0 - ey_black).abs() > 0.05);
+    assert!((235.0_f32 / 255.0 - ey_white).abs() > 0.05);
+}
+
+#[cfg(feature = "heif-native")]
+#[test]
 fn heif_studio_swing_8bit_neutral_gray_bt709() {
     use super::{HeifYcbcrMatrix, studio_digital_sample_to_normalized, ycbcr_linear_to_rgb};
 
