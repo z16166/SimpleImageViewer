@@ -820,7 +820,9 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
-        let idx = self.current_index.min(self.image_files.len().saturating_sub(1));
+        let idx = self
+            .current_index
+            .min(self.image_files.len().saturating_sub(1));
 
         self.transition_start = None;
         self.pending_transition_target = None;

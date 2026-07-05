@@ -791,8 +791,8 @@ impl ImageViewerApp {
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
-            let generation_ok = self.directory_tree.list.lock().file_metadata_generation
-                == result.generation;
+            let generation_ok =
+                self.directory_tree.list.lock().file_metadata_generation == result.generation;
             if generation_ok {
                 self.apply_directory_tree_file_metadata_to_image_files(&result);
             }
@@ -812,13 +812,10 @@ impl ImageViewerApp {
                 (metadata_repaint, resort_modified)
             };
             if resort_modified
-                && self.apply_directory_tree_image_list_sort(
-                    ImageListSortColumn::Modified,
-                    {
-                        let list = self.directory_tree.list.lock();
-                        list.image_list_sort_ascending
-                    },
-                )
+                && self.apply_directory_tree_image_list_sort(ImageListSortColumn::Modified, {
+                    let list = self.directory_tree.list.lock();
+                    list.image_list_sort_ascending
+                })
             {
                 if let Some(mut list) = self.directory_tree.list.try_lock() {
                     let _ = self.sync_directory_tree_list_images(&mut list);

@@ -251,8 +251,8 @@ fn fill_row_alpha_u16(
         return Ok(());
     }
     for x_px in 0..y_w {
-        let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
-            / scale_alpha.max(1.0);
+        let av =
+            planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32 / scale_alpha.max(1.0);
         row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
     }
     Ok(())

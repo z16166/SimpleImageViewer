@@ -355,7 +355,10 @@ pub struct ImageViewerApp {
     /// `None` in the map means probed and not a gain-map strip candidate.
     #[cfg(feature = "avif-native")]
     pub(crate) cached_avif_strip_probe: parking_lot::Mutex<
-        Option<(u64, HashMap<PathBuf, Option<crate::hdr::avif::AvifGainMapStripProbe>>)>,
+        Option<(
+            u64,
+            HashMap<PathBuf, Option<crate::hdr::avif::AvifGainMapStripProbe>>,
+        )>,
     >,
     #[cfg(feature = "avif-native")]
     pub(crate) avif_strip_probe_inflight: parking_lot::Mutex<std::collections::HashSet<PathBuf>>,

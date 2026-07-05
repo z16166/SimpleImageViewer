@@ -1403,10 +1403,8 @@ fn realign_image_rows_to_image_order(
     if rows.len() != images.len() || image_rows_match_image_order(rows, images) {
         return;
     }
-    let mut rows_by_path: std::collections::HashMap<PathBuf, DirectoryTreeFileRow> = rows
-        .drain(..)
-        .map(|row| (row.path.clone(), row))
-        .collect();
+    let mut rows_by_path: std::collections::HashMap<PathBuf, DirectoryTreeFileRow> =
+        rows.drain(..).map(|row| (row.path.clone(), row)).collect();
     rows.reserve(images.len());
     for (index, path) in images.iter().enumerate() {
         let mut row = rows_by_path.remove(path).unwrap_or_else(|| {
@@ -1480,12 +1478,7 @@ impl DirectoryTreeListState {
                 ));
             }
             self.image_rows.extend(new_rows);
-            realign_image_rows_to_image_order(
-                &mut self.image_rows,
-                images,
-                sizes,
-                modified,
-            );
+            realign_image_rows_to_image_order(&mut self.image_rows, images, sizes, modified);
         } else {
             let order_matches = image_rows_match_image_order(&self.image_rows, images);
             if !order_matches {

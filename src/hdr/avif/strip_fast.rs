@@ -104,15 +104,13 @@ pub(crate) fn try_decode_avif_gain_map_strip_fast(
     let layout = super::orientation::avif_container_layout_from_image(image_ref);
 
     if iso_gain_map_skips_forward_compose(gain_metadata) {
-        return decode_avif_strip_precomposed_hdr_from_image(
-            image, bytes, path, max_side, layout,
-        )
-        .map(|opt| {
-            opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
-                preview,
-                logical_size,
-            })
-        });
+        return decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side, layout)
+            .map(|opt| {
+                opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
+                    preview,
+                    logical_size,
+                })
+            });
     }
 
     if let Some(Ok((baseline, width, height))) =

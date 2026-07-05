@@ -66,7 +66,9 @@ impl ImageViewerApp {
                 if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
                     return Some(None);
                 }
-                Some(crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()))
+                Some(crate::hdr::avif::avif_probe_gain_map_strip_kind(
+                    mmap.as_ref(),
+                ))
             })()
             .flatten();
             let _ = tx.send(crate::app::types::AvifStripProbeJobResult {
