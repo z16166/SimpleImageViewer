@@ -43,6 +43,10 @@ use crate::hdr::decode::{
     linear_primary_to_linear_srgb,
 };
 use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
+#[cfg(target_arch = "x86_64")]
+use crate::hdr::simd_fast_pow::pow4_sse41;
+#[cfg(target_arch = "aarch64")]
+use crate::hdr::simd_fast_pow::pow4_neon;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -333,21 +337,6 @@ fn path_applies_display_p3_matrix(path: ComposeFastPath) -> bool {
             | ComposeFastPath::Bt709DisplayP3
             | ComposeFastPath::LinearDisplayP3
     )
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
-    unsafe {
-        let mut lanes = [0.0_f32; 4];
-        _mm_storeu_ps(lanes.as_mut_ptr(), base);
-        _mm_set_ps(
-            lanes[3].powf(exponent),
-            lanes[2].powf(exponent),
-            lanes[1].powf(exponent),
-            lanes[0].powf(exponent),
-        )
-    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -656,22 +645,6 @@ pub(crate) unsafe fn compose_row_sse41(
             x += 1;
         }
     }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
-    let mut lanes = [0.0_f32; 4];
-    unsafe {
-        vst1q_f32(lanes.as_mut_ptr(), base);
-    }
-    let result: [f32; 4] = [
-        lanes[0].powf(exponent),
-        lanes[1].powf(exponent),
-        lanes[2].powf(exponent),
-        lanes[3].powf(exponent),
-    ];
-    unsafe { vld1q_f32(result.as_ptr()) }
 }
 
 #[cfg(target_arch = "aarch64")]

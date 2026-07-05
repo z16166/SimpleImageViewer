@@ -37,7 +37,7 @@ mod strip_fast;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use brand::{is_avif_brand, path_is_avif_image_sequence};
+pub(crate) use brand::{bytes_is_avif_image_sequence, is_avif_brand, path_is_avif_image_sequence};
 pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(all(test, feature = "avif-native"))]

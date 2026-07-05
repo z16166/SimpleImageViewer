@@ -117,6 +117,7 @@ impl ImageViewerApp {
                 stage: HdrGpuUploadStage::PlaneCreate,
             },
             &request.image,
+            None,
         ) {
             Ok(uploaded) => {
                 completed
@@ -175,7 +176,7 @@ impl ImageViewerApp {
             queues: completed.as_ref(),
             stage: HdrGpuUploadStage::TileCreate,
         };
-        match upload_callback_tile(device, sink, &request.tile) {
+        match upload_callback_tile(device, sink, &request.tile, None) {
             Ok(uploaded) => {
                 completed
                     .completed_tile_uploads

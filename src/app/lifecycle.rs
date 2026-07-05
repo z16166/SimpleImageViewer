@@ -480,6 +480,8 @@ impl ImageViewerApp {
             initial_image,
             image_files: Vec::new(),
             cached_image_strip_path_index: None,
+            #[cfg(feature = "avif-native")]
+            cached_avif_strip_probe: parking_lot::Mutex::new(None),
             file_byte_len_by_index: Vec::new(),
             file_modified_unix_by_index: Vec::new(),
             current_index: 0,

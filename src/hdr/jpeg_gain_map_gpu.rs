@@ -254,13 +254,26 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
     })
 }
 
-fn steal_arc_vec(slot: &mut Arc<Vec<u8>>) -> Vec<u8> {
-    if Arc::strong_count(slot) == 1 {
-        let taken = std::mem::replace(slot, Arc::new(Vec::new()));
-        Arc::try_unwrap(taken).expect("sole Arc owner")
-    } else {
-        slot.as_ref().clone()
+fn orient_arc_rgba8(
+    slot: &mut Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    orientation: u16,
+) -> (u32, u32) {
+    if orientation <= 1 {
+        return (width, height);
     }
+    let (out_w, out_h, oriented) = match Arc::try_unwrap(std::mem::replace(slot, Arc::new(Vec::new()))) {
+        Ok(owned) => crate::libtiff_loader::apply_orientation_buffer(owned, width, height, orientation),
+        Err(shared) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
+            shared.as_ref(),
+            width,
+            height,
+            orientation,
+        ),
+    };
+    *slot = Arc::new(oriented);
+    (out_w, out_h)
 }
 
 pub(crate) fn apply_orientation_to_iso_deferred_hdr_buffer(
@@ -278,16 +291,10 @@ pub(crate) fn apply_orientation_to_iso_deferred_hdr_buffer(
         return buffer;
     };
 
-    let sdr_vec = steal_arc_vec(&mut deferred.sdr_rgba);
-    let (out_w, out_h, sdr) = crate::libtiff_loader::apply_orientation_buffer(
-        sdr_vec,
-        buffer.width,
-        buffer.height,
-        orientation,
-    );
-    let gain_vec = steal_arc_vec(&mut deferred.gain_rgba);
-    let (gain_w, gain_h, gain) = crate::libtiff_loader::apply_orientation_buffer(
-        gain_vec,
+    let (out_w, out_h) =
+        orient_arc_rgba8(&mut deferred.sdr_rgba, buffer.width, buffer.height, orientation);
+    let (gain_w, gain_h) = orient_arc_rgba8(
+        &mut deferred.gain_rgba,
         deferred.gain_width,
         deferred.gain_height,
         orientation,
@@ -295,8 +302,6 @@ pub(crate) fn apply_orientation_to_iso_deferred_hdr_buffer(
 
     buffer.width = out_w;
     buffer.height = out_h;
-    deferred.sdr_rgba = Arc::new(sdr);
-    deferred.gain_rgba = Arc::new(gain);
     deferred.gain_width = gain_w;
     deferred.gain_height = gain_h;
     buffer

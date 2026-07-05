@@ -16,7 +16,7 @@
 
 //! Baseline JPEG and Ultra HDR (JPEG_R).
 
-use crate::hdr::types::HdrToneMapSettings;
+use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::loader::{DecodedImage, ImageData};
 use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_or_placeholder};
 use std::path::Path;
@@ -27,6 +27,20 @@ use crate::loader::tiled_sources::MemoryImageSource;
 
 type JpegStripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalJpegStripResult = Option<Result<JpegStripWithLogicalSize, String>>;
+
+fn finish_ultra_hdr_loaded(
+    _path: &Path,
+    hdr: HdrImageBuffer,
+    orientation: u16,
+) -> Result<ImageData, String> {
+    let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
+    let fallback = DecodedImage::from_hdr_sdr_fallback(
+        hdr.width,
+        hdr.height,
+        hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
+    );
+    Ok(make_hdr_image_data(hdr, fallback))
+}
 
 #[cfg(test)]
 pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
@@ -129,29 +143,28 @@ pub(crate) fn load_jpeg_from_mapped(
                     && (pixel_count >= tiled_limit
                         || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
                 if use_tiled_deferred {
-                    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
-                    if orientation > 1 {
-                        let oriented = crate::libtiff_loader::apply_orientation_buffer(
-                            pixels,
-                            w,
-                            h,
-                            orientation,
+                    let Some(deferred) =
+                        crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata(&hdr.metadata)
+                    else {
+                        log::warn!(
+                            "[Loader] Ultra HDR tiled deferred missing iso_deferred metadata for {}",
+                            path.display()
                         );
-                        w = oriented.0;
-                        h = oriented.1;
-                        pixels = oriented.2;
-                    }
+                        // fall through to non-tiled path below
+                        return finish_ultra_hdr_loaded(path, hdr, orientation);
+                    };
                     if let Ok(hdr_source) =
-                        crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
+                        crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_from_iso_deferred(
                             path.to_path_buf(),
-                            orientation,
+                            &hdr,
+                            deferred,
                             decode_capacity,
                         )
                     {
                         let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
-                            w,
-                            h,
-                            Arc::new(pixels),
+                            hdr.width,
+                            hdr.height,
+                            Arc::clone(&deferred.sdr_rgba),
                             true,
                         ));
                         return Ok(ImageData::HdrTiled {
@@ -161,13 +174,7 @@ pub(crate) fn load_jpeg_from_mapped(
                     }
                 }
 
-                let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
-                let fallback = DecodedImage::from_hdr_sdr_fallback(
-                    hdr.width,
-                    hdr.height,
-                    hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
-                );
-                return Ok(make_hdr_image_data(hdr, fallback));
+                return finish_ultra_hdr_loaded(path, hdr, orientation);
             }
             Err(err) => {
                 log::warn!(

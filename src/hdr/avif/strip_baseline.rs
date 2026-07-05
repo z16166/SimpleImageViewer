@@ -227,12 +227,15 @@ pub(crate) fn try_decode_avif_strip_primary_scaled(
     path: &Path,
     max_side: u32,
 ) -> OptionalStripResult<StripWithLogicalSize> {
-    match super::gain_map_probe::avif_probe_gain_map_strip_kind(bytes) {
-        None | Some(super::gain_map_probe::AvifGainMapStripProbe::NoGainMap) => {}
-        Some(_) => return None,
+    let parsed = match super::gain_map_probe::avif_parse_container(bytes) {
+        Some(parsed) => parsed,
+        None => return None,
+    };
+    if parsed.strip_kind != super::gain_map_probe::AvifGainMapStripProbe::NoGainMap {
+        return None;
     }
-    let layout = super::orientation::libavif_probe_container_layout(bytes);
-    let image = match read_avif_decoder_image(bytes) {
+    let layout = Some(parsed.layout);
+    let image = match super::decode::read_avif_image_from_parsed_decoder(parsed.decoder) {
         Ok(image) => image,
         Err(err) => {
             return Some(Err(format!(

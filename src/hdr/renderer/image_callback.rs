@@ -45,7 +45,12 @@ impl HdrImagePlaneCallback {
     ) -> bool {
         if self.sync_plane_upload_on_cache_miss {
             log::debug!("[HDR] Cache miss, performing synchronous upload for animated frame");
-            match upload_image_plane_with_sink(device, GpuUploadSink::Immediate(queue), &self.image)
+            match upload_image_plane_with_sink(
+                device,
+                GpuUploadSink::Immediate(queue),
+                &self.image,
+                Some(&resources.texture_pool),
+            )
             {
                 Ok(uploaded) => {
                     let binding = HdrImageBinding::from_uploaded(
@@ -289,16 +294,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         self.tone_map.target_hdr_capacity()
                     )
                 );
-                let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-                let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
-                let display_storage = binding
-                    .uploaded_display_storage_view
-                    .as_ref()
-                    .expect("jpeg display storage view");
-                let uniform_buf = binding
-                    .jpeg_compose_uniform_buffer
-                    .as_ref()
-                    .expect("jpeg compose uniform buffer");
                 compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
                     jpeg_compose_gpu::JpegComposePass {
                         device,
@@ -308,10 +303,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         image: &self.image,
                         deferred,
                         tone_map: &self.tone_map,
-                        sdr_view,
-                        gain_view,
-                        display_storage_view: display_storage,
-                        uniform_buffer: uniform_buf,
+                        binding,
                     },
                 ));
                 binding.baked_jpeg_image_key = Some(image_key);
@@ -366,10 +358,13 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         apple_compose_used_cpu = true;
                     }
                     Ok(()) => {
-                        let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                        let gain_view = binding
+                            .uploaded_gain_view
+                            .clone()
+                            .expect("gain view");
                         let display_storage = binding
                             .uploaded_display_storage_view
-                            .as_ref()
+                            .clone()
                             .expect("display storage view");
                         let encoded_primary_buffer = binding
                             .encoded_primary_buffer
@@ -379,6 +374,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             .compose_tone_map_buffer
                             .as_ref()
                             .expect("apple compose tone map buffer");
+                        let apple_compose_bind_groups = &mut binding.apple_compose_bind_groups;
                         compose_command_buffers.push(
                             apple_compose_gpu::encode_compose_compute_pass(
                                 apple_compose_gpu::AppleComposePass {
@@ -390,10 +386,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                                     deferred,
                                     tone_map: &self.tone_map,
                                     encoded_primary_buffer,
-                                    gain_view,
-                                    display_storage_view: display_storage,
+                                    gain_view: &gain_view,
+                                    display_storage_view: &display_storage,
                                     upload_primary,
                                     compose_tone_map_buffer: compose_tone_map_buf,
+                                    apple_compose_bind_groups,
                                 },
                             ),
                         );

@@ -46,7 +46,7 @@ pub struct LibTiffScanlineSource {
     pub(crate) rows_per_strip: u32,
     pub(crate) handle_pool: TiffHandlePool,
     pub(crate) strip_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
-    pub(crate) cache_order: Mutex<Vec<u32>>,
+    pub(crate) cache_order: Mutex<crate::lru_order::LruOrder<u32>>,
     pub(crate) max_cached_strips: usize,
 }
 
@@ -63,11 +63,7 @@ impl LibTiffScanlineSource {
         {
             let cache = self.strip_cache.lock();
             if let Some(data) = cache.get(&strip_idx) {
-                let mut order = self.cache_order.lock();
-                if let Some(pos) = order.iter().position(|&k| k == strip_idx) {
-                    order.remove(pos);
-                }
-                order.push(strip_idx);
+                self.cache_order.lock().touch(strip_idx);
                 return Some(Arc::clone(data));
             }
         }
@@ -123,14 +119,15 @@ impl LibTiffScanlineSource {
             let mut order = self.cache_order.lock();
 
             while order.len() >= self.max_cached_strips {
-                if let Some(oldest) = order.first().copied() {
-                    order.remove(0);
+                if let Some(oldest) = order.pop_oldest() {
                     cache.remove(&oldest);
+                } else {
+                    break;
                 }
             }
 
             cache.insert(strip_idx, Arc::clone(&data));
-            order.push(strip_idx);
+            order.touch(strip_idx);
         }
 
         Some(data)

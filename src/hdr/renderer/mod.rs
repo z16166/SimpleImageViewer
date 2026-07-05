@@ -76,6 +76,9 @@ pub(crate) use self::pending_work::{
 mod pending_gpu_writes;
 pub(crate) use self::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage};
 
+mod texture_pool;
+pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool, TexturePoolKey};
+
 mod tone_map_gpu;
 pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};
 
@@ -171,6 +174,7 @@ impl HdrImageRenderer {
                 stage: HdrGpuUploadStage::PlaneCreate,
             },
             image,
+            None,
         )?;
         pending.flush_staged_writes_for_registration(queue);
 

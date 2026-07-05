@@ -83,6 +83,13 @@ pub(crate) fn read_avif_decoder_image(bytes: &[u8]) -> Result<libavif_sys::AvifI
         ));
     }
 
+    read_avif_image_from_parsed_decoder(decoder)
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn read_avif_image_from_parsed_decoder(
+    decoder: libavif_sys::AvifDecoderOwned,
+) -> Result<libavif_sys::AvifImageOwned, String> {
     let meta_ptr = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
     if meta_ptr.is_null() {
         return Err("libavif decoder image is null after parse".to_string());
@@ -632,9 +639,49 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
     result_to_string: &F,
 ) -> Result<(Vec<u16>, u32), String> {
     let pixel_count = image_ref.width as usize * image_ref.height as usize;
-    let (rgba_bytes, rgb_depth) = decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
-    let rgba_u16 = avif_rgba_bytes_to_u16_lanes(rgba_bytes, rgb_depth, pixel_count)?;
-    Ok((rgba_u16, rgb_depth))
+    let snap = avif_reformat_snapshot(image_ref);
+    let image_const: *const libavif_sys::avifImage = image;
+
+    unsafe {
+        avif_apply_yuv_to_rgb_image_fixes(image, &snap);
+    }
+    let params = avif_yuv_to_rgb_params(&snap, image_ref);
+    let depth_out = avif_yuv_to_rgb_output_depth(&snap, &params);
+    if depth_out != 8 && depth_out != 10 && depth_out != 12 && depth_out != 16 {
+        unsafe {
+            avif_restore_reformat_snap(image, &snap);
+        }
+        return Err(format!("unsupported AVIF RGB output depth {depth_out}"));
+    }
+    let mut rgba_u16 = vec![0_u16; pixel_count * 4];
+    let decode_params = if depth_out == 8 {
+        AvifYuvToRgbParams {
+            force_depth: Some(16),
+            avoid_libyuv: params.avoid_libyuv,
+        }
+    } else {
+        params
+    };
+    let rgba_bytes = bytemuck::cast_slice_mut(&mut rgba_u16);
+
+    let result = try_avif_yuv_to_rgb_rgba(image_const, image_ref, rgba_bytes, decode_params);
+    unsafe {
+        avif_restore_reformat_snap(image, &snap);
+    }
+    match result {
+        Ok(rgb_depth) => {
+            let reported_depth = if depth_out == 8 && rgb_depth == 16 {
+                8
+            } else {
+                rgb_depth
+            };
+            Ok((rgba_u16, reported_depth))
+        }
+        Err(code) => Err(format!(
+            "libavif RGB conversion failed: {}",
+            result_to_string(code)
+        )),
+    }
 }
 
 /// Decode libavif YUV to packed RGBA and quantize to 8-bit lanes (gain map plane).

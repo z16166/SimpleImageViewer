@@ -17,6 +17,16 @@
 use super::layout::Rgbe8Pixel;
 
 use std::io::{Cursor, Read};
+use std::sync::LazyLock;
+
+/// Ward-style RGBE scale `2^(e-128-8)` for each exponent byte (index 0 is always 0).
+static RGBE_EXPONENT_SCALE: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut table = [0.0_f32; 256];
+    for exponent in 1..=255u8 {
+        table[exponent as usize] = 2.0_f32.powi(i32::from(exponent) - 128 - 8);
+    }
+    table
+});
 
 pub(crate) fn read_scanline<R: Read>(
     reader: &mut R,
@@ -238,18 +248,48 @@ fn read_byte<R: Read>(reader: &mut R) -> Result<u8, String> {
 }
 
 impl Rgbe8Pixel {
-    /// Runs once per decoded Radiance RGBE pixel. `powi` applies the Ward-style scale (`2^(e-128-8)`
-    /// on the mantissa, same role as `ldexp`). SIMD on contiguous unpacked pixels or an `exponent`→scale
-    /// LUT are optional optimizations; scanline RLE/component decode tends to dominate end-to-end cost.
+    /// Runs once per decoded Radiance RGBE pixel. Scale comes from a precomputed exponent LUT
+    /// (bit-identical to `2^(e-128-8)` via `powi`).
     pub(crate) fn to_rgb_f32(self) -> [f32; 3] {
         if self.exponent == 0 {
             return [0.0; 3];
         }
-        let scale = 2.0_f32.powi(i32::from(self.exponent) - 128 - 8);
+        let scale = RGBE_EXPONENT_SCALE[self.exponent as usize];
         [
             f32::from(self.rgb[0]) * scale,
             f32::from(self.rgb[1]) * scale,
             f32::from(self.rgb[2]) * scale,
         ]
+    }
+}
+
+#[cfg(test)]
+mod rgbe_scale_tests {
+    use super::*;
+
+    #[test]
+    fn rgbe_exponent_scale_lut_matches_powi() {
+        for exponent in 0..=255u8 {
+            let lut = RGBE_EXPONENT_SCALE[exponent as usize];
+            let expected = if exponent == 0 {
+                0.0
+            } else {
+                2.0_f32.powi(i32::from(exponent) - 128 - 8)
+            };
+            assert_eq!(lut, expected, "exponent={exponent}");
+        }
+    }
+
+    #[test]
+    fn rgbe_to_rgb_f32_sample_pixels() {
+        let pixel = Rgbe8Pixel {
+            rgb: [128, 128, 128],
+            exponent: 129,
+        };
+        let rgb = pixel.to_rgb_f32();
+        let scale = 2.0_f32.powi(129 - 128 - 8);
+        assert!((rgb[0] - 128.0 * scale).abs() < f32::EPSILON);
+        assert!((rgb[1] - 128.0 * scale).abs() < f32::EPSILON);
+        assert!((rgb[2] - 128.0 * scale).abs() < f32::EPSILON);
     }
 }

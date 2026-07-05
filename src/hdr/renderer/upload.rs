@@ -15,8 +15,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage, submit_texture_write};
-use super::*;
+use super::{SharedGpuTexturePool, *};
 use std::sync::Arc;
+
+fn create_poolable_texture(
+    device: &wgpu::Device,
+    pool: Option<&SharedGpuTexturePool>,
+    desc: &wgpu::TextureDescriptor<'_>,
+) -> Arc<wgpu::Texture> {
+    if let Some(pool) = pool {
+        pool.lock().acquire(device, desc)
+    } else {
+        Arc::new(device.create_texture(desc))
+    }
+}
 
 pub(crate) fn upload_jpeg_tiled_source_textures(
     device: &wgpu::Device,
@@ -60,6 +72,7 @@ pub(crate) fn upload_callback_tile(
     device: &wgpu::Device,
     sink: GpuUploadSink<'_>,
     tile: &crate::hdr::tiled::HdrTileBuffer,
+    texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
     let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
@@ -69,7 +82,10 @@ pub(crate) fn upload_callback_tile(
         std::mem::size_of::<f32>() as u32 * 4,
     )
     .map_err(|err| format!("HDR tile upload: {err}"))?;
-    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+    let texture = create_poolable_texture(
+        device,
+        texture_pool,
+        &wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-tile-plane-callback-texture"),
         size: layout.size,
         mip_level_count: 1,
@@ -78,7 +94,8 @@ pub(crate) fn upload_callback_tile(
         format: layout.format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    }));
+        },
+    );
 
     submit_texture_write(
         match sink {
@@ -89,7 +106,7 @@ pub(crate) fn upload_callback_tile(
             },
         },
         Arc::clone(&texture),
-        upload_bytes.into_owned(),
+        upload_bytes,
         bytes_per_row,
         layout.size.height,
         layout.size,
@@ -121,7 +138,7 @@ pub(crate) fn write_rgba32f_to_texture(
     submit_texture_write(
         sink,
         texture,
-        upload_bytes.into_owned(),
+        upload_bytes,
         bytes_per_row,
         height,
         wgpu::Extent3d {
@@ -136,6 +153,7 @@ pub(crate) fn upload_callback_image(
     device: &wgpu::Device,
     sink: GpuUploadSink<'_>,
     image: &HdrImageBuffer,
+    texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
     let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
@@ -145,7 +163,10 @@ pub(crate) fn upload_callback_image(
         std::mem::size_of::<f32>() as u32 * 4,
     )
     .map_err(|err| format!("HDR upload: {err}"))?;
-    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+    let texture = create_poolable_texture(
+        device,
+        texture_pool,
+        &wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
         size: layout.size,
         mip_level_count: 1,
@@ -154,7 +175,8 @@ pub(crate) fn upload_callback_image(
         format: layout.format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    }));
+        },
+    );
 
     submit_texture_write(
         match sink {
@@ -165,7 +187,7 @@ pub(crate) fn upload_callback_image(
             },
         },
         Arc::clone(&texture),
-        upload_bytes.into_owned(),
+        upload_bytes,
         bytes_per_row,
         layout.size.height,
         layout.size,
@@ -291,7 +313,7 @@ pub(crate) fn upload_rgba8_texture(
     submit_texture_write(
         sink,
         Arc::clone(&texture),
-        upload_bytes.into_owned(),
+        upload_bytes,
         bytes_per_row,
         layout.size.height,
         layout.size,
@@ -351,7 +373,7 @@ pub(crate) fn upload_r16_uint_texture(
             },
         },
         Arc::clone(&texture),
-        upload_bytes.into_owned(),
+        upload_bytes,
         bytes_per_row,
         height,
         wgpu::Extent3d {
@@ -383,6 +405,7 @@ pub(crate) fn test_upload_image_plane(
             stage: HdrGpuUploadStage::PlaneCreate,
         },
         image,
+        None,
     )?;
     pending.flush_staged_writes_for_registration(queue);
     Ok(uploaded)
@@ -404,6 +427,7 @@ pub(crate) fn loader_background_upload_image_plane(
             stage: HdrGpuUploadStage::PlaneCreate,
         },
         image,
+        None,
     )
     .map(Some);
     pending_work.finish_loader_plane_upload();
@@ -414,11 +438,13 @@ pub(crate) fn upload_image_plane_with_sink(
     device: &wgpu::Device,
     sink: GpuUploadSink<'_>,
     image: &HdrImageBuffer,
+    texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<ImagePlaneUpload, String> {
     if let Some(ref raw_source) = image.metadata.raw_gpu_source {
         #[cfg(feature = "preload-debug")]
         let upload_started = std::time::Instant::now();
-        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let base =
+            create_empty_rgba32f_texture(device, image.width, image.height, texture_pool)?;
         let raw_pixels = upload_r16_uint_texture(
             device,
             sink,
@@ -459,7 +485,8 @@ pub(crate) fn upload_image_plane_with_sink(
     }
 
     if let Some(deferred) = iso_deferred_from_metadata(&image.metadata) {
-        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let base =
+            create_empty_rgba32f_texture(device, image.width, image.height, texture_pool)?;
         let sdr = upload_rgba8_texture(
             device,
             sink,
@@ -497,7 +524,8 @@ pub(crate) fn upload_image_plane_with_sink(
 
     #[cfg(feature = "heif-native")]
     if let Some(deferred) = apple_heic_deferred_from_metadata(&image.metadata) {
-        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let base =
+            create_empty_rgba32f_texture(device, image.width, image.height, texture_pool)?;
         let gain = upload_rgba8_texture(
             device,
             sink,
@@ -520,7 +548,7 @@ pub(crate) fn upload_image_plane_with_sink(
         });
     }
 
-    let base = upload_callback_image(device, sink, image)?;
+    let base = upload_callback_image(device, sink, image, texture_pool)?;
     Ok(ImagePlaneUpload {
         base,
         gain: None,
@@ -534,6 +562,7 @@ pub(crate) fn create_empty_rgba32f_texture(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_rgba32f_upload_layout(
         width,
@@ -542,7 +571,10 @@ pub(crate) fn create_empty_rgba32f_texture(
         device.limits().max_texture_dimension_2d,
         "HDR deferred display texture",
     )?;
-    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+    let texture = create_poolable_texture(
+        device,
+        texture_pool,
+        &wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
         size: layout.size,
         mip_level_count: 1,
@@ -553,7 +585,8 @@ pub(crate) fn create_empty_rgba32f_texture(
             | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    }));
+        },
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let storage_view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("simple-image-viewer-hdr-deferred-display-storage-view"),

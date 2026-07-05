@@ -113,10 +113,10 @@ impl HdrYcbcrRowSimdCtx {
 /// Tight u16 rows, full-range pack, supported matrix/chroma only.
 pub(crate) fn hdr_ycbcr_u16_simd_eligible(
     layout: HdrYcbcrU16RowLayout,
-    studio_swing: bool,
+    _studio_swing: bool,
     matrix: HeifYcbcrMatrix,
 ) -> bool {
-    if studio_swing || matrix == HeifYcbcrMatrix::Monochrome {
+    if matrix == HeifYcbcrMatrix::Monochrome {
         return false;
     }
     if layout.span_y != 2 || layout.span_cb != 2 || layout.span_cr != 2 {
@@ -132,6 +132,363 @@ pub(crate) fn hdr_ycbcr_u16_simd_eligible(
         layout.chroma,
         c if c == libheif_sys::heif_chroma_444 || c == libheif_sys::heif_chroma_420
     )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HdrYcbcrStudioSwingParams {
+    pub luma_floor: f32,
+    pub luma_inv_span: f32,
+    pub chroma_mid: f32,
+    pub chroma_inv_span: f32,
+}
+
+/// Studio swing limited-range u16 row -> RGBA f32 (444).
+pub(crate) fn ycbcr_studio_swing_row_444_u16_to_rgba_f32(
+    matrix: HeifYcbcrMatrix,
+    swing: HdrYcbcrStudioSwingParams,
+    y_row: &[u16],
+    cb_row: &[u16],
+    cr_row: &[u16],
+    dst: &mut [f32],
+    width: usize,
+) {
+    debug_assert!(y_row.len() >= width);
+    debug_assert!(cb_row.len() >= width);
+    debug_assert!(cr_row.len() >= width);
+    debug_assert!(dst.len() >= width * 4);
+    let Some(coeffs) = HdrYcbcrSimdConvert {
+        inv_scale_y: 1.0,
+        inv_scale_cb: 1.0,
+        inv_scale_cr: 1.0,
+        matrix,
+    }
+    .matrix_coeffs() else {
+        return;
+    };
+    let ctx = HdrYcbcrStudioRowSimdCtx { coeffs, swing };
+    let mut row = HdrYcbcrU16Row {
+        y: y_row,
+        cb: cb_row,
+        cr: cr_row,
+        dst,
+        width,
+    };
+    let mut x = 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                ycbcr_studio_swing_row_444_u16_sse41(&ctx, &mut row, &mut x);
+            }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            ycbcr_studio_swing_row_444_u16_neon(&ctx, &mut row, &mut x);
+        }
+    }
+    while x < row.width {
+        write_studio_swing_u16_pixel(ctx, row.dst, x, row.y[x], row.cb[x], row.cr[x], matrix);
+        x += 1;
+    }
+}
+
+/// Studio swing limited-range u16 row -> RGBA f32 (420).
+pub(crate) fn ycbcr_studio_swing_row_420_u16_to_rgba_f32(
+    matrix: HeifYcbcrMatrix,
+    swing: HdrYcbcrStudioSwingParams,
+    y_row: &[u16],
+    cb_row: &[u16],
+    cr_row: &[u16],
+    dst: &mut [f32],
+    width: usize,
+) {
+    debug_assert!(y_row.len() >= width);
+    let chroma_len = width.div_ceil(2);
+    debug_assert!(cb_row.len() >= chroma_len);
+    debug_assert!(cr_row.len() >= chroma_len);
+    debug_assert!(dst.len() >= width * 4);
+    let Some(coeffs) = HdrYcbcrSimdConvert {
+        inv_scale_y: 1.0,
+        inv_scale_cb: 1.0,
+        inv_scale_cr: 1.0,
+        matrix,
+    }
+    .matrix_coeffs() else {
+        return;
+    };
+    let ctx = HdrYcbcrStudioRowSimdCtx { coeffs, swing };
+    let mut row = HdrYcbcrU16Row {
+        y: y_row,
+        cb: cb_row,
+        cr: cr_row,
+        dst,
+        width,
+    };
+    let mut x = 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                ycbcr_studio_swing_row_420_u16_sse41(&ctx, &mut row, &mut x);
+            }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            ycbcr_studio_swing_row_420_u16_neon(&ctx, &mut row, &mut x);
+        }
+    }
+    while x < row.width {
+        let xc = x / 2;
+        write_studio_swing_u16_pixel(ctx, row.dst, x, row.y[x], row.cb[xc], row.cr[xc], matrix);
+        x += 1;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HdrYcbcrStudioRowSimdCtx {
+    coeffs: YcbcrMatrixSimdCoeffs,
+    swing: HdrYcbcrStudioSwingParams,
+}
+
+#[inline]
+fn write_studio_swing_u16_pixel(
+    ctx: HdrYcbcrStudioRowSimdCtx,
+    dst: &mut [f32],
+    x: usize,
+    y: u16,
+    cb: u16,
+    cr: u16,
+    matrix: HeifYcbcrMatrix,
+) {
+    let yy = (y as f32 - ctx.swing.luma_floor) * ctx.swing.luma_inv_span;
+    let pb = (cb as f32 - ctx.swing.chroma_mid) * ctx.swing.chroma_inv_span;
+    let pr = (cr as f32 - ctx.swing.chroma_mid) * ctx.swing.chroma_inv_span;
+    let [r, g, b] = super::ycbcr::ycbcr_linear_to_rgb(yy, pb, pr, matrix);
+    let base = x * 4;
+    dst[base] = r.clamp(0.0, 1.0);
+    dst[base + 1] = g.clamp(0.0, 1.0);
+    dst[base + 2] = b.clamp(0.0, 1.0);
+    dst[base + 3] = 1.0;
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ycbcr_studio_swing_row_444_u16_sse41(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    unsafe {
+        let luma_floor = _mm_set1_ps(ctx.swing.luma_floor);
+        let luma_inv = _mm_set1_ps(ctx.swing.luma_inv_span);
+        let chroma_mid = _mm_set1_ps(ctx.swing.chroma_mid);
+        let chroma_inv = _mm_set1_ps(ctx.swing.chroma_inv_span);
+        let k_pr_r = _mm_set1_ps(ctx.coeffs.pr_to_r);
+        let k_pb_g = _mm_set1_ps(ctx.coeffs.pb_to_g);
+        let k_pr_g = _mm_set1_ps(ctx.coeffs.pr_to_g);
+        let k_pb_b = _mm_set1_ps(ctx.coeffs.pb_to_b);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
+
+        while *x + PIXELS_PER_SSE41_STEP <= row.width {
+            let y = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                row.y.as_ptr().add(*x) as *const __m128i,
+            )));
+            let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                row.cb.as_ptr().add(*x) as *const __m128i,
+            )));
+            let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                row.cr.as_ptr().add(*x) as *const __m128i,
+            )));
+
+            let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
+            let pb = _mm_mul_ps(_mm_sub_ps(cb, chroma_mid), chroma_inv);
+            let pr = _mm_mul_ps(_mm_sub_ps(cr, chroma_mid), chroma_inv);
+
+            let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
+            let gf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
+                    zero,
+                ),
+                one,
+            );
+            let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            _mm_storeu_ps(r.as_mut_ptr(), rf);
+            _mm_storeu_ps(g.as_mut_ptr(), gf);
+            _mm_storeu_ps(b.as_mut_ptr(), bf);
+            store_rgba_f32x4(row.dst, *x, r, g, b);
+            *x += PIXELS_PER_SSE41_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ycbcr_studio_swing_row_420_u16_sse41(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    unsafe {
+        let chroma_len = row.width.div_ceil(2);
+        while *x < row.width {
+            if *x + PIXELS_PER_SSE41_STEP <= row.width
+                && ycbcr420_chroma_load4_fits(*x, chroma_len)
+            {
+                let luma_floor = _mm_set1_ps(ctx.swing.luma_floor);
+                let luma_inv = _mm_set1_ps(ctx.swing.luma_inv_span);
+                let chroma_mid = _mm_set1_ps(ctx.swing.chroma_mid);
+                let chroma_inv = _mm_set1_ps(ctx.swing.chroma_inv_span);
+                let k_pr_r = _mm_set1_ps(ctx.coeffs.pr_to_r);
+                let k_pb_g = _mm_set1_ps(ctx.coeffs.pb_to_g);
+                let k_pr_g = _mm_set1_ps(ctx.coeffs.pr_to_g);
+                let k_pb_b = _mm_set1_ps(ctx.coeffs.pb_to_b);
+                let zero = _mm_setzero_ps();
+                let one = _mm_set1_ps(1.0);
+
+                let y = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                    row.y.as_ptr().add(*x) as *const __m128i,
+                )));
+                let xc = *x / 2;
+                let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                    row.cb.as_ptr().add(xc) as *const __m128i,
+                )));
+                let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                    row.cr.as_ptr().add(xc) as *const __m128i,
+                )));
+
+                let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
+                let pb = _mm_mul_ps(_mm_sub_ps(cb, chroma_mid), chroma_inv);
+                let pr = _mm_mul_ps(_mm_sub_ps(cr, chroma_mid), chroma_inv);
+
+                let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
+                let gf = _mm_min_ps(
+                    _mm_max_ps(
+                        _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
+                        zero,
+                    ),
+                    one,
+                );
+                let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+
+                let mut r = [0.0_f32; 4];
+                let mut g = [0.0_f32; 4];
+                let mut b = [0.0_f32; 4];
+                _mm_storeu_ps(r.as_mut_ptr(), rf);
+                _mm_storeu_ps(g.as_mut_ptr(), gf);
+                _mm_storeu_ps(b.as_mut_ptr(), bf);
+                store_rgba_f32x4(row.dst, *x, r, g, b);
+                *x += PIXELS_PER_SSE41_STEP;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ycbcr_studio_swing_row_444_u16_neon(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    let luma_floor = vdupq_n_f32(ctx.swing.luma_floor);
+    let luma_inv = vdupq_n_f32(ctx.swing.luma_inv_span);
+    let chroma_mid = vdupq_n_f32(ctx.swing.chroma_mid);
+    let chroma_inv = vdupq_n_f32(ctx.swing.chroma_inv_span);
+    let k_pr_r = vdupq_n_f32(ctx.coeffs.pr_to_r);
+    let k_pb_g = vdupq_n_f32(ctx.coeffs.pb_to_g);
+    let k_pr_g = vdupq_n_f32(ctx.coeffs.pr_to_g);
+    let k_pb_b = vdupq_n_f32(ctx.coeffs.pb_to_b);
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+
+    while *x + PIXELS_PER_NEON_STEP <= row.width {
+        let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
+        let cb = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cb.as_ptr().add(*x)))));
+        let cr = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cr.as_ptr().add(*x)))));
+
+        let yy = vmulq_f32(vsubq_f32(y, luma_floor), luma_inv);
+        let pb = vmulq_f32(vsubq_f32(cb, chroma_mid), chroma_inv);
+        let pr = vmulq_f32(vsubq_f32(cr, chroma_mid), chroma_inv);
+
+        let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
+        let gf = vminq_f32(
+            vmaxq_f32(vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)), zero),
+            one,
+        );
+        let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
+
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        vst1q_f32(r.as_mut_ptr(), rf);
+        vst1q_f32(g.as_mut_ptr(), gf);
+        vst1q_f32(b.as_mut_ptr(), bf);
+        store_rgba_f32x4(row.dst, *x, r, g, b);
+        *x += PIXELS_PER_NEON_STEP;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ycbcr_studio_swing_row_420_u16_neon(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    let chroma_len = row.width.div_ceil(2);
+    while *x < row.width {
+        if *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len) {
+            let luma_floor = vdupq_n_f32(ctx.swing.luma_floor);
+            let luma_inv = vdupq_n_f32(ctx.swing.luma_inv_span);
+            let chroma_mid = vdupq_n_f32(ctx.swing.chroma_mid);
+            let chroma_inv = vdupq_n_f32(ctx.swing.chroma_inv_span);
+            let k_pr_r = vdupq_n_f32(ctx.coeffs.pr_to_r);
+            let k_pb_g = vdupq_n_f32(ctx.coeffs.pb_to_g);
+            let k_pr_g = vdupq_n_f32(ctx.coeffs.pr_to_g);
+            let k_pb_b = vdupq_n_f32(ctx.coeffs.pb_to_b);
+            let zero = vdupq_n_f32(0.0);
+            let one = vdupq_n_f32(1.0);
+
+            let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
+            let xc = *x / 2;
+            let cb = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cb.as_ptr().add(xc)))));
+            let cr = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cr.as_ptr().add(xc)))));
+
+            let yy = vmulq_f32(vsubq_f32(y, luma_floor), luma_inv);
+            let pb = vmulq_f32(vsubq_f32(cb, chroma_mid), chroma_inv);
+            let pr = vmulq_f32(vsubq_f32(cr, chroma_mid), chroma_inv);
+
+            let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
+            let gf = vminq_f32(
+                vmaxq_f32(vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)), zero),
+                one,
+            );
+            let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
+
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            vst1q_f32(r.as_mut_ptr(), rf);
+            vst1q_f32(g.as_mut_ptr(), gf);
+            vst1q_f32(b.as_mut_ptr(), bf);
+            store_rgba_f32x4(row.dst, *x, r, g, b);
+            *x += PIXELS_PER_NEON_STEP;
+        } else {
+            break;
+        }
+    }
 }
 
 /// Full-range u16 YCbCr 4:4:4 row -> RGBA f32 (`width * 4` floats written).
@@ -712,6 +1069,11 @@ mod tests {
             HeifYcbcrMatrix::Bt709,
         ));
         assert!(!hdr_ycbcr_u16_simd_eligible(
+            hdr_u16_layout(libheif_sys::heif_chroma_420),
+            true,
+            HeifYcbcrMatrix::Bt601,
+        ));
+        assert!(hdr_ycbcr_u16_simd_eligible(
             hdr_u16_layout(libheif_sys::heif_chroma_420),
             true,
             HeifYcbcrMatrix::Bt709,

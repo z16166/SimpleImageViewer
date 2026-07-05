@@ -442,7 +442,8 @@ pub struct TiffStripCachingSource {
     orientation: u32,
     // Key: chunk_idx, Value: Normalized RGBA8 buffer for that chunk
     strip_cache: Mutex<HashMap<u32, Arc<Vec<u8>>>>,
-    cache_order: Mutex<Vec<u32>>,
+    cache_order: Mutex<crate::lru_order::LruOrder<u32>>,
+    in_flight: Mutex<HashSet<u32>>,
 }
 
 unsafe impl Send for TiffStripCachingSource {}
@@ -618,21 +619,51 @@ impl TiffStripCachingSource {
             }
         }
 
-        // Decode
-        let data = self.decode_chunk_to_rgba8(chunk_idx)?;
-        let data_arc = Arc::new(data);
+        {
+            let mut in_flight = self.in_flight.lock();
+            if !in_flight.insert(chunk_idx) {
+                drop(in_flight);
+                loop {
+                    {
+                        let cache = self.strip_cache.lock();
+                        if let Some(chunk) = cache.get(&chunk_idx) {
+                            return Some(Arc::clone(chunk));
+                        }
+                    }
+                    if !self.in_flight.lock().contains(&chunk_idx) {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                let cache = self.strip_cache.lock();
+                return cache.get(&chunk_idx).map(Arc::clone);
+            }
+        }
+
+        let decode_result = self.decode_chunk_to_rgba8(chunk_idx).map(Arc::new);
+        self.in_flight.lock().remove(&chunk_idx);
+
+        let Some(data_arc) = decode_result else {
+            return None;
+        };
 
         {
             let mut cache = self.strip_cache.lock();
             let mut order = self.cache_order.lock();
 
-            cache.insert(chunk_idx, Arc::clone(&data_arc));
-            order.push(chunk_idx);
+            if let Some(existing) = cache.get(&chunk_idx) {
+                return Some(Arc::clone(existing));
+            }
 
-            // Evict if too many strips (Max 32 strips ~ 1.5GB for very giant images)
-            if order.len() > 32 {
-                let to_remove = order.remove(0);
-                cache.remove(&to_remove);
+            cache.insert(chunk_idx, Arc::clone(&data_arc));
+            order.touch(chunk_idx);
+
+            while order.len() > 32 {
+                if let Some(to_remove) = order.pop_oldest() {
+                    cache.remove(&to_remove);
+                } else {
+                    break;
+                }
             }
         }
 
@@ -1124,6 +1155,7 @@ pub fn load_via_image_io(
 
         let props_ref =
             CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
+        let mut is_stripped = false;
         if !props_ref.is_null() {
             let props = CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
 
@@ -1142,6 +1174,7 @@ pub fn load_via_image_io(
                         "TIFF Diagnostics: [{}] is STRIPPED (Potentially slower random access)",
                         path.display()
                     );
+                    is_stripped = true;
                 }
             }
 
@@ -1189,30 +1222,6 @@ pub fn load_via_image_io(
         // --- Tiled Path Selection ---
         // Optimization: For giant STRIPPED TIFFs, use our custom caching loader to avoid CoreGraphics re-decoding overhead.
         let is_tiff = ext == "tif" || ext == "tiff";
-        let mut is_stripped = false;
-        if is_tiff {
-            let props_ref = CGImageSourceCopyPropertiesAtIndex(
-                source.as_concrete_TypeRef(),
-                0,
-                std::ptr::null(),
-            );
-            if !props_ref.is_null() {
-                let props =
-                    CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
-                let tiff_key = CFString::from_static_string("{TIFF}");
-                if let Some(tiff_props_ref) = props.find(&tiff_key) {
-                    let tiff_props = CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(
-                        *tiff_props_ref as _,
-                    );
-                    let tw_key = CFString::from_static_string("TileWidth");
-                    let th_key = CFString::from_static_string("TileHeight");
-                    if !tiff_props.contains_key(&tw_key) || !tiff_props.contains_key(&th_key) {
-                        is_stripped = true;
-                    }
-                }
-            }
-        }
-
         if is_tiff && is_stripped {
             log::info!(
                 "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}, orientation {}). Using TiffStripCachingSource.",
@@ -1263,7 +1272,8 @@ pub fn load_via_image_io(
                 chunk_h,
                 orientation,
                 strip_cache: Mutex::new(HashMap::new()),
-                cache_order: Mutex::new(Vec::new()),
+                cache_order: Mutex::new(crate::lru_order::LruOrder::default()),
+                in_flight: Mutex::new(HashSet::new()),
             })));
         }
 

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crossbeam_channel::{Sender, TrySendError};
+use crossbeam_channel::{SendTimeoutError, Sender};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
@@ -515,25 +515,24 @@ fn send_scan_message(
     let mut pending = msg;
     let deadline = Instant::now() + SCAN_SEND_MAX_WALL_CLOCK;
     loop {
-        if Instant::now() >= deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             log::warn!("[Scanner] Dropping scan message: UI channel full for too long");
             return false;
         }
-        match tx.try_send(pending) {
+        let wait = remaining.min(SCAN_SEND_RETRY_SLEEP);
+        match tx.send_timeout(pending, wait) {
             Ok(()) => {
                 if let Some(wake) = wake_ui {
                     wake();
                 }
                 return true;
             }
-            Err(TrySendError::Full(m)) => {
-                if cancel.load(Ordering::Relaxed) {
-                    return false;
-                }
-                pending = m;
-                std::thread::sleep(SCAN_SEND_RETRY_SLEEP);
-            }
-            Err(TrySendError::Disconnected(_)) => return false,
+            Err(SendTimeoutError::Timeout(m)) => pending = m,
+            Err(SendTimeoutError::Disconnected(_)) => return false,
         }
     }
 }

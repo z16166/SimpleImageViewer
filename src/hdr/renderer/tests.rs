@@ -908,6 +908,7 @@ fn drain_pending_plane_uploads_for_test(
                 stage: HdrGpuUploadStage::PlaneCreate,
             },
             &request.image,
+            None,
         ) {
             Ok(uploaded) => {
                 let _ = pending.flush_staged_writes_for_registration(queue);

@@ -96,21 +96,14 @@ pub(crate) fn extract_exif_thumbnail_from_mmap_probed(
 pub(crate) fn extract_exif_thumbnail_probed(
     path: &Path,
 ) -> (Option<DecodedImage>, ExifThumbProbe, ExifThumbProbeDetail) {
-    if let Ok(mmap) = crate::mmap_util::map_file(path) {
-        return extract_exif_thumbnail_from_mmap_probed(&mmap, path);
-    }
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            use std::io::Cursor;
-            let mut reader = Cursor::new(bytes);
-            extract_exif_thumbnail_from_reader(&mut reader, path)
-        }
-        Err(_) => (
+    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+        return (
             None,
             ExifThumbProbe::ContainerUnreadable,
             ExifThumbProbeDetail::default(),
-        ),
-    }
+        );
+    };
+    extract_exif_thumbnail_from_mmap_probed(&mmap, path)
 }
 
 fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(

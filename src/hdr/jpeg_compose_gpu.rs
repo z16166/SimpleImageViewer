@@ -398,10 +398,58 @@ pub(super) struct JpegComposePass<'a> {
     pub(super) image: &'a HdrImageBuffer,
     pub(super) deferred: &'a IsoGainMapGpuSource,
     pub(super) tone_map: &'a HdrToneMapSettings,
-    pub(super) sdr_view: &'a wgpu::TextureView,
-    pub(super) gain_view: &'a wgpu::TextureView,
-    pub(super) display_storage_view: &'a wgpu::TextureView,
-    pub(super) uniform_buffer: &'a wgpu::Buffer,
+    pub(super) binding: &'a mut super::resources::HdrImageBinding,
+}
+
+pub(super) fn ensure_jpeg_compose_bind_group<'a>(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    binding: &'a mut super::resources::HdrImageBinding,
+) -> &'a wgpu::BindGroup {
+    if binding.jpeg_compose_bind_group.is_none() {
+        let sdr_view = binding
+            .uploaded_sdr_view
+            .as_ref()
+            .expect("jpeg sdr view");
+        let gain_view = binding
+            .uploaded_gain_view
+            .as_ref()
+            .expect("jpeg gain view");
+        let display_storage_view = binding
+            .uploaded_display_storage_view
+            .as_ref()
+            .expect("jpeg display storage view");
+        let uniform_buffer = binding
+            .jpeg_compose_uniform_buffer
+            .as_ref()
+            .expect("jpeg compose uniform buffer");
+        binding.jpeg_compose_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("simple-image-viewer-hdr-jpeg-compose-bind-group"),
+            layout: bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(sdr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(gain_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(display_storage_view),
+                },
+            ],
+        }));
+    }
+    binding
+        .jpeg_compose_bind_group
+        .as_ref()
+        .expect("jpeg compose bind group")
 }
 
 pub(super) fn encode_compose_compute_pass(pass_params: JpegComposePass<'_>) -> wgpu::CommandBuffer {
@@ -413,36 +461,16 @@ pub(super) fn encode_compose_compute_pass(pass_params: JpegComposePass<'_>) -> w
         image,
         deferred,
         tone_map,
-        sdr_view,
-        gain_view,
-        display_storage_view,
-        uniform_buffer,
+        binding,
     } = pass_params;
     let uniform = compose_uniform(deferred, image, tone_map.target_hdr_capacity());
+    let uniform_buffer = binding
+        .jpeg_compose_uniform_buffer
+        .as_ref()
+        .expect("jpeg compose uniform buffer");
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("simple-image-viewer-hdr-jpeg-compose-bind-group"),
-        layout: bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(sdr_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(gain_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(display_storage_view),
-            },
-        ],
-    });
+    let bind_group = ensure_jpeg_compose_bind_group(device, bind_group_layout, binding);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-encoder"),
@@ -453,7 +481,7 @@ pub(super) fn encode_compose_compute_pass(pass_params: JpegComposePass<'_>) -> w
             timestamp_writes: None,
         });
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.dispatch_workgroups(
             image.width.div_ceil(COMPOSE_WORKGROUP_SIZE),
             image.height.div_ceil(COMPOSE_WORKGROUP_SIZE),
@@ -461,6 +489,47 @@ pub(super) fn encode_compose_compute_pass(pass_params: JpegComposePass<'_>) -> w
         );
     }
     encoder.finish()
+}
+
+pub(super) fn ensure_jpeg_tile_compose_bind_group<'a>(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    tile_binding: &'a mut super::tile_cache::HdrTileBinding,
+    sdr_view: &wgpu::TextureView,
+    gain_view: &wgpu::TextureView,
+    uniform_buffer: &wgpu::Buffer,
+    display_storage_view: &wgpu::TextureView,
+) -> &'a wgpu::BindGroup {
+    if tile_binding.jpeg_compose_bind_group.is_none() {
+        tile_binding.jpeg_compose_bind_group = Some(device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("simple-image-viewer-hdr-jpeg-compose-tile-bind-group"),
+                layout: bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(sdr_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(gain_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(display_storage_view),
+                    },
+                ],
+            },
+        ));
+    }
+    tile_binding
+        .jpeg_compose_bind_group
+        .as_ref()
+        .expect("jpeg tile compose bind group")
 }
 
 pub(super) struct JpegTileComposePass<'a> {
@@ -475,6 +544,7 @@ pub(super) struct JpegTileComposePass<'a> {
     pub(super) sdr_view: &'a wgpu::TextureView,
     pub(super) gain_view: &'a wgpu::TextureView,
     pub(super) display_storage_view: &'a wgpu::TextureView,
+    pub(super) compose_bind_group: &'a wgpu::BindGroup,
 }
 
 pub(super) fn encode_tile_compose_compute_pass(
@@ -489,14 +559,11 @@ pub(super) fn encode_tile_compose_compute_pass(
         tile_width,
         tile_height,
         tone_map,
-        sdr_view,
-        gain_view,
-        display_storage_view,
+        sdr_view: _,
+        gain_view: _,
+        display_storage_view: _,
+        compose_bind_group,
     } = pass_params;
-    let bind_group_layout = resources
-        .jpeg_compose_bind_group_layout
-        .as_ref()
-        .expect("jpeg compose bind group layout");
     let tile_pipeline = resources
         .jpeg_compose_tile_pipeline
         .as_ref()
@@ -514,29 +581,6 @@ pub(super) fn encode_tile_compose_compute_pass(
     );
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("simple-image-viewer-hdr-jpeg-compose-tile-bind-group"),
-        layout: bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(sdr_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(gain_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(display_storage_view),
-            },
-        ],
-    });
-
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-tile-encoder"),
     });
@@ -546,7 +590,7 @@ pub(super) fn encode_tile_compose_compute_pass(
             timestamp_writes: None,
         });
         pass.set_pipeline(tile_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, compose_bind_group, &[]);
         pass.dispatch_workgroups(
             tile_width.div_ceil(COMPOSE_WORKGROUP_SIZE),
             tile_height.div_ceil(COMPOSE_WORKGROUP_SIZE),

@@ -503,7 +503,7 @@ fn hdr_to_sdr_rgba8_gpu(
         .get(&device_epoch)
         .ok_or_else(|| "HDR preview GPU cache missing entry".to_string())?;
 
-    let uploaded = upload_callback_image(device, GpuUploadSink::Immediate(queue), buffer)?;
+    let uploaded = upload_callback_image(device, GpuUploadSink::Immediate(queue), buffer, None)?;
 
     let mut tone = *tone;
     tone.exposure_ev = exposure_ev;

@@ -16,6 +16,12 @@
 
 use super::*;
 
+fn release_tile_texture(pool: &mut Option<&mut GpuTexturePool>, binding: &HdrTileBinding) {
+    if let (Some(pool), Some(texture)) = (pool.as_mut(), binding._texture.as_ref()) {
+        pool.release(Arc::clone(texture));
+    }
+}
+
 pub(crate) struct HdrTileBindings {
     pub(super) entries: HashMap<HdrTileKey, HdrTileBinding>,
     evictable_lru: crate::lru_order::LruOrder<HdrTileKey>,
@@ -31,6 +37,7 @@ pub(crate) struct HdrTileInsert {
     pub(crate) compose_storage_view: Option<wgpu::TextureView>,
     pub(crate) tone_map_buffer: wgpu::Buffer,
     pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) jpeg_compose_bind_group: Option<wgpu::BindGroup>,
     pub(crate) baked_jpeg_weight_bits: Option<u32>,
 }
 
@@ -69,13 +76,19 @@ impl HdrTileBindings {
         self.entries.len()
     }
 
-    pub(crate) fn insert(&mut self, key: HdrTileKey, tile: HdrTileInsert) {
+    pub(crate) fn insert(
+        &mut self,
+        key: HdrTileKey,
+        tile: HdrTileInsert,
+        mut texture_pool: Option<&mut GpuTexturePool>,
+    ) {
         let HdrTileInsert {
             texture,
             view,
             compose_storage_view,
             tone_map_buffer,
             bind_group,
+            jpeg_compose_bind_group,
             baked_jpeg_weight_bits,
         } = tile;
         self.protect_recent(key);
@@ -87,18 +100,26 @@ impl HdrTileBindings {
                 compose_storage_view,
                 tone_map_buffer: Some(tone_map_buffer),
                 bind_group: Some(bind_group),
+                jpeg_compose_bind_group,
                 estimated_bytes: 0,
                 baked_jpeg_weight_bits,
             },
+            texture_pool,
         );
     }
 
-    pub(crate) fn insert_binding(&mut self, key: HdrTileKey, binding: HdrTileBinding) {
+    pub(crate) fn insert_binding(
+        &mut self,
+        key: HdrTileKey,
+        binding: HdrTileBinding,
+        mut texture_pool: Option<&mut GpuTexturePool>,
+    ) {
         if let Some(old_binding) = self.entries.remove(&key) {
             self.current_bytes = self
                 .current_bytes
                 .saturating_sub(old_binding.estimated_bytes);
             self.evictable_lru.remove(key);
+            release_tile_texture(&mut texture_pool, &old_binding);
         }
 
         let bytes = hdr_tile_key_bytes(key);
@@ -114,6 +135,7 @@ impl HdrTileBindings {
                 self.current_bytes = self
                     .current_bytes
                     .saturating_sub(evicted_binding.estimated_bytes);
+                release_tile_texture(&mut texture_pool, &evicted_binding);
             }
         }
 
@@ -167,9 +189,11 @@ impl HdrTileBindings {
                 compose_storage_view: None,
                 tone_map_buffer: None,
                 bind_group: None,
+                jpeg_compose_bind_group: None,
                 estimated_bytes: 0,
                 baked_jpeg_weight_bits: None,
             },
+            None,
         );
     }
 
@@ -210,6 +234,7 @@ pub(crate) struct HdrTileBinding {
     pub(super) compose_storage_view: Option<wgpu::TextureView>,
     pub(super) tone_map_buffer: Option<wgpu::Buffer>,
     pub(super) bind_group: Option<wgpu::BindGroup>,
+    pub(super) jpeg_compose_bind_group: Option<wgpu::BindGroup>,
     pub(super) estimated_bytes: usize,
     pub(super) baked_jpeg_weight_bits: Option<u32>,
 }

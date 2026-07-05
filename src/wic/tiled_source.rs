@@ -379,6 +379,11 @@ impl crate::loader::TiledImageSource for WicTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
+        thread_local! {
+            static WIC_TILE_CONVERTER: std::cell::RefCell<Option<IWICFormatConverter>> =
+                const { std::cell::RefCell::new(None) };
+        }
+
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         let stride = w * 4;
 
@@ -392,27 +397,40 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         };
 
         unsafe {
-            if let Ok(converter) = self.factory.CreateFormatConverter()
-                && converter
-                    .Initialize(
-                        &self.source,
-                        &GUID_WICPixelFormat32bppRGBA,
-                        WICBitmapDitherTypeNone,
-                        None,
-                        0.0,
-                        WICBitmapPaletteTypeCustom,
-                    )
-                    .is_ok()
-            {
-                let rect = WICRect {
-                    X: x as i32,
-                    Y: y as i32,
-                    Width: w as i32,
-                    Height: h as i32,
-                };
-                if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
-                    log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
+            let init_ok = WIC_TILE_CONVERTER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() {
+                    *slot = self.factory.CreateFormatConverter().ok();
                 }
+                if let Some(converter) = slot.as_ref() {
+                    converter
+                        .Initialize(
+                            &self.source,
+                            &GUID_WICPixelFormat32bppRGBA,
+                            WICBitmapDitherTypeNone,
+                            None,
+                            0.0,
+                            WICBitmapPaletteTypeCustom,
+                        )
+                        .is_ok()
+                } else {
+                    false
+                }
+            });
+            if init_ok {
+                WIC_TILE_CONVERTER.with(|slot| {
+                    if let Some(converter) = slot.borrow().as_ref() {
+                        let rect = WICRect {
+                            X: x as i32,
+                            Y: y as i32,
+                            Width: w as i32,
+                            Height: h as i32,
+                        };
+                        if let Err(err) = converter.CopyPixels(&rect, stride, &mut pixels) {
+                            log::warn!("[WIC] CopyPixels failed for tile ({x},{y}) {w}x{h}: {err:?}");
+                        }
+                    }
+                });
             }
         }
 

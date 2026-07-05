@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -94,37 +95,48 @@ impl HdrPendingGpuWriteQueues {
         rows_per_image: u32,
         extent: wgpu::Extent3d,
     ) {
-        let pending_len = self.pending_len();
-        if pending_len >= MAX_HDR_PENDING_GPU_WRITES {
-            let dropped = self.evict(pending_len.saturating_sub(MAX_HDR_PENDING_GPU_WRITES - 1));
-            log::warn!("[HDR] Pending GPU write queue full; dropped {dropped} write(s)");
-        }
-        self.queue_for_mut(stage).push_back(PendingGpuWrite {
+        let write = PendingGpuWrite {
             texture,
             bytes,
             bytes_per_row,
             rows_per_image,
             extent,
-        });
+        };
+        if self.pending_len() >= MAX_HDR_PENDING_GPU_WRITES {
+            let need = self
+                .pending_len()
+                .saturating_sub(MAX_HDR_PENDING_GPU_WRITES - 1);
+            let evicted = self.evict(need);
+            if !evicted.is_empty() {
+                log::warn!(
+                    "[HDR] Pending GPU write queue full; re-queuing {} evicted write(s)",
+                    evicted.len()
+                );
+            }
+            for (evict_stage, item) in evicted {
+                self.queue_for_mut(evict_stage).push_back(item);
+            }
+        }
+        self.queue_for_mut(stage).push_back(write);
     }
 
-    fn evict(&mut self, need: usize) -> usize {
+    fn evict(&mut self, need: usize) -> Vec<(HdrGpuUploadStage, PendingGpuWrite)> {
         if need == 0 {
-            return 0;
+            return Vec::new();
         }
-        let mut dropped = 0usize;
+        let mut evicted = Vec::new();
         for stage in HdrGpuUploadStage::EVICT_ORDER {
-            while dropped < need {
-                let Some(_item) = self.queue_for_mut(stage).pop_front() else {
+            while evicted.len() < need {
+                let Some(item) = self.queue_for_mut(stage).pop_front() else {
                     break;
                 };
-                dropped += 1;
+                evicted.push((stage, item));
             }
-            if dropped >= need {
+            if evicted.len() >= need {
                 break;
             }
         }
-        dropped
+        evicted
     }
 
     pub(crate) fn flush(&mut self, queue: &wgpu::Queue, quota: usize) -> usize {
@@ -170,10 +182,10 @@ pub(crate) enum GpuUploadSink<'a> {
     },
 }
 
-pub(crate) fn submit_texture_write(
+pub(crate) fn submit_texture_write<'a>(
     sink: GpuUploadSink<'_>,
     texture: Arc<wgpu::Texture>,
-    upload_bytes: Vec<u8>,
+    upload_bytes: Cow<'a, [u8]>,
     bytes_per_row: u32,
     rows_per_image: u32,
     extent: wgpu::Extent3d,
@@ -187,7 +199,7 @@ pub(crate) fn submit_texture_write(
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &upload_bytes,
+                upload_bytes.as_ref(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
@@ -201,11 +213,12 @@ pub(crate) fn submit_texture_write(
             queues.gpu_writes.lock().enqueue(
                 stage,
                 texture,
-                upload_bytes,
+                upload_bytes.into_owned(),
                 bytes_per_row,
                 rows_per_image,
                 extent,
             );
+            queues.bump_active_work(1);
             Ok(())
         }
     }

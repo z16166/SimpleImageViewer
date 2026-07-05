@@ -16,6 +16,8 @@
 
 //! GPU compute path for deferred Apple HEIC gain-map composition.
 
+use std::collections::HashMap;
+
 use super::{
     AppleToneMapCompose, HdrImageBinding, HdrRenderOutputMode, ToneMapCommonParams,
     ToneMapInputMetadata, ToneMapUniform, ToneMapUniformParams,
@@ -370,6 +372,48 @@ fn compose_tone_map_uniform(
     uniform
 }
 
+pub(super) fn ensure_apple_compose_bind_group<'a>(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    bind_groups: &'a mut HashMap<u64, wgpu::BindGroup>,
+    binding_size: u64,
+    encoded_primary_buffer: &wgpu::Buffer,
+    gain_view: &wgpu::TextureView,
+    compose_tone_map_buffer: &wgpu::Buffer,
+    display_storage_view: &wgpu::TextureView,
+) -> &'a wgpu::BindGroup {
+    bind_groups
+        .entry(binding_size)
+        .or_insert_with(|| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("simple-image-viewer-hdr-apple-compose-bind-group"),
+                layout: bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: encoded_primary_buffer,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(binding_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(gain_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: compose_tone_map_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(display_storage_view),
+                    },
+                ],
+            })
+        })
+}
+
 pub(super) struct AppleComposePass<'a> {
     pub(super) device: &'a wgpu::Device,
     pub(super) queue: &'a wgpu::Queue,
@@ -383,6 +427,7 @@ pub(super) struct AppleComposePass<'a> {
     pub(super) display_storage_view: &'a wgpu::TextureView,
     pub(super) upload_primary: bool,
     pub(super) compose_tone_map_buffer: &'a wgpu::Buffer,
+    pub(super) apple_compose_bind_groups: &'a mut HashMap<u64, wgpu::BindGroup>,
 }
 
 pub(super) fn encode_compose_compute_pass(
@@ -401,6 +446,7 @@ pub(super) fn encode_compose_compute_pass(
         display_storage_view,
         upload_primary,
         compose_tone_map_buffer,
+        apple_compose_bind_groups,
     } = pass_params;
     let limits = device.limits();
     let chunk_rows = encoded_primary_chunk_rows(image.width, image.height, &limits);
@@ -440,36 +486,21 @@ pub(super) fn encode_compose_compute_pass(
             );
 
             let binding_size = std::num::NonZeroU64::new(chunk_byte_len(image.width, chunk_height))
-                .expect("Apple compose chunk binding size must be non-zero");
+                .expect("Apple compose chunk binding size must be non-zero")
+                .get();
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("simple-image-viewer-hdr-apple-compose-bind-group"),
-                layout: bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: encoded_primary_buffer,
-                            offset: 0,
-                            size: Some(binding_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(gain_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: compose_tone_map_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(display_storage_view),
-                    },
-                ],
-            });
+            let bind_group = ensure_apple_compose_bind_group(
+                device,
+                bind_group_layout,
+                apple_compose_bind_groups,
+                binding_size,
+                encoded_primary_buffer,
+                gain_view,
+                compose_tone_map_buffer,
+                display_storage_view,
+            );
 
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, bind_group, &[]);
             pass.dispatch_workgroups(
                 image.width.div_ceil(COMPOSE_WORKGROUP_SIZE),
                 chunk_height.div_ceil(COMPOSE_WORKGROUP_SIZE),

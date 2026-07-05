@@ -34,6 +34,8 @@ mod tables {
 
 use tables::UV_ROW;
 
+use std::sync::LazyLock;
+
 const UV_SQSIZ: f64 = 0.003500;
 const UV_NDIVS: i32 = 16289;
 const UV_VSTART: f64 = 0.016940;
@@ -43,14 +45,27 @@ const U_NEU: f64 = 0.210526316;
 const V_NEU: f64 = 0.473684211;
 const UVSCALE: f64 = 410.0;
 
-/// `COMPRESSION_SGILOG24` — libtiff 24-bit packed LogLuv (10+14); all other SGILog modes use LogLuv32.
-pub const COMPRESSION_SGILOG24: u16 = 34677;
-
-/// libtiff `uv_decode`: map 14-bit chroma index to CIE (u',v').
-fn uv_decode(c: i32) -> Option<(f64, f64)> {
-    if !(0..UV_NDIVS).contains(&c) {
-        return None;
+static LOG_L10_LUT: LazyLock<[f64; 1024]> = LazyLock::new(|| {
+    let mut lut = [0.0_f64; 1024];
+    for p10 in 1..1024 {
+        let e = (std::f64::consts::LN_2 / 64.0) * ((p10 as f64) + 0.5)
+            - std::f64::consts::LN_2 * 12.0;
+        lut[p10] = e.exp();
     }
+    lut
+});
+
+static LOG_L16_LUT: LazyLock<[f64; 32768]> = LazyLock::new(|| {
+    let mut lut = [0.0_f64; 32768];
+    for le in 1..32768 {
+        let e = (std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5)
+            - std::f64::consts::LN_2 * 64.0;
+        lut[le] = e.exp();
+    }
+    lut
+});
+
+fn uv_decode_build(c: i32) -> (f64, f64) {
     let mut lower: u32 = 0;
     let mut upper: u32 = UV_NVS as u32;
     while upper - lower > 1 {
@@ -69,16 +84,30 @@ fn uv_decode(c: i32) -> Option<(f64, f64)> {
     let ui = c - UV_ROW[vi].ncum as i32;
     let u = UV_ROW[vi].ustart + ((ui as f64) + 0.5) * UV_SQSIZ;
     let v = UV_VSTART + (vi as f64 + 0.5) * UV_SQSIZ;
-    Some((u, v))
+    (u, v)
+}
+
+static UV_DECODE_LUT: LazyLock<[(f64, f64); 16384]> = LazyLock::new(|| {
+    let mut lut = [(U_NEU, V_NEU); 16384];
+    for c in 0..UV_NDIVS {
+        lut[c as usize] = uv_decode_build(c);
+    }
+    lut
+});
+
+/// `COMPRESSION_SGILOG24` — libtiff 24-bit packed LogLuv (10+14); all other SGILog modes use LogLuv32.
+pub const COMPRESSION_SGILOG24: u16 = 34677;
+
+/// `libtiff` `uv_decode`: map 14-bit chroma index to CIE (u',v').
+fn uv_decode(c: i32) -> Option<(f64, f64)> {
+    if !(0..UV_NDIVS).contains(&c) {
+        return None;
+    }
+    Some(UV_DECODE_LUT[c as usize])
 }
 
 fn log_l10_to_y(p10: u32) -> f64 {
-    let p10 = p10 & 0x3ff;
-    if p10 == 0 {
-        return 0.0;
-    }
-    let e = (std::f64::consts::LN_2 / 64.0) * ((p10 as f64) + 0.5) - std::f64::consts::LN_2 * 12.0;
-    e.exp()
+    LOG_L10_LUT[(p10 & 0x3ff) as usize]
 }
 
 /// Greg Ward `LogL16toY` (luminance from high 16 bits of LogLuv32 or raw `int16` LogL).
@@ -87,9 +116,7 @@ pub(crate) fn log_l16_to_y(p16: i32) -> f64 {
     if le == 0 {
         return 0.0;
     }
-    let y = ((std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5)
-        - std::f64::consts::LN_2 * 64.0)
-        .exp();
+    let y = LOG_L16_LUT[le as usize];
     if (p16 & 0x8000) == 0 { y } else { -y }
 }
 
@@ -169,6 +196,56 @@ pub(crate) fn logl_f32_y_to_linear_rgba(y: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn log_l10_to_y_reference(p10: u32) -> f64 {
+        let p10 = p10 & 0x3ff;
+        if p10 == 0 {
+            return 0.0;
+        }
+        let e = (std::f64::consts::LN_2 / 64.0) * ((p10 as f64) + 0.5)
+            - std::f64::consts::LN_2 * 12.0;
+        e.exp()
+    }
+
+    fn log_l16_to_y_reference(p16: i32) -> f64 {
+        let le = p16 & 0x7fff;
+        if le == 0 {
+            return 0.0;
+        }
+        let y = ((std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5)
+            - std::f64::consts::LN_2 * 64.0)
+            .exp();
+        if (p16 & 0x8000) == 0 { y } else { -y }
+    }
+
+    #[test]
+    fn log_l10_lut_matches_exp_formula() {
+        for p10 in 0..1024u32 {
+            assert_eq!(log_l10_to_y(p10), log_l10_to_y_reference(p10), "p10={p10}");
+        }
+    }
+
+    #[test]
+    fn log_l16_lut_matches_exp_formula() {
+        for le in 0..32768i32 {
+            assert_eq!(log_l16_to_y(le), log_l16_to_y_reference(le), "le={le}");
+            assert_eq!(
+                log_l16_to_y(le | 0x8000),
+                log_l16_to_y_reference(le | 0x8000),
+                "le={le} sign"
+            );
+        }
+    }
+
+    #[test]
+    fn uv_decode_lut_matches_binary_search() {
+        for c in 0..UV_NDIVS {
+            let expected = uv_decode_build(c);
+            assert_eq!(uv_decode(c), Some(expected), "c={c}");
+        }
+        assert_eq!(uv_decode(-1), None);
+        assert_eq!(uv_decode(UV_NDIVS), None);
+    }
 
     #[test]
     fn logluv32_not_black() {

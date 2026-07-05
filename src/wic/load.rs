@@ -229,7 +229,8 @@ fn load_via_wic_inner(
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
         let orientation = orientation_override.unwrap_or_else(|| {
-            crate::mmap_util::map_file(path)
+            mmap_out
+                .as_ref()
                 .map(|mmap| {
                     crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
                 })

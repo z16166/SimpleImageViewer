@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -77,14 +78,22 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
         return Err("HDR tiled preview dimensions must be non-zero".to_string());
     }
 
-    let rows = (0..height)
-        .into_par_iter()
-        .map(|preview_y| sample_tiled_preview_row(source, preview_y, width, height))
-        .collect::<Vec<_>>();
+    let src_ys: Vec<u32> = (0..height)
+        .map(|preview_y| preview_sample_coord(preview_y, height, source.height()))
+        .collect();
+    let source_rows = fetch_tiled_preview_source_rows(source, &src_ys)?;
 
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-    for row in rows {
-        rgba_f32.extend(row?);
+    for preview_y in 0..height {
+        let src_y = src_ys[preview_y as usize];
+        let (strip, row_in_strip) = &source_rows[&src_y];
+        let row = sample_preview_row_from_source_strip(
+            strip,
+            *row_in_strip,
+            width,
+            source.width(),
+        );
+        rgba_f32.extend(row);
     }
 
     Ok(HdrImageBuffer {
@@ -97,21 +106,75 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
     })
 }
 
+fn fetch_tiled_preview_source_rows<S: HdrTiledSource + ?Sized>(
+    source: &S,
+    src_ys: &[u32],
+) -> Result<HashMap<u32, (Arc<super::buffer::HdrTileBuffer>, u32)>, String> {
+    if src_ys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut unique = Vec::<u32>::new();
+    for &src_y in src_ys {
+        if unique.last().copied() != Some(src_y) {
+            unique.push(src_y);
+        }
+    }
+
+    let mut rows = HashMap::with_capacity(unique.len());
+    let mut index = 0;
+    while index < unique.len() {
+        let start_y = unique[index];
+        let mut end_y = start_y;
+        while index + 1 < unique.len() && unique[index + 1] == end_y + 1 {
+            index += 1;
+            end_y = unique[index];
+        }
+        let strip_height = end_y - start_y + 1;
+        let strip = source.extract_tile_rgba32f_arc(0, start_y, source.width(), strip_height)?;
+        for src_y in start_y..=end_y {
+            rows.insert(src_y, (Arc::clone(&strip), src_y - start_y));
+        }
+        index += 1;
+    }
+    Ok(rows)
+}
+
+fn sample_preview_row_from_source_strip(
+    strip: &super::buffer::HdrTileBuffer,
+    row_in_strip: u32,
+    preview_width: u32,
+    source_width: u32,
+) -> Vec<f32> {
+    let row_offset = row_in_strip as usize * source_width as usize * 4;
+    let row_len = source_width as usize * 4;
+    let row = &strip.rgba_f32[row_offset..row_offset + row_len];
+    let mut rgba_f32 = Vec::with_capacity(preview_width as usize * 4);
+    for preview_x in 0..preview_width {
+        let src_x = preview_sample_coord(preview_x, preview_width, source_width) as usize;
+        let offset = src_x * 4;
+        rgba_f32.extend_from_slice(&row[offset..offset + 4]);
+    }
+    rgba_f32
+}
+
 fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
     source: &S,
     preview_y: u32,
     preview_width: u32,
     preview_height: u32,
+    source_rows: &HashMap<u32, (Arc<super::buffer::HdrTileBuffer>, u32)>,
 ) -> Result<Vec<f32>, String> {
     let src_y = preview_sample_coord(preview_y, preview_height, source.height());
-    let row = source.extract_tile_rgba32f_arc(0, src_y, source.width(), 1)?;
-    let mut rgba_f32 = Vec::with_capacity(preview_width as usize * 4);
-    for preview_x in 0..preview_width {
-        let src_x = preview_sample_coord(preview_x, preview_width, source.width()) as usize;
-        let offset = src_x * 4;
-        rgba_f32.extend_from_slice(&row.rgba_f32[offset..offset + 4]);
-    }
-    Ok(rgba_f32)
+    let (strip, row_in_strip) = source_rows
+        .get(&src_y)
+        .ok_or_else(|| format!("missing tiled preview source row {src_y}"))?;
+    Ok(sample_preview_row_from_source_strip(
+        strip,
+        *row_in_strip,
+        preview_width,
+        source.width(),
+    ))
 }
 
 /// Nearest downsample from an in-memory linear HDR image straight to 8-bit SDR preview pixels.
@@ -226,18 +289,24 @@ pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
 
     let metadata = source.metadata();
     let color_space = source.color_space();
+    let src_ys: Vec<u32> = (0..height)
+        .map(|preview_y| preview_sample_coord(preview_y, height, source.height()))
+        .collect();
+    let source_rows = fetch_tiled_preview_source_rows(source, &src_ys)?;
     let rows = if height >= PARALLEL_PREVIEW_ROW_THRESHOLD {
         (0..height)
             .into_par_iter()
             .map(|preview_y| {
-                let row_f32 = sample_tiled_preview_row(source, preview_y, width, height)?;
+                let row_f32 =
+                    sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
                 tone_map_linear_rgba_f32_row_to_sdr_u8(width, row_f32, color_space, &metadata)
             })
             .collect::<Result<Vec<_>, _>>()?
     } else {
         let mut rows = Vec::with_capacity(height as usize);
         for preview_y in 0..height {
-            let row_f32 = sample_tiled_preview_row(source, preview_y, width, height)?;
+            let row_f32 =
+                sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
             rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
                 width,
                 row_f32,

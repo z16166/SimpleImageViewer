@@ -108,8 +108,10 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
     headroom_span: f32,
     stops: f32,
     hdr_target_capacity: f32,
-) -> Result<HdrImageBuffer, String> {
-    validate_apple_deferred_planes(&hdr, gain_w, gain_h, &gain_rgba)?;
+) -> Result<HdrImageBuffer, (HdrImageBuffer, String)> {
+    if let Err(err) = validate_apple_deferred_planes(&hdr, gain_w, gain_h, &gain_rgba) {
+        return Err((hdr, err));
+    }
 
     let gain_rgba = Arc::new(gain_rgba);
     let weight = apple_gain_map_display_weight(hdr_target_capacity, stops);
@@ -171,7 +173,8 @@ mod tests {
             ]),
         };
         let gain = vec![128u8; 2 * 2 * 4];
-        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
+        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0)
+            .expect("attach");
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
     }

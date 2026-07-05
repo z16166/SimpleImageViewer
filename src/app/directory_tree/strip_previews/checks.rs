@@ -16,6 +16,7 @@
 
 //! Strip preview need-checks, logical size lookup, and cache helper predicates.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app::ImageViewerApp;
@@ -26,6 +27,37 @@ use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
 impl ImageViewerApp {
+    #[cfg(feature = "avif-native")]
+    fn cached_avif_gain_map_strip_probe(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::hdr::avif::AvifGainMapStripProbe> {
+        let current_gen = self
+            .directory_tree
+            .list
+            .try_lock()
+            .map(|list| list.image_list_generation);
+        let mut cache = self.cached_avif_strip_probe.lock();
+        if current_gen.is_none_or(|generation| {
+            cache.as_ref().is_none_or(|(g, _)| *g != generation)
+        }) {
+            *cache = Some((current_gen.unwrap_or(0), HashMap::new()));
+        }
+        let (_, map) = cache.as_mut().expect("just inserted");
+        if let Some(probe) = map.get(path) {
+            return Some(*probe);
+        }
+        let Ok(mmap) = crate::mmap_util::map_file(path) else {
+            return None;
+        };
+        if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
+            return None;
+        }
+        let probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref())?;
+        map.insert(path.to_path_buf(), probe);
+        Some(probe)
+    }
+
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
         self.pending_anim_frames
             .get(&index)
@@ -267,14 +299,8 @@ impl ImageViewerApp {
         if ext == "avif" || ext == "avifs" {
             #[cfg(feature = "avif-native")]
             {
-                if crate::hdr::avif::path_is_avif_image_sequence(path) {
-                    return false;
-                }
-                let Ok(mmap) = crate::mmap_util::map_file(path) else {
-                    return false;
-                };
                 return matches!(
-                    crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()),
+                    self.cached_avif_gain_map_strip_probe(path),
                     Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap)
                         | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
                 );

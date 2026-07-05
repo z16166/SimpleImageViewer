@@ -274,20 +274,17 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
         return false;
     }
 
-    // Build interleaved CMYK input in lcms2's native PostScript units (0..100,
+    // Pack interleaved CMYK into `rgba` in lcms2's native PostScript units (0..100,
     // 0 = no ink, 100 = max ink). libjxl uses (0 = max ink, 1 = white), so the
-    // scale is `100 - 100*v`.
-    let mut cmyk = Vec::<f32>::with_capacity(pixel_count * 4);
+    // scale is `100 - 100*v`. Alpha is saved and restored after the in-place transform.
     let mut alpha = Vec::<f32>::with_capacity(pixel_count);
-    for (px, &k_val) in rgba.chunks_exact(4).zip(k.iter()) {
-        cmyk.push(100.0 - 100.0 * px[0].clamp(0.0, 1.0));
-        cmyk.push(100.0 - 100.0 * px[1].clamp(0.0, 1.0));
-        cmyk.push(100.0 - 100.0 * px[2].clamp(0.0, 1.0));
-        cmyk.push(100.0 - 100.0 * k_val.clamp(0.0, 1.0));
+    for (px, &k_val) in rgba.chunks_exact_mut(4).zip(k.iter()) {
         alpha.push(px[3]);
+        px[0] = 100.0 - 100.0 * px[0].clamp(0.0, 1.0);
+        px[1] = 100.0 - 100.0 * px[1].clamp(0.0, 1.0);
+        px[2] = 100.0 - 100.0 * px[2].clamp(0.0, 1.0);
+        px[3] = 100.0 - 100.0 * k_val.clamp(0.0, 1.0);
     }
-
-    let mut rgba_out = vec![0.0_f32; pixel_count * 4];
     let Some(in_profile) = libjxl_sys::CmsProfile::open_from_mem(source_icc) else {
         log::warn!("[JXL] lcms2 could not parse embedded CMYK ICC; skipping CMS transform");
         return false;
@@ -311,20 +308,13 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
         return false;
     };
     transform.do_transform(
-        cmyk.as_ptr().cast(),
-        rgba_out.as_mut_ptr().cast(),
+        rgba.as_ptr().cast(),
+        rgba.as_mut_ptr().cast(),
         pixel_count as u32,
     );
 
-    for (i, (dst, src)) in rgba
-        .chunks_exact_mut(4)
-        .zip(rgba_out.chunks_exact(4))
-        .enumerate()
-    {
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-        dst[3] = alpha[i];
+    for (px, &a) in rgba.chunks_exact_mut(4).zip(alpha.iter()) {
+        px[3] = a;
     }
     true
 }

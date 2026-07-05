@@ -345,6 +345,18 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         inv_scale_cr: 1.0 / scale_cr.max(1.0),
         matrix: yuv_matrix,
     });
+    let hdr_studio_simd = if nclx_studio_swing
+        && super::ycbcr_hdr_simd::hdr_ycbcr_u16_simd_eligible(u16_layout, true, yuv_matrix)
+    {
+        studio_swing.map(|(swing_y, swing_cb, _)| super::ycbcr_hdr_simd::HdrYcbcrStudioSwingParams {
+            luma_floor: swing_y.luma_floor,
+            luma_inv_span: 1.0 / swing_y.luma_span,
+            chroma_mid: swing_cb.chroma_mid,
+            chroma_inv_span: 1.0 / swing_cb.chroma_span,
+        })
+    } else {
+        None
+    };
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -377,6 +389,41 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         let row_cr = unsafe { ptr_cr.get().byte_add(yc * stride_cr) };
 
         let row_alpha = alpha_ptr.map(|ap| unsafe { ap.get().byte_add(y_px * alpha_stride) });
+
+        if let Some(studio_simd) = hdr_studio_simd {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            if chroma == libheif_sys::heif_chroma_420 {
+                super::ycbcr_hdr_simd::ycbcr_studio_swing_row_420_u16_to_rgba_f32(
+                    yuv_matrix,
+                    studio_simd,
+                    y_u16,
+                    cb_u16,
+                    cr_u16,
+                    row_dst,
+                    y_w,
+                );
+            } else {
+                super::ycbcr_hdr_simd::ycbcr_studio_swing_row_444_u16_to_rgba_f32(
+                    yuv_matrix,
+                    studio_simd,
+                    y_u16,
+                    cb_u16,
+                    cr_u16,
+                    row_dst,
+                    y_w,
+                );
+            }
+            if let Some(ar) = row_alpha {
+                for x_px in 0..y_w {
+                    let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
+                        / scale_alpha.max(1.0);
+                    row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
+                }
+            }
+            return Ok(());
+        }
 
         if let Some(simd) = hdr_simd {
             let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };

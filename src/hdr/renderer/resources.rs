@@ -45,6 +45,8 @@ pub(crate) struct HdrImageBinding {
 
     pub(super) tone_map_buffer: wgpu::Buffer,
     pub(super) jpeg_compose_uniform_buffer: Option<wgpu::Buffer>,
+    /// Cached when SDR/gain/display views are stable; uniform updates do not require rebinding.
+    pub(super) jpeg_compose_bind_group: Option<wgpu::BindGroup>,
     #[cfg(feature = "heif-native")]
     pub(super) compose_tone_map_buffer: Option<wgpu::Buffer>,
     #[cfg(feature = "heif-native")]
@@ -53,6 +55,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) encoded_primary_buffer_bytes: usize,
     #[cfg(feature = "heif-native")]
     pub(super) encoded_primary_source_ptr: Option<usize>,
+    #[cfg(feature = "heif-native")]
+    pub(super) apple_compose_bind_groups: HashMap<u64, wgpu::BindGroup>,
 
     pub(super) bind_group: Option<wgpu::BindGroup>,
     pub(super) last_use: std::time::Instant,
@@ -95,6 +99,7 @@ pub(crate) struct HdrCallbackResources {
     pub(super) compose_bind_group_layout: Option<wgpu::BindGroupLayout>,
     #[cfg(feature = "heif-native")]
     pub(super) compose_pipeline: Option<wgpu::ComputePipeline>,
+    pub(super) texture_pool: SharedGpuTexturePool,
 }
 
 const HDR_COMPOSE_WORKGROUP_SIZE: u32 = 16;
@@ -134,7 +139,7 @@ pub(crate) struct ImagePlaneUpload {
 // hand off completed uploads to the main thread via `LoadResult::uploaded_planes`, and
 // `HdrImageBinding::from_uploaded` runs on the main thread before any paint callback uses them.
 
-pub(crate) const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
+pub(crate) const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 16;
 pub(crate) const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
     std::time::Duration::from_millis(50);
 pub(crate) const HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER: std::time::Duration =
@@ -265,6 +270,7 @@ impl HdrImageBinding {
             baked_raw_demosaic_method: None,
             tone_map_buffer,
             jpeg_compose_uniform_buffer,
+            jpeg_compose_bind_group: None,
             #[cfg(feature = "heif-native")]
             compose_tone_map_buffer,
             #[cfg(feature = "heif-native")]
@@ -274,6 +280,8 @@ impl HdrImageBinding {
             #[cfg(feature = "heif-native")]
             // Pre-upload path matches sync prepare(): encoded primary is filled on first paint.
             encoded_primary_source_ptr: None,
+            #[cfg(feature = "heif-native")]
+            apple_compose_bind_groups: HashMap::new(),
             bind_group: None,
             last_use: std::time::Instant::now(),
             keep_resident: false,
@@ -340,7 +348,23 @@ impl HdrCallbackResources {
             else {
                 break;
             };
-            self.image_bindings.remove(&oldest_key);
+            if let Some(binding) = self.image_bindings.remove(&oldest_key) {
+                self.release_binding_textures(binding);
+            }
+        }
+    }
+
+    fn release_binding_textures(&mut self, binding: HdrImageBinding) {
+        let mut pool = self.texture_pool.lock();
+        pool.release(binding.uploaded_texture);
+        if let Some(texture) = binding.uploaded_gain_texture {
+            pool.release(texture);
+        }
+        if let Some(texture) = binding.uploaded_sdr_texture {
+            pool.release(texture);
+        }
+        if let Some(texture) = binding.uploaded_raw_pixels_texture {
+            pool.release(texture);
         }
     }
 
@@ -467,6 +491,7 @@ impl HdrCallbackResources {
                 },
             ],
         });
+        let mut pool = self.texture_pool.lock();
         self.tile_bindings.insert(
             item.tile_key,
             HdrTileInsert {
@@ -475,8 +500,10 @@ impl HdrCallbackResources {
                 compose_storage_view: item.uploaded.storage_view,
                 tone_map_buffer,
                 bind_group,
+                jpeg_compose_bind_group: None,
                 baked_jpeg_weight_bits: None,
             },
+            Some(&mut *pool),
         );
         true
     }
@@ -763,5 +790,6 @@ pub(crate) fn create_callback_resources(
         compose_bind_group_layout,
         #[cfg(feature = "heif-native")]
         compose_pipeline,
+        texture_pool: Mutex::new(GpuTexturePool::default()),
     }
 }

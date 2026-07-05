@@ -189,6 +189,7 @@ pub(crate) enum HdrCompletedComposeFailure {
 pub(crate) struct HdrPendingWorkQueues {
     inflight: Mutex<HdrPendingWorkInflight>,
     loader_plane_upload_inflight: AtomicUsize,
+    active_work_count: AtomicUsize,
     pub(crate) gpu_writes: Mutex<HdrPendingGpuWriteQueues>,
     pub(crate) plane_upload_requests: Mutex<Vec<HdrPendingPlaneUploadRequest>>,
     pub(crate) completed_plane_uploads: Mutex<Vec<HdrCompletedPlaneUpload>>,
@@ -208,6 +209,7 @@ impl HdrPendingWorkQueues {
         Arc::new(Self {
             inflight: Mutex::new(HdrPendingWorkInflight::default()),
             loader_plane_upload_inflight: AtomicUsize::new(0),
+            active_work_count: AtomicUsize::new(0),
             gpu_writes: Mutex::new(HdrPendingGpuWriteQueues::default()),
             plane_upload_requests: Mutex::new(Vec::new()),
             completed_plane_uploads: Mutex::new(Vec::new()),
@@ -224,7 +226,11 @@ impl HdrPendingWorkQueues {
     }
 
     pub(crate) fn flush_gpu_writes(&self, queue: &wgpu::Queue, quota: usize) -> usize {
-        self.gpu_writes.lock().flush(queue, quota)
+        let flushed = self.gpu_writes.lock().flush(queue, quota);
+        if flushed > 0 {
+            self.note_work_finished(flushed);
+        }
+        flushed
     }
 
     pub(crate) fn has_pending_gpu_writes(&self) -> bool {
@@ -267,7 +273,29 @@ impl HdrPendingWorkQueues {
             .fetch_sub(1, Ordering::AcqRel);
     }
 
+    pub(crate) fn bump_active_work(&self, delta: isize) {
+        if delta > 0 {
+            self.active_work_count
+                .fetch_add(delta as usize, Ordering::Release);
+        } else if delta < 0 {
+            self.active_work_count
+                .fetch_sub((-delta) as usize, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn note_work_finished(&self, count: usize) {
+        if count > 0 {
+            self.bump_active_work(-(count as isize));
+        }
+    }
+
     pub(crate) fn has_active_work(&self) -> bool {
+        if self.active_work_count.load(Ordering::Acquire) > 0 {
+            return true;
+        }
+        if self.gpu_writes.lock().pending_len() > 0 {
+            return true;
+        }
         let inflight = self.inflight.lock();
         !inflight.plane_uploads.is_empty()
             || !inflight.tile_uploads.is_empty()
@@ -275,18 +303,6 @@ impl HdrPendingWorkQueues {
             || !inflight.iso_image_compose.is_empty()
             || !inflight.apple_image_compose.is_empty()
             || !inflight.iso_tile_compose.is_empty()
-            || self.gpu_writes.lock().pending_len() > 0
-            || !self.plane_upload_requests.lock().is_empty()
-            || !self.tile_upload_requests.lock().is_empty()
-            || !self.jpeg_tiled_source_requests.lock().is_empty()
-            || !self.iso_image_compose_requests.lock().is_empty()
-            || !self.apple_image_compose_requests.lock().is_empty()
-            || !self.iso_tile_compose_requests.lock().is_empty()
-            || !self.completed_plane_uploads.lock().is_empty()
-            || !self.completed_tile_uploads.lock().is_empty()
-            || !self.completed_jpeg_tiled_source_uploads.lock().is_empty()
-            || !self.completed_compose_writes.lock().is_empty()
-            || !self.completed_compose_failures.lock().is_empty()
     }
 
     pub(crate) fn try_queue_plane_upload(&self, request: HdrPendingPlaneUploadRequest) -> bool {
@@ -296,6 +312,7 @@ impl HdrPendingWorkQueues {
         }
         inflight.plane_uploads.insert(request.key);
         self.plane_upload_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
@@ -306,6 +323,7 @@ impl HdrPendingWorkQueues {
         }
         inflight.tile_uploads.insert(request.tile_key);
         self.tile_upload_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
@@ -320,6 +338,7 @@ impl HdrPendingWorkQueues {
         }
         inflight.jpeg_tiled_source_uploads.insert(key);
         self.jpeg_tiled_source_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
@@ -334,6 +353,7 @@ impl HdrPendingWorkQueues {
         }
         inflight.iso_image_compose.insert(key);
         self.iso_image_compose_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
@@ -348,6 +368,7 @@ impl HdrPendingWorkQueues {
         }
         inflight.apple_image_compose.insert(key);
         self.apple_image_compose_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
@@ -362,15 +383,20 @@ impl HdrPendingWorkQueues {
         }
         inflight.iso_tile_compose.insert(key);
         self.iso_tile_compose_requests.lock().push(request);
+        self.bump_active_work(1);
         true
     }
 
     pub(crate) fn clear_plane_upload_inflight(&self, key: HdrImageKey) {
-        self.inflight.lock().plane_uploads.remove(&key);
+        if self.inflight.lock().plane_uploads.remove(&key) {
+            self.note_work_finished(1);
+        }
     }
 
     pub(crate) fn clear_tile_upload_inflight(&self, key: HdrTileKey) {
-        self.inflight.lock().tile_uploads.remove(&key);
+        if self.inflight.lock().tile_uploads.remove(&key) {
+            self.note_work_finished(1);
+        }
     }
 
     pub(crate) fn clear_jpeg_tiled_source_upload_inflight(
@@ -378,10 +404,14 @@ impl HdrPendingWorkQueues {
         upload_key: JpegTiledUploadKey,
         target_format: wgpu::TextureFormat,
     ) {
-        self.inflight
+        if self
+            .inflight
             .lock()
             .jpeg_tiled_source_uploads
-            .remove(&(upload_key, target_format));
+            .remove(&(upload_key, target_format))
+        {
+            self.note_work_finished(1);
+        }
     }
 
     pub(crate) fn clear_iso_image_compose_inflight(
@@ -389,10 +419,14 @@ impl HdrPendingWorkQueues {
         key: HdrImageKey,
         target_capacity_bits: u32,
     ) {
-        self.inflight
+        if self
+            .inflight
             .lock()
             .iso_image_compose
-            .remove(&(key, target_capacity_bits));
+            .remove(&(key, target_capacity_bits))
+        {
+            self.note_work_finished(1);
+        }
     }
 
     pub(crate) fn clear_apple_image_compose_inflight(
@@ -400,10 +434,14 @@ impl HdrPendingWorkQueues {
         key: HdrImageKey,
         target_capacity_bits: u32,
     ) {
-        self.inflight
+        if self
+            .inflight
             .lock()
             .apple_image_compose
-            .remove(&(key, target_capacity_bits));
+            .remove(&(key, target_capacity_bits))
+        {
+            self.note_work_finished(1);
+        }
     }
 
     pub(crate) fn clear_iso_tile_compose_inflight(
@@ -411,9 +449,13 @@ impl HdrPendingWorkQueues {
         tile_key: HdrTileKey,
         target_capacity_bits: u32,
     ) {
-        self.inflight
+        if self
+            .inflight
             .lock()
             .iso_tile_compose
-            .remove(&(tile_key, target_capacity_bits));
+            .remove(&(tile_key, target_capacity_bits))
+        {
+            self.note_work_finished(1);
+        }
     }
 }
