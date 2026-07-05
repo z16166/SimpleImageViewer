@@ -326,6 +326,25 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     };
 
     let yuv_matrix = heif_ycbcr_matrix_from_nclx(&metadata, y_w, y_h);
+    let u16_layout = super::ycbcr_hdr_simd::HdrYcbcrU16RowLayout {
+        span_y,
+        span_cb,
+        span_cr,
+        stride_y,
+        stride_cb,
+        stride_cr,
+        y_w,
+        cb_w,
+        chroma,
+    };
+    let hdr_simd = (!nclx_studio_swing
+        && super::ycbcr_hdr_simd::hdr_ycbcr_u16_simd_eligible(u16_layout, false, yuv_matrix))
+    .then(|| super::ycbcr_hdr_simd::HdrYcbcrSimdConvert {
+        inv_scale_y: 1.0 / scale_y.max(1.0),
+        inv_scale_cb: 1.0 / scale_cb.max(1.0),
+        inv_scale_cr: 1.0 / scale_cr.max(1.0),
+        matrix: yuv_matrix,
+    });
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -358,6 +377,29 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         let row_cr = unsafe { ptr_cr.get().byte_add(yc * stride_cr) };
 
         let row_alpha = alpha_ptr.map(|ap| unsafe { ap.get().byte_add(y_px * alpha_stride) });
+
+        if let Some(simd) = hdr_simd {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            if chroma == libheif_sys::heif_chroma_420 {
+                super::ycbcr_hdr_simd::ycbcr_full_range_row_420_u16_to_rgba_f32(
+                    simd, y_u16, cb_u16, cr_u16, row_dst, y_w,
+                );
+            } else {
+                super::ycbcr_hdr_simd::ycbcr_full_range_row_444_u16_to_rgba_f32(
+                    simd, y_u16, cb_u16, cr_u16, row_dst, y_w,
+                );
+            }
+            if let Some(ar) = row_alpha {
+                for x_px in 0..y_w {
+                    let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
+                        / scale_alpha.max(1.0);
+                    row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
+                }
+            }
+            return Ok(());
+        }
 
         for x_px in 0..y_w {
             let y_raw = planar_read_sample(row_y, x_px, stride_y, span_y)?;
