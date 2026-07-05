@@ -247,6 +247,17 @@ pub(crate) struct ComplexTransitionDraw<'a> {
 
 pub(crate) const RIPPLE_SEGMENTS: u32 = 128;
 
+/// ~60 Hz pacing for navigation transition frames. Prefer over immediate
+/// [`egui::Context::request_repaint`] so transition steps do not stack RepaintNow wakeups.
+const NAVIGATION_TRANSITION_FRAME_INTERVAL: std::time::Duration =
+    std::time::Duration::from_micros(16_667);
+
+pub(crate) fn request_navigation_transition_repaint(ctx: &egui::Context, is_animating: bool) {
+    if is_animating {
+        ctx.request_repaint_after(NAVIGATION_TRANSITION_FRAME_INTERVAL);
+    }
+}
+
 impl ImageViewerApp {
     /// Compute per-frame transition animation parameters.
     /// Returns `TransitionParams` with alpha/scale/offset for both current and previous images.
@@ -399,7 +410,7 @@ impl ImageViewerApp {
             }
         }
 
-        ui.ctx().request_repaint();
+        request_navigation_transition_repaint(ui.ctx(), true);
     }
 }
 

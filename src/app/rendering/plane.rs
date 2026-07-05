@@ -106,27 +106,26 @@ pub(crate) fn draw_plane(
             hdr_pending_work,
             sync_plane_upload_on_cache_miss,
         } => {
-            let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
-                return;
-            };
-            ui.painter()
-                .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
-                    clipped_rect,
-                    crate::hdr::renderer::HdrImagePlaneCallbackParams {
-                        image,
-                        tone_map,
-                        target_format,
-                        output_mode,
-                        rotation_steps,
-                        alpha,
-                        uv_rect: uv_subrect(uv, uv_rect),
-                        ripple,
-                        keep_resident,
-                        raw_demosaic_baked_notify,
-                        pending_work: hdr_pending_work,
-                        sync_plane_upload_on_cache_miss,
-                    },
-                ));
+            draw_hdr_image_plane(
+                ui,
+                clip_rect,
+                rect,
+                uv,
+                crate::hdr::renderer::HdrImagePlaneCallbackParams {
+                    image,
+                    tone_map,
+                    target_format,
+                    output_mode,
+                    rotation_steps,
+                    alpha,
+                    uv_rect: uv,
+                    ripple,
+                    keep_resident,
+                    raw_demosaic_baked_notify,
+                    pending_work: hdr_pending_work,
+                    sync_plane_upload_on_cache_miss,
+                },
+            );
         }
         PlaneDrawSource::HdrTile {
             tile,
@@ -156,6 +155,23 @@ pub(crate) fn draw_plane(
                 ));
         }
     }
+}
+
+/// Draw an HDR float image plane. Does not use [`PlaneLayout`] (rotation is handled in the GPU callback).
+pub(crate) fn draw_hdr_image_plane(
+    ui: &egui::Ui,
+    clip_rect: Rect,
+    rect: Rect,
+    uv: Rect,
+    mut params: crate::hdr::renderer::HdrImagePlaneCallbackParams,
+) {
+    let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
+        return;
+    };
+    params.uv_rect = uv_subrect(uv, uv_rect);
+    ui.painter().add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
+        clipped_rect, params,
+    ));
 }
 
 fn uv_subrect(base: Rect, clipped: Rect) -> Rect {

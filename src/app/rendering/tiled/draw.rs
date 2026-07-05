@@ -130,7 +130,10 @@ impl ImageViewerApp {
         let (tile_alpha, prev_alpha_eff) = effective_hdr_tiled_alphas(&tp, self.active_transition);
 
         if tp.is_animating {
-            ui.ctx().request_repaint();
+            crate::app::rendering::transitions::request_navigation_transition_repaint(
+                ui.ctx(),
+                true,
+            );
         }
 
         // Draw the previous image underneath for crossfade effect if we are animating
