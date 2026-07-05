@@ -203,9 +203,7 @@ impl ImageViewerApp {
         // 1. Texture cache: remove everything except except_idx
         let to_remove_tex: Vec<usize> = self
             .texture_cache
-            .textures
-            .keys()
-            .copied()
+            .indices()
             .filter(|&idx| idx != except_idx)
             .collect();
         for idx in to_remove_tex {
@@ -310,7 +308,7 @@ impl ImageViewerApp {
     pub(super) fn clear_preloaded_assets_for_capacity_change(&mut self) {
         let current = self.current_index;
         let mut indices = std::collections::BTreeSet::new();
-        indices.extend(self.texture_cache.textures.keys().copied());
+        indices.extend(self.texture_cache.indices());
         indices.extend(self.prefetched_tiles.keys().copied());
         indices.extend(self.hdr_image_cache.keys().copied());
         indices.extend(self.hdr_tiled_source_cache.keys().copied());
@@ -372,7 +370,7 @@ impl ImageViewerApp {
         let mut all_prefetch_indices = self.prefetch_resource_indices.clone();
         all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
         all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());
-        all_prefetch_indices.extend(self.texture_cache.textures.keys().copied());
+        all_prefetch_indices.extend(self.texture_cache.indices());
         all_prefetch_indices.extend(self.animation_cache.keys().copied());
         all_prefetch_indices.extend(self.hdr_image_cache.keys().copied());
         all_prefetch_indices.extend(self.hdr_tiled_source_cache.keys().copied());

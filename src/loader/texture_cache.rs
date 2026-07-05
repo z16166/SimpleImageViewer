@@ -30,6 +30,16 @@ fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
     }
 }
 
+struct CachedTexture {
+    handle: egui::TextureHandle,
+    /// Original image dimensions (may differ from texture size for tiled previews).
+    original_res: (u32, u32),
+    /// True when the index uses the tiled pyramid pipeline (PSB/EXR/large raster).
+    needs_tile_manager: bool,
+    buffer_tag: TexturePreviewBufferTag,
+    stage: PreviewStage,
+}
+
 pub struct TextureCacheInsert {
     pub orig_w: u32,
     pub orig_h: u32,
@@ -41,13 +51,7 @@ pub struct TextureCacheInsert {
 }
 
 pub struct TextureCache {
-    pub textures: HashMap<usize, egui::TextureHandle>,
-    /// Original image dimensions (may differ from texture size for tiled previews).
-    original_res: HashMap<usize, (u32, u32)>,
-    /// True when the index uses the tiled pyramid pipeline (PSB/EXR/large raster).
-    needs_tile_manager: HashMap<usize, bool>,
-    preview_buffer_tag: HashMap<usize, TexturePreviewBufferTag>,
-    preview_stage: HashMap<usize, PreviewStage>,
+    entries: HashMap<usize, CachedTexture>,
     /// Cached keys for bounded eviction scans (len <= max_size + 1).
     cached_indices: Vec<usize>,
     /// `(current_index, total_count)` for which `evict_furthest_idx` was computed.
@@ -71,11 +75,7 @@ fn circular_distance(current_index: usize, total_count: usize, idx: usize) -> us
 impl TextureCache {
     pub fn new(max_size: usize) -> Self {
         Self {
-            textures: HashMap::new(),
-            original_res: HashMap::new(),
-            needs_tile_manager: HashMap::new(),
-            preview_buffer_tag: HashMap::new(),
-            preview_stage: HashMap::new(),
+            entries: HashMap::new(),
             cached_indices: Vec::new(),
             evict_anchor: (0, 0),
             evict_furthest_idx: None,
@@ -90,14 +90,17 @@ impl TextureCache {
         handle: egui::TextureHandle,
         params: TextureCacheInsert,
     ) -> Option<usize> {
-        let is_new_key = !self.textures.contains_key(&index);
-        self.textures.insert(index, handle);
-        self.original_res
-            .insert(index, (params.orig_w, params.orig_h));
-        self.needs_tile_manager
-            .insert(index, params.needs_tile_manager);
-        self.preview_buffer_tag.insert(index, params.buffer_tag);
-        self.preview_stage.insert(index, params.stage);
+        let is_new_key = !self.entries.contains_key(&index);
+        self.entries.insert(
+            index,
+            CachedTexture {
+                handle,
+                original_res: (params.orig_w, params.orig_h),
+                needs_tile_manager: params.needs_tile_manager,
+                buffer_tag: params.buffer_tag,
+                stage: params.stage,
+            },
+        );
         if is_new_key {
             self.cached_indices.push(index);
         }
@@ -105,22 +108,22 @@ impl TextureCache {
         self.evict(params.current_index, params.total_count)
     }
 
+    pub fn indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.entries.keys().copied()
+    }
+
     pub fn get_original_res(&self, index: usize) -> Option<(u32, u32)> {
-        self.original_res.get(&index).copied()
+        self.entries.get(&index).map(|entry| entry.original_res)
     }
 
     pub fn set_original_res(&mut self, index: usize, orig_w: u32, orig_h: u32) {
-        if self.textures.contains_key(&index) {
-            self.original_res.insert(index, (orig_w, orig_h));
+        if let Some(entry) = self.entries.get_mut(&index) {
+            entry.original_res = (orig_w, orig_h);
         }
     }
 
     pub fn remove(&mut self, index: usize) {
-        self.textures.remove(&index);
-        self.original_res.remove(&index);
-        self.needs_tile_manager.remove(&index);
-        self.preview_buffer_tag.remove(&index);
-        self.preview_stage.remove(&index);
+        self.entries.remove(&index);
         self.drop_cached_index(index);
         if self.evict_furthest_idx == Some(index) {
             self.evict_furthest_idx = None;
@@ -131,20 +134,8 @@ impl TextureCache {
         if from == to {
             return;
         }
-        if let Some(tex) = self.textures.remove(&from) {
-            self.textures.insert(to, tex);
-        }
-        if let Some(res) = self.original_res.remove(&from) {
-            self.original_res.insert(to, res);
-        }
-        if let Some(flag) = self.needs_tile_manager.remove(&from) {
-            self.needs_tile_manager.insert(to, flag);
-        }
-        if let Some(tag) = self.preview_buffer_tag.remove(&from) {
-            self.preview_buffer_tag.insert(to, tag);
-        }
-        if let Some(stage) = self.preview_stage.remove(&from) {
-            self.preview_stage.insert(to, stage);
+        if let Some(entry) = self.entries.remove(&from) {
+            self.entries.insert(to, entry);
         }
         if let Some(slot) = self.cached_indices.iter_mut().find(|i| **i == from) {
             *slot = to;
@@ -153,11 +144,7 @@ impl TextureCache {
     }
 
     pub fn permute(&mut self, old_to_new: &[usize]) {
-        permute_usize_hashmap(&mut self.textures, old_to_new);
-        permute_usize_hashmap(&mut self.original_res, old_to_new);
-        permute_usize_hashmap(&mut self.needs_tile_manager, old_to_new);
-        permute_usize_hashmap(&mut self.preview_buffer_tag, old_to_new);
-        permute_usize_hashmap(&mut self.preview_stage, old_to_new);
+        permute_usize_hashmap(&mut self.entries, old_to_new);
         for idx in &mut self.cached_indices {
             if *idx < old_to_new.len() {
                 *idx = old_to_new[*idx];
@@ -167,53 +154,44 @@ impl TextureCache {
     }
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
-        self.textures.get(&index)
+        self.entries.get(&index).map(|entry| &entry.handle)
     }
 
     pub fn contains(&self, index: usize) -> bool {
-        self.textures.contains_key(&index)
+        self.entries.contains_key(&index)
     }
 
     pub fn needs_tile_manager(&self, index: usize) -> bool {
-        self.needs_tile_manager
+        self.entries
             .get(&index)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|entry| entry.needs_tile_manager)
     }
 
     pub fn cached_buffer_tag(&self, index: usize) -> Option<TexturePreviewBufferTag> {
-        self.preview_buffer_tag.get(&index).copied()
+        self.entries.get(&index).map(|entry| entry.buffer_tag)
     }
 
     pub fn cached_preview_stage(&self, index: usize) -> Option<PreviewStage> {
-        self.preview_stage.get(&index).copied()
+        self.entries.get(&index).map(|entry| entry.stage)
     }
 
     pub fn satisfies_tiled_sdr_hq(&self, index: usize) -> bool {
-        match (
-            self.cached_buffer_tag(index),
-            self.cached_preview_stage(index),
-        ) {
-            (Some(tag), Some(stage)) => tag.satisfies_tiled_sdr_hq(stage),
-            _ => false,
-        }
+        self.entries
+            .get(&index)
+            .is_some_and(|entry| entry.buffer_tag.satisfies_tiled_sdr_hq(entry.stage))
     }
 
     /// Longer side of the **uploaded** preview texture in pixels (not the full-image logical size).
     /// Used only to pick the larger GPU handle when promoting into an active tile manager.
     pub fn cached_preview_max_side(&self, index: usize) -> Option<u32> {
-        self.textures.get(&index).map(|h| {
-            let s = h.size();
+        self.entries.get(&index).map(|entry| {
+            let s = entry.handle.size();
             s[0].max(s[1]) as u32
         })
     }
 
     pub fn clear_all(&mut self) {
-        self.textures.clear();
-        self.original_res.clear();
-        self.needs_tile_manager.clear();
-        self.preview_buffer_tag.clear();
-        self.preview_stage.clear();
+        self.entries.clear();
         self.cached_indices.clear();
         self.evict_furthest_idx = None;
         self.evict_furthest_dist = 0;
@@ -255,17 +233,13 @@ impl TextureCache {
     }
 
     fn evict(&mut self, current_index: usize, total_count: usize) -> Option<usize> {
-        if self.textures.len() <= self.max_size {
+        if self.entries.len() <= self.max_size {
             return None;
         }
         // Evict the texture with the greatest CIRCULAR distance from current_index.
         // In a 100-image list, index 99 is distance 1 from index 0 (wrapping around).
         let idx = self.evict_furthest_idx?;
-        self.textures.remove(&idx);
-        self.original_res.remove(&idx);
-        self.needs_tile_manager.remove(&idx);
-        self.preview_buffer_tag.remove(&idx);
-        self.preview_stage.remove(&idx);
+        self.entries.remove(&idx);
         self.drop_cached_index(idx);
         self.rebuild_evict_candidate(current_index, total_count);
         Some(idx)

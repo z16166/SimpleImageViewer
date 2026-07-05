@@ -270,9 +270,7 @@ impl ImageViewerApp {
         // GPU texture cache: remove all entries except current.
         let to_remove_tex: Vec<usize> = self
             .texture_cache
-            .textures
-            .keys()
-            .copied()
+            .indices()
             .filter(|&idx| idx != keep)
             .collect();
         for idx in to_remove_tex {
