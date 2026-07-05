@@ -61,6 +61,19 @@ unsafe extern "C" fn tiff_warning_handler(
 }
 
 #[test]
+fn tiff_scanline_size_validation() {
+    assert_eq!(tiff_min_contig_scanline_bytes(100, 3, 8), Some(300));
+    assert_eq!(tiff_min_contig_scanline_bytes(100, 1, 1), Some(13));
+    assert_eq!(tiff_min_separate_scanline_bytes(100, 16), Some(200));
+
+    assert!(ensure_tiff_scanline_size(300, 100, 3, 8, CONFIG_CONTIG, "test").is_ok());
+    assert!(ensure_tiff_scanline_size(299, 100, 3, 8, CONFIG_CONTIG, "test").is_err());
+    assert!(ensure_tiff_scanline_size(0, 100, 3, 8, CONFIG_CONTIG, "test").is_err());
+    assert!(ensure_tiff_scanline_size(200, 100, 1, 16, CONFIG_SEPARATE, "test").is_ok());
+    assert!(ensure_tiff_scanline_size(199, 100, 1, 16, CONFIG_SEPARATE, "test").is_err());
+}
+
+#[test]
 fn uint16_rgb_scene_linear_detection_smoke() {
     assert!(tiff_uint16_rgb_scene_linear_eligible(
         lib::SAMPLEFORMAT_UINT,

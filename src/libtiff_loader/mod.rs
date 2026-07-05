@@ -37,6 +37,9 @@ pub(crate) use orientation::{apply_orientation_buffer, apply_orientation_buffer_
 #[cfg(test)]
 pub(crate) use constants::*;
 #[cfg(test)]
-pub(crate) use decode::{tiff_ieee_scene_linear_eligible, tiff_uint16_rgb_scene_linear_eligible};
+pub(crate) use decode::{
+    ensure_tiff_scanline_size, tiff_ieee_scene_linear_eligible, tiff_min_contig_scanline_bytes,
+    tiff_min_separate_scanline_bytes, tiff_uint16_rgb_scene_linear_eligible,
+};
 #[cfg(test)]
 pub(crate) use libtiff_viewer as lib;

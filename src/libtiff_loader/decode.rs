@@ -46,6 +46,71 @@ fn sample_bytes_in_buf(buf: &[u8], idx: usize, bps: u16) -> bool {
     }
 }
 
+/// Minimum byte length of one scanline buffer for contiguous planar configuration.
+pub(crate) fn tiff_min_contig_scanline_bytes(width: u32, spp: u16, bps: u16) -> Option<usize> {
+    let sample_count = (width as usize).checked_mul(spp as usize)?;
+    if bps >= 8 {
+        let bytes_per_sample = (bps as usize) / 8;
+        if bytes_per_sample == 0 {
+            return None;
+        }
+        sample_count.checked_mul(bytes_per_sample)
+    } else {
+        sample_count
+            .checked_mul(bps as usize)?
+            .checked_add(7)
+            .map(|bits| bits / 8)
+    }
+}
+
+/// Minimum byte length of one scanline buffer for separate planar configuration (one plane).
+pub(crate) fn tiff_min_separate_scanline_bytes(width: u32, bps: u16) -> Option<usize> {
+    if bps >= 8 {
+        let bytes_per_sample = (bps as usize) / 8;
+        if bytes_per_sample == 0 {
+            return None;
+        }
+        (width as usize).checked_mul(bytes_per_sample)
+    } else {
+        (width as usize)
+            .checked_mul(bps as usize)?
+            .checked_add(7)
+            .map(|bits| bits / 8)
+    }
+}
+
+pub(crate) fn ensure_tiff_scanline_size(
+    scanline_size: i64,
+    width: u32,
+    spp: u16,
+    bps: u16,
+    config: u16,
+    context: &str,
+) -> Result<(), String> {
+    if scanline_size <= 0 {
+        return Err(format!("{context}: invalid scanline size"));
+    }
+    let required = match config {
+        CONFIG_CONTIG => tiff_min_contig_scanline_bytes(width, spp, bps),
+        CONFIG_SEPARATE => tiff_min_separate_scanline_bytes(width, bps),
+        _ => {
+            return Err(format!(
+                "{context}: unsupported PlanarConfiguration {config}"
+            ));
+        }
+    };
+    let Some(required) = required else {
+        return Err(format!("{context}: scanline size calculation overflow"));
+    };
+    if (scanline_size as usize) < required {
+        return Err(format!(
+            "{context}: TIFFScanlineSize={scanline_size} smaller than required {required} \
+             (width={width}, spp={spp}, bps={bps}, config={config})"
+        ));
+    }
+    Ok(())
+}
+
 fn checked_rgba32f_len(width: u32, height: u32) -> Result<usize, String> {
     (width as u64)
         .checked_mul(height as u64)
@@ -634,9 +699,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
 
     // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
-    if scanline_size <= 0 {
-        return Err("16-bit RGB TIFF: invalid scanline size".to_string());
-    }
+    ensure_tiff_scanline_size(scanline_size, width, spp, 16, CONFIG_CONTIG, "16-bit RGB TIFF")?;
     let mut buf = vec![0u8; scanline_size as usize];
 
     let mut smin = 0.0_f64;
@@ -996,27 +1059,13 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
     if !matches!(bps, 16 | 32 | 64) {
         return Err(format!("IEEE TIFF: unsupported BitsPerSample {bps}"));
     }
-    let bytes_per_sample = (bps / 8) as usize;
 
     // SAFETY: `tif` is a valid libtiff handle opened by this loader; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
-    if scanline_size <= 0 {
-        return Err("IEEE TIFF: invalid scanline size".to_string());
-    }
     if matches!(photo, PHOTO_RGB | PHOTO_MINISBLACK | PHOTO_MINISWHITE) {
-        let expected_min = if config == CONFIG_CONTIG {
-            width as usize * spp as usize * bytes_per_sample
-        } else if config == CONFIG_SEPARATE {
-            width as usize * bytes_per_sample
-        } else {
-            0
-        };
-        if expected_min > 0 && (scanline_size as usize) < expected_min {
-            return Err(format!(
-                "IEEE TIFF: TIFFScanlineSize={scanline_size} smaller than required {expected_min} \
-                 (width={width}, spp={spp}, bps={bps})"
-            ));
-        }
+        ensure_tiff_scanline_size(scanline_size, width, spp, bps, config, "IEEE TIFF")?;
+    } else if scanline_size <= 0 {
+        return Err("IEEE TIFF: invalid scanline size".to_string());
     }
     let mut buf = vec![0u8; scanline_size as usize];
 

@@ -26,10 +26,10 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 
 use super::decode::{
-    TiffPaletteMaps, TiffSampleDecodeParams, finalize_ieee_float_linear_scratch_to_rgba,
-    get_raw_value, process_scanline_contig, process_scanline_separate,
-    tiff_uint_default_sample_max, write_ieee_contig_scanline_linear_scratch,
-    write_ieee_separate_scanline_linear_scratch,
+    TiffPaletteMaps, TiffSampleDecodeParams, ensure_tiff_scanline_size,
+    finalize_ieee_float_linear_scratch_to_rgba, get_raw_value, process_scanline_contig,
+    process_scanline_separate, tiff_uint_default_sample_max,
+    write_ieee_contig_scanline_linear_scratch, write_ieee_separate_scanline_linear_scratch,
 };
 use super::scratch::{
     with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
@@ -476,9 +476,7 @@ pub(crate) unsafe fn manual_decode_scanline(
 
     // SAFETY: `tif` is valid; TIFFScanlineSize is read-only.
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
-    if scanline_size <= 0 {
-        return Err("Invalid scanline size".to_string());
-    }
+    ensure_tiff_scanline_size(scanline_size, width, spp, bps, config, "TIFF")?;
 
     let mut buf = vec![0u8; scanline_size as usize];
     let mut rgba = vec![255u8; width as usize * height as usize * 4];
