@@ -115,10 +115,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
-        let is_system_native = if let Ok(reg) = crate::formats::get_registry().read() {
+        let is_system_native = {
+            let reg = crate::formats::get_registry().read();
             reg.extensions.contains(&ext)
-        } else {
-            false
         };
 
         if ext == "exr" {

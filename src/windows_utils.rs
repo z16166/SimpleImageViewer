@@ -354,13 +354,12 @@ pub fn unregister_file_associations() {
     }
 
     // 4. Remove our ProgID from each extension's OpenWithProgids
-    if let Ok(reg) = crate::formats::get_registry().read() {
-        for fmt in &reg.formats {
-            let ext = &fmt.extension;
-            let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
-            if let Ok(list_key) = hkcu.open_subkey_with_flags(&progid_list_path, KEY_WRITE) {
-                let _ = list_key.delete_value(APP_ID);
-            }
+    let reg = crate::formats::get_registry().read();
+    for fmt in &reg.formats {
+        let ext = &fmt.extension;
+        let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
+        if let Ok(list_key) = hkcu.open_subkey_with_flags(&progid_list_path, KEY_WRITE) {
+            let _ = list_key.delete_value(APP_ID);
         }
     }
 

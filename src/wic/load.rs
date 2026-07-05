@@ -107,14 +107,12 @@ fn load_via_wic_inner(
 
         // --- Fast Path: Generic direct instantiation via registry CLSID (No sniffing) ---
         if !prefer_stream_sniff {
-            let clsid_opt = if let Ok(reg) = get_registry().read() {
-                reg.formats
-                    .iter()
-                    .find(|f| f.extension == ext)
-                    .and_then(|f| f.wic_clsid)
-            } else {
-                None
-            };
+            let clsid_opt = get_registry()
+                .read()
+                .formats
+                .iter()
+                .find(|f| f.extension == ext)
+                .and_then(|f| f.wic_clsid);
 
             if let Some(clsid_bytes) = clsid_opt {
                 let mut clsid = GUID::default();
@@ -164,14 +162,12 @@ fn load_via_wic_inner(
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
         {
-            let clsid_bytes_opt = if let Ok(reg) = get_registry().read() {
-                reg.formats
-                    .iter()
-                    .find(|f| f.extension == ext)
-                    .and_then(|f| f.wic_clsid)
-            } else {
-                None
-            };
+            let clsid_bytes_opt = get_registry()
+                .read()
+                .formats
+                .iter()
+                .find(|f| f.extension == ext)
+                .and_then(|f| f.wic_clsid);
 
             if let Some(clsid_bytes) = clsid_bytes_opt {
                 let mut clsid = GUID::default();

@@ -29,6 +29,7 @@ use crate::hdr::heif::{
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
+use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
@@ -616,8 +617,8 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if let Ok(reg) = crate::formats::get_registry().read()
-        && reg.extensions.contains(&ext)
+    let reg = crate::formats::get_registry().read();
+    if reg.extensions.contains(&ext)
         && !is_maybe_animated(&ext)
     {
         #[cfg(target_os = "windows")]
@@ -802,7 +803,16 @@ fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
-    source.wait_for_async_pixels(std::time::Duration::from_secs(300))?;
+    if source.defers_loader_hq_preview()
+        && source
+            .wait_for_async_pixels(PSD_V1_ASYNC_DECODE_TIMEOUT)
+            .is_err()
+    {
+        log::debug!(
+            "Strip tiled preview: async pixels not ready within {}s, trying non-blocking preview",
+            PSD_V1_ASYNC_DECODE_TIMEOUT.as_secs()
+        );
+    }
     // SAFETY: panic in generate_full_image_preview is caught below; the caller thread
     // stays healthy without spawning a nested OS thread.
     let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

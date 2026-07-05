@@ -18,7 +18,7 @@
 
 use crossbeam_channel::Sender;
 use image::{DynamicImage, GenericImageView};
-use parking_lot::RwLock as PLRwLock;
+use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -543,7 +543,7 @@ pub(crate) struct PsdV1AsyncSource {
     width: u32,
     height: u32,
     pixels: Arc<PLRwLock<Option<Arc<Vec<u8>>>>>,
-    decode_state: Arc<(std::sync::Mutex<PsdV1DecodeState>, std::sync::Condvar)>,
+    decode_state: Arc<(Mutex<PsdV1DecodeState>, Condvar)>,
 }
 
 impl PsdV1AsyncSource {
@@ -560,8 +560,8 @@ impl PsdV1AsyncSource {
         let mmap = Arc::new(mmap);
         let pixels = Arc::new(PLRwLock::new(None));
         let decode_state = Arc::new((
-            std::sync::Mutex::new(PsdV1DecodeState::Pending),
-            std::sync::Condvar::new(),
+            Mutex::new(PsdV1DecodeState::Pending),
+            Condvar::new(),
         ));
         let decode_mmap = Arc::clone(&mmap);
         let decode_pixels = Arc::clone(&pixels);
@@ -570,7 +570,7 @@ impl PsdV1AsyncSource {
         REFINEMENT_POOL.spawn(move || {
             let finish = |state: PsdV1DecodeState| {
                 let (lock, cvar) = &*decode_state_worker;
-                *lock.lock().expect("PSD v1 decode state lock") = state;
+                *lock.lock() = state;
                 cvar.notify_all();
             };
 
@@ -720,19 +720,14 @@ impl TiledImageSource for PsdV1AsyncSource {
 
     fn wait_for_async_pixels(&self, timeout: std::time::Duration) -> Result<(), String> {
         let (lock, cvar) = &*self.decode_state;
-        let mut state = lock
-            .lock()
-            .map_err(|_| "PSD v1 decode state lock poisoned".to_string())?;
+        let mut state = lock.lock();
         let deadline = std::time::Instant::now() + timeout;
         while matches!(*state, PsdV1DecodeState::Pending) {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return Err("PSD decode timed out waiting for async pixels".into());
             }
-            let wait = cvar
-                .wait_timeout(state, remaining)
-                .map_err(|_| "PSD v1 decode state lock poisoned".to_string())?;
-            state = wait.0;
+            cvar.wait_for(&mut state, remaining);
         }
         match &*state {
             PsdV1DecodeState::Ready => Ok(()),
