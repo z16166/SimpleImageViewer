@@ -137,7 +137,7 @@ fn apply_children_result_ignores_stale_generation() {
     });
 
     let node = state.tree.nodes.get(&root).expect("root node");
-    assert!(node.loading);
+    assert!(!node.loading);
     assert!(!node.children_loaded);
     assert!(node.children.is_empty());
     let child_tree = super::namespace::namespace_child_path(&root, &root, &child);
@@ -214,6 +214,126 @@ fn apply_children_result_records_read_error() {
     assert!(node.children_loaded);
     assert!(node.children.is_empty());
     assert_eq!(node.error.as_deref(), Some("permission denied"));
+}
+
+#[test]
+fn apply_children_result_leaves_children_unloaded_when_node_cap_reached() {
+    let root = PathBuf::from("/tmp/siv-dir-tree-cap-root");
+    let child_a = PathBuf::from("/tmp/siv-dir-tree-cap-a");
+    let child_b = PathBuf::from("/tmp/siv-dir-tree-cap-b");
+
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loaded = true;
+    state.tree.generation = 1;
+    let _ = state.tree.nodes.insert(
+        root.clone(),
+        DirectoryTreeNode {
+            display_name: "root".to_string(),
+            fs_path: root.clone(),
+            expanded: true,
+            loading: true,
+            children_loaded: false,
+            children: Vec::new(),
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+    for idx in 0..super::MAX_DIRECTORY_TREE_NODES {
+        let filler = PathBuf::from(format!("/tmp/siv-dir-tree-cap-filler-{idx}"));
+        let _ = state.tree.nodes.insert(
+            filler,
+            DirectoryTreeNode {
+                display_name: format!("filler-{idx}"),
+                fs_path: PathBuf::from(format!("/tmp/siv-dir-tree-cap-filler-{idx}")),
+                expanded: false,
+                loading: false,
+                children_loaded: false,
+                children: Vec::new(),
+                error: None,
+            },
+            super::MAX_DIRECTORY_TREE_NODES,
+        );
+    }
+
+    state.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: 1,
+        result: Ok(vec![child_a.clone(), child_b.clone()]),
+    });
+
+    let node = state.tree.nodes.get(&root).expect("root node");
+    assert!(!node.loading);
+    assert!(!node.children_loaded);
+    assert!(node.error.is_some());
+    assert!(node.children.len() < 2);
+}
+
+#[test]
+fn initialize_places_clears_provisional_bootstrap_children() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+    let iphone15 = PathBuf::from(r"F:\iphone15");
+    let iphone15_ns =
+        super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &iphone15);
+
+    let mut state = DirectoryTreeState::default();
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_mount.clone()));
+    let _requests = state.tree.reveal_selected_namespace();
+    assert!(
+        state
+            .tree
+            .nodes
+            .get(&mount_root)
+            .is_some_and(|node| node
+                .children
+                .iter()
+                .any(|child| child.as_os_str() == iphone15_ns.as_os_str())),
+        "bootstrap reveal should link the selected chain child before Places loads"
+    );
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        this_pc_label: "This PC".to_string(),
+        known_folders: Vec::new(),
+        drives: vec![DriveEntry {
+            display_name: "Local Disk (F:)".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+        }],
+        network_locations: Vec::new(),
+        network_label: "Network".to_string(),
+    };
+    state.initialize_places(places);
+
+    let mount_node = state.tree.nodes.get(&mount_root).expect("mount node");
+    assert!(
+        mount_node.children.is_empty(),
+        "Places init should drop provisional bootstrap children until read_dir completes"
+    );
+    assert!(!mount_node.children_loaded);
+
+    let requests = state.children_requests_for_selection(&browse);
+    assert!(
+        requests.iter().any(|request| request.namespace_path == mount_root),
+        "post-Places reveal should reload the mount root on the saved chain"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.namespace_path == via_mount),
+        "post-Places reveal should load the selected folder listing"
+    );
 }
 
 #[test]

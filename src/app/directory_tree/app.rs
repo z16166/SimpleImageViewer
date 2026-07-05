@@ -773,7 +773,10 @@ impl ImageViewerApp {
                     &tree,
                     &loaded_namespace,
                 );
-                let requests = tree.reveal_selected_namespace();
+                let requests = self
+                    .saved_directory_tree_selection_dir()
+                    .map(|dir| tree.children_requests_for_selection(&dir))
+                    .unwrap_or_else(|| tree.reveal_selected_namespace());
                 (requests, pending_folder_scroll, folder_repaint)
             };
             for request in requests {

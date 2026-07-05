@@ -327,7 +327,14 @@ impl DirectoryTreeState {
         &mut self,
         dir: &Path,
     ) -> Vec<DirectoryChildrenRequest> {
-        self.tree.expand_requests_for_selection(dir)
+        self.tree.children_requests_for_selection(dir)
+    }
+
+    pub(crate) fn children_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        self.tree.children_requests_for_selection(dir)
     }
 
     pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
@@ -801,6 +808,29 @@ impl DirectoryTreeTreeState {
         }
 
         self.nodes.retain(|key| valid_keys.contains(key));
+        self.reset_interrupted_children_loads();
+    }
+
+    /// After a generation bump, invalidate cached directory listings so reveal reloads from disk.
+    fn reset_interrupted_children_loads(&mut self) {
+        let paths: Vec<PathBuf> = self.nodes.iter().map(|(path, _)| path.clone()).collect();
+        for path in paths {
+            if is_places_sentinel_namespace_path(&path) || is_this_pc_namespace_path(&path) {
+                continue;
+            }
+            // Network children are curated from Places, not read_dir.
+            if is_network_namespace_path(&path) {
+                continue;
+            }
+            let Some(node) = self.nodes.get_mut(&path) else {
+                continue;
+            };
+            node.loading = false;
+            node.children_loaded = false;
+            node.children.clear();
+            node.error = None;
+        }
+        self.mark_snapshot_dirty();
     }
 
     pub(crate) fn ensure_network_visible(&mut self) {
@@ -959,6 +989,14 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn expand_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        self.children_requests_for_selection(dir)
+    }
+
+    /// Queue reveal-chain ancestor loads plus a listing for the selected folder itself.
+    pub(crate) fn children_requests_for_selection(
         &mut self,
         dir: &Path,
     ) -> Vec<DirectoryChildrenRequest> {
@@ -1640,7 +1678,14 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
+        let namespace_path = result.namespace_path.clone();
         if result.generation != self.generation {
+            if let Some(node) = self.nodes.get_mut(&namespace_path)
+                && node.loading
+            {
+                node.loading = false;
+                self.mark_snapshot_dirty();
+            }
             return;
         }
 
@@ -1691,8 +1736,8 @@ impl DirectoryTreeTreeState {
                     return;
                 };
                 node.loading = false;
-                // Cap is a global arena limit; retry on re-expand would only re-hit the cap.
-                node.children_loaded = true;
+                // Cap is a global arena limit; leave children_loaded false so re-expand can retry.
+                node.children_loaded = !cap_reached;
                 node.children = loaded_children;
                 Self::dedupe_tree_children(&mut node.children);
                 node.error = if cap_reached {
