@@ -824,52 +824,130 @@ unsafe fn tiff_tag_smax_sample_value_f64(tif: *mut lib::TIFF) -> Option<f64> {
     None
 }
 
-/// Full-image maximum of gray IEEE samples (one sample per column). Used for `PHOTO_MINISWHITE`
-/// when `SMaxSampleValue` is absent, so inversion uses one file-consistent reference (not per-row).
-fn ieee_grayscale_float_global_max_sample(
-    tif: *mut lib::TIFF,
-    width: u32,
-    height: u32,
-    bps: u16,
-    buf: &mut [u8],
-) -> Result<f32, String> {
-    let mut gmax = f32::NEG_INFINITY;
-    for y in 0..height {
-        if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-            return Err(format!(
-                "IEEE TIFF (white-ref scan): TIFFReadScanline failed at row {y}"
-            ));
-        }
-        for x in 0..width as usize {
-            let v = read_ieee_sample_f32(buf, x, bps);
-            if v.is_finite() {
-                gmax = gmax.max(v);
-            }
-        }
-    }
-    Ok(if gmax.is_finite() && gmax > 0.0 {
+fn ieee_grayscale_float_white_reference_from_max(gmax: f32) -> f32 {
+    if gmax.is_finite() && gmax > 0.0 {
         gmax
     } else {
         1.0
-    })
+    }
 }
 
-fn resolve_miniswhite_float_white_reference(
-    tif: *mut lib::TIFF,
+/// Apply `(pivot - v).max(0)` after a single I/O pass that stored raw gray samples in `out`.
+fn finalize_miniswhite_float_inversion(out: &mut [f32], width: u32, height: u32, pivot: f32) {
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let i = (y * width as usize + x) * 4;
+            let v = out[i];
+            let g = (pivot - v).max(0.0);
+            out[i] = g;
+            out[i + 1] = g;
+            out[i + 2] = g;
+            out[i + 3] = 1.0;
+        }
+    }
+}
+
+/// Store raw IEEE float samples in a row of `scratch` (RGBA layout) and track file-wide min/max.
+pub(crate) fn write_ieee_contig_scanline_linear_scratch(
+    buf: &[u8],
+    scratch_row: &mut [f32],
+    width: u32,
+    spp: u16,
+    bps: u16,
+    format: u16,
+    actual_min: &mut f64,
+    actual_max: &mut f64,
+) {
+    for x in 0..width as usize {
+        let dst_idx = x * 4;
+        for s in 0..(spp as usize).min(4) {
+            let idx = x * spp as usize + s;
+            let val = get_raw_value(buf, idx, bps, format);
+            if val.is_finite() {
+                *actual_min = actual_min.min(val);
+                *actual_max = actual_max.max(val);
+                scratch_row[dst_idx + s] = val as f32;
+            }
+        }
+    }
+}
+
+/// Store one IEEE float plane in a row of `scratch` (RGBA layout) and track file-wide min/max.
+pub(crate) fn write_ieee_separate_scanline_linear_scratch(
+    buf: &[u8],
+    scratch_row: &mut [f32],
+    width: u32,
+    sample_idx: usize,
+    bps: u16,
+    format: u16,
+    actual_min: &mut f64,
+    actual_max: &mut f64,
+) {
+    if sample_idx >= 4 {
+        return;
+    }
+    for x in 0..width as usize {
+        let val = get_raw_value(buf, x, bps, format);
+        if val.is_finite() {
+            *actual_min = actual_min.min(val);
+            *actual_max = actual_max.max(val);
+            scratch_row[x * 4 + sample_idx] = val as f32;
+        }
+    }
+}
+
+/// Normalize deferred IEEE float scratch (single I/O pass) into display RGBA8.
+pub(crate) fn finalize_ieee_float_linear_scratch_to_rgba(
+    scratch: &[f32],
+    rgba: &mut [u8],
     width: u32,
     height: u32,
-    bps: u16,
-    buf: &mut [u8],
-) -> Result<f32, String> {
-    if let Some(mx) = unsafe { tiff_tag_smax_sample_value_f64(tif) }
-        && mx > 0.0
-    {
-        return Ok(mx as f32);
+    spp: u16,
+    photo: u16,
+    smin: f64,
+    smax: f64,
+) {
+    let range = (smax - smin).max(f64::EPSILON);
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let dst_idx = (y * width as usize + x) * 4;
+            let scratch_idx = dst_idx;
+            let mut samples = [0u32; 4];
+            for s in 0..(spp as usize).min(4) {
+                let f_val = scratch[scratch_idx + s] as f64;
+                let linear = ((f_val - smin) / range).clamp(0.0, 1.0) as f32;
+                samples[s] = if photo == PHOTO_SEPARATED {
+                    (linear * 255.0) as u32
+                } else {
+                    to_srgb_8(linear) as u32
+                };
+            }
+            match photo {
+                PHOTO_MINISWHITE | PHOTO_MINISBLACK => {
+                    let v = (if photo == PHOTO_MINISWHITE {
+                        255 - samples[0].min(255)
+                    } else {
+                        samples[0].min(255)
+                    }) as u8;
+                    rgba[dst_idx] = v;
+                    rgba[dst_idx + 1] = v;
+                    rgba[dst_idx + 2] = v;
+                    rgba[dst_idx + 3] = 255;
+                }
+                PHOTO_RGB => {
+                    rgba[dst_idx] = samples[0] as u8;
+                    rgba[dst_idx + 1] = samples[1] as u8;
+                    rgba[dst_idx + 2] = samples[2] as u8;
+                    if spp >= 4 {
+                        rgba[dst_idx + 3] = samples[3] as u8;
+                    } else {
+                        rgba[dst_idx + 3] = 255;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-    log::debug!(
-        "[libtiff_loader] IEEE MINISWHITE float: SMaxSampleValue unset or non-positive; using image-wide maximum as white reference"
-    );
-    ieee_grayscale_float_global_max_sample(tif, width, height, bps, buf)
 }
 
 /// Scene-linear RGBA (`HdrImageMetadata` linear / scene) from IEEE float TIFF samples. libtiff returns
@@ -912,13 +990,21 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
     }
     let mut buf = vec![0u8; scanline_size as usize];
 
-    let miniswhite_ref: Option<f32> = if photo == PHOTO_MINISWHITE {
-        Some(resolve_miniswhite_float_white_reference(
-            tif, width, height, bps, &mut buf,
-        )?)
+    let miniswhite_pivot = if photo == PHOTO_MINISWHITE {
+        unsafe { tiff_tag_smax_sample_value_f64(tif) }
+            .filter(|&mx| mx > 0.0)
+            .map(|mx| mx as f32)
     } else {
         None
     };
+    let miniswhite_deferred = photo == PHOTO_MINISWHITE && miniswhite_pivot.is_none();
+    if miniswhite_deferred {
+        log::debug!(
+            "[libtiff_loader] IEEE MINISWHITE float: SMaxSampleValue unset or non-positive; \
+             deferring inversion until image-wide maximum is known"
+        );
+    }
+    let mut miniswhite_gmax = f32::NEG_INFINITY;
 
     let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
 
@@ -955,16 +1041,28 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
                     }
                 }
                 PHOTO_MINISWHITE => {
-                    let pivot = miniswhite_ref
-                        .expect("IEEE HDR: MINISWHITE white reference must be resolved");
-                    for x in 0..width as usize {
-                        let dst = x * 4;
-                        let v = read_ieee_sample_f32(&buf, x, bps);
-                        let g = (pivot - v).max(0.0);
-                        row[dst] = g;
-                        row[dst + 1] = g;
-                        row[dst + 2] = g;
-                        row[dst + 3] = 1.0;
+                    if let Some(pivot) = miniswhite_pivot {
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            let g = (pivot - v).max(0.0);
+                            row[dst] = g;
+                            row[dst + 1] = g;
+                            row[dst + 2] = g;
+                            row[dst + 3] = 1.0;
+                        }
+                    } else {
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            if v.is_finite() {
+                                miniswhite_gmax = miniswhite_gmax.max(v);
+                            }
+                            row[dst] = v;
+                            row[dst + 1] = v;
+                            row[dst + 2] = v;
+                            row[dst + 3] = 1.0;
+                        }
                     }
                 }
                 _ => {
@@ -1012,13 +1110,22 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
                         }
                     }
                     PHOTO_MINISWHITE => {
-                        let pivot = miniswhite_ref
-                            .expect("IEEE HDR: MINISWHITE white reference must be resolved");
-                        for x in 0..width as usize {
-                            let dst = x * 4;
-                            let v = read_ieee_sample_f32(&buf, x, bps);
-                            let g = (pivot - v).max(0.0);
-                            row[dst + c] = g;
+                        if let Some(pivot) = miniswhite_pivot {
+                            for x in 0..width as usize {
+                                let dst = x * 4;
+                                let v = read_ieee_sample_f32(&buf, x, bps);
+                                let g = (pivot - v).max(0.0);
+                                row[dst + c] = g;
+                            }
+                        } else {
+                            for x in 0..width as usize {
+                                let dst = x * 4;
+                                let v = read_ieee_sample_f32(&buf, x, bps);
+                                if v.is_finite() {
+                                    miniswhite_gmax = miniswhite_gmax.max(v);
+                                }
+                                row[dst + c] = v;
+                            }
                         }
                     }
                     _ => unreachable!(),
@@ -1048,6 +1155,11 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
         return Err(format!(
             "IEEE TIFF: unsupported PlanarConfiguration {config}"
         ));
+    }
+
+    if miniswhite_deferred {
+        let pivot = ieee_grayscale_float_white_reference_from_max(miniswhite_gmax);
+        finalize_miniswhite_float_inversion(&mut out, width, height, pivot);
     }
 
     Ok(out)
