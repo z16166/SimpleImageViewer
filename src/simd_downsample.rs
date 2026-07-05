@@ -44,15 +44,9 @@ struct DownsampleSimdParams<'a> {
 /// its footprint.  Operates on a borrowed `&[u8]` slice — zero-copy of the source
 /// buffer.
 ///
-/// # Panics
-///
-/// In debug mode, panics (via `debug_assert!`) if `dst_w > src_w` or `dst_h > src_h`
-/// (upscaling not supported).  In release mode, the assertion is skipped and the
-/// function produces all-black pixels — empty source footprints yield `count == 0`,
-/// the guard at the end of the scalar loop skips the division, and the SIMD paths
-/// likewise leave the output pixel at zero.
-///
-/// Returns an empty `Vec<u8>` if any dimension is zero.
+/// Returns an empty `Vec<u8>` if any dimension is zero, if upscaling is
+/// requested (`dst_w > src_w` or `dst_h > src_h`), or if `src` is shorter than
+/// `src_w * src_h * 4` bytes.
 pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     // Zero dimensions would divide-by-zero in the scalar path and UB in SIMD
     // paths via get_unchecked.  Return empty — all callers guarantee non-zero
@@ -60,16 +54,19 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return Vec::new();
     }
-    debug_assert!(
-        dst_w <= src_w && dst_h <= src_h,
-        "downsample_rgba8_box does not support upscaling (src {src_w}x{src_h}, dst {dst_w}x{dst_h})"
-    );
-    debug_assert!(
-        src.len() >= src_w as usize * src_h as usize * 4,
-        "downsample_rgba8_box src buffer too short: {} bytes for {src_w}x{src_h} (need {})",
-        src.len(),
-        src_w as usize * src_h as usize * 4
-    );
+    if dst_w > src_w || dst_h > src_h {
+        return Vec::new();
+    }
+    let Some(expected_len) = src_w
+        .checked_mul(src_h)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Vec::new();
+    };
+    if src.len() < expected_len {
+        return Vec::new();
+    }
     let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
 
     // Pre-compute column-to-source-range mapping once — all SIMD kernels need
@@ -661,6 +658,96 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
     }
 }
 
+// ── Nearest-neighbor RGBA8 downsample ─────────────────────────────────────────
+//
+// Uses the same endpoint-inclusive coordinate mapping as
+// [`crate::hdr::tiled::preview_sample_coord`] (HDR/SDR preview pipelines).
+
+/// Nearest-neighbor RGBA8 downsample (endpoint-inclusive coordinate mapping).
+///
+/// Returns an empty `Vec<u8>` under the same zero-dimension / buffer-length rules
+/// as [`downsample_rgba8_box`].
+pub fn downsample_rgba8_nearest(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> Vec<u8> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Vec::new();
+    }
+    if dst_w > src_w || dst_h > src_h {
+        return Vec::new();
+    }
+    let Some(expected_len) = src_w
+        .checked_mul(src_h)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Vec::new();
+    };
+    if src.len() < expected_len {
+        return Vec::new();
+    }
+
+    let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+    let dst_w_u = dst_w as usize;
+    let row_stride = src_w as usize * 4;
+
+    let mut src_x = vec![0_u32; dst_w_u];
+    for (dx, slot) in src_x.iter_mut().enumerate() {
+        *slot = nearest_sample_coord(dx as u32, dst_w, src_w);
+    }
+
+    for dst_y in 0..dst_h {
+        let src_y = nearest_sample_coord(dst_y, dst_h, src_h);
+        let src_row_base = src_y as usize * row_stride;
+        let dst_row_start = dst_y as usize * dst_w_u * 4;
+        let dst_row = &mut dst[dst_row_start..dst_row_start + dst_w_u * 4];
+        downsample_rgba8_nearest_row(src, src_row_base, &src_x, dst_row);
+    }
+
+    dst
+}
+
+fn nearest_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: u32) -> u32 {
+    if preview_extent <= 1 {
+        return 0;
+    }
+    ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
+        as u32
+}
+
+/// Scatter-gather nearest row copy. Scalar with loop unrolling — source indices are
+/// arbitrary per pixel, so SIMD gather would only help on wide rows with profiling.
+fn downsample_rgba8_nearest_row(
+    src: &[u8],
+    src_row_base: usize,
+    src_x: &[u32],
+    dst_row: &mut [u8],
+) {
+    const UNROLL: usize = 8;
+    let len = src_x.len();
+    let mut dx = 0usize;
+    while dx + UNROLL <= len {
+        for offset in 0..UNROLL {
+            let sx = src_x[dx + offset] as usize;
+            let si = src_row_base + sx * 4;
+            let di = (dx + offset) * 4;
+            dst_row[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+        dx += UNROLL;
+    }
+    while dx < len {
+        let sx = src_x[dx] as usize;
+        let si = src_row_base + sx * 4;
+        let di = dx * 4;
+        dst_row[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        dx += 1;
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -821,10 +908,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "upscaling"))]
-    fn upscale_panics_in_debug() {
+    fn upscale_returns_empty() {
         let src = make_patterned_rgba(10, 10);
-        let _result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+        let result = downsample_rgba8_box(&src, 10, 10, 20, 20);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn short_src_buffer_returns_empty() {
+        let src = vec![0_u8; 16];
+        let result = downsample_rgba8_box(&src, 10, 10, 5, 5);
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -841,5 +935,40 @@ mod tests {
         let r1 = downsample_rgba8_box(&src, 64, 64, 32, 32);
         let r2 = downsample_rgba8_box(&src, 64, 64, 32, 32);
         assert_eq!(r1, r2);
+    }
+
+    fn downsample_rgba8_nearest_reference(
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Vec<u8> {
+        let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+        for dst_y in 0..dst_h {
+            let src_y = nearest_sample_coord(dst_y, dst_h, src_h);
+            for dst_x in 0..dst_w {
+                let src_x = nearest_sample_coord(dst_x, dst_w, src_w);
+                let si = (src_y as usize * src_w as usize + src_x as usize) * 4;
+                let di = (dst_y as usize * dst_w as usize + dst_x as usize) * 4;
+                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+            }
+        }
+        dst
+    }
+
+    #[test]
+    fn nearest_downsample_matches_reference() {
+        let src = make_patterned_rgba(32, 32);
+        let simd = downsample_rgba8_nearest(&src, 32, 32, 16, 16);
+        let reference = downsample_rgba8_nearest_reference(&src, 32, 32, 16, 16);
+        assert_eq!(simd, reference);
+    }
+
+    #[test]
+    fn nearest_downsample_single_pixel() {
+        let src = make_patterned_rgba(8192, 8192);
+        let result = downsample_rgba8_nearest(&src, 8192, 8192, 1, 1);
+        assert_eq!(result.len(), 4);
     }
 }

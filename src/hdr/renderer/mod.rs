@@ -62,16 +62,35 @@ pub(super) use self::tile_cache::{
     HdrTileBindings, HdrTileInsert, iso_deferred_tile_compose_views_reusable,
 };
 
+mod pending_work;
+pub(crate) use self::pending_work::{
+    HdrCompletedComposeFailure, HdrCompletedComposeWrite, HdrCompletedJpegTiledSourceUpload,
+    HdrCompletedPlaneUpload, HdrCompletedTileUpload, HdrPendingAppleImageComposeRequest,
+    HdrPendingIsoImageComposeRequest, HdrPendingIsoTileComposeRequest,
+    HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
+    HdrPendingTileUploadRequest, HdrPendingWorkQueues, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
+    MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
+    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+};
+
+mod pending_gpu_writes;
+pub(crate) use self::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage};
+
+mod tone_map_gpu;
+pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};
+
 pub(super) mod upload;
 #[cfg(test)]
 pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
-/// Background HDR plane upload used by loader workers (`load.rs`) and sync cache misses (`prepare()`).
-pub(crate) use self::upload::upload_image_plane;
+#[cfg(test)]
+pub(crate) use self::upload::test_upload_image_plane;
 pub(super) use self::upload::{
-    create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
-    rgba32f_as_bytes, upload_callback_tile, upload_jpeg_tiled_source_textures,
-    validate_upload_layout, write_rgba32f_to_texture,
+    create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, validate_upload_layout,
+    write_rgba32f_to_texture,
 };
+/// Background HDR plane upload used by loader workers and deferred cache-miss uploads in `logic()`.
+pub(crate) use self::upload::{loader_background_upload_image_plane, upload_image_plane_with_sink};
+pub(crate) use self::upload::{upload_callback_tile, upload_jpeg_tiled_source_textures};
 
 pub(super) mod image_callback;
 pub(super) use self::image_callback::HdrImagePlaneCallback;
@@ -95,7 +114,7 @@ use eframe::{
 };
 use parking_lot::Mutex;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -144,41 +163,17 @@ impl HdrImageRenderer {
         image: &HdrImageBuffer,
     ) -> Result<(), String> {
         let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
-        let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
-            rgba32f_as_bytes(image.rgba_f32.as_slice()),
-            image.width,
-            image.height,
-            std::mem::size_of::<f32>() as u32 * 4,
-        )
-        .map_err(|err| format!("HDR upload: {err}"))?;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("simple-image-viewer-hdr-image-plane"),
-            size: layout.size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: layout.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
+        let pending = HdrPendingWorkQueues::new_shared();
+        let uploaded = upload_image_plane_with_sink(
+            device,
+            GpuUploadSink::Pending {
+                queues: pending.as_ref(),
+                stage: HdrGpuUploadStage::PlaneCreate,
             },
-            &upload_bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(layout.size.height),
-            },
-            layout.size,
-        );
+            image,
+        )?;
+        pending.flush_staged_writes_for_registration(queue);
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -193,8 +188,8 @@ impl HdrImageRenderer {
         self.uploaded_image = Some(UploadedHdrImage {
             size: layout.size,
             format: layout.format,
-            texture,
-            view,
+            texture: Arc::try_unwrap(uploaded.base.texture).unwrap_or_else(|arc| (*arc).clone()),
+            view: uploaded.base.view,
             sampler,
         });
 
@@ -225,6 +220,8 @@ pub fn hdr_image_plane_callback(
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: None,
+            sync_plane_upload_on_cache_miss: false,
         },
     )
 }
@@ -240,6 +237,9 @@ pub struct HdrImagePlaneCallbackParams {
     pub ripple: Option<(egui::Pos2, f32, f32, u32)>,
     pub keep_resident: bool,
     pub raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
+    pub pending_work: Option<Arc<HdrPendingWorkQueues>>,
+    /// When true, upload missing plane bindings synchronously in `prepare()` (animated playback).
+    pub sync_plane_upload_on_cache_miss: bool,
 }
 
 pub fn hdr_image_plane_callback_with_uv(
@@ -257,6 +257,8 @@ pub fn hdr_image_plane_callback_with_uv(
         ripple,
         keep_resident,
         raw_demosaic_baked_notify,
+        pending_work,
+        sync_plane_upload_on_cache_miss,
     } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -271,6 +273,8 @@ pub fn hdr_image_plane_callback_with_uv(
             ripple,
             keep_resident,
             raw_demosaic_baked_notify,
+            pending_work,
+            sync_plane_upload_on_cache_miss,
         },
     ))
 }
@@ -295,6 +299,7 @@ pub fn hdr_tile_plane_callback(
             rotation_steps,
             alpha,
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            pending_work: None,
         },
     )
 }
@@ -308,6 +313,7 @@ pub struct HdrTilePlaneCallbackParams {
     pub rotation_steps: u32,
     pub alpha: f32,
     pub uv_rect: egui::Rect,
+    pub pending_work: Option<Arc<HdrPendingWorkQueues>>,
 }
 
 pub fn hdr_tile_plane_callback_with_uv(
@@ -322,6 +328,7 @@ pub fn hdr_tile_plane_callback_with_uv(
         rotation_steps,
         alpha,
         uv_rect,
+        pending_work,
     } = params;
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -333,6 +340,7 @@ pub fn hdr_tile_plane_callback_with_uv(
             rotation_steps: rotation_steps % 4,
             alpha,
             uv_rect,
+            pending_work,
         },
     ))
 }

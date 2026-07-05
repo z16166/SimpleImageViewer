@@ -22,7 +22,8 @@
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
-use std::sync::{Once, OnceLock, RwLock};
+use parking_lot::RwLock;
+use std::sync::{Once, OnceLock};
 
 use crate::app::RootRedrawWake;
 
@@ -46,18 +47,16 @@ static TRAY_LOGIC_WAKE: OnceLock<RwLock<Option<RootRedrawWake>>> = OnceLock::new
 /// Register the same ROOT redraw hook used by the loader so tray clicks wake winit while hidden.
 pub fn register_tray_logic_wake(wake: RootRedrawWake) {
     let slot = TRAY_LOGIC_WAKE.get_or_init(|| RwLock::new(None));
-    if let Ok(mut guard) = slot.write() {
-        if guard.is_none() {
-            *guard = Some(wake);
-        }
+    let mut guard = slot.write();
+    if guard.is_none() {
+        *guard = Some(wake);
     }
 }
 
 fn wake_ui_for_tray(ctx: &egui::Context) {
     ctx.request_repaint();
     if let Some(slot) = TRAY_LOGIC_WAKE.get()
-        && let Ok(guard) = slot.read()
-        && let Some(wake) = guard.as_ref()
+        && let Some(wake) = slot.read().as_ref()
     {
         wake();
     }
@@ -68,19 +67,15 @@ pub fn set_menu_ids(
     settings: tray_icon::menu::MenuId,
     quit: tray_icon::menu::MenuId,
 ) {
-    if let Ok(mut guard) = TRAY_MENU_IDS.write() {
-        *guard = Some(TrayMenuIds {
-            show,
-            settings,
-            quit,
-        });
-    }
+    *TRAY_MENU_IDS.write() = Some(TrayMenuIds {
+        show,
+        settings,
+        quit,
+    });
 }
 
 pub fn clear_menu_ids() {
-    if let Ok(mut guard) = TRAY_MENU_IDS.write() {
-        *guard = None;
-    }
+    *TRAY_MENU_IDS.write() = None;
 }
 
 /// Install global tray/menu handlers once and return the command receiver for [`logic`].
@@ -111,8 +106,7 @@ fn install_tray_icon_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
 fn install_tray_menu_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
     tray_icon::menu::MenuEvent::set_event_handler(Some(
         move |event: tray_icon::menu::MenuEvent| {
-            let cmd = TRAY_MENU_IDS.read().ok().and_then(|guard| {
-                let ids = guard.as_ref()?;
+            let cmd = TRAY_MENU_IDS.read().as_ref().and_then(|ids| {
                 if event.id == ids.show {
                     Some(TrayCommand::ShowMainWindow)
                 } else if event.id == ids.settings {

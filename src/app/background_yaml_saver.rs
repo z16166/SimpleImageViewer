@@ -68,7 +68,8 @@ pub(crate) fn run_coalescing_periodic_saver<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::thread;
 
     #[test]
@@ -84,8 +85,8 @@ mod tests {
                 rx,
                 Duration::from_millis(200),
                 |v: &i32| {
-                    *sc.lock().unwrap() += 1;
-                    sv.lock().unwrap().push(*v);
+                    *sc.lock() += 1;
+                    sv.lock().push(*v);
                     Ok(())
                 },
                 |_| {},
@@ -99,11 +100,11 @@ mod tests {
         tx.send(3).unwrap();
 
         thread::sleep(Duration::from_millis(100));
-        assert_eq!(*save_count.lock().unwrap(), 0);
+        assert_eq!(*save_count.lock(), 0);
 
         thread::sleep(Duration::from_millis(150));
-        assert_eq!(*save_count.lock().unwrap(), 1);
-        assert_eq!(*saved_values.lock().unwrap(), vec![3]);
+        assert_eq!(*save_count.lock(), 1);
+        assert_eq!(*saved_values.lock(), vec![3]);
 
         drop(tx);
         handle.join().unwrap();
@@ -120,7 +121,7 @@ mod tests {
                 rx,
                 Duration::from_secs(60),
                 |_: &()| {
-                    *sc.lock().unwrap() += 1;
+                    *sc.lock() += 1;
                     Ok(())
                 },
                 |_| {},
@@ -133,6 +134,6 @@ mod tests {
         let start = Instant::now();
         handle.join().unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
-        assert_eq!(*save_count.lock().unwrap(), 0);
+        assert_eq!(*save_count.lock(), 0);
     }
 }

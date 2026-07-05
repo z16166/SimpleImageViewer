@@ -1091,6 +1091,9 @@ pub fn load_via_image_io(
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let orientation = orientation_override.unwrap_or_else(|| {
+        crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
+    }) as u32;
     unsafe {
         let cf_data = CFDataCreateWithBytesNoCopy(
             kCFAllocatorDefault,
@@ -1147,10 +1150,6 @@ pub fn load_via_image_io(
             physical_height =
                 get_cf_number_u32(&props, kCGImagePropertyPixelHeight as _).unwrap_or(0);
         }
-
-        let orientation = orientation_override
-            .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path))
-            as u32;
 
         if physical_width == 0 || physical_height == 0 {
             return Err(

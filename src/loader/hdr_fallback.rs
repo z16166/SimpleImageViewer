@@ -61,10 +61,10 @@ pub(crate) fn hdr_gain_map_sdr_display_mode_affects_image(
     }
     // Nokia-style HEIF stills: 8-bit primary with no gain-map auxiliary in metadata still toggle
     // between embedded SDR master (8-bit primary) and GPU tone-mapped float plane on SDR output.
-    !hdr.rgba_f32.is_empty() && heif_extension_path(path)
+    !hdr.rgba_f32.is_empty() && heif_family_path(path)
 }
 
-fn heif_extension_path(path: &std::path::Path) -> bool {
+pub(crate) fn heif_family_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| {
@@ -74,10 +74,62 @@ fn heif_extension_path(path: &std::path::Path) -> bool {
         })
 }
 
+/// Whether cached HDR state can route through the tone-mapped float / deferred compose path.
+pub(crate) fn hdr_tone_map_plane_available_in_cache(hdr: &HdrImageBuffer) -> bool {
+    if !hdr.rgba_f32.is_empty() {
+        return true;
+    }
+    hdr.metadata.gain_map.as_ref().is_some_and(|gain_map| {
+        gain_map.apple_heic_deferred.is_some()
+            || gain_map
+                .iso_deferred
+                .as_ref()
+                .is_some_and(|iso| !iso_deferred_is_embedded_sdr_master_only(iso))
+    })
+}
+
 /// ISO deferred planes from [`crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only`]
 /// carry no gain-map texels; full HDR decode + compose uses non-zero gain dimensions.
 fn iso_deferred_is_embedded_sdr_master_only(iso: &crate::hdr::types::IsoGainMapGpuSource) -> bool {
     iso.gain_width == 0 && iso.gain_height == 0 && iso.gain_rgba.is_empty()
+}
+
+fn gain_map_supports_embedded_sdr_master_display(
+    gain_map: &crate::hdr::types::HdrGainMapMetadata,
+) -> bool {
+    if gain_map.is_heif_embedded_sdr_primary_only() {
+        return true;
+    }
+    gain_map
+        .iso_deferred
+        .as_ref()
+        .is_some_and(iso_deferred_is_embedded_sdr_master_only)
+}
+
+/// Gain-map metadata supports embedded-SDR-master presentation (independent of float plane fill).
+pub(crate) fn hdr_supports_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(gain_map_supports_embedded_sdr_master_display)
+}
+
+/// Whether a preload-window index should react to [`crate::settings::HdrGainMapSdrDisplayMode`].
+pub(crate) fn index_hdr_gain_map_sdr_display_mode_affects(
+    path: &std::path::Path,
+    hdr: Option<&HdrImageBuffer>,
+    ultra_hdr_capacity_sensitive: bool,
+    has_sdr_fallback_cache: bool,
+) -> bool {
+    if let Some(hdr) = hdr {
+        if hdr_gain_map_sdr_display_mode_affects_image(hdr, path) {
+            return true;
+        }
+    }
+    if ultra_hdr_capacity_sensitive {
+        return true;
+    }
+    heif_family_path(path) && has_sdr_fallback_cache
 }
 
 /// True when the HDR buffer represents gain-map HDR shown via embedded SDR master (no float plane).
@@ -85,15 +137,10 @@ pub(crate) fn hdr_has_embedded_sdr_master_display(hdr: &HdrImageBuffer) -> bool 
     if !hdr.rgba_f32.is_empty() {
         return false;
     }
-    hdr.metadata.gain_map.as_ref().is_some_and(|gain_map| {
-        if gain_map.is_heif_embedded_sdr_primary_only() {
-            return true;
-        }
-        gain_map
-            .iso_deferred
-            .as_ref()
-            .is_some_and(iso_deferred_is_embedded_sdr_master_only)
-    })
+    hdr.metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(gain_map_supports_embedded_sdr_master_display)
 }
 
 /// True when ISO gain-map HDR should show the embedded SDR master on an SDR output path
@@ -111,7 +158,7 @@ pub(crate) fn prefer_embedded_iso_gain_map_sdr_on_sdr_output(
     {
         return false;
     }
-    hdr.is_some_and(hdr_has_embedded_sdr_master_display)
+    hdr.is_some_and(hdr_supports_embedded_sdr_master_display)
 }
 
 #[inline]
@@ -178,20 +225,16 @@ pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
     }
 
     // ISO deferred: strip thumbnails use the embedded SDR baseline only (no gain-map compose).
-    if hdr_has_iso_deferred_gain_map(hdr) {
-        if let Some(iso) = hdr
+    if hdr_has_iso_deferred_gain_map(hdr)
+        && let Some(iso) = hdr
             .metadata
             .gain_map
             .as_ref()
             .and_then(|gain_map| gain_map.iso_deferred.as_ref())
-        {
-            let decoded = crate::loader::DecodedImage::from_arc(
-                hdr.width,
-                hdr.height,
-                Arc::clone(&iso.sdr_rgba),
-            );
-            return downsample_decoded_for_strip(&decoded, max_side);
-        }
+    {
+        let decoded =
+            crate::loader::DecodedImage::from_arc(hdr.width, hdr.height, Arc::clone(&iso.sdr_rgba));
+        return downsample_decoded_for_strip(&decoded, max_side);
     }
 
     if !fallback.is_sdr_deferred_placeholder() {
@@ -954,6 +997,51 @@ mod tests {
         ));
         assert!(!super::static_hdr_background_plane_upload_eligible(
             &hdr, 1.0, true, true
+        ));
+    }
+
+    #[test]
+    fn prefer_embedded_sdr_master_uses_metadata_even_with_cached_float_plane() {
+        use crate::hdr::types::HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE;
+        use crate::settings::HdrGainMapSdrDisplayMode;
+
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+            target_hdr_capacity: None,
+            diagnostic: "test".to_string(),
+            capped_display_referred: true,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        });
+        let hdr = HdrImageBuffer {
+            width: 4032,
+            height: 3024,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+        };
+
+        assert!(!super::hdr_has_embedded_sdr_master_display(&hdr));
+        assert!(super::hdr_supports_embedded_sdr_master_display(&hdr));
+        let mut settings = crate::settings::Settings::default();
+        settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+        assert!(super::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+            &settings,
+            crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
+            Some(&hdr),
+        ));
+    }
+
+    #[test]
+    fn index_hdr_gain_map_sdr_display_mode_affects_heif_with_fallback_only() {
+        let path = std::path::Path::new("photo.heic");
+        assert!(super::index_hdr_gain_map_sdr_display_mode_affects(
+            path, None, false, true
+        ));
+        assert!(!super::index_hdr_gain_map_sdr_display_mode_affects(
+            path, None, false, false
         ));
     }
 

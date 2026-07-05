@@ -21,6 +21,7 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RawOpenPhaseTimings {
@@ -47,13 +48,20 @@ struct RawOpenPrefetchInner {
 
 pub(crate) struct RawOpenPrefetch {
     state: Arc<(Mutex<RawOpenPrefetchInner>, Condvar)>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl RawOpenPrefetch {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(shutdown: Arc<AtomicBool>) -> Self {
         Self {
             state: Arc::new((Mutex::new(RawOpenPrefetchInner::default()), Condvar::new())),
+            shutdown,
         }
+    }
+
+    pub(crate) fn wake_waiters(&self) {
+        let (_, cvar) = &*self.state;
+        cvar.notify_all();
     }
 
     pub(crate) fn request(&self, pool: &rayon::ThreadPool, path: PathBuf) {
@@ -108,6 +116,9 @@ impl RawOpenPrefetch {
     pub(crate) fn take_or_wait(&self, path: &Path) -> Option<RawPrefetchedOpen> {
         let (lock, cvar) = &*self.state;
         loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
             let mut inner = lock.lock();
             match inner.entries.get(path) {
                 Some(RawPrefetchEntry::Ready(_)) => {
@@ -116,7 +127,7 @@ impl RawOpenPrefetch {
                     }
                 }
                 Some(RawPrefetchEntry::InProgress) => {
-                    cvar.wait(&mut inner);
+                    cvar.wait_for(&mut inner, super::types::LOADER_WORKER_IDLE_POLL);
                 }
                 None => return None,
             }

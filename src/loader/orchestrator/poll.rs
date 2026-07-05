@@ -27,46 +27,43 @@ impl ImageLoader {
         self.loading.lock().len()
     }
 
+    /// Point-in-time snapshot of indices with registered in-flight decode jobs.
+    pub(crate) fn in_flight_snapshot(&self) -> std::collections::HashSet<usize> {
+        self.loading.lock().keys().copied().collect()
+    }
+
     /// Profile / window based pending output filter (generation-plan Phase A).
     pub fn discard_pending_stale_outputs_profile(
         &mut self,
-        keep: impl Fn(
-            &LoaderOutput,
-            &std::collections::HashMap<usize, crate::loader::InFlightLoad>,
-        ) -> bool,
+        keep: impl Fn(&LoaderOutput, &dyn Fn(usize) -> bool) -> bool,
     ) {
-        let loading_snapshot = self.loading.lock().clone();
-        let keep_output = |output: &LoaderOutput| keep(output, &loading_snapshot);
+        let mut pending: Vec<LoaderOutput> = self.local_queue.drain(..).collect();
+        while let Ok(output) = self.rx.try_recv() {
+            pending.push(output);
+        }
+
+        let loading = self.loading.lock();
+        let is_loading = |idx: usize| loading.contains_key(&idx);
 
         let mut retained = std::collections::VecDeque::new();
-        for output in self.local_queue.drain(..) {
-            if keep_output(&output) {
+        let mut finish_indices = Vec::new();
+        for output in pending {
+            if keep(&output, &is_loading) {
                 retained.push_back(output);
-            } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock();
-                if loading
+            } else if let LoaderOutput::Image(ref r) = output
+                && loading
                     .get(&r.index)
                     .is_some_and(|e| e.profile == r.decode_profile)
-                {
-                    loading.remove(&r.index);
-                }
+            {
+                finish_indices.push(r.index);
             }
+        }
+        drop(loading);
+
+        for index in finish_indices {
+            self.loading.lock().remove(&index);
         }
         self.local_queue = retained;
-
-        while let Ok(output) = self.rx.try_recv() {
-            if keep_output(&output) {
-                self.local_queue.push_back(output);
-            } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock();
-                if loading
-                    .get(&r.index)
-                    .is_some_and(|e| e.profile == r.decode_profile)
-                {
-                    loading.remove(&r.index);
-                }
-            }
-        }
     }
 
     pub fn has_pending_outputs(&self) -> bool {
@@ -146,6 +143,7 @@ impl ImageLoader {
     /// Clears all registered loads via [`Self::cancel_all`]. This loader must not be reused
     /// after this call — it is only valid on the process-exit path.
     pub fn prepare_for_process_exit(&mut self) {
+        self.signal_shutdown();
         self.cancel_all();
         self.raw_open_prefetch.clear_all();
         drain_rayon_pool_for_exit(&self.pool, LOADER_EXIT_DRAIN_TIMEOUT);

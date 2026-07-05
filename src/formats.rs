@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use parking_lot::RwLock;
 use std::collections::HashSet;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -168,9 +169,8 @@ pub fn get_registry() -> &'static Arc<RwLock<FormatRegistry>> {
 pub fn is_supported_extension(ext: &std::ffi::OsStr) -> bool {
     if let Some(e) = ext.to_str() {
         let e_lower = e.to_lowercase();
-        if let Ok(reg) = get_registry().read() {
-            return reg.extensions.contains(&e_lower);
-        }
+        let reg = get_registry().read();
+        return reg.extensions.contains(&e_lower);
     }
     false
 }

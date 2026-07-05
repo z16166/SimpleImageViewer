@@ -51,16 +51,12 @@ pub(crate) fn apply_orientation_buffer_f32(
     }
     (out_w, out_h, out)
 }
-pub(crate) fn apply_orientation_buffer(
-    pixels: Vec<u8>,
+fn apply_orientation_rgba8_inner(
+    pixels: &[u8],
     w: u32,
     h: u32,
     orientation: u16,
 ) -> (u32, u32, Vec<u8>) {
-    if orientation <= 1 {
-        return (w, h, pixels);
-    }
-
     let (out_w, out_h) = if (5..=8).contains(&orientation) {
         (h, w)
     } else {
@@ -88,4 +84,29 @@ pub(crate) fn apply_orientation_buffer(
         }
     }
     (out_w, out_h, out)
+}
+
+/// Rotate/flip RGBA8 pixels read from `pixels` without cloning the source buffer.
+pub(crate) fn apply_orientation_buffer_from_slice(
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    orientation: u16,
+) -> (u32, u32, Vec<u8>) {
+    if orientation <= 1 {
+        return (w, h, pixels.to_vec());
+    }
+    apply_orientation_rgba8_inner(pixels, w, h, orientation)
+}
+
+pub(crate) fn apply_orientation_buffer(
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
+    orientation: u16,
+) -> (u32, u32, Vec<u8>) {
+    if orientation <= 1 {
+        return (w, h, pixels);
+    }
+    apply_orientation_rgba8_inner(&pixels, w, h, orientation)
 }

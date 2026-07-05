@@ -20,6 +20,7 @@ mod background_yaml_saver;
 mod directory_tree;
 mod directory_tree_strip_cache;
 pub(crate) mod folder_picker;
+mod hdr_pending_work;
 mod hdr_prewarm;
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
@@ -57,8 +58,8 @@ pub(crate) use directory_tree::DirectoryTreeRuntime;
 
 pub(crate) use preload::{
     CACHE_SIZE, MAX_CONCURRENT_DECODER_LOADS, MAX_DEFERRED_SDR_UPLOADS,
-    PRELOAD_MEMORY_REFRESH_MIN_INTERVAL, capacity_refresh_should_reschedule_preloads,
-    compute_preload_budgets, memory_aware_tile_cache_budgets_mb, plan_ultra_hdr_capacity_refresh,
+    capacity_refresh_should_reschedule_preloads, compute_preload_budgets,
+    memory_aware_tile_cache_budgets_mb, plan_ultra_hdr_capacity_refresh,
     ultra_hdr_decode_capacity_for_output_mode,
 };
 

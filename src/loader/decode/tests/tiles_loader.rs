@@ -41,6 +41,7 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     loader.test_send_loader_output(LoaderOutput::Image(Box::new(load_result)));

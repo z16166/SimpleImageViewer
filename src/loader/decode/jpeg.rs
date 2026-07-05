@@ -75,7 +75,7 @@ pub(crate) fn load_jpeg_from_mapped(
     }
     // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
     // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
-    let orientation = crate::metadata_utils::get_exif_orientation(path);
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path));
     // Apply EXIF Orientation per TIFF/EXIF rules (same transform family as Pillow `exif_transpose`).
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
     // looks like a normal landscape before correction; the tag still requests transpose, so the
@@ -178,7 +178,7 @@ pub(crate) fn try_decode_jpeg_strip_dct(
 ) -> OptionalJpegStripResult {
     // Use the bytes variant to avoid re-opening the already mmap'd file
     // (checklist #29 — "avoid opening the same file multiple times").
-    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(jpeg_data);
+    let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(jpeg_data, None);
     let (orig_w, orig_h, scaled_w, scaled_h, pixels) =
         match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
             Ok(v) => v,

@@ -155,6 +155,7 @@ impl ImageViewerApp {
             result.stage,
             Some(result.logical),
             result.buffer_tag,
+            Some(result.strip_max_side_used),
         );
         if !self
             .directory_tree_strip_cache
@@ -198,7 +199,7 @@ impl ImageViewerApp {
             return;
         }
         let pixel_bytes = u64::from(full.width) * u64::from(full.height) * 4;
-        if pixel_bytes > u64::from(crate::hdr::decode::MAX_HDR_FALLBACK_DECODE_BYTES) {
+        if pixel_bytes > crate::hdr::decode::MAX_HDR_FALLBACK_DECODE_BYTES {
             return;
         }
         self.insert_deferred_sdr_upload(index, full);
@@ -302,6 +303,7 @@ impl ImageViewerApp {
                 result.stage,
                 Some(result.logical),
                 result.buffer_tag,
+                Some(result.strip_max_side_used),
             );
             self.cache_reusable_strip_full_decode(result.index, result.logical, reusable_full);
             let cache_valid = self

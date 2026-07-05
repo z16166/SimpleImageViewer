@@ -29,6 +29,18 @@ use crate::{
     },
 };
 
+pub(super) struct Dx12AdapterExposeParams<'a> {
+    pub adapter: DxgiAdapter,
+    pub library: &'a Arc<D3D12Lib>,
+    pub device_factory: &'a Arc<DeviceFactory>,
+    pub dcomp_lib: &'a Arc<DCompLib>,
+    pub instance_flags: wgt::InstanceFlags,
+    pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+    pub compiler_container: Arc<shader_compilation::CompilerContainer>,
+    pub backend_options: wgt::Dx12BackendOptions,
+    pub telemetry: Option<crate::Telemetry>,
+}
+
 impl Drop for super::Adapter {
     fn drop(&mut self) {
         // Debug tracking alive objects
@@ -61,18 +73,18 @@ impl super::Adapter {
         &self.raw
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn expose(
-        adapter: DxgiAdapter,
-        library: &Arc<D3D12Lib>,
-        device_factory: &Arc<DeviceFactory>,
-        dcomp_lib: &Arc<DCompLib>,
-        instance_flags: wgt::InstanceFlags,
-        memory_budget_thresholds: wgt::MemoryBudgetThresholds,
-        compiler_container: Arc<shader_compilation::CompilerContainer>,
-        backend_options: wgt::Dx12BackendOptions,
-        telemetry: Option<crate::Telemetry>,
-    ) -> Option<crate::ExposedAdapter<super::Api>> {
+    pub(super) fn expose(params: Dx12AdapterExposeParams<'_>) -> Option<crate::ExposedAdapter<super::Api>> {
+        let Dx12AdapterExposeParams {
+            adapter,
+            library,
+            device_factory,
+            dcomp_lib,
+            instance_flags,
+            memory_budget_thresholds,
+            compiler_container,
+            backend_options,
+            telemetry,
+        } = params;
         let desc = unsafe { adapter.GetDesc2() }.unwrap();
         let driver_version = unsafe { adapter.CheckInterfaceSupport(&Dxgi::IDXGIDevice::IID) };
         let driver_version = driver_version
@@ -1048,20 +1060,20 @@ impl crate::Adapter for super::Adapter {
             .into_device_result("Queue creation")?
         };
 
-        let device = super::Device::new(
-            self.raw.clone(),
-            self.device.clone(),
-            queue.clone(),
+        let device = super::Device::new(crate::dx12::device::Dx12DeviceCreateParams {
+            adapter: self.raw.clone(),
+            raw: self.device.clone(),
+            present_queue: queue.clone(),
             features,
             limits,
             memory_hints,
-            self.private_caps,
-            &self.library,
-            &self.dcomp_lib,
-            self.memory_budget_thresholds,
-            self.compiler_container.clone(),
-            self.options.clone(),
-        )?;
+            private_caps: self.private_caps,
+            library: &self.library,
+            dcomp_lib: &self.dcomp_lib,
+            memory_budget_thresholds: self.memory_budget_thresholds,
+            compiler_container: self.compiler_container.clone(),
+            backend_options: self.options.clone(),
+        })?;
         Ok(crate::OpenDevice {
             device,
             queue: super::Queue {

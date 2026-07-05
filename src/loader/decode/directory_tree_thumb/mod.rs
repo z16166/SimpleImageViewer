@@ -21,6 +21,7 @@
 //! then half-size LibRaw develop when no embedded thumbnail exists.
 
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
@@ -28,6 +29,7 @@ use crate::hdr::heif::{
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
+use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
@@ -117,10 +119,15 @@ fn try_directory_tree_exif_thumb(
     if !preview_aspect_matches_logical(exif.width, exif.height, logical.0, logical.1) {
         return None;
     }
-    let decoded = downsample_decoded_to_max_side(exif.clone(), max_side).ok()?;
+    let decoded = downsample_decoded_for_strip(exif, max_side).ok()?;
     Some((decoded, logical))
 }
 
+/// Builds a navigation-strip thumbnail decode for `path`.
+///
+/// May block up to [`PSD_V1_ASYNC_DECODE_TIMEOUT`] while PSD v1 pixels finish decoding.
+/// **Must run on a strip worker thread** (`DIRECTORY_TREE_STRIP_POOL` in
+/// `strip_previews/schedule.rs`); never call from the UI `logic()` / `ui()` path.
 pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     path: &Path,
     max_side: u32,
@@ -129,8 +136,8 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
-    let mmap = crate::mmap_util::map_file(path).ok();
-    let (exif, exif_probe, exif_probe_detail) = match mmap.as_ref() {
+    let mmap = crate::mmap_util::map_file(path).ok().map(Arc::new);
+    let (exif, exif_probe, exif_probe_detail) = match mmap.as_deref() {
         Some(data) => extract_exif_thumbnail_from_mmap_probed(data, path),
         None => extract_exif_thumbnail_probed(path),
     };
@@ -185,10 +192,11 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     #[cfg(feature = "heif-native")]
     if super::modern::is_heif_path(path) {
         let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
-        let heif_outcome = match mmap.as_ref() {
+        let heif_outcome = match mmap.as_deref() {
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
                 .ok()
+                .map(Arc::new)
                 .map(|owned| {
                     try_heif_directory_tree_strip(owned.as_ref(), max_side, allow_primary_sdr)
                 })
@@ -239,7 +247,9 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
 
-    if let Some(fast) = super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, max_side) {
+    if let Some(fast) =
+        super::hdr_strip_fast::try_fast_hdr_float_strip_from_path(path, mmap.as_ref(), max_side)
+    {
         return fast.map(|(preview, logical_size)| {
             log_strip_decode_path(
                 path,
@@ -255,7 +265,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     if !options.defer_iso_gain_map_baseline {
         if let Some(fast) = super::gain_map_strip::try_fast_iso_gain_map_strip_from_path(
             path,
-            mmap.as_ref().map(|data| data.as_ref()),
+            mmap.as_deref().map(|data| data.as_ref()),
             max_side,
         ) {
             match fast {
@@ -320,7 +330,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     // needs a fast SDR preview.  For a 4000×3000 → 256px strip this is ~10×
     // faster and 64× less peak memory than a full-resolution decode followed
     // by a software downsample.
-    if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_ref(), max_side) {
+    if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_deref(), max_side) {
         return result.map(|(preview, logical_size)| {
             log_strip_decode_path(
                 path,
@@ -340,7 +350,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         );
         return Err(STRIP_DEFER_SLOW_EMBEDDED_SDR.to_string());
     }
-    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_ref(), max_side) {
+    if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_deref(), max_side) {
         match result {
             Ok(strip) => {
                 log_strip_decode_path(
@@ -361,7 +371,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_ref())?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_deref())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()
@@ -486,6 +496,7 @@ fn open_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    let file_bytes = file_mmap.map(|m| m.as_ref());
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -513,11 +524,11 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
-        return load_psd(path);
+        return load_psd(path, None);
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
-        return open_raw_image_data_for_directory_tree_thumb(path);
+        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
     }
 
     if path_has_extension(path, "jpg") || path_has_extension(path, "jpeg") {
@@ -547,8 +558,12 @@ fn open_image_data_for_directory_tree_thumb(
         let tiff_is_raw = file_mmap
             .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
             .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
-        if tiff_is_raw && crate::raw_processor::probe_libraw_can_open(path) {
-            return open_raw_image_data_for_directory_tree_thumb(path);
+        if tiff_is_raw
+            && file_mmap
+                .map(|data| crate::raw_processor::probe_libraw_can_open_bytes(data))
+                .unwrap_or_else(|| crate::raw_processor::probe_libraw_can_open(path))
+        {
+            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
         }
         return load_primary_with_detection_fallback(
             path,
@@ -607,17 +622,17 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if let Ok(reg) = crate::formats::get_registry().read()
-        && reg.extensions.contains(&ext)
+    let reg = crate::formats::get_registry().read();
+    if reg.extensions.contains(&ext)
         && !is_maybe_animated(&ext)
     {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img));
+            return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
         #[cfg(target_os = "macos")]
         if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
-            return Ok(apply_exif_orientation_to_image_data(path, img));
+            return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
     }
 
@@ -636,7 +651,10 @@ fn open_image_data_for_directory_tree_thumb(
     )
 }
 
-fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData, String> {
+fn open_raw_image_data_for_directory_tree_thumb(
+    path: &Path,
+    file_mmap: Option<&memmap2::Mmap>,
+) -> Result<ImageData, String> {
     match open_raw_processor_with_preview(path) {
         Ok((processor, preview_opt, _, _)) => {
             if let Some(preview) = preview_opt {
@@ -651,14 +669,14 @@ fn open_raw_image_data_for_directory_tree_thumb(path: &Path) -> Result<ImageData
                     height
                 );
             }
-            platform_still_image_fallback(path, Some(processor))
+            platform_still_image_fallback(path, Some(processor), file_mmap)
         }
         Err(err) => {
             log::debug!(
                 "[DirectoryTree] LibRaw open failed for {:?}: {err}; trying platform fallback",
                 path.file_name().unwrap_or_default()
             );
-            platform_still_image_fallback(path, None)
+            platform_still_image_fallback(path, None, file_mmap)
         }
     }
 }
@@ -688,12 +706,14 @@ fn raw_strip_libraw_fallback(
 fn platform_still_image_fallback(
     path: &Path,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
+    file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    let file_bytes = file_mmap.map(|m| m.as_ref());
     #[cfg(target_os = "windows")]
     {
         match crate::wic::load_via_wic(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img));
+                return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }
             Err(wic_err) => {
                 log::debug!(
@@ -708,7 +728,7 @@ fn platform_still_image_fallback(
     {
         match crate::macos_image_io::load_via_image_io(path, false, None) {
             Ok(img) => {
-                return Ok(apply_exif_orientation_to_image_data(path, img));
+                return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }
             Err(io_err) => {
                 log::debug!(
@@ -744,15 +764,15 @@ fn logical_size_from_image_data(image_data: &ImageData) -> (u32, u32) {
 
 fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<DecodedImage, String> {
     match image_data {
-        ImageData::Static(image) => downsample_decoded_to_max_side(image.clone(), max_side),
+        ImageData::Static(image) => downsample_decoded_for_strip(image, max_side),
         ImageData::Hdr { hdr, fallback, .. } => {
             sdr_preview_for_hdr_fallback(hdr, fallback, max_side)
         }
         ImageData::Animated(frames) => frames
             .first()
             .map(|frame| {
-                downsample_decoded_to_max_side(
-                    DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
+                downsample_decoded_for_strip(
+                    &DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels()),
                     max_side,
                 )
             })
@@ -763,7 +783,7 @@ fn preview_from_image_data(image_data: &ImageData, max_side: u32) -> Result<Deco
             let preview = tiled_source_preview(fallback.as_ref(), max_side)?;
             if preview.is_sdr_deferred_placeholder() {
                 let (width, height, rgba) = hdr.generate_sdr_preview(max_side, max_side)?;
-                downsample_decoded_to_max_side(DecodedImage::new(width, height, rgba), max_side)
+                downsample_decoded_for_strip(&DecodedImage::new(width, height, rgba), max_side)
             } else {
                 Ok(preview)
             }
@@ -784,10 +804,22 @@ fn sdr_preview_for_hdr_fallback(
     crate::loader::directory_tree_strip_from_hdr_or_fallback(hdr, fallback, max_side)
 }
 
+/// Strip preview for a tiled source. Blocking wait runs on the caller worker thread only
+/// (see [`generate_directory_tree_thumb_decode_from_path`]).
 fn tiled_source_preview(
     source: &dyn TiledImageSource,
     max_side: u32,
 ) -> Result<DecodedImage, String> {
+    if source.defers_loader_hq_preview()
+        && source
+            .wait_for_async_pixels(PSD_V1_ASYNC_DECODE_TIMEOUT)
+            .is_err()
+    {
+        log::debug!(
+            "Strip tiled preview: async pixels not ready within {}s, trying non-blocking preview",
+            PSD_V1_ASYNC_DECODE_TIMEOUT.as_secs()
+        );
+    }
     // SAFETY: panic in generate_full_image_preview is caught below; the caller thread
     // stays healthy without spawning a nested OS thread.
     let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -800,13 +832,6 @@ fn tiled_source_preview(
         Ok(_) => Err("generate_full_image_preview returned empty preview".to_string()),
         Err(_) => Err("generate_full_image_preview panicked".to_string()),
     }
-}
-
-fn downsample_decoded_to_max_side(
-    decoded: DecodedImage,
-    max_side: u32,
-) -> Result<DecodedImage, String> {
-    downsample_decoded_for_strip(&decoded, max_side)
 }
 
 /// Try to produce a strip thumbnail from a baseline JPEG using DCT-domain scaling.

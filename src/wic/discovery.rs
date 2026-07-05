@@ -89,29 +89,28 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
                             16,
                         );
 
-                        if let Ok(mut reg) = get_registry().write() {
-                            let mut added_for_codec = false;
-                            for ext in extensions_str.split([',', ';']) {
-                                let normalized_ext = ext
-                                    .trim()
-                                    .trim_start_matches('*')
-                                    .trim_start_matches('.')
-                                    .to_lowercase();
-                                if !normalized_ext.is_empty()
-                                    && !reg.extensions.contains(&normalized_ext)
-                                {
-                                    reg.add_format(ImageFormat {
-                                        extension: normalized_ext,
-                                        group,
-                                        description: friendly_name.clone(),
-                                        wic_clsid: Some(clsid_bytes),
-                                    });
-                                    added_for_codec = true;
-                                }
+                        let mut reg = get_registry().write();
+                        let mut added_for_codec = false;
+                        for ext in extensions_str.split([',', ';']) {
+                            let normalized_ext = ext
+                                .trim()
+                                .trim_start_matches('*')
+                                .trim_start_matches('.')
+                                .to_lowercase();
+                            if !normalized_ext.is_empty()
+                                && !reg.extensions.contains(&normalized_ext)
+                            {
+                                reg.add_format(ImageFormat {
+                                    extension: normalized_ext,
+                                    group,
+                                    description: friendly_name.clone(),
+                                    wic_clsid: Some(clsid_bytes),
+                                });
+                                added_for_codec = true;
                             }
-                            if added_for_codec {
-                                new_codecs += 1;
-                            }
+                        }
+                        if added_for_codec {
+                            new_codecs += 1;
                         }
                     }
                 }
@@ -125,8 +124,6 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
         );
     }
 
-    if let Ok(mut reg) = get_registry().write() {
-        reg.discovery_finished = true;
-    }
+    get_registry().write().discovery_finished = true;
     Ok(())
 }

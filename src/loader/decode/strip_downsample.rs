@@ -42,6 +42,34 @@ pub(crate) fn downsample_decoded_for_strip(
     let scale = max_side as f32 / max_dim as f32;
     let out_w = ((w as f32 * scale).round() as u32).max(1);
     let out_h = ((h as f32 * scale).round() as u32).max(1);
+    let Some(src_bytes) = w
+        .checked_mul(h)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Err(format!("downsample source dimensions overflow: {w}x{h}"));
+    };
+    if decoded.rgba().len() < src_bytes {
+        return Err(format!(
+            "downsample source buffer too short: {} bytes for {w}x{h} (need {src_bytes})",
+            decoded.rgba().len()
+        ));
+    }
     let pixels = downsample_rgba8_box(decoded.rgba(), w, h, out_w, out_h);
+    let Some(expected_out_bytes) = out_w
+        .checked_mul(out_h)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return Err(format!(
+            "downsample output dimensions overflow: {out_w}x{out_h}"
+        ));
+    };
+    if pixels.len() != expected_out_bytes {
+        return Err(format!(
+            "downsample produced invalid buffer: got {} bytes for {out_w}x{out_h} (need {expected_out_bytes})",
+            pixels.len()
+        ));
+    }
     Ok(DecodedImage::new(out_w, out_h, pixels))
 }

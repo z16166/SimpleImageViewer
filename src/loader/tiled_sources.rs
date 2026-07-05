@@ -18,7 +18,7 @@
 
 use crossbeam_channel::Sender;
 use image::{DynamicImage, GenericImageView};
-use parking_lot::RwLock as PLRwLock;
+use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -54,6 +54,16 @@ fn memory_rgba_preview(
     let out_w = (width as f64 * scale).round().max(1.0) as u32;
     let out_h = (height as f64 * scale).round().max(1.0) as u32;
     let out = downsample_rgba8_box(pixels, width, height, out_w, out_h);
+    let Some(expected_out_bytes) = out_w
+        .checked_mul(out_h)
+        .and_then(|px| px.checked_mul(4))
+        .map(|len| len as usize)
+    else {
+        return (0, 0, Vec::new());
+    };
+    if out.len() != expected_out_bytes {
+        return (0, 0, Vec::new());
+    }
     crate::preload_debug!(
         "[PreloadDebug][Strip] memory preview logical={}x{} max={}x{} -> {}x{}",
         width,
@@ -252,15 +262,11 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let preview = self.generate_hdr_preview(max_w, max_h)?;
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
-        let image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            preview.width,
-            preview.height,
-            pixels,
-        )
-        .ok_or_else(|| "Failed to create RAW HDR SDR preview buffer".to_string())?;
-        Ok((image.width(), image.height(), image.into_raw()))
+        let guard = self.buffer.read();
+        let image = guard
+            .as_ref()
+            .ok_or_else(|| "RAW HDR buffer not yet refined".to_string())?;
+        crate::hdr::tiled::sdr_preview_from_hdr_image_nearest(image, max_w, max_h)
     }
 
     fn extract_tile_rgba32f_arc(
@@ -510,6 +516,227 @@ impl TiledImageSource for RawImageSource {
 
     fn defers_loader_hq_preview(&self) -> bool {
         self.needs_refinement
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PSD v1 (async full decode on the refinement pool; placeholder until pixels land)
+// ---------------------------------------------------------------------------
+
+const PSD_V1_PLACEHOLDER_RGBA: [u8; 4] = [32, 32, 32, 255];
+
+#[derive(Debug)]
+enum PsdV1DecodeState {
+    Pending,
+    Ready,
+    Failed(String),
+}
+
+pub(crate) struct PsdV1LoadNotify {
+    pub index: usize,
+    pub decode_profile: crate::loader::DecodeProfile,
+    pub source_key: crate::loader::SourceKey,
+    pub load_tx: crate::loader::orchestrator::LoaderOutputSender,
+}
+
+pub(crate) struct PsdV1AsyncSource {
+    width: u32,
+    height: u32,
+    pixels: Arc<PLRwLock<Option<Arc<Vec<u8>>>>>,
+    decode_state: Arc<(Mutex<PsdV1DecodeState>, Condvar)>,
+}
+
+impl PsdV1AsyncSource {
+    pub(crate) fn new(
+        mmap: memmap2::Mmap,
+        path: std::path::PathBuf,
+        width: u32,
+        height: u32,
+        notify: Option<PsdV1LoadNotify>,
+    ) -> Arc<Self> {
+        use crate::loader::preview_caps::REFINEMENT_POOL;
+        use crate::loader::{ImageData, apply_exif_orientation_to_image_data};
+
+        let mmap = Arc::new(mmap);
+        let pixels = Arc::new(PLRwLock::new(None));
+        let decode_state = Arc::new((
+            Mutex::new(PsdV1DecodeState::Pending),
+            Condvar::new(),
+        ));
+        let decode_mmap = Arc::clone(&mmap);
+        let decode_pixels = Arc::clone(&pixels);
+        let decode_state_worker = Arc::clone(&decode_state);
+
+        REFINEMENT_POOL.spawn(move || {
+            let finish = |state: PsdV1DecodeState| {
+                let (lock, cvar) = &*decode_state_worker;
+                *lock.lock() = state;
+                cvar.notify_all();
+            };
+
+            let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
+                let psd_file = psd::Psd::from_bytes(&decode_mmap[..])
+                    .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+                Ok((psd_file.width(), psd_file.height(), psd_file.rgba()))
+            });
+
+            match result {
+                Ok((w, h, px)) => {
+                    let img = DecodedImage::new(w, h, px);
+                    let oriented_pixels = match apply_exif_orientation_to_image_data(
+                        &path,
+                        ImageData::Static(img),
+                        Some(&decode_mmap[..]),
+                    ) {
+                        ImageData::Static(oriented) => oriented.into_arc_pixels(),
+                        ImageData::Tiled(source) => {
+                            source.full_pixels().unwrap_or_else(|| Arc::new(Vec::new()))
+                        }
+                        other => {
+                            log::error!(
+                                "[Loader] PSD v1 unexpected oriented shape for {}: {:?}",
+                                path.display(),
+                                std::mem::discriminant(&other)
+                            );
+                            finish(PsdV1DecodeState::Failed(
+                                "PSD v1 orientation produced unexpected image shape".into(),
+                            ));
+                            return;
+                        }
+                    };
+                    if oriented_pixels.is_empty() {
+                        finish(PsdV1DecodeState::Failed(
+                            "PSD v1 decode produced empty pixel buffer".into(),
+                        ));
+                        return;
+                    }
+                    *decode_pixels.write() = Some(Arc::clone(&oriented_pixels));
+                    finish(PsdV1DecodeState::Ready);
+                    if let Some(notify) = notify {
+                        notify_psd_v1_decode_complete(notify, width, height, &oriented_pixels);
+                    }
+                }
+                Err(e) => {
+                    const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
+                    if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
+                        log::error!(
+                            "[Loader] PSD decoder panicked for {}: {}",
+                            path.display(),
+                            msg
+                        );
+                    } else {
+                        log::error!("[Loader] PSD decode failed for {}: {e}", path.display());
+                    }
+                    finish(PsdV1DecodeState::Failed(e));
+                }
+            }
+        });
+
+        Arc::new(Self {
+            width,
+            height,
+            pixels,
+            decode_state,
+        })
+    }
+}
+
+fn notify_psd_v1_decode_complete(
+    notify: PsdV1LoadNotify,
+    width: u32,
+    height: u32,
+    pixels: &Arc<Vec<u8>>,
+) {
+    use crate::loader::preview_caps::hq_preview_max_side;
+    use crate::loader::{LoaderOutput, PreviewBundle, PreviewResult};
+
+    let limit = hq_preview_max_side();
+    let (pw, ph, preview_pixels) = memory_rgba_preview(width, height, pixels, limit, limit);
+    if pw > 0 && ph > 0 {
+        let preview = DecodedImage::new(pw, ph, preview_pixels);
+        let _ = notify.load_tx.send(LoaderOutput::Preview(PreviewResult {
+            index: notify.index,
+            decode_profile: notify.decode_profile.clone(),
+            source_key: notify.source_key,
+            preview_bundle: PreviewBundle::refined().with_sdr(preview),
+            error: None,
+            cpu_demosaic_ms: None,
+            raw_bootstrap_osd: None,
+            sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
+        }));
+    }
+}
+
+impl TiledImageSource for PsdV1AsyncSource {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+        if let Some(px) = self.pixels.read().as_ref() {
+            let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
+            let stride = self.width as usize * 4;
+            for row in y..(y + h) {
+                let start = row as usize * stride + x as usize * 4;
+                let end = start + w as usize * 4;
+                if end <= px.len() {
+                    tile_pixels.extend_from_slice(&px[start..end]);
+                } else {
+                    tile_pixels.resize(tile_pixels.len() + w as usize * 4, 0);
+                }
+            }
+            return Arc::new(tile_pixels);
+        }
+        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            tile_pixels.extend_from_slice(&PSD_V1_PLACEHOLDER_RGBA);
+        }
+        Arc::new(tile_pixels)
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        if let Some(px) = self.pixels.read().as_ref() {
+            return memory_rgba_preview(self.width, self.height, px, max_w, max_h);
+        }
+        // Do not synthesize a solid-color bootstrap preview: the loader would upload it
+        // and the async HQ preview would flash gray -> image on the first frame.
+        (0, 0, Vec::new())
+    }
+
+    fn generate_full_image_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        self.generate_preview(max_w, max_h)
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        self.pixels.read().clone()
+    }
+
+    fn defers_loader_hq_preview(&self) -> bool {
+        self.pixels.read().is_none()
+    }
+
+    fn wait_for_async_pixels(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let (lock, cvar) = &*self.decode_state;
+        let mut state = lock.lock();
+        let deadline = std::time::Instant::now() + timeout;
+        while matches!(*state, PsdV1DecodeState::Pending) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("PSD decode timed out waiting for async pixels".into());
+            }
+            cvar.wait_for(&mut state, remaining);
+        }
+        match &*state {
+            PsdV1DecodeState::Ready => Ok(()),
+            PsdV1DecodeState::Failed(msg) => Err(msg.clone()),
+            PsdV1DecodeState::Pending => {
+                Err("PSD decode timed out waiting for async pixels".into())
+            }
+        }
     }
 }
 

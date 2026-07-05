@@ -95,6 +95,7 @@ fn load_result_exposes_unified_preview_bundle_without_compat_fields() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
 
@@ -166,6 +167,7 @@ fn preview_result_exposes_refined_sdr_preview_bundle() {
         crate::loader::decode_profile_stub(),
         99,
         Ok(preview.clone()),
+        crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
     );
 
     assert!(update.error.is_none());
@@ -198,6 +200,7 @@ fn preview_result_exposes_refined_hdr_preview_bundle() {
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd: None,
+        sdr_texture_tag: None,
     };
 
     assert!(update.error.is_none());

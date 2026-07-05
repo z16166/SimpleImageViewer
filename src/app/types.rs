@@ -121,11 +121,11 @@ pub(crate) struct AnimationPlayback {
     /// Index in the image_files list that this animation belongs to.
     pub(crate) image_index: usize,
     /// Pre-uploaded GPU textures for each frame.
-    pub(crate) textures: Vec<egui::TextureHandle>,
+    pub(crate) textures: std::sync::Arc<Vec<egui::TextureHandle>>,
     /// Per-frame HDR buffers when the animation uses the HDR / gain-map plane path.
     pub(crate) hdr_frames: Option<Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>>,
     /// Per-frame display duration.
-    pub(crate) delays: Vec<Duration>,
+    pub(crate) delays: std::sync::Arc<Vec<Duration>>,
     /// Currently displayed frame index.
     pub(crate) current_frame: usize,
     /// When the current frame started displaying.
@@ -133,6 +133,13 @@ pub(crate) struct AnimationPlayback {
     /// Per-frame raw CPU pixel buffers (zero-copy clone of Arc handles).
     pub(crate) cpu_frames: Option<Vec<std::sync::Arc<Vec<u8>>>>,
 }
+
+impl AnimationPlayback {
+    pub(crate) fn repaint_after(&self) -> Duration {
+        self.delays[self.current_frame].saturating_sub(self.frame_start.elapsed())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
     Low,
@@ -357,8 +364,6 @@ pub struct ImageViewerApp {
     pub(crate) wgpu_adapter_info: Option<wgpu::AdapterInfo>,
     /// Epoch tracking live `wgpu::Device`/`Queue` instances (not swap-chain format changes).
     pub(crate) current_device_id: u64,
-    /// Last `wgpu::Device` instance pushed to [`ImageLoader`] (detects Device rebuild).
-    pub(crate) loader_wgpu_device: Option<wgpu::Device>,
     pub(crate) hdr_callback_resources_prewarm:
         std::sync::Arc<crate::hdr::renderer::HdrCallbackResourcesPrewarm>,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
@@ -443,6 +448,8 @@ pub struct ImageViewerApp {
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
+    /// Cross-thread queue for deferred HDR plane uploads and CPU gain-map composes.
+    pub(crate) hdr_pending_work: Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
     /// RAW indices awaiting CPU async HQ demosaic (LibRaw refine worker).
     pub(crate) cpu_raw_refinement_pending_indices: HashSet<usize>,
     /// Tiled indices awaiting loader HQ preview generation (PSB/EXR/etc.).
@@ -576,6 +583,15 @@ pub struct ImageViewerApp {
     /// has shrunk; skipping it when the generation is unchanged avoids wasteful
     /// per-frame iteration over sets that can grow to directory-scale (10k+).
     pub(crate) strip_stale_retain_last_generation: u64,
+    /// Reused each strip-thumbnail frame to avoid per-frame Vec allocation when
+    /// releasing resolved cold-awaiting entries.
+    pub(crate) strip_cold_awaiting_scratch: Vec<usize>,
+    /// Reused each strip-thumbnail frame for tiled-index sync/generate and deferred SDR uploads.
+    pub(crate) strip_indices_scratch: Vec<usize>,
+    /// Reused each strip-thumbnail frame for cold candidate collection (output).
+    pub(crate) strip_cold_candidates_scratch: Vec<usize>,
+    /// Dedup guard for [`Self::strip_cold_candidates_scratch`] (at most 32 entries per frame).
+    pub(crate) strip_cold_seen_scratch: Vec<usize>,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
@@ -631,11 +647,18 @@ pub struct ImageViewerApp {
     pub(crate) tile_manager: Option<TileManager>,
     /// Reused each tiled draw frame to avoid per-frame HashSet/Vec allocations.
     pub(crate) tiled_primary_visible_scratch: HashSet<TileCoord>,
-    pub(crate) tiled_visible_coords_scratch: Vec<TileCoord>,
+    pub(crate) tiled_visible_coords_scratch: HashSet<TileCoord>,
+    pub(crate) tiled_visible_tiles_scratch:
+        Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
+    pub(crate) tiled_primary_visible_tiles_scratch:
+        Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
+    pub(crate) tiled_tile_visits_scratch: Vec<(TileCoord, eframe::egui::Rect, eframe::egui::Rect)>,
 
     // Tiled rendering instances decoded during prefetch (bounded by prefetch window; see
     // prefetch_retention::prefetched_tiles_steady_state_cap).
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
+    /// Indices with at least one prefetch eviction cache entry (see `prefetch_resource_index`).
+    pub(crate) prefetch_resource_indices: HashSet<usize>,
 
     // Theme state
     pub(crate) theme_cache: SystemThemeCache,
@@ -766,8 +789,8 @@ pub(crate) struct PendingAnimUpload {
     pub(crate) image_index: usize,
     pub(crate) hdr_frames: Option<Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>>,
     pub(crate) frames: Vec<crate::loader::AnimationFrame>,
-    pub(crate) textures: Vec<egui::TextureHandle>,
-    pub(crate) delays: Vec<std::time::Duration>,
+    pub(crate) textures: std::sync::Arc<Vec<egui::TextureHandle>>,
+    pub(crate) delays: std::sync::Arc<Vec<std::time::Duration>>,
     pub(crate) next_frame: usize,
 }
 

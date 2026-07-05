@@ -228,6 +228,70 @@ fn avif_software_gain_map_decode_defers_compose_to_gpu() {
 
 #[cfg(feature = "avif-native")]
 #[test]
+fn avif_kimono_rotate90_strip_applies_container_orientation_when_sample_present() {
+    use crate::loader::{
+        DirectoryTreeThumbDecodeOptions, generate_directory_tree_thumb_decode_from_path,
+    };
+
+    let path = std::path::Path::new(r"F:\HDR\av1-avif\testFiles\Link-U\kimono.rotate90.avif");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let strip = generate_directory_tree_thumb_decode_from_path(
+        path,
+        128,
+        DirectoryTreeThumbDecodeOptions::default(),
+    )
+    .expect("kimono.rotate90 strip decode");
+    assert_eq!(strip.logical_size, (722, 1024));
+    assert!(
+        strip.preview.height > strip.preview.width,
+        "strip preview must apply irot so portrait logical size matches pixel layout"
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
+fn decode_truncated_elementary_stream_8bpc_avif_when_sample_present() {
+    use crate::hdr::types::HdrToneMapSettings;
+
+    let path = std::path::Path::new(
+        r"F:\HDR\av1-avif\testFiles\Apple\edge_case_testing\non_compliant\truncated_elementary_stream.avif",
+    );
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(path).expect("read avif");
+    let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+    let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
+        .expect("decode truncated elementary stream avif");
+    let w = hdr.width as usize;
+    let h = hdr.height as usize;
+    let cx = w / 2;
+    let avg_r = |y0: usize, y1: usize| -> f32 {
+        let mut sum = 0.0_f32;
+        for y in y0..y1 {
+            sum += hdr.rgba_f32[(y * w + cx) * 4];
+        }
+        sum / (y1 - y0).max(1) as f32
+    };
+    let top_r = avg_r(0, h / 2);
+    let bot_r = avg_r(h / 2, h);
+    eprintln!("truncated_elementary_stream: top_avg_r={top_r:.3} bot_avg_r={bot_r:.3}");
+    assert!(
+        top_r > 0.05 && bot_r > 0.05,
+        "8bpc AVIF must unpack 1 byte/channel RGBA; misreading packed bytes as u16 yields white top / black bottom"
+    );
+    assert!(
+        top_r < 1.5 && bot_r < 1.5,
+        "decoded red channel should stay in normalized float range"
+    );
+}
+
+#[cfg(feature = "avif-native")]
+#[test]
 fn decode_mexico_yuv444_avif_metadata_when_sample_present() {
     use crate::hdr::types::HdrToneMapSettings;
     let path = std::path::Path::new(r"F:\HDR\av1-avif\testFiles\Microsoft\Mexico_YUV444.avif");

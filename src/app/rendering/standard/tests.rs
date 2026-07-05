@@ -173,6 +173,28 @@ fn hdr_curtain_transition_uses_image_rotation() {
 }
 
 #[test]
+fn transition_prev_layout_clamps_union_to_canvas() {
+    let canvas = Rect::from_min_max(Pos2::new(240.0, 0.0), Pos2::new(1000.0, 800.0));
+    let final_dest = Rect::from_center_size(canvas.center(), Vec2::new(400.0, 300.0));
+    let captured_old_dest =
+        Rect::from_center_size(Pos2::new(500.0, 400.0), Vec2::new(400.0, 300.0));
+
+    let (prev_dest, union_rect, has_prev) = resolve_transition_prev_layout(
+        canvas,
+        final_dest,
+        Some(Vec2::new(400.0, 300.0)),
+        Some(captured_old_dest),
+        true,
+        |size, rect| Rect::from_center_size(rect.center(), size),
+    );
+
+    assert!(has_prev);
+    assert_eq!(prev_dest, captured_old_dest);
+    assert!(union_rect.min.x >= canvas.min.x - f32::EPSILON);
+    assert!(union_rect.max.x <= canvas.max.x + f32::EPSILON);
+}
+
+#[test]
 fn transition_prev_layout_uses_captured_outgoing_rect_for_tiled_previews() {
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1024.0, 512.0));
     let wide_new_dest = Rect::from_center_size(screen.center(), Vec2::new(1024.0, 96.0));

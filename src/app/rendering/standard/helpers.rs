@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::rendering::geometry::transition_union_rect;
 use crate::app::rendering::transitions::TransitionParams;
 use eframe::egui::{Rect, Vec2};
 
@@ -43,11 +44,7 @@ pub(super) fn resolve_transition_prev_layout(
     let p_dest = captured_prev_dest
         .or_else(|| prev_size.map(|size| compute_display_rect(size, screen_rect)))
         .unwrap_or(final_dest);
-    let union_rect = if has_prev {
-        p_dest.union(final_dest)
-    } else {
-        final_dest
-    };
+    let union_rect = transition_union_rect(screen_rect, final_dest, p_dest, has_prev);
     (p_dest, union_rect, has_prev)
 }
 

@@ -60,6 +60,7 @@ pub(crate) fn load_static_from_mmap(
     Ok(apply_exif_orientation_to_image_data(
         path,
         make_image_data(DecodedImage::new(width, height, pixels)),
+        Some(mmap),
     ))
 }
 
@@ -115,11 +116,13 @@ pub(crate) fn process_animation_frames(
     Ok(apply_exif_orientation_to_image_data(
         path,
         ImageData::Animated(frames),
+        mmap,
     ))
 }
 
-pub(crate) fn load_gif(
+pub(crate) fn load_gif_from_mmap(
     path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -127,8 +130,7 @@ pub(crate) fn load_gif(
     use image::codecs::gif::GifDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -138,14 +140,24 @@ pub(crate) fn load_gif(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
 }
 
-pub(crate) fn load_png(
+pub(crate) fn load_gif(
     path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_gif_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
+}
+
+pub(crate) fn load_png_from_mmap(
+    path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -153,12 +165,11 @@ pub(crate) fn load_png(
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
 
     if !decoder.is_apng().map_err(|e| e.to_string())? {
-        return load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map);
+        return load_static_from_mmap(path, mmap, hdr_target_capacity, hdr_tone_map);
     }
 
     let raw_frames = decoder
@@ -171,18 +182,28 @@ pub(crate) fn load_png(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
+}
+
+pub(crate) fn load_png(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_png_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
 // Animated WebP
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_webp(
+pub(crate) fn load_webp_from_mmap(
     path: &Path,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
@@ -190,8 +211,7 @@ pub(crate) fn load_webp(
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
-    let mmap = crate::mmap_util::map_file(path)?;
-    let reader = Cursor::new(&mmap[..]);
+    let reader = Cursor::new(mmap);
     let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -201,17 +221,29 @@ pub(crate) fn load_webp(
     process_animation_frames(
         raw_frames,
         path,
-        Some(&mmap),
+        Some(mmap),
         hdr_target_capacity,
         hdr_tone_map,
     )
+}
+
+pub(crate) fn load_webp(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_webp_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
 // PSD / PSB (Photoshop Document / Large Document)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
+pub(crate) fn load_psd(
+    path: &Path,
+    notify: Option<crate::loader::tiled_sources::PsdV1LoadNotify>,
+) -> Result<ImageData, String> {
     // Step 1: Map the file once standardly
     let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
 
@@ -220,11 +252,8 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
         crate::psb_reader::estimate_memory_from_bytes(&mmap)?;
     let estimated_mb = estimated_bytes / BYTES_PER_MB;
 
-    // Step 3: Check available RAM
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let available_mb = sys.available_memory() / BYTES_PER_MB;
+    // Step 3: Check available RAM (cached snapshot; refreshed on the logic thread / monitor changes).
+    let available_mb = crate::system_memory::available_memory_mb();
 
     // Reserve at least 1GB for the OS + app overhead
     let safe_available = available_mb.saturating_sub(BYTES_PER_GB / BYTES_PER_MB);
@@ -251,68 +280,16 @@ pub(crate) fn load_psd(path: &Path) -> Result<ImageData, String> {
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
     } else {
-        // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
-        // Decode on a dedicated thread: `join()` turns any unwinding panic into `Err`, which is
-        // more reliable than `catch_unwind` alone when the loader runs on worker pools / mixed stacks.
-
-        let handle = std::thread::Builder::new()
-            .name("siv-psd-v1".to_string())
-            .spawn(move || {
-                // Must use the same panic-hook suppression as EXR: `setup_panic_hook` calls
-                // `process::exit(1)` on every panic; without suppression, a caught decoder panic
-                // still runs the hook and terminates before `join()` can turn it into `Err`.
-                crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                    let psd_file = psd::Psd::from_bytes(&mmap[..])
-                        .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-                    let w = psd_file.width();
-                    let h = psd_file.height();
-                    let pixels = psd_file.rgba();
-                    Ok((w, h, pixels))
-                })
-            })
-            .map_err(|e| format!("Failed to spawn PSD decoder thread: {e}"))?;
-
-        match handle.join() {
-            Ok(Ok((w, h, pixels))) => {
-                let img = DecodedImage::new(w, h, pixels);
-                Ok(apply_exif_orientation_to_image_data(
-                    path,
-                    make_image_data(img),
-                ))
-            }
-            Ok(Err(e)) => {
-                const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
-                if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
-                    log::error!(
-                        "[Loader] PSD decoder panicked for {}: {}",
-                        path.display(),
-                        msg
-                    );
-                    Err(format!(
-                        "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
-                    ))
-                } else {
-                    Err(e)
-                }
-            }
-            Err(panic_payload) => {
-                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic in psd decode thread".to_string()
-                };
-                log::error!(
-                    "[Loader] PSD decode thread panicked for {}: {}",
-                    path.display(),
-                    msg
-                );
-                Err(format!(
-                    "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
-                ))
-            }
-        }
+        // PSD v1: return a tiled source immediately; full decode runs on REFINEMENT_POOL.
+        log::info!("Using async PSD v1 decode via psd crate");
+        let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
+            mmap,
+            path.to_path_buf(),
+            width,
+            height,
+            notify,
+        );
+        Ok(ImageData::Tiled(source))
     }
 }
 

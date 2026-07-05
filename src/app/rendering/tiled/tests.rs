@@ -179,7 +179,7 @@ fn ready_tile_repaint_is_selected_by_backend() {
 
 #[test]
 fn visible_pending_hdr_tiles_continue_repaint_until_ready() {
-    let visible = vec![TileCoord { col: 3, row: 5 }];
+    let visible = HashSet::from([TileCoord { col: 3, row: 5 }]);
     let pending = HashSet::from([crate::tile_cache::PendingTileKey::new(
         TileCoord { col: 3, row: 5 },
         TilePixelKind::Hdr,
@@ -463,7 +463,8 @@ fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
         tile_visit(5, 3),
     ];
 
-    let ordered = super::prioritize_tile_visits(&primary, &padded);
+    let mut ordered = Vec::new();
+    super::prioritize_tile_visits_into(&mut ordered, &primary, &padded);
     let ordered_coords = ordered
         .iter()
         .map(|(coord, _, _)| *coord)

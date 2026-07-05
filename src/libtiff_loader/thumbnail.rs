@@ -24,6 +24,8 @@ pub(crate) fn extract_embedded_thumbnail(
         let mut best_index = 0;
         let mut best_dim = 0;
         let mut best_pixels = None;
+        let mut raster = Vec::new();
+        let mut pixels = Vec::new();
 
         // Iterate through IFDs to find the best-fitting thumbnail
         let mut dir_idx = 1;
@@ -50,7 +52,12 @@ pub(crate) fn extract_embedded_thumbnail(
                 best_dim = dim;
                 best_index = dir_idx;
 
-                let mut raster = vec![0u32; (tw * th) as usize];
+                let raster_len = (tw * th) as usize;
+                let pixels_len = raster_len * 4;
+                raster.clear();
+                raster.resize(raster_len, 0);
+                pixels.clear();
+                pixels.resize(pixels_len, 0);
                 if lib::TIFFReadRGBAImageOriented(
                     tif,
                     tw,
@@ -60,13 +67,12 @@ pub(crate) fn extract_embedded_thumbnail(
                     0,
                 ) != 0
                 {
-                    let mut pixels = vec![0u8; (tw * th * 4) as usize];
                     std::ptr::copy_nonoverlapping(
                         raster.as_ptr() as *const u8,
                         pixels.as_mut_ptr(),
                         pixels.len(),
                     );
-                    best_pixels = Some((tw as u32, th as u32, pixels));
+                    best_pixels = Some((tw as u32, th as u32, std::mem::take(&mut pixels)));
                 }
             }
             dir_idx += 1;

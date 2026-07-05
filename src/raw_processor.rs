@@ -232,6 +232,23 @@ impl RawProcessor {
         }
     }
 
+    pub fn open_buffer(&mut self, buffer: &[u8]) -> Result<(), String> {
+        if buffer.is_empty() {
+            return Err("empty buffer".to_string());
+        }
+        unsafe {
+            let ret = ffi::libraw_open_buffer(
+                self.data,
+                buffer.as_ptr() as *const std::os::raw::c_void,
+                buffer.len(),
+            );
+            if ret != 0 {
+                return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+            }
+        }
+        Ok(())
+    }
+
     pub fn open<P: AsRef<Path>>(&mut self, path: P) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
@@ -1260,12 +1277,12 @@ pub fn is_raw_extension(ext: &str) -> bool {
 /// LibRaw identifies camera RAW by file content, not extension. Some vendors (e.g. Kodak DCS)
 /// store RAW in `.tif` containers; probe before the generic TIFF decoder so we demosaic IFD0
 /// instead of showing a tiny embedded RGB preview IFD.
-pub fn probe_libraw_can_open(path: &Path) -> bool {
+pub fn probe_libraw_can_open_bytes(bytes: &[u8]) -> bool {
     let mut processor = match RawProcessor::new() {
         Some(p) => p,
         None => return false,
     };
-    if processor.open(path).is_err() {
+    if processor.open_buffer(bytes).is_err() {
         return false;
     }
     let w = processor.width();
@@ -1273,11 +1290,19 @@ pub fn probe_libraw_can_open(path: &Path) -> bool {
     w > 0 && h > 0
 }
 
+pub fn probe_libraw_can_open(path: &Path) -> bool {
+    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+        return false;
+    };
+    probe_libraw_can_open_bytes(mmap.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         RawDisplayMode, RawProcessor, is_raw_extension, probe_libraw_can_open,
-        raw_scene_linear_metadata, unpack_libraw_rgb16_rows_to_rgba_f32,
+        probe_libraw_can_open_bytes, raw_scene_linear_metadata,
+        unpack_libraw_rgb16_rows_to_rgba_f32,
     };
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
     use std::path::Path;
@@ -1423,6 +1448,11 @@ mod tests {
             ag / ng.max(1e-9),
             ab / nb.max(1e-9)
         );
+    }
+
+    #[test]
+    fn probe_libraw_can_open_bytes_false_for_empty_buffer() {
+        assert!(!probe_libraw_can_open_bytes(&[]));
     }
 
     #[test]

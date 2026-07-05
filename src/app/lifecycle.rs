@@ -363,6 +363,8 @@ impl ImageViewerApp {
             std::sync::atomic::Ordering::Relaxed,
         );
         let available_ram_mb = sys.available_memory() / (1024 * 1024);
+        let total_ram_mb = sys.total_memory() / (1024 * 1024);
+        crate::system_memory::publish_startup_memory(available_ram_mb, total_ram_mb);
         let (cpu_cache_mb, hdr_tile_cache_mb) =
             crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
         crate::tile_cache::PIXEL_CACHE
@@ -450,15 +452,17 @@ impl ImageViewerApp {
 
         let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
         let current_device_id = 1_u64;
-        let loader_wgpu_device = cc.wgpu_render_state.as_ref().map(|s| s.device.clone());
+        let hdr_pending_work = crate::hdr::renderer::HdrPendingWorkQueues::new_shared();
         let loader = if let Some(state) = cc.wgpu_render_state.as_ref() {
-            ImageLoader::new().with_wgpu(
-                Some(state.device.clone()),
-                Some(state.queue.clone()),
-                current_device_id,
-            )
-        } else {
             ImageLoader::new()
+                .with_wgpu(
+                    Some(state.device.clone()),
+                    Some(state.queue.clone()),
+                    current_device_id,
+                )
+                .with_hdr_pending_gpu_writes(Arc::clone(&hdr_pending_work))
+        } else {
+            ImageLoader::new().with_hdr_pending_gpu_writes(Arc::clone(&hdr_pending_work))
         };
         // Defer neighbor/current preload until HDR output mode + decode headroom are known.
         // macOS EDR: uses NSScreen *potential* for decode (not dynamic *current*) — see
@@ -496,6 +500,14 @@ impl ImageViewerApp {
             directory_tree_strip_bootstrap_frames: 0,
             strip_preload_cooldown_frames: 0,
             strip_stale_retain_last_generation: u64::MAX,
+            strip_cold_awaiting_scratch: Vec::new(),
+            strip_indices_scratch: Vec::new(),
+            strip_cold_candidates_scratch: Vec::with_capacity(
+                crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+            ),
+            strip_cold_seen_scratch: Vec::with_capacity(
+                crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+            ),
             scanning: false,
             loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
@@ -504,7 +516,6 @@ impl ImageViewerApp {
             wgpu_pipeline_cache,
             wgpu_adapter_info,
             current_device_id,
-            loader_wgpu_device,
             hdr_callback_resources_prewarm,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(
@@ -549,6 +560,7 @@ impl ImageViewerApp {
             main_loader_failed_indices: std::collections::HashSet::new(),
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
+            hdr_pending_work,
             cpu_raw_refinement_pending_indices: std::collections::HashSet::new(),
             hq_tiled_preview_pending_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
@@ -629,8 +641,12 @@ impl ImageViewerApp {
             installed_display_modes: std::collections::HashMap::new(),
             tile_manager: None,
             tiled_primary_visible_scratch: HashSet::new(),
-            tiled_visible_coords_scratch: Vec::new(),
+            tiled_visible_coords_scratch: HashSet::new(),
+            tiled_visible_tiles_scratch: Vec::new(),
+            tiled_primary_visible_tiles_scratch: Vec::new(),
+            tiled_tile_visits_scratch: Vec::new(),
             prefetched_tiles: std::collections::HashMap::new(),
+            prefetch_resource_indices: HashSet::new(),
             theme_cache,
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),

@@ -68,9 +68,7 @@ pub(crate) struct ExifThumbProbeDetail {
 }
 
 pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut reader = std::io::BufReader::new(file);
-    exif_probe_image(extract_exif_thumbnail_from_reader(&mut reader, path))
+    exif_probe_image(extract_exif_thumbnail_probed(path))
 }
 
 pub(crate) fn extract_exif_thumbnail_from_bytes(bytes: &[u8], path: &Path) -> Option<DecodedImage> {
@@ -98,18 +96,21 @@ pub(crate) fn extract_exif_thumbnail_from_mmap_probed(
 pub(crate) fn extract_exif_thumbnail_probed(
     path: &Path,
 ) -> (Option<DecodedImage>, ExifThumbProbe, ExifThumbProbeDetail) {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => {
-            return (
-                None,
-                ExifThumbProbe::ContainerUnreadable,
-                ExifThumbProbeDetail::default(),
-            );
+    if let Ok(mmap) = crate::mmap_util::map_file(path) {
+        return extract_exif_thumbnail_from_mmap_probed(&mmap, path);
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            use std::io::Cursor;
+            let mut reader = Cursor::new(bytes);
+            extract_exif_thumbnail_from_reader(&mut reader, path)
         }
-    };
-    let mut reader = std::io::BufReader::new(file);
-    extract_exif_thumbnail_from_reader(&mut reader, path)
+        Err(_) => (
+            None,
+            ExifThumbProbe::ContainerUnreadable,
+            ExifThumbProbeDetail::default(),
+        ),
+    }
 }
 
 fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(

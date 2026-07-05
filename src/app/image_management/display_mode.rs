@@ -47,6 +47,58 @@ impl ImageViewerApp {
         self.installed_display_mode(index) == Some(RenderShape::Tiled)
     }
 
+    /// True when an index needs a live [`TileManager`], including after prefetch eviction
+    /// cleared `installed_display_modes` but the texture cache still marks tiled pyramids.
+    pub(crate) fn index_requires_tile_manager(&self, index: usize) -> bool {
+        self.index_uses_tiled_pipeline(index)
+            || self.texture_cache.needs_tile_manager(index)
+            || self.hdr_tiled_source_cache.contains_key(&index)
+    }
+
+    /// Whether tiled HQ sync can stop (loader refine satisfied, not on-demand SDR alone).
+    pub(crate) fn tiled_hq_preview_requirement_met(&self, index: usize) -> bool {
+        let display = self.display_requirements_for_index(index);
+        if crate::loader::output_mode_is_hdr(display.output_mode) {
+            return self.hdr_tiled_preview_cache.contains_key(&index)
+                && self.texture_cache.satisfies_tiled_sdr_hq(index);
+        }
+        if self.texture_cache.satisfies_tiled_sdr_hq(index) {
+            return true;
+        }
+        let Some(tm) = self
+            .tile_manager
+            .as_ref()
+            .filter(|tm| tm.image_index == index)
+        else {
+            return false;
+        };
+        if tm.preview_texture.is_none() {
+            return false;
+        }
+        match self.texture_cache.cached_preview_stage(index) {
+            Some(crate::loader::PreviewStage::Refined) => true,
+            None => {
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] tm_preview_without_cache_stage idx={} cache_tag={:?} hq_pending={} current={}",
+                    index,
+                    self.texture_cache.cached_buffer_tag(index),
+                    self.hq_tiled_preview_pending_indices.contains(&index),
+                    self.current_index,
+                );
+                !self.hq_tiled_preview_pending_indices.contains(&index)
+            }
+            Some(crate::loader::PreviewStage::Initial) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] tm_preview_cache_stage_initial idx={} cache_tag={:?} current={}",
+                    index,
+                    self.texture_cache.cached_buffer_tag(index),
+                    self.current_index,
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) fn index_uses_animated_pipeline(&self, index: usize) -> bool {
         self.installed_display_mode(index) == Some(RenderShape::Animated)
     }
@@ -61,6 +113,20 @@ impl ImageViewerApp {
             && self.animation.as_ref().is_some_and(|anim| {
                 anim.image_index == self.current_index && anim.textures.len() > 1
             })
+    }
+
+    /// Time until the active animation frame should advance; used to schedule repaints.
+    pub(crate) fn next_animation_repaint_after(&self) -> Option<std::time::Duration> {
+        let anim = self.animation.as_ref()?;
+        if anim.image_index != self.current_index || anim.textures.len() <= 1 {
+            return None;
+        }
+        Some(anim.repaint_after())
+    }
+
+    /// Animated HDR planes use synchronous GPU upload on cache miss (main-branch behavior).
+    pub(crate) fn hdr_plane_sync_upload_on_cache_miss(&self) -> bool {
+        self.animation_needs_repaint_wake()
     }
 
     pub(crate) fn animation_upload_pending_for_current(&self) -> bool {
@@ -114,9 +180,9 @@ impl ImageViewerApp {
                 }
                 self.animation = Some(crate::app::AnimationPlayback {
                     image_index: cached.image_index,
-                    textures: cached.textures.clone(),
+                    textures: std::sync::Arc::clone(&cached.textures),
                     hdr_frames: cached.hdr_frames.clone(),
-                    delays: cached.delays.clone(),
+                    delays: std::sync::Arc::clone(&cached.delays),
                     current_frame: 0,
                     frame_start: std::time::Instant::now(),
                     cpu_frames: cached.cpu_frames.clone(),
@@ -134,9 +200,9 @@ impl ImageViewerApp {
         let uploaded = pending.textures.len();
         self.animation = Some(crate::app::AnimationPlayback {
             image_index: pending.image_index,
-            textures: pending.textures.clone(),
+            textures: std::sync::Arc::clone(&pending.textures),
             hdr_frames: pending.hdr_frames.clone(),
-            delays: pending.delays.clone(),
+            delays: std::sync::Arc::clone(&pending.delays),
             current_frame: 0,
             frame_start: std::time::Instant::now(),
             cpu_frames: Some(
@@ -148,6 +214,45 @@ impl ImageViewerApp {
                     .collect(),
             ),
         });
+    }
+
+    /// Extend active playback as deferred SDR textures finish uploading.
+    pub(crate) fn sync_active_animation_from_pending(&mut self, idx: usize) {
+        let Some(pending) = self.pending_anim_frames.get(&idx) else {
+            return;
+        };
+        if pending.textures.len() <= 1 {
+            return;
+        }
+        let Some(anim) = self.animation.as_mut() else {
+            return;
+        };
+        if anim.image_index != idx || pending.textures.len() <= anim.textures.len() {
+            return;
+        }
+        anim.textures = std::sync::Arc::clone(&pending.textures);
+        anim.delays = std::sync::Arc::clone(&pending.delays);
+        match anim.cpu_frames.as_mut() {
+            Some(cpu_frames) => {
+                cpu_frames.extend(
+                    pending
+                        .frames
+                        .iter()
+                        .skip(cpu_frames.len())
+                        .map(|frame| frame.arc_pixels()),
+                );
+            }
+            None => {
+                anim.cpu_frames = Some(
+                    pending
+                        .frames
+                        .iter()
+                        .take(pending.textures.len())
+                        .map(|frame| frame.arc_pixels())
+                        .collect(),
+                );
+            }
+        }
     }
 }
 
@@ -223,6 +328,98 @@ mod tests {
     }
 
     #[test]
+    fn hdr_tiled_hq_requires_tone_mapped_sdr_texture() {
+        use crate::hdr::types::{
+            HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+        };
+        use crate::loader::{PreviewStage, TextureCacheInsert, TexturePreviewBufferTag};
+        use std::sync::Arc;
+
+        let mut app = app_with_mode(0, RenderShape::Tiled);
+        app.hdr_capabilities.output_mode = crate::hdr::types::HdrOutputMode::WindowsScRgb;
+        app.hdr_tiled_preview_cache.insert(
+            0,
+            Arc::new(HdrImageBuffer {
+                width: 64,
+                height: 32,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::default(),
+                rgba_f32: Arc::new(vec![1.0; 64 * 32 * 4]),
+            }),
+        );
+        assert!(
+            !app.tiled_hq_preview_requirement_met(0),
+            "HDR cache alone must not satisfy HQ gate"
+        );
+
+        let ctx = eframe::egui::Context::default();
+        let color_image =
+            eframe::egui::ColorImage::from_rgba_unmultiplied([64, 32], &vec![128u8; 64 * 32 * 4]);
+        let handle = ctx.load_texture("hq", color_image, eframe::egui::TextureOptions::LINEAR);
+        app.texture_cache.insert(
+            0,
+            handle,
+            TextureCacheInsert {
+                orig_w: 4096,
+                orig_h: 2048,
+                needs_tile_manager: true,
+                buffer_tag: TexturePreviewBufferTag::TiledRefinedLoader,
+                stage: PreviewStage::Refined,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
+        assert!(app.tiled_hq_preview_requirement_met(0));
+    }
+
+    #[test]
+    fn tm_preview_without_cache_stage_counts_as_hq_when_not_pending() {
+        use crate::loader::{PreviewStage, TextureCacheInsert, TexturePreviewBufferTag};
+        use crate::tile_cache::TileManager;
+        use std::sync::Arc;
+
+        let mut app = app_with_mode(0, RenderShape::Tiled);
+        let ctx = eframe::egui::Context::default();
+        let color_image =
+            eframe::egui::ColorImage::from_rgba_unmultiplied([64, 32], &vec![128u8; 64 * 32 * 4]);
+        let handle = ctx.load_texture("tm_only", color_image, eframe::egui::TextureOptions::LINEAR);
+        let mut tm = TileManager::with_source(
+            0,
+            sample_tiled_profile(),
+            Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
+        );
+        tm.preview_texture = Some(handle);
+        app.tile_manager = Some(tm);
+        assert!(
+            app.tiled_hq_preview_requirement_met(0),
+            "live tile-manager preview without cache stage should satisfy HQ when not pending"
+        );
+
+        app.texture_cache.insert(
+            0,
+            ctx.load_texture(
+                "bootstrap",
+                eframe::egui::ColorImage::from_rgba_unmultiplied([8, 8], &vec![0u8; 256]),
+                eframe::egui::TextureOptions::LINEAR,
+            ),
+            TextureCacheInsert {
+                orig_w: 4096,
+                orig_h: 2048,
+                needs_tile_manager: true,
+                buffer_tag: TexturePreviewBufferTag::TiledBootstrap,
+                stage: PreviewStage::Initial,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
+        assert!(
+            !app.tiled_hq_preview_requirement_met(0),
+            "bootstrap cache stage should block HQ until refined"
+        );
+    }
+
+    #[test]
     fn stale_animated_reload_only_for_animated_mode_with_texture_only() {
         let mut app = app_with_mode(0, RenderShape::Animated);
         let ctx = eframe::egui::Context::default();
@@ -235,6 +432,8 @@ mod tests {
                 orig_w: 1,
                 orig_h: 1,
                 needs_tile_manager: false,
+                buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                stage: crate::loader::PreviewStage::Refined,
                 current_index: 0,
                 total_count: 1,
             },
@@ -261,8 +460,8 @@ mod tests {
                     AnimationFrame::new(1, 1, vec![0; 4], Duration::from_millis(100)),
                     AnimationFrame::new(1, 1, vec![1; 4], Duration::from_millis(100)),
                 ],
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -285,8 +484,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -322,8 +521,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                    textures: std::sync::Arc::new(Vec::new()),
+                    delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );

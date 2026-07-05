@@ -21,12 +21,43 @@ use crate::hdr::types::{
 use super::constants::*;
 use libtiff_viewer as lib;
 use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::loader::{DecodedImage, ImageData};
 
+#[inline]
+fn sample_bytes_span(idx: usize, bps: u16) -> Option<(usize, usize)> {
+    let (offset, len) = match bps {
+        8 => (idx, 1),
+        16 => (idx.checked_mul(2)?, 2),
+        24 => (idx.checked_mul(3)?, 3),
+        32 => (idx.checked_mul(4)?, 4),
+        64 => (idx.checked_mul(8)?, 8),
+        _ => return None,
+    };
+    Some((offset, len))
+}
+
+#[inline]
+fn sample_bytes_in_buf(buf: &[u8], idx: usize, bps: u16) -> bool {
+    match sample_bytes_span(idx, bps) {
+        Some((offset, len)) => offset.saturating_add(len) <= buf.len(),
+        None => false,
+    }
+}
+
+fn checked_rgba32f_len(width: u32, height: u32) -> Result<usize, String> {
+    (width as u64)
+        .checked_mul(height as u64)
+        .and_then(|p| p.checked_mul(4))
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| format!("TIFF output buffer size overflow for {width}x{height}"))
+}
+
 pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f64 {
+    if !sample_bytes_in_buf(buf, idx, bps) {
+        return 0.0;
+    }
     match (bps, format) {
         (16, _) => unsafe {
             std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
@@ -69,6 +100,8 @@ pub(crate) struct TiffPaletteMaps {
     pub(crate) r_map: *mut u16,
     pub(crate) g_map: *mut u16,
     pub(crate) b_map: *mut u16,
+    /// Number of palette entries (`1 << bps` for indexed color).
+    pub(crate) entries: usize,
 }
 
 pub(crate) fn process_scanline_contig(
@@ -126,6 +159,13 @@ pub(crate) fn process_scanline_contig(
             }
             PHOTO_PALETTE => {
                 let idx = get_sample_value(buf, x, params, true) as usize;
+                if palette.r_map.is_null()
+                    || palette.g_map.is_null()
+                    || palette.b_map.is_null()
+                    || idx >= palette.entries
+                {
+                    continue;
+                }
                 unsafe {
                     let r_ptr = palette.r_map.add(idx);
                     let g_ptr = palette.g_map.add(idx);
@@ -202,6 +242,7 @@ mod tests {
             r_map: std::ptr::null_mut(),
             g_map: std::ptr::null_mut(),
             b_map: std::ptr::null_mut(),
+            entries: 0,
         }
     }
 
@@ -317,6 +358,9 @@ fn get_sample_value(
     if bps < 16 && bps != 8 && format == FORMAT_UINT {
         let bit_offset = idx * bps as usize;
         let byte_idx = bit_offset / 8;
+        if byte_idx >= buf.len() {
+            return 0;
+        }
         let bit_in_byte = bit_offset % 8;
 
         let mut val: u32 = (buf[byte_idx] as u32) << 16;
@@ -352,41 +396,79 @@ fn get_sample_value(
     // CRITICAL: libtiff ALWAYS returns 16, 32, and 64-bit samples in the host's NATIVE byte order!
     // We MUST NOT perform manual swap_bytes on them.
     let f_val: f64 = match (bps, format) {
-        (8, _) => buf[idx] as f64,
-        (16, _) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
-        },
-        (24, _) => {
-            // libtiff doesn't natively swap 24-bit arrays. We must swap based on _swapped flag.
-            let b0 = buf[idx * 3] as u32;
-            let b1 = buf[idx * 3 + 1] as u32;
-            let b2 = buf[idx * 3 + 2] as u32;
-            let val = if _swapped {
-                (b0 << 16) | (b1 << 8) | b2
+        (8, _) => {
+            if idx >= buf.len() {
+                0.0
             } else {
-                (b2 << 16) | (b1 << 8) | b0
-            };
-            val as f64
+                buf[idx] as f64
+            }
         }
-        (32, 1) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64
-        },
-        (32, 2) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64
-        },
-        (32, 3) => unsafe {
-            f32::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(idx * 4) as *const u32
-            )) as f64
-        },
-        (64, 1) => unsafe {
-            std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64
-        },
-        (64, 3) => unsafe {
-            f64::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(idx * 8) as *const u64
-            ))
-        },
+        (16, _) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64 }
+            }
+        }
+        (24, _) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                // libtiff doesn't natively swap 24-bit arrays. We must swap based on _swapped flag.
+                let b0 = buf[idx * 3] as u32;
+                let b1 = buf[idx * 3 + 1] as u32;
+                let b2 = buf[idx * 3 + 2] as u32;
+                let val = if _swapped {
+                    (b0 << 16) | (b1 << 8) | b2
+                } else {
+                    (b2 << 16) | (b1 << 8) | b0
+                };
+                val as f64
+            }
+        }
+        (32, 1) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64 }
+            }
+        }
+        (32, 2) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64 }
+            }
+        }
+        (32, 3) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe {
+                    f32::from_bits(std::ptr::read_unaligned(
+                        buf.as_ptr().add(idx * 4) as *const u32
+                    )) as f64
+                }
+            }
+        }
+        (64, 1) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64 }
+            }
+        }
+        (64, 3) => {
+            if !sample_bytes_in_buf(buf, idx, bps) {
+                0.0
+            } else {
+                unsafe {
+                    f64::from_bits(std::ptr::read_unaligned(
+                        buf.as_ptr().add(idx * 8) as *const u64
+                    ))
+                }
+            }
+        }
         _ => 0.0,
     };
 
@@ -467,7 +549,47 @@ pub(crate) fn tiff_uint16_rgb_scene_linear_eligible(
 
 #[inline]
 fn read_uint16_sample(buf: &[u8], sample_index: usize) -> u16 {
+    if !sample_bytes_in_buf(buf, sample_index, 16) {
+        return 0;
+    }
     unsafe { std::ptr::read_unaligned(buf.as_ptr().add(sample_index * 2) as *const u16) }
+}
+
+#[inline]
+pub(crate) fn tiff_uint_default_sample_max(bps: u16) -> f64 {
+    match bps {
+        64 => 18446744073709551615.0,
+        32 => 4294967295.0,
+        24 => 16777215.0,
+        16 => 65535.0,
+        8 => 255.0,
+        _ => 1.0,
+    }
+}
+
+/// Re-normalize scene-linear f32 pixels after a provisional full-range decode.
+fn rescale_scene_linear_rgba32f(
+    out: &mut [f32],
+    provisional_smin: f64,
+    provisional_smax: f64,
+    final_smin: f64,
+    final_smax: f64,
+    rescale_alpha: bool,
+) {
+    let provisional_range = (provisional_smax - provisional_smin).max(1.0);
+    let final_range = (final_smax - final_smin).max(1.0);
+    if (final_smin - provisional_smin).abs() <= 1.0 && (final_smax - provisional_smax).abs() <= 1.0
+    {
+        return;
+    }
+    let scale = (provisional_range / final_range) as f32;
+    let offset = ((provisional_smin - final_smin) / final_range) as f32;
+    let channels = if rescale_alpha { 4 } else { 3 };
+    for px in out.chunks_exact_mut(4) {
+        for channel in px.iter_mut().take(channels) {
+            *channel = (*channel * scale + offset).clamp(0.0, 1.0);
+        }
+    }
 }
 
 pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
@@ -508,34 +630,17 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
         }
     }
 
-    if !smax_provided {
-        let mut actual_min = f64::MAX;
-        let mut actual_max = f64::MIN;
-        for y in 0..height {
-            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-                return Err(format!(
-                    "16-bit RGB TIFF: scan failed at row {y} (min/max pass)"
-                ));
-            }
-            for x in 0..width as usize {
-                let base = x * spp as usize;
-                for c in 0..3 {
-                    let val = read_uint16_sample(&buf, base + c) as f64;
-                    actual_min = actual_min.min(val);
-                    actual_max = actual_max.max(val);
-                }
-            }
-        }
-        if actual_max > actual_min {
-            if !smin_provided {
-                smin = actual_min;
-            }
-            smax = actual_max;
-        }
-    }
+    let provisional_smin = if smin_provided { smin } else { 0.0 };
+    let provisional_smax = if smax_provided {
+        smax
+    } else {
+        tiff_uint_default_sample_max(16)
+    };
+    let provisional_range = (provisional_smax - provisional_smin).max(1.0);
 
-    let range = (smax - smin).max(1.0);
-    let mut out = vec![0.0_f32; width as usize * height as usize * 4];
+    let mut actual_min = f64::MAX;
+    let mut actual_max = f64::MIN;
+    let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
     for y in 0..height {
         if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
             return Err(format!("16-bit RGB TIFF: scan failed at row {y}"));
@@ -547,16 +652,39 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
             let dst = x * 4;
             for c in 0..3 {
                 let val = read_uint16_sample(&buf, base + c) as f64;
-                row[dst + c] = (((val - smin) / range).clamp(0.0, 1.0)) as f32;
+                if !smax_provided {
+                    actual_min = actual_min.min(val);
+                    actual_max = actual_max.max(val);
+                }
+                row[dst + c] =
+                    (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32;
             }
             row[dst + 3] = if spp >= 4 {
-                (((read_uint16_sample(&buf, base + 3) as f64 - smin) / range).clamp(0.0, 1.0))
-                    as f32
+                let val = read_uint16_sample(&buf, base + 3) as f64;
+                if !smax_provided {
+                    actual_min = actual_min.min(val);
+                    actual_max = actual_max.max(val);
+                }
+                (((val - provisional_smin) / provisional_range).clamp(0.0, 1.0)) as f32
             } else {
                 1.0
             };
         }
     }
+
+    if !smax_provided && actual_max > actual_min {
+        let final_smin = if smin_provided { smin } else { actual_min };
+        let final_smax = actual_max;
+        rescale_scene_linear_rgba32f(
+            &mut out,
+            provisional_smin,
+            provisional_smax,
+            final_smin,
+            final_smax,
+            spp >= 4,
+        );
+    }
+
     Ok(out)
 }
 
@@ -598,7 +726,7 @@ fn rgba8_to_scene_linear_hdr_buffer(
 }
 
 pub(crate) struct CameraTiffHdrUpgrade<'a> {
-    pub(crate) path: &'a Path,
+    pub(crate) file_bytes: &'a [u8],
     pub(crate) hdr_target_capacity: f32,
     #[allow(dead_code)]
     pub(crate) tone_map: &'a HdrToneMapSettings,
@@ -613,7 +741,7 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     input: CameraTiffHdrUpgrade<'_>,
 ) -> Result<Option<ImageData>, String> {
     let CameraTiffHdrUpgrade {
-        path,
+        file_bytes,
         hdr_target_capacity,
         tone_map: _,
         photo,
@@ -625,8 +753,12 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
     if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         || photo != PHOTO_RGB
         || bps != 8
-        || !crate::loader::tiff_may_be_camera_raw(path)
-        || crate::raw_processor::probe_libraw_can_open(path)
+        || !crate::loader::tiff_may_be_camera_raw_bytes(file_bytes)
+    {
+        return Ok(None);
+    }
+    if crate::loader::tiff_ifd0_suggests_libraw_raw(file_bytes)
+        && crate::raw_processor::probe_libraw_can_open_bytes(file_bytes)
     {
         return Ok(None);
     }
@@ -644,6 +776,9 @@ pub(crate) fn try_camera_tiff_rgb8_hdr_upgrade(
 
 #[inline]
 fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
+    if !sample_bytes_in_buf(buf, sample_index, bps) {
+        return 0.0;
+    }
     let v = match bps {
         16 => {
             let bits = unsafe {
@@ -758,7 +893,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
         None
     };
 
-    let mut out = vec![0.0_f32; width as usize * height as usize * 4];
+    let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
 
     if config == CONFIG_CONTIG {
         for y in 0..height {
@@ -930,7 +1065,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
         spp,
         sample_format,
     } = params;
-    let mut out = vec![0.0_f32; width as usize * height as usize * 4];
+    let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
     if scanline_size <= 0 {
         return Err("LogL/LogLuv: invalid TIFFScanlineSize".to_string());

@@ -2349,6 +2349,17 @@ impl super::Instance {
     }
 }
 
+pub struct VulkanDeviceFromRawParams<'a> {
+    pub raw_device: ash::Device,
+    pub drop_callback: Option<crate::DropCallback>,
+    pub enabled_extensions: &'a [&'static CStr],
+    pub features: wgt::Features,
+    pub limits: &'a wgt::Limits,
+    pub memory_hints: &'a wgt::MemoryHints,
+    pub family_index: u32,
+    pub queue_index: u32,
+}
+
 impl super::Adapter {
     pub fn raw_physical_device(&self) -> vk::PhysicalDevice {
         self.raw
@@ -2419,18 +2430,20 @@ impl super::Adapter {
     /// - `enabled_extensions` must be a superset of `required_device_extensions()`.
     /// - If `drop_callback` is [`None`], wgpu-hal will take ownership of `raw_device`. If
     ///   `drop_callback` is [`Some`], `raw_device` must be valid until the callback is called.
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn device_from_raw(
         &self,
-        raw_device: ash::Device,
-        drop_callback: Option<crate::DropCallback>,
-        enabled_extensions: &[&'static CStr],
-        features: wgt::Features,
-        limits: &wgt::Limits,
-        memory_hints: &wgt::MemoryHints,
-        family_index: u32,
-        queue_index: u32,
+        params: VulkanDeviceFromRawParams<'_>,
     ) -> Result<crate::OpenDevice<super::Api>, crate::DeviceError> {
+        let VulkanDeviceFromRawParams {
+            raw_device,
+            drop_callback,
+            enabled_extensions,
+            features,
+            limits,
+            memory_hints,
+            family_index,
+            queue_index,
+        } = params;
         let mem_properties = {
             profiling::scope!("vkGetPhysicalDeviceMemoryProperties");
             unsafe {
@@ -2876,16 +2889,16 @@ impl super::Adapter {
         }
 
         unsafe {
-            self.device_from_raw(
+            self.device_from_raw(VulkanDeviceFromRawParams {
                 raw_device,
-                None,
-                &enabled_extensions,
+                drop_callback: None,
+                enabled_extensions: &enabled_extensions,
                 features,
                 limits,
                 memory_hints,
-                family_info.queue_family_index,
-                0,
-            )
+                family_index: family_info.queue_family_index,
+                queue_index: 0,
+            })
         }
     }
 }

@@ -181,6 +181,12 @@ pub const IPC_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 /// Deadline for the underlying connection attempt.
 pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Maximum wait for PSD v1 async full decode when building a directory-tree strip preview.
+/// Strip workers run on a 4-thread pool; this must stay well below main-loader decode
+/// deadlines to avoid thread-pool starvation.
+pub const PSD_V1_ASYNC_DECODE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
 /// Maximum size for the log file (10MB) before rotation.
 pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 

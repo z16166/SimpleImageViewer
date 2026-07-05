@@ -13,7 +13,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -51,7 +51,7 @@ pub(crate) fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
 #[derive(Debug)]
 pub(crate) struct HdrTileCache {
     entries: HashMap<HdrTileCacheKey, Arc<HdrTileBuffer>>,
-    lru: VecDeque<HdrTileCacheKey>,
+    evictable_lru: crate::lru_order::LruOrder<HdrTileCacheKey>,
     protected: HashSet<HdrTileCacheKey>,
     current_bytes: usize,
     max_bytes: usize,
@@ -61,7 +61,7 @@ impl HdrTileCache {
     pub(crate) fn new(max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            lru: VecDeque::new(),
+            evictable_lru: crate::lru_order::LruOrder::default(),
             protected: HashSet::new(),
             current_bytes: 0,
             max_bytes,
@@ -77,17 +77,14 @@ impl HdrTileCache {
     pub(crate) fn insert(&mut self, key: HdrTileCacheKey, tile: Arc<HdrTileBuffer>) {
         if let Some(old_tile) = self.entries.remove(&key) {
             self.current_bytes = self.current_bytes.saturating_sub(tile_len_bytes(&old_tile));
-            self.lru.retain(|existing| *existing != key);
+            self.evictable_lru.remove(key);
         }
 
         let bytes = tile_len_bytes(&tile);
-        while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
-            let evict_pos = self
-                .lru
-                .iter()
-                .position(|existing| !self.protected.contains(existing))
-                .unwrap_or(0);
-            let Some(evicted_key) = self.lru.remove(evict_pos) else {
+        while !self.evictable_lru.is_empty()
+            && self.current_bytes.saturating_add(bytes) > self.max_bytes
+        {
+            let Some(evicted_key) = self.evictable_lru.pop_oldest() else {
                 break;
             };
             if let Some(evicted_tile) = self.entries.remove(&evicted_key) {
@@ -99,21 +96,33 @@ impl HdrTileCache {
 
         if self.current_bytes.saturating_add(bytes) <= self.max_bytes {
             self.entries.insert(key, tile);
-            self.lru.push_back(key);
+            if !self.protected.contains(&key) {
+                self.evictable_lru.touch(key);
+            }
             self.current_bytes += bytes;
         }
     }
 
     fn touch(&mut self, key: HdrTileCacheKey) {
-        if let Some(pos) = self.lru.iter().position(|existing| *existing == key) {
-            self.lru.remove(pos);
+        if !self.protected.contains(&key) {
+            self.evictable_lru.touch(key);
         }
-        self.lru.push_back(key);
     }
 
     pub(crate) fn set_protected_keys(&mut self, keys: impl IntoIterator<Item = HdrTileCacheKey>) {
-        self.protected.clear();
-        self.protected.extend(keys);
+        let new_protected: HashSet<_> = keys.into_iter().collect();
+
+        for key in self.protected.difference(&new_protected) {
+            if self.entries.contains_key(key) {
+                self.evictable_lru.touch(*key);
+            }
+        }
+
+        for key in new_protected.difference(&self.protected) {
+            self.evictable_lru.remove(*key);
+        }
+
+        self.protected = new_protected;
     }
 
     #[cfg(test)]

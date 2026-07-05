@@ -106,8 +106,15 @@ fn skip_old_rle(reader: &mut Cursor<&[u8]>, first: Rgbe8Pixel, width: usize) -> 
     while x < width {
         let pixel = read_rgbe(reader)?;
         if pixel.rgb == [1, 1, 1] {
-            let count = pixel.exponent as usize * run_multiplier;
-            run_multiplier *= 256;
+            if run_multiplier > width {
+                return Err("Radiance HDR old RLE run multiplier overflow".to_string());
+            }
+            let count = (pixel.exponent as usize)
+                .checked_mul(run_multiplier)
+                .ok_or_else(|| "Radiance HDR old RLE run count overflow".to_string())?;
+            run_multiplier = run_multiplier
+                .checked_mul(256)
+                .ok_or_else(|| "Radiance HDR old RLE run multiplier overflow".to_string())?;
             if x + count > width {
                 return Err(format!(
                     "Wrong Radiance HDR scanline length: got {}, expected {width}",
@@ -180,9 +187,17 @@ fn decode_old_rle<R: Read>(
     while x < scanline.len() {
         let pixel = read_rgbe(reader)?;
         if pixel.rgb == [1, 1, 1] {
-            let count = pixel.exponent as usize * run_multiplier;
-            run_multiplier *= 256;
-            if x + count > scanline.len() {
+            let line_len = scanline.len();
+            if run_multiplier > line_len {
+                return Err("Radiance HDR old RLE run multiplier overflow".to_string());
+            }
+            let count = (pixel.exponent as usize)
+                .checked_mul(run_multiplier)
+                .ok_or_else(|| "Radiance HDR old RLE run count overflow".to_string())?;
+            run_multiplier = run_multiplier
+                .checked_mul(256)
+                .ok_or_else(|| "Radiance HDR old RLE run multiplier overflow".to_string())?;
+            if x + count > line_len {
                 return Err(format!(
                     "Wrong Radiance HDR scanline length: got {}, expected {}",
                     x + count,

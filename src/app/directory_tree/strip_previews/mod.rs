@@ -26,10 +26,9 @@ use crate::loader::{DecodedImage, PreviewStage};
 use super::{
     BOOTSTRAP_STRIP_VISIBLE_ROW_CAP, DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS,
     DirectoryTreeListPreviewLayout, MAX_COLD_STRIP_GENERATES_PER_FRAME,
-    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
-    MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME, MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES,
-    MAX_STRIP_GENERATE_INFLIGHT, MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP,
-    MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
+    MAX_COLD_STRIP_GENERATES_PER_FRAME_BOOTSTRAP, MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME,
+    MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES, MAX_STRIP_GENERATE_INFLIGHT,
+    MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
 mod checks;
@@ -81,12 +80,14 @@ impl ImageViewerApp {
     }
 
     fn release_resolved_strip_cold_awaiting_main_loader(&mut self) {
-        let pending: Vec<usize> = self
-            .directory_tree_strip_cold_awaiting_main_loader
-            .iter()
-            .copied()
-            .collect();
-        for index in pending {
+        self.strip_cold_awaiting_scratch.clear();
+        self.strip_cold_awaiting_scratch.extend(
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .iter()
+                .copied(),
+        );
+        for i in 0..self.strip_cold_awaiting_scratch.len() {
+            let index = self.strip_cold_awaiting_scratch[i];
             self.release_strip_cold_awaiting_main_loader_if_resolved(index);
         }
     }
@@ -143,16 +144,18 @@ impl ImageViewerApp {
                 || self.directory_tree_strip_generate_inflight.contains(index)
         });
 
-        let mut tiled_indices: Vec<usize> = self.prefetched_tiles.keys().copied().collect();
+        self.strip_indices_scratch.clear();
+        self.strip_indices_scratch
+            .extend(self.prefetched_tiles.keys().copied());
         if let Some(tm) = &self.tile_manager
-            && !tiled_indices.contains(&tm.image_index)
+            && !self.strip_indices_scratch.contains(&tm.image_index)
         {
-            tiled_indices.push(tm.image_index);
+            self.strip_indices_scratch.push(tm.image_index);
         }
         let current = self.current_index;
         let file_count = self.image_files.len();
         let total = file_count.max(1);
-        tiled_indices.sort_by_key(|&idx| {
+        self.strip_indices_scratch.sort_by_key(|&idx| {
             if idx == current {
                 0
             } else {
@@ -162,13 +165,15 @@ impl ImageViewerApp {
             }
         });
 
-        for index in &tiled_indices {
-            let Some(logical) = self.directory_tree_strip_logical_size(*index) else {
+        let tiled_count = self.strip_indices_scratch.len();
+        for i in 0..tiled_count {
+            let index = self.strip_indices_scratch[i];
+            let Some(logical) = self.directory_tree_strip_logical_size(index) else {
                 continue;
             };
             if self
                 .directory_tree_strip_cache
-                .invalidate_if_invalid(*index, logical)
+                .invalidate_if_invalid(index, logical)
             {
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
@@ -177,10 +182,10 @@ impl ImageViewerApp {
                     logical.0,
                     logical.1
                 );
-                self.directory_tree_strip_tiled_attempted.remove(index);
+                self.directory_tree_strip_tiled_attempted.remove(&index);
             }
-            self.try_sync_strip_from_tile_manager_preview(*index);
-            self.try_sync_strip_from_texture_cache(*index);
+            self.try_sync_strip_from_tile_manager_preview(index);
+            self.try_sync_strip_from_texture_cache(index);
         }
 
         if file_count > 0 {
@@ -220,7 +225,9 @@ impl ImageViewerApp {
         }
 
         let mut generated_this_frame = 0usize;
-        for index in tiled_indices {
+        let tiled_count = self.strip_indices_scratch.len();
+        for i in 0..tiled_count {
+            let index = self.strip_indices_scratch[i];
             let Some(logical) = self.directory_tree_strip_logical_size(index) else {
                 continue;
             };
@@ -242,22 +249,23 @@ impl ImageViewerApp {
         // per-frame iteration when many HDR images have deferred SDR fallbacks.
         let deferred_upload_budget = MAX_DEFERRED_SDR_STRIP_UPLOADS_PER_FRAME;
         if deferred_upload_budget > 0 {
-            let deferred_indices: Vec<usize> = {
-                let file_count = self.image_files.len();
-                let current = self.current_index.min(file_count.saturating_sub(1));
-                let mut keys: Vec<usize> = self.deferred_sdr_uploads.keys().copied().collect();
-                keys.sort_by_key(|&idx| {
-                    if file_count == 0 || idx == current {
-                        return 0;
-                    }
-                    let forward = (idx + file_count - current) % file_count;
-                    let backward = (current + file_count - idx) % file_count;
-                    forward.min(backward)
-                });
-                keys
-            };
+            let file_count = self.image_files.len();
+            let current = self.current_index.min(file_count.saturating_sub(1));
+            self.strip_indices_scratch.clear();
+            self.strip_indices_scratch
+                .extend(self.deferred_sdr_uploads.keys().copied());
+            self.strip_indices_scratch.sort_by_key(|&idx| {
+                if file_count == 0 || idx == current {
+                    return 0;
+                }
+                let forward = (idx + file_count - current) % file_count;
+                let backward = (current + file_count - idx) % file_count;
+                forward.min(backward)
+            });
             let mut deferred_processed = 0usize;
-            for index in deferred_indices {
+            let deferred_count = self.strip_indices_scratch.len();
+            for i in 0..deferred_count {
+                let index = self.strip_indices_scratch[i];
                 if deferred_processed >= deferred_upload_budget {
                     break;
                 }
@@ -286,6 +294,7 @@ impl ImageViewerApp {
                     PreviewStage::Initial,
                     self.directory_tree_strip_logical_size(index),
                     StripPreviewBufferTag::PreloadSdrFallback,
+                    None,
                 );
                 deferred_processed += 1;
             }
@@ -299,7 +308,7 @@ impl ImageViewerApp {
         let inflight_room =
             max_inflight.saturating_sub(self.directory_tree_strip_generate_inflight.len());
         let schedule_budget = max_cold_per_frame.min(inflight_room);
-        let cold_candidates = self.collect_cold_strip_thumbnail_candidates(
+        let cold_count = self.collect_cold_strip_thumbnail_candidates(
             visible_row_range,
             scroll_to_current_pending,
             bootstrap_visible,
@@ -323,10 +332,11 @@ impl ImageViewerApp {
         let mut cold_scheduled = 0usize;
         let allow_cold_strip = !self.scanning || bootstrap_visible;
         if allow_cold_strip {
-            for index in cold_candidates {
+            for i in 0..cold_count {
                 if cold_scheduled >= schedule_budget {
                     break;
                 }
+                let index = self.strip_cold_candidates_scratch[i];
                 self.try_generate_cold_directory_tree_strip_thumbnail(index);
                 cold_scheduled += 1;
             }

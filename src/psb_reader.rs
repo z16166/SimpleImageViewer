@@ -36,6 +36,13 @@ use std::sync::Arc;
 
 use simple_image_viewer::simd_swizzle;
 
+/// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
+const PSD_MAX_DIMENSION: u32 = 300_000;
+/// Adobe Photoshop PSD/PSB maximum channel count.
+const PSD_MAX_CHANNELS: u32 = 56;
+/// Bytes per RGBA pixel when assembling the composite image.
+const RGBA_BYTES_PER_PIXEL: usize = 4;
+
 /// Decoded PSB composite image (Full in-memory).
 #[allow(dead_code)]
 pub struct PsbComposite {
@@ -141,6 +148,10 @@ impl PsbTiledSource {
 #[allow(dead_code)]
 pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
+    let file_size = file
+        .metadata()
+        .map_err(|e| format!("Cannot stat file: {e}"))?
+        .len();
     let mut r = BufReader::new(file);
 
     // ── Section 1: File Header ─────────────────────────────────────
@@ -167,6 +178,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     let depth = read_u16(&mut r)?; // bits per channel (8, 16, 32)
     let color_mode = read_u16(&mut r)?;
 
+    validate_psd_dimensions(width, height, channels)?;
+
     if depth != 8 {
         return Err(format!(
             "Only 8-bit depth is supported for direct viewing (this file is {depth}-bit). \
@@ -186,13 +199,11 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
 
     // ── Section 2: Color Mode Data ─────────────────────────────────
     let cm_len = read_u32(&mut r)?;
-    r.seek(SeekFrom::Current(cm_len as i64))
-        .map_err(|e| format!("Seek error: {e}"))?;
+    seek_forward(&mut r, cm_len as u64)?;
 
     // ── Section 3: Image Resources ─────────────────────────────────
     let ir_len = read_u32(&mut r)?;
-    r.seek(SeekFrom::Current(ir_len as i64))
-        .map_err(|e| format!("Seek error: {e}"))?;
+    seek_forward(&mut r, ir_len as u64)?;
 
     // ── Section 4: Layer and Mask Information ───────────────────────
     // PSD uses u32 length, PSB uses u64 length
@@ -201,17 +212,16 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     } else {
         read_u32(&mut r)? as u64
     };
-    r.seek(SeekFrom::Current(lm_len as i64))
-        .map_err(|e| format!("Seek error: {e}"))?;
+    seek_forward(&mut r, lm_len)?;
 
     // ── Section 5: Image Data (the flattened composite) ────────────
     let compression = read_u16(&mut r)?;
 
     // Interleave channels directly into RGBA
-    let pixel_count = width as usize * height as usize;
-
-    // First: row byte counts for RLE (if applicable)
-    let total_rows = height as usize * channels as usize;
+    let pixel_count = checked_pixel_count(width, height)?;
+    let total_rows = (height as usize)
+        .checked_mul(channels as usize)
+        .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
     let mut row_counts = Vec::new();
     if compression == 1 {
         row_counts.reserve(total_rows);
@@ -223,6 +233,11 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
             };
             row_counts.push(count);
         }
+        let remaining = file_size.saturating_sub(
+            r.stream_position()
+                .map_err(|e| format!("Stream position error: {e}"))?,
+        );
+        validate_rle_total_bytes(&row_counts, remaining)?;
     }
 
     // Step 1: Read all channel data into planar buffers (Sequential I/O)
@@ -284,7 +299,7 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     }
 
     // Step 2: Interleave planar buffers into final RGBA buffer (SIMD Swizzling)
-    let mut rgba = vec![255u8; pixel_count * 4];
+    let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
     for row in 0..height as usize {
         let start = row * width as usize;
         let end = start + width as usize;
@@ -374,27 +389,23 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     let depth = read_u16(&mut cursor)?;
     let color_mode = read_u16(&mut cursor)?;
 
+    validate_psd_dimensions(width, height, channels)?;
+
     if depth != 8 {
         return Err("Only 8-bit depth supported for tiled mode".into());
     }
 
     // Skip Sections 2, 3, 4
     let cm_len = read_u32(&mut cursor)?;
-    cursor
-        .seek(SeekFrom::Current(cm_len as i64))
-        .map_err(|e| e.to_string())?;
+    seek_forward(&mut cursor, cm_len as u64).map_err(|e| e.to_string())?;
     let ir_len = read_u32(&mut cursor)?;
-    cursor
-        .seek(SeekFrom::Current(ir_len as i64))
-        .map_err(|e| e.to_string())?;
+    seek_forward(&mut cursor, ir_len as u64).map_err(|e| e.to_string())?;
     let lm_len = if is_psb {
         read_u64(&mut cursor)?
     } else {
         read_u32(&mut cursor)? as u64
     };
-    cursor
-        .seek(SeekFrom::Current(lm_len as i64))
-        .map_err(|e| e.to_string())?;
+    seek_forward(&mut cursor, lm_len).map_err(|e| e.to_string())?;
 
     // Image Data Section start
     let compression = read_u16(&mut cursor)?;
@@ -416,7 +427,9 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         }
         1 => {
             // RLE: row counts follow, then the data
-            let total_rows = channels as usize * height as usize;
+            let total_rows = (channels as usize)
+                .checked_mul(height as usize)
+                .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
             let mut counts = Vec::with_capacity(total_rows);
             for _ in 0..total_rows {
                 let cnt = if is_psb {
@@ -426,6 +439,9 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 };
                 counts.push(cnt);
             }
+            let remaining = mmap.len().saturating_sub(cursor.position() as usize) as u64;
+            let row_counts_usize: Vec<usize> = counts.iter().map(|&c| c as usize).collect();
+            validate_rle_total_bytes(&row_counts_usize, remaining)?;
             let data_start = cursor.position();
             let mut running_offset = data_start;
             for cnt in counts {
@@ -696,6 +712,60 @@ fn unpack_bits(data: &[u8], expected_len: usize) -> Vec<u8> {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+fn validate_psd_dimensions(width: u32, height: u32, channels: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("PSD/PSB dimensions must be non-zero".into());
+    }
+    if width > PSD_MAX_DIMENSION || height > PSD_MAX_DIMENSION {
+        return Err(format!(
+            "PSD/PSB dimensions {width}x{height} exceed maximum {PSD_MAX_DIMENSION}"
+        ));
+    }
+    if channels == 0 || channels > PSD_MAX_CHANNELS {
+        return Err(format!(
+            "PSD/PSB channel count {channels} is out of range (1..={PSD_MAX_CHANNELS})"
+        ));
+    }
+    Ok(())
+}
+
+fn checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
+    (width as u64)
+        .checked_mul(height as u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| "PSD/PSB pixel count overflow".into())
+}
+
+fn checked_rgba_len(pixel_count: usize) -> Result<usize, String> {
+    pixel_count
+        .checked_mul(RGBA_BYTES_PER_PIXEL)
+        .ok_or_else(|| "PSD/PSB RGBA buffer size overflow".into())
+}
+
+fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
+    if len > i64::MAX as u64 {
+        return Err(format!(
+            "PSD/PSB section length {len} exceeds seekable range"
+        ));
+    }
+    r.seek(SeekFrom::Current(len as i64))
+        .map_err(|e| format!("Seek error: {e}"))?;
+    Ok(())
+}
+
+fn validate_rle_total_bytes(row_counts: &[usize], remaining: u64) -> Result<(), String> {
+    let total = row_counts.iter().try_fold(0u64, |acc, &len| {
+        acc.checked_add(len as u64)
+            .ok_or_else(|| "PSD/PSB RLE total length overflow".to_string())
+    })?;
+    if total > remaining {
+        return Err(format!(
+            "PSD/PSB RLE compressed data ({total} bytes) exceeds remaining file size ({remaining} bytes)"
+        ));
+    }
+    Ok(())
+}
+
 fn read_u16(r: &mut impl Read) -> Result<u16, String> {
     let mut buf = [0u8; 2];
     r.read_exact(&mut buf)
@@ -734,6 +804,11 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
     let height = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
     let width = u32::from_be_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
 
-    let rgba = width as u64 * height as u64 * 4;
+    validate_psd_dimensions(width, height, channels)?;
+
+    let rgba = (width as u64)
+        .checked_mul(height as u64)
+        .and_then(|p| p.checked_mul(RGBA_BYTES_PER_PIXEL as u64))
+        .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
     Ok((width, height, channels, rgba))
 }

@@ -77,8 +77,26 @@ pub(crate) fn load_avif_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
-    load_avif_with_target_capacity_outcome(
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    load_avif_with_target_capacity_from_mmap(
         path,
+        &mmap,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+    )
+}
+
+pub(crate) fn load_avif_with_target_capacity_from_mmap(
+    path: &Path,
+    mmap: &memmap2::Mmap,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+) -> Result<ImageData, String> {
+    load_avif_with_target_capacity_outcome_from_mmap(
+        path,
+        mmap,
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -94,8 +112,28 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<AvifLoadOutcome, String> {
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    load_avif_with_target_capacity_outcome_from_mmap(
+        path,
+        &mmap,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        bootstrap_animation,
+    )
+}
+
+pub(crate) fn load_avif_with_target_capacity_outcome_from_mmap(
+    path: &Path,
+    mmap: &memmap2::Mmap,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+    bootstrap_animation: bool,
+) -> Result<AvifLoadOutcome, String> {
     load_avif_with_target_capacity_outcome_impl(
         path,
+        &mmap[..],
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -149,7 +187,11 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
         let Ok(frames) = frames else {
             return;
         };
-        let image = apply_exif_orientation_to_image_data(&job.path, ImageData::HdrAnimated(frames));
+        let image = apply_exif_orientation_to_image_data(
+            &job.path,
+            ImageData::HdrAnimated(frames),
+            Some(&job.bytes),
+        );
         log::info!(
             "[Loader] AVIF image sequence remainder: {} frames — {}",
             decode.total_frame_count,
@@ -167,6 +209,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
+            staged_gpu_plane_upload: false,
         };
         let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
     });
@@ -183,6 +226,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
 
 fn hdr_animated_from_sequence_decode(
     path: &Path,
+    bytes: &[u8],
     decode: crate::hdr::avif::AvifSequenceDecode,
 ) -> Result<ImageData, String> {
     let frames: Vec<HdrAnimationFrame> = decode
@@ -205,11 +249,13 @@ fn hdr_animated_from_sequence_decode(
     Ok(apply_exif_orientation_to_image_data(
         path,
         ImageData::HdrAnimated(frames),
+        Some(bytes),
     ))
 }
 
 fn load_avif_with_target_capacity_outcome_impl(
     path: &Path,
+    bytes: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
@@ -217,10 +263,6 @@ fn load_avif_with_target_capacity_outcome_impl(
 ) -> Result<AvifLoadOutcome, String> {
     #[cfg(feature = "avif-native")]
     {
-        let mmap =
-            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
-        let bytes = mmap.as_ref();
-
         let gain_map_probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes);
         let skip_embedded_sdr = crate::hdr::avif::path_is_avif_image_sequence(path)
             || matches!(
@@ -261,7 +303,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                     } else {
                         None
                     };
-                let image = hdr_animated_from_sequence_decode(path, decode)?;
+                let image = hdr_animated_from_sequence_decode(path, bytes, decode)?;
                 return Ok(AvifLoadOutcome {
                     image,
                     sequence_remainder: remainder,
@@ -307,8 +349,9 @@ fn load_avif_with_target_capacity_outcome_impl(
                             "[Loader] libavif rejected container/brands — trying libheif for {}",
                             path.display()
                         );
-                        return load_heif_hdr_aware(
+                        return load_heif_hdr_aware_from_bytes(
                             path,
+                            bytes,
                             hdr_target_capacity,
                             hdr_tone_map,
                             crate::hdr::heif::HeifHdrDecodeDiag::default(),
@@ -334,6 +377,7 @@ fn load_avif_with_target_capacity_outcome_impl(
     {
         let _ = (
             path,
+            bytes,
             hdr_target_capacity,
             hdr_tone_map,
             prefer_embedded_sdr_master,
@@ -351,6 +395,24 @@ pub(crate) fn load_jxl_with_target_capacity(
 ) -> Result<ImageData, String> {
     load_jxl_with_target_capacity_outcome(
         path,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        false,
+    )
+    .map(|outcome| outcome.image)
+}
+
+pub(crate) fn load_jxl_with_target_capacity_from_mmap(
+    path: &Path,
+    mmap: &memmap2::Mmap,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+) -> Result<ImageData, String> {
+    load_jxl_with_target_capacity_outcome_from_mmap(
+        path,
+        mmap,
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -378,6 +440,26 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<JxlLoadOutcome, String> {
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
+    load_jxl_with_target_capacity_outcome_from_mmap(
+        path,
+        &mmap,
+        hdr_target_capacity,
+        hdr_tone_map,
+        prefer_embedded_sdr_master,
+        bootstrap_animation,
+    )
+}
+
+pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
+    path: &Path,
+    mmap: &memmap2::Mmap,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+    bootstrap_animation: bool,
+) -> Result<JxlLoadOutcome, String> {
     #[cfg(feature = "jpegxl")]
     {
         let try_embedded_sdr_master = crate::loader::should_use_embedded_sdr_master_load(
@@ -385,8 +467,9 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
             hdr_target_capacity,
         );
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
+        let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity_from_bytes(
             path,
+            &mmap[..],
             decode_capacity,
             hdr_target_capacity,
             hdr_tone_map,
@@ -404,7 +487,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
             None
         };
         Ok(JxlLoadOutcome {
-            image: apply_exif_orientation_to_image_data(path, output.image),
+            image: apply_exif_orientation_to_image_data(path, output.image, Some(&mmap[..])),
             remainder_job,
         })
     }
@@ -413,6 +496,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     {
         let _ = (
             path,
+            mmap,
             hdr_target_capacity,
             hdr_tone_map,
             prefer_embedded_sdr_master,
@@ -456,6 +540,7 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
+            staged_gpu_plane_upload: false,
         };
         let _ = tx.send(LoaderOutput::Image(Box::new(load_result)));
     });
@@ -464,7 +549,7 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
 pub(crate) fn load_heif_hdr_aware(
     path: &Path,
     hdr_target_capacity: f32,
-    _hdr_tone_map: HdrToneMapSettings,
+    hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
@@ -472,18 +557,76 @@ pub(crate) fn load_heif_hdr_aware(
     {
         let mmap = crate::mmap_util::map_file(path)
             .map_err(|err| format!("Failed to read HEIF: {err}"))?;
+        load_heif_hdr_aware_from_mmap(
+            path,
+            &mmap,
+            hdr_target_capacity,
+            hdr_tone_map,
+            diag,
+            prefer_embedded_sdr_master,
+        )
+    }
+
+    #[cfg(not(feature = "heif-native"))]
+    {
+        let _ = (
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+            diag,
+            prefer_embedded_sdr_master,
+        );
+        Err(
+            "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
+                .to_string(),
+        )
+    }
+}
+
+pub(crate) fn load_heif_hdr_aware_from_mmap(
+    path: &Path,
+    mmap: &memmap2::Mmap,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
+    prefer_embedded_sdr_master: bool,
+) -> Result<ImageData, String> {
+    load_heif_hdr_aware_from_bytes(
+        path,
+        &mmap[..],
+        hdr_target_capacity,
+        hdr_tone_map,
+        diag,
+        prefer_embedded_sdr_master,
+    )
+}
+
+pub(crate) fn load_heif_hdr_aware_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+    hdr_target_capacity: f32,
+    _hdr_tone_map: HdrToneMapSettings,
+    diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
+    prefer_embedded_sdr_master: bool,
+) -> Result<ImageData, String> {
+    #[cfg(feature = "heif-native")]
+    {
         let try_embedded = crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
         );
         match crate::hdr::heif::load_heif_with_optional_embedded_sdr_from_bytes(
-            &mmap[..],
+            bytes,
             path,
             hdr_target_capacity,
             diag,
             try_embedded,
         ) {
-            Ok(image) => Ok(apply_exif_orientation_to_image_data(path, image)),
+            Ok(image) => Ok(apply_exif_orientation_to_image_data(
+                path,
+                image,
+                Some(bytes),
+            )),
             Err(err) => {
                 log::warn!(
                     "[Loader] libheif decode failed for {}: {err}",
@@ -498,6 +641,7 @@ pub(crate) fn load_heif_hdr_aware(
     {
         let _ = (
             path,
+            bytes,
             hdr_target_capacity,
             hdr_tone_map,
             diag,

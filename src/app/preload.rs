@@ -32,9 +32,6 @@ pub(crate) const CACHE_SIZE: usize =
 /// Max CPU-side SDR previews queued for deferred GPU upload (neighbors + HDR fallbacks).
 /// Independent of preload direction limits so tuning one does not silently change the other.
 pub(crate) const MAX_DEFERRED_SDR_UPLOADS: usize = 12;
-/// Avoid refreshing sysinfo RAM stats on every preload schedule during rapid navigation.
-pub(crate) const PRELOAD_MEMORY_REFRESH_MIN_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(1);
 
 /// Decode-time Ultra HDR headroom for loader spawn and cache invalidation.
 ///

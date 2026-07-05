@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, ImageLoader, LoaderOutputSender, TileInFlightKey, TileRequest,
-    should_spawn_load_task,
+    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_WORKER_IDLE_POLL,
+    LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey, TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -31,15 +31,47 @@ use crate::loader::{
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+#[cfg(feature = "preload-debug")]
+fn preload_debug_hq_refinement_skip(
+    index: usize,
+    when: &'static str,
+    worker_profile: &DecodeProfile,
+    loading: &Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+    path_label: &str,
+) {
+    let inflight_epoch = loading
+        .lock()
+        .get(&index)
+        .map(|entry| entry.profile.profile_epoch);
+    crate::preload_debug!(
+        "[PreloadDebug][Refine] skip idx={} when={} worker_epoch={} inflight_epoch={:?} path={}",
+        index,
+        when,
+        worker_profile.profile_epoch,
+        inflight_epoch,
+        path_label,
+    );
+}
+
+#[cfg(not(feature = "preload-debug"))]
+#[inline]
+fn preload_debug_hq_refinement_skip(
+    _index: usize,
+    _when: &'static str,
+    _worker_profile: &DecodeProfile,
+    _loading: &Arc<Mutex<HashMap<usize, InFlightLoad>>>,
+    _path_label: &str,
+) {
+}
 
 /// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
 struct CurrentImageOsThreadGuard(Arc<AtomicUsize>);
@@ -69,10 +101,12 @@ struct LoadWorkerInput {
     wgpu_device_id_live: Arc<AtomicU64>,
     hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
+    hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
 }
 
 impl ImageLoader {
     pub fn new() -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, rx) = crossbeam_channel::unbounded();
         let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
             crossbeam_channel::unbounded();
@@ -136,19 +170,42 @@ impl ImageLoader {
         let embedded_iso_gain_map_sdr_master = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
-        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
+        let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
+            Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
+        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new(Arc::clone(
+            &shutdown,
+        )));
+        let (worker_lifetime, refine_tx) = LoaderWorkerLifetime::new(
+            Arc::clone(&shutdown),
+            refine_tx,
+            Arc::clone(&delayed_fallback),
+            Arc::clone(&tile_queue),
+            Arc::clone(&raw_open_prefetch),
+        );
+        let worker_lifetime = Arc::new(worker_lifetime);
         {
             let state = Arc::clone(&delayed_fallback);
-            let _ = std::thread::Builder::new()
+            let shutdown_worker = Arc::clone(&shutdown);
+            let workers = Arc::clone(&worker_lifetime);
+            if let Ok(handle) = std::thread::Builder::new()
                 .name("loader-fallback".to_string())
                 .spawn(move || {
                     let (lock, cvar) = &*state;
                     loop {
+                        if shutdown_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let mut job = {
                             let mut g = lock.lock();
                             loop {
                                 while g.is_none() {
-                                    cvar.wait(&mut g);
+                                    if shutdown_worker.load(Ordering::Acquire) {
+                                        return;
+                                    }
+                                    cvar.wait_for(&mut g, LOADER_WORKER_IDLE_POLL);
+                                    if shutdown_worker.load(Ordering::Acquire) {
+                                        return;
+                                    }
                                 }
                                 if let Some(j) = g.take() {
                                     break j;
@@ -156,15 +213,23 @@ impl ImageLoader {
                             }
                         };
                         loop {
-                            std::thread::sleep(Duration::from_millis(50));
+                            if shutdown_worker.load(Ordering::Acquire) {
+                                return;
+                            }
                             let mut g = lock.lock();
+                            let wait_result = cvar.wait_for(&mut g, FALLBACK_DEBOUNCE);
+                            if shutdown_worker.load(Ordering::Acquire) {
+                                return;
+                            }
                             if let Some(newer) = g.take() {
                                 job = newer;
                                 drop(g);
                                 continue;
                             }
                             drop(g);
-                            break;
+                            if wait_result.timed_out() {
+                                break;
+                            }
                         }
 
                         {
@@ -201,6 +266,7 @@ impl ImageLoader {
                             hdr_target_capacity: job.hdr_target_capacity,
                             hdr_tone_map: job.hdr_tone_map,
                             raw_open_prefetch: Arc::clone(&job.raw_open_prefetch),
+                            hdr_pending_gpu_writes: job.hdr_pending_gpu_writes.clone(),
                             wgpu_device: job.wgpu_device.clone(),
                             wgpu_queue: job.wgpu_queue.clone(),
                             wgpu_device_id_at_spawn: job.wgpu_device_id_at_spawn,
@@ -214,11 +280,12 @@ impl ImageLoader {
                             ),
                         });
                     }
-                });
+                })
+            {
+                workers.register_worker(handle);
+            }
         }
 
-        let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
-            Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
         // Shared set of tiles currently being decoded — prevents duplicate work across workers
         let in_flight: Arc<Mutex<std::collections::HashSet<TileInFlightKey>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -240,19 +307,30 @@ impl ImageLoader {
             let tx = tx.clone();
             let plan_ref = Arc::clone(&preload_plan);
             let flight = Arc::clone(&in_flight);
+            let shutdown_worker = Arc::clone(&shutdown);
+            let workers = Arc::clone(&worker_lifetime);
 
-            std::thread::Builder::new()
+            if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("tile-worker-{}", i))
                 .spawn(move || {
                     #[cfg(target_os = "windows")]
                     let _com = crate::wic::ComGuard::new();
 
                     loop {
+                        if shutdown_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let request = {
                             let (lock, cvar) = &*queue;
                             let mut heap = lock.lock();
                             while heap.is_empty() {
-                                cvar.wait(&mut heap);
+                                if shutdown_worker.load(Ordering::Acquire) {
+                                    return;
+                                }
+                                cvar.wait_for(&mut heap, LOADER_WORKER_IDLE_POLL);
+                                if shutdown_worker.load(Ordering::Acquire) {
+                                    return;
+                                }
                             }
                             if let Some(req) = heap.pop() {
                                 req
@@ -430,195 +508,216 @@ impl ImageLoader {
                         }));
                     }
                 })
-                .ok();
+            {
+                workers.register_worker(handle);
+            }
         }
 
         // Start dedicated Background Refinement Worker (Throttled)
         let worker_tx = tx.clone();
         let worker_plan = Arc::clone(&preload_plan);
-        let _ = std::thread::Builder::new()
+        let shutdown_worker = Arc::clone(&shutdown);
+        let workers = Arc::clone(&worker_lifetime);
+        if let Ok(handle) = std::thread::Builder::new()
             .name("refinement-worker".to_string())
             .spawn(move || {
-                while let Ok(req) = refine_rx.recv() {
-                    let snapshot_epoch = worker_plan.profile_epoch();
-                    if req.decode_profile.profile_epoch < snapshot_epoch {
-                        log::debug!(
-                            "[Refinement] Skipping stale profile epoch for {:?} ({} < {})",
-                            req.path.file_name().unwrap_or_default(),
-                            req.decode_profile.profile_epoch,
-                            snapshot_epoch
-                        );
-                        continue;
+                loop {
+                    if shutdown_worker.load(Ordering::Acquire) {
+                        break;
                     }
-                    if !worker_plan.index_in_window(req.index) {
-                        continue;
-                    }
-
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
-                        req.index,
-                        req.hdr_target_capacity,
-                        req.path.display()
-                    );
-
-                    // 2. Perform HQ demosaic at full develop resolution.
-                    let limit = hq_preview_max_side();
-                    log::debug!(
-                        "[Refinement] Starting HQ demosaic for {:?} (limit={})",
-                        req.path.file_name().unwrap_or_default(),
-                        limit,
-                    );
-                    let t0 = std::time::Instant::now();
-
-                    let mut processor = match RawProcessor::new() {
-                        Some(p) => p,
-                        None => {
-                            log::error!("[Refinement] Failed to create RawProcessor");
-                            continue;
-                        }
-                    };
-
-                    match processor.open(&req.path) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            log::error!(
-                                "[Refinement] Failed to open {:?}: {}",
-                                req.path.file_name().unwrap_or_default(),
-                                e
-                            );
-                            continue;
-                        }
-                    }
-
-                    let user_flip = req.orientation_override.unwrap_or(0);
-                    processor.set_user_flip(user_flip);
-                    if let Err(err) = processor.unpack() {
-                        log::error!(
-                            "[Refinement] Failed to unpack {:?}: {}",
-                            req.path.file_name().unwrap_or_default(),
-                            err
-                        );
-                        continue;
-                    }
-
-                    let develop_result = {
-                        let started = std::time::Instant::now();
-                        processor
-                            .develop_scene_linear_hdr()
-                            .and_then(|hdr| {
-                                finalize_raw_hq_hdr_buffer(
-                                    hdr,
-                                    req.logical_width,
-                                    req.logical_height,
-                                )
-                            })
-                            .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
-                    };
-
-                    match develop_result {
-                        Ok((hdr, cpu_demosaic_ms)) => {
-                            let elapsed = t0.elapsed();
-                            let preview_w = hdr.width;
-                            let preview_h = hdr.height;
-
+                    match refine_rx.recv_timeout(LOADER_WORKER_IDLE_POLL) {
+                        Ok(req) => {
                             let snapshot_epoch = worker_plan.profile_epoch();
                             if req.decode_profile.profile_epoch < snapshot_epoch {
                                 log::debug!(
-                                    "[Refinement] Discarding stale HQ HDR develop result for {:?} (epoch {} < {})",
+                                    "[Refinement] Skipping stale profile epoch for {:?} ({} < {})",
                                     req.path.file_name().unwrap_or_default(),
                                     req.decode_profile.profile_epoch,
                                     snapshot_epoch
                                 );
                                 continue;
                             }
-
-                            if let Some(slot) = req.hdr_developed_image.as_ref() {
-                                *slot.write() = Some(hdr.clone());
+                            if !worker_plan.index_in_window(req.index) {
+                                continue;
                             }
 
-                            let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
-                                Ok(fb) => fb,
+                            crate::preload_debug!(
+                                "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
+                                req.index,
+                                req.hdr_target_capacity,
+                                req.path.display()
+                            );
+
+                            // 2. Perform HQ demosaic at full develop resolution.
+                            let limit = hq_preview_max_side();
+                            log::debug!(
+                                "[Refinement] Starting HQ demosaic for {:?} (limit={})",
+                                req.path.file_name().unwrap_or_default(),
+                                limit,
+                            );
+                            let t0 = std::time::Instant::now();
+
+                            let mut processor = match RawProcessor::new() {
+                                Some(p) => p,
+                                None => {
+                                    log::error!("[Refinement] Failed to create RawProcessor");
+                                    continue;
+                                }
+                            };
+
+                            match processor.open(&req.path) {
+                                Ok(()) => {}
                                 Err(e) => {
                                     log::error!(
-                                        "[Refinement] HQ HDR SDR fallback failed for {:?}: {}",
+                                        "[Refinement] Failed to open {:?}: {}",
                                         req.path.file_name().unwrap_or_default(),
                                         e
                                     );
                                     continue;
                                 }
-                            };
-                            let preview = DecodedImage::from_hdr_sdr_fallback(
-                                hdr.width,
-                                hdr.height,
-                                fb,
-                            );
-                            let tile_pixels = preview.rgba().to_vec();
-                            let dynamic = match image::ImageBuffer::from_raw(
-                                hdr.width,
-                                hdr.height,
-                                tile_pixels,
-                            ) {
-                                Some(buf) => DynamicImage::ImageRgba8(buf),
-                                None => {
-                                    log::error!(
-                                        "[Refinement] Failed to build tile buffer from HQ HDR fallback"
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            {
-                                let mut dev_lock = req.developed_image.write();
-                                *dev_lock = Some(dynamic);
                             }
 
-                            let bundle = PreviewBundle::refined()
-                                .with_hdr(std::sync::Arc::new(hdr))
-                                .with_sdr(preview);
-                            let refine_osd = crate::loader::RawOsdInfo::refine_complete(
-                                preview_w,
-                                preview_h,
-                                cpu_demosaic_ms,
-                            );
-                            let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                index: req.index,
-                                decode_profile: req.decode_profile.clone(),
-                                source_key: req.source_key,
-                                preview_bundle: bundle,
-                                error: None,
-                                cpu_demosaic_ms: Some(cpu_demosaic_ms),
-                                raw_bootstrap_osd: Some(refine_osd),
-                            }));
-                            let _ =
-                                worker_tx.send(LoaderOutput::Refined(req.index));
-                            crate::preload_debug!(
-                                "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
-                                req.index,
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64(),
-                                req.path.display()
-                            );
-                            log::debug!(
-                                "[Refinement] HQ HDR completed {}x{} in {:.1}s",
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64()
-                            );
+                            let user_flip = req.orientation_override.unwrap_or(0);
+                            processor.set_user_flip(user_flip);
+                            if let Err(err) = processor.unpack() {
+                                log::error!(
+                                    "[Refinement] Failed to unpack {:?}: {}",
+                                    req.path.file_name().unwrap_or_default(),
+                                    err
+                                );
+                                continue;
+                            }
+
+                            let develop_result = {
+                                let started = std::time::Instant::now();
+                                processor
+                                    .develop_scene_linear_hdr()
+                                    .and_then(|hdr| {
+                                        finalize_raw_hq_hdr_buffer(
+                                            hdr,
+                                            req.logical_width,
+                                            req.logical_height,
+                                        )
+                                    })
+                                    .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
+                            };
+
+                            match develop_result {
+                                Ok((hdr, cpu_demosaic_ms)) => {
+                                    let elapsed = t0.elapsed();
+                                    let preview_w = hdr.width;
+                                    let preview_h = hdr.height;
+
+                                    let snapshot_epoch = worker_plan.profile_epoch();
+                                    if req.decode_profile.profile_epoch < snapshot_epoch {
+                                        log::debug!(
+                                            "[Refinement] Discarding stale HQ HDR develop result for {:?} (epoch {} < {})",
+                                            req.path.file_name().unwrap_or_default(),
+                                            req.decode_profile.profile_epoch,
+                                            snapshot_epoch
+                                        );
+                                        continue;
+                                    }
+
+                                    if let Some(slot) = req.hdr_developed_image.as_ref() {
+                                        *slot.write() = Some(hdr.clone());
+                                    }
+
+                                    let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
+                                        Ok(fb) => fb,
+                                        Err(e) => {
+                                            log::error!(
+                                                "[Refinement] HQ HDR SDR fallback failed for {:?}: {}",
+                                                req.path.file_name().unwrap_or_default(),
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let preview = DecodedImage::from_hdr_sdr_fallback(
+                                        hdr.width,
+                                        hdr.height,
+                                        fb,
+                                    );
+                                    let tile_pixels = preview.rgba().to_vec();
+                                    let dynamic = match image::ImageBuffer::from_raw(
+                                        hdr.width,
+                                        hdr.height,
+                                        tile_pixels,
+                                    ) {
+                                        Some(buf) => DynamicImage::ImageRgba8(buf),
+                                        None => {
+                                            log::error!(
+                                                "[Refinement] Failed to build tile buffer from HQ HDR fallback"
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    {
+                                        let mut dev_lock = req.developed_image.write();
+                                        *dev_lock = Some(dynamic);
+                                    }
+
+                                    let bundle = PreviewBundle::refined()
+                                        .with_hdr(std::sync::Arc::new(hdr))
+                                        .with_sdr(preview);
+                                    let refine_osd = crate::loader::RawOsdInfo::refine_complete(
+                                        preview_w,
+                                        preview_h,
+                                        cpu_demosaic_ms,
+                                    );
+                                    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+                                        index: req.index,
+                                        decode_profile: req.decode_profile.clone(),
+                                        source_key: req.source_key,
+                                        preview_bundle: bundle,
+                                        error: None,
+                                        cpu_demosaic_ms: Some(cpu_demosaic_ms),
+                                        raw_bootstrap_osd: Some(refine_osd),
+                                        sdr_texture_tag: Some(
+                                            crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
+                                        ),
+                                    }));
+                                    let _ =
+                                        worker_tx.send(LoaderOutput::Refined(req.index));
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
+                                        req.index,
+                                        preview_w,
+                                        preview_h,
+                                        elapsed.as_secs_f64(),
+                                        req.path.display()
+                                    );
+                                    log::debug!(
+                                        "[Refinement] HQ HDR completed {}x{} in {:.1}s",
+                                        preview_w,
+                                        preview_h,
+                                        elapsed.as_secs_f64()
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "[Refinement] LibRaw HQ develop failed for {:?} after {:.1}s: {}",
+                                        req.path.file_name().unwrap_or_default(),
+                                        t0.elapsed().as_secs_f64(),
+                                        e
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            log::error!(
-                                "[Refinement] LibRaw HQ develop failed for {:?} after {:.1}s: {}",
-                                req.path.file_name().unwrap_or_default(),
-                                t0.elapsed().as_secs_f64(),
-                                e
-                            );
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
-            });
+            })
+        {
+            workers.register_worker(handle);
+        }
 
         Self {
+            worker_lifetime,
+            refine_tx,
             raw_open_prefetch,
             tx: LoaderOutputSender::new(tx),
             rx,
@@ -626,7 +725,6 @@ impl ImageLoader {
             preload_plan,
             pool: Arc::new(pool),
             tile_queue,
-            refine_tx,
             local_queue: std::collections::VecDeque::new(),
             delayed_fallback,
             hdr_target_capacity_bits,
@@ -635,6 +733,7 @@ impl ImageLoader {
             hdr_tone_max_display_nits_bits,
             hdr_callback_upload_active,
             embedded_iso_gain_map_sdr_master,
+            hdr_pending_gpu_writes: None,
             wgpu_device: None,
             wgpu_queue: None,
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
@@ -671,6 +770,14 @@ impl ImageLoader {
         self
     }
 
+    pub fn with_hdr_pending_gpu_writes(
+        mut self,
+        queues: Arc<crate::hdr::renderer::HdrPendingWorkQueues>,
+    ) -> Self {
+        self.hdr_pending_gpu_writes = Some(queues);
+        self
+    }
+
     /// Updates worker GPU handles after a live `wgpu::Device` instance replacement.
     pub fn set_wgpu_context(
         &mut self,
@@ -679,6 +786,21 @@ impl ImageLoader {
         device_id: u64,
     ) {
         self.apply_wgpu_context(device, queue, device_id);
+    }
+
+    pub(crate) fn wgpu_device_handle(&self) -> Option<&wgpu::Device> {
+        self.wgpu_device.as_ref()
+    }
+
+    pub(crate) fn preview_tone_map_wgpu_context(
+        &self,
+    ) -> (Option<wgpu::Device>, Option<wgpu::Queue>, u64) {
+        (
+            self.wgpu_device.clone(),
+            self.wgpu_queue.clone(),
+            self.wgpu_device_id
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
     }
 
     pub fn prefetch_raw_open(&self, path: PathBuf) {
@@ -727,6 +849,38 @@ impl ImageLoader {
         };
         entry.profile.load_intent = LoadIntent::Current;
         true
+    }
+
+    /// Cancel in-flight loads whose index falls outside the preload window.
+    ///
+    /// Scans only [`Self::loading`] (typically a handful of entries), not the full image list.
+    pub fn cancel_outside_prefetch_window(
+        &mut self,
+        current_index: usize,
+        image_count: usize,
+        max_distance: usize,
+    ) {
+        if image_count == 0 {
+            return;
+        }
+        let cancelled: Vec<usize> = {
+            let loading = self.loading.lock();
+            loading
+                .keys()
+                .copied()
+                .filter(|&idx| {
+                    super::preload_plan::index_outside_prefetch_window(
+                        current_index,
+                        image_count,
+                        idx,
+                        max_distance,
+                    )
+                })
+                .collect()
+        };
+        if !cancelled.is_empty() {
+            self.cancel_indices(cancelled);
+        }
     }
 
     pub fn cancel_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
@@ -890,11 +1044,12 @@ impl ImageLoader {
         let loading2 = Arc::clone(&self.loading);
         let claimed1 = Arc::clone(&claimed);
         let claimed2 = Arc::clone(&claimed);
-        let rtx1 = self.refine_tx.clone();
-        let rtx2 = self.refine_tx.clone();
+        let rtx1 = self.clone_refine_tx().expect("refinement channel closed");
+        let rtx2 = self.clone_refine_tx().expect("refinement channel closed");
         let hdr_target_capacity = self.hdr_target_capacity();
         let hdr_tone_map = self.hdr_tone_map_settings_snapshot();
         let raw_open_prefetch = Arc::clone(&self.raw_open_prefetch);
+        let hdr_pending_gpu_writes = self.hdr_pending_gpu_writes.clone();
         let wgpu_device = self.wgpu_device.clone();
         let wgpu_queue = self.wgpu_queue.clone();
         let wgpu_device_id_at_spawn = self
@@ -917,6 +1072,7 @@ impl ImageLoader {
         }
 
         let raw_open_prefetch_spawn = Arc::clone(&raw_open_prefetch);
+        let hdr_pending_gpu_writes_spawn = hdr_pending_gpu_writes.clone();
         let wgpu_device_spawn = wgpu_device.clone();
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
@@ -953,6 +1109,7 @@ impl ImageLoader {
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch: raw_open_prefetch_spawn,
+                hdr_pending_gpu_writes: hdr_pending_gpu_writes_spawn,
                 wgpu_device: wgpu_device_spawn,
                 wgpu_queue: wgpu_queue_spawn,
                 wgpu_device_id_at_spawn,
@@ -1036,7 +1193,7 @@ impl ImageLoader {
             self.pool.spawn(run_worker);
         }
 
-        // Fallback: one shared worker sleeps 50ms then tries `do_load` if the pool task
+        // Fallback: one shared worker waits 50ms (condvar) then tries `do_load` if the pool task
         // did not claim first. Pending jobs are coalesced to a single slot (no per-request OS thread).
         let delayed_job = DelayedFallbackJob {
             index,
@@ -1051,6 +1208,7 @@ impl ImageLoader {
             hdr_target_capacity,
             hdr_tone_map,
             raw_open_prefetch,
+            hdr_pending_gpu_writes,
             wgpu_device,
             wgpu_queue,
             wgpu_device_id_at_spawn,
@@ -1114,6 +1272,7 @@ impl ImageLoader {
             wgpu_device_id_live,
             hdr_callback_upload_active_live,
             embedded_iso_gain_map_sdr_master_live,
+            hdr_pending_gpu_writes,
         } = input;
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -1125,21 +1284,30 @@ impl ImageLoader {
         }
 
         let decode_profile_for_load = decode_profile.clone();
+        let wgpu_device_for_preview = wgpu_device.clone();
+        let wgpu_queue_for_preview = wgpu_queue.clone();
         let mut load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_image_file(ImageLoadRequest {
-                index,
-                path: &path,
-                tx: tx.clone(),
-                refine_tx: refine_tx.clone(),
-                decode_profile: decode_profile_for_load,
-                high_quality,
-                raw_demosaic_mode,
-                hdr_target_capacity,
-                hdr_tone_map,
-                raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
-                prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
-                    .load(std::sync::atomic::Ordering::Acquire),
-            })
+            crate::hdr::renderer::with_preview_tone_map_gpu(
+                wgpu_device_for_preview,
+                wgpu_queue_for_preview,
+                wgpu_device_id_at_spawn,
+                || {
+                    load_image_file(ImageLoadRequest {
+                        index,
+                        path: &path,
+                        tx: tx.clone(),
+                        refine_tx: refine_tx.clone(),
+                        decode_profile: decode_profile_for_load,
+                        high_quality,
+                        raw_demosaic_mode,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
+                        prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
+                            .load(std::sync::atomic::Ordering::Acquire),
+                    })
+                },
+            )
         }))
         .unwrap_or_else(|e| {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -1166,6 +1334,7 @@ impl ImageLoader {
                 raw_osd: None,
                 uploaded_planes: None,
                 device_id: None,
+                staged_gpu_plane_upload: false,
             }
         });
 
@@ -1187,6 +1356,12 @@ impl ImageLoader {
         }
 
         if Self::load_result_superseded(&loading_ref, index, &decode_profile) {
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] load_abort_before_hq idx={} reason=load_result_superseded epoch={} path={}",
+                index,
+                decode_profile.profile_epoch,
+                path.display()
+            );
             return;
         }
 
@@ -1201,6 +1376,12 @@ impl ImageLoader {
         {
             let loading = loading_ref.lock();
             if !loading.contains_key(&index) {
+                crate::preload_debug!(
+                    "[PreloadDebug][Refine] load_abort_before_hq idx={} reason=loading_map_missing epoch={} path={}",
+                    index,
+                    load_result.decode_profile.profile_epoch,
+                    path.display()
+                );
                 return;
             }
         }
@@ -1208,7 +1389,8 @@ impl ImageLoader {
         if !wgpu_is_opengl
             && wgpu_device_id_at_spawn
                 == wgpu_device_id_live.load(std::sync::atomic::Ordering::Acquire)
-            && let (Some(device), Some(queue)) = (&wgpu_device, &wgpu_queue)
+            && let Some(device) = &wgpu_device
+            && let Some(pending_work) = hdr_pending_gpu_writes.as_ref()
             && let Ok(ImageData::Hdr { ref hdr, .. }) = load_result.result
             && static_hdr_background_plane_upload_eligible(
                 hdr,
@@ -1217,10 +1399,20 @@ impl ImageLoader {
                 embedded_iso_gain_map_sdr_master_live.load(std::sync::atomic::Ordering::Acquire),
             )
         {
-            match crate::hdr::renderer::upload_image_plane(device, queue, hdr) {
-                Ok(uploaded) => {
+            match crate::hdr::renderer::loader_background_upload_image_plane(
+                device,
+                pending_work.as_ref(),
+                hdr,
+            ) {
+                Ok(Some(uploaded)) => {
                     load_result.uploaded_planes = Some(uploaded);
+                    load_result.staged_gpu_plane_upload = true;
                     load_result.device_id = Some(wgpu_device_id_at_spawn);
+                }
+                Ok(None) => {
+                    log::debug!(
+                        "[Loader] Background HDR plane upload deferred (in-flight cap) for index={index}"
+                    );
                 }
                 Err(err) => {
                     log::debug!(
@@ -1252,17 +1444,64 @@ impl ImageLoader {
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown")
                             .to_string();
+                        let wgpu_device_hq = wgpu_device.clone();
+                        let wgpu_queue_hq = wgpu_queue.clone();
+                        let refine_limit = hq_preview_max_side();
+                        let _refine_epoch = result_profile.profile_epoch;
+                        let _refine_source_w = source.width();
+                        let _refine_source_h = source.height();
+                        let refine_hdr_mode =
+                            !hdr_display_requests_sdr_preview(hdr_target_capacity);
+                        crate::preload_debug!(
+                            "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
+                            index,
+                            _refine_epoch,
+                            refine_limit,
+                            refine_hdr_mode,
+                            _refine_source_w,
+                            _refine_source_h,
+                            file_name,
+                        );
                         REFINEMENT_POOL.spawn(move || {
                         if Self::hq_refinement_superseded(&loading_for_hq, index, &result_profile) {
+                            preload_debug_hq_refinement_skip(
+                                index,
+                                "worker_start",
+                                &result_profile,
+                                &loading_for_hq,
+                                &file_name,
+                            );
                             return;
                         }
+                        crate::preload_debug!(
+                            "[PreloadDebug][Refine] worker_start idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
+                            index,
+                            _refine_epoch,
+                            refine_limit,
+                            refine_hdr_mode,
+                            _refine_source_w,
+                            _refine_source_h,
+                            file_name,
+                        );
 
                         #[cfg(target_os = "windows")]
                         let _com = crate::wic::ComGuard::new();
 
-                        let limit = hq_preview_max_side();
+                        crate::hdr::renderer::with_preview_tone_map_gpu(
+                            wgpu_device_hq,
+                            wgpu_queue_hq,
+                            wgpu_device_id_at_spawn,
+                            || {
+                        let limit = refine_limit;
                         let started_at = std::time::Instant::now();
-                        let is_hdr_mode = !hdr_display_requests_sdr_preview(hdr_target_capacity);
+                        let is_hdr_mode = refine_hdr_mode;
+                        crate::preload_debug!(
+                            "[PreloadDebug][Refine] decode_start idx={} limit={} hdr_mode={} path={}",
+                            index,
+                            limit,
+                            is_hdr_mode,
+                            file_name,
+                        );
                         log::debug!(
                             "[Loader] [{}] HQ preview start: index={} limit={} source={}x{} (hdr_mode={})",
                             file_name,
@@ -1286,6 +1525,13 @@ impl ImageLoader {
                         match r_result {
                             Ok(Ok((hdr, sdr))) => {
                                 if Self::hq_refinement_superseded(&loading_for_hq, index, &result_profile) {
+                                    preload_debug_hq_refinement_skip(
+                                        index,
+                                        "after_decode",
+                                        &result_profile,
+                                        &loading_for_hq,
+                                        &file_name,
+                                    );
                                     log::debug!(
                                         "[Loader] [{}] HQ preview discarded as stale: index={} elapsed={:?}",
                                         file_name,
@@ -1302,6 +1548,17 @@ impl ImageLoader {
                                     (0, 0)
                                 };
                                 let preview_kind = if is_hdr_mode { "HDR" } else { "SDR" };
+                                let _has_hdr = hdr.is_some();
+                                let has_sdr = sdr.is_some();
+                                crate::preload_debug!(
+                                    "[PreloadDebug][Refine] decode_done idx={} kind={} {}x{} elapsed_ms={} path={}",
+                                    index,
+                                    preview_kind,
+                                    pw,
+                                    ph,
+                                    crate::preload_debug::elapsed_ms(started_at),
+                                    file_name,
+                                );
                                 log::debug!(
                                     "[Loader] [{}] HQ {} preview generated: {}x{} (source {}x{}, limit={}, elapsed={:?})",
                                     file_name,
@@ -1321,6 +1578,16 @@ impl ImageLoader {
                                     bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
                                 }
 
+                                crate::preload_debug!(
+                                    "[PreloadDebug][Refine] send_preview idx={} stage=Refined epoch={} hdr={} sdr={} {}x{} path={}",
+                                    index,
+                                    result_profile.profile_epoch,
+                                    _has_hdr,
+                                    has_sdr,
+                                    pw,
+                                    ph,
+                                    file_name,
+                                );
                                 let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                                     index,
                                     decode_profile: result_profile.clone(),
@@ -1329,9 +1596,19 @@ impl ImageLoader {
                                     error: None,
                                     cpu_demosaic_ms: None,
                                     raw_bootstrap_osd: None,
+                                    sdr_texture_tag: has_sdr.then_some(
+                                        crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
+                                    ),
                                 }));
                             }
                             Ok(Err(e)) => {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][Refine] decode_failed idx={} limit={} elapsed_ms={} err={e} path={}",
+                                    index,
+                                    limit,
+                                    crate::preload_debug::elapsed_ms(started_at),
+                                    file_name,
+                                );
                                 log::error!(
                                     "[Loader] [{}] High-quality HDR preview failed: index={} limit={} elapsed={:?}: {e}",
                                     file_name,
@@ -1341,6 +1618,13 @@ impl ImageLoader {
                                 );
                             }
                             Err(e) => {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][Refine] decode_panicked idx={} limit={} elapsed_ms={} path={}",
+                                    index,
+                                    limit,
+                                    crate::preload_debug::elapsed_ms(started_at),
+                                    file_name,
+                                );
                                 log::error!(
                                     "[Loader] [{}] High-quality HDR preview PANICKED: index={} limit={} elapsed={:?}: {:?}",
                                     file_name,
@@ -1351,6 +1635,7 @@ impl ImageLoader {
                                 );
                             }
                         }
+                        });
                     });
                     }
                 }
@@ -1362,19 +1647,49 @@ impl ImageLoader {
                         );
                     } else {
                         let loading_sdr_hq = Arc::clone(&loading_ref);
+                        let refine_limit = hq_preview_max_side();
+                        let _refine_epoch = result_profile.profile_epoch;
+                        let file_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        crate::preload_debug!(
+                            "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode=false source={}x{} path={}",
+                            index,
+                            _refine_epoch,
+                            refine_limit,
+                            source.width(),
+                            source.height(),
+                            file_name,
+                        );
                         REFINEMENT_POOL.spawn(move || {
                             if Self::hq_refinement_superseded(
                                 &loading_sdr_hq,
                                 index,
                                 &result_profile,
                             ) {
+                                preload_debug_hq_refinement_skip(
+                                    index,
+                                    "worker_start",
+                                    &result_profile,
+                                    &loading_sdr_hq,
+                                    &file_name,
+                                );
                                 return;
                             }
 
                             #[cfg(target_os = "windows")]
                             let _com = crate::wic::ComGuard::new();
 
-                            let limit = hq_preview_max_side();
+                            let limit = refine_limit;
+                            let _started_at = std::time::Instant::now();
+                            crate::preload_debug!(
+                                "[PreloadDebug][Refine] decode_start idx={} limit={} hdr_mode=false path={}",
+                                index,
+                                limit,
+                                file_name,
+                            );
                             let r_result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     source.generate_full_image_preview(limit, limit)
@@ -1387,9 +1702,24 @@ impl ImageLoader {
                                         index,
                                         &result_profile,
                                     ) {
+                                        preload_debug_hq_refinement_skip(
+                                            index,
+                                            "after_decode",
+                                            &result_profile,
+                                            &loading_sdr_hq,
+                                            &file_name,
+                                        );
                                         return;
                                     }
 
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][Refine] decode_done idx={} kind=SDR {}x{} elapsed_ms={} path={}",
+                                        index,
+                                        pw,
+                                        ph,
+                                        crate::preload_debug::elapsed_ms(_started_at),
+                                        file_name,
+                                    );
                                     log::debug!(
                                         "[Loader] HQ preview generated: {}x{} (source {}x{})",
                                         pw,
@@ -1397,22 +1727,46 @@ impl ImageLoader {
                                         source.width(),
                                         source.height()
                                     );
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][Refine] send_preview idx={} stage=Refined epoch={} hdr=false sdr=true {}x{} path={}",
+                                        index,
+                                        result_profile.profile_epoch,
+                                        pw,
+                                        ph,
+                                        file_name,
+                                    );
                                     let _ = tx_cloned.send(LoaderOutput::Preview(
                                         PreviewResult::from_sdr_preview(
                                             index,
                                             result_profile.clone(),
                                             load_result.source_key,
                                             Ok(DecodedImage::new(pw, ph, p_pixels)),
+                                            crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
                                         ),
                                     ));
                                 }
                                 Err(e) => {
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][Refine] decode_panicked idx={} limit={} elapsed_ms={} path={}",
+                                        index,
+                                        limit,
+                                        crate::preload_debug::elapsed_ms(_started_at),
+                                        file_name,
+                                    );
                                     log::error!(
                                         "[Loader] High-quality refinement PANICKED: {:?}",
                                         e
                                     );
                                 }
-                                _ => {}
+                                _ => {
+                                    crate::preload_debug!(
+                                        "[PreloadDebug][Refine] decode_empty idx={} limit={} elapsed_ms={} path={}",
+                                        index,
+                                        limit,
+                                        crate::preload_debug::elapsed_ms(_started_at),
+                                        file_name,
+                                    );
+                                }
                             }
                         });
                     }
@@ -1442,20 +1796,47 @@ impl ImageLoader {
         source_key: u64,
     ) {
         if source.defers_loader_hq_preview() {
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] skip_on_demand idx={} reason=async_raw_refinement",
+                index,
+            );
             return;
         }
         let tx = self.tx.clone();
+        let refine_limit = hq_preview_max_side();
+        let _refine_epoch = decode_profile.profile_epoch;
+        crate::preload_debug!(
+            "[PreloadDebug][Refine] on_demand_spawn idx={} epoch={} limit={} source={}x{}",
+            index,
+            _refine_epoch,
+            refine_limit,
+            source.width(),
+            source.height(),
+        );
         REFINEMENT_POOL.spawn(move || {
             #[cfg(target_os = "windows")]
             let _com = crate::wic::ComGuard::new();
 
-            let limit = hq_preview_max_side();
+            let limit = refine_limit;
+            let _started_at = std::time::Instant::now();
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] on_demand_decode_start idx={} limit={}",
+                index,
+                limit,
+            );
             let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 source.generate_full_image_preview(limit, limit)
             }));
 
             match r_result {
                 Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_decode_done idx={} {}x{} elapsed_ms={}",
+                        index,
+                        pw,
+                        ph,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
                     log::debug!(
                         "[Loader] On-demand HQ preview generated: {}x{} (source {}x{}) idx={}",
                         pw,
@@ -1464,21 +1845,159 @@ impl ImageLoader {
                         source.height(),
                         index,
                     );
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_send_preview idx={} stage=Refined epoch={} {}x{}",
+                        index,
+                        decode_profile.profile_epoch,
+                        pw,
+                        ph,
+                    );
                     let _ = tx.send(LoaderOutput::Preview(PreviewResult::from_sdr_preview(
                         index,
                         decode_profile,
                         source_key,
                         Ok(DecodedImage::new(pw, ph, p_pixels)),
+                        crate::loader::TexturePreviewBufferTag::TiledOnDemandSdr,
                     )));
                 }
                 Err(e) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_decode_panicked idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
                     log::error!(
                         "[Loader] On-demand HQ preview PANICKED idx={}: {:?}",
                         index,
                         e
                     );
                 }
-                _ => {}
+                _ => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_decode_empty idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
+                }
+            }
+        });
+    }
+
+    /// Regenerate an HQ HDR preview for a tiled source when bootstrap-only remains in cache.
+    pub fn trigger_hq_tiled_hdr_preview(
+        &self,
+        index: usize,
+        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+        decode_profile: DecodeProfile,
+        source_key: u64,
+    ) {
+        if source.defers_loader_hq_preview() {
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] skip_on_demand_hdr idx={} reason=async_raw_refinement",
+                index,
+            );
+            return;
+        }
+        let tx = self.tx.clone();
+        let refine_limit = hq_preview_max_side();
+        let wgpu_device = self.wgpu_device.clone();
+        let wgpu_queue = self.wgpu_queue.clone();
+        let wgpu_device_id_at_spawn = self
+            .wgpu_device_id
+            .load(std::sync::atomic::Ordering::Acquire);
+        crate::preload_debug!(
+            "[PreloadDebug][Refine] on_demand_hdr_spawn idx={} epoch={} limit={} source={}x{}",
+            index,
+            decode_profile.profile_epoch,
+            refine_limit,
+            source.width(),
+            source.height(),
+        );
+        REFINEMENT_POOL.spawn(move || {
+            #[cfg(target_os = "windows")]
+            let _com = crate::wic::ComGuard::new();
+
+            let limit = refine_limit;
+            let _started_at = std::time::Instant::now();
+            crate::preload_debug!(
+                "[PreloadDebug][Refine] on_demand_hdr_decode_start idx={} limit={}",
+                index,
+                limit,
+            );
+            let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::hdr::renderer::with_preview_tone_map_gpu(
+                    wgpu_device,
+                    wgpu_queue,
+                    wgpu_device_id_at_spawn,
+                    || source.generate_hdr_preview(limit, limit),
+                )
+            }));
+
+            match r_result {
+                Ok(Ok(hdr)) if hdr.width > 0 && hdr.height > 0 => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_done idx={} {}x{} elapsed_ms={}",
+                        index,
+                        hdr.width,
+                        hdr.height,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
+                    log::debug!(
+                        "[Loader] On-demand HQ HDR preview generated: {}x{} (source {}x{}) idx={}",
+                        hdr.width,
+                        hdr.height,
+                        source.width(),
+                        source.height(),
+                        index,
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_send_preview idx={} stage=Refined epoch={} {}x{}",
+                        index,
+                        decode_profile.profile_epoch,
+                        hdr.width,
+                        hdr.height,
+                    );
+                    let _ = tx.send(LoaderOutput::Preview(PreviewResult {
+                        index,
+                        decode_profile: decode_profile.clone(),
+                        source_key,
+                        preview_bundle: PreviewBundle::refined().with_hdr(Arc::new(hdr)),
+                        error: None,
+                        cpu_demosaic_ms: None,
+                        raw_bootstrap_osd: None,
+                        sdr_texture_tag: None,
+                    }));
+                }
+                Ok(Err(err)) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_failed idx={} elapsed_ms={} err={err}",
+                        index,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
+                    log::error!(
+                        "[Loader] On-demand HQ HDR preview failed idx={}: {err}",
+                        index,
+                    );
+                }
+                Err(e) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_panicked idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
+                    log::error!(
+                        "[Loader] On-demand HQ HDR preview PANICKED idx={}: {:?}",
+                        index,
+                        e
+                    );
+                }
+                _ => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][Refine] on_demand_hdr_decode_empty idx={} elapsed_ms={}",
+                        index,
+                        crate::preload_debug::elapsed_ms(_started_at),
+                    );
+                }
             }
         });
     }

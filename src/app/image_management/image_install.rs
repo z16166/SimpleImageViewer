@@ -63,9 +63,7 @@ impl ImageViewerApp {
         if index != self.current_index {
             return None;
         }
-        if self.effective_hdr_display_output().is_none() {
-            return None;
-        }
+        self.effective_hdr_display_output()?;
         let has_hdr_plane = self
             .current_hdr_image
             .as_ref()
@@ -143,6 +141,7 @@ impl ImageViewerApp {
 
         if let Entry::Occupied(mut slot) = self.deferred_sdr_uploads.entry(idx) {
             *slot.get_mut() = decoded;
+            self.register_prefetch_resource(idx);
             return;
         }
         if self.deferred_sdr_uploads.len() >= crate::app::MAX_DEFERRED_SDR_UPLOADS {
@@ -155,9 +154,11 @@ impl ImageViewerApp {
                 .max_by_key(|&i| super::prefetch_circular_distance(current, total, i))
             {
                 self.deferred_sdr_uploads.remove(&evict_idx);
+                self.maybe_unregister_prefetch_resource(evict_idx);
             }
         }
         self.deferred_sdr_uploads.insert(idx, decoded);
+        self.register_prefetch_resource(idx);
     }
 
     pub(super) fn upload_static_sdr_texture(
@@ -165,6 +166,8 @@ impl ImageViewerApp {
         idx: usize,
         decoded: &DecodedImage,
         texture_name: String,
+        buffer_tag: crate::loader::TexturePreviewBufferTag,
+        stage: crate::loader::PreviewStage,
         ctx: &egui::Context,
     ) {
         let color_image = ColorImage::from_rgba_unmultiplied(
@@ -179,12 +182,15 @@ impl ImageViewerApp {
                 orig_w: decoded.width,
                 orig_h: decoded.height,
                 needs_tile_manager: false,
+                buffer_tag,
+                stage,
                 current_index: self.current_index,
                 total_count: self.image_files.len(),
             },
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
+        self.register_prefetch_resource(idx);
         // Preload may have queued pixels for this index; GPU upload makes them redundant.
         self.deferred_sdr_uploads.remove(&idx);
     }
@@ -195,7 +201,14 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.upload_static_sdr_texture(idx, decoded, raw_gpu_bootstrap_texture_name(idx), ctx);
+        self.upload_static_sdr_texture(
+            idx,
+            decoded,
+            raw_gpu_bootstrap_texture_name(idx),
+            crate::loader::TexturePreviewBufferTag::RawGpuBootstrap,
+            crate::loader::PreviewStage::Initial,
+            ctx,
+        );
         self.raw_gpu_embedded_bootstrap_indices.insert(idx);
     }
 
@@ -205,7 +218,14 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.upload_static_sdr_texture(idx, decoded, hdr_sdr_fallback_texture_name(idx), ctx);
+        self.upload_static_sdr_texture(
+            idx,
+            decoded,
+            hdr_sdr_fallback_texture_name(idx),
+            crate::loader::TexturePreviewBufferTag::HdrSdrFallback,
+            crate::loader::PreviewStage::Refined,
+            ctx,
+        );
         self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
     }
 
@@ -243,7 +263,14 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         if idx == self.current_index {
-            self.upload_static_sdr_texture(idx, decoded, texture_name, ctx);
+            self.upload_static_sdr_texture(
+                idx,
+                decoded,
+                texture_name,
+                crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                crate::loader::PreviewStage::Refined,
+                ctx,
+            );
         } else {
             self.insert_deferred_sdr_upload(idx, decoded.clone());
         }
@@ -301,7 +328,14 @@ impl ImageViewerApp {
         if is_hdr_fallback {
             self.upload_hdr_sdr_fallback_texture(index, &decoded, ctx);
         } else {
-            self.upload_static_sdr_texture(index, &decoded, format!("img_{index}"), ctx);
+            self.upload_static_sdr_texture(
+                index,
+                &decoded,
+                format!("img_{index}"),
+                crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+                crate::loader::PreviewStage::Refined,
+                ctx,
+            );
         }
         if index == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
@@ -356,13 +390,17 @@ impl ImageViewerApp {
             );
         }
         self.cache_directory_tree_strip_thumbnail(
-            idx,
-            decoded,
-            crate::loader::PreviewStage::Refined,
-            Some((decoded.width, decoded.height)),
-            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-            ctx,
-            false,
+            crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                index: idx,
+                decoded,
+                stage: crate::loader::PreviewStage::Refined,
+                logical_size: Some((decoded.width, decoded.height)),
+                buffer_tag:
+                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+                strip_max_side_used: None,
+                ctx,
+                bypass_detach_queue: false,
+            },
         );
     }
 
@@ -379,6 +417,7 @@ impl ImageViewerApp {
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+        self.register_prefetch_resource(idx);
         self.hdr_sdr_fallback_indices.insert(idx);
         if sdr_fallback_is_placeholder {
             self.hdr_placeholder_fallback_indices.insert(idx);
@@ -482,13 +521,16 @@ impl ImageViewerApp {
                 )
             };
             self.cache_directory_tree_strip_thumbnail(
-                idx,
-                &strip_preview,
-                strip_stage,
-                Some(strip_logical),
-                strip_tag,
-                ctx,
-                false,
+                crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                    index: idx,
+                    decoded: &strip_preview,
+                    stage: strip_stage,
+                    logical_size: Some(strip_logical),
+                    buffer_tag: strip_tag,
+                    strip_max_side_used: None,
+                    ctx,
+                    bypass_detach_queue: false,
+                },
             );
         }
     }
@@ -507,6 +549,10 @@ impl ImageViewerApp {
         } = install;
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Tiled);
         self.remove_hdr_image_resources(idx);
+        #[cfg(feature = "preload-debug")]
+        let bootstrap_dims = sdr_preview.map(|p| (p.width, p.height));
+        #[cfg(feature = "preload-debug")]
+        let bootstrap_hdr_dims = hdr_preview.as_ref().map(|h| (h.width, h.height));
         if let Some(hdr_source) = hdr_source.as_ref() {
             self.hdr_tiled_source_cache
                 .insert(idx, Arc::clone(hdr_source));
@@ -523,6 +569,14 @@ impl ImageViewerApp {
 
         if !source.defers_loader_hq_preview() {
             self.hq_tiled_preview_pending_indices.insert(idx);
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][Install] hq_pending_set idx={} current={} bootstrap={:?} hdr_preview={:?}",
+                idx,
+                self.current_index,
+                bootstrap_dims,
+                bootstrap_hdr_dims,
+            );
         }
 
         let mut tm = build_tiled_manager_with_best_preview(
@@ -553,6 +607,8 @@ impl ImageViewerApp {
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
+
+        self.register_prefetch_resource(idx);
 
         if crate::preload_debug::path_is_raw(&self.image_files[idx]) {
             crate::preload_debug!(
@@ -597,8 +653,8 @@ impl ImageViewerApp {
                 image_index: idx,
                 hdr_frames: None,
                 frames: frames.to_vec(),
-                textures: Vec::new(),
-                delays: Vec::new(),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -684,8 +740,8 @@ impl ImageViewerApp {
                 image_index: idx,
                 hdr_frames: Some(hdr_frames),
                 frames: sdr_frames,
-                textures: Vec::new(),
-                delays: Vec::new(),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );

@@ -171,6 +171,10 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
             self.wake_root_for_logic();
         }
+        if pass.is_root() && self.process_hdr_pending_work(ctx, frame) {
+            ctx.request_repaint();
+            self.wake_root_for_logic();
+        }
         if pass.is_root() && self.needs_process_loaded_images() {
             self.process_loaded_images(ctx, &mut Some(frame));
         }

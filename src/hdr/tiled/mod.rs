@@ -35,8 +35,10 @@ pub(crate) use cache::{
 pub(crate) use globals::HDR_TILE_CACHE_MAX_BYTES;
 pub(crate) use kind::{HdrTiledSource, HdrTiledSourceKind};
 pub(crate) use preview::{
-    downsample_hdr_image_nearest, hdr_preview_from_tiled_source_nearest, preview_dimensions,
-    preview_sample_coord, sdr_preview_from_hdr_preview,
+    downsample_hdr_image_nearest, finalize_sdr_preview_pixels,
+    hdr_preview_from_tiled_source_nearest, preview_dimensions, preview_sample_coord,
+    sdr_preview_from_hdr_image_nearest, sdr_preview_from_linear_rgba32f,
+    sdr_preview_from_tiled_source_nearest, tone_map_linear_rgba_f32_row_to_sdr_u8,
 };
 pub(crate) use source::HdrTiledImageSource;
 pub(crate) use validate::validate_tile_bounds;

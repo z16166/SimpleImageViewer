@@ -71,27 +71,26 @@ pub(crate) struct JxlHdrLoadOutput {
 }
 
 #[cfg(feature = "jpegxl")]
-pub(crate) fn load_jxl_hdr_with_target_capacity(
+pub(crate) fn load_jxl_hdr_with_target_capacity_from_bytes(
     path: &std::path::Path,
+    bytes: &[u8],
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
     try_embedded_sdr_master: bool,
 ) -> Result<JxlHdrLoadOutput, String> {
-    let bytes =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
-    decode_jxl_bytes_to_image_data_impl(
-        bytes.as_ref(),
+    decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
+        bytes,
         decode_target_hdr_capacity,
         display_hdr_target_capacity,
         tone_map,
-        false,
-        false,
+        strip_baseline_only: false,
+        embedded_sdr_master_load: false,
         bootstrap_animation,
         try_embedded_sdr_master,
-        Some(path),
-    )
+        source_path: Some(path),
+    })
     .map(|output| JxlHdrLoadOutput {
         image: output.image,
         animation_remainder: output.animation_remainder,
@@ -379,18 +378,20 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         strip_baseline_only,
         embedded_sdr_master_load,
     } = input;
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{
+        JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+    };
 
-    let hdr = match finish_jxl_jhgm_frame(
+    let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
         jhgm_box,
-        decode_target_hdr_capacity,
-        &rgba,
+        target_hdr_capacity: decode_target_hdr_capacity,
+        rgba: &rgba,
         width,
         height,
-        &metadata,
+        metadata: &metadata,
         strip_baseline_only,
         embedded_sdr_master_load,
-    ) {
+    }) {
         JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
             return Ok(ImageData::Static(DecodedImage::new(
                 width, height, baseline,
@@ -459,18 +460,20 @@ fn jxl_finish_static_frame_with_embedded_fallback(
     }
 
     if try_embedded_sdr_master {
-        use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+        use crate::hdr::jxl_gain_map_deferred::{
+            JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+        };
 
-        match finish_jxl_jhgm_frame(
+        match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
             jhgm_box,
-            decode_target_hdr_capacity,
-            &rgba,
+            target_hdr_capacity: decode_target_hdr_capacity,
+            rgba: &rgba,
             width,
             height,
-            &metadata,
-            true,
-            true,
-        ) {
+            metadata: &metadata,
+            strip_baseline_only: true,
+            embedded_sdr_master_load: true,
+        }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
                 return Ok(ImageData::Static(DecodedImage::new(
                     width, height, baseline,
@@ -560,23 +563,25 @@ fn jxl_build_hdr_animated_image_data(
     jhgm_box: Option<&[u8]>,
     decode_target_hdr_capacity: f32,
 ) -> Result<ImageData, String> {
-    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::hdr::jxl_gain_map_deferred::{
+        JxlJhgmFrameInput, JxlJhgmFrameOutcome, finish_jxl_jhgm_frame,
+    };
     use crate::loader::HdrAnimationFrame;
 
     let require_jhgm_processing = jhgm_box.is_some();
     let mut frames = Vec::with_capacity(captured_frames.len());
     for (rgba, ticks) in captured_frames {
         let frame_metadata = meta_base.clone();
-        let hdr = match finish_jxl_jhgm_frame(
+        let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
             jhgm_box,
-            decode_target_hdr_capacity,
-            &rgba,
-            info.xsize,
-            info.ysize,
-            &frame_metadata,
-            false,
-            false,
-        ) {
+            target_hdr_capacity: decode_target_hdr_capacity,
+            rgba: &rgba,
+            width: info.xsize,
+            height: info.ysize,
+            metadata: &frame_metadata,
+            strip_baseline_only: false,
+            embedded_sdr_master_load: false,
+        }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(_)
             | JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(_) => {
                 return Err("JPEG XL animated jhgm strip baseline is not supported".to_string());
@@ -672,17 +677,17 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    decode_jxl_bytes_to_image_data_impl(
+    decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
         bytes,
         decode_target_hdr_capacity,
         display_hdr_target_capacity,
         tone_map,
-        false,
-        false,
-        false,
-        false,
-        None,
-    )
+        strip_baseline_only: false,
+        embedded_sdr_master_load: false,
+        bootstrap_animation: false,
+        try_embedded_sdr_master: false,
+        source_path: None,
+    })
     .map(|output| output.image)
 }
 
@@ -694,9 +699,17 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
     use super::strip_baseline_error::{JxlStripBaselineError, classify_jxl_strip_baseline_failure};
 
     let tone_map = HdrToneMapSettings::default();
-    match decode_jxl_bytes_to_image_data_impl(
-        bytes, 1.0, 1.0, tone_map, true, false, false, false, None,
-    ) {
+    match decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
+        bytes,
+        decode_target_hdr_capacity: 1.0,
+        display_hdr_target_capacity: 1.0,
+        tone_map,
+        strip_baseline_only: true,
+        embedded_sdr_master_load: false,
+        bootstrap_animation: false,
+        try_embedded_sdr_master: false,
+        source_path: None,
+    }) {
         Ok(output) => match output.image {
             ImageData::Static(mut decoded) => {
                 Ok((decoded.take_rgba_owned(), decoded.width, decoded.height))
@@ -721,8 +734,18 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
 #[allow(dead_code)] // Standalone entry; main loader uses single-decode finish fallback.
 pub(crate) fn decode_jxl_embedded_sdr_master_bytes(bytes: &[u8]) -> Result<ImageData, String> {
     let tone_map = HdrToneMapSettings::default();
-    decode_jxl_bytes_to_image_data_impl(bytes, 1.0, 1.0, tone_map, true, true, false, false, None)
-        .map(|output| output.image)
+    decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
+        bytes,
+        decode_target_hdr_capacity: 1.0,
+        display_hdr_target_capacity: 1.0,
+        tone_map,
+        strip_baseline_only: true,
+        embedded_sdr_master_load: true,
+        bootstrap_animation: false,
+        try_embedded_sdr_master: false,
+        source_path: None,
+    })
+    .map(|output| output.image)
 }
 
 #[cfg(feature = "jpegxl")]
@@ -802,9 +825,8 @@ fn jxl_bootstrap_first_animation_frame(
 }
 
 #[cfg(feature = "jpegxl")]
-#[allow(clippy::too_many_arguments)]
-fn decode_jxl_bytes_to_image_data_impl(
-    bytes: &[u8],
+struct JxlDecodeImplInput<'a> {
+    bytes: &'a [u8],
     decode_target_hdr_capacity: f32,
     display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
@@ -812,8 +834,24 @@ fn decode_jxl_bytes_to_image_data_impl(
     embedded_sdr_master_load: bool,
     bootstrap_animation: bool,
     try_embedded_sdr_master: bool,
-    source_path: Option<&std::path::Path>,
+    source_path: Option<&'a std::path::Path>,
+}
+
+#[cfg(feature = "jpegxl")]
+fn decode_jxl_bytes_to_image_data_impl(
+    input: JxlDecodeImplInput<'_>,
 ) -> Result<JxlDecodeOutput, String> {
+    let JxlDecodeImplInput {
+        bytes,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+        strip_baseline_only,
+        embedded_sdr_master_load,
+        bootstrap_animation,
+        try_embedded_sdr_master,
+        source_path,
+    } = input;
     let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
         return Err(

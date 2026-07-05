@@ -69,7 +69,11 @@ pub(crate) fn open_raw_processor_with_preview(
         5 => 8,
         6 => 6,
         7 => 7,
-        _ => crate::metadata_utils::get_exif_orientation(path),
+        _ => crate::mmap_util::map_file(path)
+            .map(|mmap| {
+                crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
+            })
+            .unwrap_or(1),
     };
 
     let final_lr_flip = match final_orientation {
@@ -243,6 +247,7 @@ fn emit_raw_hq_bootstrap_preview(
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd,
+        sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
     }));
 }
 

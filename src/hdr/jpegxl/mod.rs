@@ -33,7 +33,8 @@ pub(crate) use decode::{
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use decode::{
-    decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
+    decode_jxl_strip_iso_gain_map_baseline, load_jxl_hdr_with_target_capacity_from_bytes,
+    srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use metadata::{
@@ -46,8 +47,11 @@ pub(crate) use probe::{
     JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,
     JXL_TRANSFER_FUNCTION_SRGB, jxl_color_encoding_to_metadata,
 };
+#[cfg(not(feature = "jpegxl"))]
+pub(crate) use probe::{is_jxl_header, libjxl_probe_logical_size_from_bytes};
+#[cfg(feature = "jpegxl")]
 pub(crate) use probe::{
-    is_jxl_header, libjxl_probe_logical_size_from_bytes, libjxl_probe_orientation_from_path,
+    is_jxl_header, libjxl_probe_logical_size_from_bytes, libjxl_probe_orientation_from_bytes,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use strip_baseline::decode_jxl_strip_preview_rgba8;

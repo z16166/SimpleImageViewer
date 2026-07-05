@@ -50,6 +50,7 @@ impl ImageViewerApp {
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.prefetched_tiles.clear();
+        self.clear_prefetch_resource_indices();
         self.animation = None;
         self.animation_cache.clear();
         self.pending_anim_frames.clear();
@@ -156,6 +157,7 @@ impl ImageViewerApp {
             pending.image_index = to;
             self.pending_anim_frames.insert(to, pending);
         }
+        self.relocate_prefetch_resource_index(from, to);
         if let Some(ref mut anim) = self.animation
             && anim.image_index == from
         {
@@ -302,6 +304,7 @@ impl ImageViewerApp {
         self.pending_anim_frames.remove(&evicted_idx);
         self.clear_installed_display_mode(evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
+        self.maybe_unregister_prefetch_resource(evicted_idx);
     }
 
     pub(super) fn clear_preloaded_assets_for_capacity_change(&mut self) {
@@ -357,165 +360,75 @@ impl ImageViewerApp {
             self.cached_available_memory_mb
         );
 
-        let retention_for = |idx: usize| {
-            prefetch_retention::prefetch_cache_retention(
-                current_index,
-                len,
-                max_distance,
-                idx,
-                self.loader.is_loading(idx),
-            )
+        let window_indices =
+            prefetch_retention::prefetch_window_index_set(current_index, len, max_distance);
+        let loading_indices: std::collections::HashSet<usize> =
+            self.loader.loading.lock().keys().copied().collect();
+        let should_retain = |idx: usize| {
+            len > 0 && (window_indices.contains(&idx) || loading_indices.contains(&idx))
         };
 
-        // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too
-        let mut distant_indices = Vec::new();
+        let mut distant_indices = std::collections::HashSet::new();
+        let mut all_prefetch_indices = self.prefetch_resource_indices.clone();
+        all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
+        all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());
+        all_prefetch_indices.extend(self.texture_cache.textures.keys().copied());
+        all_prefetch_indices.extend(self.animation_cache.keys().copied());
+        all_prefetch_indices.extend(self.hdr_image_cache.keys().copied());
+        all_prefetch_indices.extend(self.hdr_tiled_source_cache.keys().copied());
+        all_prefetch_indices.extend(
+            crate::tile_cache::PIXEL_CACHE
+                .lock()
+                .distinct_image_indices(),
+        );
 
-        self.prefetched_tiles.retain(|&idx, _| {
-            let decision = retention_for(idx);
-            let keep = decision.should_retain();
-            if !keep {
-                preload_debug!(
-                    "[PreloadDebug] prefetch eviction retain=false: kind=prefetched_tiles idx={} reason={}",
+        #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+        let mut record_eviction = |idx: usize, kind: &'static str| {
+            distant_indices.insert(idx);
+            preload_debug!(
+                "[PreloadDebug] prefetch eviction retain=false: kind={kind} idx={idx} reason={}",
+                prefetch_retention::prefetch_cache_retention(
+                    current_index,
+                    len,
+                    max_distance,
                     idx,
-                    decision.log_label()
-                );
-                distant_indices.push(idx);
+                    loading_indices.contains(&idx),
+                )
+                .log_label()
+            );
+        };
+
+        for idx in all_prefetch_indices {
+            if !should_retain(idx) {
+                record_eviction(idx, "prefetch_resource");
             }
-            keep
-        });
-
-        self.deferred_sdr_uploads.retain(|&idx, _| {
-            let decision = retention_for(idx);
-            let keep = decision.should_retain();
-            if !keep {
-                preload_debug!(
-                    "[PreloadDebug] prefetch eviction retain=false: kind=deferred_sdr idx={} reason={}",
-                    idx,
-                    decision.log_label()
-                );
-                distant_indices.push(idx);
-            }
-            keep
-        });
-
-        // Gather distant static HDR images
-        let distant_hdr: Vec<usize> = self
-            .hdr_image_cache
-            .keys()
-            .copied()
-            .filter(|&idx| {
-                let decision = retention_for(idx);
-                if !decision.should_retain() {
-                    preload_debug!(
-                        "[PreloadDebug] prefetch eviction retain=false: kind=hdr_image idx={} reason={}",
-                        idx,
-                        decision.log_label()
-                    );
-                }
-                !decision.should_retain()
-            })
-            .collect();
-        distant_indices.extend(distant_hdr);
-
-        // Gather distant tiled HDR image sources. This ensures tiled HDR sources (like gain-map JPEGs)
-        // are correctly evicted and do not leak in hdr_tiled_source_cache, which would cause
-        // subsequent visits to trigger has_loaded_asset() but fail to construct the TileManager,
-        // hanging the UI on loading.
-        let distant_tiled_hdr: Vec<usize> = self
-            .hdr_tiled_source_cache
-            .keys()
-            .copied()
-            .filter(|&idx| {
-                let decision = retention_for(idx);
-                if !decision.should_retain() {
-                    preload_debug!(
-                        "[PreloadDebug] prefetch eviction retain=false: kind=hdr_tiled_source idx={} reason={}",
-                        idx,
-                        decision.log_label()
-                    );
-                }
-                !decision.should_retain()
-            })
-            .collect();
-        distant_indices.extend(distant_tiled_hdr);
-
-        // Gather distant uploaded SDR/static preview textures as well. These can be
-        // produced by background preload without a matching TileManager/HDR cache entry,
-        // so relying only on prefetched_tiles/HDR cleanup leaves stale GPU textures alive
-        // until the texture cache reaches its capacity.
-        let distant_textures: Vec<usize> = self
-            .texture_cache
-            .textures
-            .keys()
-            .copied()
-            .filter(|&idx| {
-                let decision = retention_for(idx);
-                if !decision.should_retain() {
-                    preload_debug!(
-                        "[PreloadDebug] prefetch eviction retain=false: kind=texture idx={} reason={}",
-                        idx,
-                        decision.log_label()
-                    );
-                }
-                !decision.should_retain()
-            })
-            .collect();
-        distant_indices.extend(distant_textures);
-
-        let distant_animations: Vec<usize> = self
-            .animation_cache
-            .keys()
-            .copied()
-            .filter(|&idx| {
-                let decision = retention_for(idx);
-                if !decision.should_retain() {
-                    preload_debug!(
-                        "[PreloadDebug] prefetch eviction retain=false: kind=animation idx={} reason={}",
-                        idx,
-                        decision.log_label()
-                    );
-                }
-                !decision.should_retain()
-            })
-            .collect();
-        distant_indices.extend(distant_animations);
-
-        let distant_pixel_cache: Vec<usize> = crate::tile_cache::PIXEL_CACHE
-            .lock()
-            .distinct_image_indices()
-            .into_iter()
-            .filter(|&idx| {
-                let decision = retention_for(idx);
-                if !decision.should_retain() {
-                    preload_debug!(
-                        "[PreloadDebug] prefetch eviction retain=false: kind=pixel_cache idx={} reason={}",
-                        idx,
-                        decision.log_label()
-                    );
-                }
-                !decision.should_retain()
-            })
-            .collect();
-        distant_indices.extend(distant_pixel_cache);
-
-        // Deduplicate the combined list of indices to evict
-        distant_indices.sort_unstable();
-        distant_indices.dedup();
+        }
 
         #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
         let evicted_count = distant_indices.len();
 
-        if !distant_indices.is_empty() {
-            let pixel_cache_indices: std::collections::HashSet<usize> =
-                distant_indices.iter().copied().collect();
+        if distant_indices.is_empty() {
             preload_debug!(
-                "[PreloadDebug] prefetch eviction pixel_cache remove: indices={:?}",
-                distant_indices
+                "[PreloadDebug] prefetch eviction done: evicted_count={}",
+                evicted_count
             );
-            crate::tile_cache::PIXEL_CACHE
-                .lock()
-                .remove_images(&pixel_cache_indices);
+            return;
         }
+
+        preload_debug!(
+            "[PreloadDebug] prefetch eviction pixel_cache remove: indices={:?}",
+            distant_indices
+        );
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .remove_images(&distant_indices);
+
+        self.prefetched_tiles
+            .retain(|idx, _| !distant_indices.contains(idx));
+        self.deferred_sdr_uploads
+            .retain(|idx, _| !distant_indices.contains(idx));
+        self.prefetch_resource_indices
+            .retain(|idx| !distant_indices.contains(idx));
 
         for idx in distant_indices {
             self.texture_cache.remove(idx);
@@ -523,6 +436,7 @@ impl ImageViewerApp {
             self.pending_anim_frames.remove(&idx);
             self.clear_installed_display_mode(idx);
             self.remove_hdr_image_index(idx);
+            self.maybe_unregister_prefetch_resource(idx);
         }
 
         preload_debug!(
@@ -577,6 +491,7 @@ impl ImageViewerApp {
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 
         self.raw_metadata.permute_indices(old_to_new);
+        permute_usize_set(&mut self.prefetch_resource_indices, old_to_new);
 
         for value in self.hdr_raw_gpu_demosaic_pending_key_index.values_mut() {
             if *value < old_to_new.len() {

@@ -20,15 +20,25 @@ use std::path::Path;
 use std::io::{BufRead, Cursor};
 
 use crate::hdr::types::HdrImageBuffer;
+
 pub(crate) fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let mmap = crate::mmap_util::map_file(path)?;
-    let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(&mmap, None)?;
-    log::debug!(
-        "[HDR] {}: Radiance decode {}x{} (resolution-line orientation unfolded)",
-        path.display(),
-        img.width,
-        img.height
-    );
+    decode_radiance_hdr_image_from_mmap(&mmap, Some(path))
+}
+
+pub(crate) fn decode_radiance_hdr_image_from_mmap(
+    mmap: &memmap2::Mmap,
+    path: Option<&Path>,
+) -> Result<HdrImageBuffer, String> {
+    let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(mmap, None)?;
+    if let Some(path) = path {
+        log::debug!(
+            "[HDR] {}: Radiance decode {}x{} (resolution-line orientation unfolded)",
+            path.display(),
+            img.width,
+            img.height
+        );
+    }
     Ok(img)
 }
 

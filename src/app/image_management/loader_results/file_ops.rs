@@ -52,6 +52,7 @@ impl ImageViewerApp {
                         self.clear_hdr_image_state();
                         self.animation_cache.clear();
                         self.prefetched_tiles.clear();
+                        self.clear_prefetch_resource_indices();
 
                         self.animation = None;
                         self.prev_texture = None;
@@ -167,6 +168,7 @@ impl ImageViewerApp {
                         self.clear_hdr_image_state();
                         self.animation_cache.clear();
                         self.prefetched_tiles.clear();
+                        self.clear_prefetch_resource_indices();
 
                         self.animation = None;
                         self.prev_texture = None;

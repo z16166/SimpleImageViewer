@@ -260,14 +260,16 @@ impl ImageViewerApp {
             );
 
         let plan = crate::app::rendering::plan::build_render_plan_for_state(
-            shape,
-            has_hdr_plane,
-            has_sdr_fallback,
-            self.effective_hdr_target_format(),
-            effective_selection.as_ref(),
-            prefer_sdr_for_pending_gpu_demosaic,
-            self.raw_gpu_demosaic_await_hdr_present,
-            prefer_embedded_iso_gain_map_sdr_master,
+            crate::app::rendering::plan::RenderPlanStateInput {
+                shape,
+                has_hdr_plane,
+                has_sdr_fallback,
+                target_format: self.effective_hdr_target_format(),
+                monitor_selection: effective_selection.as_ref(),
+                prefer_sdr_for_pending_gpu_demosaic,
+                force_hdr_plane_after_raw_demosaic: self.raw_gpu_demosaic_await_hdr_present,
+                prefer_embedded_iso_gain_map_sdr_master,
+            },
         );
         hdr_render_path_for_render_plan(
             &plan,
@@ -439,7 +441,7 @@ fn hdr_render_path_for_viewer_plan(
     force_hdr_plane_after_raw_demosaic: bool,
     prefer_embedded_iso_gain_map_sdr_master: bool,
 ) -> Option<HdrRenderPath> {
-    use crate::app::rendering::plan::build_render_plan_for_state;
+    use crate::app::rendering::plan::{RenderPlanStateInput, build_render_plan_for_state};
 
     let shape = if tiled_canvas_active {
         RenderShape::Tiled
@@ -451,16 +453,16 @@ fn hdr_render_path_for_viewer_plan(
     } else {
         has_hdr_image
     };
-    let plan = build_render_plan_for_state(
+    let plan = build_render_plan_for_state(RenderPlanStateInput {
         shape,
         has_hdr_plane,
         has_sdr_fallback,
-        hdr_target_format,
+        target_format: hdr_target_format,
         monitor_selection,
         prefer_sdr_for_pending_gpu_demosaic,
         force_hdr_plane_after_raw_demosaic,
         prefer_embedded_iso_gain_map_sdr_master,
-    );
+    });
     hdr_render_path_for_render_plan(
         &plan,
         shape,

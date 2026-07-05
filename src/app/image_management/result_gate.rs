@@ -266,6 +266,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         };
         assert_eq!(
@@ -303,6 +304,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         };
         assert_eq!(
@@ -336,6 +338,7 @@ mod tests {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: Some(999),
         };
         assert_eq!(
@@ -358,6 +361,7 @@ mod tests {
             source_key: source_key_for_path(&files[0]),
             preview_bundle: crate::loader::PreviewBundle::initial(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };
@@ -392,6 +396,7 @@ mod tests {
             source_key: source_key_for_path(&files[40]),
             preview_bundle: crate::loader::PreviewBundle::refined(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };
@@ -494,6 +499,7 @@ mod tests {
             source_key: source_key_for_path(&files[40]),
             preview_bundle: crate::loader::PreviewBundle::initial(),
             raw_bootstrap_osd: None,
+            sdr_texture_tag: None,
             cpu_demosaic_ms: None,
             error: None,
         };

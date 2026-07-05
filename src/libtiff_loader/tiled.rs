@@ -25,7 +25,12 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 
 use super::handle::create_tiff_handle;
+use super::scratch::with_tiled_extract_scratch;
 use super::thumbnail::extract_embedded_thumbnail;
+
+fn checked_tile_pixel_count(tile_width: u32, tile_height: u32) -> Option<usize> {
+    (tile_width as usize).checked_mul(tile_height as usize)
+}
 
 pub struct LibTiffTiledSource {
     pub(crate) path: PathBuf,
@@ -62,59 +67,70 @@ impl TiledImageSource for LibTiffTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
-        let handle = match self.acquire_handle() {
-            Ok(h) => h,
-            Err(e) => {
-                log::error!(
-                    "[{}] libtiff: Failed to acquire handle for tile: {}",
-                    self.path.display(),
-                    e
-                );
-                return std::sync::Arc::new(result);
-            }
-        };
+        let result_len = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+            .unwrap_or(0);
+        let tile_len = checked_tile_pixel_count(self.tile_width, self.tile_height).unwrap_or(0);
 
-        let tif_ptr = handle.as_ptr();
-        let tw = self.tile_width;
-        let th = self.tile_height;
-        let mut tile_buf = vec![0u32; (tw as usize) * (th as usize)];
-        let start_tx = (x / tw) * tw;
-        let start_ty = (y / th) * th;
+        let ((), result) = with_tiled_extract_scratch(result_len, tile_len, |scratch| {
+            let result = &mut scratch.result;
+            let tile_buf = &mut scratch.tile;
+            let handle = match self.acquire_handle() {
+                Ok(h) => h,
+                Err(e) => {
+                    log::error!(
+                        "[{}] libtiff: Failed to acquire handle for tile: {}",
+                        self.path.display(),
+                        e
+                    );
+                    return;
+                }
+            };
 
-        for curr_ty in (start_ty..(y + h)).step_by(th as usize) {
-            for curr_tx in (start_tx..(x + w)).step_by(tw as usize) {
-                unsafe {
-                    if lib::TIFFReadRGBATile(tif_ptr, curr_tx, curr_ty, tile_buf.as_mut_ptr()) != 0
-                    {
-                        for ty_in_p in 0..th {
-                            let py = curr_ty + ty_in_p;
-                            if py < y || py >= y + h {
-                                continue;
-                            }
-                            for tx_in_p in 0..tw {
-                                let px = curr_tx + tx_in_p;
-                                if px < x || px >= x + w {
+            let tif_ptr = handle.as_ptr();
+            let tw = self.tile_width;
+            let th = self.tile_height;
+            let start_tx = (x / tw) * tw;
+            let start_ty = (y / th) * th;
+
+            for curr_ty in (start_ty..(y + h)).step_by(th as usize) {
+                for curr_tx in (start_tx..(x + w)).step_by(tw as usize) {
+                    unsafe {
+                        if lib::TIFFReadRGBATile(tif_ptr, curr_tx, curr_ty, tile_buf.as_mut_ptr())
+                            != 0
+                        {
+                            for ty_in_p in 0..th {
+                                let py = curr_ty + ty_in_p;
+                                if py < y || py >= y + h {
                                     continue;
                                 }
-                                let dest_x = px - x;
-                                let dest_y = py - y;
-                                let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
-                                let src_idx =
-                                    (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
+                                for tx_in_p in 0..tw {
+                                    let px = curr_tx + tx_in_p;
+                                    if px < x || px >= x + w {
+                                        continue;
+                                    }
+                                    let dest_x = px - x;
+                                    let dest_y = py - y;
+                                    let dest_idx =
+                                        (dest_y as usize * w as usize + dest_x as usize) * 4;
+                                    let src_idx = (th - 1 - ty_in_p) as usize * tw as usize
+                                        + tx_in_p as usize;
 
-                                if src_idx < tile_buf.len() && dest_idx + 4 <= result.len() {
-                                    let pixel = tile_buf[src_idx].to_ne_bytes();
-                                    result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                                    if src_idx < tile_buf.len() && dest_idx + 4 <= result.len() {
+                                        let pixel = tile_buf[src_idx].to_ne_bytes();
+                                        result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        self.release_handle(handle);
+            self.release_handle(handle);
+        });
+
         std::sync::Arc::new(result)
     }
 
@@ -162,7 +178,20 @@ impl TiledImageSource for LibTiffTiledSource {
         let tif_ptr = handle.as_ptr();
         let tw = self.tile_width;
         let th = self.tile_height;
-        let mut tile_buf = vec![0u32; (tw * th) as usize];
+        let tile_len = match checked_tile_pixel_count(tw, th) {
+            Some(len) => len,
+            None => {
+                log::error!(
+                    "[{}] libtiff: tile buffer size overflow ({}x{})",
+                    self.path.display(),
+                    tw,
+                    th
+                );
+                self.release_handle(handle);
+                return (0, 0, vec![]);
+            }
+        };
+        let mut tile_buf = vec![0u32; tile_len];
         let mut last_tile_idx = u32::MAX;
 
         let stride_x_fp = ((self.width as u64) << 16) / pw as u64;

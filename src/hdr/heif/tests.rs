@@ -127,6 +127,36 @@ fn heif_unknown_transfer_not_lifted_for_rec2020_primaries() {
 
 #[cfg(feature = "heif-native")]
 #[test]
+fn heif_decode_target_labels_cover_native_and_common_layouts() {
+    use super::decode::{heif_chroma_label, heif_colorspace_label, heif_decode_target_label};
+
+    assert_eq!(
+        heif_decode_target_label(
+            libheif_sys::heif_colorspace_YCbCr,
+            libheif_sys::heif_chroma_420
+        ),
+        "YCbCr / 4:2:0"
+    );
+    assert_eq!(
+        heif_colorspace_label(libheif_sys::heif_colorspace_undefined),
+        "native (undefined)"
+    );
+    assert_eq!(
+        heif_chroma_label(libheif_sys::heif_chroma_interleaved_RRGGBBAA_LE),
+        "interleaved RRGGBBAA16 LE"
+    );
+    assert_eq!(
+        heif_chroma_label(libheif_sys::heif_chroma_interleaved_RRGGBBAA_BE),
+        "interleaved RRGGBBAA16 BE"
+    );
+    assert_eq!(
+        heif_colorspace_label(libheif_sys::heif_colorspace_nonvisual),
+        "non-visual"
+    );
+}
+
+#[cfg(feature = "heif-native")]
+#[test]
 fn heif_fallback_without_colour_boxes_is_srgb_transfer_not_scene_linear() {
     let m = super::heif_metadata_without_embedded_colour_info();
     assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
@@ -468,8 +498,9 @@ fn heif_display_orientation_prefers_irot_when_exif_normal() {
     use std::path::Path;
 
     let path = Path::new(r"F:\HDR\heif\2013\IMG_2603.HEIC");
-    let manual =
-        crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path).expect("irot");
+    let mmap = crate::mmap_util::map_file(path).expect("mmap heif");
+    let manual = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
+        .expect("irot");
     assert!(
         manual > 1,
         "Apple HEIC corpus should expose non-normal irot/imir geometry"

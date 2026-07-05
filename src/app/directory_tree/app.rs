@@ -42,8 +42,8 @@ use super::{
     DIRECTORY_TREE_RIGHT_MIN_WIDTH, DIRECTORY_TREE_SPLITTER_GRAB_WIDTH, DIRECTORY_TREE_VIEWPORT_ID,
     DirectoryChildrenRequest, DirectoryTreeCommand, DirectoryTreeListPreviewLayout,
     DirectoryTreeListSnapshot, DirectoryTreeListState, DirectoryTreePreviewSnapshot,
-    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, FileMetadataRequest, ImageListSortColumn,
-    domains, embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
+    DirectoryTreeTreeSnapshot, DirectoryTreeTreeState, ImageListSortColumn, domains,
+    embedded_side_panel_clamped_width, is_places_sentinel_namespace_path, view,
 };
 
 struct DirectoryTreePanelRefs<'a> {
@@ -61,12 +61,28 @@ struct DirectoryTreePanelRefs<'a> {
     allow_image_context_menu: bool,
 }
 
+#[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+struct EmbeddedSidePanelLayoutSample {
+    available_before: f32,
+    available_after: f32,
+    max_rect_width_before: f32,
+    panel_width: f32,
+    panel_left: f32,
+    panel_right: f32,
+    default_width: f32,
+    min_width: f32,
+    tree_embedded_width_before: f32,
+    chrome_embedded_width_after: Option<f32>,
+}
+
 #[cfg(feature = "preload-debug")]
 mod embedded_side_panel_layout_diag {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
     use parking_lot::Mutex;
+
+    use super::EmbeddedSidePanelLayoutSample;
 
     #[derive(Default)]
     struct EmbeddedSidePanelLayoutDiag {
@@ -80,17 +96,20 @@ mod embedded_side_panel_layout_diag {
         OnceLock::new();
 
     pub(super) fn maybe_log_embedded_side_panel_layout(
-        available_before: f32,
-        available_after: f32,
-        max_rect_width_before: f32,
-        panel_width: f32,
-        panel_left: f32,
-        panel_right: f32,
-        default_width: f32,
-        min_width: f32,
-        tree_embedded_width_before: f32,
-        chrome_embedded_width_after: Option<f32>,
+        sample: super::EmbeddedSidePanelLayoutSample,
     ) {
+        let EmbeddedSidePanelLayoutSample {
+            available_before,
+            available_after,
+            max_rect_width_before,
+            panel_width,
+            panel_left,
+            panel_right,
+            default_width,
+            min_width,
+            tree_embedded_width_before,
+            chrome_embedded_width_after,
+        } = sample;
         const WIDTH_CHANGE_EPS: f32 = 2.0;
         const LOG_INTERVAL: Duration = Duration::from_millis(1000);
 
@@ -109,7 +128,7 @@ mod embedded_side_panel_layout_diag {
             .last_panel_width
             .map(|prev| panel_width - prev)
             .unwrap_or(0.0);
-        let chrome_embedded_delta = diag
+        let chrome_embedded_delta: f32 = diag
             .last_chrome_embedded_width
             .zip(chrome_embedded_width_after)
             .map(|(prev, now)| now - prev)
@@ -159,19 +178,7 @@ use embedded_side_panel_layout_diag::maybe_log_embedded_side_panel_layout;
 
 #[cfg(not(feature = "preload-debug"))]
 #[inline]
-fn maybe_log_embedded_side_panel_layout(
-    _available_before: f32,
-    _available_after: f32,
-    _max_rect_width_before: f32,
-    _panel_width: f32,
-    _panel_left: f32,
-    _panel_right: f32,
-    _default_width: f32,
-    _min_width: f32,
-    _tree_embedded_width_before: f32,
-    _chrome_embedded_width_after: Option<f32>,
-) {
-}
+fn maybe_log_embedded_side_panel_layout(_sample: EmbeddedSidePanelLayoutSample) {}
 
 fn embedded_side_panel_stable_rect_before_show(
     ui: &egui::Ui,
@@ -216,16 +223,14 @@ impl ImageViewerApp {
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
     }
 
-    fn send_directory_tree_metadata_request(
-        metadata_tx: &crossbeam_channel::Sender<FileMetadataRequest>,
-        request: FileMetadataRequest,
-    ) -> bool {
-        metadata_tx
-            .try_send(request)
-            .map_err(|err| {
-                log::warn!("[DirectoryTree] file metadata request dropped: {err}");
-            })
-            .is_ok()
+    fn directory_tree_list_row_to_file_index(
+        &self,
+        list: &DirectoryTreeListState,
+        row_index: usize,
+    ) -> Option<usize> {
+        list.image_rows.get(row_index).and_then(|row| {
+            self.image_files.iter().position(|path| path == &row.path)
+        })
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
@@ -508,7 +513,7 @@ impl ImageViewerApp {
 
     fn send_directory_tree_children_request(&mut self, request: DirectoryChildrenRequest) {
         let namespace_path = request.namespace_path.clone();
-        if let Err(err) = self.directory_tree.children_request_tx.try_send(request) {
+        if let Err(err) = self.directory_tree.try_send_children_request(request) {
             log::warn!(
                 "[DirectoryTree] children request dropped for {}: {err}",
                 namespace_path.display()
@@ -652,7 +657,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn apply_directory_tree_image_list_sort(
+    pub(crate) fn apply_directory_tree_image_list_sort(
         &mut self,
         column: ImageListSortColumn,
         ascending: bool,
@@ -694,11 +699,36 @@ impl ImageViewerApp {
         if let Some(path) = current_path
             && let Some(index) = self.image_files.iter().position(|entry| entry == &path)
         {
-            self.current_index = index;
-            self.image_status.set_current_index(self.current_index);
-            self.raw_metadata.set_current_index(self.current_index);
+            self.set_current_index(index);
+        }
+        // Re-sort permutes `image_files` and calls `loader.cancel_all()`; restart the current
+        // image if scan-time preload already ran against pre-sort indices (see resort_after_scan).
+        if !self.defer_main_preload_for_directory_tree_list() {
+            self.schedule_current_image_load_if_needed();
         }
         true
+    }
+
+    /// Apply persisted list-column sort before main preload so `request_load` targets the file
+    /// at `current_index` after reorder (avoids cancel/restart races in `resort_after_scan`).
+    pub(crate) fn apply_directory_tree_list_sort_before_preload(&mut self) {
+        if self.image_files.len() <= 1 {
+            return;
+        }
+        let (sort_active, column, ascending) = {
+            let Some(list) = self.directory_tree.list.try_lock() else {
+                return;
+            };
+            (
+                list.image_list_sort_active,
+                list.image_list_sort_column,
+                list.image_list_sort_ascending,
+            )
+        };
+        if !sort_active {
+            return;
+        }
+        let _ = self.apply_directory_tree_image_list_sort(column, ascending);
     }
 
     pub(crate) fn initialize_directory_tree_root(&mut self, root: PathBuf) {
@@ -813,7 +843,7 @@ impl ImageViewerApp {
                     }
                     ctx.request_repaint();
                 }
-                DirectoryTreeCommand::SelectImage(index) => {
+                DirectoryTreeCommand::SelectImage(row_index) => {
                     if self
                         .directory_tree
                         .list
@@ -822,17 +852,20 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    if index < self.image_files.len() {
-                        self.pending_directory_tree_select_index = Some(index);
-                        let mut list = self.directory_tree.list.lock();
-                        list.current_index = index;
-                        list.scroll_image_list_to_current = true;
-                        list.mark_snapshot_dirty();
-                        ctx.request_repaint();
-                        self.request_directory_tree_viewport_repaint(ctx);
-                    }
+                    let mut list = self.directory_tree.list.lock();
+                    let Some(file_index) =
+                        self.directory_tree_list_row_to_file_index(&list, row_index)
+                    else {
+                        continue;
+                    };
+                    self.pending_directory_tree_select_index = Some(file_index);
+                    list.current_index = row_index;
+                    list.scroll_image_list_to_current = true;
+                    list.mark_snapshot_dirty();
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
                 }
-                DirectoryTreeCommand::SelectImageAndHideNav(index) => {
+                DirectoryTreeCommand::SelectImageAndHideNav(row_index) => {
                     if self
                         .directory_tree
                         .list
@@ -841,21 +874,23 @@ impl ImageViewerApp {
                     {
                         continue;
                     }
-                    if index < self.image_files.len() {
-                        if index != self.current_index {
-                            self.pending_directory_tree_select_index = Some(index);
-                        }
-                        {
-                            let mut list = self.directory_tree.list.lock();
-                            list.current_index = index;
-                            list.scroll_image_list_to_current = true;
-                        }
-                        // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
-                        // Settings can restore the panel without rewriting yaml.
-                        self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
-                        ctx.request_repaint();
-                        self.request_directory_tree_viewport_repaint(ctx);
+                    let mut list = self.directory_tree.list.lock();
+                    let Some(file_index) =
+                        self.directory_tree_list_row_to_file_index(&list, row_index)
+                    else {
+                        continue;
+                    };
+                    if file_index != self.current_index {
+                        self.pending_directory_tree_select_index = Some(file_index);
                     }
+                    list.current_index = row_index;
+                    list.scroll_image_list_to_current = true;
+                    drop(list);
+                    // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
+                    // Settings can restore the panel without rewriting yaml.
+                    self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
                 }
                 DirectoryTreeCommand::SortImageList(column) => {
                     let (sort_column, sort_ascending) = {
@@ -1624,10 +1659,8 @@ impl ImageViewerApp {
         }
 
         for request in metadata_requests {
-            if !Self::send_directory_tree_metadata_request(
-                &self.directory_tree.metadata_request_tx,
-                request,
-            ) && let Some(mut list) = self.directory_tree.list.try_lock()
+            if !self.directory_tree.try_send_metadata_request(request)
+                && let Some(mut list) = self.directory_tree.list.try_lock()
             {
                 list.sync_warning = Some(t!("directory_tree.metadata_request_busy").to_string());
             }
@@ -1798,18 +1831,18 @@ impl ImageViewerApp {
             .chrome
             .try_lock()
             .and_then(|chrome| chrome.embedded_nav_panel_width);
-        maybe_log_embedded_side_panel_layout(
+        maybe_log_embedded_side_panel_layout(EmbeddedSidePanelLayoutSample {
             available_before,
-            ui.available_width(),
+            available_after: ui.available_width(),
             max_rect_width_before,
-            panel_rect.width(),
-            panel_rect.left(),
-            panel_rect.right(),
+            panel_width: panel_rect.width(),
+            panel_left: panel_rect.left(),
+            panel_right: panel_rect.right(),
             default_width,
-            DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
+            min_width: DIRECTORY_TREE_EMBEDDED_MIN_WIDTH,
             tree_embedded_width_before,
             chrome_embedded_width_after,
-        );
+        });
     }
 
     /// Apply a directory-tree list selection queued in `process_directory_tree_events`.

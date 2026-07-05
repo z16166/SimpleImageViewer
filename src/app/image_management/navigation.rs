@@ -128,19 +128,33 @@ impl ImageViewerApp {
                     self.prefetch_window_max_distance,
                 )
             })
-            .filter(|&idx| {
-                self.hdr_image_cache.get(&idx).is_some_and(|hdr| {
-                    self.image_files.get(idx).is_some_and(|path| {
-                        crate::loader::hdr_gain_map_sdr_display_mode_affects_image(
-                            hdr.as_ref(),
-                            path,
-                        )
-                    })
-                })
-            })
+            .filter(|&idx| self.index_sensitive_to_hdr_gain_map_sdr_display(idx))
             .collect();
 
         if sensitive.is_empty() {
+            return;
+        }
+
+        let current = self.current_index;
+        let cache_fast_path = sensitive
+            .iter()
+            .all(|&idx| self.hdr_gain_map_sdr_display_refreshable_from_cache(idx));
+
+        if cache_fast_path {
+            log::info!(
+                "[HDR] hdr_gain_map_sdr_display -> {}; refreshed {} gain-map cache(s) in preload window (idx={} current)",
+                self.settings.hdr_gain_map_sdr_display.label(),
+                sensitive.len(),
+                current
+            );
+            for &idx in &sensitive {
+                self.apply_hdr_gain_map_sdr_display_from_cache(idx);
+                self.texture_cache.remove(idx);
+                self.prefetched_tiles.remove(&idx);
+                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            }
+            self.schedule_preloads(true);
+            self.wake_root_for_logic();
             return;
         }
 
@@ -148,13 +162,12 @@ impl ImageViewerApp {
             "[HDR] hdr_gain_map_sdr_display -> {}; evicting {} gain-map cache(s) in preload window and reloading current idx={}",
             self.settings.hdr_gain_map_sdr_display.label(),
             sensitive.len(),
-            self.current_index
+            current
         );
 
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
 
-        let current = self.current_index;
         for idx in &sensitive {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
@@ -181,6 +194,65 @@ impl ImageViewerApp {
             self.raw_demosaic_mode_for_index(current),
         );
         self.schedule_preloads(true);
+        self.wake_root_for_logic();
+    }
+
+    fn index_has_sdr_fallback_resident(&self, idx: usize) -> bool {
+        self.hdr_sdr_fallback_indices.contains(&idx)
+            || self.texture_cache.contains(idx)
+            || self.deferred_sdr_uploads.contains_key(&idx)
+    }
+
+    fn index_sensitive_to_hdr_gain_map_sdr_display(&self, idx: usize) -> bool {
+        let Some(path) = self.image_files.get(idx) else {
+            return false;
+        };
+        crate::loader::index_hdr_gain_map_sdr_display_mode_affects(
+            path,
+            self.hdr_image_cache.get(&idx).map(|entry| entry.as_ref()),
+            self.ultra_hdr_capacity_sensitive_indices.contains(&idx),
+            self.index_has_sdr_fallback_resident(idx),
+        )
+    }
+
+    /// Switch SDR gain-map presentation using cached planes when both routes are already resident.
+    fn hdr_gain_map_sdr_display_refreshable_from_cache(&self, idx: usize) -> bool {
+        let Some(hdr) = self.hdr_image_cache.get(&idx) else {
+            return false;
+        };
+        let Some(path) = self.image_files.get(idx) else {
+            return false;
+        };
+        if !crate::loader::hdr_gain_map_sdr_display_mode_affects_image(hdr, path) {
+            return false;
+        }
+        let output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.effective_hdr_target_format(),
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        if output_mode != crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped {
+            return false;
+        }
+
+        let want_embedded = self.settings.hdr_gain_map_sdr_display
+            == crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+        let has_sdr_fallback = self.index_has_sdr_fallback_resident(idx);
+        let has_tone_map_plane = crate::loader::hdr_tone_map_plane_available_in_cache(hdr);
+        if want_embedded {
+            crate::loader::hdr_supports_embedded_sdr_master_display(hdr) && has_sdr_fallback
+        } else {
+            has_tone_map_plane
+        }
+    }
+
+    fn apply_hdr_gain_map_sdr_display_from_cache(&mut self, idx: usize) {
+        let Some(hdr) = self.hdr_image_cache.get(&idx).cloned() else {
+            return;
+        };
+        if idx == self.current_index {
+            self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, hdr));
+            self.refresh_hdr_view_status();
+        }
     }
 
     pub(crate) fn reload_current(&mut self) {
@@ -408,6 +480,11 @@ impl ImageViewerApp {
             &mut self.tile_manager,
             &mut self.prefetched_tiles,
         );
+        if self.current_index != target_index
+            && self.prefetched_tiles.contains_key(&self.current_index)
+        {
+            self.register_prefetch_resource(self.current_index);
+        }
         self.set_current_index(target_index);
         self.refresh_current_file_name();
         self.current_hdr_image = self
@@ -471,7 +548,13 @@ impl ImageViewerApp {
                 );
             }
         } else if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
-            if self.index_uses_tiled_pipeline(self.current_index) {
+            if self.index_requires_tile_manager(self.current_index) {
+                if self.installed_display_mode(self.current_index) != Some(crate::loader::RenderShape::Tiled) {
+                    self.record_installed_display_mode(
+                        self.current_index,
+                        crate::loader::RenderShape::Tiled,
+                    );
+                }
                 tm.decode_profile = self.decode_profile_for_index(self.current_index);
                 self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
@@ -547,31 +630,28 @@ impl ImageViewerApp {
                 self.tile_manager.is_some()
             );
             self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
-            let needs_tile_manager_rebuild = (self.index_uses_tiled_pipeline(self.current_index)
-                || self
-                    .hdr_tiled_source_cache
-                    .contains_key(&self.current_index))
+            let needs_tile_manager_rebuild = self.index_requires_tile_manager(self.current_index)
                 && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
-                if self.index_uses_tiled_pipeline(self.current_index) {
-                    if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
-                        self.set_current_image_resolution(Some((w, h)));
-                    }
-                    self.loader.request_load(
-                        self.current_index,
-                        self.image_files[self.current_index].clone(),
-                        self.settings.raw_high_quality,
-                        self.raw_demosaic_mode_for_index(self.current_index),
-                    );
+                if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                    self.set_current_image_resolution(Some((w, h)));
+                } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                    self.set_current_image_resolution(Some((hdr.width, hdr.height)));
                 } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
                     self.set_current_image_resolution(Some((src.width(), src.height())));
-                    self.loader.request_load(
-                        self.current_index,
-                        self.image_files[self.current_index].clone(),
-                        self.settings.raw_high_quality,
-                        self.raw_demosaic_mode_for_index(self.current_index),
-                    );
                 }
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] navigate tile_manager_rebuild idx={} display_mode={:?} needs_tile_mgr_flag={}",
+                    self.current_index,
+                    self.installed_display_mode(self.current_index),
+                    self.texture_cache.needs_tile_manager(self.current_index),
+                );
+                self.loader.request_load(
+                    self.current_index,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(self.current_index),
+                );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {

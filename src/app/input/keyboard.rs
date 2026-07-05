@@ -134,8 +134,10 @@ impl ImageViewerApp {
             return;
         }
 
-        if matches!(action, Some(AppAction::Next | AppAction::Prev))
-            && self.directory_tree_embedded_list_captures_main_navigation()
+        if matches!(
+            action,
+            Some(AppAction::Next | AppAction::Prev | AppAction::First | AppAction::Last)
+        ) && self.directory_tree_embedded_list_captures_main_navigation()
         {
             action = None;
         }

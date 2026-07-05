@@ -118,9 +118,9 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         1,
         AnimationPlayback {
             image_index: 1,
-            textures: Vec::new(),
+            textures: std::sync::Arc::new(Vec::new()),
             hdr_frames: Some(vec![Arc::clone(&anim_hdr)]),
-            delays: Vec::new(),
+            delays: std::sync::Arc::new(Vec::new()),
             current_frame: 0,
             frame_start: Instant::now(),
             cpu_frames: None,
@@ -136,8 +136,8 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         image_index: 2,
         hdr_frames: Some(vec![Arc::clone(&pending_hdr)]),
         frames: Vec::new(),
-        textures: Vec::new(),
-        delays: Vec::new(),
+        textures: std::sync::Arc::new(Vec::new()),
+        delays: std::sync::Arc::new(Vec::new()),
         next_frame: 0,
     };
     let mut pending_map = HashMap::new();
@@ -174,16 +174,26 @@ fn navigation_preserves_current_tile_manager_for_restore() {
 }
 
 #[test]
-fn tiled_bootstrap_preview_replaces_only_missing_or_smaller_cached_preview() {
-    assert!(should_upload_tiled_bootstrap_preview(false, None, 512));
-    assert!(should_upload_tiled_bootstrap_preview(true, None, 512));
-    assert!(should_upload_tiled_bootstrap_preview(true, Some(128), 512));
+fn tiled_bootstrap_preview_replaces_only_lower_rank_cached_preview() {
+    use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+
+    assert!(should_upload_tiled_bootstrap_preview(false, None, None));
+    assert!(should_upload_tiled_bootstrap_preview(true, None, None));
+    assert!(should_upload_tiled_bootstrap_preview(
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+    ));
     assert!(!should_upload_tiled_bootstrap_preview(
         true,
-        Some(1024),
-        512
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
     ));
-    assert!(!should_upload_tiled_bootstrap_preview(true, Some(512), 512));
+    assert!(!should_upload_tiled_bootstrap_preview(
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+    ));
 }
 
 #[test]
@@ -378,11 +388,23 @@ fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
 }
 
 #[test]
-fn tiled_hdr_preview_replaces_only_missing_or_smaller_cached_preview() {
-    assert!(should_cache_tiled_hdr_preview(None, 4096));
-    assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
-    assert!(!should_cache_tiled_hdr_preview(Some(4096), 1024));
-    assert!(!should_cache_tiled_hdr_preview(Some(4096), 4096));
+fn tiled_hdr_preview_buffer_cache_still_compares_dimensions() {
+    // Float HDR preview buffers are not tagged in `TextureCache`; size guards remain here.
+    let mut cache = HashMap::<usize, Arc<crate::hdr::types::HdrImageBuffer>>::new();
+    let small = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1024,
+        height: 512,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![0.0; 4]),
+    });
+    cache.insert(0, small);
+    let cached_max = cache.get(&0).map(|cached| cached.width.max(cached.height));
+    assert!(cached_max.is_none_or(|max| 4096 > max));
+    assert!(!cached_max.is_none_or(|max| 1024 > max));
 }
 
 #[test]
@@ -448,13 +470,57 @@ fn current_hdr_tiled_preview_updates_only_when_larger_preview_is_cached() {
 }
 
 #[test]
-fn tiled_sdr_preview_cache_policy_preserves_full_images_and_larger_previews() {
-    assert!(should_cache_tiled_sdr_preview(false, false, None, 512));
-    assert!(!should_cache_tiled_sdr_preview(true, false, Some(128), 512));
-    assert!(should_cache_tiled_sdr_preview(true, true, None, 512));
-    assert!(should_cache_tiled_sdr_preview(true, true, Some(128), 512));
-    assert!(!should_cache_tiled_sdr_preview(true, true, Some(512), 512));
-    assert!(!should_cache_tiled_sdr_preview(true, true, Some(1024), 512));
+fn tiled_sdr_preview_cache_policy_uses_tag_rank_not_dimensions() {
+    use crate::loader::{PreviewStage, TexturePreviewBufferTag};
+
+    assert!(should_cache_tiled_sdr_preview(
+        false,
+        false,
+        None,
+        None,
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        false,
+        Some(TexturePreviewBufferTag::MainWindowSdr),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(should_cache_tiled_sdr_preview(
+        true,
+        true,
+        None,
+        None,
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledBootstrap),
+        Some(PreviewStage::Initial),
+        TexturePreviewBufferTag::TiledRefinedLoader,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledOnDemandSdr,
+        PreviewStage::Refined,
+    ));
+    assert!(!should_cache_tiled_sdr_preview(
+        true,
+        true,
+        Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        Some(PreviewStage::Refined),
+        TexturePreviewBufferTag::TiledBootstrap,
+        PreviewStage::Initial,
+    ));
 }
 
 #[test]
@@ -866,6 +932,116 @@ fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
 }
 
 #[test]
+fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
+    use crate::app::directory_tree::ImageListSortColumn;
+    use crate::settings::BrowseMode;
+
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.image_files = vec![
+        PathBuf::from(r"F:\win7\2013\XMN_2332.NEF"),
+        PathBuf::from(r"F:\win7\2013\XMN_2333.NEF"),
+        PathBuf::from(r"F:\win7\2013\XMN_2334.NEF"),
+    ];
+    app.file_byte_len_by_index = vec![1, 2, 3];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 0;
+    app.loader.request_load(
+        0,
+        app.image_files[0].clone(),
+        app.settings.raw_high_quality,
+        app.settings.raw_demosaic_mode,
+    );
+    assert!(app.loader.is_loading(0));
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false,));
+    assert_eq!(app.current_index, 2);
+    assert_eq!(
+        app.image_files[app.current_index].file_name().unwrap(),
+        "XMN_2332.NEF"
+    );
+    assert!(!app.loader.is_loading(0));
+    assert!(app.loader.is_loading(2));
+}
+
+#[test]
+fn hdr_gain_map_sdr_display_change_refreshes_cached_heic_without_reload() {
+    use crate::hdr::types::{
+        HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE, HdrGainMapMetadata, HdrImageBuffer,
+        HdrImageMetadata, HdrPixelFormat,
+    };
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+
+    let mut metadata = HdrImageMetadata::default();
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+        target_hdr_capacity: None,
+        diagnostic: String::new(),
+        capped_display_referred: true,
+        apple_heic_deferred: None,
+        iso_deferred: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4032,
+        height: 3024,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(vec![0.5; 4032 * 3024 * 4]),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_hdr_sdr_fallback_texture(
+        0,
+        &DecodedImage::new(64, 48, vec![128; 64 * 48 * 4]),
+        &ctx,
+    );
+    assert!(app.active_hdr_plane_displays_index(0));
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(app.hdr_image_cache.contains_key(&0));
+    assert!(!app.loader.is_loading(0));
+    assert!(!app.active_hdr_plane_displays_index(0));
+}
+
+#[test]
+fn hdr_gain_map_sdr_display_change_reloads_heif_marked_ultra_hdr_sensitive() {
+    use crate::settings::HdrGainMapSdrDisplayMode;
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    app.current_index = 0;
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
+    app.ultra_hdr_capacity_sensitive_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_static_sdr_texture(
+        0,
+        &DecodedImage::new(64, 48, vec![128; 64 * 48 * 4]),
+        "img_0".into(),
+        crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+        crate::loader::PreviewStage::Refined,
+        &ctx,
+    );
+
+    app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
+    app.reload_after_hdr_gain_map_sdr_display_change();
+
+    assert!(!app.texture_cache.contains(0));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
 fn neighbor_image_install_yields_until_current_ready() {
     assert!(super::should_yield_neighbor_image_install_until_current_ready(false, false, true));
     assert!(!super::should_yield_neighbor_image_install_until_current_ready(true, false, true));
@@ -1070,6 +1246,7 @@ fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
         error: None,
         cpu_demosaic_ms: None,
         raw_bootstrap_osd: None,
+        sdr_texture_tag: None,
     };
 
     assert!(!preview_result_has_sdr_upload(&result));
@@ -1650,6 +1827,7 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
@@ -1679,6 +1857,7 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         target_hdr_capacity: 3.478,
         raw_osd: Some(crate::loader::RawOsdInfo::empty()),
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 3.786));
@@ -1707,6 +1886,7 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         target_hdr_capacity: 1.0,
         raw_osd: None,
         uploaded_planes: None,
+        staged_gpu_plane_upload: false,
         device_id: None,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
@@ -1884,7 +2064,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         wgpu_pipeline_cache: None,
         wgpu_adapter_info: None,
         current_device_id: 1,
-        loader_wgpu_device: None,
         hdr_callback_resources_prewarm:
             crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared(),
         hdr_target_format: None,
@@ -1928,6 +2107,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
+        hdr_pending_work: crate::hdr::renderer::HdrPendingWorkQueues::new_shared(),
         cpu_raw_refinement_pending_indices: HashSet::new(),
         hq_tiled_preview_pending_indices: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
@@ -2003,6 +2183,14 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_bootstrap_frames: 0,
         strip_preload_cooldown_frames: 0,
         strip_stale_retain_last_generation: u64::MAX,
+        strip_cold_awaiting_scratch: Vec::new(),
+        strip_indices_scratch: Vec::new(),
+        strip_cold_candidates_scratch: Vec::with_capacity(
+            crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+        ),
+        strip_cold_seen_scratch: Vec::with_capacity(
+            crate::app::directory_tree::MAX_COLD_STRIP_SCHEDULE_PER_FRAME,
+        ),
         current_image_res: None,
         canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
@@ -2033,8 +2221,12 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         installed_display_modes: HashMap::new(),
         tile_manager: None,
         tiled_primary_visible_scratch: HashSet::new(),
-        tiled_visible_coords_scratch: Vec::new(),
+        tiled_visible_coords_scratch: HashSet::new(),
+        tiled_visible_tiles_scratch: Vec::new(),
+        tiled_primary_visible_tiles_scratch: Vec::new(),
+        tiled_tile_visits_scratch: Vec::new(),
         prefetched_tiles: HashMap::new(),
+        prefetch_resource_indices: HashSet::new(),
         theme_cache: SystemThemeCache::default(),
         cached_palette: ThemePalette::dark(),
         is_printing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2378,6 +2570,8 @@ fn evict_distant_prefetch_caches_evicts_all_distant_prefetched_tiled_and_hdr_res
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
             current_index: 0,
             total_count: 7,
         },
@@ -2427,6 +2621,8 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2438,6 +2634,8 @@ fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2475,6 +2673,8 @@ fn evict_distant_prefetch_caches_retains_outside_window_while_loading() {
             orig_w: 1024,
             orig_h: 768,
             needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
             current_index: 0,
             total_count: 7,
         },
@@ -2601,6 +2801,8 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
             orig_w: 2048,
             orig_h: 1536,
             needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
             current_index: 0,
             total_count: 2,
         },
@@ -2617,6 +2819,41 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     app.navigate_to(1, &ctx);
 
     assert_eq!(app.current_image_res, Some((2048, 1536)));
+    assert!(app.loader.is_loading(1));
+}
+
+#[test]
+fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
+    use eframe::egui;
+
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.exr")];
+    app.current_index = 0;
+
+    let ctx = egui::Context::default();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([4, 2], &[0u8; 32]);
+    let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
+    app.texture_cache.insert(
+        1,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: 24576,
+            orig_h: 12288,
+            needs_tile_manager: true,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+            stage: crate::loader::PreviewStage::Initial,
+            current_index: 0,
+            total_count: 2,
+        },
+    );
+
+    assert!(app.texture_cache.needs_tile_manager(1));
+    assert!(app.installed_display_mode(1).is_none());
+    assert!(app.tile_manager.is_none());
+
+    app.navigate_to(1, &ctx);
+
+    assert_eq!(app.current_image_res, Some((24576, 12288)));
     assert!(app.loader.is_loading(1));
 }
 
@@ -2778,6 +3015,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: None,
+            staged_gpu_plane_upload: false,
             device_id: None,
         })));
     app.process_loaded_images(&ctx, &mut None);
@@ -2819,7 +3057,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         ),
         rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
     };
-    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+    let uploaded = crate::hdr::renderer::test_upload_image_plane(&device, &queue, &hdr)
         .expect("background plane upload");
 
     let mut app = make_test_app();
@@ -2845,6 +3083,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: Some(uploaded),
+            staged_gpu_plane_upload: true,
             device_id: Some(999),
         })));
     app.process_loaded_images(&ctx, &mut None);
@@ -2866,7 +3105,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
         ),
         rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
     };
-    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+    let uploaded = crate::hdr::renderer::test_upload_image_plane(&device, &queue, &hdr)
         .expect("background plane upload");
     app.loader.test_register_inflight(0);
     app.loader
@@ -2884,6 +3123,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             target_hdr_capacity: 1.0,
             raw_osd: None,
             uploaded_planes: Some(uploaded),
+            staged_gpu_plane_upload: true,
             device_id: Some(app.current_device_id),
         })));
     app.process_loaded_images(&ctx, &mut None);
@@ -2945,7 +3185,7 @@ fn sync_loader_wgpu_context_bumps_epoch_on_device_replacement() {
 
     app.sync_loader_wgpu_context(device_a, queue_a);
     assert_eq!(app.current_device_id, 1);
-    assert!(app.loader_wgpu_device.is_some());
+    assert!(app.loader.wgpu_device_handle().is_some());
 
     app.sync_loader_wgpu_context(device_b, queue_b);
     assert_eq!(app.current_device_id, 2);
@@ -3465,6 +3705,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
                 path: &paths[index],
                 ctx: &ctx,
                 strip_max_side: 128,
+                strip_max_side_used: Some(128),
             },
         );
     }
@@ -3501,6 +3742,7 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
             path: &old_files[0],
             ctx: &ctx,
             strip_max_side: 128,
+            strip_max_side_used: Some(128),
         },
     );
 

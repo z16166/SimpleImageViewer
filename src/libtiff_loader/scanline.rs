@@ -27,9 +27,12 @@ use std::path::PathBuf;
 
 use super::decode::{
     TiffPaletteMaps, TiffSampleDecodeParams, get_raw_value, process_scanline_contig,
-    process_scanline_separate,
+    process_scanline_separate, tiff_uint_default_sample_max,
 };
 use super::handle::create_tiff_handle;
+use super::scratch::{
+    with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
+};
 use super::thumbnail::extract_embedded_thumbnail;
 
 // --- Scanline Implementation (Mock Tiles from Strips) ---
@@ -75,35 +78,46 @@ impl LibTiffScanlineSource {
         }
 
         let rps = self.rows_per_strip;
-        let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
-
-        let decoded = unsafe {
-            lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr()) != 0
-        };
-
-        if !decoded {
-            return None;
-        }
-
+        let strip_len = (self.width as usize) * (rps as usize);
         let actual_rows = if (strip_idx + 1) * rps > self.height {
             self.height - strip_idx * rps
         } else {
             rps
         };
-        let mut rgba = vec![0u8; (self.width as usize) * (actual_rows as usize) * 4];
-        for row in 0..actual_rows {
-            let src_row = (rps - 1 - row) as usize;
-            let src_offset = src_row * self.width as usize;
-            let dst_offset = row as usize * self.width as usize * 4;
-            for col in 0..self.width as usize {
-                let src_idx = src_offset + col;
-                if src_idx < strip_buf.len() {
-                    let pixel = strip_buf[src_idx].to_ne_bytes();
-                    let dst_idx = dst_offset + col * 4;
-                    rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+        let rgba_len = (self.width as usize) * (actual_rows as usize) * 4;
+
+        let (decoded, rgba) = with_scanline_strip_scratch(strip_len, rgba_len, |scratch| {
+            let strip_buf = &mut scratch.strip;
+            let rgba = &mut scratch.rgba;
+            let decoded = unsafe {
+                lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr())
+                    != 0
+            };
+
+            if !decoded {
+                return false;
+            }
+
+            for row in 0..actual_rows {
+                let src_row = (rps - 1 - row) as usize;
+                let src_offset = src_row * self.width as usize;
+                let dst_offset = row as usize * self.width as usize * 4;
+                for col in 0..self.width as usize {
+                    let src_idx = src_offset + col;
+                    if src_idx < strip_buf.len() {
+                        let pixel = strip_buf[src_idx].to_ne_bytes();
+                        let dst_idx = dst_offset + col * 4;
+                        rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                    }
                 }
             }
+            true
+        });
+
+        if !decoded {
+            return None;
         }
+
         let data = Arc::new(rgba);
 
         {
@@ -134,64 +148,68 @@ impl TiledImageSource for LibTiffScanlineSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
-        let handle = match self.acquire_handle() {
-            Ok(h) => h,
-            Err(e) => {
-                log::error!(
-                    "[{}] libtiff: Failed to acquire handle for scanline: {}",
-                    self.path.display(),
-                    e
-                );
-                return std::sync::Arc::new(result);
-            }
-        };
+        let result_len = (w as usize) * (h as usize) * 4;
 
-        let rps = self.rows_per_strip;
-        let start_strip = y / rps;
-        let end_strip = (y + h - 1) / rps;
-
-        for strip_idx in start_strip..=end_strip {
-            let strip_data = match self.get_or_decode_strip(strip_idx, &handle) {
-                Some(d) => d,
-                None => continue,
+        let ((), result) = with_scanline_extract_result(result_len, |result| {
+            let handle = match self.acquire_handle() {
+                Ok(h) => h,
+                Err(e) => {
+                    log::error!(
+                        "[{}] libtiff: Failed to acquire handle for scanline: {}",
+                        self.path.display(),
+                        e
+                    );
+                    return;
+                }
             };
 
-            let strip_y_start = strip_idx * rps;
-            let actual_rows = if (strip_idx + 1) * rps > self.height {
-                self.height - strip_y_start
-            } else {
-                rps
-            };
+            let rps = self.rows_per_strip;
+            let start_strip = y / rps;
+            let end_strip = (y + h - 1) / rps;
 
-            let intersect_y_start = y.max(strip_y_start);
-            let intersect_y_end = (y + h).min(strip_y_start + actual_rows).min(self.height);
-            let intersect_x_start = x;
-            let intersect_x_end = (x + w).min(self.width);
+            for strip_idx in start_strip..=end_strip {
+                let strip_data = match self.get_or_decode_strip(strip_idx, &handle) {
+                    Some(d) => d,
+                    None => continue,
+                };
 
-            if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end {
-                continue;
-            }
+                let strip_y_start = strip_idx * rps;
+                let actual_rows = if (strip_idx + 1) * rps > self.height {
+                    self.height - strip_y_start
+                } else {
+                    rps
+                };
 
-            let copy_bytes = (intersect_x_end - intersect_x_start) as usize * 4;
+                let intersect_y_start = y.max(strip_y_start);
+                let intersect_y_end = (y + h).min(strip_y_start + actual_rows).min(self.height);
+                let intersect_x_start = x;
+                let intersect_x_end = (x + w).min(self.width);
 
-            for py in intersect_y_start..intersect_y_end {
-                let row_in_strip = (py - strip_y_start) as usize;
-                let src_offset =
-                    (row_in_strip * self.width as usize + intersect_x_start as usize) * 4;
-                let dst_y = (py - y) as usize;
-                let dst_offset = (dst_y * w as usize + (intersect_x_start - x) as usize) * 4;
+                if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end {
+                    continue;
+                }
 
-                if src_offset + copy_bytes <= strip_data.len()
-                    && dst_offset + copy_bytes <= result.len()
-                {
-                    result[dst_offset..dst_offset + copy_bytes]
-                        .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
+                let copy_bytes = (intersect_x_end - intersect_x_start) as usize * 4;
+
+                for py in intersect_y_start..intersect_y_end {
+                    let row_in_strip = (py - strip_y_start) as usize;
+                    let src_offset =
+                        (row_in_strip * self.width as usize + intersect_x_start as usize) * 4;
+                    let dst_y = (py - y) as usize;
+                    let dst_offset = (dst_y * w as usize + (intersect_x_start - x) as usize) * 4;
+
+                    if src_offset + copy_bytes <= strip_data.len()
+                        && dst_offset + copy_bytes <= result.len()
+                    {
+                        result[dst_offset..dst_offset + copy_bytes]
+                            .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
+                    }
                 }
             }
-        }
 
-        self.release_handle(handle);
+            self.release_handle(handle);
+        });
+
         std::sync::Arc::new(result)
     }
 
@@ -238,40 +256,43 @@ impl TiledImageSource for LibTiffScanlineSource {
 
         let tif_ptr = handle.as_ptr();
         let rps = self.rows_per_strip;
-        let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
+        let strip_len = (self.width as usize) * (rps as usize);
         let mut last_strip_idx = u32::MAX;
 
         let stride_x_fp = ((self.width as u64) << 16) / pw as u64;
         let stride_y_fp = ((self.height as u64) << 16) / ph as u64;
 
-        for ty in 0..ph {
-            let y = ((ty as u64 * stride_y_fp) >> 16) as u32;
-            let strip_idx = y / rps;
-            let y_in_strip = y % rps;
-            let dst_y_offset = (ty * pw) as usize * 4;
+        with_scanline_strip_buf(strip_len, |strip_buf| {
+            for ty in 0..ph {
+                let y = ((ty as u64 * stride_y_fp) >> 16) as u32;
+                let strip_idx = y / rps;
+                let y_in_strip = y % rps;
+                let dst_y_offset = (ty * pw) as usize * 4;
 
-            unsafe {
-                if strip_idx != last_strip_idx {
-                    if lib::TIFFReadRGBAStrip(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr()) != 0
-                    {
-                        last_strip_idx = strip_idx;
-                    } else {
-                        continue;
+                unsafe {
+                    if strip_idx != last_strip_idx {
+                        if lib::TIFFReadRGBAStrip(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr())
+                            != 0
+                        {
+                            last_strip_idx = strip_idx;
+                        } else {
+                            continue;
+                        }
                     }
-                }
 
-                for tx in 0..pw {
-                    let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
-                    let src_idx =
-                        (rps - 1 - y_in_strip) as usize * self.width as usize + x as usize;
-                    if src_idx < strip_buf.len() {
-                        let pixel = strip_buf[src_idx].to_ne_bytes();
-                        let dst_idx = dst_y_offset + (tx as usize) * 4;
-                        result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                    for tx in 0..pw {
+                        let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
+                        let src_idx =
+                            (rps - 1 - y_in_strip) as usize * self.width as usize + x as usize;
+                        if src_idx < strip_buf.len() {
+                            let pixel = strip_buf[src_idx].to_ne_bytes();
+                            let dst_idx = dst_y_offset + (tx as usize) * 4;
+                            result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                        }
                     }
                 }
             }
-        }
+        });
 
         self.release_handle(handle);
         (pw, ph, result)
@@ -294,6 +315,81 @@ const FORMAT_IEEEFP: u16 = 3;
 // TIFF Planar Configurations
 const CONFIG_CONTIG: u16 = 1; // Contiguous / Chunky format (e.g., RGBRGBRGB...)
 const CONFIG_SEPARATE: u16 = 2; // Planar format (e.g., RRR... GGG... BBB...)
+
+struct ManualScanlineDecodePass<'a> {
+    tif: *mut lib::TIFF,
+    buf: &'a mut [u8],
+    rgba: &'a mut [u8],
+    width: u32,
+    height: u32,
+    config: u16,
+    spp: u16,
+    samples_to_process: usize,
+    params: TiffSampleDecodeParams,
+    palette: TiffPaletteMaps,
+    track_range: bool,
+    actual_min: &'a mut f64,
+    actual_max: &'a mut f64,
+}
+
+unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
+    let ManualScanlineDecodePass {
+        tif,
+        buf,
+        rgba,
+        width,
+        height,
+        config,
+        spp,
+        samples_to_process,
+        params,
+        palette,
+        track_range,
+        actual_min,
+        actual_max,
+    } = pass;
+    if config == CONFIG_CONTIG {
+        for y in 0..height {
+            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
+                buf.fill(0);
+            }
+            if track_range {
+                let num_samples = width as usize * spp as usize;
+                for idx in 0..num_samples {
+                    let val = get_raw_value(buf, idx, params.bps, params.format);
+                    if val.is_finite() {
+                        *actual_min = actual_min.min(val);
+                        *actual_max = actual_max.max(val);
+                    }
+                }
+            }
+            let row_offset = y as usize * width as usize * 4;
+            process_scanline_contig(buf, &mut rgba[row_offset..], width, spp, params, palette);
+        }
+    } else {
+        for s in 0..samples_to_process {
+            for y in 0..height {
+                if unsafe {
+                    lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
+                } <= 0
+                {
+                    buf.fill(0);
+                }
+                if track_range {
+                    for idx in 0..width as usize {
+                        let val = get_raw_value(buf, idx, params.bps, params.format);
+                        if val.is_finite() {
+                            *actual_min = actual_min.min(val);
+                            *actual_max = actual_max.max(val);
+                        }
+                    }
+                }
+                let row_offset = y as usize * width as usize * 4;
+                process_scanline_separate(buf, &mut rgba[row_offset..], width, s, params);
+            }
+        }
+    }
+}
 
 pub(crate) unsafe fn manual_decode_scanline(
     tif: *mut lib::TIFF,
@@ -372,8 +468,11 @@ pub(crate) unsafe fn manual_decode_scanline(
     let use_auto_scale = !smax_provided
         && photo != PHOTO_SEPARATED
         && (format == FORMAT_IEEEFP || bps == 16 || bps == 32 || bps == 64);
+    let use_integer_auto_scale = use_auto_scale && format != FORMAT_IEEEFP;
 
-    if use_auto_scale {
+    // IEEE float without SMax can exceed 1.0; a provisional decode would clamp before we
+    // know the range, so keep a dedicated min/max scan for that case only.
+    if use_auto_scale && format == FORMAT_IEEEFP {
         let mut actual_min = f64::MAX;
         let mut actual_max = f64::MIN;
 
@@ -397,12 +496,8 @@ pub(crate) unsafe fn manual_decode_scanline(
                     for idx in 0..num_samples {
                         let val = get_raw_value(&buf, idx, bps, format);
                         if val.is_finite() {
-                            if val < actual_min {
-                                actual_min = val;
-                            }
-                            if val > actual_max {
-                                actual_max = val;
-                            }
+                            actual_min = actual_min.min(val);
+                            actual_max = actual_max.max(val);
                         }
                     }
                 }
@@ -417,50 +512,65 @@ pub(crate) unsafe fn manual_decode_scanline(
         }
     }
 
-    if config == CONFIG_CONTIG {
-        // Contig
-        for y in 0..height {
-            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-                buf.fill(0);
-            }
-            let row_offset = y as usize * width as usize * 4;
-            process_scanline_contig(
-                &buf,
-                &mut rgba[row_offset..],
-                width,
-                spp,
-                TiffSampleDecodeParams {
-                    bps,
-                    photo,
-                    format,
-                    swapped,
-                    smin,
-                    smax,
-                },
-                TiffPaletteMaps {
-                    r_map,
-                    g_map,
-                    b_map,
-                },
-            );
-        }
-    } else {
-        // Separate
-        for s in 0..samples_to_process {
-            for y in 0..height {
-                if unsafe {
-                    lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
-                } <= 0
-                {
-                    buf.fill(0);
-                }
-                let row_offset = y as usize * width as usize * 4;
-                process_scanline_separate(
-                    &buf,
-                    &mut rgba[row_offset..],
+    let palette = TiffPaletteMaps {
+        r_map,
+        g_map,
+        b_map,
+        entries: if photo == PHOTO_PALETTE {
+            (1usize).checked_shl(bps.min(16) as u32).unwrap_or(0)
+        } else {
+            0
+        },
+    };
+    let mut actual_min = f64::MAX;
+    let mut actual_max = f64::MIN;
+    let decode_params = TiffSampleDecodeParams {
+        bps,
+        photo,
+        format,
+        swapped,
+        smin,
+        smax,
+    };
+
+    unsafe {
+        manual_decode_scanline_pass(ManualScanlineDecodePass {
+            tif,
+            buf: &mut buf,
+            rgba: &mut rgba,
+            width,
+            height,
+            config,
+            spp,
+            samples_to_process,
+            params: decode_params,
+            palette,
+            track_range: use_integer_auto_scale,
+            actual_min: &mut actual_min,
+            actual_max: &mut actual_max,
+        });
+    }
+
+    if use_integer_auto_scale && actual_max > actual_min {
+        let default_max = tiff_uint_default_sample_max(bps);
+        let final_smin = if smin_provided { smin } else { actual_min };
+        let final_smax = actual_max;
+        let needs_rescale = (!smin_provided && final_smin > 0.5) || final_smax < default_max - 0.5;
+        if needs_rescale {
+            smin = final_smin;
+            smax = final_smax;
+            rgba.fill(255);
+            unsafe {
+                manual_decode_scanline_pass(ManualScanlineDecodePass {
+                    tif,
+                    buf: &mut buf,
+                    rgba: &mut rgba,
                     width,
-                    s,
-                    TiffSampleDecodeParams {
+                    height,
+                    config,
+                    spp,
+                    samples_to_process,
+                    params: TiffSampleDecodeParams {
                         bps,
                         photo,
                         format,
@@ -468,9 +578,14 @@ pub(crate) unsafe fn manual_decode_scanline(
                         smin,
                         smax,
                     },
-                );
+                    palette,
+                    track_range: false,
+                    actual_min: &mut actual_min,
+                    actual_max: &mut actual_max,
+                });
             }
         }
     }
+
     Ok(rgba)
 }

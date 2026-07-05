@@ -40,7 +40,9 @@ pub(crate) use directory_tree_thumb::{
 };
 pub(crate) use raster::is_maybe_animated;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;
-pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
+pub(crate) use tiff_raw_sniff::{
+    tiff_ifd0_suggests_libraw_raw, tiff_may_be_camera_raw, tiff_may_be_camera_raw_bytes,
+};
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
@@ -113,10 +115,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
-        let is_system_native = if let Ok(reg) = crate::formats::get_registry().read() {
+        let is_system_native = {
+            let reg = crate::formats::get_registry().read();
             reg.extensions.contains(&ext)
-        } else {
-            false
         };
 
         if ext == "exr" {
@@ -145,7 +146,15 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
         if ext == "psd" || ext == "psb" {
-            return load_psd(path);
+            return load_psd(
+                path,
+                Some(crate::loader::tiled_sources::PsdV1LoadNotify {
+                    index,
+                    decode_profile: decode_profile.clone(),
+                    source_key: crate::loader::source_key_for_path(path),
+                    load_tx: tx.clone(),
+                }),
+            );
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
@@ -601,6 +610,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         raw_osd: raw_osd_info,
         uploaded_planes: None,
         device_id: None,
+        staged_gpu_plane_upload: false,
     }
 }
 fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
@@ -741,30 +751,29 @@ fn compute_hdr_tiled_initial_preview(
                     }
                     _ => {
                         log::warn!(
-                            "[{}] SDR preview paths failed; trying emergency HDR preview fallback",
+                            "[{}] SDR preview paths failed; trying emergency tiled SDR preview fallback",
                             file_name
                         );
-                        let hdr_preview_result =
+                        let emergency_sdr =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                hdr.generate_hdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                                crate::hdr::tiled::sdr_preview_from_tiled_source_nearest(
+                                    hdr.as_ref(),
+                                    DEFAULT_PREVIEW_SIZE,
+                                    DEFAULT_PREVIEW_SIZE,
+                                )
                             }));
-                        if let Ok(Ok(image)) = hdr_preview_result
-                            && image.width > 0
-                            && image.height > 0
-                        {
-                            match crate::hdr::tiled::sdr_preview_from_hdr_preview(&image) {
-                                Ok((pw, ph, p_pixels)) => {
-                                    preview =
-                                        Some(crate::loader::DecodedImage::new(pw, ph, p_pixels));
-                                }
-                                Err(err) => {
-                                    log::error!(
-                                        "[{}] Emergency HDR to SDR preview conversion failed: {}",
-                                        file_name,
-                                        err
-                                    );
-                                }
+                        match emergency_sdr {
+                            Ok(Ok((pw, ph, p_pixels))) if pw > 0 && ph > 0 => {
+                                preview = Some(crate::loader::DecodedImage::new(pw, ph, p_pixels));
                             }
+                            Ok(Err(err)) => {
+                                log::error!(
+                                    "[{}] Emergency tiled SDR preview fallback failed: {}",
+                                    file_name,
+                                    err
+                                );
+                            }
+                            _ => {}
                         }
                     }
                 }

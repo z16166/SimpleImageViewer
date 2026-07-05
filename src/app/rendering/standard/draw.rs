@@ -140,9 +140,7 @@ impl ImageViewerApp {
                         Arc::clone(hdr),
                     ));
                 }
-                let remaining =
-                    anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed());
-                ui.ctx().request_repaint_after(remaining);
+                ui.ctx().request_repaint_after(anim.repaint_after());
                 Some(anim.textures[anim.current_frame].clone())
             } else {
                 texture

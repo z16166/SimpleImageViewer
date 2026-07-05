@@ -13,13 +13,28 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::hdr::renderer::hdr_to_sdr_rgba8_for_preview;
+
 use super::kind::HdrTiledSource;
 use super::validate::validate_rgba32f_len;
+
+const PARALLEL_PREVIEW_ROW_THRESHOLD: u32 = 8;
+
+#[derive(Clone, Copy)]
+struct HdrImagePreviewRowSample<'a> {
+    rgba_f32: &'a [f32],
+    source_width: u32,
+    source_height: u32,
+    preview_width: u32,
+    preview_height: u32,
+    color_space: HdrColorSpace,
+    metadata: &'a HdrImageMetadata,
+}
 
 pub(crate) fn downsample_hdr_image_nearest(
     image: &HdrImageBuffer,
@@ -99,14 +114,195 @@ fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
     Ok(rgba_f32)
 }
 
-pub(crate) fn sdr_preview_from_hdr_preview(
-    preview: &HdrImageBuffer,
+/// Nearest downsample from an in-memory linear HDR image straight to 8-bit SDR preview pixels.
+///
+/// Tone-maps row by row so the SDR path never allocates a full `Rgba32Float` preview buffer.
+pub(crate) fn sdr_preview_from_hdr_image_nearest(
+    image: &HdrImageBuffer,
+    max_w: u32,
+    max_h: u32,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    validate_rgba32f_len(image.width, image.height, image.rgba_f32.len())?;
+    let (width, height) = preview_dimensions(image.width, image.height, max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("SDR preview dimensions must be non-zero".to_string());
+    }
+
+    let metadata = image.metadata.clone();
+    let color_space = image.color_space;
+    let source_width = image.width;
+    let source_height = image.height;
+    let rgba_f32 = Arc::clone(&image.rgba_f32);
+    let row_sample = HdrImagePreviewRowSample {
+        rgba_f32: &rgba_f32,
+        source_width,
+        source_height,
+        preview_width: width,
+        preview_height: height,
+        color_space,
+        metadata: &metadata,
+    };
+
+    let rows = if height >= PARALLEL_PREVIEW_ROW_THRESHOLD {
+        (0..height)
+            .into_par_iter()
+            .map(|y| sample_hdr_image_preview_row_to_sdr_u8(row_sample, y))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut rows = Vec::with_capacity(height as usize);
+        for y in 0..height {
+            rows.push(sample_hdr_image_preview_row_to_sdr_u8(row_sample, y)?);
+        }
+        rows
+    };
+
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in rows {
+        pixels.extend_from_slice(&row);
+    }
+    finalize_sdr_preview_pixels(width, height, pixels)
+}
+
+/// Tone-map an already-downsampled linear RGBA f32 buffer to 8-bit SDR preview pixels.
+pub(crate) fn sdr_preview_from_linear_rgba32f(
+    width: u32,
+    height: u32,
+    rgba_f32: &[f32],
+    color_space: HdrColorSpace,
+    metadata: &HdrImageMetadata,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    validate_rgba32f_len(width, height, rgba_f32.len())?;
+    if width == 0 || height == 0 {
+        return Err("SDR preview dimensions must be non-zero".to_string());
+    }
+
+    let metadata = metadata.clone();
+    let rows = if height >= PARALLEL_PREVIEW_ROW_THRESHOLD {
+        (0..height)
+            .into_par_iter()
+            .map(|y| {
+                let row_start = y as usize * width as usize * 4;
+                let row_end = row_start + width as usize * 4;
+                tone_map_linear_rgba_f32_row_to_sdr_u8(
+                    width,
+                    rgba_f32[row_start..row_end].to_vec(),
+                    color_space,
+                    &metadata,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut rows = Vec::with_capacity(height as usize);
+        for y in 0..height {
+            let row_start = y as usize * width as usize * 4;
+            let row_end = row_start + width as usize * 4;
+            rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
+                width,
+                rgba_f32[row_start..row_end].to_vec(),
+                color_space,
+                &metadata,
+            )?);
+        }
+        rows
+    };
+
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in rows {
+        pixels.extend_from_slice(&row);
+    }
+    finalize_sdr_preview_pixels(width, height, pixels)
+}
+
+/// Build an SDR preview by nearest sampling a tiled HDR source row-by-row.
+pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
+    source: &S,
+    max_w: u32,
+    max_h: u32,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (width, height) = preview_dimensions(source.width(), source.height(), max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("SDR tiled preview dimensions must be non-zero".to_string());
+    }
+
+    let metadata = source.metadata();
+    let color_space = source.color_space();
+    let rows = if height >= PARALLEL_PREVIEW_ROW_THRESHOLD {
+        (0..height)
+            .into_par_iter()
+            .map(|preview_y| {
+                let row_f32 = sample_tiled_preview_row(source, preview_y, width, height)?;
+                tone_map_linear_rgba_f32_row_to_sdr_u8(width, row_f32, color_space, &metadata)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut rows = Vec::with_capacity(height as usize);
+        for preview_y in 0..height {
+            let row_f32 = sample_tiled_preview_row(source, preview_y, width, height)?;
+            rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
+                width,
+                row_f32,
+                color_space,
+                &metadata,
+            )?);
+        }
+        rows
+    };
+
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in rows {
+        pixels.extend_from_slice(&row);
+    }
+    finalize_sdr_preview_pixels(width, height, pixels)
+}
+
+fn sample_hdr_image_preview_row_to_sdr_u8(
+    sample: HdrImagePreviewRowSample<'_>,
+    preview_y: u32,
+) -> Result<Vec<u8>, String> {
+    let HdrImagePreviewRowSample {
+        rgba_f32,
+        source_width,
+        source_height,
+        preview_width,
+        preview_height,
+        color_space,
+        metadata,
+    } = sample;
+    let src_y = preview_sample_coord(preview_y, preview_height, source_height) as usize;
+    let mut row_f32 = Vec::with_capacity(preview_width as usize * 4);
+    for x in 0..preview_width {
+        let src_x = preview_sample_coord(x, preview_width, source_width) as usize;
+        let offset = (src_y * source_width as usize + src_x) * 4;
+        row_f32.extend_from_slice(&rgba_f32[offset..offset + 4]);
+    }
+    tone_map_linear_rgba_f32_row_to_sdr_u8(preview_width, row_f32, color_space, metadata)
+}
+
+/// Tone-map one linear RGBA f32 preview row to 8-bit SDR without a full-image HDR buffer.
+pub(crate) fn tone_map_linear_rgba_f32_row_to_sdr_u8(
+    row_width: u32,
+    row_rgba_f32: Vec<f32>,
+    color_space: HdrColorSpace,
+    metadata: &HdrImageMetadata,
+) -> Result<Vec<u8>, String> {
+    let row = HdrImageBuffer {
+        width: row_width,
+        height: 1,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space,
+        metadata: metadata.clone(),
+        rgba_f32: Arc::new(row_rgba_f32),
+    };
+    hdr_to_sdr_rgba8_for_preview(&row, 0.0)
+}
+
+pub(crate) fn finalize_sdr_preview_pixels(
+    width: u32,
+    height: u32,
+    mut pixels: Vec<u8>,
+) -> Result<(u32, u32, Vec<u8>), String> {
     make_visible_preview_opaque_if_alpha_is_empty(&mut pixels);
-    let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
-        .ok_or_else(|| "Failed to build SDR preview image from HDR preview".to_string())?;
-    Ok((image.width(), image.height(), image.into_raw()))
+    Ok((width, height, pixels))
 }
 
 fn make_visible_preview_opaque_if_alpha_is_empty(pixels: &mut [u8]) {

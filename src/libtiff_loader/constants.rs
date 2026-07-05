@@ -29,3 +29,12 @@ pub(crate) const CONFIG_CONTIG: u16 = 1;
 pub(crate) const CONFIG_SEPARATE: u16 = 2;
 #[allow(dead_code)]
 pub(crate) const COMPRESSION_THUNDERSCAN: u16 = 32809;
+
+/// Upper bound on TIFF tile width/height from tags; rejects absurd values before allocation.
+pub(crate) const MAX_TIFF_TILE_DIMENSION: u32 = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
+
+/// Budget (bytes) for strip cache sizing in large strip-based TIFFs.
+pub(crate) const STRIP_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+
+/// Maximum pixel count for static full-image HDR decode paths (256 megapixels).
+pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;

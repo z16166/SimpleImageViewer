@@ -64,6 +64,7 @@ pub const AVIF_PIXEL_FORMAT_YUV400: avifPixelFormat = 4;
 pub const AVIF_CHROMA_UPSAMPLING_NEAREST: avifChromaUpsampling = 3;
 pub const AVIF_PLANES_YUV: avifPlanesFlags = 1 << 0;
 pub const AVIF_PLANES_A: avifPlanesFlags = 1 << 1;
+pub const AVIF_PLANES_ALL: avifPlanesFlags = 0xff;
 pub const AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA: u32 = (1 << 0) | (1 << 1);
 pub const AVIF_IMAGE_CONTENT_GAIN_MAP: u32 = 1 << 2;
 pub const AVIF_IMAGE_CONTENT_ALL: u32 =

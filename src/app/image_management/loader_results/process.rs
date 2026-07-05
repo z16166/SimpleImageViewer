@@ -66,8 +66,8 @@ impl ImageViewerApp {
                     );
                     let name = format!("anim_{}_{}", pending.image_index, i);
                     let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    pending.textures.push(handle);
-                    pending.delays.push(frame.delay);
+                    std::sync::Arc::make_mut(&mut pending.textures).push(handle);
+                    std::sync::Arc::make_mut(&mut pending.delays).push(frame.delay);
                     pending.next_frame += 1;
                     uploaded += 1;
                 }
@@ -75,14 +75,20 @@ impl ImageViewerApp {
             }
 
             if pending_idx == self.current_index {
+                self.sync_active_animation_from_pending(pending_idx);
                 self.ensure_current_animation_playback();
             }
 
             if finished {
                 if let Some(pending) = self.pending_anim_frames.remove(&pending_idx) {
                     let idx = pending.image_index;
+                    let preserve = self
+                        .animation
+                        .as_ref()
+                        .filter(|anim| anim.image_index == idx)
+                        .map(|anim| (anim.current_frame, anim.frame_start, anim.textures.len()));
 
-                    let playback = AnimationPlayback {
+                    let mut playback = AnimationPlayback {
                         image_index: idx,
                         textures: pending.textures,
                         hdr_frames: pending.hdr_frames.clone(),
@@ -91,10 +97,17 @@ impl ImageViewerApp {
                         frame_start: Instant::now(),
                         cpu_frames: Some(pending.frames.iter().map(|f| f.arc_pixels()).collect()),
                     };
+                    if let Some((prev_frame, prev_start, prev_len)) = preserve
+                        && prev_len > 0
+                        && playback.textures.len() > prev_len
+                    {
+                        playback.current_frame = prev_frame % playback.textures.len();
+                        playback.frame_start = prev_start;
+                    }
 
                     if idx == self.current_index {
                         if let Some(hdr_frames) = &playback.hdr_frames
-                            && let Some(hdr) = hdr_frames.first()
+                            && let Some(hdr) = hdr_frames.get(playback.current_frame)
                         {
                             self.current_hdr_image =
                                 Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
@@ -102,15 +115,16 @@ impl ImageViewerApp {
                         self.tile_manager = None;
                         self.animation = Some(AnimationPlayback {
                             image_index: playback.image_index,
-                            textures: playback.textures.clone(),
+                            textures: std::sync::Arc::clone(&playback.textures),
                             hdr_frames: playback.hdr_frames.clone(),
-                            delays: playback.delays.clone(),
-                            current_frame: 0,
-                            frame_start: Instant::now(),
+                            delays: std::sync::Arc::clone(&playback.delays),
+                            current_frame: playback.current_frame,
+                            frame_start: playback.frame_start,
                             cpu_frames: playback.cpu_frames.clone(),
                         });
                     }
                     self.animation_cache.insert(idx, playback);
+                    self.register_prefetch_resource(idx);
                 }
             } else if self.pending_anim_frames.contains_key(&pending_idx) {
                 ctx.request_repaint();
@@ -509,10 +523,20 @@ impl ImageViewerApp {
                         break;
                     }
                     preload_debug!(
-                        "[PreloadDebug] install preview: idx={} current={} is_current={} uploads_before={}",
+                        "[PreloadDebug] install preview: idx={} current={} is_current={} stage={:?} hdr_dims={:?} sdr_dims={:?} epoch={} uploads_before={}",
                         preview_update.index,
                         self.current_index,
                         preview_is_current,
+                        preview_update.preview_bundle.stage(),
+                        preview_update
+                            .preview_bundle
+                            .hdr()
+                            .map(|h| (h.width, h.height)),
+                        preview_update
+                            .preview_bundle
+                            .sdr()
+                            .map(|s| (s.width, s.height)),
+                        preview_update.decode_profile.profile_epoch,
                         uploads_this_frame
                     );
                     self.handle_preview_update(preview_update, ctx);
@@ -527,6 +551,7 @@ impl ImageViewerApp {
                 LoaderOutput::Tile(tile_result) => {
                     // Tile signals are free: pixels live in PIXEL_CACHE; GPU upload
                     // happens lazily in the tile rendering pass, not here.
+                    self.register_prefetch_resource(tile_result.index);
                     self.handle_tile_load_result(tile_result, ctx);
                 }
 
@@ -640,6 +665,14 @@ impl ImageViewerApp {
         };
         if upload_device_id != self.current_device_id {
             return abandon_preuploaded_planes(load_result);
+        }
+
+        if load_result.staged_gpu_plane_upload
+            && !self
+                .hdr_pending_work
+                .flush_staged_writes_for_registration(&wgpu_state.queue)
+        {
+            return self.finish_or_defer_hdr_preupload_registration(load_result);
         }
 
         let Some(uploaded) = load_result.uploaded_planes.take() else {

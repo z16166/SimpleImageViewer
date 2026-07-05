@@ -176,6 +176,11 @@ impl DecodedImage {
         let arc = std::mem::replace(&mut self.pixels, Arc::new(Vec::new()));
         Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
     }
+
+    /// Take the pixel [`Arc`] for transforms that can read from a shared slice when not unique.
+    pub(crate) fn take_pixels_arc(&mut self) -> Arc<Vec<u8>> {
+        std::mem::replace(&mut self.pixels, Arc::new(Vec::new()))
+    }
 }
 
 impl From<image::RgbaImage> for DecodedImage {
@@ -218,6 +223,11 @@ pub trait TiledImageSource: Send + Sync {
     /// because an async RAW demosaic worker owns HQ refinement (embedded bootstrap path).
     fn defers_loader_hq_preview(&self) -> bool {
         false
+    }
+
+    /// Block until async pixel data is ready (PSD v1 bootstrap). Default: already ready.
+    fn wait_for_async_pixels(&self, _timeout: std::time::Duration) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -415,6 +425,48 @@ pub enum PreviewStage {
     Refined,
 }
 
+/// Provenance of pixels stored in the main-window [`crate::loader::TextureCache`].
+///
+/// HQ/sync decisions use tag + stage, not decoded or GPU texture dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexturePreviewBufferTag {
+    MainWindowSdr,
+    /// Bootstrap tiled SDR preview from initial load. Pair with [`PreviewStage::Initial`] only;
+    /// refined tiled previews use [`Self::TiledRefinedLoader`].
+    TiledBootstrap,
+    TiledRefinedLoader,
+    /// `ImageLoader::trigger_hq_tiled_sdr_preview`; not a substitute for loader HDR refine.
+    TiledOnDemandSdr,
+    HdrSdrFallback,
+    RawGpuBootstrap,
+}
+
+impl TexturePreviewBufferTag {
+    const PREVIEW_STAGE_COUNT: u16 = 2;
+
+    pub fn quality_rank(self, stage: PreviewStage) -> u16 {
+        // `TiledBootstrap` is only stored with `PreviewStage::Initial`; refined loader previews
+        // always use `TiledRefinedLoader`.
+        let base = match self {
+            Self::RawGpuBootstrap => 0,
+            Self::HdrSdrFallback => 1,
+            Self::MainWindowSdr => 2,
+            Self::TiledBootstrap => 3,
+            Self::TiledOnDemandSdr => 4,
+            Self::TiledRefinedLoader => 5,
+        };
+        let stage_bonus = match stage {
+            PreviewStage::Initial => 0,
+            PreviewStage::Refined => 1,
+        };
+        base * Self::PREVIEW_STAGE_COUNT + stage_bonus
+    }
+
+    pub fn satisfies_tiled_sdr_hq(self, stage: PreviewStage) -> bool {
+        matches!((self, stage), (Self::TiledRefinedLoader, PreviewStage::Refined))
+    }
+}
+
 #[derive(Clone)]
 pub enum PreviewPlane {
     Sdr(DecodedImage),
@@ -520,6 +572,9 @@ pub struct LoadResult {
     pub uploaded_planes: Option<crate::hdr::renderer::ImagePlaneUpload>,
     /// [`ImageViewerApp::current_device_id`] under which `uploaded_planes` was created.
     pub device_id: Option<u64>,
+    /// True when plane bytes were enqueued into [`HdrPendingGpuWriteQueues`] instead of
+    /// flushed on the loader worker; main thread must flush before GPU bind.
+    pub staged_gpu_plane_upload: bool,
 }
 
 impl Clone for LoadResult {
@@ -542,6 +597,7 @@ impl Clone for LoadResult {
             raw_osd: self.raw_osd.clone(),
             uploaded_planes: None,
             device_id: self.device_id,
+            staged_gpu_plane_upload: false,
         }
     }
 }
@@ -603,6 +659,8 @@ pub struct PreviewResult {
     pub cpu_demosaic_ms: Option<u32>,
     /// Partial RAW OSD for HQ bootstrap previews before the full `LoadResult` arrives.
     pub raw_bootstrap_osd: Option<RawOsdInfo>,
+    /// Tag for SDR pixels when written into `TextureCache`; None uses loader-refined default.
+    pub sdr_texture_tag: Option<TexturePreviewBufferTag>,
 }
 
 impl PreviewResult {
@@ -611,6 +669,7 @@ impl PreviewResult {
         decode_profile: DecodeProfile,
         source_key: SourceKey,
         result: Result<DecodedImage, String>,
+        sdr_texture_tag: TexturePreviewBufferTag,
     ) -> Self {
         let (preview_bundle, error) = match result {
             Ok(preview) => (PreviewBundle::refined().with_sdr(preview), None),
@@ -624,7 +683,13 @@ impl PreviewResult {
             error,
             cpu_demosaic_ms: None,
             raw_bootstrap_osd: None,
+            sdr_texture_tag: Some(sdr_texture_tag),
         }
+    }
+
+    pub fn effective_sdr_texture_tag(&self) -> TexturePreviewBufferTag {
+        self.sdr_texture_tag
+            .unwrap_or(TexturePreviewBufferTag::TiledRefinedLoader)
     }
 }
 

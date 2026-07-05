@@ -130,11 +130,11 @@ fn finish_heif_sdr_capacity_from_opened_primary(
         return Err("HEIF primary has zero logical size".to_string());
     }
 
-    if let Some(decoded) = recovered_sdr {
-        if heif_recovered_sdr_usable_for_logical(&decoded, logical) {
-            let hdr = heif_embedded_sdr_master_hdr_from_metadata(primary_metadata.clone(), logical);
-            return Ok((hdr, decoded));
-        }
+    if let Some(decoded) = recovered_sdr
+        && heif_recovered_sdr_usable_for_logical(&decoded, logical)
+    {
+        let hdr = heif_embedded_sdr_master_hdr_from_metadata(primary_metadata.clone(), logical);
+        return Ok((hdr, decoded));
     }
 
     let (decoded, _) = decode_heif_primary_sdr_from_handle(handle, decode_opts_ptr)?;
@@ -491,8 +491,12 @@ mod tests {
 
     #[test]
     fn heif_sdr_capacity_still_decodes_float_plane_for_hdr_tone_map_mode() {
-        assert!(!crate::loader::should_use_embedded_sdr_master_load(false, 1.0));
-        assert!(crate::loader::should_use_embedded_sdr_master_load(true, 1.0));
+        assert!(!crate::loader::should_use_embedded_sdr_master_load(
+            false, 1.0
+        ));
+        assert!(crate::loader::should_use_embedded_sdr_master_load(
+            true, 1.0
+        ));
     }
 
     #[test]

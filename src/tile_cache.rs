@@ -16,7 +16,7 @@
 
 use eframe::egui::{self, TextureHandle};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -86,8 +86,7 @@ impl PendingTileKey {
 pub struct TilePixelCache {
     /// Key: (image_index, col, row)
     entries: HashMap<(usize, u32, u32), Arc<Vec<u8>>>,
-    /// LRU tracking
-    lru: VecDeque<(usize, u32, u32)>,
+    lru: crate::lru_order::LruOrder<(usize, u32, u32)>,
     current_bytes: usize,
     max_mb: usize,
 }
@@ -96,7 +95,7 @@ impl TilePixelCache {
     pub fn new(max_mb: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            lru: VecDeque::new(),
+            lru: crate::lru_order::LruOrder::default(),
             current_bytes: 0,
             max_mb,
         }
@@ -117,11 +116,7 @@ impl TilePixelCache {
     pub fn get(&mut self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
         let key = (index, coord.col, coord.row);
         if let Some(pixels) = self.entries.get(&key) {
-            // Update LRU
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
-            self.lru.push_back(key);
+            self.lru.touch(key);
             Some(Arc::clone(pixels))
         } else {
             None
@@ -134,7 +129,7 @@ impl TilePixelCache {
         // Handle duplicate insertions: remove old entry first to update memory accounting and LRU
         if let Some(old_pixels) = self.entries.remove(&key) {
             self.current_bytes -= old_pixels.len();
-            self.lru.retain(|&k| k != key);
+            self.lru.remove(key);
         }
 
         let bytes = pixels.len();
@@ -142,7 +137,7 @@ impl TilePixelCache {
 
         // Evict if needed
         while !self.lru.is_empty() && self.current_bytes + bytes > max_bytes {
-            if let Some(evicted_key) = self.lru.pop_front()
+            if let Some(evicted_key) = self.lru.pop_oldest()
                 && let Some(evicted_pixels) = self.entries.remove(&evicted_key)
             {
                 self.current_bytes -= evicted_pixels.len();
@@ -151,7 +146,7 @@ impl TilePixelCache {
 
         if self.current_bytes + bytes <= max_bytes {
             self.entries.insert(key, Arc::clone(&pixels));
-            self.lru.push_back(key);
+            self.lru.touch(key);
             self.current_bytes += bytes;
         }
     }
@@ -169,9 +164,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -191,9 +184,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -211,11 +202,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 let new_key = (to, key.1, key.2);
                 self.entries.insert(new_key, pixels);
-            }
-        }
-        for item in self.lru.iter_mut() {
-            if item.0 == from {
-                item.0 = to;
+                self.lru.rename(key, new_key);
             }
         }
     }
@@ -243,11 +230,18 @@ impl TilePixelCache {
                 self.entries.insert((new_idx, key.1, key.2), pixels);
             }
         }
-        for item in self.lru.iter_mut() {
-            if item.0 < old_to_new.len() {
-                item.0 = old_to_new[item.0];
+        self.lru.remap_ordered(|(idx, col, row)| {
+            if idx >= old_to_new.len() {
+                Some((idx, col, row))
+            } else {
+                let new_idx = old_to_new[idx];
+                if new_idx == idx {
+                    Some((idx, col, row))
+                } else {
+                    Some((new_idx, col, row))
+                }
             }
-        }
+        });
     }
 
     pub fn remove_images_except(&mut self, except_idx: usize) {
@@ -261,9 +255,7 @@ impl TilePixelCache {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
             }
-            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
-                self.lru.remove(pos);
-            }
+            self.lru.remove(key);
         }
     }
 
@@ -273,7 +265,12 @@ impl TilePixelCache {
         self.current_bytes = 0;
     }
 
-    /// Unique image indices with at least one cached tile (for preload eviction scans).
+    pub fn has_image(&self, image_index: usize) -> bool {
+        self.entries.keys().any(|(idx, _, _)| *idx == image_index)
+    }
+
+    /// Unique image indices with at least one cached tile (diagnostics / legacy scans).
+    #[allow(dead_code)]
     pub fn distinct_image_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = self.entries.keys().map(|(idx, _, _)| *idx).collect();
         indices.sort_unstable();
@@ -329,7 +326,7 @@ mod tests {
             crate::loader::TilePixelKind::Sdr,
         ));
 
-        manager.retain_pending_tiles(&[TileCoord { col: 0, row: 0 }]);
+        manager.retain_pending_tiles(&HashSet::from([TileCoord { col: 0, row: 0 }]));
 
         assert!(manager.pending_tiles.contains(&PendingTileKey::new(
             TileCoord { col: 0, row: 0 },
@@ -398,8 +395,10 @@ pub struct TileManager {
     /// Tiles currently being decoded in the background.
     pub pending_tiles: HashSet<PendingTileKey>,
 
-    /// LRU ordering: most recently used tiles at the back.
-    lru_order: Vec<TileCoord>,
+    /// GPU tiles eligible for eviction (oldest first).
+    evictable_lru: crate::lru_order::LruOrder<TileCoord>,
+    /// GPU tiles in the current visible set; never evicted while pinned.
+    visible_pinned: HashSet<TileCoord>,
     /// Timestamps when each tile was uploaded to GPU (for cross-fading).
     ready_times: HashMap<TileCoord, Instant>,
 }
@@ -427,8 +426,54 @@ impl TileManager {
             source,
             tiles: HashMap::new(),
             pending_tiles: HashSet::new(),
-            lru_order: Vec::new(),
+            evictable_lru: crate::lru_order::LruOrder::default(),
+            visible_pinned: HashSet::new(),
             ready_times: HashMap::new(),
+        }
+    }
+
+    fn touch_gpu_lru(&mut self, coord: TileCoord, visible: bool) {
+        if visible {
+            self.evictable_lru.remove(coord);
+            self.visible_pinned.insert(coord);
+        } else {
+            self.visible_pinned.remove(&coord);
+            if self.tiles.contains_key(&coord) {
+                self.evictable_lru.touch(coord);
+            }
+        }
+    }
+
+    fn sync_gpu_visible_protection(&mut self, visible: &HashSet<TileCoord>) {
+        for coord in visible {
+            if self.tiles.contains_key(coord) {
+                self.evictable_lru.remove(*coord);
+                self.visible_pinned.insert(*coord);
+            }
+        }
+
+        let unpinned: Vec<_> = self
+            .visible_pinned
+            .iter()
+            .filter(|coord| !visible.contains(coord))
+            .copied()
+            .collect();
+        for coord in unpinned {
+            self.visible_pinned.remove(&coord);
+            if self.tiles.contains_key(&coord) {
+                self.evictable_lru.push_oldest(coord);
+            }
+        }
+    }
+
+    fn evict_gpu_tiles_over_limit(&mut self, limit: usize) {
+        while self.tiles.len() > limit {
+            let Some(evicted) = self.evictable_lru.pop_oldest() else {
+                break;
+            };
+            self.tiles.remove(&evicted);
+            self.ready_times.remove(&evicted);
+            self.visible_pinned.remove(&evicted);
         }
     }
 
@@ -441,14 +486,14 @@ impl TileManager {
         Arc::clone(&self.source)
     }
 
-    pub fn retain_pending_tiles(&mut self, visible_coords: &[TileCoord]) {
+    pub fn retain_pending_tiles(&mut self, visible_coords: &HashSet<TileCoord>) {
         self.pending_tiles
             .retain(|key| visible_coords.contains(&key.coord));
     }
 
     /// Returns counts for the current visible set using a non-blocking try_lock: (gpu, cpu_ready, pending)
     #[cfg(feature = "tile-debug")]
-    pub fn stats_for_visible(&self, visible: &[TileCoord]) -> (usize, usize, usize) {
+    pub fn stats_for_visible(&self, visible: &HashSet<TileCoord>) -> (usize, usize, usize) {
         let mut gpu = 0;
         let mut cpu = 0;
         let mut pending = 0;
@@ -482,7 +527,7 @@ impl TileManager {
     }
 
     /// Returns true if any of the visible tiles are in CPU cache but NOT in GPU.
-    pub fn has_ready_to_upload(&self, visible: &[TileCoord]) -> bool {
+    pub fn has_ready_to_upload(&self, visible: &HashSet<TileCoord>) -> bool {
         let cache = PIXEL_CACHE.lock();
 
         for coord in visible {
@@ -526,18 +571,16 @@ impl TileManager {
         coord: TileCoord,
         ctx: &egui::Context,
         allow_upload: bool,
-        visible_coords: &[TileCoord],
+        visible_coords: &HashSet<TileCoord>,
     ) -> (TileStatus, bool) {
-        // Touch LRU
-        if let Some(pos) = self.lru_order.iter().position(|c| *c == coord) {
-            self.lru_order.remove(pos);
-        }
-        self.lru_order.push(coord);
+        let is_visible = visible_coords.contains(&coord);
 
         // check if exists in GPU
-        if let Some(handle) = self.tiles.get(&coord) {
+        if self.tiles.contains_key(&coord) {
+            self.touch_gpu_lru(coord, is_visible);
+            let handle = self.tiles.get(&coord).expect("gpu tile").clone();
             let ready_at = self.ready_times.get(&coord).cloned();
-            return (TileStatus::Ready(handle.clone(), ready_at), false);
+            return (TileStatus::Ready(handle, ready_at), false);
         }
 
         // 1. Check Global Pixel Cache (CPU)
@@ -551,23 +594,8 @@ impl TileManager {
 
                 // Evict if over limit, but NEVER evict tiles currently in the visible set.
                 // This prevents the "circular hole" artifact on high-DPI screens.
-                while self.lru_order.len() > current_limit {
-                    let mut found_non_visible = false;
-                    for i in 0..self.lru_order.len() {
-                        let potential_evict = self.lru_order[i];
-                        if !visible_coords.contains(&potential_evict) {
-                            self.lru_order.remove(i);
-                            self.tiles.remove(&potential_evict);
-                            found_non_visible = true;
-                            break;
-                        }
-                    }
-                    if !found_non_visible {
-                        // All cached tiles are currently visible!
-                        // We must temporarily exceed the limit to maintain visual integrity.
-                        break;
-                    }
-                }
+                self.sync_gpu_visible_protection(visible_coords);
+                self.evict_gpu_tiles_over_limit(current_limit);
 
                 let ts = get_tile_size();
                 let tw = ts.min(self.full_width - coord.col * ts);
@@ -581,6 +609,7 @@ impl TileManager {
 
                 let now = Instant::now();
                 self.ready_times.insert(coord, now);
+                self.touch_gpu_lru(coord, is_visible);
 
                 // Remove from pending if it was there
                 self.pending_tiles.remove(&PendingTileKey::new(
@@ -604,12 +633,18 @@ impl TileManager {
         (TileStatus::Pending(needs_request), false)
     }
 
+    /// Drop uploaded GPU tiles while keeping the bootstrap/HQ preview texture.
+    pub fn drop_gpu_tiles(&mut self) {
+        self.tiles.clear();
+        self.evictable_lru.clear();
+        self.visible_pinned.clear();
+        self.ready_times.clear();
+    }
+
     /// Clear all cached tiles (e.g. when switching images).
     #[allow(dead_code)]
     pub fn clear(&mut self) {
-        self.tiles.clear();
-        self.lru_order.clear();
-        self.ready_times.clear();
+        self.drop_gpu_tiles();
         self.preview_texture = None;
         // The source's lifecycle is managed via Arc.
     }
@@ -617,22 +652,22 @@ impl TileManager {
     /// Compute which tiles are visible given the current viewport mapping.
     /// `viewport` is the screen-space rectangle where the full image would be displayed.
     /// `screen_clip` is the visible screen area (to clip against).
-    /// Returns a list of (TileCoord, screen_rect, uv_rect) tuples.
-    pub fn visible_tiles(
+    /// Writes `(TileCoord, screen_rect, uv_rect)` tuples into `out` (reuses capacity).
+    pub fn visible_tiles_into(
         &self,
         viewport: egui::Rect,
         screen_clip: egui::Rect,
         padding: f32,
-    ) -> Vec<(TileCoord, egui::Rect, egui::Rect)> {
+        out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
+    ) {
+        out.clear();
         // Look-ahead padding: Inflate the visible area to trigger background requests
         // for neighbor tiles BEFORE they actually enter the screen.
         let visible_area = viewport.intersect(screen_clip.expand(padding));
 
         if visible_area.width() <= 0.0 || visible_area.height() <= 0.0 {
-            return Vec::new();
+            return;
         }
-
-        let mut result = Vec::new();
 
         // Compute UV bounds of the visible area relative to the full image viewport
         let uv_min_x = ((visible_area.min.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
@@ -663,40 +698,55 @@ impl TileManager {
         let start_row = min_row.min(total_rows.saturating_sub(1));
         let end_row = max_row.min(total_rows.saturating_sub(1));
 
-        for r in start_row..=end_row {
-            for c in start_col..=end_col {
-                let ts = get_tile_size();
-                let tile_x0 = c * ts;
-                let tile_y0 = r * ts;
-                let tile_w = ts.min(self.full_width - tile_x0);
-                let tile_h = ts.min(self.full_height - tile_y0);
+        let screen_center = screen_clip.center();
+        let ts = get_tile_size();
+        let rel_x = (screen_center.x - viewport.min.x) / viewport.width();
+        let rel_y = (screen_center.y - viewport.min.y) / viewport.height();
+        let center_col = (rel_x * self.full_width as f32 / ts as f32).floor() as i32;
+        let center_row = (rel_y * self.full_height as f32 / ts as f32).floor() as i32;
 
-                // Map tile pixel bounds to screen coordinates
-                let sx0 =
-                    viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
-                let sy0 =
-                    viewport.min.y + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
-                let sx1 = viewport.min.x
-                    + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
-                let sy1 = viewport.min.y
-                    + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+        let max_ring = (start_col..=end_col)
+            .flat_map(|c| (start_row..=end_row).map(move |r| (c, r)))
+            .map(|(c, r)| {
+                let dc = (c as i32 - center_col).unsigned_abs();
+                let dr = (r as i32 - center_row).unsigned_abs();
+                dc.max(dr)
+            })
+            .max()
+            .unwrap_or(0);
 
-                let tile_screen_rect =
-                    egui::Rect::from_min_max(egui::Pos2::new(sx0, sy0), egui::Pos2::new(sx1, sy1));
+        for ring in 0..=max_ring {
+            for r in start_row..=end_row {
+                for c in start_col..=end_col {
+                    let dc = (c as i32 - center_col).unsigned_abs();
+                    let dr = (r as i32 - center_row).unsigned_abs();
+                    if dc.max(dr) != ring {
+                        continue;
+                    }
 
-                let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                result.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                    let tile_x0 = c * ts;
+                    let tile_y0 = r * ts;
+                    let tile_w = ts.min(self.full_width - tile_x0);
+                    let tile_h = ts.min(self.full_height - tile_y0);
+
+                    let sx0 = viewport.min.x
+                        + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
+                    let sy0 = viewport.min.y
+                        + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
+                    let sx1 = viewport.min.x
+                        + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
+                    let sy1 = viewport.min.y
+                        + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+
+                    let tile_screen_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(sx0, sy0),
+                        egui::Pos2::new(sx1, sy1),
+                    );
+
+                    let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                    out.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                }
             }
         }
-
-        // Sort by distance from screen center (Center-Out Priority)
-        let screen_center = screen_clip.center();
-        result.sort_by_key(|(_, rect, _)| {
-            let dist_sq = (rect.center().x - screen_center.x).powi(2)
-                + (rect.center().y - screen_center.y).powi(2);
-            (dist_sq * 10.0) as i32
-        });
-
-        result
     }
 }

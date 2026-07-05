@@ -17,7 +17,7 @@
 use super::{AppAction, app_action_from_hotkey_action_id};
 use crate::app::ImageViewerApp;
 use crate::hotkeys::model::KeyChord;
-use eframe::egui::{self, Context, Event, MouseWheelUnit};
+use eframe::egui::{self, Context, Event, MouseWheelUnit, Rect};
 
 pub(crate) struct WheelHotkeyMatch {
     action: AppAction,
@@ -28,7 +28,7 @@ impl ImageViewerApp {
     /// Mouse wheel for image navigation/zoom. Called from [`super::rendering::draw_image_canvas_ui`]
     /// after the central panel is built so scroll deltas are not dropped by pointer-hover guards
     /// in [`super::keyboard::ImageViewerApp::handle_main_window_input`].
-    pub(crate) fn handle_main_window_wheel_input(&mut self, ctx: &Context) {
+    pub(crate) fn handle_main_window_wheel_input(&mut self, ctx: &Context, canvas_rect: Rect) {
         if self.active_modal.is_some() || self.show_settings {
             return;
         }
@@ -40,7 +40,7 @@ impl ImageViewerApp {
         let Some(wheel_match) = self.map_wheel_to_action(ctx) else {
             return;
         };
-        self.dispatch_wheel_action(ctx, wheel_match, mouse_pos);
+        self.dispatch_wheel_action(ctx, wheel_match, mouse_pos, canvas_rect);
     }
 
     pub(crate) fn map_wheel_to_action(&self, ctx: &Context) -> Option<WheelHotkeyMatch> {
@@ -80,9 +80,13 @@ impl ImageViewerApp {
         ctx: &Context,
         wheel_match: WheelHotkeyMatch,
         mouse_pos: Option<egui::Pos2>,
+        canvas_rect: Rect,
     ) {
         match wheel_match.action {
             AppAction::Next | AppAction::Prev => {
+                // Wheel navigation on the main canvas takes over from image-list keyboard
+                // selection (set by clicking the list) so file-list sync can follow.
+                self.release_directory_tree_list_keyboard_capture();
                 let now = ctx.input(|i| i.time);
                 if now - self.last_mouse_wheel_nav > 0.2 {
                     match wheel_match.action {
@@ -102,7 +106,7 @@ impl ImageViewerApp {
                 } else {
                     factor
                 };
-                self.zoom_at_mouse(ctx, factor, mouse_pos);
+                self.zoom_at_mouse(factor, mouse_pos, canvas_rect);
             }
             AppAction::RotateCW | AppAction::RotateCCW => {
                 let now = ctx.input(|i| i.time);
@@ -116,7 +120,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn zoom_at_mouse(&mut self, ctx: &Context, factor: f32, mouse_pos: Option<egui::Pos2>) {
+    fn zoom_at_mouse(&mut self, factor: f32, mouse_pos: Option<egui::Pos2>, canvas_rect: Rect) {
         if factor == 1.0 {
             return;
         }
@@ -125,9 +129,12 @@ impl ImageViewerApp {
         let ratio = self.zoom_factor / old_zoom;
 
         if let Some(mouse) = mouse_pos {
-            let screen_center = ctx.input(|i| i.content_rect()).center();
-            let d = mouse - screen_center;
-            self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
+            self.pan_offset = crate::app::rendering::geometry::zoom_pan_offset_for_screen_point(
+                mouse,
+                canvas_rect,
+                ratio,
+                self.pan_offset,
+            );
         }
         self.invalidate_tile_requests_for_view_change();
     }

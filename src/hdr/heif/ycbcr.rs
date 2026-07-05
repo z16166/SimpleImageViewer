@@ -337,3 +337,103 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         rgba_f32: Arc::new(rgba_f32),
     })
 }
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn ycbcr_matrix_from_heif_handle(
+    handle: *const libheif_sys::heif_image_handle,
+) -> HeifYcbcrMatrix {
+    use super::brand::heif_nclx_to_metadata;
+
+    let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
+    let height = unsafe { libheif_sys::heif_image_handle_get_height(handle) }.max(0) as usize;
+    let mut nclx_ptr = std::ptr::null_mut();
+    let status =
+        unsafe { libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr) };
+    if status.code == libheif_sys::heif_error_Ok && !nclx_ptr.is_null() {
+        let nclx_guard = unsafe { libheif_sys::HeifNclxProfileGuard::from_ptr(nclx_ptr) };
+        let nclx = nclx_guard.as_ref();
+        let metadata = heif_nclx_to_metadata(
+            nclx.color_primaries as u16,
+            nclx.transfer_characteristics as u16,
+            nclx.matrix_coefficients as u16,
+            nclx.full_range_flag != 0,
+        );
+        return heif_ycbcr_matrix_from_nclx(&metadata, width, height);
+    }
+    HeifYcbcrMatrix::Bt709
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn ycbcr_image_to_rgba8(
+    handle: *const libheif_sys::heif_image_handle,
+    image: *const libheif_sys::heif_image,
+    chroma: libheif_sys::heif_chroma,
+) -> Result<crate::loader::DecodedImage, String> {
+    let y_w = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
+    let y_h = unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
+    if y_w <= 0 || y_h <= 0 {
+        return Err("libheif YCbCr image has zero luma size".to_string());
+    }
+    let width = y_w as u32;
+    let height = y_h as u32;
+
+    let mut y_stride = 0_usize;
+    let y_plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image,
+            libheif_sys::heif_channel_Y,
+            &mut y_stride,
+        )
+    };
+    let mut cb_stride = 0_usize;
+    let cb_plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image,
+            libheif_sys::heif_channel_Cb,
+            &mut cb_stride,
+        )
+    };
+    let mut cr_stride = 0_usize;
+    let cr_plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image,
+            libheif_sys::heif_channel_Cr,
+            &mut cr_stride,
+        )
+    };
+    if y_plane.is_null() || cb_plane.is_null() || cr_plane.is_null() {
+        return Err("libheif YCbCr image missing planes".to_string());
+    }
+
+    let matrix = ycbcr_matrix_from_heif_handle(handle);
+    let subsample_h = chroma != libheif_sys::heif_chroma_444;
+    let subsample_v = chroma == libheif_sys::heif_chroma_420;
+    let chroma_row_len = if subsample_h {
+        (width as usize).div_ceil(2)
+    } else {
+        width as usize
+    };
+    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+    for y in 0..height as usize {
+        let y_row =
+            unsafe { std::slice::from_raw_parts(y_plane.add(y * y_stride), width as usize) };
+        let cb_y = if subsample_v { y / 2 } else { y };
+        let cb_row =
+            unsafe { std::slice::from_raw_parts(cb_plane.add(cb_y * cb_stride), chroma_row_len) };
+        let cr_row =
+            unsafe { std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len) };
+        for (x, &y_sample) in y_row.iter().enumerate().take(width as usize) {
+            let xc = if subsample_h { x / 2 } else { x };
+            let yy = y_sample as f32 / 255.0;
+            let cb = cb_row[xc] as f32 / 255.0 - 0.5;
+            let cr = cr_row[xc] as f32 / 255.0 - 0.5;
+            let [r, g, b] = ycbcr_linear_to_rgb(yy, cb, cr, matrix);
+            let dst = (y * width as usize + x) * 4;
+            rgba[dst] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[dst + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[dst + 2] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[dst + 3] = 255;
+        }
+    }
+    Ok(crate::loader::DecodedImage::new(width, height, rgba))
+}

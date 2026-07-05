@@ -51,7 +51,7 @@ pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]
 pub(crate) use gain_map_probe::{AvifGainMapStripProbe, avif_probe_gain_map_strip_kind};
 #[cfg(feature = "avif-native")]
-pub(crate) use orientation::libavif_probe_exif_orientation_from_path;
+pub(crate) use orientation::libavif_probe_exif_orientation_from_bytes;
 #[cfg(feature = "avif-native")]
 pub(crate) use orientation::libavif_probe_logical_size_from_bytes;
 #[cfg(all(test, feature = "avif-native"))]

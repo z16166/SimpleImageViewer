@@ -17,6 +17,7 @@
 //! Fast directory-tree strip decode for classic float HDR (OpenEXR, Radiance `.hdr`).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::hdr::exr_tiled::ExrTiledImageSource;
 use crate::hdr::radiance_tiled::RadianceHdrTiledImageSource;
@@ -41,17 +42,38 @@ fn finish_hdr_float_strip(
     Ok((DecodedImage::new(width, height, pixels), logical))
 }
 
+fn open_exr_source(
+    path: &Path,
+    mmap: Option<&Arc<memmap2::Mmap>>,
+) -> Result<ExrTiledImageSource, String> {
+    match mmap {
+        Some(m) => ExrTiledImageSource::open_from_mmap(path, Arc::clone(m)),
+        None => ExrTiledImageSource::open(path),
+    }
+}
+
+fn open_radiance_source(
+    path: &Path,
+    mmap: Option<&Arc<memmap2::Mmap>>,
+) -> Result<RadianceHdrTiledImageSource, String> {
+    match mmap {
+        Some(m) => RadianceHdrTiledImageSource::open_from_mmap(path, Arc::clone(m)),
+        None => RadianceHdrTiledImageSource::open(path),
+    }
+}
+
 fn try_hdr_float_strip_with_source<S, F>(
     path: &Path,
+    mmap: Option<&Arc<memmap2::Mmap>>,
     max_side: u32,
     format_label: &str,
     open: F,
 ) -> OptionalStripResult
 where
     S: HdrTiledSource,
-    F: FnOnce(&Path) -> Result<S, String>,
+    F: FnOnce(&Path, Option<&Arc<memmap2::Mmap>>) -> Result<S, String>,
 {
-    let source = match open(path) {
+    let source = match open(path, mmap) {
         Ok(source) => source,
         Err(err) => {
             log::debug!(
@@ -82,6 +104,7 @@ where
 /// cannot be produced (caller falls back to full decode).
 pub(crate) fn try_fast_hdr_float_strip_from_path(
     path: &Path,
+    mmap: Option<&Arc<memmap2::Mmap>>,
     max_side: u32,
 ) -> OptionalStripResult {
     let ext = path
@@ -89,12 +112,13 @@ pub(crate) fn try_fast_hdr_float_strip_from_path(
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "exr" => try_hdr_float_strip_with_source(path, max_side, "EXR", ExrTiledImageSource::open),
+        "exr" => try_hdr_float_strip_with_source(path, mmap, max_side, "EXR", open_exr_source),
         "hdr" | "pic" => try_hdr_float_strip_with_source(
             path,
+            mmap,
             max_side,
             "Radiance HDR",
-            RadianceHdrTiledImageSource::open,
+            open_radiance_source,
         ),
         _ => None,
     }

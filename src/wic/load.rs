@@ -107,14 +107,12 @@ fn load_via_wic_inner(
 
         // --- Fast Path: Generic direct instantiation via registry CLSID (No sniffing) ---
         if !prefer_stream_sniff {
-            let clsid_opt = if let Ok(reg) = get_registry().read() {
-                reg.formats
-                    .iter()
-                    .find(|f| f.extension == ext)
-                    .and_then(|f| f.wic_clsid)
-            } else {
-                None
-            };
+            let clsid_opt = get_registry()
+                .read()
+                .formats
+                .iter()
+                .find(|f| f.extension == ext)
+                .and_then(|f| f.wic_clsid);
 
             if let Some(clsid_bytes) = clsid_opt {
                 let mut clsid = GUID::default();
@@ -164,14 +162,12 @@ fn load_via_wic_inner(
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
         {
-            let clsid_bytes_opt = if let Ok(reg) = get_registry().read() {
-                reg.formats
-                    .iter()
-                    .find(|f| f.extension == ext)
-                    .and_then(|f| f.wic_clsid)
-            } else {
-                None
-            };
+            let clsid_bytes_opt = get_registry()
+                .read()
+                .formats
+                .iter()
+                .find(|f| f.extension == ext)
+                .and_then(|f| f.wic_clsid);
 
             if let Some(clsid_bytes) = clsid_bytes_opt {
                 let mut clsid = GUID::default();
@@ -232,8 +228,13 @@ fn load_via_wic_inner(
             .GetFrame(best_frame_idx)
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
-        let orientation = orientation_override
-            .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path));
+        let orientation = orientation_override.unwrap_or_else(|| {
+            crate::mmap_util::map_file(path)
+                .map(|mmap| {
+                    crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
+                })
+                .unwrap_or(1)
+        });
         let transform_options = match orientation {
             2 => WICBitmapTransformOptions(8),     // Flip Horizontal
             3 => WICBitmapTransformOptions(2),     // Rotate180

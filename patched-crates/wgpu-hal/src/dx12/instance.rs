@@ -171,17 +171,17 @@ impl crate::Instance for super::Instance {
         adapters
             .into_iter()
             .filter_map(|raw| {
-                super::Adapter::expose(
-                    raw,
-                    &self.library,
-                    &self.device_factory,
-                    &self.dcomp_lib,
-                    self.flags,
-                    self.memory_budget_thresholds,
-                    self.compiler_container.clone(),
-                    self.options.clone(),
-                    self.telemetry,
-                )
+                super::Adapter::expose(crate::dx12::adapter::Dx12AdapterExposeParams {
+                    adapter: raw,
+                    library: &self.library,
+                    device_factory: &self.device_factory,
+                    dcomp_lib: &self.dcomp_lib,
+                    instance_flags: self.flags,
+                    memory_budget_thresholds: self.memory_budget_thresholds,
+                    compiler_container: self.compiler_container.clone(),
+                    backend_options: self.options.clone(),
+                    telemetry: self.telemetry,
+                })
             })
             .collect()
     }

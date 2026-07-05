@@ -45,6 +45,7 @@ pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
 pub use preview_aspect::preview_aspect_matches_logical;
 pub(crate) use preview_caps::DIRECTORY_TREE_STRIP_POOL;
+pub(crate) use preview_caps::REFINEMENT_POOL;
 #[allow(unused_imports)]
 // `MONITOR_PREVIEW_CAP` is part of the public loader re-export surface.
 pub use preview_caps::{
@@ -64,13 +65,14 @@ pub(crate) use decode::{
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, directory_tree_strip_from_hdr_or_fallback,
     directory_tree_strip_logical_for_preview, hdr_directory_tree_strip_sdr_at_max_side,
-    hdr_display_requests_sdr_preview, hdr_has_embedded_sdr_master_display,
-    hdr_has_iso_deferred_gain_map, hdr_gain_map_sdr_display_mode_affects_image,
+    hdr_display_requests_sdr_preview, hdr_gain_map_sdr_display_mode_affects_image,
+    hdr_has_embedded_sdr_master_display, hdr_has_iso_deferred_gain_map,
     hdr_raw_gpu_bootstrap_fallback_decoded, hdr_raw_gpu_demosaic_pending,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_or_placeholder,
-    hdr_tone_map_settings_for_directory_tree_strip, prefer_embedded_iso_gain_map_sdr_on_sdr_output,
-    raw_gpu_source_has_bootstrap_preview, should_use_embedded_sdr_master_load,
-    static_hdr_background_plane_upload_eligible,
+    hdr_supports_embedded_sdr_master_display, hdr_tone_map_plane_available_in_cache,
+    hdr_tone_map_settings_for_directory_tree_strip, index_hdr_gain_map_sdr_display_mode_affects,
+    prefer_embedded_iso_gain_map_sdr_on_sdr_output, raw_gpu_source_has_bootstrap_preview,
+    should_use_embedded_sdr_master_load, static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
     extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,
@@ -83,6 +85,14 @@ pub(crate) use orientation::{
 
 pub(crate) fn tiff_may_be_camera_raw(path: &std::path::Path) -> bool {
     decode::tiff_may_be_camera_raw(path)
+}
+
+pub(crate) fn tiff_may_be_camera_raw_bytes(bytes: &[u8]) -> bool {
+    decode::tiff_may_be_camera_raw_bytes(bytes)
+}
+
+pub(crate) fn tiff_ifd0_suggests_libraw_raw(bytes: &[u8]) -> bool {
+    decode::tiff_ifd0_suggests_libraw_raw(bytes)
 }
 
 pub(crate) use decode::is_maybe_animated;

@@ -132,10 +132,8 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             );
 
             let r1 = styled_button(&mut group_ui, t!("win.assoc_formats"), &palette);
-            if r1.clicked()
-                && let Ok(reg) = crate::formats::get_registry().read()
-            {
-                let formats = reg.formats.clone();
+            if r1.clicked() {
+                let formats = crate::formats::get_registry().read().formats.clone();
                 app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::FileAssoc(
                     crate::ui::dialogs::file_assoc::State::new(formats),
                 ));

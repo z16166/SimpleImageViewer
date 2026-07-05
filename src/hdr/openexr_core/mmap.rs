@@ -98,8 +98,12 @@ pub(crate) struct ExrMmapCookieGuard {
 
 impl ExrMmapCookieGuard {
     pub(crate) fn new(mmap: Mmap) -> Self {
+        Self::from_shared(Arc::new(mmap))
+    }
+
+    pub(crate) fn from_shared(mmap: Arc<Mmap>) -> Self {
         let cookie = Arc::new(ExrMmapReadCookie {
-            mmap: Arc::new(mmap),
+            mmap,
             destroy_called: AtomicBool::new(false),
         });
         let c_ref = Arc::into_raw(Arc::clone(&cookie));

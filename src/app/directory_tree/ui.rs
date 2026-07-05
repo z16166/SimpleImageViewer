@@ -101,7 +101,7 @@ struct DirectoryTreePanelLayoutDiag {
 static DIRECTORY_TREE_PANEL_LAYOUT_DIAG: OnceLock<Mutex<DirectoryTreePanelLayoutDiag>> =
     OnceLock::new();
 
-fn maybe_log_directory_tree_panel_layout(
+struct DirectoryTreePanelLayoutSample {
     embedded: bool,
     viewport_width: f32,
     layout_left_w: f32,
@@ -110,7 +110,19 @@ fn maybe_log_directory_tree_panel_layout(
     stored_left_after: f32,
     splitter_dragged: bool,
     splitter_drag_delta_x: f32,
-) {
+}
+
+fn maybe_log_directory_tree_panel_layout(sample: DirectoryTreePanelLayoutSample) {
+    let DirectoryTreePanelLayoutSample {
+        embedded,
+        viewport_width,
+        layout_left_w,
+        layout_list_w,
+        stored_left_before,
+        stored_left_after,
+        splitter_dragged,
+        splitter_drag_delta_x,
+    } = sample;
     if !embedded {
         return;
     }
@@ -148,7 +160,7 @@ fn maybe_log_directory_tree_panel_layout(
     };
     let interval_elapsed = diag
         .last_log_at
-        .map_or(true, |last| now.saturating_duration_since(last) >= interval);
+        .is_none_or(|last| now.saturating_duration_since(last) >= interval);
 
     if interval_elapsed && (splitter_dragged || width_changed || left_clamped) {
         log::debug!(
@@ -752,16 +764,16 @@ fn draw_directory_tree_top_panels(
         chrome.panel_layout_dirty = true;
         ui.ctx().request_repaint();
     }
-    maybe_log_directory_tree_panel_layout(
+    maybe_log_directory_tree_panel_layout(DirectoryTreePanelLayoutSample {
         embedded,
         viewport_width,
-        left_w,
-        right_w,
+        layout_left_w: left_w,
+        layout_list_w: right_w,
         stored_left_before,
-        chrome.left_panel_width,
-        splitter_response.dragged(),
+        stored_left_after: chrome.left_panel_width,
+        splitter_dragged: splitter_response.dragged(),
         splitter_drag_delta_x,
-    );
+    });
     if splitter_response.hovered() || splitter_response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
@@ -1601,6 +1613,22 @@ pub(super) fn wrapped_image_list_index(current: usize, delta: i32, len: usize) -
     if next == current { None } else { Some(next) }
 }
 
+pub(super) fn image_list_home_end_index(
+    current: usize,
+    key: egui::Key,
+    len: usize,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let target = match key {
+        egui::Key::Home => 0,
+        egui::Key::End => len - 1,
+        _ => return None,
+    };
+    if target == current { None } else { Some(target) }
+}
+
 fn apply_image_list_row_selection(chrome: &mut DirectoryTreeUiChrome, index: usize) {
     chrome.image_list_keyboard_active = true;
     chrome.current_index = index;
@@ -1633,6 +1661,10 @@ fn try_handle_image_list_arrow_keys(
             next = wrapped_image_list_index(current, 1, len);
         } else if input.key_pressed(egui::Key::ArrowUp) {
             next = wrapped_image_list_index(current, -1, len);
+        } else if input.key_pressed(egui::Key::Home) {
+            next = image_list_home_end_index(current, egui::Key::Home, len);
+        } else if input.key_pressed(egui::Key::End) {
+            next = image_list_home_end_index(current, egui::Key::End, len);
         }
     });
     let Some(index) = next else {
@@ -1642,6 +1674,8 @@ fn try_handle_image_list_arrow_keys(
     ui.input_mut(|input| {
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
         input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+        input.consume_key(egui::Modifiers::NONE, egui::Key::Home);
+        input.consume_key(egui::Modifiers::NONE, egui::Key::End);
     });
     apply_image_list_row_selection(chrome, index);
     send_directory_tree_command(command_tx, DirectoryTreeCommand::SelectImage(index));

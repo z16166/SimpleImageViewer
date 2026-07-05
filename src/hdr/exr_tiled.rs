@@ -23,12 +23,12 @@ use std::{cell::Cell, panic::AssertUnwindSafe};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, hdr_preview_from_tiled_source_nearest,
-    sdr_preview_from_hdr_preview,
+    sdr_preview_from_linear_rgba32f, sdr_preview_from_tiled_source_nearest,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 // `std::panic::set_hook` runs on the thread that panicked. Suppression must be thread-local so a
-// decoder panic on e.g. `siv-psd-v1` is gated by that thread's depth, not the Rayon parent.
+// decoder panic on a refinement-pool worker is gated by that thread's depth, not the Rayon parent.
 thread_local! {
     static SUPPRESS_EXR_PANIC_HOOK_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
@@ -80,6 +80,28 @@ impl ExrTiledImageSource {
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
         let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+        Self::from_context(path, context, max_cache_bytes)
+    }
+
+    pub(crate) fn open_from_mmap(path: &Path, mmap: Arc<memmap2::Mmap>) -> Result<Self, String> {
+        Self::open_from_mmap_with_cache_budget(path, mmap, configured_hdr_tile_cache_max_bytes())
+    }
+
+    pub(crate) fn open_from_mmap_with_cache_budget(
+        path: &Path,
+        mmap: Arc<memmap2::Mmap>,
+        max_cache_bytes: usize,
+    ) -> Result<Self, String> {
+        let context =
+            crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
+        Self::from_context(path, context, max_cache_bytes)
+    }
+
+    fn from_context(
+        path: &Path,
+        context: crate::hdr::openexr_core_backend::OpenExrCoreReadContext,
+        max_cache_bytes: usize,
+    ) -> Result<Self, String> {
         let parts = exr_part_infos_from_context(&context)?;
         let part_index = default_display_part_index(&parts).unwrap_or(0);
         let part = context.part(part_index)?;
@@ -316,6 +338,7 @@ impl HdrTiledSource for ExrTiledImageSource {
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
+        let metadata = HdrImageMetadata::from_color_space(self.color_space);
         catch_exr_panic(&context, || {
             if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
                 && !self.has_subsampled_channels
@@ -325,34 +348,29 @@ impl HdrTiledSource for ExrTiledImageSource {
                     max_w,
                     max_h,
                 )?;
-                let hdr = HdrImageBuffer {
-                    width: preview.width,
-                    height: preview.height,
-                    format: HdrPixelFormat::Rgba32Float,
-                    color_space: self.color_space,
-                    metadata: HdrImageMetadata::from_color_space(self.color_space),
-                    rgba_f32: Arc::new(preview.rgba),
-                };
-                return sdr_preview_from_hdr_preview(&hdr);
+                return sdr_preview_from_linear_rgba32f(
+                    preview.width,
+                    preview.height,
+                    &preview.rgba,
+                    self.color_space,
+                    &metadata,
+                );
             }
             if self.storage == openexr_core_sys::EXR_STORAGE_TILED
                 && let Ok(preview) =
                     self.context
                         .extract_tiled_mip_rgba32f_preview(self.part_index, max_w, max_h)
             {
-                let hdr = HdrImageBuffer {
-                    width: preview.width,
-                    height: preview.height,
-                    format: HdrPixelFormat::Rgba32Float,
-                    color_space: self.color_space,
-                    metadata: HdrImageMetadata::from_color_space(self.color_space),
-                    rgba_f32: Arc::new(preview.rgba),
-                };
-                return sdr_preview_from_hdr_preview(&hdr);
+                return sdr_preview_from_linear_rgba32f(
+                    preview.width,
+                    preview.height,
+                    &preview.rgba,
+                    self.color_space,
+                    &metadata,
+                );
             }
 
-            let preview = hdr_preview_from_tiled_source_nearest(self, max_w, max_h)?;
-            sdr_preview_from_hdr_preview(&preview)
+            sdr_preview_from_tiled_source_nearest(self, max_w, max_h)
         })
     }
 
@@ -494,16 +512,30 @@ pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize>
         })
 }
 
-pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
-    let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+pub(crate) fn exr_dimensions_unvalidated_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<(u32, u32), String> {
+    let context =
+        crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
     let parts = exr_part_infos_from_context(&context)?;
     let part_index = default_display_part_index(&parts).unwrap_or(0);
     let part = context.part(part_index)?;
     Ok((part.width, part.height))
 }
 
+#[cfg(test)]
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    decode_deep_exr_image_from_mmap(path, mmap)
+}
+
+pub(crate) fn decode_deep_exr_image_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+) -> Result<HdrImageBuffer, String> {
+    let context =
+        crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
     let parts = exr_part_infos_from_context(&context)?;
     let part_index = default_display_part_index(&parts).unwrap_or(0);
     let part = context.part(part_index)?;

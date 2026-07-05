@@ -25,7 +25,7 @@ use super::ui::{
     directory_tree_panel_layout, filesystem_ancestor_chain, image_list_column_layout,
     image_list_modified_column, image_list_name_column, image_list_size_column,
     image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
-    unc_share_root, wrapped_image_list_index,
+    unc_share_root, wrapped_image_list_index, image_list_home_end_index,
 };
 use super::workers::read_child_directories;
 use super::*;
@@ -454,6 +454,25 @@ fn sync_images_preserves_keyboard_list_selection_until_main_window_catches_up() 
 }
 
 #[test]
+fn sync_images_follows_main_index_after_list_keyboard_capture_released() {
+    let paths = vec![PathBuf::from("/tmp/a.avif"), PathBuf::from("/tmp/b.avif")];
+    let mut state = DirectoryTreeState::default();
+    state.list.image_rows = paths
+        .iter()
+        .map(|path| DirectoryTreeFileRow::new(path.clone(), directory_display_name(path), 0, None))
+        .collect();
+    state.list.current_index = 0;
+    state.list.image_list_keyboard_active = true;
+    state.list.scroll_image_list_to_current = false;
+
+    state.list.image_list_keyboard_active = false;
+    state.sync_images(&paths, &[0, 0], &[None, None], 1, false, String::new());
+
+    assert_eq!(state.list.current_index, 1);
+    assert!(state.list.scroll_image_list_to_current);
+}
+
+#[test]
 fn wrapped_image_list_index_loops_at_bounds() {
     assert_eq!(wrapped_image_list_index(0, -1, 10), Some(9));
     assert_eq!(wrapped_image_list_index(9, 1, 10), Some(0));
@@ -462,6 +481,21 @@ fn wrapped_image_list_index_loops_at_bounds() {
     assert!(wrapped_image_list_index(0, -1, 1).is_none());
     assert!(wrapped_image_list_index(0, 1, 1).is_none());
     assert!(wrapped_image_list_index(0, 1, 0).is_none());
+}
+
+#[test]
+fn image_list_home_end_index_jumps_to_bounds() {
+    assert_eq!(
+        image_list_home_end_index(4, egui::Key::Home, 10),
+        Some(0)
+    );
+    assert_eq!(
+        image_list_home_end_index(4, egui::Key::End, 10),
+        Some(9)
+    );
+    assert!(image_list_home_end_index(0, egui::Key::Home, 10).is_none());
+    assert!(image_list_home_end_index(9, egui::Key::End, 10).is_none());
+    assert!(image_list_home_end_index(0, egui::Key::Home, 0).is_none());
 }
 
 #[test]
@@ -2117,6 +2151,12 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
         String::new(),
     );
     assert_eq!(state.list.image_rows.len(), 3);
+    assert_eq!(state.list.image_rows[0].path, path_a);
+    assert_eq!(state.list.image_rows[0].size_bytes, 1);
+    assert_eq!(state.list.image_rows[1].path, path_b);
+    assert_eq!(state.list.image_rows[1].size_bytes, 2);
+    assert_eq!(state.list.image_rows[2].path, path_c);
+    assert_eq!(state.list.image_rows[2].size_bytes, 3);
     assert!(state.list.image_rows.iter().any(|row| row.path == path_c));
     assert_eq!(
         state
@@ -2127,6 +2167,24 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
             .count(),
         1
     );
+}
+
+#[test]
+fn sync_images_realigns_sizes_after_image_order_changes() {
+    let mut state = DirectoryTreeState::default();
+    let path_small = PathBuf::from("/dir/small.jpg");
+    let path_large = PathBuf::from("/dir/large.psb");
+    state.list.image_rows = vec![
+        DirectoryTreeFileRow::new(path_small.clone(), "small".to_string(), 100, None),
+        DirectoryTreeFileRow::new(path_large.clone(), "large".to_string(), 200, None),
+    ];
+    let images = vec![path_large.clone(), path_small.clone()];
+    let sizes = vec![4_637_379_310_u64, 7_962_624_u64];
+    state.sync_images(&images, &sizes, &[None, None], 0, false, String::new());
+    assert_eq!(state.list.image_rows[0].path, path_large);
+    assert_eq!(state.list.image_rows[0].size_bytes, 4_637_379_310);
+    assert_eq!(state.list.image_rows[1].path, path_small);
+    assert_eq!(state.list.image_rows[1].size_bytes, 7_962_624);
 }
 
 #[test]

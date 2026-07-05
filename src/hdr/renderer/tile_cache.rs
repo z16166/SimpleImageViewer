@@ -18,15 +18,15 @@ use super::*;
 
 pub(crate) struct HdrTileBindings {
     pub(super) entries: HashMap<HdrTileKey, HdrTileBinding>,
-    pub(super) lru: VecDeque<HdrTileKey>,
-    pub(super) protected_recent: HashSet<HdrTileKey>,
-    pub(super) protected_order: VecDeque<HdrTileKey>,
+    evictable_lru: crate::lru_order::LruOrder<HdrTileKey>,
+    protected_recent: HashSet<HdrTileKey>,
+    protected_order: crate::lru_order::LruOrder<HdrTileKey>,
     pub(super) current_bytes: usize,
     pub(super) max_bytes: usize,
 }
 
 pub(crate) struct HdrTileInsert {
-    pub(crate) texture: wgpu::Texture,
+    pub(crate) texture: Arc<wgpu::Texture>,
     pub(crate) view: wgpu::TextureView,
     pub(crate) compose_storage_view: Option<wgpu::TextureView>,
     pub(crate) tone_map_buffer: wgpu::Buffer,
@@ -46,9 +46,9 @@ impl HdrTileBindings {
     pub(crate) fn with_budget(max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            lru: VecDeque::new(),
+            evictable_lru: crate::lru_order::LruOrder::default(),
             protected_recent: HashSet::new(),
-            protected_order: VecDeque::new(),
+            protected_order: crate::lru_order::LruOrder::default(),
             current_bytes: 0,
             max_bytes,
         }
@@ -98,24 +98,18 @@ impl HdrTileBindings {
             self.current_bytes = self
                 .current_bytes
                 .saturating_sub(old_binding.estimated_bytes);
-            self.lru.retain(|existing| *existing != key);
+            self.evictable_lru.remove(key);
         }
 
         let bytes = hdr_tile_key_bytes(key);
-        while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
-            let evict_pos = self
-                .lru
-                .iter()
-                .position(|existing| !self.protected_recent.contains(existing));
-            let Some(evict_pos) = evict_pos else {
-                break;
-            };
-            let Some(evicted_key) = self.lru.remove(evict_pos) else {
+        while !self.evictable_lru.is_empty()
+            && self.current_bytes.saturating_add(bytes) > self.max_bytes
+        {
+            let Some(evicted_key) = self.evictable_lru.pop_oldest() else {
                 break;
             };
             self.protected_recent.remove(&evicted_key);
-            self.protected_order
-                .retain(|existing| *existing != evicted_key);
+            self.protected_order.remove(evicted_key);
             if let Some(evicted_binding) = self.entries.remove(&evicted_key) {
                 self.current_bytes = self
                     .current_bytes
@@ -129,27 +123,33 @@ impl HdrTileBindings {
             let mut binding = binding;
             binding.estimated_bytes = bytes;
             self.entries.insert(key, binding);
-            self.lru.push_back(key);
+            if !self.protected_recent.contains(&key) {
+                self.evictable_lru.touch(key);
+            }
             self.current_bytes += bytes;
         }
     }
 
     pub(crate) fn protect_recent(&mut self, key: HdrTileKey) {
-        self.protected_order.retain(|existing| *existing != key);
-        self.protected_order.push_back(key);
+        self.evictable_lru.remove(key);
+        self.protected_order.touch(key);
         self.protected_recent.insert(key);
         while self.protected_order.len() > HDR_TILE_BINDING_RECENT_PROTECTION_COUNT {
-            if let Some(expired) = self.protected_order.pop_front() {
+            if let Some(expired) = self.protected_order.pop_oldest() {
                 self.protected_recent.remove(&expired);
+                if self.entries.contains_key(&expired) {
+                    self.evictable_lru.touch(expired);
+                }
             }
         }
     }
 
     pub(crate) fn touch(&mut self, key: HdrTileKey) {
-        if let Some(pos) = self.lru.iter().position(|existing| *existing == key) {
-            self.lru.remove(pos);
+        if self.protected_recent.contains(&key) {
+            self.protected_order.touch(key);
+        } else {
+            self.evictable_lru.touch(key);
         }
-        self.lru.push_back(key);
     }
 
     #[cfg(test)]
@@ -183,9 +183,9 @@ impl HdrTileBindings {
         if let Some(binding) = self.entries.remove(&key) {
             self.current_bytes = self.current_bytes.saturating_sub(binding.estimated_bytes);
         }
-        self.lru.retain(|existing| *existing != key);
+        self.evictable_lru.remove(key);
         self.protected_recent.remove(&key);
-        self.protected_order.retain(|existing| *existing != key);
+        self.protected_order.remove(key);
     }
 
     pub(crate) fn bind_group(&self, key: HdrTileKey) -> Option<&wgpu::BindGroup> {
@@ -204,7 +204,7 @@ impl HdrTileBindings {
 }
 
 pub(crate) struct HdrTileBinding {
-    pub(super) _texture: Option<wgpu::Texture>,
+    pub(super) _texture: Option<Arc<wgpu::Texture>>,
     pub(super) _view: Option<wgpu::TextureView>,
     /// Storage view for ISO deferred tile GPU compose; reused across rebakes at the same tile size.
     pub(super) compose_storage_view: Option<wgpu::TextureView>,

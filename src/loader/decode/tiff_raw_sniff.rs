@@ -73,23 +73,30 @@ pub(crate) fn tiff_may_be_camera_raw_bytes(bytes: &[u8]) -> bool {
     sniff_tiff_may_be_camera_raw(bytes)
 }
 
-fn sniff_tiff_may_be_camera_raw(bytes: &[u8]) -> bool {
-    let Some(le) = tiff_endianness(bytes) else {
+/// IFD0 CFA photometric or CFA tags suggest LibRaw should own the file instead of libtiff RGB preview.
+pub(crate) fn tiff_ifd0_suggests_libraw_raw(bytes: &[u8]) -> bool {
+    let Some(ifd0) = sniff_ifd0(bytes) else {
         return false;
     };
+    ifd0.photometric == Some(PHOTOMETRIC_CFA) || ifd0.has_cfa_tags
+}
 
-    let ifd_offset = match read_u32(bytes, 4, le) {
-        Some(v) => v as usize,
-        None => return false,
-    };
+struct Ifd0Sniff {
+    photometric: Option<u16>,
+    make: Option<String>,
+    model: Option<String>,
+    has_cfa_tags: bool,
+}
+
+fn sniff_ifd0(bytes: &[u8]) -> Option<Ifd0Sniff> {
+    let le = tiff_endianness(bytes)?;
+
+    let ifd_offset = read_u32(bytes, 4, le)? as usize;
     if ifd_offset + 2 > bytes.len() {
-        return false;
+        return None;
     }
 
-    let entry_count = match read_u16(bytes, ifd_offset, le) {
-        Some(v) => v as usize,
-        None => return false,
-    };
+    let entry_count = read_u16(bytes, ifd_offset, le)? as usize;
     let entries_start = ifd_offset + 2;
     let max_entries = entry_count.min(128);
 
@@ -103,22 +110,10 @@ fn sniff_tiff_may_be_camera_raw(bytes: &[u8]) -> bool {
         if entry + 12 > bytes.len() {
             break;
         }
-        let tag = match read_u16(bytes, entry, le) {
-            Some(v) => v,
-            None => continue,
-        };
-        let ty = match read_u16(bytes, entry + 2, le) {
-            Some(v) => v,
-            None => continue,
-        };
-        let count = match read_u32(bytes, entry + 4, le) {
-            Some(v) => v,
-            None => continue,
-        };
-        let value = match read_u32(bytes, entry + 8, le) {
-            Some(v) => v,
-            None => continue,
-        };
+        let tag = read_u16(bytes, entry, le)?;
+        let ty = read_u16(bytes, entry + 2, le)?;
+        let count = read_u32(bytes, entry + 4, le)?;
+        let value = read_u32(bytes, entry + 8, le)?;
 
         match tag {
             TIFF_TAG_PHOTOMETRIC => photometric = read_short_value(bytes, ty, count, value, le),
@@ -129,11 +124,24 @@ fn sniff_tiff_may_be_camera_raw(bytes: &[u8]) -> bool {
         }
     }
 
-    if photometric == Some(PHOTOMETRIC_CFA) || has_cfa_tags {
+    Some(Ifd0Sniff {
+        photometric,
+        make,
+        model,
+        has_cfa_tags,
+    })
+}
+
+fn sniff_tiff_may_be_camera_raw(bytes: &[u8]) -> bool {
+    let Some(ifd0) = sniff_ifd0(bytes) else {
+        return false;
+    };
+
+    if ifd0.photometric == Some(PHOTOMETRIC_CFA) || ifd0.has_cfa_tags {
         return true;
     }
 
-    camera_make_or_model_suggests_raw(make.as_deref(), model.as_deref())
+    camera_make_or_model_suggests_raw(ifd0.make.as_deref(), ifd0.model.as_deref())
 }
 
 fn tiff_endianness(bytes: &[u8]) -> Option<bool> {
@@ -301,6 +309,24 @@ mod tests {
             b'K', b'o', b'd', b'a', b'k', 0,
         ];
         assert!(sniff_tiff_may_be_camera_raw(tiff));
+    }
+
+    #[test]
+    fn ifd0_suggests_libraw_raw_for_cfa_photometric() {
+        let tiff: &[u8] = &[
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 6, 1, 3, 0, 1, 0, 0, 0, 35, 128, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(tiff_ifd0_suggests_libraw_raw(tiff));
+    }
+
+    #[test]
+    fn ifd0_does_not_suggest_libraw_raw_for_kodak_make_only() {
+        let tiff: &[u8] = &[
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 15, 1, 2, 0, 6, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0, 0,
+            b'K', b'o', b'd', b'a', b'k', 0,
+        ];
+        assert!(sniff_tiff_may_be_camera_raw(tiff));
+        assert!(!tiff_ifd0_suggests_libraw_raw(tiff));
     }
 
     /// Requires `F:\win7\raws\nikon\RAW_NIKON_D800_L.TIFF`.

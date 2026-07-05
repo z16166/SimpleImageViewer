@@ -37,22 +37,37 @@ use crate::{
 // this has to match Naga's HLSL backend, and also needs to be null-terminated
 const NAGA_LOCATION_SEMANTIC: &[u8] = c"LOC".to_bytes();
 
+pub(super) struct Dx12DeviceCreateParams<'a> {
+    pub adapter: auxil::dxgi::factory::DxgiAdapter,
+    pub raw: Direct3D12::ID3D12Device,
+    pub present_queue: Direct3D12::ID3D12CommandQueue,
+    pub features: wgt::Features,
+    pub limits: &'a wgt::Limits,
+    pub memory_hints: &'a wgt::MemoryHints,
+    pub private_caps: super::PrivateCapabilities,
+    pub library: &'a Arc<D3D12Lib>,
+    pub dcomp_lib: &'a Arc<DCompLib>,
+    pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+    pub compiler_container: Arc<shader_compilation::CompilerContainer>,
+    pub backend_options: wgt::Dx12BackendOptions,
+}
+
 impl super::Device {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
-        adapter: auxil::dxgi::factory::DxgiAdapter,
-        raw: Direct3D12::ID3D12Device,
-        present_queue: Direct3D12::ID3D12CommandQueue,
-        features: wgt::Features,
-        limits: &wgt::Limits,
-        memory_hints: &wgt::MemoryHints,
-        private_caps: super::PrivateCapabilities,
-        library: &Arc<D3D12Lib>,
-        dcomp_lib: &Arc<DCompLib>,
-        memory_budget_thresholds: wgt::MemoryBudgetThresholds,
-        compiler_container: Arc<shader_compilation::CompilerContainer>,
-        backend_options: wgt::Dx12BackendOptions,
-    ) -> Result<Self, crate::DeviceError> {
+    pub(super) fn new(params: Dx12DeviceCreateParams<'_>) -> Result<Self, crate::DeviceError> {
+        let Dx12DeviceCreateParams {
+            adapter,
+            raw,
+            present_queue,
+            features,
+            limits,
+            memory_hints,
+            private_caps,
+            library,
+            dcomp_lib,
+            memory_budget_thresholds,
+            compiler_container,
+            backend_options,
+        } = params;
         if private_caps
             .instance_flags
             .contains(wgt::InstanceFlags::VALIDATION)

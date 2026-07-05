@@ -28,7 +28,110 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// Delayed fallback worker debounce before running `do_load` when the pool task has not claimed first.
+pub(crate) const FALLBACK_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// Periodic wake for dedicated loader workers blocked on an empty queue or channel recv.
+/// Avoids infinite condvar/recv waits when shutdown is never signaled (e.g. panic without drop).
+pub(crate) const LOADER_WORKER_IDLE_POLL: Duration = Duration::from_millis(50);
+
+/// Best-effort join budget for dedicated loader worker threads during [`LoaderWorkerLifetime`] drop.
+pub(crate) const LOADER_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// RAII shutdown for dedicated loader worker threads. Ensures `signal_shutdown` runs even if
+/// [`ImageLoader`] is dropped during stack unwinding (e.g. after `catch_unwind`).
+pub(crate) struct LoaderWorkerLifetime {
+    shutdown: Arc<AtomicBool>,
+    refine_tx: Arc<Mutex<Option<Sender<RefinementRequest>>>>,
+    delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
+    tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
+    raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    worker_handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl LoaderWorkerLifetime {
+    pub(crate) fn new(
+        shutdown: Arc<AtomicBool>,
+        refine_tx: Sender<RefinementRequest>,
+        delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
+        tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
+        raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    ) -> (Self, Arc<Mutex<Option<Sender<RefinementRequest>>>>) {
+        let refine_tx = Arc::new(Mutex::new(Some(refine_tx)));
+        let lifetime = Self {
+            shutdown,
+            refine_tx: Arc::clone(&refine_tx),
+            delayed_fallback,
+            tile_queue,
+            raw_open_prefetch,
+            worker_handles: Mutex::new(Vec::new()),
+        };
+        (lifetime, refine_tx)
+    }
+
+    pub(crate) fn register_worker(&self, handle: JoinHandle<()>) {
+        self.worker_handles.lock().push(handle);
+    }
+
+    pub(crate) fn signal_shutdown(&self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.refine_tx.lock().take();
+        {
+            let (_, cvar) = &*self.delayed_fallback;
+            cvar.notify_all();
+        }
+        {
+            let (_, cvar) = &*self.tile_queue;
+            cvar.notify_all();
+        }
+        self.raw_open_prefetch.wake_waiters();
+    }
+}
+
+impl Drop for LoaderWorkerLifetime {
+    fn drop(&mut self) {
+        self.signal_shutdown();
+        self.join_workers(LOADER_WORKER_JOIN_TIMEOUT);
+    }
+}
+
+impl LoaderWorkerLifetime {
+    fn join_workers(&mut self, timeout: Duration) {
+        let handles = std::mem::take(&mut *self.worker_handles.lock());
+        if handles.is_empty() {
+            return;
+        }
+        let total = handles.len();
+        let deadline = Instant::now() + timeout;
+        let mut pending = handles;
+        while !pending.is_empty() {
+            if Instant::now() >= deadline {
+                let remaining = pending.len();
+                log::warn!(
+                    "[Loader] Timed out after {:?} joining dedicated worker threads; detaching {remaining} of {total}",
+                    timeout
+                );
+                for handle in pending.drain(..) {
+                    if let Some(name) = handle.thread().name() {
+                        log::warn!("[Loader] Detaching unfinished loader worker thread {name}");
+                    } else {
+                        log::warn!("[Loader] Detaching unnamed loader worker thread");
+                    }
+                }
+                return;
+            }
+            let handle = pending.remove(0);
+            if handle.join().is_err() {
+                log::warn!("[Loader] Dedicated loader worker thread panicked on join");
+            }
+        }
+    }
+}
 
 use super::preload_plan::PreloadPlanSnapshot;
 
@@ -144,6 +247,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) wgpu_device_id_live: Arc<AtomicU64>,
     pub(crate) hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
 }
 
 pub(crate) fn should_spawn_load_task(
@@ -173,6 +277,9 @@ pub(crate) fn should_spawn_load_task(
 }
 
 pub struct ImageLoader {
+    /// Ensures worker threads are woken and channels closed when this loader is dropped.
+    pub(crate) worker_lifetime: Arc<LoaderWorkerLifetime>,
+    pub(crate) refine_tx: Arc<Mutex<Option<Sender<RefinementRequest>>>>,
     pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: LoaderOutputSender,
     pub rx: Receiver<LoaderOutput>,
@@ -183,8 +290,6 @@ pub struct ImageLoader {
     pub(crate) pool: Arc<rayon::ThreadPool>,
     /// Priority queue for tile requests.
     pub(crate) tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
-    /// Channel for background refinement tasks (LibRaw).
-    pub(crate) refine_tx: Sender<RefinementRequest>,
     /// Local deque for results that were polled but deferred due to per-frame
     /// upload quota. Drained before the crossbeam channel on the next frame.
     pub(crate) local_queue: std::collections::VecDeque<LoaderOutput>,
@@ -198,6 +303,7 @@ pub struct ImageLoader {
     pub(crate) hdr_callback_upload_active: Arc<std::sync::atomic::AtomicBool>,
     /// User setting: show embedded ISO gain-map SDR master on SDR monitors (skip HDR GPU pre-upload).
     pub(crate) embedded_iso_gain_map_sdr_master: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
     pub(crate) wgpu_device: Option<wgpu::Device>,
     pub(crate) wgpu_queue: Option<wgpu::Queue>,
     /// Live epoch; compare before background GPU upload and on the main thread at registration.
@@ -209,4 +315,16 @@ pub struct ImageLoader {
     pub(crate) current_image_os_threads: Arc<std::sync::atomic::AtomicUsize>,
     /// Main-thread-only HDR capacity requeue storm cap (not shared with workers; no lock needed).
     pub(crate) capacity_requeue_counts: std::collections::HashMap<usize, u32>,
+}
+
+impl ImageLoader {
+    /// Clone the refinement channel sender when workers are still accepting jobs.
+    pub(crate) fn clone_refine_tx(&self) -> Option<Sender<RefinementRequest>> {
+        self.refine_tx.lock().clone()
+    }
+
+    /// Wake all dedicated worker threads and tell them to exit idle waits.
+    pub(crate) fn signal_shutdown(&self) {
+        self.worker_lifetime.signal_shutdown();
+    }
 }

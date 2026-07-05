@@ -16,7 +16,10 @@
 
 use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
-use super::upload::{validate_rgba8_upload_layout, validate_tile_upload_layout};
+use super::upload::{
+    pack_rows_for_texture_copy, rgba32f_as_bytes, validate_rgba8_upload_layout,
+    validate_tile_upload_layout,
+};
 use super::*;
 use crate::hdr::renderer::hdr_image_binding_is_eviction_candidate;
 use crate::hdr::tiled::HdrTileBuffer;
@@ -887,6 +890,53 @@ fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
     HdrTileBuffer::new(width, height, HdrColorSpace::LinearSrgb, Arc::new(rgba_f32))
 }
 
+fn drain_pending_plane_uploads_for_test(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pending: &Arc<HdrPendingWorkQueues>,
+    callback_resources: &mut egui_wgpu::CallbackResources,
+    target_format: wgpu::TextureFormat,
+    device_id: u64,
+) {
+    let requests = std::mem::take(&mut *pending.plane_upload_requests.lock());
+    for request in requests {
+        let key = request.key;
+        match upload_image_plane_with_sink(
+            device,
+            GpuUploadSink::Pending {
+                queues: pending.as_ref(),
+                stage: HdrGpuUploadStage::PlaneCreate,
+            },
+            &request.image,
+        ) {
+            Ok(uploaded) => {
+                let _ = pending.flush_staged_writes_for_registration(queue);
+                let binding = HdrImageBinding::from_uploaded(
+                    device,
+                    uploaded,
+                    &request.image,
+                    request.tone_map,
+                    request.target_format,
+                    request.output_mode,
+                    device_id,
+                );
+                if let Some(resources) = callback_resources
+                    .get_mut::<HdrCallbackResourcesSet>()
+                    .and_then(|set| set.get_for_mut(target_format))
+                {
+                    let _ = resources.register_preuploaded_binding(key, binding, device_id);
+                    resources.set_image_binding_keep_resident(key, request.keep_resident);
+                }
+                pending.clear_plane_upload_inflight(key);
+            }
+            Err(err) => {
+                log::warn!("[HDR] Test plane upload failed: {err}");
+                pending.clear_plane_upload_inflight(key);
+            }
+        }
+    }
+}
+
 #[test]
 fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     let Some((_instance, _adapter, device, queue)) = pollster::block_on(async {
@@ -933,6 +983,9 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         pixels_per_point: 1.0,
     };
 
+    let pending_work = HdrPendingWorkQueues::new_shared();
+    const TEST_DEVICE_ID: u64 = 0;
+
     // Prepare eight callbacks (sleeping so LRU timestamps are distinct).
     for (i, img) in images.iter().take(8).enumerate() {
         if i > 0 {
@@ -949,8 +1002,29 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: Some(Arc::clone(&pending_work)),
+            sync_plane_upload_on_cache_miss: false,
         };
 
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let cmds = callback.prepare(
+            &device,
+            &queue,
+            &screen_desc,
+            &mut encoder,
+            &mut callback_resources,
+        );
+        if !cmds.is_empty() {
+            queue.submit(cmds);
+        }
+        drain_pending_plane_uploads_for_test(
+            &device,
+            &queue,
+            &pending_work,
+            &mut callback_resources,
+            target_format,
+            TEST_DEVICE_ID,
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let cmds = callback.prepare(
             &device,
@@ -1005,8 +1079,29 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             ripple: None,
             keep_resident: false,
             raw_demosaic_baked_notify: None,
+            pending_work: Some(Arc::clone(&pending_work)),
+            sync_plane_upload_on_cache_miss: false,
         };
 
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let cmds = callback.prepare(
+            &device,
+            &queue,
+            &screen_desc,
+            &mut encoder,
+            &mut callback_resources,
+        );
+        if !cmds.is_empty() {
+            queue.submit(cmds);
+        }
+        drain_pending_plane_uploads_for_test(
+            &device,
+            &queue,
+            &pending_work,
+            &mut callback_resources,
+            target_format,
+            TEST_DEVICE_ID,
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let cmds = callback.prepare(
             &device,
@@ -1035,5 +1130,56 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             let key = HdrImageKey::from_image(img);
             assert!(resources.image_bindings.contains_key(&key));
         }
+    }
+}
+
+#[test]
+fn gpu_preview_tone_map_matches_cpu_for_linear_srgb() {
+    let Some((_instance, _adapter, device, queue)) = pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: true,
+                compatible_surface: None,
+            })
+            .await
+            .ok()?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .ok()?;
+        Some((instance, adapter, device, queue))
+    }) else {
+        log::warn!("Skipping GPU preview tone-map test: no adapter available");
+        return;
+    };
+
+    let width = 256_u32;
+    let height = 256_u32;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let v = (x as f32 / width as f32) * 2.0;
+            rgba.extend_from_slice(&[v, v * 0.5, v * 0.25, 1.0]);
+            let _ = y;
+        }
+    }
+    let buffer = hdr_image(width, height, HdrPixelFormat::Rgba32Float, rgba);
+    let tone = HdrToneMapSettings::default();
+    let cpu = crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &tone)
+        .expect("cpu preview tone-map");
+    let gpu = with_preview_tone_map_gpu(Some(device), Some(queue), 1, || {
+        hdr_to_sdr_rgba8_for_preview(&buffer, 0.0)
+    })
+    .expect("gpu preview tone-map");
+
+    assert_eq!(cpu.len(), gpu.len());
+    for (idx, (c, g)) in cpu.iter().zip(gpu.iter()).enumerate() {
+        let delta = i32::from(*c) - i32::from(*g);
+        assert!(
+            delta.abs() <= 1,
+            "preview tone-map mismatch at byte {idx}: cpu={c} gpu={g}"
+        );
     }
 }

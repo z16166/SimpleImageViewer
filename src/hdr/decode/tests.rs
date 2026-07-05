@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
+use crate::hdr::decode::exr::decode_exr_display_image;
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
