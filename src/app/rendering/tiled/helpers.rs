@@ -325,20 +325,12 @@ pub(crate) fn prioritize_tile_visits_into(
 }
 
 pub(crate) fn tile_visits_for_backend_into(
-    plane_backend: PlaneBackendKind,
+    _plane_backend: PlaneBackendKind,
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
     out: &mut Vec<(TileCoord, Rect, Rect)>,
 ) {
-    match plane_backend {
-        PlaneBackendKind::Sdr => {
-            out.clear();
-            out.extend_from_slice(padded_visible);
-        }
-        PlaneBackendKind::Hdr => {
-            prioritize_tile_visits_into(out, primary_visible, padded_visible);
-        }
-    }
+    prioritize_tile_visits_into(out, primary_visible, padded_visible);
 }
 
 #[cfg(test)]

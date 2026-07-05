@@ -482,7 +482,7 @@ fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
 }
 
 #[test]
-fn tile_visit_order_is_selected_by_backend() {
+fn tile_visit_order_prioritizes_primary_for_all_backends() {
     let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
     let padded = vec![
         tile_visit(2, 3),
@@ -490,23 +490,23 @@ fn tile_visit_order_is_selected_by_backend() {
         tile_visit(4, 3),
         tile_visit(5, 3),
     ];
+    let expected = vec![
+        TileCoord { col: 3, row: 3 },
+        TileCoord { col: 4, row: 3 },
+        TileCoord { col: 2, row: 3 },
+        TileCoord { col: 5, row: 3 },
+    ];
 
-    let sdr_ordered = tile_visits_for_backend(PlaneBackendKind::Sdr, &primary, &padded);
-    let hdr_ordered = tile_visits_for_backend(PlaneBackendKind::Hdr, &primary, &padded);
-
-    assert_eq!(sdr_ordered, padded);
-    assert_eq!(
-        hdr_ordered
-            .iter()
-            .map(|(coord, _, _)| *coord)
-            .collect::<Vec<_>>(),
-        vec![
-            TileCoord { col: 3, row: 3 },
-            TileCoord { col: 4, row: 3 },
-            TileCoord { col: 2, row: 3 },
-            TileCoord { col: 5, row: 3 },
-        ]
-    );
+    for backend in [PlaneBackendKind::Sdr, PlaneBackendKind::Hdr] {
+        let ordered = tile_visits_for_backend(backend, &primary, &padded);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
 }
 
 #[test]
