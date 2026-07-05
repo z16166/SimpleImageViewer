@@ -641,33 +641,37 @@ impl TiffStripCachingSource {
         }
 
         let decode_result = self.decode_chunk_to_rgba8(chunk_idx).map(Arc::new);
-        self.in_flight.lock().remove(&chunk_idx);
 
         let Some(data_arc) = decode_result else {
+            self.in_flight.lock().remove(&chunk_idx);
             return None;
         };
 
-        {
+        let cached = {
             let mut cache = self.strip_cache.lock();
             let mut order = self.cache_order.lock();
 
             if let Some(existing) = cache.get(&chunk_idx) {
-                return Some(Arc::clone(existing));
-            }
+                Arc::clone(existing)
+            } else {
+                cache.insert(chunk_idx, Arc::clone(&data_arc));
+                order.touch(chunk_idx);
 
-            cache.insert(chunk_idx, Arc::clone(&data_arc));
-            order.touch(chunk_idx);
-
-            while order.len() > 32 {
-                if let Some(to_remove) = order.pop_oldest() {
-                    cache.remove(&to_remove);
-                } else {
-                    break;
+                while order.len() > 32 {
+                    if let Some(to_remove) = order.pop_oldest() {
+                        cache.remove(&to_remove);
+                    } else {
+                        break;
+                    }
                 }
+                data_arc
             }
-        }
+        };
 
-        Some(data_arc)
+        // Publish decoded bytes before clearing in_flight so waiters never miss the cache insert.
+        self.in_flight.lock().remove(&chunk_idx);
+
+        Some(cached)
     }
 
     fn decode_chunk_to_rgba8(&self, chunk_idx: u32) -> Option<Vec<u8>> {
