@@ -63,9 +63,9 @@ use animation_bootstrap::{
     spawn_raster_animation_remainder_decode,
 };
 use assemble::{make_hdr_image_data, make_image_data};
-use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection};
+use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection, PrimaryDecodeAttempt};
 use hdr_formats::load_hdr;
-use jpeg::load_jpeg_with_target_capacity;
+use jpeg::load_jpeg_primary_attempt;
 use modern::{
     load_avif_with_target_capacity_outcome, load_heif_hdr_aware,
     load_jxl_with_target_capacity_outcome, spawn_avif_sequence_remainder_decode,
@@ -127,7 +127,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || load_hdr(path, hdr_target_capacity, hdr_tone_map),
+                || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
             );
         }
 
@@ -186,7 +186,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    load_jpeg_with_target_capacity(
+                    load_jpeg_primary_attempt(
                         path,
                         hdr_target_capacity,
                         hdr_tone_map,
@@ -228,7 +228,13 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map),
+                || {
+                    PrimaryDecodeAttempt::from_result(crate::libtiff_loader::load_via_libtiff(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    ))
+                },
             );
         }
 
@@ -246,16 +252,19 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         hdr_tone_map,
                         prefer_embedded_sdr_master,
                         true,
-                    )?;
-                    if let Some(job) = outcome.sequence_remainder {
-                        spawn_avif_sequence_remainder_decode(
-                            job,
-                            tx.clone(),
-                            index,
-                            decode_profile.clone(),
-                        );
-                    }
-                    Ok(outcome.image)
+                    );
+                    let result = outcome.map(|outcome| {
+                        if let Some(job) = outcome.sequence_remainder {
+                            spawn_avif_sequence_remainder_decode(
+                                job,
+                                tx.clone(),
+                                index,
+                                decode_profile.clone(),
+                            );
+                        }
+                        outcome.image
+                    });
+                    PrimaryDecodeAttempt::from_result(result)
                 },
             );
         }
@@ -274,16 +283,19 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         hdr_tone_map,
                         prefer_embedded_sdr_master,
                         true,
-                    )?;
-                    if let Some(job) = outcome.remainder_job {
-                        spawn_jxl_animation_remainder_decode(
-                            job,
-                            tx.clone(),
-                            index,
-                            decode_profile.clone(),
-                        );
-                    }
-                    Ok(outcome.image)
+                    );
+                    let result = outcome.map(|outcome| {
+                        if let Some(job) = outcome.remainder_job {
+                            spawn_jxl_animation_remainder_decode(
+                                job,
+                                tx.clone(),
+                                index,
+                                decode_profile.clone(),
+                            );
+                        }
+                        outcome.image
+                    });
+                    PrimaryDecodeAttempt::from_result(result)
                 },
             );
         }
@@ -296,7 +308,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 high_quality,
                 || {
-                    load_heif_hdr_aware(
+                    PrimaryDecodeAttempt::from_result(load_heif_hdr_aware(
                         path,
                         hdr_target_capacity,
                         hdr_tone_map,
@@ -305,7 +317,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             path: Some(path),
                         },
                         prefer_embedded_sdr_master,
-                    )
+                    ))
                 },
             );
         }
@@ -340,16 +352,19 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             load_webp_with_bootstrap(path, hdr_target_capacity, hdr_tone_map, true)
                         }
                         _ => unreachable!("matched gif/png/apng/webp above"),
-                    }?;
-                    if let Some(job) = outcome.remainder {
-                        spawn_raster_animation_remainder_decode(
-                            job,
-                            tx.clone(),
-                            index,
-                            decode_profile.clone(),
-                        );
-                    }
-                    Ok(outcome.image)
+                    };
+                    let result = outcome.and_then(|outcome| {
+                        if let Some(job) = outcome.remainder {
+                            spawn_raster_animation_remainder_decode(
+                                job,
+                                tx.clone(),
+                                index,
+                                decode_profile.clone(),
+                            );
+                        }
+                        Ok(outcome.image)
+                    });
+                    PrimaryDecodeAttempt::from_result(result)
                 },
             );
         }
@@ -363,6 +378,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
+                None,
                 primary_err,
             ),
         }

@@ -344,7 +344,7 @@ impl ImageViewerApp {
         for idx in &hard_invalidate {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(*idx);
             self.remove_hdr_image_index(*idx);
         }
 
@@ -387,7 +387,7 @@ impl ImageViewerApp {
         let idx = self.current_index;
         self.texture_cache.remove(idx);
         self.prefetched_tiles.remove(&idx);
-        crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+        crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
         self.remove_hdr_image_index(idx);
         self.tile_manager = None;
         self.set_current_image_resolution(None);

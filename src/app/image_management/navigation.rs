@@ -151,7 +151,7 @@ impl ImageViewerApp {
                 self.apply_hdr_gain_map_sdr_display_from_cache(idx);
                 self.texture_cache.remove(idx);
                 self.prefetched_tiles.remove(&idx);
-                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
             }
             self.schedule_preloads(true);
             self.wake_root_for_logic();
@@ -171,7 +171,7 @@ impl ImageViewerApp {
         for idx in &sensitive {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(*idx);
             self.remove_hdr_image_index(*idx);
             if *idx == current {
                 self.tile_manager = None;
@@ -320,7 +320,7 @@ impl ImageViewerApp {
             self.raw_metadata.remove(idx);
             self.prefetched_tiles.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
         }
 
         self.tile_manager = None;

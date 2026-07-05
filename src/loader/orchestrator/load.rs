@@ -363,16 +363,13 @@ impl ImageLoader {
 
                         let already_cached = match &request.source {
                             TileDecodeSource::Sdr(_) => {
+                                let coord = crate::tile_cache::TileCoord {
+                                    col: request.col,
+                                    row: request.row,
+                                };
                                 crate::tile_cache::PIXEL_CACHE
-                                    .lock()
-                                    .get(
-                                        request.index,
-                                        crate::tile_cache::TileCoord {
-                                            col: request.col,
-                                            row: request.row,
-                                        },
-                                    )
-                                    .is_some()
+                                    .read()
+                                    .contains_tile(request.index, coord)
                             }
                             TileDecodeSource::Hdr(source) => {
                                 let tw = tile_size.min(source.width() - x);
@@ -434,7 +431,7 @@ impl ImageLoader {
                                         col: request.col,
                                         row: request.row,
                                     };
-                                    let mut cache = crate::tile_cache::PIXEL_CACHE.lock();
+                                    let mut cache = crate::tile_cache::PIXEL_CACHE.write();
                                     cache.insert(request.index, coord, pixels);
                                 }
                             }

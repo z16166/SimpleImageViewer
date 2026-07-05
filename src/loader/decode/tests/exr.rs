@@ -304,6 +304,7 @@ fn exr_magic_short_circuits_to_openexr_core_loader_even_with_wrong_extension() {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         load_via_content_detection(
             &path,
+            None,
             HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default(),
         )

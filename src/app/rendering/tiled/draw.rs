@@ -307,10 +307,10 @@ impl ImageViewerApp {
                     padding,
                     &mut self.tiled_visible_tiles_scratch,
                 );
-                tm.visible_tiles_into(
+                tm.primary_visible_from_padded_into(
                     unrotated_dest,
                     tile_clip,
-                    0.0,
+                    &self.tiled_visible_tiles_scratch,
                     &mut self.tiled_primary_visible_tiles_scratch,
                 );
             }
@@ -525,7 +525,8 @@ impl ImageViewerApp {
                     ),
             );
             if newly_uploaded > 0 || has_more_ready {
-                ui.ctx().request_repaint();
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(4));
             }
         }
     }

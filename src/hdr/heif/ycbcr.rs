@@ -283,7 +283,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         return Err("YCbCr: alpha stride too small".to_string());
     }
 
-    let mut rgba_f32 = Vec::with_capacity(y_w * y_h * 4);
+    let mut rgba_f32 = vec![0.0_f32; y_w * y_h * 4];
 
     for y_px in 0..y_h {
         let row_y = unsafe { ptr_y.byte_add(y_px * stride_y) };
@@ -312,16 +312,17 @@ pub(crate) fn hdr_buffer_from_ycbcr(
                 ycbcr_linear_to_rgb(yv, cbv - 0.5, crv - 0.5, yuv_matrix)
             };
 
-            rgba_f32.push(r_.clamp(0.0, 1.0));
-            rgba_f32.push(g_.clamp(0.0, 1.0));
-            rgba_f32.push(b_.clamp(0.0, 1.0));
+            let out_idx = (y_px * y_w + x_px) * 4;
+            rgba_f32[out_idx] = r_.clamp(0.0, 1.0);
+            rgba_f32[out_idx + 1] = g_.clamp(0.0, 1.0);
+            rgba_f32[out_idx + 2] = b_.clamp(0.0, 1.0);
 
             if let Some(ar) = row_alpha {
                 let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
                     / scale_alpha.max(1.0);
-                rgba_f32.push(av.clamp(0.0, 1.0));
+                rgba_f32[out_idx + 3] = av.clamp(0.0, 1.0);
             } else {
-                rgba_f32.push(1.0);
+                rgba_f32[out_idx + 3] = 1.0;
             }
         }
     }

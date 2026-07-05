@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use eframe::egui::{self, TextureHandle};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -111,6 +111,11 @@ impl TilePixelCache {
             .keys()
             .filter(|(idx, _, _)| *idx == index)
             .count()
+    }
+
+    pub fn contains_tile(&self, index: usize, coord: TileCoord) -> bool {
+        self.entries
+            .contains_key(&(index, coord.col, coord.row))
     }
 
     pub fn get(&mut self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
@@ -369,8 +374,8 @@ mod tests {
 }
 
 /// The global tile pixel cache instance.
-pub static PIXEL_CACHE: LazyLock<Mutex<TilePixelCache>> = LazyLock::new(|| {
-    Mutex::new(TilePixelCache::new(512)) // Default 512MB, will be updated by settings
+pub static PIXEL_CACHE: LazyLock<RwLock<TilePixelCache>> = LazyLock::new(|| {
+    RwLock::new(TilePixelCache::new(512)) // Default 512MB, will be updated by settings
 });
 
 /// Manages the tiled rendering state for a single large image.
@@ -498,14 +503,11 @@ impl TileManager {
         let mut cpu = 0;
         let mut pending = 0;
 
-        if let Some(cache) = PIXEL_CACHE.try_lock() {
+        if let Some(cache) = PIXEL_CACHE.try_read() {
             for coord in visible {
                 if self.tiles.contains_key(coord) {
                     gpu += 1;
-                } else if cache
-                    .entries
-                    .contains_key(&(self.image_index, coord.col, coord.row))
-                {
+                } else if cache.contains_tile(self.image_index, *coord) {
                     cpu += 1;
                 } else {
                     pending += 1;
@@ -518,7 +520,7 @@ impl TileManager {
     /// Returns global counts using a non-blocking try_lock
     #[cfg(feature = "tile-debug")]
     pub fn tiles_and_pending(&self) -> (usize, usize, usize) {
-        let cpu_cached = if let Some(cache) = PIXEL_CACHE.try_lock() {
+        let cpu_cached = if let Some(cache) = PIXEL_CACHE.try_read() {
             cache.count_for_image(self.image_index)
         } else {
             0
@@ -528,13 +530,11 @@ impl TileManager {
 
     /// Returns true if any of the visible tiles are in CPU cache but NOT in GPU.
     pub fn has_ready_to_upload(&self, visible: &HashSet<TileCoord>) -> bool {
-        let cache = PIXEL_CACHE.lock();
+        let cache = PIXEL_CACHE.read();
 
         for coord in visible {
             if !self.tiles.contains_key(coord)
-                && cache
-                    .entries
-                    .contains_key(&(self.image_index, coord.col, coord.row))
+                && cache.contains_tile(self.image_index, *coord)
             {
                 return true;
             }
@@ -584,7 +584,8 @@ impl TileManager {
         }
 
         // 1. Check Global Pixel Cache (CPU)
-        let cached_pixels: Option<Arc<Vec<u8>>> = PIXEL_CACHE.lock().get(self.image_index, coord);
+        let cached_pixels: Option<Arc<Vec<u8>>> =
+            PIXEL_CACHE.write().get(self.image_index, coord);
 
         if let Some(pixels) = cached_pixels {
             if allow_upload {
@@ -661,42 +662,17 @@ impl TileManager {
         out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
     ) {
         out.clear();
-        // Look-ahead padding: Inflate the visible area to trigger background requests
-        // for neighbor tiles BEFORE they actually enter the screen.
-        let visible_area = viewport.intersect(screen_clip.expand(padding));
-
-        if visible_area.width() <= 0.0 || visible_area.height() <= 0.0 {
+        let Some((start_col, end_col, start_row, end_row)) = visible_tile_index_bounds(
+            self.full_width,
+            self.full_height,
+            self.cols(),
+            self.rows(),
+            viewport,
+            screen_clip,
+            padding,
+        ) else {
             return;
-        }
-
-        // Compute UV bounds of the visible area relative to the full image viewport
-        let uv_min_x = ((visible_area.min.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
-        let uv_max_x = ((visible_area.max.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
-        let uv_min_y = ((visible_area.min.y - viewport.min.y) / viewport.height()).clamp(0.0, 1.0);
-        let uv_max_y = ((visible_area.max.y - viewport.min.y) / viewport.height()).clamp(0.0, 1.0);
-
-        // Map to pixel coordinates
-        let px_min_x = uv_min_x * self.full_width as f32;
-        let px_max_x = uv_max_x * self.full_width as f32;
-        let px_min_y = uv_min_y * self.full_height as f32;
-        let px_max_y = uv_max_y * self.full_height as f32;
-
-        // Determine the range of tile indices (cols/rows) that are visible.
-        // We subtract a tiny epsilon from max bounds to avoid including an extra tile when
-        // the viewport edge aligns exactly with a tile boundary.
-        let ts = get_tile_size() as f32;
-        let min_col = (px_min_x.max(0.0) / ts).floor() as u32;
-        let max_col = ((px_max_x - 0.01).max(0.0) / ts).floor() as u32;
-        let min_row = (px_min_y.max(0.0) / ts).floor() as u32;
-        let max_row = ((px_max_y - 0.01).max(0.0) / ts).floor() as u32;
-
-        let total_cols = self.cols();
-        let total_rows = self.rows();
-
-        let start_col = min_col.min(total_cols.saturating_sub(1));
-        let end_col = max_col.min(total_cols.saturating_sub(1));
-        let start_row = min_row.min(total_rows.saturating_sub(1));
-        let end_row = max_row.min(total_rows.saturating_sub(1));
+        };
 
         let screen_center = screen_clip.center();
         let ts = get_tile_size();
@@ -749,4 +725,75 @@ impl TileManager {
             }
         }
     }
+
+    /// Derive primary-visible tiles (no lookahead padding) from a padded visibility scan.
+    pub fn primary_visible_from_padded_into(
+        &self,
+        viewport: egui::Rect,
+        screen_clip: egui::Rect,
+        padded: &[(TileCoord, egui::Rect, egui::Rect)],
+        out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
+    ) {
+        out.clear();
+        let Some((start_col, end_col, start_row, end_row)) = visible_tile_index_bounds(
+            self.full_width,
+            self.full_height,
+            self.cols(),
+            self.rows(),
+            viewport,
+            screen_clip,
+            0.0,
+        ) else {
+            return;
+        };
+        for &(coord, screen_rect, uv) in padded {
+            if coord.col >= start_col
+                && coord.col <= end_col
+                && coord.row >= start_row
+                && coord.row <= end_row
+            {
+                out.push((coord, screen_rect, uv));
+            }
+        }
+    }
+}
+
+/// Tile col/row bounds intersecting `viewport` and `screen_clip` (with optional padding).
+fn visible_tile_index_bounds(
+    full_width: u32,
+    full_height: u32,
+    total_cols: u32,
+    total_rows: u32,
+    viewport: egui::Rect,
+    screen_clip: egui::Rect,
+    padding: f32,
+) -> Option<(u32, u32, u32, u32)> {
+    let visible_area = viewport.intersect(screen_clip.expand(padding));
+
+    if visible_area.width() <= 0.0 || visible_area.height() <= 0.0 {
+        return None;
+    }
+
+    let uv_min_x = ((visible_area.min.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
+    let uv_max_x = ((visible_area.max.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
+    let uv_min_y = ((visible_area.min.y - viewport.min.y) / viewport.height()).clamp(0.0, 1.0);
+    let uv_max_y = ((visible_area.max.y - viewport.min.y) / viewport.height()).clamp(0.0, 1.0);
+
+    let px_min_x = uv_min_x * full_width as f32;
+    let px_max_x = uv_max_x * full_width as f32;
+    let px_min_y = uv_min_y * full_height as f32;
+    let px_max_y = uv_max_y * full_height as f32;
+
+    let ts = get_tile_size() as f32;
+    let min_col = (px_min_x.max(0.0) / ts).floor() as u32;
+    let max_col = ((px_max_x - 0.01).max(0.0) / ts).floor() as u32;
+    let min_row = (px_min_y.max(0.0) / ts).floor() as u32;
+    let max_row = ((px_max_y - 0.01).max(0.0) / ts).floor() as u32;
+
+    let start_col = min_col.min(total_cols.saturating_sub(1));
+    let end_col = max_col.min(total_cols.saturating_sub(1));
+    let start_row = min_row.min(total_rows.saturating_sub(1));
+    let end_row = max_row.min(total_rows.saturating_sub(1));
+
+    Some((start_col, end_col, start_row, end_row))
 }

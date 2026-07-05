@@ -2706,14 +2706,14 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
 
     let pixels = std::sync::Arc::new(vec![0u8; 16]);
     PIXEL_CACHE
-        .lock()
+        .write()
         .insert(4, TileCoord { col: 0, row: 0 }, pixels);
 
     app.evict_distant_prefetch_caches();
 
     assert!(
         PIXEL_CACHE
-            .lock()
+            .write()
             .get(4, TileCoord { col: 0, row: 0 })
             .is_none()
     );

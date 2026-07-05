@@ -238,7 +238,7 @@ impl ImageViewerApp {
                         && tm.preview_texture.is_some()
                     {
                         crate::tile_cache::PIXEL_CACHE
-                            .lock()
+                            .write()
                             .remove_image(update.index);
                         tm.pending_tiles.clear();
                         tm.drop_gpu_tiles();
@@ -647,7 +647,7 @@ impl ImageViewerApp {
             );
             if texture_stage == crate::loader::PreviewStage::Refined && tm.preview_texture.is_some()
             {
-                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
                 tm.pending_tiles.clear();
                 tm.drop_gpu_tiles();
             }

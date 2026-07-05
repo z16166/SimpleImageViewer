@@ -49,57 +49,85 @@ pub(crate) fn gain_map_stored_in_sensor_orientation(
 pub(crate) fn rotate_gain_rgba_90_cw(
     width: u32,
     height: u32,
-    gain_rgba: &[u8],
+    gain_rgba: Vec<u8>,
 ) -> (u32, u32, Vec<u8>) {
     let new_w = height;
     let new_h = width;
-    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
-    for y in 0..new_h {
-        for x in 0..new_w {
-            let src_y = height - 1 - x;
-            let src_x = y;
-            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
-            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
-            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+    let w = width as usize;
+    let h = height as usize;
+    let nw = new_w as usize;
+    let len = gain_rgba.len();
+    let src = gain_rgba;
+    let mut out = Vec::with_capacity(len);
+    unsafe {
+        out.set_len(len);
+        let out_ptr: *mut u8 = out.as_mut_ptr();
+        for y in 0..h {
+            for x in 0..w {
+                let src_idx = (y * w + x) * 4;
+                let dst_y = x;
+                let dst_x = h - 1 - y;
+                let dst_idx = (dst_y * nw + dst_x) * 4;
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(src_idx),
+                    out_ptr.add(dst_idx),
+                    4,
+                );
+            }
         }
     }
-    (new_w, new_h, rotated)
+    (new_w, new_h, out)
 }
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn rotate_gain_rgba_90_ccw(
     width: u32,
     height: u32,
-    gain_rgba: &[u8],
+    gain_rgba: Vec<u8>,
 ) -> (u32, u32, Vec<u8>) {
     let new_w = height;
     let new_h = width;
-    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
-    for y in 0..new_h {
-        for x in 0..new_w {
-            let src_y = x;
-            let src_x = width - 1 - y;
-            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
-            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
-            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+    let w = width as usize;
+    let h = height as usize;
+    let nw = new_w as usize;
+    let len = gain_rgba.len();
+    let src = gain_rgba;
+    let mut out = Vec::with_capacity(len);
+    unsafe {
+        out.set_len(len);
+        let out_ptr: *mut u8 = out.as_mut_ptr();
+        for y in 0..h {
+            for x in 0..w {
+                let src_idx = (y * w + x) * 4;
+                let dst_y = w - 1 - x;
+                let dst_x = y;
+                let dst_idx = (dst_y * nw + dst_x) * 4;
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(src_idx),
+                    out_ptr.add(dst_idx),
+                    4,
+                );
+            }
         }
     }
-    (new_w, new_h, rotated)
+    (new_w, new_h, out)
 }
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn rotate_gain_rgba_180(
     width: u32,
     height: u32,
-    gain_rgba: &[u8],
+    mut gain_rgba: Vec<u8>,
 ) -> (u32, u32, Vec<u8>) {
-    let mut rotated = vec![0u8; gain_rgba.len()];
-    for i in 0..(width as usize * height as usize) {
-        let src_idx = i * 4;
-        let dst_idx = (width as usize * height as usize - 1 - i) * 4;
-        rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+    let pixels = width as usize * height as usize;
+    for i in 0..pixels / 2 {
+        let a = i * 4;
+        let b = (pixels - 1 - i) * 4;
+        for j in 0..4 {
+            gain_rgba.swap(a + j, b + j);
+        }
     }
-    (width, height, rotated)
+    (width, height, gain_rgba)
 }
 
 /// Rotate an Apple HDR gain map from sensor (ispe) orientation into primary display orientation.
@@ -164,9 +192,9 @@ pub(crate) fn align_apple_gain_map_to_primary_display_orientation(
     };
 
     match rotation {
-        Some(RotateGainMap::Cw90) => rotate_gain_rgba_90_cw(gain_width, gain_height, &gain_rgba),
-        Some(RotateGainMap::Ccw90) => rotate_gain_rgba_90_ccw(gain_width, gain_height, &gain_rgba),
-        Some(RotateGainMap::Rotate180) => rotate_gain_rgba_180(gain_width, gain_height, &gain_rgba),
+        Some(RotateGainMap::Cw90) => rotate_gain_rgba_90_cw(gain_width, gain_height, gain_rgba),
+        Some(RotateGainMap::Ccw90) => rotate_gain_rgba_90_ccw(gain_width, gain_height, gain_rgba),
+        Some(RotateGainMap::Rotate180) => rotate_gain_rgba_180(gain_width, gain_height, gain_rgba),
         None => (gain_width, gain_height, gain_rgba),
     }
 }

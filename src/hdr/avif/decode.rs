@@ -552,8 +552,18 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
     }
     match result {
         Ok(rgb_depth) => {
-            let rgba_u16 =
-                avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)?;
+            let rgba_u16 = if rgb_depth == 8 {
+                avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)?
+            } else if cfg!(target_endian = "little") {
+                bytemuck::try_cast_vec(rgba_bytes).map_err(|(_err, bytes)| {
+                    format!(
+                        "AVIF RGBA cast to u16 lanes failed (byte len={})",
+                        bytes.len()
+                    )
+                })?
+            } else {
+                avif_unpack_rgba_bytes_to_u16_lanes(&rgba_bytes, rgb_depth, pixel_count)?
+            };
             Ok((rgba_u16, rgb_depth))
         }
         Err(code) => Err(format!(

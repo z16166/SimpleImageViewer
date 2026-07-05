@@ -62,7 +62,7 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
         self.transition_start = None;
-        crate::tile_cache::PIXEL_CACHE.lock().clear();
+        crate::tile_cache::PIXEL_CACHE.write().clear();
         self.discard_stale_loader_outputs();
     }
 
@@ -190,7 +190,7 @@ impl ImageViewerApp {
 
         // 8. Global tile pixel cache
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .relocate_image(from, to);
     }
 
@@ -295,7 +295,7 @@ impl ImageViewerApp {
 
         // Clear only non-except_idx entries from the global tile pixel cache
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images_except(except_idx);
     }
 
@@ -329,7 +329,7 @@ impl ImageViewerApp {
             .filter(|&idx| idx != current)
             .collect();
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images(&pixel_cache_indices);
 
         for idx in indices {
@@ -378,7 +378,7 @@ impl ImageViewerApp {
         all_prefetch_indices.extend(self.hdr_tiled_source_cache.keys().copied());
         all_prefetch_indices.extend(
             crate::tile_cache::PIXEL_CACHE
-                .lock()
+                .read()
                 .distinct_image_indices(),
         );
 
@@ -420,7 +420,7 @@ impl ImageViewerApp {
             distant_indices
         );
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images(&distant_indices);
 
         self.prefetched_tiles
@@ -554,7 +554,7 @@ impl ImageViewerApp {
         }
 
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .permute_images(old_to_new);
 
         if self.current_index < old_to_new.len() {

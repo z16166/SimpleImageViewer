@@ -43,7 +43,7 @@ impl ImageViewerApp {
             self.clear_cpu_raw_refinement_pending(idx);
             self.wake_root_for_logic();
 
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
 
             let decode_profile = self.decode_profile_for_index(idx);
             if let Some(tm) = &mut self.tile_manager {
@@ -115,7 +115,7 @@ impl ImageViewerApp {
                 "[App] Refined: background update for index {} (not current). Invalidating caches.",
                 idx
             );
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
             self.prefetched_tiles.remove(&idx);
             self.texture_cache.remove(idx);
             self.remove_hdr_image_index(idx);

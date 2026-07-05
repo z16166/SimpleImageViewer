@@ -54,6 +54,30 @@ pub(crate) fn load_jpeg_with_target_capacity(
     )
 }
 
+pub(crate) fn load_jpeg_primary_attempt(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    prefer_embedded_sdr_master: bool,
+) -> super::detect::PrimaryDecodeAttempt {
+    use super::detect::PrimaryDecodeAttempt;
+    match crate::mmap_util::map_file(path) {
+        Ok(mmap) if !mmap.is_empty() => {
+            let arc = Arc::new(mmap);
+            let result = load_jpeg_from_mapped(
+                path,
+                arc.as_ref(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                prefer_embedded_sdr_master,
+            );
+            PrimaryDecodeAttempt::with_mmap(result, Some(arc))
+        }
+        Ok(_) => PrimaryDecodeAttempt::from_result(Err("empty file".to_string())),
+        Err(e) => PrimaryDecodeAttempt::from_result(Err(e.to_string())),
+    }
+}
+
 pub(crate) fn load_jpeg_from_mapped(
     path: &Path,
     mmap: &memmap2::Mmap,

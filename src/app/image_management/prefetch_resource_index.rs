@@ -50,6 +50,6 @@ impl ImageViewerApp {
             || self.hdr_tiled_source_cache.contains_key(&idx)
             || self.texture_cache.contains(idx)
             || self.animation_cache.contains_key(&idx)
-            || crate::tile_cache::PIXEL_CACHE.lock().has_image(idx)
+            || crate::tile_cache::PIXEL_CACHE.read().has_image(idx)
     }
 }

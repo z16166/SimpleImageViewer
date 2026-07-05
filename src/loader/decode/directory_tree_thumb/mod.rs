@@ -38,10 +38,10 @@ use crate::loader::{
 };
 
 use super::assemble::make_image_data;
-use super::detect::load_primary_with_detection_fallback;
+use super::detect::{load_primary_with_detection_fallback, PrimaryDecodeAttempt};
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
-use super::jpeg::load_jpeg_with_target_capacity;
+use super::jpeg::load_jpeg_primary_attempt;
 use super::modern::{
     load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
 };
@@ -371,7 +371,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_deref())?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.clone())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()
@@ -494,9 +494,9 @@ pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
 
 fn open_image_data_for_directory_tree_thumb(
     path: &Path,
-    file_mmap: Option<&memmap2::Mmap>,
+    file_mmap: Option<Arc<memmap2::Mmap>>,
 ) -> Result<ImageData, String> {
-    let file_bytes = file_mmap.map(|m| m.as_ref());
+    let file_bytes = file_mmap.as_deref().map(|m| m.as_ref());
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -513,7 +513,7 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_hdr(path, hdr_target_capacity, hdr_tone_map),
+            || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
         );
     }
 
@@ -528,7 +528,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
-        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
+        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap.as_deref());
     }
 
     if path_has_extension(path, "jpg") || path_has_extension(path, "jpeg") {
@@ -539,16 +539,22 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_tone_map,
             high_quality,
             || {
-                if let Some(mmap) = file_mmap {
-                    super::jpeg::load_jpeg_from_mapped(
+                if let Some(mmap) = file_mmap.clone() {
+                    let result = super::jpeg::load_jpeg_from_mapped(
                         path,
-                        mmap,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        false,
+                    );
+                    PrimaryDecodeAttempt::with_mmap(result, Some(mmap))
+                } else {
+                    super::jpeg::load_jpeg_primary_attempt(
+                        path,
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
                     )
-                } else {
-                    load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
                 }
             },
         );
@@ -556,14 +562,16 @@ fn open_image_data_for_directory_tree_thumb(
 
     if path_has_extension(path, "tif") || path_has_extension(path, "tiff") {
         let tiff_is_raw = file_mmap
+            .as_deref()
             .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
             .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
         if tiff_is_raw
             && file_mmap
+                .as_deref()
                 .map(|data| crate::raw_processor::probe_libraw_can_open_bytes(data))
                 .unwrap_or_else(|| crate::raw_processor::probe_libraw_can_open(path))
         {
-            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
+            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap.as_deref());
         }
         return load_primary_with_detection_fallback(
             path,
@@ -571,7 +579,13 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map),
+            || {
+                PrimaryDecodeAttempt::from_result(crate::libtiff_loader::load_via_libtiff(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                ))
+            },
         );
     }
 
@@ -582,7 +596,14 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false),
+            || {
+                PrimaryDecodeAttempt::from_result(load_avif_with_target_capacity(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    false,
+                ))
+            },
         );
     }
 
@@ -593,7 +614,14 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false),
+            || {
+                PrimaryDecodeAttempt::from_result(load_jxl_with_target_capacity(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    false,
+                ))
+            },
         );
     }
 
@@ -608,7 +636,7 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_tone_map,
             high_quality,
             || {
-                load_heif_hdr_aware(
+                PrimaryDecodeAttempt::from_result(load_heif_hdr_aware(
                     path,
                     hdr_target_capacity,
                     hdr_tone_map,
@@ -617,7 +645,7 @@ fn open_image_data_for_directory_tree_thumb(
                         path: Some(path),
                     },
                     false,
-                )
+                ))
             },
         );
     }
@@ -642,11 +670,13 @@ fn open_image_data_for_directory_tree_thumb(
         hdr_target_capacity,
         hdr_tone_map,
         high_quality,
-        || match ext.as_str() {
-            "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
-            "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
-            "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+        || {
+            PrimaryDecodeAttempt::from_result(match ext.as_str() {
+                "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
+                "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
+                "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
+                _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+            })
         },
     )
 }

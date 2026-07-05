@@ -173,6 +173,33 @@ fn load_by_image_format_from_mmap(
     }
 }
 
+/// Outcome of an extension-first decode attempt, optionally retaining the primary mmap.
+pub(crate) struct PrimaryDecodeAttempt {
+    pub result: Result<ImageData, String>,
+    pub detection_mmap: Option<Arc<memmap2::Mmap>>,
+}
+
+impl PrimaryDecodeAttempt {
+    #[inline]
+    pub(crate) fn from_result(result: Result<ImageData, String>) -> Self {
+        Self {
+            result,
+            detection_mmap: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn with_mmap(
+        result: Result<ImageData, String>,
+        detection_mmap: Option<Arc<memmap2::Mmap>>,
+    ) -> Self {
+        Self {
+            result,
+            detection_mmap,
+        }
+    }
+}
+
 /// After extension-first decode fails: platform decoder (WIC/ImageIO), then magic-byte routing.
 pub(crate) fn recover_via_platform_and_content_detection(
     path: &Path,
@@ -184,6 +211,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
         allow(unused_variables)
     )]
     high_quality: bool,
+    detection_mmap: Option<Arc<memmap2::Mmap>>,
     primary_err: String,
 ) -> Result<ImageData, String> {
     if primary_decode_failure_is_final(&primary_err) {
@@ -209,7 +237,7 @@ pub(crate) fn recover_via_platform_and_content_detection(
         return Ok(image);
     }
 
-    match load_via_content_detection(path, hdr_target_capacity, hdr_tone_map) {
+    match load_via_content_detection(path, detection_mmap, hdr_target_capacity, hdr_tone_map) {
         Ok(image) => {
             log::info!(
                 "[{}] Recovered via content-based detection after extension-first decode failed",
@@ -235,9 +263,13 @@ pub(crate) fn load_primary_with_detection_fallback(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     high_quality: bool,
-    primary: impl FnOnce() -> Result<ImageData, String>,
+    primary: impl FnOnce() -> PrimaryDecodeAttempt,
 ) -> Result<ImageData, String> {
-    match primary() {
+    let PrimaryDecodeAttempt {
+        result,
+        detection_mmap,
+    } = primary();
+    match result {
         Ok(image) => Ok(image),
         Err(primary_err) => {
             log::debug!(
@@ -250,6 +282,7 @@ pub(crate) fn load_primary_with_detection_fallback(
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
+                detection_mmap,
                 primary_err,
             )
         }
@@ -258,10 +291,14 @@ pub(crate) fn load_primary_with_detection_fallback(
 
 pub(crate) fn load_via_content_detection(
     path: &Path,
+    detection_mmap: Option<Arc<memmap2::Mmap>>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mmap = mmap_for_content_detection(path)?;
+    let mmap = match detection_mmap {
+        Some(mmap) => mmap,
+        None => mmap_for_content_detection(path)?,
+    };
     let n = mmap.len().min(DETECTION_BUFFER_SIZE);
     let header = &mmap[..n];
 
@@ -381,7 +418,7 @@ mod tests {
         };
         let tone = crate::hdr::types::HdrToneMapSettings::default();
         let capacity = tone.target_hdr_capacity();
-        let result = load_via_content_detection(&path, capacity, tone);
+        let result = load_via_content_detection(&path, None, capacity, tone);
         match result {
             Ok(image) => {
                 let (w, h) = match image {
@@ -410,6 +447,7 @@ mod tests {
         };
         let result = load_via_content_detection(
             &path,
+            None,
             crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
             crate::hdr::types::HdrToneMapSettings::default(),
         );

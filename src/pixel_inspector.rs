@@ -132,7 +132,7 @@ pub fn screen_to_image_coord(
 }
 
 /// Reads a single pixel from the active image (non-blocking, for hover tooltips).
-/// For tiled images, queries PIXEL_CACHE using try_lock; if missing, returns None.
+/// For tiled images, queries PIXEL_CACHE using try_write; if missing, returns None.
 pub fn sample_hover_pixel(
     source: &PixelDataSource,
     image_index: usize,
@@ -171,7 +171,7 @@ pub fn sample_hover_pixel(
             let row = y / tile_size;
             let coord = TileCoord { col, row };
 
-            if let Some(mut cache) = PIXEL_CACHE.try_lock()
+            if let Some(mut cache) = PIXEL_CACHE.try_write()
                 && let Some(tile_pixels) = cache.get(image_index, coord)
             {
                 let tile_x = x % tile_size;
