@@ -108,7 +108,9 @@ fn tiled_sdr_texture_tag_for_stage(
     stage: crate::loader::PreviewStage,
 ) -> crate::loader::TexturePreviewBufferTag {
     match stage {
-        crate::loader::PreviewStage::Initial => crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+        crate::loader::PreviewStage::Initial => {
+            crate::loader::TexturePreviewBufferTag::TiledBootstrap
+        }
         crate::loader::PreviewStage::Refined => {
             crate::loader::TexturePreviewBufferTag::TiledRefinedLoader
         }
@@ -1314,10 +1316,14 @@ mod tiled_hq_preview_apply_tests {
     #[test]
     fn on_demand_sdr_tag_does_not_satisfy_tiled_hq_gate() {
         use crate::loader::{PreviewStage, TexturePreviewBufferTag};
-        assert!(!TexturePreviewBufferTag::TiledOnDemandSdr
-            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
-        assert!(TexturePreviewBufferTag::TiledRefinedLoader
-            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
+        assert!(
+            !TexturePreviewBufferTag::TiledOnDemandSdr
+                .satisfies_tiled_sdr_hq(PreviewStage::Refined)
+        );
+        assert!(
+            TexturePreviewBufferTag::TiledRefinedLoader
+                .satisfies_tiled_sdr_hq(PreviewStage::Refined)
+        );
     }
 
     #[test]

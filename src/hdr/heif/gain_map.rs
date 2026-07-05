@@ -68,11 +68,7 @@ pub(crate) fn rotate_gain_rgba_90_cw(
                 let dst_y = x;
                 let dst_x = h - 1 - y;
                 let dst_idx = (dst_y * nw + dst_x) * 4;
-                std::ptr::copy_nonoverlapping(
-                    src.as_ptr().add(src_idx),
-                    out_ptr.add(dst_idx),
-                    4,
-                );
+                std::ptr::copy_nonoverlapping(src.as_ptr().add(src_idx), out_ptr.add(dst_idx), 4);
             }
         }
     }
@@ -102,11 +98,7 @@ pub(crate) fn rotate_gain_rgba_90_ccw(
                 let dst_y = w - 1 - x;
                 let dst_x = y;
                 let dst_idx = (dst_y * nw + dst_x) * 4;
-                std::ptr::copy_nonoverlapping(
-                    src.as_ptr().add(src_idx),
-                    out_ptr.add(dst_idx),
-                    4,
-                );
+                std::ptr::copy_nonoverlapping(src.as_ptr().add(src_idx), out_ptr.add(dst_idx), 4);
             }
         }
     }

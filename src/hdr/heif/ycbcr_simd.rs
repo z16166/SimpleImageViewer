@@ -161,49 +161,58 @@ unsafe fn ycbcr_full_range_bt709_row_444_sse41(
     x: &mut usize,
 ) {
     unsafe {
-    let scale = _mm_set1_ps(U8_TO_F32_SCALE);
-    let center = _mm_set1_ps(CHROMA_CENTER);
-    let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
-    let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
-    let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
-    let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
-    let zero = _mm_setzero_ps();
-    let one = _mm_set1_ps(1.0);
+        let scale = _mm_set1_ps(U8_TO_F32_SCALE);
+        let center = _mm_set1_ps(CHROMA_CENTER);
+        let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
+        let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
+        let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
+        let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
 
-    while *x + PIXELS_PER_SSE41_STEP <= width {
-        let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-            y_row.as_ptr().add(*x) as *const __m128i,
-        )));
-        let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-            cb_row.as_ptr().add(*x) as *const __m128i,
-        )));
-        let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-            cr_row.as_ptr().add(*x) as *const __m128i,
-        )));
+        while *x + PIXELS_PER_SSE41_STEP <= width {
+            let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+                y_row.as_ptr().add(*x) as *const __m128i
+            )));
+            let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+                cb_row.as_ptr().add(*x) as *const __m128i
+            )));
+            let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
+                cr_row.as_ptr().add(*x) as *const __m128i
+            )));
 
-        let yy = _mm_mul_ps(y, scale);
-        let pb = _mm_sub_ps(_mm_mul_ps(cb, scale), center);
-        let pr = _mm_sub_ps(_mm_mul_ps(cr, scale), center);
+            let yy = _mm_mul_ps(y, scale);
+            let pb = _mm_sub_ps(_mm_mul_ps(cb, scale), center);
+            let pr = _mm_sub_ps(_mm_mul_ps(cr, scale), center);
 
-        let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
-        let gf = _mm_min_ps(
-            _mm_max_ps(
-                _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
-                zero,
-            ),
-            one,
-        );
-        let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+            let rf = _mm_min_ps(
+                _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero),
+                one,
+            );
+            let gf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_add_ps(
+                        _mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)),
+                        _mm_mul_ps(k_pr_g, pr),
+                    ),
+                    zero,
+                ),
+                one,
+            );
+            let bf = _mm_min_ps(
+                _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero),
+                one,
+            );
 
-        let mut r = [0.0_f32; 4];
-        let mut g = [0.0_f32; 4];
-        let mut b = [0.0_f32; 4];
-        _mm_storeu_ps(r.as_mut_ptr(), rf);
-        _mm_storeu_ps(g.as_mut_ptr(), gf);
-        _mm_storeu_ps(b.as_mut_ptr(), bf);
-        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
-        *x += PIXELS_PER_SSE41_STEP;
-    }
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            _mm_storeu_ps(r.as_mut_ptr(), rf);
+            _mm_storeu_ps(g.as_mut_ptr(), gf);
+            _mm_storeu_ps(b.as_mut_ptr(), bf);
+            store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+            *x += PIXELS_PER_SSE41_STEP;
+        }
     }
 }
 
@@ -218,93 +227,102 @@ unsafe fn ycbcr_full_range_bt709_row_420_sse41(
     x: &mut usize,
 ) {
     unsafe {
-    while *x + PIXELS_PER_SSE41_STEP <= width {
-        let xc = *x / 2;
-        let cb = [cb_row[xc], cb_row[xc + 1]];
-        let cr = [cr_row[xc], cr_row[xc + 1]];
-        let y = _mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i);
-        let cbv = _mm_setr_epi8(
-            cb[0] as i8,
-            cb[0] as i8,
-            cb[1] as i8,
-            cb[1] as i8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        );
-        let crv = _mm_setr_epi8(
-            cr[0] as i8,
-            cr[0] as i8,
-            cr[1] as i8,
-            cr[1] as i8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        );
-        bt709_convert_u8x4_sse41(y, cbv, crv, dst, *x);
-        *x += PIXELS_PER_SSE41_STEP;
-    }
+        while *x + PIXELS_PER_SSE41_STEP <= width {
+            let xc = *x / 2;
+            let cb = [cb_row[xc], cb_row[xc + 1]];
+            let cr = [cr_row[xc], cr_row[xc + 1]];
+            let y = _mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i);
+            let cbv = _mm_setr_epi8(
+                cb[0] as i8,
+                cb[0] as i8,
+                cb[1] as i8,
+                cb[1] as i8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            );
+            let crv = _mm_setr_epi8(
+                cr[0] as i8,
+                cr[0] as i8,
+                cr[1] as i8,
+                cr[1] as i8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            );
+            bt709_convert_u8x4_sse41(y, cbv, crv, dst, *x);
+            *x += PIXELS_PER_SSE41_STEP;
+        }
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn bt709_convert_u8x4_sse41(
-    y: __m128i,
-    cb: __m128i,
-    cr: __m128i,
-    dst: &mut [u8],
-    x: usize,
-) {
+unsafe fn bt709_convert_u8x4_sse41(y: __m128i, cb: __m128i, cr: __m128i, dst: &mut [u8], x: usize) {
     unsafe {
-    let scale = _mm_set1_ps(U8_TO_F32_SCALE);
-    let center = _mm_set1_ps(CHROMA_CENTER);
-    let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
-    let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
-    let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
-    let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
-    let zero = _mm_setzero_ps();
-    let one = _mm_set1_ps(1.0);
+        let scale = _mm_set1_ps(U8_TO_F32_SCALE);
+        let center = _mm_set1_ps(CHROMA_CENTER);
+        let k_pr_r = _mm_set1_ps(BT709_PR_TO_R);
+        let k_pb_g = _mm_set1_ps(BT709_PB_TO_G);
+        let k_pr_g = _mm_set1_ps(BT709_PR_TO_G);
+        let k_pb_b = _mm_set1_ps(BT709_PB_TO_B);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
 
-    let yy = _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(y)), scale);
-    let pb = _mm_sub_ps(_mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cb)), scale), center);
-    let pr = _mm_sub_ps(_mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cr)), scale), center);
+        let yy = _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(y)), scale);
+        let pb = _mm_sub_ps(
+            _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cb)), scale),
+            center,
+        );
+        let pr = _mm_sub_ps(
+            _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(cr)), scale),
+            center,
+        );
 
-    let rf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero), one);
-    let gf = _mm_min_ps(
-        _mm_max_ps(
-            _mm_add_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)), _mm_mul_ps(k_pr_g, pr)),
-            zero,
-        ),
-        one,
-    );
-    let bf = _mm_min_ps(_mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero), one);
+        let rf = _mm_min_ps(
+            _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero),
+            one,
+        );
+        let gf = _mm_min_ps(
+            _mm_max_ps(
+                _mm_add_ps(
+                    _mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)),
+                    _mm_mul_ps(k_pr_g, pr),
+                ),
+                zero,
+            ),
+            one,
+        );
+        let bf = _mm_min_ps(
+            _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero),
+            one,
+        );
 
-    let mut r = [0.0_f32; 4];
-    let mut g = [0.0_f32; 4];
-    let mut b = [0.0_f32; 4];
-    _mm_storeu_ps(r.as_mut_ptr(), rf);
-    _mm_storeu_ps(g.as_mut_ptr(), gf);
-    _mm_storeu_ps(b.as_mut_ptr(), bf);
-    store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        _mm_storeu_ps(r.as_mut_ptr(), rf);
+        _mm_storeu_ps(g.as_mut_ptr(), gf);
+        _mm_storeu_ps(b.as_mut_ptr(), bf);
+        store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
     }
 }
 
@@ -319,18 +337,26 @@ unsafe fn ycbcr_full_range_bt709_row_444_avx2(
     x: &mut usize,
 ) {
     unsafe {
-    while *x + PIXELS_PER_AVX2_STEP <= width {
-        let y_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
-        let cb_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x) as *const __m128i));
-        let cr_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x) as *const __m128i));
-        let y_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
-        let cb_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x + 4) as *const __m128i));
-        let cr_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x + 4) as *const __m128i));
+        while *x + PIXELS_PER_AVX2_STEP <= width {
+            let y_lo =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+            let cb_lo =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x) as *const __m128i));
+            let cr_lo =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x) as *const __m128i));
+            let y_hi =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+            let cb_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
+                cb_row.as_ptr().add(*x + 4) as *const __m128i
+            ));
+            let cr_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
+                cr_row.as_ptr().add(*x + 4) as *const __m128i
+            ));
 
-        store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
-        store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
-        *x += PIXELS_PER_AVX2_STEP;
-    }
+            store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
+            store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
+            *x += PIXELS_PER_AVX2_STEP;
+        }
     }
 }
 
@@ -345,31 +371,31 @@ unsafe fn ycbcr_full_range_bt709_row_420_avx2(
     x: &mut usize,
 ) {
     unsafe {
-    while *x + PIXELS_PER_AVX2_STEP <= width
-        && ycbcr420_chroma_load8_fits(*x, cb_row.len())
-    {
-        let xc = *x / 2;
-        let cb = _mm_loadl_epi64(cb_row.as_ptr().add(xc) as *const __m128i);
-        let cr = _mm_loadl_epi64(cr_row.as_ptr().add(xc) as *const __m128i);
-        let cb_dup = _mm_shuffle_epi8(
-            cb,
-            _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
-        );
-        let cr_dup = _mm_shuffle_epi8(
-            cr,
-            _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
-        );
-        let y_lo = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
-        let y_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
-        let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
-        let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
-        let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
-        let cr_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cr_dup, 4));
+        while *x + PIXELS_PER_AVX2_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+            let xc = *x / 2;
+            let cb = _mm_loadl_epi64(cb_row.as_ptr().add(xc) as *const __m128i);
+            let cr = _mm_loadl_epi64(cr_row.as_ptr().add(xc) as *const __m128i);
+            let cb_dup = _mm_shuffle_epi8(
+                cb,
+                _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
+            );
+            let cr_dup = _mm_shuffle_epi8(
+                cr,
+                _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
+            );
+            let y_lo =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+            let y_hi =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+            let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
+            let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
+            let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
+            let cr_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cr_dup, 4));
 
-        store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
-        store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
-        *x += PIXELS_PER_AVX2_STEP;
-    }
+            store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
+            store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
+            *x += PIXELS_PER_AVX2_STEP;
+        }
     }
 }
 
@@ -383,23 +409,23 @@ unsafe fn store_bt709_u8x4_from_i32(
     cr: __m256i,
 ) {
     unsafe {
-    let scale = _mm256_set1_ps(U8_TO_F32_SCALE);
-    let center = _mm256_set1_ps(CHROMA_CENTER);
-    let yy = _mm256_mul_ps(_mm256_cvtepi32_ps(y), scale);
-    let pb = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cb), scale), center);
-    let pr = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cr), scale), center);
+        let scale = _mm256_set1_ps(U8_TO_F32_SCALE);
+        let center = _mm256_set1_ps(CHROMA_CENTER);
+        let yy = _mm256_mul_ps(_mm256_cvtepi32_ps(y), scale);
+        let pb = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cb), scale), center);
+        let pr = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cr), scale), center);
 
-    let rf = bt709_rgb_channel_avx2(yy, pb, pr, 0.0, BT709_PR_TO_R);
-    let gf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_G, BT709_PR_TO_G);
-    let bf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_B, 0.0);
+        let rf = bt709_rgb_channel_avx2(yy, pb, pr, 0.0, BT709_PR_TO_R);
+        let gf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_G, BT709_PR_TO_G);
+        let bf = bt709_rgb_channel_avx2(yy, pb, pr, BT709_PB_TO_B, 0.0);
 
-    let mut r = [0.0_f32; 4];
-    let mut g = [0.0_f32; 4];
-    let mut b = [0.0_f32; 4];
-    _mm_storeu_ps(r.as_mut_ptr(), _mm256_castps256_ps128(rf));
-    _mm_storeu_ps(g.as_mut_ptr(), _mm256_castps256_ps128(gf));
-    _mm_storeu_ps(b.as_mut_ptr(), _mm256_castps256_ps128(bf));
-    store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        _mm_storeu_ps(r.as_mut_ptr(), _mm256_castps256_ps128(rf));
+        _mm_storeu_ps(g.as_mut_ptr(), _mm256_castps256_ps128(gf));
+        _mm_storeu_ps(b.as_mut_ptr(), _mm256_castps256_ps128(bf));
+        store_bt709_f32x4_to_rgba8(dst, x, r, g, b);
     }
 }
 
@@ -435,43 +461,49 @@ unsafe fn ycbcr_full_range_bt709_row_444_neon(
     x: &mut usize,
 ) {
     unsafe {
-    let scale = vdupq_n_f32(U8_TO_F32_SCALE);
-    let center = vdupq_n_f32(CHROMA_CENTER);
-    let k_pr_r = vdupq_n_f32(BT709_PR_TO_R);
-    let k_pb_g = vdupq_n_f32(BT709_PB_TO_G);
-    let k_pr_g = vdupq_n_f32(BT709_PR_TO_G);
-    let k_pb_b = vdupq_n_f32(BT709_PB_TO_B);
-    let zero = vdupq_n_f32(0.0);
-    let one = vdupq_n_f32(1.0);
+        let scale = vdupq_n_f32(U8_TO_F32_SCALE);
+        let center = vdupq_n_f32(CHROMA_CENTER);
+        let k_pr_r = vdupq_n_f32(BT709_PR_TO_R);
+        let k_pb_g = vdupq_n_f32(BT709_PB_TO_G);
+        let k_pr_g = vdupq_n_f32(BT709_PR_TO_G);
+        let k_pb_b = vdupq_n_f32(BT709_PB_TO_B);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
 
-    while *x + PIXELS_PER_NEON_STEP <= width {
-        let y = vld1_u8(y_row.as_ptr().add(*x));
-        let cb = vld1_u8(cb_row.as_ptr().add(*x));
-        let cr = vld1_u8(cr_row.as_ptr().add(*x));
+        while *x + PIXELS_PER_NEON_STEP <= width {
+            let y = vld1_u8(y_row.as_ptr().add(*x));
+            let cb = vld1_u8(cb_row.as_ptr().add(*x));
+            let cr = vld1_u8(cr_row.as_ptr().add(*x));
 
-        let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
-        let pb = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale), center);
-        let pr = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale), center);
+            let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
+            let pb = vsubq_f32(
+                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale),
+                center,
+            );
+            let pr = vsubq_f32(
+                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale),
+                center,
+            );
 
-        let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
-        let gf = vminq_f32(
-            vmaxq_f32(
-                vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)),
-                zero,
-            ),
-            one,
-        );
-        let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
+            let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
+            let gf = vminq_f32(
+                vmaxq_f32(
+                    vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)),
+                    zero,
+                ),
+                one,
+            );
+            let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
 
-        let mut r = [0.0_f32; 4];
-        let mut g = [0.0_f32; 4];
-        let mut b = [0.0_f32; 4];
-        vst1q_f32(r.as_mut_ptr(), rf);
-        vst1q_f32(g.as_mut_ptr(), gf);
-        vst1q_f32(b.as_mut_ptr(), bf);
-        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
-        *x += PIXELS_PER_NEON_STEP;
-    }
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            vst1q_f32(r.as_mut_ptr(), rf);
+            vst1q_f32(g.as_mut_ptr(), gf);
+            vst1q_f32(b.as_mut_ptr(), bf);
+            store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+            *x += PIXELS_PER_NEON_STEP;
+        }
     }
 }
 
@@ -486,48 +518,52 @@ unsafe fn ycbcr_full_range_bt709_row_420_neon(
     x: &mut usize,
 ) {
     unsafe {
-    let scale = vdupq_n_f32(U8_TO_F32_SCALE);
-    let center = vdupq_n_f32(CHROMA_CENTER);
-    let k_pr_r = vdupq_n_f32(BT709_PR_TO_R);
-    let k_pb_g = vdupq_n_f32(BT709_PB_TO_G);
-    let k_pr_g = vdupq_n_f32(BT709_PR_TO_G);
-    let k_pb_b = vdupq_n_f32(BT709_PB_TO_B);
-    let zero = vdupq_n_f32(0.0);
-    let one = vdupq_n_f32(1.0);
+        let scale = vdupq_n_f32(U8_TO_F32_SCALE);
+        let center = vdupq_n_f32(CHROMA_CENTER);
+        let k_pr_r = vdupq_n_f32(BT709_PR_TO_R);
+        let k_pb_g = vdupq_n_f32(BT709_PB_TO_G);
+        let k_pr_g = vdupq_n_f32(BT709_PR_TO_G);
+        let k_pb_b = vdupq_n_f32(BT709_PB_TO_B);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
 
-    while *x + PIXELS_PER_NEON_STEP <= width
-        && ycbcr420_chroma_load8_fits(*x, cb_row.len())
-    {
-        let xc = *x / 2;
-        let y = vld1_u8(y_row.as_ptr().add(*x));
-        let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
-        let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
-        let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
-        let cr = vcombine_u8(vdup_lane_u8(cr_pair, 0), vdup_lane_u8(cr_pair, 1));
+        while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+            let xc = *x / 2;
+            let y = vld1_u8(y_row.as_ptr().add(*x));
+            let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
+            let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
+            let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
+            let cr = vcombine_u8(vdup_lane_u8(cr_pair, 0), vdup_lane_u8(cr_pair, 1));
 
-        let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
-        let pb = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale), center);
-        let pr = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale), center);
+            let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
+            let pb = vsubq_f32(
+                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale),
+                center,
+            );
+            let pr = vsubq_f32(
+                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale),
+                center,
+            );
 
-        let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
-        let gf = vminq_f32(
-            vmaxq_f32(
-                vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)),
-                zero,
-            ),
-            one,
-        );
-        let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
+            let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
+            let gf = vminq_f32(
+                vmaxq_f32(
+                    vaddq_f32(vaddq_f32(yy, vmulq_f32(k_pb_g, pb)), vmulq_f32(k_pr_g, pr)),
+                    zero,
+                ),
+                one,
+            );
+            let bf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pb_b, pb)), zero), one);
 
-        let mut r = [0.0_f32; 4];
-        let mut g = [0.0_f32; 4];
-        let mut b = [0.0_f32; 4];
-        vst1q_f32(r.as_mut_ptr(), rf);
-        vst1q_f32(g.as_mut_ptr(), gf);
-        vst1q_f32(b.as_mut_ptr(), bf);
-        store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
-        *x += PIXELS_PER_NEON_STEP;
-    }
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            vst1q_f32(r.as_mut_ptr(), rf);
+            vst1q_f32(g.as_mut_ptr(), gf);
+            vst1q_f32(b.as_mut_ptr(), bf);
+            store_bt709_f32x4_to_rgba8(dst, *x, r, g, b);
+            *x += PIXELS_PER_NEON_STEP;
+        }
     }
 }
 

@@ -215,14 +215,7 @@ fn store_m128_rgb_pixels(dst: &mut [f32], x: usize, r: __m128, g: __m128, b: __m
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn store_m256_rgb_pixels(
-    dst: &mut [f32],
-    x: usize,
-    r: __m256,
-    g: __m256,
-    b: __m256,
-    count: usize,
-) {
+fn store_m256_rgb_pixels(dst: &mut [f32], x: usize, r: __m256, g: __m256, b: __m256, count: usize) {
     let mut rf = [0.0_f32; 4];
     let mut gf = [0.0_f32; 4];
     let mut bf = [0.0_f32; 4];
@@ -244,12 +237,12 @@ fn read_native_u16(buf: &[u8], byte_offset: usize) -> u16 {
 #[target_feature(enable = "avx2")]
 unsafe fn unpack_u8_to_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_AVX2_STEP <= src.len() {
-        let bytes = _mm_loadu_si128(src.as_ptr().add(*i) as *const __m128i);
-        let widened = _mm256_cvtepu8_epi16(bytes);
-        _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, widened);
-        *i += LANES_PER_AVX2_STEP;
-    }
+        while *i + LANES_PER_AVX2_STEP <= src.len() {
+            let bytes = _mm_loadu_si128(src.as_ptr().add(*i) as *const __m128i);
+            let widened = _mm256_cvtepu8_epi16(bytes);
+            _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, widened);
+            *i += LANES_PER_AVX2_STEP;
+        }
     }
 }
 
@@ -257,12 +250,12 @@ unsafe fn unpack_u8_to_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize
 #[target_feature(enable = "sse4.1")]
 unsafe fn unpack_u8_to_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_SSE41_STEP <= src.len() {
-        let bytes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
-        let widened = _mm_cvtepu8_epi16(bytes);
-        _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, widened);
-        *i += LANES_PER_SSE41_STEP;
-    }
+        while *i + LANES_PER_SSE41_STEP <= src.len() {
+            let bytes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
+            let widened = _mm_cvtepu8_epi16(bytes);
+            _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, widened);
+            *i += LANES_PER_SSE41_STEP;
+        }
     }
 }
 
@@ -270,12 +263,12 @@ unsafe fn unpack_u8_to_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usiz
 #[target_feature(enable = "neon")]
 unsafe fn unpack_u8_to_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_NEON_STEP <= src.len() {
-        let bytes = vld1_u8(src.as_ptr().add(*i));
-        let widened = vmovl_u8(bytes);
-        vst1q_u16(dst.as_mut_ptr().add(*i), widened);
-        *i += LANES_PER_NEON_STEP;
-    }
+        while *i + LANES_PER_NEON_STEP <= src.len() {
+            let bytes = vld1_u8(src.as_ptr().add(*i));
+            let widened = vmovl_u8(bytes);
+            vst1q_u16(dst.as_mut_ptr().add(*i), widened);
+            *i += LANES_PER_NEON_STEP;
+        }
     }
 }
 
@@ -283,11 +276,11 @@ unsafe fn unpack_u8_to_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize
 #[target_feature(enable = "avx2")]
 unsafe fn copy_le_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_AVX2_STEP <= dst.len() {
-        let chunk = _mm256_loadu_si256(src.as_ptr().add(*i * 2) as *const __m256i);
-        _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, chunk);
-        *i += LANES_PER_AVX2_STEP;
-    }
+        while *i + LANES_PER_AVX2_STEP <= dst.len() {
+            let chunk = _mm256_loadu_si256(src.as_ptr().add(*i * 2) as *const __m256i);
+            _mm256_storeu_si256(dst.as_mut_ptr().add(*i) as *mut __m256i, chunk);
+            *i += LANES_PER_AVX2_STEP;
+        }
     }
 }
 
@@ -295,11 +288,11 @@ unsafe fn copy_le_u16_lanes_avx2(dst: &mut [u16], src: &[u8], i: &mut usize) {
 #[target_feature(enable = "sse4.1")]
 unsafe fn copy_le_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_SSE41_STEP <= dst.len() {
-        let chunk = _mm_loadu_si128(src.as_ptr().add(*i * 2) as *const __m128i);
-        _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, chunk);
-        *i += LANES_PER_SSE41_STEP;
-    }
+        while *i + LANES_PER_SSE41_STEP <= dst.len() {
+            let chunk = _mm_loadu_si128(src.as_ptr().add(*i * 2) as *const __m128i);
+            _mm_storeu_si128(dst.as_mut_ptr().add(*i) as *mut __m128i, chunk);
+            *i += LANES_PER_SSE41_STEP;
+        }
     }
 }
 
@@ -307,11 +300,11 @@ unsafe fn copy_le_u16_lanes_sse41(dst: &mut [u16], src: &[u8], i: &mut usize) {
 #[target_feature(enable = "neon")]
 unsafe fn copy_le_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
     unsafe {
-    while *i + LANES_PER_NEON_STEP <= dst.len() {
-        let chunk = vld1q_u16(src.as_ptr().add(*i * 2) as *const u16);
-        vst1q_u16(dst.as_mut_ptr().add(*i), chunk);
-        *i += LANES_PER_NEON_STEP;
-    }
+        while *i + LANES_PER_NEON_STEP <= dst.len() {
+            let chunk = vld1q_u16(src.as_ptr().add(*i * 2) as *const u16);
+            vst1q_u16(dst.as_mut_ptr().add(*i), chunk);
+            *i += LANES_PER_NEON_STEP;
+        }
     }
 }
 
@@ -319,14 +312,14 @@ unsafe fn copy_le_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
 #[target_feature(enable = "sse4.1")]
 unsafe fn u16_lanes_to_f32_sse41(dst: &mut [f32], src: &[u16], inv_scale: f32, i: &mut usize) {
     unsafe {
-    let scale = _mm_set1_ps(inv_scale);
-    while *i + F32S_PER_SSE41_STEP <= src.len() {
-        let lanes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
-        let widened = _mm_cvtepu16_epi32(lanes);
-        let floats = _mm_mul_ps(_mm_cvtepi32_ps(widened), scale);
-        _mm_storeu_ps(dst.as_mut_ptr().add(*i), floats);
-        *i += F32S_PER_SSE41_STEP;
-    }
+        let scale = _mm_set1_ps(inv_scale);
+        while *i + F32S_PER_SSE41_STEP <= src.len() {
+            let lanes = _mm_loadl_epi64(src.as_ptr().add(*i) as *const __m128i);
+            let widened = _mm_cvtepu16_epi32(lanes);
+            let floats = _mm_mul_ps(_mm_cvtepi32_ps(widened), scale);
+            _mm_storeu_ps(dst.as_mut_ptr().add(*i), floats);
+            *i += F32S_PER_SSE41_STEP;
+        }
     }
 }
 
@@ -334,14 +327,14 @@ unsafe fn u16_lanes_to_f32_sse41(dst: &mut [f32], src: &[u16], inv_scale: f32, i
 #[target_feature(enable = "neon")]
 unsafe fn u16_lanes_to_f32_neon(dst: &mut [f32], src: &[u16], inv_scale: f32, i: &mut usize) {
     unsafe {
-    let scale = vdupq_n_f32(inv_scale);
-    while *i + F32S_PER_NEON_STEP <= src.len() {
-        let lanes = vld1_u16(src.as_ptr().add(*i));
-        let widened = vmovl_u16(lanes);
-        let floats = vmulq_f32(vcvtq_f32_u32(widened), scale);
-        vst1q_f32(dst.as_mut_ptr().add(*i), floats);
-        *i += F32S_PER_NEON_STEP;
-    }
+        let scale = vdupq_n_f32(inv_scale);
+        while *i + F32S_PER_NEON_STEP <= src.len() {
+            let lanes = vld1_u16(src.as_ptr().add(*i));
+            let widened = vmovl_u16(lanes);
+            let floats = vmulq_f32(vcvtq_f32_u32(widened), scale);
+            vst1q_f32(dst.as_mut_ptr().add(*i), floats);
+            *i += F32S_PER_NEON_STEP;
+        }
     }
 }
 
@@ -356,79 +349,79 @@ unsafe fn normalize_uint16_rgb3_scanline_avx2(
     x: &mut usize,
 ) {
     unsafe {
-    let smin_v = _mm256_set1_ps(smin);
-    let inv_v = _mm256_set1_ps(inv_range);
-    let zero = _mm256_setzero_ps();
-    let one = _mm256_set1_ps(1.0);
+        let smin_v = _mm256_set1_ps(smin);
+        let inv_v = _mm256_set1_ps(inv_range);
+        let zero = _mm256_setzero_ps();
+        let one = _mm256_set1_ps(1.0);
 
-    while *x + 4 <= width {
-        let base = *x * 6;
-        let words = src.as_ptr().add(base) as *const u16;
-        let r = _mm_setr_epi16(
-            *words.add(0) as i16,
-            *words.add(3) as i16,
-            *words.add(6) as i16,
-            *words.add(9) as i16,
-            0,
-            0,
-            0,
-            0,
-        );
-        let g = _mm_setr_epi16(
-            *words.add(1) as i16,
-            *words.add(4) as i16,
-            *words.add(7) as i16,
-            *words.add(10) as i16,
-            0,
-            0,
-            0,
-            0,
-        );
-        let b = _mm_setr_epi16(
-            *words.add(2) as i16,
-            *words.add(5) as i16,
-            *words.add(8) as i16,
-            *words.add(11) as i16,
-            0,
-            0,
-            0,
-            0,
-        );
+        while *x + 4 <= width {
+            let base = *x * 6;
+            let words = src.as_ptr().add(base) as *const u16;
+            let r = _mm_setr_epi16(
+                *words.add(0) as i16,
+                *words.add(3) as i16,
+                *words.add(6) as i16,
+                *words.add(9) as i16,
+                0,
+                0,
+                0,
+                0,
+            );
+            let g = _mm_setr_epi16(
+                *words.add(1) as i16,
+                *words.add(4) as i16,
+                *words.add(7) as i16,
+                *words.add(10) as i16,
+                0,
+                0,
+                0,
+                0,
+            );
+            let b = _mm_setr_epi16(
+                *words.add(2) as i16,
+                *words.add(5) as i16,
+                *words.add(8) as i16,
+                *words.add(11) as i16,
+                0,
+                0,
+                0,
+                0,
+            );
 
-        let rf = _mm256_min_ps(
-            _mm256_max_ps(
-                _mm256_mul_ps(
-                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(r)), smin_v),
-                    inv_v,
+            let rf = _mm256_min_ps(
+                _mm256_max_ps(
+                    _mm256_mul_ps(
+                        _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(r)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
                 ),
-                zero,
-            ),
-            one,
-        );
-        let gf = _mm256_min_ps(
-            _mm256_max_ps(
-                _mm256_mul_ps(
-                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(g)), smin_v),
-                    inv_v,
+                one,
+            );
+            let gf = _mm256_min_ps(
+                _mm256_max_ps(
+                    _mm256_mul_ps(
+                        _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(g)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
                 ),
-                zero,
-            ),
-            one,
-        );
-        let bf = _mm256_min_ps(
-            _mm256_max_ps(
-                _mm256_mul_ps(
-                    _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(b)), smin_v),
-                    inv_v,
+                one,
+            );
+            let bf = _mm256_min_ps(
+                _mm256_max_ps(
+                    _mm256_mul_ps(
+                        _mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(b)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
                 ),
-                zero,
-            ),
-            one,
-        );
+                one,
+            );
 
-        store_m256_rgb_pixels(dst, *x, rf, gf, bf, 4);
-        *x += 4;
-    }
+            store_m256_rgb_pixels(dst, *x, rf, gf, bf, 4);
+            *x += 4;
+        }
     }
 }
 
@@ -443,43 +436,52 @@ unsafe fn normalize_uint16_rgb3_scanline_sse41(
     x: &mut usize,
 ) {
     unsafe {
-    let smin_v = _mm_set1_ps(smin);
-    let inv_v = _mm_set1_ps(inv_range);
-    let zero = _mm_setzero_ps();
-    let one = _mm_set1_ps(1.0);
+        let smin_v = _mm_set1_ps(smin);
+        let inv_v = _mm_set1_ps(inv_range);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
 
-    while *x + 2 <= width {
-        let base = *x * 6;
-        let words = src.as_ptr().add(base) as *const u16;
-        let r = _mm_setr_epi16(*words.add(0) as i16, *words.add(3) as i16, 0, 0, 0, 0, 0, 0);
-        let g = _mm_setr_epi16(*words.add(1) as i16, *words.add(4) as i16, 0, 0, 0, 0, 0, 0);
-        let b = _mm_setr_epi16(*words.add(2) as i16, *words.add(5) as i16, 0, 0, 0, 0, 0, 0);
+        while *x + 2 <= width {
+            let base = *x * 6;
+            let words = src.as_ptr().add(base) as *const u16;
+            let r = _mm_setr_epi16(*words.add(0) as i16, *words.add(3) as i16, 0, 0, 0, 0, 0, 0);
+            let g = _mm_setr_epi16(*words.add(1) as i16, *words.add(4) as i16, 0, 0, 0, 0, 0, 0);
+            let b = _mm_setr_epi16(*words.add(2) as i16, *words.add(5) as i16, 0, 0, 0, 0, 0, 0);
 
-        let rf = _mm_min_ps(
-            _mm_max_ps(
-                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(r)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
-        let gf = _mm_min_ps(
-            _mm_max_ps(
-                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(g)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
-        let bf = _mm_min_ps(
-            _mm_max_ps(
-                _mm_mul_ps(_mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(b)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
+            let rf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_mul_ps(
+                        _mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(r)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
+                ),
+                one,
+            );
+            let gf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_mul_ps(
+                        _mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(g)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
+                ),
+                one,
+            );
+            let bf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_mul_ps(
+                        _mm_sub_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(b)), smin_v),
+                        inv_v,
+                    ),
+                    zero,
+                ),
+                one,
+            );
 
-        store_m128_rgb_pixels(dst, *x, rf, gf, bf, 2);
-        *x += 2;
-    }
+            store_m128_rgb_pixels(dst, *x, rf, gf, bf, 2);
+            *x += 2;
+        }
     }
 }
 
@@ -494,49 +496,49 @@ unsafe fn normalize_uint16_rgb3_scanline_neon(
     x: &mut usize,
 ) {
     unsafe {
-    let smin_v = vdupq_n_f32(smin);
-    let inv_v = vdupq_n_f32(inv_range);
-    let zero = vdupq_n_f32(0.0);
-    let one = vdupq_n_f32(1.0);
+        let smin_v = vdupq_n_f32(smin);
+        let inv_v = vdupq_n_f32(inv_range);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
 
-    while *x + 2 <= width {
-        let base = *x * 6;
-        let words = src.as_ptr().add(base) as *const u16;
-        let r_u16 = vcreate_u16(u64::from(*words.add(0)) | (u64::from(*words.add(3)) << 16));
-        let g_u16 = vcreate_u16(u64::from(*words.add(1)) | (u64::from(*words.add(4)) << 16));
-        let b_u16 = vcreate_u16(u64::from(*words.add(2)) | (u64::from(*words.add(5)) << 16));
+        while *x + 2 <= width {
+            let base = *x * 6;
+            let words = src.as_ptr().add(base) as *const u16;
+            let r_u16 = vcreate_u16(u64::from(*words.add(0)) | (u64::from(*words.add(3)) << 16));
+            let g_u16 = vcreate_u16(u64::from(*words.add(1)) | (u64::from(*words.add(4)) << 16));
+            let b_u16 = vcreate_u16(u64::from(*words.add(2)) | (u64::from(*words.add(5)) << 16));
 
-        let rf = vminq_f32(
-            vmaxq_f32(
-                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(r_u16)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
-        let gf = vminq_f32(
-            vmaxq_f32(
-                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(g_u16)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
-        let bf = vminq_f32(
-            vmaxq_f32(
-                vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(b_u16)), smin_v), inv_v),
-                zero,
-            ),
-            one,
-        );
+            let rf = vminq_f32(
+                vmaxq_f32(
+                    vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(r_u16)), smin_v), inv_v),
+                    zero,
+                ),
+                one,
+            );
+            let gf = vminq_f32(
+                vmaxq_f32(
+                    vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(g_u16)), smin_v), inv_v),
+                    zero,
+                ),
+                one,
+            );
+            let bf = vminq_f32(
+                vmaxq_f32(
+                    vmulq_f32(vsubq_f32(vcvtq_f32_u32(vmovl_u16(b_u16)), smin_v), inv_v),
+                    zero,
+                ),
+                one,
+            );
 
-        let mut r = [0.0_f32; 4];
-        let mut g = [0.0_f32; 4];
-        let mut b = [0.0_f32; 4];
-        vst1q_f32(r.as_mut_ptr(), rf);
-        vst1q_f32(g.as_mut_ptr(), gf);
-        vst1q_f32(b.as_mut_ptr(), bf);
-        store_normalized_rgb_pixels(dst, *x, r, g, b, 2);
-        *x += 2;
-    }
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            vst1q_f32(r.as_mut_ptr(), rf);
+            vst1q_f32(g.as_mut_ptr(), gf);
+            vst1q_f32(b.as_mut_ptr(), bf);
+            store_normalized_rgb_pixels(dst, *x, r, g, b, 2);
+            *x += 2;
+        }
     }
 }
 
@@ -563,13 +565,7 @@ mod tests {
         }
     }
 
-    fn normalize_rgb3_scalar(
-        src: &[u8],
-        dst: &mut [f32],
-        width: usize,
-        smin: f32,
-        inv_range: f32,
-    ) {
+    fn normalize_rgb3_scalar(src: &[u8], dst: &mut [f32], width: usize, smin: f32, inv_range: f32) {
         for x in 0..width {
             let src_base = x * 6;
             let dst_base = x * 4;
@@ -598,9 +594,7 @@ mod tests {
     #[test]
     fn copy_le_u16_lanes_matches_scalar() {
         for len in PARITY_LENGTHS {
-            let src: Vec<u8> = (0..len * 2)
-                .map(|i| ((i * 17 + 3) % 256) as u8)
-                .collect();
+            let src: Vec<u8> = (0..len * 2).map(|i| ((i * 17 + 3) % 256) as u8).collect();
             let mut simd_dst = vec![0_u16; *len];
             let mut scalar_dst = vec![0_u16; *len];
             copy_le_u16_lanes(&mut simd_dst, &src);
@@ -625,14 +619,19 @@ mod tests {
     #[test]
     fn normalize_uint16_rgb_scanline_matches_scalar() {
         for width in [0, 1, 2, 3, 4, 7, 8, 9, 16] {
-            let src: Vec<u8> = (0..width * 6)
-                .map(|i| ((i * 11 + 5) % 256) as u8)
-                .collect();
+            let src: Vec<u8> = (0..width * 6).map(|i| ((i * 11 + 5) % 256) as u8).collect();
             let mut simd_dst = vec![0.0_f32; width * 4];
             let mut scalar_dst = vec![0.0_f32; width * 4];
             let smin = 100.0_f32;
             let inv_range = 1.0 / 60000.0_f32;
-            normalize_uint16_rgb_scanline_to_rgba32f(&src, &mut simd_dst, width, 3, smin, inv_range);
+            normalize_uint16_rgb_scanline_to_rgba32f(
+                &src,
+                &mut simd_dst,
+                width,
+                3,
+                smin,
+                inv_range,
+            );
             normalize_rgb3_scalar(&src, &mut scalar_dst, width, smin, inv_range);
             assert_eq!(simd_dst, scalar_dst, "width={width}");
         }

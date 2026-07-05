@@ -123,14 +123,8 @@ impl ImageViewerApp {
                     result_gate::GateDecision::Requeue => "requeue",
                 };
                 let incoming_stage = update.preview_bundle.stage();
-                let hdr_dims = update
-                    .preview_bundle
-                    .hdr()
-                    .map(|h| (h.width, h.height));
-                let sdr_dims = update
-                    .preview_bundle
-                    .sdr()
-                    .map(|s| (s.width, s.height));
+                let hdr_dims = update.preview_bundle.hdr().map(|h| (h.width, h.height));
+                let sdr_dims = update.preview_bundle.sdr().map(|s| (s.width, s.height));
                 crate::preload_debug!(
                     "[PreloadDebug][Gate] preview {} idx={} stage={:?} existing_stage={:?} is_loading={} hdr_dims={:?} sdr_dims={:?} epoch={} current={} path={}",
                     gate_label,
@@ -510,12 +504,8 @@ impl ImageViewerApp {
                     profile.profile_epoch,
                     self.current_index,
                 );
-                self.loader.trigger_hq_tiled_hdr_preview(
-                    idx,
-                    hdr_source,
-                    profile,
-                    source_key,
-                );
+                self.loader
+                    .trigger_hq_tiled_hdr_preview(idx, hdr_source, profile, source_key);
                 log::debug!(
                     "[App] Triggered on-demand HQ HDR tiled preview for idx={}",
                     idx
@@ -550,8 +540,8 @@ impl ImageViewerApp {
             return TiledSdrFromHdrCacheOutcome::Failed;
         };
         let texture_tag = tiled_sdr_texture_tag_for_stage(preview_stage);
-        let needs_tile_manager = self.texture_cache.needs_tile_manager(idx)
-            || self.index_requires_tile_manager(idx);
+        let needs_tile_manager =
+            self.texture_cache.needs_tile_manager(idx) || self.index_requires_tile_manager(idx);
         if !should_cache_tiled_sdr_preview(
             self.texture_cache.contains(idx),
             needs_tile_manager,

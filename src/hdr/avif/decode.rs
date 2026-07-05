@@ -632,8 +632,7 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
     result_to_string: &F,
 ) -> Result<(Vec<u16>, u32), String> {
     let pixel_count = image_ref.width as usize * image_ref.height as usize;
-    let (rgba_bytes, rgb_depth) =
-        decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
+    let (rgba_bytes, rgb_depth) = decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
     let rgba_u16 = avif_rgba_bytes_to_u16_lanes(rgba_bytes, rgb_depth, pixel_count)?;
     Ok((rgba_u16, rgb_depth))
 }
@@ -646,7 +645,6 @@ pub(crate) fn decode_avif_image_rgba_u8<F: Fn(libavif_sys::avifResult) -> String
     result_to_string: &F,
 ) -> Result<Vec<u8>, String> {
     let pixel_count = image_ref.width as usize * image_ref.height as usize;
-    let (rgba_bytes, rgb_depth) =
-        decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
+    let (rgba_bytes, rgb_depth) = decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
     avif_quantize_rgba_bytes_to_u8(rgba_bytes, rgb_depth, pixel_count)
 }

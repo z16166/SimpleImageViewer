@@ -297,9 +297,7 @@ impl ImageViewerApp {
         } else if animation_active {
             ctx.request_repaint_after(
                 self.next_animation_repaint_after()
-                    .unwrap_or(Duration::from_millis(
-                        DEFAULT_ANIMATION_DELAY_MS as u64,
-                    )),
+                    .unwrap_or(Duration::from_millis(DEFAULT_ANIMATION_DELAY_MS as u64)),
             );
         } else if is_music_playing {
             // Music only needs low-frequency polling for track-name updates (~2 fps)
@@ -332,9 +330,7 @@ impl ImageViewerApp {
         } else if self.animation_needs_repaint_wake() {
             ctx.request_repaint_after(
                 self.next_animation_repaint_after()
-                    .unwrap_or(Duration::from_millis(
-                        DEFAULT_ANIMATION_DELAY_MS as u64,
-                    )),
+                    .unwrap_or(Duration::from_millis(DEFAULT_ANIMATION_DELAY_MS as u64)),
             );
             self.wake_root_for_logic();
         }

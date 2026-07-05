@@ -62,21 +62,15 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
         (16, _) => {
             // SAFETY: `sample_bytes_in_buf` verified `idx * 2 .. idx * 2 + 2` lies in `buf`.
             // Unaligned read is required because TIFF sample offsets are not guaranteed aligned.
-            unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64
-            }
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 2) as *const u16) as f64 }
         }
         (32, FORMAT_UINT) => {
             // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
-            unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64
-            }
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const u32) as f64 }
         }
         (32, FORMAT_INT) => {
             // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
-            unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64
-            }
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 4) as *const i32) as f64 }
         }
         (32, FORMAT_IEEEFP) => {
             // SAFETY: bounds checked above; unaligned read for packed IEEE float samples.
@@ -88,9 +82,7 @@ pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f6
         }
         (64, FORMAT_UINT) => {
             // SAFETY: bounds checked above; unaligned read for packed TIFF samples.
-            unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64
-            }
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(idx * 8) as *const u64) as f64 }
         }
         (64, FORMAT_IEEEFP) => {
             // SAFETY: bounds checked above; unaligned read for packed IEEE double samples.

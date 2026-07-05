@@ -114,8 +114,7 @@ impl TilePixelCache {
     }
 
     pub fn contains_tile(&self, index: usize, coord: TileCoord) -> bool {
-        self.entries
-            .contains_key(&(index, coord.col, coord.row))
+        self.entries.contains_key(&(index, coord.col, coord.row))
     }
 
     pub fn get(&self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
@@ -535,9 +534,7 @@ impl TileManager {
         let cache = PIXEL_CACHE.read();
 
         for coord in visible {
-            if !self.tiles.contains_key(coord)
-                && cache.contains_tile(self.image_index, *coord)
-            {
+            if !self.tiles.contains_key(coord) && cache.contains_tile(self.image_index, *coord) {
                 return true;
             }
         }

@@ -23,13 +23,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
     HeifDirectoryTreeStripOutcome, HeifThumbProbe, try_heif_directory_tree_strip,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
-use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
@@ -39,8 +39,8 @@ use crate::loader::{
 
 use super::assemble::make_image_data;
 use super::detect::{
-    load_primary_with_detection_fallback, primary_with_optional_mmap,
-    primary_with_retainable_mmap, PrimaryDecodeAttempt,
+    PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
+    primary_with_retainable_mmap,
 };
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
@@ -667,9 +667,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     let reg = crate::formats::get_registry().read();
-    if reg.extensions.contains(&ext)
-        && !is_maybe_animated(&ext)
-    {
+    if reg.extensions.contains(&ext) && !is_maybe_animated(&ext) {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));

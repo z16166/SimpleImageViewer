@@ -45,11 +45,8 @@ impl HdrImagePlaneCallback {
     ) -> bool {
         if self.sync_plane_upload_on_cache_miss {
             log::debug!("[HDR] Cache miss, performing synchronous upload for animated frame");
-            match upload_image_plane_with_sink(
-                device,
-                GpuUploadSink::Immediate(queue),
-                &self.image,
-            ) {
+            match upload_image_plane_with_sink(device, GpuUploadSink::Immediate(queue), &self.image)
+            {
                 Ok(uploaded) => {
                     let binding = HdrImageBinding::from_uploaded(
                         device,
@@ -79,9 +76,7 @@ impl HdrImagePlaneCallback {
             }
         } else {
             let Some(pending_work) = self.pending_work.as_ref() else {
-                log::debug!(
-                    "[HDR] Cache miss without pending work queues; deferring plane upload"
-                );
+                log::debug!("[HDR] Cache miss without pending work queues; deferring plane upload");
                 return false;
             };
             log::debug!("[HDR] Cache miss, queued async plane upload");
@@ -155,7 +150,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
             None
         };
 
-        if binding_missing && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key) {
+        if binding_missing
+            && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key)
+        {
             return Vec::new();
         }
 

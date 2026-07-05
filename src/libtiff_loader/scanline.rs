@@ -487,19 +487,18 @@ pub(crate) unsafe fn manual_decode_scanline(
     let mut r_map: *mut u16 = std::ptr::null_mut();
     let mut g_map: *mut u16 = std::ptr::null_mut();
     let mut b_map: *mut u16 = std::ptr::null_mut();
-    if photo == PHOTO_PALETTE
-        && {
-            // SAFETY: colormap pointers are filled by libtiff and live until the handle closes.
-            unsafe {
-                lib::TIFFGetField(
-                    tif,
-                    lib::TIFFTAG_COLORMAP,
-                    &mut r_map,
-                    &mut g_map,
-                    &mut b_map,
-                )
-            }
-        } == 0
+    if photo == PHOTO_PALETTE && {
+        // SAFETY: colormap pointers are filled by libtiff and live until the handle closes.
+        unsafe {
+            lib::TIFFGetField(
+                tif,
+                lib::TIFFTAG_COLORMAP,
+                &mut r_map,
+                &mut g_map,
+                &mut b_map,
+            )
+        }
+    } == 0
     {
         return Err("Palette image missing colormap".to_string());
     }
@@ -535,8 +534,7 @@ pub(crate) unsafe fn manual_decode_scanline(
         && photo != PHOTO_SEPARATED
         && (format == FORMAT_IEEEFP || bps == 16 || bps == 32 || bps == 64);
     let use_integer_auto_scale = use_auto_scale && format != FORMAT_IEEEFP;
-    let use_ieee_float_deferred_scale =
-        use_auto_scale && format == FORMAT_IEEEFP && !smax_provided;
+    let use_ieee_float_deferred_scale = use_auto_scale && format == FORMAT_IEEEFP && !smax_provided;
 
     let palette = TiffPaletteMaps {
         r_map,
@@ -593,14 +591,7 @@ pub(crate) unsafe fn manual_decode_scanline(
         }
         if let Some(scratch) = ieee_linear_scratch.as_ref() {
             finalize_ieee_float_linear_scratch_to_rgba(
-                scratch,
-                &mut rgba,
-                width,
-                height,
-                spp,
-                photo,
-                smin,
-                smax,
+                scratch, &mut rgba, width, height, spp, photo, smin, smax,
             );
         }
     }

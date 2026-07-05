@@ -549,7 +549,9 @@ impl ImageViewerApp {
             }
         } else if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
             if self.index_requires_tile_manager(self.current_index) {
-                if self.installed_display_mode(self.current_index) != Some(crate::loader::RenderShape::Tiled) {
+                if self.installed_display_mode(self.current_index)
+                    != Some(crate::loader::RenderShape::Tiled)
+                {
                     self.record_installed_display_mode(
                         self.current_index,
                         crate::loader::RenderShape::Tiled,
@@ -630,8 +632,8 @@ impl ImageViewerApp {
                 self.tile_manager.is_some()
             );
             self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
-            let needs_tile_manager_rebuild = self.index_requires_tile_manager(self.current_index)
-                && self.tile_manager.is_none();
+            let needs_tile_manager_rebuild =
+                self.index_requires_tile_manager(self.current_index) && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
                 if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                     self.set_current_image_resolution(Some((w, h)));

@@ -147,12 +147,7 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
 }
 
 /// True when the largest box footprint would overflow SIMD per-channel accumulators.
-fn simd_box_accumulator_would_overflow(
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> bool {
+fn simd_box_accumulator_would_overflow(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> bool {
     let col_span = (src_w as u64).div_ceil(dst_w as u64);
     let row_span = (src_h as u64).div_ceil(dst_h as u64);
     let footprint = col_span.saturating_mul(row_span);

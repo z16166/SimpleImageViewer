@@ -65,9 +65,8 @@ use animation_bootstrap::{
 };
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{
-    load_primary_with_detection_fallback, primary_with_optional_mmap,
+    PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
     primary_with_retainable_mmap, recover_via_platform_and_content_detection,
-    PrimaryDecodeAttempt,
 };
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_primary_attempt;
@@ -134,7 +133,13 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 high_quality,
-                || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
+                || {
+                    PrimaryDecodeAttempt::from_result(load_hdr(
+                        path,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    ))
+                },
             );
         }
 

@@ -121,7 +121,8 @@ fn load_raster_animation_bootstrap_from_bytes(
             use image::codecs::gif::GifDecoder;
             let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image = load_gif_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image =
+                    load_gif_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -175,14 +176,16 @@ fn load_raster_animation_bootstrap_from_bytes(
             use image::codecs::png::PngDecoder;
             let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
             if !decoder.is_apng().map_err(|e| e.to_string())? {
-                let image = load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image =
+                    load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
             if !bootstrap_animation {
-                let image = load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image =
+                    load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -236,7 +239,8 @@ fn load_raster_animation_bootstrap_from_bytes(
             use image::codecs::webp::WebPDecoder;
             let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image = load_webp_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image =
+                    load_webp_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,

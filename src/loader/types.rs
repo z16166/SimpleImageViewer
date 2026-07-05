@@ -463,7 +463,10 @@ impl TexturePreviewBufferTag {
     }
 
     pub fn satisfies_tiled_sdr_hq(self, stage: PreviewStage) -> bool {
-        matches!((self, stage), (Self::TiledRefinedLoader, PreviewStage::Refined))
+        matches!(
+            (self, stage),
+            (Self::TiledRefinedLoader, PreviewStage::Refined)
+        )
     }
 }
 

@@ -559,10 +559,7 @@ impl PsdV1AsyncSource {
 
         let mmap = Arc::new(mmap);
         let pixels = Arc::new(PLRwLock::new(None));
-        let decode_state = Arc::new((
-            Mutex::new(PsdV1DecodeState::Pending),
-            Condvar::new(),
-        ));
+        let decode_state = Arc::new((Mutex::new(PsdV1DecodeState::Pending), Condvar::new()));
         let decode_mmap = Arc::clone(&mmap);
         let decode_pixels = Arc::clone(&pixels);
         let decode_state_worker = Arc::clone(&decode_state);

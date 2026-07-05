@@ -329,9 +329,7 @@ mod tests {
 
     #[test]
     fn hdr_tiled_hq_requires_tone_mapped_sdr_texture() {
-        use crate::hdr::types::{
-            HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-        };
+        use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
         use crate::loader::{PreviewStage, TextureCacheInsert, TexturePreviewBufferTag};
         use std::sync::Arc;
 
@@ -460,8 +458,8 @@ mod tests {
                     AnimationFrame::new(1, 1, vec![0; 4], Duration::from_millis(100)),
                     AnimationFrame::new(1, 1, vec![1; 4], Duration::from_millis(100)),
                 ],
-                    textures: std::sync::Arc::new(Vec::new()),
-                    delays: std::sync::Arc::new(Vec::new()),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -484,8 +482,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                    textures: std::sync::Arc::new(Vec::new()),
-                    delays: std::sync::Arc::new(Vec::new()),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );
@@ -521,8 +519,8 @@ mod tests {
                 image_index: 0,
                 hdr_frames: None,
                 frames,
-                    textures: std::sync::Arc::new(Vec::new()),
-                    delays: std::sync::Arc::new(Vec::new()),
+                textures: std::sync::Arc::new(Vec::new()),
+                delays: std::sync::Arc::new(Vec::new()),
                 next_frame: 0,
             },
         );

@@ -228,9 +228,9 @@ impl ImageViewerApp {
         list: &DirectoryTreeListState,
         row_index: usize,
     ) -> Option<usize> {
-        list.image_rows.get(row_index).and_then(|row| {
-            self.image_files.iter().position(|path| path == &row.path)
-        })
+        list.image_rows
+            .get(row_index)
+            .and_then(|row| self.image_files.iter().position(|path| path == &row.path))
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.

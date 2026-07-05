@@ -96,8 +96,7 @@ impl TextureCache {
             .insert(index, (params.orig_w, params.orig_h));
         self.needs_tile_manager
             .insert(index, params.needs_tile_manager);
-        self.preview_buffer_tag
-            .insert(index, params.buffer_tag);
+        self.preview_buffer_tag.insert(index, params.buffer_tag);
         self.preview_stage.insert(index, params.stage);
         if is_new_key {
             self.cached_indices.push(index);
