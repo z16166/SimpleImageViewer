@@ -40,6 +40,9 @@ pub struct LibTiffTiledSource {
     pub(crate) tile_width: u32,
     pub(crate) tile_height: u32,
     pub(crate) pool: Mutex<Vec<TiffHandle>>,
+    pub(crate) tile_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
+    pub(crate) cache_order: Mutex<Vec<u32>>,
+    pub(crate) max_cached_tiles: usize,
 }
 
 impl LibTiffTiledSource {
@@ -56,6 +59,78 @@ impl LibTiffTiledSource {
     fn release_handle(&self, handle: TiffHandle) {
         self.pool.lock().push(handle);
     }
+
+    fn tile_index(&self, tile_col: u32, tile_row: u32) -> u32 {
+        let tiles_across = self.width.div_ceil(self.tile_width);
+        tile_row * tiles_across + tile_col
+    }
+
+    fn get_or_decode_tile(
+        &self,
+        tile_col: u32,
+        tile_row: u32,
+        handle: &TiffHandle,
+    ) -> Option<Arc<Vec<u8>>> {
+        let tile_idx = self.tile_index(tile_col, tile_row);
+        {
+            let cache = self.tile_cache.lock();
+            if let Some(data) = cache.get(&tile_idx) {
+                let mut order = self.cache_order.lock();
+                if let Some(pos) = order.iter().position(|&k| k == tile_idx) {
+                    order.remove(pos);
+                }
+                order.push(tile_idx);
+                return Some(Arc::clone(data));
+            }
+        }
+
+        let tw = self.tile_width;
+        let th = self.tile_height;
+        let tile_len = checked_tile_pixel_count(tw, th)?;
+        let rgba_len = tile_len.checked_mul(crate::constants::RGBA_CHANNELS)?;
+
+        let mut tile_buf = vec![0u32; tile_len];
+        let mut rgba = vec![0u8; rgba_len];
+        let curr_tx = tile_col * tw;
+        let curr_ty = tile_row * th;
+
+        unsafe {
+            if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr()) == 0
+            {
+                return None;
+            }
+        }
+
+        for ty_in_p in 0..th {
+            for tx_in_p in 0..tw {
+                let src_idx = (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
+                let dst_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
+                if src_idx < tile_buf.len() && dst_idx + 4 <= rgba.len() {
+                    let pixel = tile_buf[src_idx].to_ne_bytes();
+                    rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                }
+            }
+        }
+
+        let data = Arc::new(rgba);
+
+        {
+            let mut cache = self.tile_cache.lock();
+            let mut order = self.cache_order.lock();
+
+            while order.len() >= self.max_cached_tiles {
+                if let Some(oldest) = order.first().copied() {
+                    order.remove(0);
+                    cache.remove(&oldest);
+                }
+            }
+
+            cache.insert(tile_idx, Arc::clone(&data));
+            order.push(tile_idx);
+        }
+
+        Some(data)
+    }
 }
 
 impl TiledImageSource for LibTiffTiledSource {
@@ -71,11 +146,9 @@ impl TiledImageSource for LibTiffTiledSource {
             .checked_mul(h as usize)
             .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
             .unwrap_or(0);
-        let tile_len = checked_tile_pixel_count(self.tile_width, self.tile_height).unwrap_or(0);
 
-        let ((), result) = with_tiled_extract_scratch(result_len, tile_len, |scratch| {
+        let ((), result) = with_tiled_extract_scratch(result_len, 0, |scratch| {
             let result = &mut scratch.result;
-            let tile_buf = &mut scratch.tile;
             let handle = match self.acquire_handle() {
                 Ok(h) => h,
                 Err(e) => {
@@ -88,7 +161,6 @@ impl TiledImageSource for LibTiffTiledSource {
                 }
             };
 
-            let tif_ptr = handle.as_ptr();
             let tw = self.tile_width;
             let th = self.tile_height;
             let start_tx = (x / tw) * tw;
@@ -96,32 +168,31 @@ impl TiledImageSource for LibTiffTiledSource {
 
             for curr_ty in (start_ty..(y + h)).step_by(th as usize) {
                 for curr_tx in (start_tx..(x + w)).step_by(tw as usize) {
-                    unsafe {
-                        if lib::TIFFReadRGBATile(tif_ptr, curr_tx, curr_ty, tile_buf.as_mut_ptr())
-                            != 0
-                        {
-                            for ty_in_p in 0..th {
-                                let py = curr_ty + ty_in_p;
-                                if py < y || py >= y + h {
-                                    continue;
-                                }
-                                for tx_in_p in 0..tw {
-                                    let px = curr_tx + tx_in_p;
-                                    if px < x || px >= x + w {
-                                        continue;
-                                    }
-                                    let dest_x = px - x;
-                                    let dest_y = py - y;
-                                    let dest_idx =
-                                        (dest_y as usize * w as usize + dest_x as usize) * 4;
-                                    let src_idx = (th - 1 - ty_in_p) as usize * tw as usize
-                                        + tx_in_p as usize;
+                    let tile_col = curr_tx / tw;
+                    let tile_row = curr_ty / th;
+                    let tile_data = match self.get_or_decode_tile(tile_col, tile_row, &handle) {
+                        Some(d) => d,
+                        None => continue,
+                    };
 
-                                    if src_idx < tile_buf.len() && dest_idx + 4 <= result.len() {
-                                        let pixel = tile_buf[src_idx].to_ne_bytes();
-                                        result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
-                                    }
-                                }
+                    for ty_in_p in 0..th {
+                        let py = curr_ty + ty_in_p;
+                        if py < y || py >= y + h {
+                            continue;
+                        }
+                        for tx_in_p in 0..tw {
+                            let px = curr_tx + tx_in_p;
+                            if px < x || px >= x + w {
+                                continue;
+                            }
+                            let dest_x = px - x;
+                            let dest_y = py - y;
+                            let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
+                            let src_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
+
+                            if src_idx + 4 <= tile_data.len() && dest_idx + 4 <= result.len() {
+                                result[dest_idx..dest_idx + 4]
+                                    .copy_from_slice(&tile_data[src_idx..src_idx + 4]);
                             }
                         }
                     }

@@ -371,6 +371,16 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     ));
                 }
 
+                let tile_bytes = (tile_width as usize)
+                    .checked_mul(tile_height as usize)
+                    .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
+                let max_cached =
+                    if let Some(tile_bytes) = tile_bytes.and_then(std::num::NonZeroUsize::new) {
+                        (TILE_CACHE_BUDGET_BYTES / tile_bytes.get()).max(16)
+                    } else {
+                        64
+                    };
+
                 return Ok(ImageData::Tiled(Arc::new(LibTiffTiledSource {
                     path: path.to_path_buf(),
                     mmap: mmap.clone(),
@@ -379,6 +389,9 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     tile_width,
                     tile_height,
                     pool: Mutex::new(vec![handle]),
+                    tile_cache: Mutex::new(std::collections::HashMap::new()),
+                    cache_order: Mutex::new(Vec::new()),
+                    max_cached_tiles: max_cached,
                 })));
             } else {
                 let mut rps: lib::uint32 = 0;
