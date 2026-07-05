@@ -107,11 +107,7 @@ fn load_bmff_ftyp_container(
 }
 
 pub(crate) fn mmap_for_content_detection(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
-    let mmap = crate::mmap_util::map_file(path).map_err(|e| e.to_string())?;
-    if mmap.is_empty() {
-        return Err("empty file".to_string());
-    }
-    Ok(Arc::new(mmap))
+    Ok(Arc::new(crate::mmap_util::map_file(path)?))
 }
 
 fn load_by_image_format_from_mmap(

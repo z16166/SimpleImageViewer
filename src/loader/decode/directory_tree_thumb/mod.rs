@@ -136,6 +136,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     max_side: u32,
     options: DirectoryTreeThumbDecodeOptions,
 ) -> Result<DirectoryTreeThumbDecode, String> {
+    crate::mmap_util::reject_if_image_file_too_small(path)?;
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);

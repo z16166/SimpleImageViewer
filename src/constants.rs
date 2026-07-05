@@ -208,6 +208,9 @@ pub const MAX_ICC_TAG_COUNT: usize = 4096;
 /// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
 pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
 
+/// Minimum on-disk size that can hold a still-image container header (ISO BMFF `ftyp` is 12 bytes).
+pub const MIN_IMAGE_FILE_BYTES: u64 = 12;
+
 /// Default buffer/profile size for building ICC profiles in unit tests.
 #[cfg(test)]
 pub const MOCK_ICC_PROFILE_SIZE: usize = 4096;

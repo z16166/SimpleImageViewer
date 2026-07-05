@@ -115,6 +115,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
     let mut raw_osd_info: Option<crate::loader::RawOsdInfo> = None;
 
     let result = (|| -> Result<ImageData, String> {
+        crate::mmap_util::reject_if_image_file_too_small(path)?;
+
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -201,56 +203,50 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
         }
         if ext == "tif" || ext == "tiff" {
-            match crate::mmap_util::map_file(path) {
-                Ok(mmap) if !mmap.is_empty() => {
-                    let file_mmap = Arc::new(mmap);
-                    if tiff_may_be_camera_raw_bytes(file_mmap.as_ref())
-                        && crate::raw_processor::probe_libraw_can_open_bytes(file_mmap.as_ref())
-                    {
-                        log::info!(
-                            "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
-                            file_name
-                        );
-                        return load_raw(raw::RawLoadRequest {
-                            index,
+            let file_mmap = Arc::new(crate::mmap_util::map_file(path)?);
+            if tiff_may_be_camera_raw_bytes(file_mmap.as_ref())
+                && crate::raw_processor::probe_libraw_can_open_bytes(file_mmap.as_ref())
+            {
+                log::info!(
+                    "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
+                    file_name
+                );
+                return load_raw(raw::RawLoadRequest {
+                    index,
+                    path,
+                    refine_tx: refine_tx.clone(),
+                    load_tx: tx.clone(),
+                    decode_profile: decode_profile.clone(),
+                    high_quality,
+                    raw_demosaic_mode,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    raw_open_prefetch,
+                })
+                .map(|out| {
+                    if out.osd.sensor_size.0 > 0 {
+                        raw_osd_info = Some(out.osd);
+                    }
+                    out.image
+                });
+            }
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || {
+                    primary_with_optional_mmap(Some(Arc::clone(&file_mmap)), path, |mmap| {
+                        crate::libtiff_loader::load_via_libtiff_from_mmap(
                             path,
-                            refine_tx: refine_tx.clone(),
-                            load_tx: tx.clone(),
-                            decode_profile: decode_profile.clone(),
-                            high_quality,
-                            raw_demosaic_mode,
+                            mmap,
                             hdr_target_capacity,
                             hdr_tone_map,
-                            raw_open_prefetch,
-                        })
-                        .map(|out| {
-                            if out.osd.sensor_size.0 > 0 {
-                                raw_osd_info = Some(out.osd);
-                            }
-                            out.image
-                        });
-                    }
-                    return load_primary_with_detection_fallback(
-                        path,
-                        file_name,
-                        hdr_target_capacity,
-                        hdr_tone_map,
-                        high_quality,
-                        || {
-                            primary_with_optional_mmap(Some(Arc::clone(&file_mmap)), path, |mmap| {
-                                crate::libtiff_loader::load_via_libtiff_from_mmap(
-                                    path,
-                                    mmap,
-                                    hdr_target_capacity,
-                                    hdr_tone_map,
-                                )
-                            })
-                        },
-                    );
-                }
-                Ok(_) => return Err("empty file".to_string()),
-                Err(e) => return Err(e.to_string()),
-            }
+                        )
+                    })
+                },
+            );
         }
 
         if ext == "avif" || ext == "avifs" {

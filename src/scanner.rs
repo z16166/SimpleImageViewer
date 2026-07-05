@@ -141,7 +141,10 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
 /// `modified_unix` stores UTC seconds from [`Metadata::modified`].
 fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
     let len = metadata.len();
-    if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
+    if len < crate::constants::MIN_IMAGE_FILE_BYTES
+        || !metadata.is_file()
+        || is_offline_meta(metadata)
+    {
         return None;
     }
     use std::time::UNIX_EPOCH;

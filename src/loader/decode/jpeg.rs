@@ -62,7 +62,7 @@ pub(crate) fn load_jpeg_primary_attempt(
 ) -> super::detect::PrimaryDecodeAttempt {
     use super::detect::PrimaryDecodeAttempt;
     match crate::mmap_util::map_file(path) {
-        Ok(mmap) if !mmap.is_empty() => {
+        Ok(mmap) => {
             let arc = Arc::new(mmap);
             let result = load_jpeg_from_mapped(
                 path,
@@ -73,8 +73,7 @@ pub(crate) fn load_jpeg_primary_attempt(
             );
             PrimaryDecodeAttempt::with_mmap(result, Some(arc))
         }
-        Ok(_) => PrimaryDecodeAttempt::from_result(Err("empty file".to_string())),
-        Err(e) => PrimaryDecodeAttempt::from_result(Err(e.to_string())),
+        Err(e) => PrimaryDecodeAttempt::from_result(Err(e)),
     }
 }
 

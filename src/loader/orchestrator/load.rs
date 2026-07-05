@@ -1031,6 +1031,32 @@ impl ImageLoader {
             }
         }
 
+        if let Err(e) = crate::mmap_util::reject_if_image_file_too_small(&path) {
+            log::debug!(
+                "[Loader] Rejecting load for index={}: {} path={}",
+                index,
+                e,
+                path.display()
+            );
+            let load_result = LoadResult {
+                index,
+                decode_profile: decode_profile_for_job.clone(),
+                source_key: source_key_for_path(&path),
+                result: Err(e),
+                preview_bundle: PreviewBundle::initial(),
+                ultra_hdr_capacity_sensitive: false,
+                sdr_fallback_is_placeholder: false,
+                target_hdr_capacity: self.hdr_target_capacity(),
+                raw_osd: None,
+                uploaded_planes: None,
+                device_id: None,
+                staged_gpu_plane_upload: false,
+            };
+            let _ = self.tx.send(LoaderOutput::Image(Box::new(load_result)));
+            self.loading.lock().remove(&index);
+            return;
+        }
+
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let path1 = path.clone();
         let path_is_raw = crate::preload_debug::path_is_raw(&path);
