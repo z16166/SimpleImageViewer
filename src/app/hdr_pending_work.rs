@@ -14,6 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::hdr_pending_dispatch::{
+    HdrCompletedRegisterOutcome, apply_hdr_completed_batch, dispatch_hdr_cpu_compose_batch,
+    dispatch_hdr_gpu_upload_batch,
+};
 use super::types::ImageViewerApp;
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels;
@@ -82,40 +86,20 @@ impl ImageViewerApp {
             return;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.plane_upload_requests.lock() = requests;
-            return;
-        };
-
-        let device_id = self.current_device_id;
-        let wgpu_is_opengl = self.wgpu_is_opengl_backend();
-        let device = wgpu_state.device.clone();
-        let completed = Arc::clone(&self.hdr_pending_work);
-
-        let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-            .into_iter()
-            .enumerate()
-            .partition(|(idx, _)| *idx < MAX_HDR_PLANE_UPLOADS_PER_LOGIC);
-
-        if wgpu_is_opengl {
-            for (_, request) in run_now {
-                Self::finish_plane_upload(&completed, &device, request, device_id);
-            }
-        } else {
-            for (_, request) in run_now {
-                let completed = Arc::clone(&completed);
-                let device = device.clone();
-                REFINEMENT_POOL.spawn(move || {
-                    Self::finish_plane_upload(&completed, &device, request, device_id);
-                });
-            }
-        }
-
+        let requeue = dispatch_hdr_gpu_upload_batch(
+            requests,
+            frame.wgpu_render_state(),
+            self.wgpu_is_opengl_backend(),
+            self.current_device_id,
+            Arc::clone(&self.hdr_pending_work),
+            MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+            Self::finish_plane_upload,
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .plane_upload_requests
                 .lock()
-                .extend(requeue.into_iter().map(|(_, request)| request));
+                .extend(requeue);
         }
     }
 
@@ -163,49 +147,20 @@ impl ImageViewerApp {
             return;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.tile_upload_requests.lock() = requests;
-            return;
-        };
-
-        let device_id = self.current_device_id;
-        let wgpu_is_opengl = self.wgpu_is_opengl_backend();
-        let device = wgpu_state.device.clone();
-        let completed = Arc::clone(&self.hdr_pending_work);
-
-        if wgpu_is_opengl {
-            let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-                .into_iter()
-                .enumerate()
-                .partition(|(idx, _)| *idx < MAX_HDR_TILE_UPLOADS_PER_LOGIC);
-            for (_, request) in run_now {
-                Self::finish_tile_upload(&completed, &device, request, device_id);
-            }
-            if !requeue.is_empty() {
-                self.hdr_pending_work
-                    .tile_upload_requests
-                    .lock()
-                    .extend(requeue.into_iter().map(|(_, request)| request));
-            }
-            return;
-        }
-
-        let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-            .into_iter()
-            .enumerate()
-            .partition(|(idx, _)| *idx < MAX_HDR_TILE_UPLOADS_PER_LOGIC);
-        for (_, request) in run_now {
-            let completed = Arc::clone(&completed);
-            let device = device.clone();
-            REFINEMENT_POOL.spawn(move || {
-                Self::finish_tile_upload(&completed, &device, request, device_id);
-            });
-        }
+        let requeue = dispatch_hdr_gpu_upload_batch(
+            requests,
+            frame.wgpu_render_state(),
+            self.wgpu_is_opengl_backend(),
+            self.current_device_id,
+            Arc::clone(&self.hdr_pending_work),
+            MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+            Self::finish_tile_upload,
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .tile_upload_requests
                 .lock()
-                .extend(requeue.into_iter().map(|(_, request)| request));
+                .extend(requeue);
         }
     }
 
@@ -253,49 +208,20 @@ impl ImageViewerApp {
             return;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.jpeg_tiled_source_requests.lock() = requests;
-            return;
-        };
-
-        let device_id = self.current_device_id;
-        let wgpu_is_opengl = self.wgpu_is_opengl_backend();
-        let device = wgpu_state.device.clone();
-        let completed = Arc::clone(&self.hdr_pending_work);
-
-        if wgpu_is_opengl {
-            let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-                .into_iter()
-                .enumerate()
-                .partition(|(idx, _)| *idx < MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC);
-            for (_, request) in run_now {
-                Self::finish_jpeg_tiled_source_upload(&completed, &device, request, device_id);
-            }
-            if !requeue.is_empty() {
-                self.hdr_pending_work
-                    .jpeg_tiled_source_requests
-                    .lock()
-                    .extend(requeue.into_iter().map(|(_, request)| request));
-            }
-            return;
-        }
-
-        let (run_now, requeue): (Vec<_>, Vec<_>) = requests
-            .into_iter()
-            .enumerate()
-            .partition(|(idx, _)| *idx < MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC);
-        for (_, request) in run_now {
-            let completed = Arc::clone(&completed);
-            let device = device.clone();
-            REFINEMENT_POOL.spawn(move || {
-                Self::finish_jpeg_tiled_source_upload(&completed, &device, request, device_id);
-            });
-        }
+        let requeue = dispatch_hdr_gpu_upload_batch(
+            requests,
+            frame.wgpu_render_state(),
+            self.wgpu_is_opengl_backend(),
+            self.current_device_id,
+            Arc::clone(&self.hdr_pending_work),
+            MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
+            Self::finish_jpeg_tiled_source_upload,
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .jpeg_tiled_source_requests
                 .lock()
-                .extend(requeue.into_iter().map(|(_, request)| request));
+                .extend(requeue);
         }
     }
 
@@ -356,65 +282,63 @@ impl ImageViewerApp {
             return 0;
         }
 
-        let mut ran = 0usize;
-        let mut requeue = Vec::new();
         let mut started = started;
-        for request in requests {
-            if started >= MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC {
-                requeue.push(request);
-                continue;
-            }
-            started += 1;
-            ran += 1;
-            let queues = Arc::clone(&queues);
-            REFINEMENT_POOL.spawn(move || {
-                let key = request.key;
-                let bits = request.target_capacity_bits;
-                let format = request.target_format;
-                let width = request.image.width;
-                let height = request.image.height;
-                let capacity = request.target_hdr_capacity;
-                let result = iso_deferred_from_metadata(&request.image.metadata)
-                    .ok_or_else(|| "ISO deferred metadata missing".to_string())
-                    .and_then(|deferred| {
-                        crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
-                            width, height, deferred, capacity,
-                        )
-                    });
-                match result {
-                    Ok(pixels) => {
-                        queues.completed_compose_writes.lock().push(
-                            HdrCompletedComposeWrite::IsoImage {
-                                key,
-                                target_capacity_bits: bits,
-                                target_format: format,
-                                width,
-                                height,
-                                pixels,
-                            },
-                        );
+        let ran_before = started;
+        let requeue = dispatch_hdr_cpu_compose_batch(
+            requests,
+            &mut started,
+            MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
+            |request| {
+                let queues = Arc::clone(&queues);
+                REFINEMENT_POOL.spawn(move || {
+                    let key = request.key;
+                    let bits = request.target_capacity_bits;
+                    let format = request.target_format;
+                    let width = request.image.width;
+                    let height = request.image.height;
+                    let capacity = request.target_hdr_capacity;
+                    let result = iso_deferred_from_metadata(&request.image.metadata)
+                        .ok_or_else(|| "ISO deferred metadata missing".to_string())
+                        .and_then(|deferred| {
+                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+                                width, height, deferred, capacity,
+                            )
+                        });
+                    match result {
+                        Ok(pixels) => {
+                            queues.completed_compose_writes.lock().push(
+                                HdrCompletedComposeWrite::IsoImage {
+                                    key,
+                                    target_capacity_bits: bits,
+                                    target_format: format,
+                                    width,
+                                    height,
+                                    pixels,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!("[HDR] ISO CPU compose failed: {err}");
+                            queues.completed_compose_failures.lock().push(
+                                HdrCompletedComposeFailure::IsoImage {
+                                    key,
+                                    target_capacity_bits: bits,
+                                    target_format: format,
+                                },
+                            );
+                        }
                     }
-                    Err(err) => {
-                        log::warn!("[HDR] ISO CPU compose failed: {err}");
-                        queues.completed_compose_failures.lock().push(
-                            HdrCompletedComposeFailure::IsoImage {
-                                key,
-                                target_capacity_bits: bits,
-                                target_format: format,
-                            },
-                        );
-                    }
-                }
-                queues.clear_iso_image_compose_inflight(key, bits);
-            });
-        }
+                    queues.clear_iso_image_compose_inflight(key, bits);
+                });
+            },
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .iso_image_compose_requests
                 .lock()
                 .extend(requeue);
         }
-        ran
+        started - ran_before
     }
 
     #[cfg(feature = "heif-native")]
@@ -426,60 +350,58 @@ impl ImageViewerApp {
             return 0;
         }
 
-        let mut ran = 0usize;
-        let mut requeue = Vec::new();
         let mut started = started;
-        for request in requests {
-            if started >= MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC {
-                requeue.push(request);
-                continue;
-            }
-            started += 1;
-            ran += 1;
-            let queues = Arc::clone(&queues);
-            REFINEMENT_POOL.spawn(move || {
-                let key = request.key;
-                let bits = request.target_capacity_bits;
-                let format = request.target_format;
-                let width = request.image.width;
-                let height = request.image.height;
-                match compose_apple_heic_deferred_cpu_pixels(
-                    &request.image,
-                    request.target_hdr_capacity,
-                ) {
-                    Ok(pixels) => {
-                        queues.completed_compose_writes.lock().push(
-                            HdrCompletedComposeWrite::AppleImage {
-                                key,
-                                target_capacity_bits: bits,
-                                target_format: format,
-                                width,
-                                height,
-                                pixels,
-                            },
-                        );
+        let ran_before = started;
+        let requeue = dispatch_hdr_cpu_compose_batch(
+            requests,
+            &mut started,
+            MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
+            |request| {
+                let queues = Arc::clone(&queues);
+                REFINEMENT_POOL.spawn(move || {
+                    let key = request.key;
+                    let bits = request.target_capacity_bits;
+                    let format = request.target_format;
+                    let width = request.image.width;
+                    let height = request.image.height;
+                    match compose_apple_heic_deferred_cpu_pixels(
+                        &request.image,
+                        request.target_hdr_capacity,
+                    ) {
+                        Ok(pixels) => {
+                            queues.completed_compose_writes.lock().push(
+                                HdrCompletedComposeWrite::AppleImage {
+                                    key,
+                                    target_capacity_bits: bits,
+                                    target_format: format,
+                                    width,
+                                    height,
+                                    pixels,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!("[HDR] Apple CPU compose failed: {err}");
+                            queues.completed_compose_failures.lock().push(
+                                HdrCompletedComposeFailure::AppleImage {
+                                    key,
+                                    target_capacity_bits: bits,
+                                    target_format: format,
+                                },
+                            );
+                        }
                     }
-                    Err(err) => {
-                        log::warn!("[HDR] Apple CPU compose failed: {err}");
-                        queues.completed_compose_failures.lock().push(
-                            HdrCompletedComposeFailure::AppleImage {
-                                key,
-                                target_capacity_bits: bits,
-                                target_format: format,
-                            },
-                        );
-                    }
-                }
-                queues.clear_apple_image_compose_inflight(key, bits);
-            });
-        }
+                    queues.clear_apple_image_compose_inflight(key, bits);
+                });
+            },
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .apple_image_compose_requests
                 .lock()
                 .extend(requeue);
         }
-        ran
+        started - ran_before
     }
 
     fn start_pending_iso_tile_compose_jobs(&mut self, started: usize) -> usize {
@@ -490,65 +412,63 @@ impl ImageViewerApp {
             return 0;
         }
 
-        let mut ran = 0usize;
-        let mut requeue = Vec::new();
         let mut started = started;
-        for request in requests {
-            if started >= MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC {
-                requeue.push(request);
-                continue;
-            }
-            started += 1;
-            ran += 1;
-            let queues = Arc::clone(&queues);
-            REFINEMENT_POOL.spawn(move || {
-                let tile_key = request.tile_key;
-                let bits = request.target_capacity_bits;
-                let format = request.target_format;
-                let width = request.tile_width;
-                let height = request.tile_height;
-                let capacity = request.target_hdr_capacity;
-                let ctx = request.tile_ctx;
-                let result = iso_deferred_from_metadata(&request.tile.metadata)
-                    .ok_or_else(|| "ISO deferred metadata missing".to_string())
-                    .and_then(|deferred| {
-                        crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
-                            deferred, &ctx, width, height, capacity,
-                        )
-                    });
-                match result {
-                    Ok(pixels) => {
-                        queues.completed_compose_writes.lock().push(
-                            HdrCompletedComposeWrite::IsoTile {
-                                tile_key,
-                                target_capacity_bits: bits,
-                                target_format: format,
-                                width,
-                                height,
-                                pixels,
-                            },
-                        );
+        let ran_before = started;
+        let requeue = dispatch_hdr_cpu_compose_batch(
+            requests,
+            &mut started,
+            MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
+            |request| {
+                let queues = Arc::clone(&queues);
+                REFINEMENT_POOL.spawn(move || {
+                    let tile_key = request.tile_key;
+                    let bits = request.target_capacity_bits;
+                    let format = request.target_format;
+                    let width = request.tile_width;
+                    let height = request.tile_height;
+                    let capacity = request.target_hdr_capacity;
+                    let ctx = request.tile_ctx;
+                    let result = iso_deferred_from_metadata(&request.tile.metadata)
+                        .ok_or_else(|| "ISO deferred metadata missing".to_string())
+                        .and_then(|deferred| {
+                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
+                                deferred, &ctx, width, height, capacity,
+                            )
+                        });
+                    match result {
+                        Ok(pixels) => {
+                            queues.completed_compose_writes.lock().push(
+                                HdrCompletedComposeWrite::IsoTile {
+                                    tile_key,
+                                    target_capacity_bits: bits,
+                                    target_format: format,
+                                    width,
+                                    height,
+                                    pixels,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!("[HDR] ISO tile CPU compose failed: {err}");
+                            queues.completed_compose_failures.lock().push(
+                                HdrCompletedComposeFailure::IsoTile {
+                                    tile_key,
+                                    target_format: format,
+                                },
+                            );
+                        }
                     }
-                    Err(err) => {
-                        log::warn!("[HDR] ISO tile CPU compose failed: {err}");
-                        queues.completed_compose_failures.lock().push(
-                            HdrCompletedComposeFailure::IsoTile {
-                                tile_key,
-                                target_format: format,
-                            },
-                        );
-                    }
-                }
-                queues.clear_iso_tile_compose_inflight(tile_key, bits);
-            });
-        }
+                    queues.clear_iso_tile_compose_inflight(tile_key, bits);
+                });
+            },
+        );
         if !requeue.is_empty() {
             self.hdr_pending_work
                 .iso_tile_compose_requests
                 .lock()
                 .extend(requeue);
         }
-        ran
+        started - ran_before
     }
 
     fn apply_completed_hdr_pending_work(&mut self, frame: &mut eframe::Frame) -> bool {
@@ -590,59 +510,60 @@ impl ImageViewerApp {
             return false;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.completed_plane_uploads.lock() = completed;
-            return false;
-        };
+        let device_id = self.current_device_id;
+        let hdr_pending_work = Arc::clone(&self.hdr_pending_work);
+        apply_hdr_completed_batch(
+            frame.wgpu_render_state(),
+            completed,
+            |items| {
+                *hdr_pending_work.completed_plane_uploads.lock() = items;
+            },
+            |defer| {
+                hdr_pending_work
+                    .completed_plane_uploads
+                    .lock()
+                    .extend(defer);
+            },
+            |wgpu_state, item| {
+                if item.device_id != device_id {
+                    hdr_pending_work.clear_plane_upload_inflight(item.key);
+                    return HdrCompletedRegisterOutcome::Skipped;
+                }
+                if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
+                if !hdr_pending_work.flush_staged_writes_for_registration(&wgpu_state.queue) {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
 
-        let mut changed = false;
-        let mut defer = Vec::new();
-        for item in completed {
-            if item.device_id != self.current_device_id {
-                self.hdr_pending_work.clear_plane_upload_inflight(item.key);
-                continue;
-            }
-            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
-                defer.push(item);
-                continue;
-            }
-
-            if !self
-                .hdr_pending_work
-                .flush_staged_writes_for_registration(&wgpu_state.queue)
-            {
-                defer.push(item);
-                continue;
-            }
-
-            let binding = HdrImageBinding::from_uploaded(
-                &wgpu_state.device,
-                item.uploaded,
-                &item.image,
-                item.tone_map,
-                item.target_format,
-                item.output_mode,
-                item.device_id,
-            );
-            let mut renderer = wgpu_state.renderer.write();
-            if let Some(resources) = renderer
-                .callback_resources
-                .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
-                .and_then(|set| set.get_for_mut(item.target_format))
-                && resources.register_preuploaded_binding(item.key, binding, self.current_device_id)
-            {
-                resources.set_image_binding_keep_resident(item.key, item.keep_resident);
-                changed = true;
-            }
-            self.hdr_pending_work.clear_plane_upload_inflight(item.key);
-        }
-        if !defer.is_empty() {
-            self.hdr_pending_work
-                .completed_plane_uploads
-                .lock()
-                .extend(defer);
-        }
-        changed
+                let binding = HdrImageBinding::from_uploaded(
+                    &wgpu_state.device,
+                    item.uploaded,
+                    &item.image,
+                    item.tone_map,
+                    item.target_format,
+                    item.output_mode,
+                    item.device_id,
+                );
+                let mut renderer = wgpu_state.renderer.write();
+                let mut applied = false;
+                if let Some(resources) = renderer
+                    .callback_resources
+                    .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+                    .and_then(|set| set.get_for_mut(item.target_format))
+                    && resources.register_preuploaded_binding(item.key, binding, device_id)
+                {
+                    resources.set_image_binding_keep_resident(item.key, item.keep_resident);
+                    applied = true;
+                }
+                hdr_pending_work.clear_plane_upload_inflight(item.key);
+                if applied {
+                    HdrCompletedRegisterOutcome::Applied
+                } else {
+                    HdrCompletedRegisterOutcome::Skipped
+                }
+            },
+        )
     }
 
     fn register_completed_hdr_tile_uploads(&mut self, frame: &mut eframe::Frame) -> bool {
@@ -652,52 +573,48 @@ impl ImageViewerApp {
             return false;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self.hdr_pending_work.completed_tile_uploads.lock() = completed;
-            return false;
-        };
+        let device_id = self.current_device_id;
+        let hdr_pending_work = Arc::clone(&self.hdr_pending_work);
+        apply_hdr_completed_batch(
+            frame.wgpu_render_state(),
+            completed,
+            |items| {
+                *hdr_pending_work.completed_tile_uploads.lock() = items;
+            },
+            |defer| {
+                hdr_pending_work.completed_tile_uploads.lock().extend(defer);
+            },
+            |wgpu_state, item| {
+                if item.device_id != device_id {
+                    hdr_pending_work.clear_tile_upload_inflight(item.tile_key);
+                    return HdrCompletedRegisterOutcome::Skipped;
+                }
+                if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
+                if item.staged_gpu_upload
+                    && !hdr_pending_work.flush_staged_writes_for_registration(&wgpu_state.queue)
+                {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
 
-        let mut changed = false;
-        let mut defer = Vec::new();
-        for item in completed {
-            if item.device_id != self.current_device_id {
-                self.hdr_pending_work
-                    .clear_tile_upload_inflight(item.tile_key);
-                continue;
-            }
-            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
-                defer.push(item);
-                continue;
-            }
-
-            if item.staged_gpu_upload
-                && !self
-                    .hdr_pending_work
-                    .flush_staged_writes_for_registration(&wgpu_state.queue)
-            {
-                defer.push(item);
-                continue;
-            }
-
-            let mut renderer = wgpu_state.renderer.write();
-            let tile_key = item.tile_key;
-            if let Some(resources) = renderer
-                .callback_resources
-                .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
-                .and_then(|set| set.get_for_mut(item.target_format))
-                && resources.register_completed_tile_upload(&wgpu_state.device, item)
-            {
-                changed = true;
-            }
-            self.hdr_pending_work.clear_tile_upload_inflight(tile_key);
-        }
-        if !defer.is_empty() {
-            self.hdr_pending_work
-                .completed_tile_uploads
-                .lock()
-                .extend(defer);
-        }
-        changed
+                let mut renderer = wgpu_state.renderer.write();
+                let tile_key = item.tile_key;
+                let applied = renderer
+                    .callback_resources
+                    .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+                    .and_then(|set| set.get_for_mut(item.target_format))
+                    .is_some_and(|resources| {
+                        resources.register_completed_tile_upload(&wgpu_state.device, item)
+                    });
+                hdr_pending_work.clear_tile_upload_inflight(tile_key);
+                if applied {
+                    HdrCompletedRegisterOutcome::Applied
+                } else {
+                    HdrCompletedRegisterOutcome::Skipped
+                }
+            },
+        )
     }
 
     fn register_completed_hdr_jpeg_tiled_source_uploads(
@@ -714,55 +631,60 @@ impl ImageViewerApp {
             return false;
         }
 
-        let Some(wgpu_state) = frame.wgpu_render_state() else {
-            *self
-                .hdr_pending_work
-                .completed_jpeg_tiled_source_uploads
-                .lock() = completed;
-            return false;
-        };
+        let device_id = self.current_device_id;
+        let hdr_pending_work = Arc::clone(&self.hdr_pending_work);
+        apply_hdr_completed_batch(
+            frame.wgpu_render_state(),
+            completed,
+            |items| {
+                *hdr_pending_work.completed_jpeg_tiled_source_uploads.lock() = items;
+            },
+            |defer| {
+                hdr_pending_work
+                    .completed_jpeg_tiled_source_uploads
+                    .lock()
+                    .extend(defer);
+            },
+            |wgpu_state, item| {
+                if item.device_id != device_id {
+                    hdr_pending_work.clear_jpeg_tiled_source_upload_inflight(
+                        item.upload_key,
+                        item.target_format,
+                    );
+                    return HdrCompletedRegisterOutcome::Skipped;
+                }
+                if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
+                if item.staged_gpu_upload
+                    && !hdr_pending_work.flush_staged_writes_for_registration(&wgpu_state.queue)
+                {
+                    return HdrCompletedRegisterOutcome::Deferred(item);
+                }
 
-        let mut changed = false;
-        let mut defer = Vec::new();
-        for item in completed {
-            if item.device_id != self.current_device_id {
-                self.hdr_pending_work
+                let mut renderer = wgpu_state.renderer.write();
+                let mut applied = false;
+                if let Some(resources) = renderer
+                    .callback_resources
+                    .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+                    .and_then(|set| set.get_for_mut(item.target_format))
+                {
+                    resources.register_jpeg_tiled_source_upload(
+                        item.upload_key,
+                        item.sdr,
+                        item.gain,
+                    );
+                    applied = true;
+                }
+                hdr_pending_work
                     .clear_jpeg_tiled_source_upload_inflight(item.upload_key, item.target_format);
-                continue;
-            }
-            if !Self::ensure_hdr_resources(wgpu_state, item.target_format) {
-                defer.push(item);
-                continue;
-            }
-
-            if item.staged_gpu_upload
-                && !self
-                    .hdr_pending_work
-                    .flush_staged_writes_for_registration(&wgpu_state.queue)
-            {
-                defer.push(item);
-                continue;
-            }
-
-            let mut renderer = wgpu_state.renderer.write();
-            if let Some(resources) = renderer
-                .callback_resources
-                .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
-                .and_then(|set| set.get_for_mut(item.target_format))
-            {
-                resources.register_jpeg_tiled_source_upload(item.upload_key, item.sdr, item.gain);
-                changed = true;
-            }
-            self.hdr_pending_work
-                .clear_jpeg_tiled_source_upload_inflight(item.upload_key, item.target_format);
-        }
-        if !defer.is_empty() {
-            self.hdr_pending_work
-                .completed_jpeg_tiled_source_uploads
-                .lock()
-                .extend(defer);
-        }
-        changed
+                if applied {
+                    HdrCompletedRegisterOutcome::Applied
+                } else {
+                    HdrCompletedRegisterOutcome::Skipped
+                }
+            },
+        )
     }
 
     fn apply_completed_hdr_compose_writes(&mut self, frame: &mut eframe::Frame) -> bool {

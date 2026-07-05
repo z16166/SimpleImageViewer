@@ -154,23 +154,47 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
 }
 
 #[test]
+fn prefetch_resource_guard_syncs_when_not_committed() {
+    use super::prefetch_resource_index::PrefetchResourceGuard;
+
+    let mut app = make_test_app();
+    {
+        let _guard = PrefetchResourceGuard::new(&mut app, 3);
+    }
+    assert!(!app.prefetch_resource_indices.contains(&3));
+}
+
+#[test]
+fn prefetch_resource_guard_keeps_index_after_commit() {
+    use super::prefetch_resource_index::PrefetchResourceGuard;
+
+    let mut app = make_test_app();
+    {
+        let guard = PrefetchResourceGuard::new(&mut app, 4);
+        guard.commit();
+    }
+    assert!(app.prefetch_resource_indices.contains(&4));
+}
+
+#[test]
 fn navigation_preserves_current_tile_manager_for_restore() {
     let source = Arc::new(DummyTiledSource {
         width: 4096,
         height: 4096,
     });
-    let mut tile_manager = Some(TileManager::with_source(
+    let mut app = make_test_app();
+    app.tile_manager = Some(TileManager::with_source(
         7,
         crate::loader::decode_profile_stub(),
         source,
     ));
-    let mut prefetched_tiles = HashMap::new();
 
-    preserve_current_tile_manager_for_navigation(7, 8, &mut tile_manager, &mut prefetched_tiles);
+    preserve_current_tile_manager_for_navigation(&mut app, 7, 8);
 
-    assert!(tile_manager.is_none());
-    assert!(prefetched_tiles.contains_key(&7));
-    assert_eq!(prefetched_tiles.get(&7).unwrap().image_index, 7);
+    assert!(app.tile_manager.is_none());
+    assert!(app.prefetched_tiles.contains_key(&7));
+    assert_eq!(app.prefetched_tiles.get(&7).unwrap().image_index, 7);
+    assert!(app.prefetch_resource_indices.contains(&7));
 }
 
 #[test]

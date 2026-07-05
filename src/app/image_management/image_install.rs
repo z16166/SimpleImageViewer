@@ -137,28 +137,7 @@ impl ImageViewerApp {
         idx: usize,
         decoded: crate::loader::DecodedImage,
     ) {
-        use std::collections::hash_map::Entry;
-
-        if let Entry::Occupied(mut slot) = self.deferred_sdr_uploads.entry(idx) {
-            *slot.get_mut() = decoded;
-            self.register_prefetch_resource(idx);
-            return;
-        }
-        if self.deferred_sdr_uploads.len() >= crate::app::MAX_DEFERRED_SDR_UPLOADS {
-            let current = self.current_index;
-            let total = self.image_files.len();
-            if let Some(evict_idx) = self
-                .deferred_sdr_uploads
-                .keys()
-                .copied()
-                .max_by_key(|&i| super::prefetch_circular_distance(current, total, i))
-            {
-                self.deferred_sdr_uploads.remove(&evict_idx);
-                self.maybe_unregister_prefetch_resource(evict_idx);
-            }
-        }
-        self.deferred_sdr_uploads.insert(idx, decoded);
-        self.register_prefetch_resource(idx);
+        self.store_deferred_sdr_upload_tracked(idx, decoded);
     }
 
     pub(super) fn upload_static_sdr_texture(
@@ -175,7 +154,7 @@ impl ImageViewerApp {
             decoded.rgba(),
         );
         let handle = ctx.load_texture(texture_name, color_image, TextureOptions::LINEAR);
-        if let Some(evicted_idx) = self.texture_cache.insert(
+        self.insert_texture_cache_tracked(
             idx,
             handle,
             crate::loader::TextureCacheInsert {
@@ -187,10 +166,7 @@ impl ImageViewerApp {
                 current_index: self.current_index,
                 total_count: self.image_files.len(),
             },
-        ) {
-            self.handle_texture_cache_eviction(evicted_idx);
-        }
-        self.register_prefetch_resource(idx);
+        );
         // Preload may have queued pixels for this index; GPU upload makes them redundant.
         self.deferred_sdr_uploads.remove(&idx);
     }
@@ -416,8 +392,7 @@ impl ImageViewerApp {
         let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);
-        self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
-        self.register_prefetch_resource(idx);
+        self.insert_hdr_image_cache_tracked(idx, Arc::clone(&hdr));
         self.hdr_sdr_fallback_indices.insert(idx);
         if sdr_fallback_is_placeholder {
             self.hdr_placeholder_fallback_indices.insert(idx);
@@ -605,10 +580,8 @@ impl ImageViewerApp {
                 Arc::clone(&source),
             ));
         } else {
-            self.prefetched_tiles.insert(idx, tm);
+            self.insert_prefetched_tiles_tracked(idx, tm);
         }
-
-        self.register_prefetch_resource(idx);
 
         if crate::preload_debug::path_is_raw(&self.image_files[idx]) {
             crate::preload_debug!(
@@ -687,7 +660,7 @@ impl ImageViewerApp {
             // Preload / first navigation reads `hdr_image_cache` before deferred anim uploads
             // finish populating `animation_cache`. Without this, HDR displays fall back to the
             // black SDR placeholder until `pending_anim_frames` completes (dark → bright flash).
-            self.hdr_image_cache.insert(idx, Arc::clone(first_hdr));
+            self.insert_hdr_image_cache_tracked(idx, Arc::clone(first_hdr));
         }
         self.hdr_sdr_fallback_indices.insert(idx);
         if ultra_hdr_capacity_sensitive {

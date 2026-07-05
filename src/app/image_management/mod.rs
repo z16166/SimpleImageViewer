@@ -55,15 +55,14 @@ fn has_startup_target(
 }
 
 fn preserve_current_tile_manager_for_navigation(
+    app: &mut ImageViewerApp,
     current_index: usize,
     target_index: usize,
-    tile_manager: &mut Option<TileManager>,
-    prefetched_tiles: &mut HashMap<usize, TileManager>,
 ) {
     if current_index != target_index
-        && let Some(tm) = tile_manager.take()
+        && let Some(tm) = app.tile_manager.take()
     {
-        prefetched_tiles.insert(current_index, tm);
+        app.insert_prefetched_tiles_tracked(current_index, tm);
     }
 }
 

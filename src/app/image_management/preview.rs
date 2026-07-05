@@ -302,7 +302,7 @@ impl ImageViewerApp {
                     let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                     let texture_tag = update.effective_sdr_texture_tag();
                     let texture_stage = update.preview_bundle.stage();
-                    if let Some(evicted_idx) = self.texture_cache.insert(
+                    self.insert_texture_cache_tracked(
                         update.index,
                         handle,
                         crate::loader::TextureCacheInsert {
@@ -314,9 +314,7 @@ impl ImageViewerApp {
                             current_index: self.current_index,
                             total_count: self.image_files.len(),
                         },
-                    ) {
-                        self.handle_texture_cache_eviction(evicted_idx);
-                    }
+                    );
                 }
             }
             (None, Some(error)) => {
@@ -703,7 +701,7 @@ impl ImageViewerApp {
                 preview.rgba(),
             );
             let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
-            if let Some(evicted_idx) = self.texture_cache.insert(
+            self.insert_texture_cache_tracked(
                 idx,
                 handle,
                 crate::loader::TextureCacheInsert {
@@ -715,9 +713,7 @@ impl ImageViewerApp {
                     current_index: self.current_index,
                     total_count: self.image_files.len(),
                 },
-            ) {
-                self.handle_texture_cache_eviction(evicted_idx);
-            }
+            );
         }
     }
 
@@ -814,7 +810,7 @@ impl ImageViewerApp {
         );
         let name = format!("img_preview_{}", idx);
         let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-        if let Some(evicted_idx) = self.texture_cache.insert(
+        self.insert_texture_cache_tracked(
             idx,
             handle,
             crate::loader::TextureCacheInsert {
@@ -826,10 +822,7 @@ impl ImageViewerApp {
                 current_index: self.current_index,
                 total_count: self.image_files.len(),
             },
-        ) {
-            self.handle_texture_cache_eviction(evicted_idx);
-        }
-        self.register_prefetch_resource(idx);
+        );
     }
 
     pub(super) fn cache_hdr_tiled_preview(

@@ -474,16 +474,11 @@ impl ImageViewerApp {
             }
         }
 
-        preserve_current_tile_manager_for_navigation(
-            self.current_index,
-            target_index,
-            &mut self.tile_manager,
-            &mut self.prefetched_tiles,
-        );
+        preserve_current_tile_manager_for_navigation(self, self.current_index, target_index);
         if self.current_index != target_index
             && self.prefetched_tiles.contains_key(&self.current_index)
         {
-            self.register_prefetch_resource(self.current_index);
+            self.track_prefetch_resource(self.current_index);
         }
         self.set_current_index(target_index);
         self.refresh_current_file_name();
