@@ -26,14 +26,22 @@ pub(crate) struct ScanlineStripScratch {
     pub(crate) rgba: Vec<u8>,
 }
 
+/// Grow `buf` to `len` without zero-filling. Safe when the caller overwrites every
+/// element before the slice is read (e.g. libtiff strip decode, full RGBA conversion).
 #[inline]
-fn prepare_u8(buf: &mut Vec<u8>, len: usize) {
+fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
     buf.clear();
-    buf.resize(len, 0);
+    if buf.capacity() < len {
+        buf.reserve(len - buf.capacity());
+    }
+    unsafe {
+        buf.set_len(len);
+    }
 }
 
+/// Zero-fill is required for sparse tile extraction where missing tiles leave gaps.
 #[inline]
-fn prepare_u32(buf: &mut Vec<u32>, len: usize) {
+fn prepare_zeroed_u8(buf: &mut Vec<u8>, len: usize) {
     buf.clear();
     buf.resize(len, 0);
 }
@@ -62,8 +70,8 @@ pub(crate) fn with_tiled_extract_scratch<R>(
 ) -> (R, Vec<u8>) {
     TILED_EXTRACT_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_u8(&mut scratch.result, result_len);
-        prepare_u32(&mut scratch.tile, tile_len);
+        prepare_zeroed_u8(&mut scratch.result, result_len);
+        prepare_uninit(&mut scratch.tile, tile_len);
         let r = f(&mut scratch);
         let output = std::mem::replace(&mut scratch.result, Vec::with_capacity(result_len));
         (r, output)
@@ -76,7 +84,7 @@ pub(crate) fn with_scanline_extract_result<R>(
 ) -> (R, Vec<u8>) {
     SCANLINE_EXTRACT_RESULT.with(|result| {
         let mut result = result.borrow_mut();
-        prepare_u8(&mut result, result_len);
+        prepare_zeroed_u8(&mut result, result_len);
         let r = f(&mut result);
         let output = std::mem::replace(&mut *result, Vec::with_capacity(result_len));
         (r, output)
@@ -90,8 +98,8 @@ pub(crate) fn with_scanline_strip_scratch<R>(
 ) -> (R, Vec<u8>) {
     SCANLINE_STRIP_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_u32(&mut scratch.strip, strip_len);
-        prepare_u8(&mut scratch.rgba, rgba_len);
+        prepare_uninit(&mut scratch.strip, strip_len);
+        prepare_uninit(&mut scratch.rgba, rgba_len);
         let r = f(&mut scratch);
         let output = std::mem::replace(&mut scratch.rgba, Vec::with_capacity(rgba_len));
         (r, output)
@@ -101,7 +109,7 @@ pub(crate) fn with_scanline_strip_scratch<R>(
 pub(crate) fn with_scanline_strip_buf<R>(strip_len: usize, f: impl FnOnce(&mut [u32]) -> R) -> R {
     SCANLINE_STRIP_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_u32(&mut scratch.strip, strip_len);
+        prepare_uninit(&mut scratch.strip, strip_len);
         f(&mut scratch.strip)
     })
 }
