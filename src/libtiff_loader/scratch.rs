@@ -44,6 +44,10 @@ fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
         buf.reserve(len - buf.capacity());
     }
     unsafe {
+        // SAFETY: `reserve` above ensures capacity >= `len`. `set_len` exposes uninitialized
+        // slots; callers must write every element before reading (libtiff TIFFReadRGBA*
+        // callbacks fill strip/tile buffers; RGBA conversion loops fill rgba). All call sites
+        // of `prepare_uninit` satisfy this contract.
         buf.set_len(len);
     }
 }
