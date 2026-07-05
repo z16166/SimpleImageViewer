@@ -241,7 +241,6 @@ pub struct UltraHdrTiledImageSource {
     metadata: GainMapMetadata,
     target_hdr_capacity: f32,
     tile_cache: Mutex<HdrTileCache>,
-    lazy_preview_buffer: Mutex<Option<Vec<f32>>>,
     iso_deferred_metadata: Arc<HdrImageMetadata>,
 }
 
@@ -302,7 +301,6 @@ impl UltraHdrTiledImageSource {
             metadata,
             target_hdr_capacity,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
-            lazy_preview_buffer: Mutex::new(None),
             iso_deferred_metadata,
         })
     }
@@ -342,7 +340,6 @@ impl UltraHdrTiledImageSource {
             metadata: deferred.metadata,
             target_hdr_capacity,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
-            lazy_preview_buffer: Mutex::new(None),
             iso_deferred_metadata,
         })
     }
@@ -384,15 +381,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         }
 
         let pixel_count = preview_width as usize * preview_height as usize * 4;
-        let mut lazy = self.lazy_preview_buffer.lock();
-        let rgba_f32 = if lazy.as_ref().is_none_or(|buf| buf.len() != pixel_count) {
-            vec![0.0_f32; pixel_count]
-        } else {
-            lazy.take().expect("checked Some")
-        };
-        drop(lazy);
-
-        let mut rgba_f32 = rgba_f32;
+        let mut rgba_f32 = vec![0.0_f32; pixel_count];
         let sdr = self.sdr_rgba.as_slice();
         let gain = self.gain_rgba.as_slice();
         let physical_width = self.physical_width;
