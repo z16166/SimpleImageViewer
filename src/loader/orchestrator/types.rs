@@ -18,8 +18,9 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    DecodeProfile, InFlightLoad, LoaderOutput, ProfileSpawnRelation, RefinementRequest,
-    TileDecodeSource, TilePixelKind, profile_spawn_relation,
+    DecodeProfile, InFlightLoad, LoadIntent, LoaderOutput, MAX_IMG_LOADER_THREADS,
+    ProfileSpawnRelation, RefinementRequest, TileDecodeSource, TilePixelKind,
+    profile_spawn_relation,
 };
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
@@ -270,6 +271,11 @@ pub(crate) fn should_spawn_load_task(
             }
         },
         None => {
+            if profile.load_intent == LoadIntent::NeighborPrefetch
+                && loading.len() >= MAX_IMG_LOADER_THREADS
+            {
+                return false;
+            }
             loading.insert(index, InFlightLoad { profile });
             true
         }

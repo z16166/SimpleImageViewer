@@ -66,7 +66,7 @@ use animation_bootstrap::{
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{
     PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
-    primary_with_retainable_mmap, recover_via_platform_and_content_detection,
+    primary_with_retainable_mmap,
 };
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_primary_attempt;
@@ -75,7 +75,7 @@ use modern::{
     load_jxl_with_target_capacity_outcome_from_mmap, spawn_avif_sequence_remainder_decode,
     spawn_jxl_animation_remainder_decode,
 };
-use raster::{load_psd, load_static};
+use raster::{load_psd, load_static_from_mmap};
 use raw::load_raw;
 
 pub(crate) struct ImageLoadRequest<'a> {
@@ -404,19 +404,23 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
         }
 
-        let result = load_static(path, hdr_target_capacity, hdr_tone_map);
-        match result {
-            Ok(image) => Ok(image),
-            Err(primary_err) => recover_via_platform_and_content_detection(
-                path,
-                file_name,
-                hdr_target_capacity,
-                hdr_tone_map,
-                high_quality,
-                None,
-                primary_err,
-            ),
-        }
+        return load_primary_with_detection_fallback(
+            path,
+            file_name,
+            hdr_target_capacity,
+            hdr_tone_map,
+            high_quality,
+            || {
+                primary_with_retainable_mmap(path, |mmap| {
+                    load_static_from_mmap(
+                        path,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    )
+                })
+            },
+        );
     })();
 
     let mut preview: Option<DecodedImage> = None;

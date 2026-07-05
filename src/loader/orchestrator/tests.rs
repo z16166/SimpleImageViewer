@@ -1,5 +1,8 @@
 use super::should_spawn_load_task;
-use crate::loader::{DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, decode_profile_stub};
+use crate::loader::{
+    DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, MAX_IMG_LOADER_THREADS,
+    decode_profile_stub,
+};
 use std::collections::HashMap;
 
 #[test]
@@ -51,6 +54,38 @@ fn should_spawn_load_task_supersedes_on_profile_downgrade() {
         loading.get(&3).map(|e| e.profile.raw_high_quality),
         Some(false)
     );
+}
+
+#[test]
+fn should_spawn_load_task_rejects_neighbor_prefetch_at_soft_cap() {
+    let mut loading = HashMap::new();
+    let neighbor = || DecodeProfile {
+        load_intent: LoadIntent::NeighborPrefetch,
+        ..decode_profile_stub()
+    };
+
+    for index in 0..MAX_IMG_LOADER_THREADS {
+        assert!(should_spawn_load_task(
+            &mut loading,
+            index,
+            neighbor()
+        ));
+    }
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
+
+    assert!(!should_spawn_load_task(
+        &mut loading,
+        MAX_IMG_LOADER_THREADS,
+        neighbor()
+    ));
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
+
+    let upgraded = DecodeProfile {
+        load_intent: LoadIntent::Current,
+        ..neighbor()
+    };
+    assert!(should_spawn_load_task(&mut loading, 0, upgraded));
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
 }
 
 #[test]

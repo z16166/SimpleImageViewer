@@ -1014,12 +1014,6 @@ impl ImageLoader {
         let decode_profile_spawn = decode_profile_for_job.clone();
         {
             let mut loading = self.loading.lock();
-            if load_intent == LoadIntent::NeighborPrefetch
-                && loading.len() >= MAX_IMG_LOADER_THREADS
-                && !loading.contains_key(&index)
-            {
-                return;
-            }
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
                 return;
             }
