@@ -87,8 +87,13 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
     for preview_y in 0..height {
         let src_y = src_ys[preview_y as usize];
         let (strip, row_in_strip) = &source_rows[&src_y];
-        let row = sample_preview_row_from_source_strip(strip, *row_in_strip, width, source.width());
-        rgba_f32.extend(row);
+        append_preview_row_from_source_strip(
+            &mut rgba_f32,
+            strip,
+            *row_in_strip,
+            width,
+            source.width(),
+        );
     }
 
     Ok(HdrImageBuffer {
@@ -135,22 +140,21 @@ fn fetch_tiled_preview_source_rows<S: HdrTiledSource + ?Sized>(
     Ok(rows)
 }
 
-fn sample_preview_row_from_source_strip(
+fn append_preview_row_from_source_strip(
+    out: &mut Vec<f32>,
     strip: &super::buffer::HdrTileBuffer,
     row_in_strip: u32,
     preview_width: u32,
     source_width: u32,
-) -> Vec<f32> {
+) {
     let row_offset = row_in_strip as usize * source_width as usize * 4;
     let row_len = source_width as usize * 4;
     let row = &strip.rgba_f32[row_offset..row_offset + row_len];
-    let mut rgba_f32 = Vec::with_capacity(preview_width as usize * 4);
     for preview_x in 0..preview_width {
         let src_x = preview_sample_coord(preview_x, preview_width, source_width) as usize;
         let offset = src_x * 4;
-        rgba_f32.extend_from_slice(&row[offset..offset + 4]);
+        out.extend_from_slice(&row[offset..offset + 4]);
     }
-    rgba_f32
 }
 
 fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
@@ -164,12 +168,15 @@ fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
     let (strip, row_in_strip) = source_rows
         .get(&src_y)
         .ok_or_else(|| format!("missing tiled preview source row {src_y}"))?;
-    Ok(sample_preview_row_from_source_strip(
+    let mut row_f32 = Vec::with_capacity(preview_width as usize * 4);
+    append_preview_row_from_source_strip(
+        &mut row_f32,
         strip,
         *row_in_strip,
         preview_width,
         source.width(),
-    ))
+    );
+    Ok(row_f32)
 }
 
 /// Nearest downsample from an in-memory linear HDR image straight to 8-bit SDR preview pixels.
