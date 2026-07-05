@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// Stage for HDR GPU texture writes. Higher stages are flushed first and evicted last.
+/// Stage for HDR GPU texture writes. Higher stages are flushed first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HdrGpuUploadStage {
     /// Full image plane RGBA32F / R16 uploads (display-critical).
@@ -38,16 +38,17 @@ impl HdrGpuUploadStage {
         Self::ComposeWrite,
         Self::AuxRgba8,
     ];
-
-    const EVICT_ORDER: [Self; 4] = [
-        Self::AuxRgba8,
-        Self::ComposeWrite,
-        Self::TileCreate,
-        Self::PlaneCreate,
-    ];
 }
 
-/// Max queued GPU writes before O(1) front eviction drops the lowest-priority stage.
+/// Error text returned when the staged GPU write backlog is at capacity.
+pub(crate) const HDR_PENDING_GPU_WRITE_QUEUE_FULL: &str =
+    "HDR pending GPU write queue full; retry later";
+
+pub(crate) fn pending_gpu_write_queue_full_err(err: &str) -> bool {
+    err == HDR_PENDING_GPU_WRITE_QUEUE_FULL
+}
+
+/// Max queued GPU writes before new staged writes are refused until flush drains backlog.
 pub(crate) const MAX_HDR_PENDING_GPU_WRITES: usize = 256;
 
 /// Max `write_texture` calls drained per logic tick (checklist #3).
@@ -86,6 +87,18 @@ impl HdrPendingGpuWriteQueues {
         }
     }
 
+    fn try_enqueue(
+        &mut self,
+        stage: HdrGpuUploadStage,
+        write: PendingGpuWrite,
+    ) -> Result<(), ()> {
+        if self.pending_len() >= MAX_HDR_PENDING_GPU_WRITES {
+            return Err(());
+        }
+        self.queue_for_mut(stage).push_back(write);
+        Ok(())
+    }
+
     pub(crate) fn enqueue(
         &mut self,
         stage: HdrGpuUploadStage,
@@ -94,49 +107,17 @@ impl HdrPendingGpuWriteQueues {
         bytes_per_row: u32,
         rows_per_image: u32,
         extent: wgpu::Extent3d,
-    ) {
-        let write = PendingGpuWrite {
-            texture,
-            bytes,
-            bytes_per_row,
-            rows_per_image,
-            extent,
-        };
-        if self.pending_len() >= MAX_HDR_PENDING_GPU_WRITES {
-            let need = self
-                .pending_len()
-                .saturating_sub(MAX_HDR_PENDING_GPU_WRITES - 1);
-            let evicted = self.evict(need);
-            if !evicted.is_empty() {
-                log::warn!(
-                    "[HDR] Pending GPU write queue full; re-queuing {} evicted write(s)",
-                    evicted.len()
-                );
-            }
-            for (evict_stage, item) in evicted {
-                self.queue_for_mut(evict_stage).push_back(item);
-            }
-        }
-        self.queue_for_mut(stage).push_back(write);
-    }
-
-    fn evict(&mut self, need: usize) -> Vec<(HdrGpuUploadStage, PendingGpuWrite)> {
-        if need == 0 {
-            return Vec::new();
-        }
-        let mut evicted = Vec::new();
-        for stage in HdrGpuUploadStage::EVICT_ORDER {
-            while evicted.len() < need {
-                let Some(item) = self.queue_for_mut(stage).pop_front() else {
-                    break;
-                };
-                evicted.push((stage, item));
-            }
-            if evicted.len() >= need {
-                break;
-            }
-        }
-        evicted
+    ) -> Result<(), ()> {
+        self.try_enqueue(
+            stage,
+            PendingGpuWrite {
+                texture,
+                bytes,
+                bytes_per_row,
+                rows_per_image,
+                extent,
+            },
+        )
     }
 
     pub(crate) fn flush(&mut self, queue: &wgpu::Queue, quota: usize) -> usize {
@@ -210,14 +191,18 @@ pub(crate) fn submit_texture_write<'a>(
             Ok(())
         }
         GpuUploadSink::Pending { queues, stage } => {
-            queues.gpu_writes.lock().enqueue(
-                stage,
-                texture,
-                upload_bytes.into_owned(),
-                bytes_per_row,
-                rows_per_image,
-                extent,
-            );
+            queues
+                .gpu_writes
+                .lock()
+                .enqueue(
+                    stage,
+                    texture,
+                    upload_bytes.into_owned(),
+                    bytes_per_row,
+                    rows_per_image,
+                    extent,
+                )
+                .map_err(|()| HDR_PENDING_GPU_WRITE_QUEUE_FULL.to_string())?;
             queues.bump_active_work(1);
             Ok(())
         }

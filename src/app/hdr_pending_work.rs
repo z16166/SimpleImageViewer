@@ -31,8 +31,8 @@ use crate::hdr::renderer::{
     HdrPendingTileUploadRequest, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
     MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
     MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC, ensure_hdr_callback_resources,
-    hdr_callback_resources_readiness, upload_callback_tile, upload_image_plane_with_sink,
-    upload_jpeg_tiled_source_textures,
+    hdr_callback_resources_readiness, pending_gpu_write_queue_full_err, upload_callback_tile,
+    upload_image_plane_with_sink, upload_jpeg_tiled_source_textures,
 };
 use crate::loader::REFINEMENT_POOL;
 use eframe::egui;
@@ -135,7 +135,11 @@ impl ImageViewerApp {
                     });
             }
             Err(err) => {
-                log::warn!("[HDR] Background plane upload failed: {err}");
+                if pending_gpu_write_queue_full_err(&err) {
+                    log::debug!("[HDR] Background plane upload deferred: {err}");
+                } else {
+                    log::warn!("[HDR] Background plane upload failed: {err}");
+                }
                 completed.clear_plane_upload_inflight(key);
             }
         }
@@ -196,7 +200,11 @@ impl ImageViewerApp {
                     });
             }
             Err(err) => {
-                log::warn!("[HDR] Background tile upload failed: {err}");
+                if pending_gpu_write_queue_full_err(&err) {
+                    log::debug!("[HDR] Background tile upload deferred: {err}");
+                } else {
+                    log::warn!("[HDR] Background tile upload failed: {err}");
+                }
                 completed.clear_tile_upload_inflight(tile_key);
             }
         }
@@ -260,7 +268,11 @@ impl ImageViewerApp {
                 );
             }
             Err(err) => {
-                log::warn!("[HDR] Background JPEG tiled source upload failed: {err}");
+                if pending_gpu_write_queue_full_err(&err) {
+                    log::debug!("[HDR] Background JPEG tiled source upload deferred: {err}");
+                } else {
+                    log::warn!("[HDR] Background JPEG tiled source upload failed: {err}");
+                }
                 completed.clear_jpeg_tiled_source_upload_inflight(upload_key, target_format);
             }
         }
@@ -756,14 +768,29 @@ impl ImageViewerApp {
                         height,
                         &pixels,
                     ) {
-                        Ok(()) => changed = true,
+                        Ok(()) => {
+                            changed = true;
+                            self.hdr_pending_work
+                                .clear_iso_image_compose_inflight(key, target_capacity_bits);
+                        }
+                        Err(err) if pending_gpu_write_queue_full_err(&err) => {
+                            log::debug!("[HDR] ISO CPU compose deferred: {err}");
+                            defer.push(HdrCompletedComposeWrite::IsoImage {
+                                key,
+                                target_capacity_bits,
+                                target_format,
+                                width,
+                                height,
+                                pixels,
+                            });
+                        }
                         Err(err) => {
                             log::warn!("[HDR] ISO CPU compose upload failed: {err}");
                             resources.mark_iso_image_compose_failed(key, target_capacity_bits);
+                            self.hdr_pending_work
+                                .clear_iso_image_compose_inflight(key, target_capacity_bits);
                         }
                     }
-                    self.hdr_pending_work
-                        .clear_iso_image_compose_inflight(key, target_capacity_bits);
                 }
                 #[cfg(feature = "heif-native")]
                 HdrCompletedComposeWrite::AppleImage {
@@ -782,14 +809,29 @@ impl ImageViewerApp {
                         height,
                         &pixels,
                     ) {
-                        Ok(()) => changed = true,
+                        Ok(()) => {
+                            changed = true;
+                            self.hdr_pending_work
+                                .clear_apple_image_compose_inflight(key, target_capacity_bits);
+                        }
+                        Err(err) if pending_gpu_write_queue_full_err(&err) => {
+                            log::debug!("[HDR] Apple CPU compose deferred: {err}");
+                            defer.push(HdrCompletedComposeWrite::AppleImage {
+                                key,
+                                target_capacity_bits,
+                                target_format,
+                                width,
+                                height,
+                                pixels,
+                            });
+                        }
                         Err(err) => {
                             log::warn!("[HDR] Apple CPU compose upload failed: {err}");
                             resources.mark_apple_image_compose_failed(key, target_capacity_bits);
+                            self.hdr_pending_work
+                                .clear_apple_image_compose_inflight(key, target_capacity_bits);
                         }
                     }
-                    self.hdr_pending_work
-                        .clear_apple_image_compose_inflight(key, target_capacity_bits);
                 }
                 HdrCompletedComposeWrite::IsoTile {
                     tile_key,
@@ -807,14 +849,29 @@ impl ImageViewerApp {
                         height,
                         &pixels,
                     ) {
-                        Ok(()) => changed = true,
+                        Ok(()) => {
+                            changed = true;
+                            self.hdr_pending_work
+                                .clear_iso_tile_compose_inflight(tile_key, target_capacity_bits);
+                        }
+                        Err(err) if pending_gpu_write_queue_full_err(&err) => {
+                            log::debug!("[HDR] ISO tile CPU compose deferred: {err}");
+                            defer.push(HdrCompletedComposeWrite::IsoTile {
+                                tile_key,
+                                target_capacity_bits,
+                                target_format,
+                                width,
+                                height,
+                                pixels,
+                            });
+                        }
                         Err(err) => {
                             log::warn!("[HDR] ISO tile CPU compose upload failed: {err}");
                             resources.mark_iso_tile_compose_failed(tile_key);
+                            self.hdr_pending_work
+                                .clear_iso_tile_compose_inflight(tile_key, target_capacity_bits);
                         }
                     }
-                    self.hdr_pending_work
-                        .clear_iso_tile_compose_inflight(tile_key, target_capacity_bits);
                 }
                 #[cfg(not(feature = "heif-native"))]
                 HdrCompletedComposeWrite::AppleImage { .. } => {}

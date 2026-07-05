@@ -74,7 +74,9 @@ pub(crate) use self::pending_work::{
 };
 
 mod pending_gpu_writes;
-pub(crate) use self::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage};
+pub(crate) use self::pending_gpu_writes::{
+    GpuUploadSink, HdrGpuUploadStage, pending_gpu_write_queue_full_err,
+};
 
 mod texture_pool;
 pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool, TexturePoolKey};
