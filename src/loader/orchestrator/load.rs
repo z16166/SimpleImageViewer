@@ -1012,20 +1012,14 @@ impl ImageLoader {
         };
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
-        if load_intent == LoadIntent::NeighborPrefetch {
-            // Soft cap before registering the job. Two prefetches can both pass this read-only
-            // check while the pool is below the limit; the insert below serializes registration
-            // and `should_spawn_load_task` rejects the loser. Benign TOCTOU — do not merge the
-            // locks (would hold the mutex across `spawn_decode_profile`).
-            let loading_snapshot = self.loading.lock();
-            if loading_snapshot.len() >= MAX_IMG_LOADER_THREADS
-                && !loading_snapshot.contains_key(&index)
+        {
+            let mut loading = self.loading.lock();
+            if load_intent == LoadIntent::NeighborPrefetch
+                && loading.len() >= MAX_IMG_LOADER_THREADS
+                && !loading.contains_key(&index)
             {
                 return;
             }
-        }
-        {
-            let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
                 return;
             }
@@ -1143,21 +1137,34 @@ impl ImageLoader {
             });
         };
         if load_intent == LoadIntent::Current {
-            // Soft cap before fetch_add. Two current-image loads can both pass this read-only
-            // check while the counter is below the limit; both then fetch_add. Benign TOCTOU --
-            // same pattern as the neighbor prefetch gate above.
-            let os_thread_cap_reached = self
-                .current_image_os_threads
-                .load(std::sync::atomic::Ordering::Acquire)
-                >= MAX_CURRENT_IMAGE_OS_THREADS;
-            if os_thread_cap_reached {
+            let mut acquired_os_thread = false;
+            loop {
+                let current = self
+                    .current_image_os_threads
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if current >= MAX_CURRENT_IMAGE_OS_THREADS {
+                    break;
+                }
+                if self
+                    .current_image_os_threads
+                    .compare_exchange_weak(
+                        current,
+                        current + 1,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    acquired_os_thread = true;
+                    break;
+                }
+            }
+            if !acquired_os_thread {
                 log::debug!(
                     "[Loader] current-image OS thread cap ({MAX_CURRENT_IMAGE_OS_THREADS}) reached; using pool"
                 );
                 self.pool.spawn(run_worker);
             } else {
-                self.current_image_os_threads
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 let thread_name = format!("img-loader-current-{index}");
                 // Keep the worker in an Arc so a failed OS-thread spawn can fall back to the pool
                 // instead of dropping the closure (which would leave only the 50ms delayed fallback).
