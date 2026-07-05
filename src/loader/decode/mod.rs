@@ -65,8 +65,9 @@ use animation_bootstrap::{
 };
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{
-    load_primary_with_detection_fallback, primary_with_retainable_mmap,
-    recover_via_platform_and_content_detection, PrimaryDecodeAttempt,
+    load_primary_with_detection_fallback, primary_with_optional_mmap,
+    primary_with_retainable_mmap, recover_via_platform_and_content_detection,
+    PrimaryDecodeAttempt,
 };
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_primary_attempt;
@@ -200,49 +201,56 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
         }
         if ext == "tif" || ext == "tiff" {
-            if tiff_raw_sniff::tiff_may_be_camera_raw(path)
-                && crate::raw_processor::probe_libraw_can_open(path)
-            {
-                log::info!(
-                    "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
-                    file_name
-                );
-                return load_raw(raw::RawLoadRequest {
-                    index,
-                    path,
-                    refine_tx: refine_tx.clone(),
-                    load_tx: tx.clone(),
-                    decode_profile: decode_profile.clone(),
-                    high_quality,
-                    raw_demosaic_mode,
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                    raw_open_prefetch,
-                })
-                .map(|out| {
-                    if out.osd.sensor_size.0 > 0 {
-                        raw_osd_info = Some(out.osd);
-                    }
-                    out.image
-                });
-            }
-            return load_primary_with_detection_fallback(
-                path,
-                file_name,
-                hdr_target_capacity,
-                hdr_tone_map,
-                high_quality,
-                || {
-                    primary_with_retainable_mmap(path, |mmap| {
-                        crate::libtiff_loader::load_via_libtiff_from_mmap(
+            match crate::mmap_util::map_file(path) {
+                Ok(mmap) if !mmap.is_empty() => {
+                    let file_mmap = Arc::new(mmap);
+                    if tiff_may_be_camera_raw_bytes(file_mmap.as_ref())
+                        && crate::raw_processor::probe_libraw_can_open_bytes(file_mmap.as_ref())
+                    {
+                        log::info!(
+                            "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
+                            file_name
+                        );
+                        return load_raw(raw::RawLoadRequest {
+                            index,
                             path,
-                            mmap,
+                            refine_tx: refine_tx.clone(),
+                            load_tx: tx.clone(),
+                            decode_profile: decode_profile.clone(),
+                            high_quality,
+                            raw_demosaic_mode,
                             hdr_target_capacity,
                             hdr_tone_map,
-                        )
-                    })
-                },
-            );
+                            raw_open_prefetch,
+                        })
+                        .map(|out| {
+                            if out.osd.sensor_size.0 > 0 {
+                                raw_osd_info = Some(out.osd);
+                            }
+                            out.image
+                        });
+                    }
+                    return load_primary_with_detection_fallback(
+                        path,
+                        file_name,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        high_quality,
+                        || {
+                            primary_with_optional_mmap(Some(Arc::clone(&file_mmap)), path, |mmap| {
+                                crate::libtiff_loader::load_via_libtiff_from_mmap(
+                                    path,
+                                    mmap,
+                                    hdr_target_capacity,
+                                    hdr_tone_map,
+                                )
+                            })
+                        },
+                    );
+                }
+                Ok(_) => return Err("empty file".to_string()),
+                Err(e) => return Err(e.to_string()),
+            }
         }
 
         if ext == "avif" || ext == "avifs" {
@@ -256,7 +264,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     primary_with_retainable_mmap(path, |mmap| {
                         load_avif_with_target_capacity_outcome_from_mmap(
                             path,
-                            mmap.as_ref(),
+                            mmap,
                             hdr_target_capacity,
                             hdr_tone_map,
                             prefer_embedded_sdr_master,

@@ -65,7 +65,7 @@ pub(crate) struct AvifLoadOutcome {
 }
 
 pub(crate) struct AvifSequenceRemainderJob {
-    pub bytes: Arc<[u8]>,
+    pub mmap: Arc<memmap2::Mmap>,
     pub path: PathBuf,
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
@@ -77,7 +77,9 @@ pub(crate) fn load_avif_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
-    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    let mmap = Arc::new(
+        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?,
+    );
     load_avif_with_target_capacity_from_mmap(
         path,
         &mmap,
@@ -89,14 +91,14 @@ pub(crate) fn load_avif_with_target_capacity(
 
 pub(crate) fn load_avif_with_target_capacity_from_mmap(
     path: &Path,
-    mmap: &memmap2::Mmap,
+    mmap: &Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     load_avif_with_target_capacity_outcome_from_mmap(
         path,
-        mmap,
+        Arc::clone(mmap),
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -112,10 +114,12 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<AvifLoadOutcome, String> {
-    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+    let mmap = Arc::new(
+        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?,
+    );
     load_avif_with_target_capacity_outcome_from_mmap(
         path,
-        &mmap,
+        mmap,
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -125,7 +129,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
 
 pub(crate) fn load_avif_with_target_capacity_outcome_from_mmap(
     path: &Path,
-    mmap: &memmap2::Mmap,
+    mmap: Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
@@ -133,7 +137,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome_from_mmap(
 ) -> Result<AvifLoadOutcome, String> {
     load_avif_with_target_capacity_outcome_impl(
         path,
-        &mmap[..],
+        mmap,
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -158,7 +162,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
         let decode_capacity =
             hdr_gain_map_decode_capacity(job.hdr_target_capacity, &job.hdr_tone_map);
         let decode = match crate::hdr::avif::try_decode_avif_image_sequence_hdr_limited(
-            &job.bytes,
+            job.mmap.as_ref(),
             decode_capacity,
             None,
         ) {
@@ -190,7 +194,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
         let image = apply_exif_orientation_to_image_data(
             &job.path,
             ImageData::HdrAnimated(frames),
-            Some(&job.bytes),
+            Some(job.mmap.as_ref()),
         );
         log::info!(
             "[Loader] AVIF image sequence remainder: {} frames — {}",
@@ -255,12 +259,13 @@ fn hdr_animated_from_sequence_decode(
 
 fn load_avif_with_target_capacity_outcome_impl(
     path: &Path,
-    bytes: &[u8],
+    mmap: Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<AvifLoadOutcome, String> {
+    let bytes = mmap.as_ref();
     #[cfg(feature = "avif-native")]
     {
         let gain_map_probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes);
@@ -295,7 +300,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                             path.display()
                         );
                         Some(AvifSequenceRemainderJob {
-                            bytes: Arc::from(bytes),
+                            mmap: Arc::clone(&mmap),
                             path: path.to_path_buf(),
                             hdr_target_capacity,
                             hdr_tone_map,

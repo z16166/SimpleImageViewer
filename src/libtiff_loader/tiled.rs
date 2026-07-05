@@ -80,7 +80,9 @@ impl LibTiffTiledSource {
         let curr_tx = tile_col * tw;
         let curr_ty = tile_row * th;
 
-        let rgba = with_tiled_decode_scratch(tile_len, rgba_len, |tile_buf, rgba| {
+        let (_, rgba) = with_tiled_decode_scratch(tile_len, rgba_len, |scratch| {
+            let tile_buf = &mut scratch.tile;
+            let rgba = &mut scratch.rgba;
             unsafe {
                 if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr())
                     == 0
@@ -99,7 +101,7 @@ impl LibTiffTiledSource {
                     }
                 }
             }
-            Some(rgba.to_vec())
+            Some(())
         })?;
 
         let data = Arc::new(rgba);
@@ -136,7 +138,7 @@ impl TiledImageSource for LibTiffTiledSource {
             .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
             .unwrap_or(0);
 
-        let ((), result) = with_tiled_extract_scratch(result_len, 0, |scratch| {
+        let ((), result) = with_tiled_extract_scratch(result_len, |scratch| {
             let result = &mut scratch.result;
             let handle = match self.acquire_handle() {
                 Ok(h) => h,

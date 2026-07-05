@@ -156,7 +156,7 @@ fn load_by_image_format_from_mmap(
         }
         image::ImageFormat::Avif => load_avif_with_target_capacity_from_mmap(
             path,
-            mmap.as_ref(),
+            mmap,
             hdr_target_capacity,
             hdr_tone_map,
             false,
@@ -355,7 +355,7 @@ pub(crate) fn load_via_content_detection(
         if crate::hdr::avif::is_avif_brand(brand) {
             return load_avif_with_target_capacity_from_mmap(
                 path,
-                mmap.as_ref(),
+                &mmap,
                 hdr_target_capacity,
                 hdr_tone_map,
                 false,
