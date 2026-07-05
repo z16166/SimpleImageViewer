@@ -309,12 +309,7 @@ impl ImageViewerApp {
                     tile_clip,
                     padding,
                     &mut self.tiled_visible_tiles_scratch,
-                );
-                tm.primary_visible_from_padded_into(
-                    unrotated_dest,
-                    tile_clip,
-                    &self.tiled_visible_tiles_scratch,
-                    &mut self.tiled_primary_visible_tiles_scratch,
+                    Some(&mut self.tiled_primary_visible_tiles_scratch),
                 );
             }
             tile_visits_for_backend_into(

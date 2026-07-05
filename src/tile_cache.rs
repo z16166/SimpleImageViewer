@@ -329,6 +329,57 @@ mod tests {
     }
 
     #[test]
+    fn visible_tiles_into_emits_primary_subset_in_same_pass() {
+        let source = Arc::new(DummyTileSource {
+            width: 4096,
+            height: 4096,
+        });
+        let manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
+        let viewport = egui::Rect::from_min_max(
+            egui::pos2(0.0, 0.0),
+            egui::pos2(800.0, 600.0),
+        );
+        let screen_clip = egui::Rect::from_min_max(
+            egui::pos2(100.0, 50.0),
+            egui::pos2(700.0, 550.0),
+        );
+        let padding = 64.0;
+
+        let mut padded = Vec::new();
+        let mut primary = Vec::new();
+        manager.visible_tiles_into(
+            viewport,
+            screen_clip,
+            padding,
+            &mut padded,
+            Some(&mut primary),
+        );
+
+        assert!(!padded.is_empty());
+        assert!(!primary.is_empty());
+        assert!(primary.len() <= padded.len());
+
+        let mut padded_only = Vec::new();
+        let mut primary_only = Vec::new();
+        manager.visible_tiles_into(
+            viewport,
+            screen_clip,
+            padding,
+            &mut padded_only,
+            None,
+        );
+        manager.visible_tiles_into(
+            viewport,
+            screen_clip,
+            0.0,
+            &mut primary_only,
+            None,
+        );
+        assert_eq!(padded, padded_only);
+        assert_eq!(primary, primary_only);
+    }
+
+    #[test]
     fn retain_pending_tiles_drops_offscreen_entries() {
         let source = Arc::new(DummyTileSource {
             width: 4096,
@@ -684,14 +735,20 @@ impl TileManager {
     /// `viewport` is the screen-space rectangle where the full image would be displayed.
     /// `screen_clip` is the visible screen area (to clip against).
     /// Writes `(TileCoord, screen_rect, uv_rect)` tuples into `out` (reuses capacity).
+    /// When `primary_out` is `Some`, also writes tiles visible without lookahead padding
+    /// in the same center-first scan (no second O(cols x rows) pass).
     pub fn visible_tiles_into(
         &self,
         viewport: egui::Rect,
         screen_clip: egui::Rect,
         padding: f32,
         out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
+        mut primary_out: Option<&mut Vec<(TileCoord, egui::Rect, egui::Rect)>>,
     ) {
         out.clear();
+        if let Some(primary) = primary_out.as_deref_mut() {
+            primary.clear();
+        }
         let Some((start_col, end_col, start_row, end_row)) = visible_tile_index_bounds(
             self.full_width,
             self.full_height,
@@ -702,6 +759,20 @@ impl TileManager {
             padding,
         ) else {
             return;
+        };
+
+        let primary_bounds = if primary_out.is_some() {
+            visible_tile_index_bounds(
+                self.full_width,
+                self.full_height,
+                self.cols(),
+                self.rows(),
+                viewport,
+                screen_clip,
+                0.0,
+            )
+        } else {
+            None
         };
 
         let screen_center = screen_clip.center();
@@ -750,39 +821,20 @@ impl TileManager {
                     );
 
                     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                    out.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
+                    let coord = TileCoord { col: c, row: r };
+                    out.push((coord, tile_screen_rect, uv));
+                    if let (Some(primary), Some((p_start_col, p_end_col, p_start_row, p_end_row))) =
+                        (primary_out.as_deref_mut(), primary_bounds)
+                    {
+                        if c >= p_start_col
+                            && c <= p_end_col
+                            && r >= p_start_row
+                            && r <= p_end_row
+                        {
+                            primary.push((coord, tile_screen_rect, uv));
+                        }
+                    }
                 }
-            }
-        }
-    }
-
-    /// Derive primary-visible tiles (no lookahead padding) from a padded visibility scan.
-    pub fn primary_visible_from_padded_into(
-        &self,
-        viewport: egui::Rect,
-        screen_clip: egui::Rect,
-        padded: &[(TileCoord, egui::Rect, egui::Rect)],
-        out: &mut Vec<(TileCoord, egui::Rect, egui::Rect)>,
-    ) {
-        out.clear();
-        let Some((start_col, end_col, start_row, end_row)) = visible_tile_index_bounds(
-            self.full_width,
-            self.full_height,
-            self.cols(),
-            self.rows(),
-            viewport,
-            screen_clip,
-            0.0,
-        ) else {
-            return;
-        };
-        for &(coord, screen_rect, uv) in padded {
-            if coord.col >= start_col
-                && coord.col <= end_col
-                && coord.row >= start_row
-                && coord.row <= end_row
-            {
-                out.push((coord, screen_rect, uv));
             }
         }
     }
