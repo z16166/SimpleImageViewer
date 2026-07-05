@@ -169,12 +169,21 @@ impl ImageViewerApp {
                 self.hq_tiled_preview_pending_indices.remove(&update.index);
             }
             if crate::loader::output_mode_is_hdr(display.output_mode) {
-                let _ = self.try_upload_tiled_sdr_from_hdr_cache(
+                match self.try_upload_tiled_sdr_from_hdr_cache(
                     update.index,
                     ctx,
                     update.preview_bundle.stage(),
                     &update.decode_profile,
-                );
+                ) {
+                    TiledSdrFromHdrCacheOutcome::Failed => {
+                        log::warn!(
+                            "[App] HDR tiled tone-map failed after preview update for index {}",
+                            update.index
+                        );
+                    }
+                    TiledSdrFromHdrCacheOutcome::Uploaded
+                    | TiledSdrFromHdrCacheOutcome::AlreadyCached => {}
+                }
             }
             if should_request_repaint_for_asset_update(
                 AssetUpdateKind::PreviewUpgraded,
@@ -470,15 +479,25 @@ impl ImageViewerApp {
                     profile.profile_epoch,
                     self.current_index,
                 );
-                if self.try_upload_tiled_sdr_from_hdr_cache(
+                match self.try_upload_tiled_sdr_from_hdr_cache(
                     idx,
                     ctx,
                     crate::loader::PreviewStage::Refined,
                     &profile,
                 ) {
-                    self.hq_tiled_preview_pending_indices.remove(&idx);
+                    TiledSdrFromHdrCacheOutcome::Uploaded
+                    | TiledSdrFromHdrCacheOutcome::AlreadyCached => {
+                        self.hq_tiled_preview_pending_indices.remove(&idx);
+                        return;
+                    }
+                    TiledSdrFromHdrCacheOutcome::Failed => {
+                        crate::preload_debug!(
+                            "[PreloadDebug][SyncHq] tone_map_failed idx={} will_try_hdr_refine current={}",
+                            idx,
+                            self.current_index,
+                        );
+                    }
                 }
-                return;
             }
             if let Some(hdr_source) = self.hdr_tiled_source_cache.get(&idx).cloned() {
                 self.hq_tiled_preview_pending_indices.insert(idx);
@@ -526,9 +545,9 @@ impl ImageViewerApp {
         ctx: &egui::Context,
         preview_stage: crate::loader::PreviewStage,
         decode_profile: &crate::loader::DecodeProfile,
-    ) -> bool {
+    ) -> TiledSdrFromHdrCacheOutcome {
         let Some(hdr) = self.hdr_tiled_preview_cache.get(&idx).cloned() else {
-            return false;
+            return TiledSdrFromHdrCacheOutcome::Failed;
         };
         let texture_tag = tiled_sdr_texture_tag_for_stage(preview_stage);
         let needs_tile_manager = self.texture_cache.needs_tile_manager(idx)
@@ -541,7 +560,7 @@ impl ImageViewerApp {
             texture_tag,
             preview_stage,
         ) {
-            return false;
+            return TiledSdrFromHdrCacheOutcome::AlreadyCached;
         }
 
         let exposure = self.effective_hdr_tone_map_settings().exposure_ev;
@@ -554,7 +573,7 @@ impl ImageViewerApp {
                     "[App] HDR tiled preview tone-map failed for index {}: {err}",
                     idx
                 );
-                return false;
+                return TiledSdrFromHdrCacheOutcome::Failed;
             }
         };
         let preview = DecodedImage::new(hdr.width, hdr.height, pixels);
@@ -566,7 +585,7 @@ impl ImageViewerApp {
             preview_stage,
             decode_profile,
         );
-        true
+        TiledSdrFromHdrCacheOutcome::Uploaded
     }
 
     fn apply_tiled_sdr_preview_upload(
@@ -596,6 +615,17 @@ impl ImageViewerApp {
             );
         }
         self.upload_static_raw_gpu_bootstrap_preview_if_needed(idx, &preview, ctx);
+
+        let should_clear_raw_pending = texture_stage == crate::loader::PreviewStage::Refined
+            && self.tile_manager.as_ref().is_some_and(|tm| {
+                tiled_sdr_preview_applies_to_manager(
+                    tm,
+                    idx,
+                    decode_profile,
+                    texture_stage,
+                    &display,
+                ) && tm.preview_texture.is_some()
+            });
 
         if let Some(ref mut tm) = self.tile_manager
             && tiled_sdr_preview_applies_to_manager(
@@ -630,17 +660,7 @@ impl ImageViewerApp {
                 ctx.request_repaint();
             }
         }
-        if texture_stage == crate::loader::PreviewStage::Refined
-            && self.tile_manager.as_ref().is_some_and(|tm| {
-                tiled_sdr_preview_applies_to_manager(
-                    tm,
-                    idx,
-                    decode_profile,
-                    texture_stage,
-                    &display,
-                )
-            })
-        {
+        if should_clear_raw_pending {
             self.clear_cpu_raw_refinement_pending(idx);
         }
 

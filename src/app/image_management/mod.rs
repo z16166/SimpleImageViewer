@@ -135,6 +135,13 @@ fn tiled_sdr_preview_applies_to_manager(
         && crate::loader::profile_satisfies_display(&tm.decode_profile, display)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TiledSdrFromHdrCacheOutcome {
+    Uploaded,
+    AlreadyCached,
+    Failed,
+}
+
 fn tiled_existing_preview_stage(
     texture_cache: &crate::loader::TextureCache,
     index: usize,

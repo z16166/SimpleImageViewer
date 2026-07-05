@@ -788,6 +788,21 @@ impl ImageLoader {
         self.apply_wgpu_context(device, queue, device_id);
     }
 
+    pub(crate) fn wgpu_device_handle(&self) -> Option<&wgpu::Device> {
+        self.wgpu_device.as_ref()
+    }
+
+    pub(crate) fn preview_tone_map_wgpu_context(
+        &self,
+    ) -> (Option<wgpu::Device>, Option<wgpu::Queue>, u64) {
+        (
+            self.wgpu_device.clone(),
+            self.wgpu_queue.clone(),
+            self.wgpu_device_id
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
     pub fn prefetch_raw_open(&self, path: PathBuf) {
         self.raw_open_prefetch.request(&self.pool, path);
     }

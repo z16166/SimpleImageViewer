@@ -431,6 +431,8 @@ pub enum PreviewStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TexturePreviewBufferTag {
     MainWindowSdr,
+    /// Bootstrap tiled SDR preview from initial load. Pair with [`PreviewStage::Initial`] only;
+    /// refined tiled previews use [`Self::TiledRefinedLoader`].
     TiledBootstrap,
     TiledRefinedLoader,
     /// `ImageLoader::trigger_hq_tiled_sdr_preview`; not a substitute for loader HDR refine.
@@ -443,6 +445,8 @@ impl TexturePreviewBufferTag {
     const PREVIEW_STAGE_COUNT: u16 = 2;
 
     pub fn quality_rank(self, stage: PreviewStage) -> u16 {
+        // `TiledBootstrap` is only stored with `PreviewStage::Initial`; refined loader previews
+        // always use `TiledRefinedLoader`.
         let base = match self {
             Self::RawGpuBootstrap => 0,
             Self::HdrSdrFallback => 1,

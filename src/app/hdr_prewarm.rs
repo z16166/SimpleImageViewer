@@ -56,18 +56,18 @@ impl ImageViewerApp {
         let Some(state) = frame.wgpu_render_state() else {
             return;
         };
-        if self.loader_wgpu_device.as_ref() == Some(&state.device) {
+        if self.loader.wgpu_device_handle() == Some(&state.device) {
             return;
         }
         self.sync_loader_wgpu_context(state.device.clone(), state.queue.clone());
     }
 
     pub(crate) fn sync_loader_wgpu_context(&mut self, device: wgpu::Device, queue: wgpu::Queue) {
-        if self.loader_wgpu_device.as_ref() == Some(&device) {
+        if self.loader.wgpu_device_handle() == Some(&device) {
             return;
         }
 
-        if self.loader_wgpu_device.is_some() {
+        if self.loader.wgpu_device_handle().is_some() {
             // Bump epoch so in-flight loader workers observe a stale device_id via
             // `wgpu_device_id_live` and drop pre-uploaded planes instead of registering them
             // against the replaced Device.
@@ -78,19 +78,13 @@ impl ImageViewerApp {
             );
         }
 
-        self.loader_wgpu_device = Some(device.clone());
-        self.loader_wgpu_queue = Some(queue.clone());
         self.loader
             .set_wgpu_context(Some(device), Some(queue), self.current_device_id);
     }
 
     pub(crate) fn with_loader_preview_tone_map_gpu<R>(&self, f: impl FnOnce() -> R) -> R {
-        crate::hdr::renderer::with_preview_tone_map_gpu(
-            self.loader_wgpu_device.clone(),
-            self.loader_wgpu_queue.clone(),
-            self.current_device_id,
-            f,
-        )
+        let (device, queue, device_id) = self.loader.preview_tone_map_wgpu_context();
+        crate::hdr::renderer::with_preview_tone_map_gpu(device, queue, device_id, f)
     }
 
     pub(crate) fn sync_hdr_callback_resources_prewarm(&mut self, frame: &eframe::Frame) {

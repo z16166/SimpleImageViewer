@@ -65,15 +65,38 @@ impl ImageViewerApp {
         if self.texture_cache.satisfies_tiled_sdr_hq(index) {
             return true;
         }
-        self.tile_manager
+        let Some(tm) = self
+            .tile_manager
             .as_ref()
             .filter(|tm| tm.image_index == index)
-            .and_then(|tm| tm.preview_texture.as_ref())
-            .is_some()
-            && self
-                .texture_cache
-                .cached_preview_stage(index)
-                .is_some_and(|stage| stage == crate::loader::PreviewStage::Refined)
+        else {
+            return false;
+        };
+        if tm.preview_texture.is_none() {
+            return false;
+        }
+        match self.texture_cache.cached_preview_stage(index) {
+            Some(crate::loader::PreviewStage::Refined) => true,
+            None => {
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] tm_preview_without_cache_stage idx={} cache_tag={:?} hq_pending={} current={}",
+                    index,
+                    self.texture_cache.cached_buffer_tag(index),
+                    self.hq_tiled_preview_pending_indices.contains(&index),
+                    self.current_index,
+                );
+                !self.hq_tiled_preview_pending_indices.contains(&index)
+            }
+            Some(crate::loader::PreviewStage::Initial) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][SyncHq] tm_preview_cache_stage_initial idx={} cache_tag={:?} current={}",
+                    index,
+                    self.texture_cache.cached_buffer_tag(index),
+                    self.current_index,
+                );
+                false
+            }
+        }
     }
 
     pub(crate) fn index_uses_animated_pipeline(&self, index: usize) -> bool {
@@ -348,6 +371,52 @@ mod tests {
             },
         );
         assert!(app.tiled_hq_preview_requirement_met(0));
+    }
+
+    #[test]
+    fn tm_preview_without_cache_stage_counts_as_hq_when_not_pending() {
+        use crate::loader::{PreviewStage, TextureCacheInsert, TexturePreviewBufferTag};
+        use crate::tile_cache::TileManager;
+        use std::sync::Arc;
+
+        let mut app = app_with_mode(0, RenderShape::Tiled);
+        let ctx = eframe::egui::Context::default();
+        let color_image =
+            eframe::egui::ColorImage::from_rgba_unmultiplied([64, 32], &vec![128u8; 64 * 32 * 4]);
+        let handle = ctx.load_texture("tm_only", color_image, eframe::egui::TextureOptions::LINEAR);
+        let mut tm = TileManager::with_source(
+            0,
+            sample_tiled_profile(),
+            Arc::new(EmptySource) as Arc<dyn crate::loader::TiledImageSource>,
+        );
+        tm.preview_texture = Some(handle);
+        app.tile_manager = Some(tm);
+        assert!(
+            app.tiled_hq_preview_requirement_met(0),
+            "live tile-manager preview without cache stage should satisfy HQ when not pending"
+        );
+
+        app.texture_cache.insert(
+            0,
+            ctx.load_texture(
+                "bootstrap",
+                eframe::egui::ColorImage::from_rgba_unmultiplied([8, 8], &vec![0u8; 256]),
+                eframe::egui::TextureOptions::LINEAR,
+            ),
+            TextureCacheInsert {
+                orig_w: 4096,
+                orig_h: 2048,
+                needs_tile_manager: true,
+                buffer_tag: TexturePreviewBufferTag::TiledBootstrap,
+                stage: PreviewStage::Initial,
+                current_index: 0,
+                total_count: 1,
+            },
+        );
+        assert!(
+            !app.tiled_hq_preview_requirement_met(0),
+            "bootstrap cache stage should block HQ until refined"
+        );
     }
 
     #[test]

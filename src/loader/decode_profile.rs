@@ -124,6 +124,16 @@ fn is_inflight_intent_promotion_only(
     worker_profile.load_intent == LoadIntent::NeighborPrefetch
         && registered_profile.load_intent == LoadIntent::Current
         && profile_decode_capabilities_equal_except_render_shape(worker_profile, registered_profile)
+        && render_shape_intent_promotion_compatible(worker_profile, registered_profile)
+}
+
+/// Allow shape mismatch only while the current-image registration has not recorded install shape yet.
+fn render_shape_intent_promotion_compatible(
+    worker_profile: &DecodeProfile,
+    registered_profile: &DecodeProfile,
+) -> bool {
+    worker_profile.render_shape == registered_profile.render_shape
+        || registered_profile.render_shape == RenderShape::Unknown
 }
 
 fn profile_decode_capabilities_equal_except_render_shape(
@@ -358,6 +368,23 @@ mod tests {
             &worker, &in_flight
         ));
         assert!(!in_flight_profile_supersedes_load_result(
+            &worker, &in_flight
+        ));
+    }
+
+    #[test]
+    fn neighbor_prefetch_with_conflicting_render_shapes_is_not_intent_promotion_only() {
+        let worker = DecodeProfile {
+            load_intent: LoadIntent::NeighborPrefetch,
+            render_shape: RenderShape::Static,
+            ..base_profile()
+        };
+        let in_flight = DecodeProfile {
+            load_intent: LoadIntent::Current,
+            render_shape: RenderShape::Tiled,
+            ..base_profile()
+        };
+        assert!(in_flight_profile_supersedes_hq_refinement(
             &worker, &in_flight
         ));
     }

@@ -2064,8 +2064,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         wgpu_pipeline_cache: None,
         wgpu_adapter_info: None,
         current_device_id: 1,
-        loader_wgpu_device: None,
-        loader_wgpu_queue: None,
         hdr_callback_resources_prewarm:
             crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared(),
         hdr_target_format: None,
@@ -3187,7 +3185,7 @@ fn sync_loader_wgpu_context_bumps_epoch_on_device_replacement() {
 
     app.sync_loader_wgpu_context(device_a, queue_a);
     assert_eq!(app.current_device_id, 1);
-    assert!(app.loader_wgpu_device.is_some());
+    assert!(app.loader.wgpu_device_handle().is_some());
 
     app.sync_loader_wgpu_context(device_b, queue_b);
     assert_eq!(app.current_device_id, 2);
