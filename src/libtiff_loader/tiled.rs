@@ -67,8 +67,9 @@ impl LibTiffTiledSource {
         let tile_idx = self.tile_index(tile_col, tile_row);
         {
             let cache = self.tile_cache.lock();
+            let mut lru = self.tile_lru.lock();
             if let Some(data) = cache.get(&tile_idx) {
-                self.tile_lru.lock().touch(tile_idx);
+                lru.touch(tile_idx);
                 return Some(Arc::clone(data));
             }
         }

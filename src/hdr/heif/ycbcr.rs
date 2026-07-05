@@ -532,6 +532,7 @@ pub(crate) fn ycbcr_image_to_rgba8(
     let h = height as usize;
     let mut rgba = vec![0_u8; w * h * 4];
     let simd_bt709_full_range = matrix == HeifYcbcrMatrix::Bt709 && !nclx_studio_swing;
+    let simd_bt709_limited_range = matrix == HeifYcbcrMatrix::Bt709 && nclx_studio_swing;
     let y_plane = SendReadonlyPtr::new(y_plane);
     let cb_plane = SendReadonlyPtr::new(cb_plane);
     let cr_plane = SendReadonlyPtr::new(cr_plane);
@@ -553,6 +554,18 @@ pub(crate) fn ycbcr_image_to_rgba8(
         }
         if simd_bt709_full_range && !subsample_h {
             super::ycbcr_simd::ycbcr_full_range_bt709_row_444_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
+        }
+        if simd_bt709_limited_range && subsample_v && subsample_h {
+            super::ycbcr_simd::ycbcr_limited_range_bt709_row_420_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
+        }
+        if simd_bt709_limited_range && !subsample_h {
+            super::ycbcr_simd::ycbcr_limited_range_bt709_row_444_to_rgba8(
                 y_row, cb_row, cr_row, row_dst, w,
             );
             return Ok(());
