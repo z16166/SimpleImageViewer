@@ -199,9 +199,7 @@ impl TilePixelCache {
                 true
             }
         });
-        self.lru
-            .lock()
-            .retain_keys(|key| !indices.contains(&key.0));
+        self.lru.lock().retain_keys(|key| !indices.contains(&key.0));
     }
 
     pub fn relocate_image(&mut self, from: usize, to: usize) {
@@ -761,54 +759,94 @@ impl TileManager {
         let center_col = (rel_x * self.full_width as f32 / ts as f32).floor() as i32;
         let center_row = (rel_y * self.full_height as f32 / ts as f32).floor() as i32;
 
-        let max_ring = (start_col..=end_col)
-            .flat_map(|c| (start_row..=end_row).map(move |r| (c, r)))
-            .map(|(c, r)| {
-                let dc = (c as i32 - center_col).unsigned_abs();
-                let dr = (r as i32 - center_row).unsigned_abs();
-                dc.max(dr)
-            })
-            .max()
-            .unwrap_or(0);
+        let start_col_i = i64::from(start_col);
+        let end_col_i = i64::from(end_col);
+        let start_row_i = i64::from(start_row);
+        let end_row_i = i64::from(end_row);
+        let center_col_i = i64::from(center_col);
+        let center_row_i = i64::from(center_row);
+        let distance_to_interval = |value: i64, start: i64, end: i64| {
+            if value < start {
+                start - value
+            } else if value > end {
+                value - end
+            } else {
+                0
+            }
+        };
+        let farthest_distance_to_interval =
+            |value: i64, start: i64, end: i64| (start - value).abs().max((end - value).abs());
+        let min_ring = distance_to_interval(center_col_i, start_col_i, end_col_i)
+            .max(distance_to_interval(center_row_i, start_row_i, end_row_i));
+        let max_ring = farthest_distance_to_interval(center_col_i, start_col_i, end_col_i).max(
+            farthest_distance_to_interval(center_row_i, start_row_i, end_row_i),
+        );
 
-        for ring in 0..=max_ring {
-            for r in start_row..=end_row {
-                for c in start_col..=end_col {
-                    let dc = (c as i32 - center_col).unsigned_abs();
-                    let dr = (r as i32 - center_row).unsigned_abs();
-                    if dc.max(dr) != ring {
-                        continue;
+        let mut push_tile = |c: u32, r: u32| {
+            let tile_x0 = c.saturating_mul(ts);
+            let tile_y0 = r.saturating_mul(ts);
+            let Some(remaining_w) = self.full_width.checked_sub(tile_x0) else {
+                return;
+            };
+            let Some(remaining_h) = self.full_height.checked_sub(tile_y0) else {
+                return;
+            };
+            if remaining_w == 0 || remaining_h == 0 {
+                return;
+            }
+            let tile_w = ts.min(remaining_w);
+            let tile_h = ts.min(remaining_h);
+
+            let sx0 = viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
+            let sy0 =
+                viewport.min.y + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
+            let sx1 = viewport.min.x
+                + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
+            let sy1 = viewport.min.y
+                + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+
+            let tile_screen_rect =
+                egui::Rect::from_min_max(egui::Pos2::new(sx0, sy0), egui::Pos2::new(sx1, sy1));
+
+            let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+            let coord = TileCoord { col: c, row: r };
+            out.push((coord, tile_screen_rect, uv));
+            if let (Some(primary), Some((p_start_col, p_end_col, p_start_row, p_end_row))) =
+                (primary_out.as_deref_mut(), primary_bounds)
+                && c >= p_start_col
+                && c <= p_end_col
+                && r >= p_start_row
+                && r <= p_end_row
+            {
+                primary.push((coord, tile_screen_rect, uv));
+            }
+        };
+
+        for ring in min_ring..=max_ring {
+            let top = center_row_i - ring;
+            let bottom = center_row_i + ring;
+            let left = center_col_i - ring;
+            let right = center_col_i + ring;
+
+            let row_min = top.max(start_row_i);
+            let row_max = bottom.min(end_row_i);
+            let col_min = left.max(start_col_i);
+            let col_max = right.min(end_col_i);
+            if row_min > row_max || col_min > col_max {
+                continue;
+            }
+
+            for r in row_min..=row_max {
+                if r == top || r == bottom {
+                    for c in col_min..=col_max {
+                        push_tile(c as u32, r as u32);
                     }
-
-                    let tile_x0 = c * ts;
-                    let tile_y0 = r * ts;
-                    let tile_w = ts.min(self.full_width - tile_x0);
-                    let tile_h = ts.min(self.full_height - tile_y0);
-
-                    let sx0 = viewport.min.x
-                        + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
-                    let sy0 = viewport.min.y
-                        + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
-                    let sx1 = viewport.min.x
-                        + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
-                    let sy1 = viewport.min.y
-                        + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
-
-                    let tile_screen_rect = egui::Rect::from_min_max(
-                        egui::Pos2::new(sx0, sy0),
-                        egui::Pos2::new(sx1, sy1),
-                    );
-
-                    let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                    let coord = TileCoord { col: c, row: r };
-                    out.push((coord, tile_screen_rect, uv));
-                    if let (Some(primary), Some((p_start_col, p_end_col, p_start_row, p_end_row))) =
-                        (primary_out.as_deref_mut(), primary_bounds)
-                    {
-                        if c >= p_start_col && c <= p_end_col && r >= p_start_row && r <= p_end_row
-                        {
-                            primary.push((coord, tile_screen_rect, uv));
-                        }
+                } else {
+                    if left >= start_col_i && left <= end_col_i {
+                        push_tile(left as u32, r as u32);
+                    }
+                    if right != left && right >= start_col_i && right <= end_col_i {
+                        push_tile(right as u32, r as u32);
                     }
                 }
             }

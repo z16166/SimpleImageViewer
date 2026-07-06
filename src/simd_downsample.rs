@@ -130,8 +130,8 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                     dst: &mut dst,
                     dst_w,
                     dst_h,
-                    x0: &x0,
-                    x1: &x1,
+                    x0,
+                    x1,
                 });
             }
         } else if is_x86_feature_detected!("sse4.1") {
@@ -144,8 +144,8 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                     dst: &mut dst,
                     dst_w,
                     dst_h,
-                    x0: &x0,
-                    x1: &x1,
+                    x0,
+                    x1,
                 });
             }
         } else {
@@ -164,8 +164,8 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
                 dst: &mut dst,
                 dst_w,
                 dst_h,
-                x0: &x0,
-                x1: &x1,
+                x0,
+                x1,
             });
         }
     }

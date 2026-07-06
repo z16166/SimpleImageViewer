@@ -221,12 +221,18 @@ impl Drop for InflightGuard {
 }
 
 fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, String> {
-    if READ_DIR_INFLIGHT_PATHS.lock().contains(path) {
-        return Err(t!("directory_tree.read_busy").to_string());
+    let path_buf = path.to_path_buf();
+    {
+        let mut inflight_paths = READ_DIR_INFLIGHT_PATHS.lock();
+        if !inflight_paths.insert(path_buf.clone()) {
+            return Err(t!("directory_tree.read_busy").to_string());
+        }
     }
+
     loop {
         let current = READ_DIR_HELPERS_INFLIGHT.load(AtomicOrdering::Acquire);
         if current >= MAX_READ_DIR_HELPERS_INFLIGHT {
+            READ_DIR_INFLIGHT_PATHS.lock().remove(&path_buf);
             log::warn!(
                 "[DirectoryTree] read_dir helper cap ({MAX_READ_DIR_HELPERS_INFLIGHT}) reached; skipping {}",
                 path.display()
@@ -247,7 +253,7 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     }
 
     let (tx, rx) = crossbeam_channel::bounded(1);
-    let path_buf = path.to_path_buf();
+    let path_for_thread = path_buf.clone();
     let helper_id = READ_DIR_HELPER_THREAD_ID.fetch_add(1, AtomicOrdering::Relaxed);
     // Orphan threads cannot be cancelled on all platforms; `slot_freed` recycles the inflight
     // cap exactly once whether the helper or the timeout path wins the race.
@@ -257,16 +263,17 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     if std::thread::Builder::new()
         .name(format!("siv-dir-tree-read-dir-{helper_id}"))
         .spawn(move || {
-            let _path_guard = ReadDirPathGuard(path_buf.clone());
+            let _path_guard = ReadDirPathGuard(path_for_thread.clone());
             let _guard = InflightGuard {
                 slot_freed: slot_freed_for_thread,
             };
-            if let Err(err) = tx.send(read_child_directories(&path_buf)) {
+            if let Err(err) = tx.send(read_child_directories(&path_for_thread)) {
                 log::warn!("[DirectoryTree] read_dir orphan helper failed to send result: {err}");
             }
         })
         .is_err()
     {
+        READ_DIR_INFLIGHT_PATHS.lock().remove(&path_buf);
         release_read_dir_helper_slot(&slot_freed);
         return Err(t!(
             "directory_tree.read_failed",
@@ -293,6 +300,25 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
             err = t!("directory_tree.thread_spawn_failed")
         )
         .to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_child_directories_with_timeout_rejects_duplicate_inflight_path() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = std::env::temp_dir().join(format!("siv-dir-inflight-test-{unique_suffix}"));
+        READ_DIR_INFLIGHT_PATHS.lock().insert(path.clone());
+        let _cleanup = ReadDirPathGuard(path.clone());
+
+        let result = read_child_directories_with_timeout(&path);
+
+        assert!(result.is_err());
     }
 }
 
