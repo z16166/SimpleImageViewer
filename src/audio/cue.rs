@@ -138,7 +138,7 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
         return parse_cue_file(&cue_path);
     }
 
-    if shutdown_flag.load(Ordering::Relaxed) {
+    if shutdown_flag.load(Ordering::Acquire) {
         return None;
     }
 
@@ -156,7 +156,7 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
         }
     }
 
-    if shutdown_flag.load(Ordering::Relaxed) {
+    if shutdown_flag.load(Ordering::Acquire) {
         return None;
     }
 
@@ -166,7 +166,7 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
     {
         let mut cue_files = Vec::new();
         for entry in entries.flatten() {
-            if shutdown_flag.load(Ordering::Relaxed) {
+            if shutdown_flag.load(Ordering::Acquire) {
                 return None;
             }
             let p = entry.path();
@@ -198,7 +198,7 @@ pub(crate) fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<
                 .replace("-", "");
 
             for cue_p in cue_files {
-                if shutdown_flag.load(Ordering::Relaxed) {
+                if shutdown_flag.load(Ordering::Acquire) {
                     return None;
                 }
                 if let Some(cue_stem) = cue_p.file_stem().and_then(|s| s.to_str()) {

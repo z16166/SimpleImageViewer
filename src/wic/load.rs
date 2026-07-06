@@ -273,7 +273,7 @@ fn load_via_wic_inner(
         }
 
         let pixel_count = logical_width as u64 * logical_height as u64;
-        let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
+        let tiled_limit = crate::tile_cache::get_tiled_threshold();
         // For WIC, use the conservative 8192 limit for the tiling decision
         // rather than the GPU's actual limit (which may be 16384).
         // WIC's tiled source provides a much better UX for wide/tall images:

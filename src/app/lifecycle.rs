@@ -301,7 +301,7 @@ impl ImageViewerApp {
         };
 
         crate::tile_cache::MAX_TEXTURE_SIDE
-            .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
+            .store(max_texture_side, std::sync::atomic::Ordering::Release);
 
         // --- Hardware Tier Detection ---
         use sysinfo::System;
@@ -353,10 +353,10 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::MAX_TILES_BASE
-            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Relaxed);
+            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Release);
         crate::tile_cache::TILED_THRESHOLD.store(
             tier.tiled_threshold_pixels(),
-            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Release,
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),

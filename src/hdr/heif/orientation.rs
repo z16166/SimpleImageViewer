@@ -75,6 +75,23 @@ pub(crate) fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> O
     heif_exif_orientation_from_raw_handle(primary.as_ptr())
 }
 
+/// Resolve manual-geometry and libheif-attached Exif orientations with one libheif open.
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_heif_display_orientation_candidates_from_bytes(
+    bytes: &[u8],
+) -> (Option<u16>, Option<u16>) {
+    let Ok((ctx, primary)) = open_heif_primary_from_bytes(bytes) else {
+        return (None, None);
+    };
+    let manual = if libheif_primary_geometric_mirror_rotation_only(ctx.as_ptr(), primary.as_ptr()) {
+        libheif_transformation_props_to_manual_exif(ctx.as_ptr(), primary.as_ptr())
+    } else {
+        None
+    };
+    let exif_tag = heif_exif_orientation_from_handle(&primary);
+    (manual, exif_tag)
+}
+
 /// Read [`exif::Tag::Orientation`] from libheif-attached `Exif` metadata items (works when pure ISOBMFF
 /// scanning in [`crate::metadata_utils::get_exif_orientation_from_bytes`] misses the `Exif` item).
 #[cfg(feature = "heif-native")]

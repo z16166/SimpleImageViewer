@@ -1200,7 +1200,7 @@ pub fn load_via_image_io(
             (physical_width, physical_height)
         };
 
-        let tiled_threshold = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
+        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         if (logical_width as u64 * logical_height as u64) < tiled_threshold {
             let options_decode = CFDictionary::from_CFType_pairs(&[(
                 CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),

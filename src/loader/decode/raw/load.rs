@@ -332,7 +332,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
     // (CPU tiled refine) never needs sensor data on the loader thread.
     let (width, height) = processor.developed_output_dimensions();
     let area = width as u64 * height as u64;
-    let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let threshold = crate::tile_cache::get_tiled_threshold();
     let osd_ctx = RawOsdContext::new(
         (processor.raw_width(), processor.raw_height()),
         preview_opt.as_ref(),

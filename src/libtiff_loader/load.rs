@@ -350,10 +350,8 @@ pub(crate) fn load_via_libtiff_from_mmap(
             force_static = true;
         }
 
-        let pixel_count = width as u64 * height as u64;
         let limit = crate::tile_cache::get_max_texture_side();
-        let tiled_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         let is_large = pixel_count >= tiled_threshold || width > limit || height > limit;
 
         if !force_static && is_large {

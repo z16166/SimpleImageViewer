@@ -28,7 +28,7 @@ pub static TILE_SIZE: AtomicU32 = AtomicU32::new(512);
 
 /// Get the current tile size.
 pub fn get_tile_size() -> u32 {
-    TILE_SIZE.load(Ordering::Relaxed)
+    TILE_SIZE.load(Ordering::Acquire)
 }
 
 /// Set tile size based on image dimensions.
@@ -36,16 +36,21 @@ pub fn get_tile_size() -> u32 {
 pub fn set_tile_size_for_image(width: u32, height: u32) {
     let megapixels = (width as u64 * height as u64) / 1_000_000;
     let size = if megapixels > 500 { 1024 } else { 512 };
-    TILE_SIZE.store(size, Ordering::Relaxed);
+    TILE_SIZE.store(size, Ordering::Release);
     // Keep VRAM budget constant: 512 tiles * 512*512*4 = 512MB
     // For 1024 tiles: 128 * 1024*1024*4 = 512MB
     let max_tiles = if size == 1024 { 128 } else { 512 };
-    MAX_TILES_BASE.store(max_tiles, Ordering::Relaxed);
+    MAX_TILES_BASE.store(max_tiles, Ordering::Release);
 }
 
 /// Pixel count threshold above which tiled mode is activated.
 /// Updated dynamically based on HardwareTier in app.rs.
 pub static TILED_THRESHOLD: AtomicU64 = AtomicU64::new(64_000_000);
+
+/// Get the current tiled-mode pixel threshold.
+pub fn get_tiled_threshold() -> u64 {
+    TILED_THRESHOLD.load(Ordering::Acquire)
+}
 
 /// Maximum texture side length supported by most GPUs (conservative limit).
 /// Large images exceeding this will be rendered using tiles.
@@ -54,7 +59,7 @@ pub static MAX_TEXTURE_SIDE: AtomicU32 =
     AtomicU32::new(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
 
 pub fn get_max_texture_side() -> u32 {
-    MAX_TEXTURE_SIDE.load(Ordering::Relaxed)
+    MAX_TEXTURE_SIDE.load(Ordering::Acquire)
 }
 
 /// Base maximum number of tile textures kept in GPU memory.
@@ -655,7 +660,7 @@ impl TileManager {
             if allow_upload {
                 // Strict eviction: Never exceed the base limit determined by HardwareTier.
                 // We no longer expand the limit based on visible_count to prevent crashes.
-                let current_limit = MAX_TILES_BASE.load(Ordering::Relaxed);
+                let current_limit = MAX_TILES_BASE.load(Ordering::Acquire);
 
                 // Evict if over limit, but NEVER evict tiles currently in the visible set.
                 // This prevents the "circular hole" artifact on high-DPI screens.

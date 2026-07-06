@@ -51,6 +51,23 @@ fn ycbcr420_chroma_load8_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 8 <= chroma_len
 }
 
+/// `_mm_cvtepu8_epi32` only uses the low 4 bytes; avoid `_mm_loadl_epi64` (8 bytes).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn load_u8x4_for_cvtepu8(ptr: *const u8) -> __m128i {
+    unsafe { _mm_cvtsi32_si128(*(ptr as *const i32)) }
+}
+
+/// NEON `vld1_u8` loads 8 bytes; this loads exactly 4.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn load_u8x4_neon(ptr: *const u8) -> uint8x8_t {
+    unsafe {
+        let packed = u32::from_ne_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]);
+        vreinterpret_u8_u32(vdup_n_u32(packed))
+    }
+}
+
 /// Full-range BT.709 YCbCr 4:4:4 row -> RGBA8. Returns bytes written (`width * 4`).
 pub(crate) fn ycbcr_full_range_bt709_row_444_to_rgba8(
     y_row: &[u8],
@@ -309,14 +326,14 @@ unsafe fn ycbcr_full_range_bt709_row_444_sse41(
         let one = _mm_set1_ps(1.0);
 
         while *x + PIXELS_PER_SSE41_STEP <= width {
-            let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                y_row.as_ptr().add(*x) as *const __m128i
+            let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                y_row.as_ptr().add(*x)
             )));
-            let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                cb_row.as_ptr().add(*x) as *const __m128i
+            let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                cb_row.as_ptr().add(*x)
             )));
-            let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                cr_row.as_ptr().add(*x) as *const __m128i
+            let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                cr_row.as_ptr().add(*x)
             )));
 
             let yy = _mm_mul_ps(y, scale);
@@ -369,7 +386,7 @@ unsafe fn ycbcr_full_range_bt709_row_420_sse41(
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];
-            let y = _mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i);
+            let y = load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x));
             let cbv = _mm_setr_epi8(
                 cb[0] as i8,
                 cb[0] as i8,
@@ -514,19 +531,15 @@ unsafe fn ycbcr_full_range_bt709_row_444_avx2(
     unsafe {
         while *x + PIXELS_PER_AVX2_STEP <= width {
             let y_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
             let cb_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
             let cr_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
             let y_hi =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
-            let cb_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                cb_row.as_ptr().add(*x + 4) as *const __m128i
-            ));
-            let cr_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                cr_row.as_ptr().add(*x + 4) as *const __m128i
-            ));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let cb_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x + 4)));
+            let cr_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x + 4)));
 
             store_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
             store_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
@@ -559,9 +572,9 @@ unsafe fn ycbcr_full_range_bt709_row_420_avx2(
                 _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
             );
             let y_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
             let y_hi =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
             let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
             let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
@@ -646,9 +659,9 @@ unsafe fn ycbcr_full_range_bt709_row_444_neon(
         let one = vdupq_n_f32(1.0);
 
         while *x + PIXELS_PER_NEON_STEP <= width {
-            let y = vld1_u8(y_row.as_ptr().add(*x));
-            let cb = vld1_u8(cb_row.as_ptr().add(*x));
-            let cr = vld1_u8(cr_row.as_ptr().add(*x));
+            let y = load_u8x4_neon(y_row.as_ptr().add(*x));
+            let cb = load_u8x4_neon(cb_row.as_ptr().add(*x));
+            let cr = load_u8x4_neon(cr_row.as_ptr().add(*x));
 
             let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
             let pb = vsubq_f32(
@@ -704,7 +717,7 @@ unsafe fn ycbcr_full_range_bt709_row_420_neon(
 
         while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
-            let y = vld1_u8(y_row.as_ptr().add(*x));
+            let y = load_u8x4_neon(y_row.as_ptr().add(*x));
             let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
             let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
             let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
@@ -759,14 +772,14 @@ unsafe fn ycbcr_limited_range_bt709_row_444_sse41(
         let chroma_inv = _mm_set1_ps(STUDIO_CHROMA_INV_SPAN);
 
         while *x + PIXELS_PER_SSE41_STEP <= width {
-            let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                y_row.as_ptr().add(*x) as *const __m128i
+            let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                y_row.as_ptr().add(*x)
             )));
-            let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                cb_row.as_ptr().add(*x) as *const __m128i
+            let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                cb_row.as_ptr().add(*x)
             )));
-            let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadl_epi64(
-                cr_row.as_ptr().add(*x) as *const __m128i
+            let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
+                cr_row.as_ptr().add(*x)
             )));
 
             let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
@@ -793,7 +806,7 @@ unsafe fn ycbcr_limited_range_bt709_row_420_sse41(
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];
-            let y = _mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i);
+            let y = load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x));
             let cbv = _mm_setr_epi8(
                 cb[0] as i8,
                 cb[0] as i8,
@@ -849,19 +862,15 @@ unsafe fn ycbcr_limited_range_bt709_row_444_avx2(
     unsafe {
         while *x + PIXELS_PER_AVX2_STEP <= width {
             let y_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
             let cb_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cb_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
             let cr_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(cr_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
             let y_hi =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
-            let cb_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                cb_row.as_ptr().add(*x + 4) as *const __m128i
-            ));
-            let cr_hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                cr_row.as_ptr().add(*x + 4) as *const __m128i
-            ));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let cb_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x + 4)));
+            let cr_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x + 4)));
 
             store_limited_bt709_u8x4_from_i32(dst, *x, y_lo, cb_lo, cr_lo);
             store_limited_bt709_u8x4_from_i32(dst, *x + 4, y_hi, cb_hi, cr_hi);
@@ -894,9 +903,9 @@ unsafe fn ycbcr_limited_range_bt709_row_420_avx2(
                 _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
             );
             let y_lo =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
             let y_hi =
-                _mm256_cvtepu8_epi32(_mm_loadl_epi64(y_row.as_ptr().add(*x + 4) as *const __m128i));
+                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
             let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
             let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
@@ -998,9 +1007,9 @@ unsafe fn ycbcr_limited_range_bt709_row_444_neon(
         let chroma_inv = vdupq_n_f32(STUDIO_CHROMA_INV_SPAN);
 
         while *x + PIXELS_PER_NEON_STEP <= width {
-            let y = vld1_u8(y_row.as_ptr().add(*x));
-            let cb = vld1_u8(cb_row.as_ptr().add(*x));
-            let cr = vld1_u8(cr_row.as_ptr().add(*x));
+            let y = load_u8x4_neon(y_row.as_ptr().add(*x));
+            let cb = load_u8x4_neon(cb_row.as_ptr().add(*x));
+            let cr = load_u8x4_neon(cr_row.as_ptr().add(*x));
 
             let y_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(y)));
             let cb_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb)));
@@ -1032,7 +1041,7 @@ unsafe fn ycbcr_limited_range_bt709_row_420_neon(
 
         while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
-            let y = vld1_u8(y_row.as_ptr().add(*x));
+            let y = load_u8x4_neon(y_row.as_ptr().add(*x));
             let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
             let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
             let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
