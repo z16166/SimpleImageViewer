@@ -39,7 +39,9 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
     {
         tone.max_display_nits = max;
     }
-    hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, &tone)
+    crate::hdr::decode::tone_map_simd::hdr_to_sdr_rgba8_with_tone_settings(
+        buffer, exposure_ev, &tone,
+    )
 }
 
 /// Same as [`hdr_to_sdr_rgba8`] but uses explicit SDR white / peak display nits
@@ -47,7 +49,7 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
 /// `max_display_nits` is raised by [`HdrImageMetadata::luminance::mastering_max_nits`]
 /// when that hint exceeds it (content peak vs display capability), unless the caller
 /// pinned peak to SDR white (directory-tree strip previews).
-pub fn hdr_to_sdr_rgba8_with_tone_settings(
+pub(crate) fn hdr_to_sdr_rgba8_with_tone_settings_scalar(
     buffer: &HdrImageBuffer,
     exposure_ev: f32,
     tone: &HdrToneMapSettings,

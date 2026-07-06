@@ -138,6 +138,12 @@ mod x86 {
     pub(super) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
         unsafe { pow_ps(base, exponent) }
     }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    pub(super) unsafe fn exp2_4_sse41(exponents: __m128) -> __m128 {
+        unsafe { exp_ps(_mm_mul_ps(exponents, _mm_set1_ps(std::f32::consts::LN_2))) }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -145,6 +151,13 @@ mod x86 {
 #[inline]
 pub(crate) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
     unsafe { x86::pow4_sse41(base, exponent) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[inline]
+pub(crate) unsafe fn exp2_4_sse41(exponents: __m128) -> __m128 {
+    unsafe { x86::exp2_4_sse41(exponents) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -271,6 +284,15 @@ mod arm {
     pub(super) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
         pow_ps(base, exponent)
     }
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    pub(super) unsafe fn exp2_4_neon(exponents: float32x4_t) -> float32x4_t {
+        exp_ps(vmulq_f32(
+            exponents,
+            vdupq_n_f32(std::f32::consts::LN_2),
+        ))
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -278,6 +300,13 @@ mod arm {
 #[inline]
 pub(crate) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
     unsafe { arm::pow4_neon(base, exponent) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+pub(crate) unsafe fn exp2_4_neon(exponents: float32x4_t) -> float32x4_t {
+    unsafe { arm::exp2_4_neon(exponents) }
 }
 
 #[cfg(test)]
@@ -373,6 +402,69 @@ mod tests {
                 }
                 x += 0.017;
             }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn exp2_4_sse41_matches_std_exp2() {
+        if !std::arch::is_x86_feature_detected!("sse4.1") {
+            return;
+        }
+        let mut x = -4.0_f32;
+        while x <= 4.0 {
+            let lanes = [x, x + 0.25, x + 0.5, x + 0.75];
+            let expected: [f32; 4] = lanes.map(|v| 2.0_f32.powf(v));
+            let got = unsafe {
+                let exponents = _mm_set_ps(lanes[3], lanes[2], lanes[1], lanes[0]);
+                let out = exp2_4_sse41(exponents);
+                let mut buf = [0.0_f32; 4];
+                _mm_storeu_ps(buf.as_mut_ptr(), out);
+                buf
+            };
+            for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+                let rel = if e.abs() > 1.0e-8 {
+                    (g - e).abs() / e.abs()
+                } else {
+                    g - e
+                };
+                assert!(
+                    rel <= 2.0e-4,
+                    "lane={lane} x={} got={g} expected={e}",
+                    lanes[lane]
+                );
+            }
+            x += 0.2;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn exp2_4_neon_matches_std_exp2() {
+        let mut x = -4.0_f32;
+        while x <= 4.0 {
+            let lanes = [x, x + 0.25, x + 0.5, x + 0.75];
+            let expected: [f32; 4] = lanes.map(|v| 2.0_f32.powf(v));
+            let got = unsafe {
+                let exponents = vld1q_f32(lanes.as_ptr());
+                let out = exp2_4_neon(exponents);
+                let mut buf = [0.0_f32; 4];
+                vst1q_f32(buf.as_mut_ptr(), out);
+                buf
+            };
+            for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+                let rel = if e.abs() > 1.0e-8 {
+                    (g - e).abs() / e.abs()
+                } else {
+                    g - e
+                };
+                assert!(
+                    rel <= 2.0e-4,
+                    "lane={lane} x={} got={g} expected={e}",
+                    lanes[lane]
+                );
+            }
+            x += 0.2;
         }
     }
 }

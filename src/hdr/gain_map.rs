@@ -546,6 +546,87 @@ pub(crate) fn sample_gain_map_rgb_bilinear(
     out
 }
 
+#[inline]
+fn gain_map_rgb_at_row(row: &[u8], x: u32) -> [f32; 3] {
+    let index = x as usize * 4;
+    [
+        f32::from(row[index]) / 255.0,
+        f32::from(row[index + 1]) / 255.0,
+        f32::from(row[index + 2]) / 255.0,
+    ]
+}
+
+#[inline]
+fn bilinear_rgb_taps_encoded(
+    c00: [f32; 3],
+    c10: [f32; 3],
+    c01: [f32; 3],
+    c11: [f32; 3],
+    tx: f32,
+    ty: f32,
+) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for channel in 0..3 {
+        let top = lerp(c00[channel], c10[channel], tx);
+        let bottom = lerp(c01[channel], c11[channel], tx);
+        out[channel] = lerp(top, bottom, ty);
+    }
+    out
+}
+
+/// Bilinear upsample one gain-map row to primary width (encoded 0-1, not BT.709-linear yet).
+///
+/// **Keep in sync** with
+/// [`sample_gain_map_row_nonlinear`](crate::hdr::heif_apple_gain_map_compose_simd::sample_gain_map_row_nonlinear).
+pub(crate) fn precompute_gain_map_row_encoded(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    out: &mut [f32],
+) {
+    if gain_width == 0 || gain_height == 0 || width == 0 || height == 0 {
+        return;
+    }
+
+    let gy = ((y as f32 + 0.5) * gain_height as f32 / height as f32 - 0.5)
+        .clamp(0.0, gain_height.saturating_sub(1) as f32);
+    let y0 = gy.floor() as u32;
+    let y1 = (y0 + 1).min(gain_height - 1);
+    let ty = gy - y0 as f32;
+    let row_stride = gain_width as usize * 4;
+    let row0 = &gain_rgba[y0 as usize * row_stride..][..row_stride];
+    let row1 = &gain_rgba[y1 as usize * row_stride..][..row_stride];
+
+    let mut cache_x0 = u32::MAX;
+    let mut c00 = [0.0; 3];
+    let mut c10 = [0.0; 3];
+    let mut c01 = [0.0; 3];
+    let mut c11 = [0.0; 3];
+
+    for x in 0..width {
+        let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
+            .clamp(0.0, gain_width.saturating_sub(1) as f32);
+        let x0 = gx.floor() as u32;
+        let tx = gx - x0 as f32;
+
+        if x0 != cache_x0 {
+            let x1 = (x0 + 1).min(gain_width - 1);
+            c00 = gain_map_rgb_at_row(row0, x0);
+            c10 = gain_map_rgb_at_row(row0, x1);
+            c01 = gain_map_rgb_at_row(row1, x0);
+            c11 = gain_map_rgb_at_row(row1, x1);
+            cache_x0 = x0;
+        }
+
+        let sampled = bilinear_rgb_taps_encoded(c00, c10, c01, c11, tx, ty);
+        let base = x as usize * 3;
+        out[base..base + 3].copy_from_slice(&sampled);
+    }
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }

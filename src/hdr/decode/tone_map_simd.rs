@@ -22,8 +22,8 @@
 use super::constants::{INVERSE_DISPLAY_GAMMA, MAX_HDR_TONE_MAP_INPUT};
 use super::tone_map::{
     STRIP_PREVIEW_NITS_PIN_EPSILON, decode_transfer_to_display_linear,
-    encode_linear_display_referred_srgb8, encode_sdr_rgb8, hdr_to_sdr_rgba8_with_tone_settings,
-    should_use_iec61966_tone_map_fallback,
+    encode_linear_display_referred_srgb8, encode_sdr_rgb8,
+    hdr_to_sdr_rgba8_with_tone_settings_scalar, should_use_iec61966_tone_map_fallback,
 };
 #[cfg(target_arch = "aarch64")]
 use crate::hdr::simd_fast_pow::pow4_neon;
@@ -97,8 +97,8 @@ struct StripToneMapContext {
     path: StripSimdPath,
 }
 
-/// Directory-tree strip tone-map: SIMD fast paths when possible, scalar otherwise.
-pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
+/// CPU HDR -> SDR tone-map: SIMD fast paths when possible, scalar otherwise.
+pub fn hdr_to_sdr_rgba8_with_tone_settings(
     buffer: &HdrImageBuffer,
     exposure_ev: f32,
     tone: &HdrToneMapSettings,
@@ -139,7 +139,7 @@ pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
     let tf = buffer.metadata.transfer_function;
     let path = classify_strip_simd_path(buffer, tf);
     if path == StripSimdPath::Scalar {
-        return hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, &tone);
+        return hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, exposure_ev, &tone);
     }
 
     let apply_peak_scaler = matches!(tf, HdrTransferFunction::Pq | HdrTransferFunction::Hlg);
@@ -160,6 +160,15 @@ pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
     let mut pixels = vec![0_u8; expected_len];
     tone_map_strip_simd(&buffer.rgba_f32, &mut pixels, ctx);
     Ok(pixels)
+}
+
+/// Directory-tree strip tone-map (same SIMD path as full-image CPU tone-map).
+pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
+    buffer: &HdrImageBuffer,
+    exposure_ev: f32,
+    tone: &HdrToneMapSettings,
+) -> Result<Vec<u8>, String> {
+    hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, tone)
 }
 
 fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) -> StripSimdPath {
@@ -987,7 +996,7 @@ mod tests {
 
     fn assert_strip_simd_matches_scalar(buffer: &HdrImageBuffer, tone: &HdrToneMapSettings) {
         let scalar =
-            hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone).expect("scalar");
+            hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone).expect("scalar");
         let simd = hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, tone).expect("simd");
         assert_eq!(scalar, simd, "strip SIMD must match scalar tone-map");
     }

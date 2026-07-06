@@ -390,6 +390,21 @@ pub(crate) fn compose_iso_deferred_cpu_pixels(
     deferred: &IsoGainMapGpuSource,
     target_hdr_capacity: f32,
 ) -> Result<Vec<f32>, String> {
+    crate::hdr::iso_gain_map_compose_simd::compose_iso_deferred_cpu_pixels_simd(
+        width,
+        height,
+        deferred,
+        target_hdr_capacity,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn compose_iso_deferred_cpu_pixels_scalar(
+    width: u32,
+    height: u32,
+    deferred: &IsoGainMapGpuSource,
+    target_hdr_capacity: f32,
+) -> Result<Vec<f32>, String> {
     use crate::hdr::gain_map::{append_hdr_pixel_from_sdr_and_gain, sample_gain_map_rgb};
 
     crate::hdr::gain_map::validate_iso_deferred_planes(
@@ -494,7 +509,7 @@ mod tests {
             metadata: test_gain_map_metadata(),
         };
 
-        let err = compose_iso_deferred_cpu_pixels(2, 1, &deferred, 1.0)
+        let err = compose_iso_deferred_cpu_pixels_scalar(2, 1, &deferred, 1.0)
             .expect_err("short SDR baseline must be rejected before indexing");
 
         assert!(err.contains("SDR baseline RGBA length mismatch"));
