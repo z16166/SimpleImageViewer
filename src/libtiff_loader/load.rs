@@ -403,6 +403,8 @@ pub(crate) fn load_via_libtiff_from_mmap(
 
                 let strip_bytes = (width as usize)
                     .checked_mul(rps as usize)
+                    // Same +width slack as [`tiff_rgba_strip_buffer_u32_count`]: libtiff strip
+                    // RGBA decode can write one row past width*rps (see rgba_buffer.rs).
                     .and_then(|base| base.checked_add(width as usize))
                     .and_then(|pixels| pixels.checked_mul(std::mem::size_of::<lib::uint32>()));
                 let max_cached =

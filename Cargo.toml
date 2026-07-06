@@ -116,7 +116,7 @@ hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 [lints.clippy]
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase", "debugapi"] }
+winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }
 winreg = "0.11"
 windows = { version = "0.58", features = [
     "Win32_Foundation",

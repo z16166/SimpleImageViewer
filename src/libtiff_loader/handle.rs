@@ -57,6 +57,9 @@ impl TiffHandle {
     }
 
     pub(crate) fn reset_for_reuse(&mut self) -> Result<(), String> {
+        // Pooled handles must rewind mmap I/O and IFD state before the next decode on this
+        // thread; stale directory/offset caused hard-to-reproduce strip decode corruption
+        // when alternating large TIFFs on the same worker.
         self._context.offset = 0;
         unsafe {
             if lib::TIFFSetDirectory(self.as_ptr(), 0) == 0 {

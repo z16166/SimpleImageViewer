@@ -41,9 +41,13 @@ pub(crate) struct ScanlineStripScratch {
 fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
     buf.clear();
     if buf.capacity() < len {
-        // `Vec::reserve(additional)` grows until `len() + additional <= capacity()`.
-        // After `clear()`, `len()` is 0, so `reserve(len)` (not `len - capacity()`) is
-        // required when reusing a buffer whose capacity is still below the new length.
+        // Regression (nightly UB check, dir-tree strip worker): after `clear()`, `len()` is 0
+        // but `capacity()` may still be below the next `len` (e.g. rayon thread reuses TLS
+        // scratch: heic0601a strip 90_000 u32 then heic0604a needs 95_000). `Vec::reserve`
+        // guarantees `len() + additional <= capacity()`, NOT `capacity() + additional`, so
+        // `reserve(len - capacity())` is a no-op when cap already exceeds the delta (90000
+        // cap, need 95000: reserve(5000) only requires cap >= 5000) and `set_len(95000)` panics.
+        // After clear, use `reserve(len - len())` == `reserve(len)`.
         buf.reserve(len.saturating_sub(buf.len()));
     }
     unsafe {
@@ -166,6 +170,7 @@ mod tests {
         assert!(buf.capacity() >= 90_000);
 
         // heic0604a-style strip on same thread-local scratch: need 95_000 after 90_000 cap.
+        // Mirrors the dir-tree preview panic when `reserve(len - capacity())` was used.
         prepare_uninit(&mut buf, 95_000);
         assert_eq!(buf.len(), 95_000);
         assert!(buf.capacity() >= 95_000);
