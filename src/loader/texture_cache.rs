@@ -213,8 +213,8 @@ impl TextureCache {
         self.evict_anchor = (current_index, total_count);
         self.evict_furthest_idx = None;
         self.evict_furthest_dist = 0;
-        let indices = self.cached_indices.clone();
-        for idx in indices {
+        for i in 0..self.cached_indices.len() {
+            let idx = self.cached_indices[i];
             self.consider_evict_candidate(current_index, total_count, idx);
         }
     }

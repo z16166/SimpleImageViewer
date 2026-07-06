@@ -41,7 +41,9 @@ pub(crate) struct HdrTileInsert {
     pub(crate) baked_jpeg_weight_bits: Option<u32>,
 }
 
-pub(super) const HDR_TILE_BINDING_RECENT_PROTECTION_COUNT: usize = 512;
+/// Recently prepared HDR tile bindings kept over budget during upload bursts.
+/// 128 tiles at 512x512 RGBA32F ~= 512 MB worst case (vs 2 GB at 512).
+pub(super) const HDR_TILE_BINDING_RECENT_PROTECTION_COUNT: usize = 128;
 
 impl Default for HdrTileBindings {
     fn default() -> Self {

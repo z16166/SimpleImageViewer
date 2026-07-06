@@ -175,19 +175,15 @@ impl TilePixelCache {
 
     /// Remove all tiles belonging to a specific image index.
     pub fn remove_image(&mut self, index: usize) {
-        let keys_to_remove: Vec<_> = self
-            .entries
-            .keys()
-            .filter(|(idx, _, _)| *idx == index)
-            .copied()
-            .collect();
-
-        for key in keys_to_remove {
-            if let Some(pixels) = self.entries.remove(&key) {
+        self.entries.retain(|key, pixels| {
+            if key.0 == index {
                 self.current_bytes -= pixels.len();
+                false
+            } else {
+                true
             }
-            self.lru.lock().remove(key);
-        }
+        });
+        self.lru.lock().retain_keys(|key| key.0 != index);
     }
 
     /// Remove all tiles belonging to any of the provided image indices.
@@ -195,19 +191,17 @@ impl TilePixelCache {
         if indices.is_empty() {
             return;
         }
-        let keys_to_remove: Vec<_> = self
-            .entries
-            .keys()
-            .filter(|(idx, _, _)| indices.contains(idx))
-            .copied()
-            .collect();
-
-        for key in keys_to_remove {
-            if let Some(pixels) = self.entries.remove(&key) {
+        self.entries.retain(|key, pixels| {
+            if indices.contains(&key.0) {
                 self.current_bytes -= pixels.len();
+                false
+            } else {
+                true
             }
-            self.lru.lock().remove(key);
-        }
+        });
+        self.lru
+            .lock()
+            .retain_keys(|key| !indices.contains(&key.0));
     }
 
     pub fn relocate_image(&mut self, from: usize, to: usize) {
@@ -268,18 +262,15 @@ impl TilePixelCache {
     }
 
     pub fn remove_images_except(&mut self, except_idx: usize) {
-        let keys_to_remove: Vec<_> = self
-            .entries
-            .keys()
-            .filter(|&&(idx, _, _)| idx != except_idx)
-            .copied()
-            .collect();
-        for key in keys_to_remove {
-            if let Some(pixels) = self.entries.remove(&key) {
+        self.entries.retain(|key, pixels| {
+            if key.0 != except_idx {
                 self.current_bytes -= pixels.len();
+                false
+            } else {
+                true
             }
-            self.lru.lock().remove(key);
-        }
+        });
+        self.lru.lock().retain_keys(|key| key.0 == except_idx);
     }
 
     pub fn clear(&mut self) {

@@ -266,13 +266,24 @@ pub(crate) fn pack_rows_for_texture_copy<'a>(
         return Ok((Cow::Borrowed(tight), bytes_per_row));
     }
 
-    let mut padded = vec![0u8; (bytes_per_row * height) as usize];
-    copy_padded_rows(
-        tight,
-        &mut padded,
-        unpadded_bytes_per_row as usize,
-        bytes_per_row as usize,
-    );
+    thread_local! {
+        static TEXTURE_ROW_PAD_BUFFER: std::cell::RefCell<Vec<u8>> =
+            std::cell::RefCell::new(Vec::new());
+    }
+
+    let padded_len = (bytes_per_row * height) as usize;
+    let padded = TEXTURE_ROW_PAD_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.clear();
+        buffer.resize(padded_len, 0);
+        copy_padded_rows(
+            tight,
+            &mut buffer,
+            unpadded_bytes_per_row as usize,
+            bytes_per_row as usize,
+        );
+        std::mem::take(&mut *buffer)
+    });
     Ok((Cow::Owned(padded), bytes_per_row))
 }
 

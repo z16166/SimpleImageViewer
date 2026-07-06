@@ -26,6 +26,12 @@ use core::arch::x86_64::*;
 use core::arch::aarch64::*;
 use std::num::NonZeroU64;
 
+#[inline]
+unsafe fn load_rgba_u32_le(src: &[u8], byte_offset: usize) -> u32 {
+    // SAFETY: caller guarantees `byte_offset..byte_offset+4` is in bounds.
+    unsafe { core::ptr::read_unaligned(src.as_ptr().add(byte_offset) as *const u32).to_le() }
+}
+
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 struct AlignedU32Buffer {
     storage: Vec<u32>,
@@ -297,12 +303,7 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     let row_off = sy as usize * row_stride;
                     for sx in merged_x0..merged_x1 {
                         let sp = row_off + sx as usize * 4;
-                        let px = u32::from_le_bytes([
-                            *src.get_unchecked(sp),
-                            *src.get_unchecked(sp + 1),
-                            *src.get_unchecked(sp + 2),
-                            *src.get_unchecked(sp + 3),
-                        ]);
+                        let px = load_rgba_u32_le(src, sp);
 
                         let sx_v = _mm_set1_epi32(sx as i32);
                         let sx_v_u = _mm_xor_si128(sx_v, sign_bit128);
@@ -441,12 +442,7 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                     let row_off = sy as usize * row_stride;
                     for sx in merged_x0..merged_x1 {
                         let sp = row_off + sx as usize * 4;
-                        let px = u32::from_le_bytes([
-                            *src.get_unchecked(sp),
-                            *src.get_unchecked(sp + 1),
-                            *src.get_unchecked(sp + 2),
-                            *src.get_unchecked(sp + 3),
-                        ]);
+                        let px = load_rgba_u32_le(src, sp);
 
                         let sx_v = _mm256_set1_epi32(sx as i32);
                         let sx_v_u = _mm256_xor_si256(sx_v, sign_bit256);
@@ -593,12 +589,7 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
                     let row_off = sy as usize * row_stride;
                     for sx in merged_x0..merged_x1 {
                         let sp = row_off + sx as usize * 4;
-                        let px = u32::from_le_bytes([
-                            *src.get_unchecked(sp),
-                            *src.get_unchecked(sp + 1),
-                            *src.get_unchecked(sp + 2),
-                            *src.get_unchecked(sp + 3),
-                        ]);
+                        let px = load_rgba_u32_le(src, sp);
 
                         let sx_v = vdupq_n_u32(sx);
                         // sx >= x0  →  NOT(x0 > sx)

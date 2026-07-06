@@ -631,12 +631,12 @@ impl ImageLoader {
                                             continue;
                                         }
                                     };
-                                    let preview = DecodedImage::from_hdr_sdr_fallback(
+                                    let mut preview = DecodedImage::from_hdr_sdr_fallback(
                                         hdr.width,
                                         hdr.height,
                                         fb,
                                     );
-                                    let tile_pixels = preview.rgba().to_vec();
+                                    let tile_pixels = preview.take_rgba_owned();
                                     let dynamic = match image::ImageBuffer::from_raw(
                                         hdr.width,
                                         hdr.height,
@@ -650,6 +650,9 @@ impl ImageLoader {
                                             continue;
                                         }
                                     };
+                                    if preview.rgba().is_empty() {
+                                        preview = DecodedImage::from(dynamic.to_rgba8());
+                                    }
 
                                     {
                                         let mut dev_lock = req.developed_image.write();

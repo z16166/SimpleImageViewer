@@ -16,6 +16,7 @@
 
 //! Tracks short-lived background threads so `on_exit` can join them.
 
+use std::collections::VecDeque;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -24,13 +25,13 @@ use parking_lot::Mutex;
 pub(crate) const BACKGROUND_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct BackgroundThreadJoiner {
-    handles: Mutex<Vec<JoinHandle<()>>>,
+    handles: Mutex<VecDeque<JoinHandle<()>>>,
 }
 
 impl BackgroundThreadJoiner {
     pub(crate) fn new() -> Self {
         Self {
-            handles: Mutex::new(Vec::new()),
+            handles: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -40,7 +41,7 @@ impl BackgroundThreadJoiner {
     {
         match std::thread::Builder::new().name(name.into()).spawn(f) {
             Ok(handle) => {
-                self.handles.lock().push(handle);
+                self.handles.lock().push_back(handle);
                 true
             }
             Err(err) => {
@@ -83,7 +84,9 @@ impl BackgroundThreadJoiner {
                 }
                 return;
             }
-            let handle = handles.remove(0);
+            let handle = handles
+                .pop_front()
+                .expect("handles non-empty while join loop runs");
             if handle.join().is_err() {
                 log::warn!("[BackgroundThreads] Background thread panicked on join");
             }

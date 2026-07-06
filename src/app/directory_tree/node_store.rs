@@ -120,23 +120,32 @@ impl DirectoryTreeNodeArena {
     where
         F: FnMut(&PathBuf) -> bool,
     {
-        let kept: Vec<(PathBuf, DirectoryTreeNode)> = self
+        let to_remove: Vec<PathBuf> = self
             .path_index
-            .iter()
-            .filter_map(|(path, &id)| {
-                if keep(path) {
-                    Some((path.clone(), self.entries[id as usize].clone()))
-                } else {
-                    None
-                }
-            })
+            .keys()
+            .filter(|path| !keep(path))
+            .cloned()
             .collect();
-        self.entries.clear();
-        self.path_index.clear();
-        for (path, node) in kept {
-            let id = u32::try_from(self.entries.len()).expect("retain cannot overflow arena ids");
-            self.entries.push(node);
-            self.path_index.insert(path, id);
+        for path in to_remove {
+            self.remove_at_path(&path);
         }
+    }
+
+    fn remove_at_path(&mut self, path: &PathBuf) {
+        let Some(id) = self.path_index.remove(path) else {
+            return;
+        };
+        let last_id = self.entries.len() as u32 - 1;
+        if id != last_id {
+            if let Some(moved_path) = self
+                .path_index
+                .iter()
+                .find_map(|(p, &idx)| (idx == last_id).then(|| p.clone()))
+            {
+                self.path_index.insert(moved_path, id);
+            }
+            self.entries.swap(id as usize, last_id as usize);
+        }
+        self.entries.pop();
     }
 }

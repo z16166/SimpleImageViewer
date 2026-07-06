@@ -88,6 +88,21 @@ where
         self.unlink(key);
     }
 
+    /// Drop keys for which `keep` returns false, preserving relative order of survivors.
+    pub(crate) fn retain_keys<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(K) -> bool,
+    {
+        let mut cur = self.head;
+        while let Some(key) = cur {
+            let next = self.nodes.get(&key).and_then(|links| links.next);
+            if !keep(key) {
+                self.unlink(key);
+            }
+            cur = next;
+        }
+    }
+
     pub(crate) fn pop_oldest(&mut self) -> Option<K> {
         let oldest = self.head?;
         self.unlink(oldest);
