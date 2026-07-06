@@ -415,7 +415,10 @@ mod tests {
         }
         #[cfg(not(feature = "preload-debug"))]
         {
-            assert_eq!(super::LOG_ROTATE_SIZE, crate::constants::LOG_FILE_SIZE_LIMIT);
+            assert_eq!(
+                super::LOG_ROTATE_SIZE,
+                crate::constants::LOG_FILE_SIZE_LIMIT
+            );
             assert_eq!(super::LOG_KEEP_FILES, crate::constants::LOG_FILE_KEEP_COUNT);
         }
     }

@@ -40,7 +40,9 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
         tone.max_display_nits = max;
     }
     crate::hdr::decode::tone_map_simd::hdr_to_sdr_rgba8_with_tone_settings(
-        buffer, exposure_ev, &tone,
+        buffer,
+        exposure_ev,
+        &tone,
     )
 }
 

@@ -135,8 +135,7 @@ pub(crate) fn load_jpeg_from_mapped(
         ) {
             Ok(hdr) => {
                 let pixel_count = hdr.width as u64 * hdr.height as u64;
-                let tiled_limit =
-                    crate::tile_cache::get_tiled_threshold();
+                let tiled_limit = crate::tile_cache::get_tiled_threshold();
                 let max_side = hdr.width.max(hdr.height);
                 let use_tiled_deferred = hdr.rgba_f32.is_empty()
                     && crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata(&hdr.metadata)

@@ -34,6 +34,12 @@ pub(crate) struct AvifStripProbeJobResult {
     pub probe: Option<crate::hdr::avif::AvifGainMapStripProbe>,
 }
 
+#[cfg(feature = "avif-native")]
+type CachedAvifStripProbe = Option<(
+    u64,
+    HashMap<PathBuf, Option<crate::hdr::avif::AvifGainMapStripProbe>>,
+)>;
+
 use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
 use crate::directory_tree_places::DirectoryTreePlaces;
@@ -354,12 +360,7 @@ pub struct ImageViewerApp {
     /// AVIF gain-map strip probe by path, keyed to `image_list_generation`.
     /// `None` in the map means probed and not a gain-map strip candidate.
     #[cfg(feature = "avif-native")]
-    pub(crate) cached_avif_strip_probe: parking_lot::Mutex<
-        Option<(
-            u64,
-            HashMap<PathBuf, Option<crate::hdr::avif::AvifGainMapStripProbe>>,
-        )>,
-    >,
+    pub(crate) cached_avif_strip_probe: parking_lot::Mutex<CachedAvifStripProbe>,
     #[cfg(feature = "avif-native")]
     pub(crate) avif_strip_probe_inflight: parking_lot::Mutex<std::collections::HashSet<PathBuf>>,
     #[cfg(feature = "avif-native")]

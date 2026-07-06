@@ -46,7 +46,7 @@ pub fn chords_for_action(
     action: HotkeyActionId,
 ) -> Vec<KeyChord> {
     map.iter()
-        .filter_map(|(chord, &id)| (id == action).then(|| chord.clone()))
+        .filter_map(|(chord, &id)| (id == action).then_some(*chord))
         .collect()
 }
 

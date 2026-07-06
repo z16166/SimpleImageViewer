@@ -307,13 +307,13 @@ unsafe fn ycbcr_full_range_bt709_row_444_sse41(
 
         while *x + PIXELS_PER_SSE41_STEP <= width {
             let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                y_row.as_ptr().add(*x)
+                y_row.as_ptr().add(*x),
             )));
             let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                cb_row.as_ptr().add(*x)
+                cb_row.as_ptr().add(*x),
             )));
             let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                cr_row.as_ptr().add(*x)
+                cr_row.as_ptr().add(*x),
             )));
 
             let yy = _mm_mul_ps(y, scale);
@@ -510,14 +510,10 @@ unsafe fn ycbcr_full_range_bt709_row_444_avx2(
 ) {
     unsafe {
         while *x + PIXELS_PER_AVX2_STEP <= width {
-            let y_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
-            let cb_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
-            let cr_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
-            let y_hi =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let y_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
+            let cb_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
+            let cr_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
+            let y_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x + 4)));
             let cr_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x + 4)));
 
@@ -551,10 +547,8 @@ unsafe fn ycbcr_full_range_bt709_row_420_avx2(
                 cr,
                 _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
             );
-            let y_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
-            let y_hi =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let y_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
+            let y_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
             let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
             let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));
@@ -753,13 +747,13 @@ unsafe fn ycbcr_limited_range_bt709_row_444_sse41(
 
         while *x + PIXELS_PER_SSE41_STEP <= width {
             let y = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                y_row.as_ptr().add(*x)
+                y_row.as_ptr().add(*x),
             )));
             let cb = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                cb_row.as_ptr().add(*x)
+                cb_row.as_ptr().add(*x),
             )));
             let cr = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(load_u8x4_for_cvtepu8(
-                cr_row.as_ptr().add(*x)
+                cr_row.as_ptr().add(*x),
             )));
 
             let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
@@ -841,14 +835,10 @@ unsafe fn ycbcr_limited_range_bt709_row_444_avx2(
 ) {
     unsafe {
         while *x + PIXELS_PER_AVX2_STEP <= width {
-            let y_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
-            let cb_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
-            let cr_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
-            let y_hi =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let y_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
+            let cb_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x)));
+            let cr_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x)));
+            let y_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cb_row.as_ptr().add(*x + 4)));
             let cr_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(cr_row.as_ptr().add(*x + 4)));
 
@@ -882,10 +872,8 @@ unsafe fn ycbcr_limited_range_bt709_row_420_avx2(
                 cr,
                 _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, -1, -1, -1, -1, -1, -1, -1, -1),
             );
-            let y_lo =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
-            let y_hi =
-                _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
+            let y_lo = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x)));
+            let y_hi = _mm256_cvtepu8_epi32(load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x + 4)));
             let cb_lo = _mm256_cvtepu8_epi32(cb_dup);
             let cr_lo = _mm256_cvtepu8_epi32(cr_dup);
             let cb_hi = _mm256_cvtepu8_epi32(_mm_srli_si128(cb_dup, 4));

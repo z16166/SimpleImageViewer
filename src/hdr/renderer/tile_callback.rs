@@ -289,7 +289,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                                         _sdr_view: sdr_view,
                                         _gain_view: gain_view,
                                         _display_storage_view: display_storage,
-                                        compose_bind_group: &compose_bind_group,
+                                        compose_bind_group,
                                     },
                                 );
                             let jpeg_compose_bind_group = compose_cache.jpeg_compose_bind_group;

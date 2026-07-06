@@ -81,11 +81,8 @@ impl LibTiffTiledSource {
         let curr_tx = tile_col * tw;
         let curr_ty = tile_row * th;
 
-        let Some(tile_len) =
-            (unsafe { super::rgba_buffer::tiff_rgba_tile_buffer_u32_count(handle.as_ptr()) })
-        else {
-            return None;
-        };
+        let tile_len =
+            (unsafe { super::rgba_buffer::tiff_rgba_tile_buffer_u32_count(handle.as_ptr()) })?;
         let rgba_len = tile_len.checked_mul(crate::constants::RGBA_CHANNELS)?;
 
         let (_, rgba) = with_tiled_decode_scratch(tile_len, rgba_len, |scratch| {
@@ -238,7 +235,8 @@ impl TiledImageSource for LibTiffTiledSource {
                             {
                                 result[dest_idx..dest_idx + crate::constants::RGBA_CHANNELS]
                                     .copy_from_slice(
-                                        &tile_data[src_idx..src_idx + crate::constants::RGBA_CHANNELS],
+                                        &tile_data
+                                            [src_idx..src_idx + crate::constants::RGBA_CHANNELS],
                                     );
                             }
                         }
@@ -371,8 +369,8 @@ impl TiledImageSource for LibTiffTiledSource {
                         continue;
                     }
                     let pixel = tile_buf[src_idx].to_ne_bytes();
-                    let Some(dst_byte_offset) = (tx as usize)
-                        .checked_mul(crate::constants::RGBA_CHANNELS)
+                    let Some(dst_byte_offset) =
+                        (tx as usize).checked_mul(crate::constants::RGBA_CHANNELS)
                     else {
                         continue;
                     };

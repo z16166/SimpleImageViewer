@@ -198,28 +198,16 @@ fn store_m128_rgb_pixels(dst: &mut [f32], x: usize, r: __m128, g: __m128, b: __m
         let ba_lo = _mm_unpacklo_ps(b, one);
         let ba_hi = _mm_unpackhi_ps(b, one);
         if count > 0 {
-            _mm_storeu_ps(
-                dst[(x) * 4..].as_mut_ptr(),
-                _mm_movelh_ps(rg_lo, ba_lo),
-            );
+            _mm_storeu_ps(dst[(x) * 4..].as_mut_ptr(), _mm_movelh_ps(rg_lo, ba_lo));
         }
         if count > 1 {
-            _mm_storeu_ps(
-                dst[(x + 1) * 4..].as_mut_ptr(),
-                _mm_movehl_ps(ba_lo, rg_lo),
-            );
+            _mm_storeu_ps(dst[(x + 1) * 4..].as_mut_ptr(), _mm_movehl_ps(ba_lo, rg_lo));
         }
         if count > 2 {
-            _mm_storeu_ps(
-                dst[(x + 2) * 4..].as_mut_ptr(),
-                _mm_movelh_ps(rg_hi, ba_hi),
-            );
+            _mm_storeu_ps(dst[(x + 2) * 4..].as_mut_ptr(), _mm_movelh_ps(rg_hi, ba_hi));
         }
         if count > 3 {
-            _mm_storeu_ps(
-                dst[(x + 3) * 4..].as_mut_ptr(),
-                _mm_movehl_ps(ba_hi, rg_hi),
-            );
+            _mm_storeu_ps(dst[(x + 3) * 4..].as_mut_ptr(), _mm_movehl_ps(ba_hi, rg_hi));
         }
     }
 }
@@ -741,12 +729,7 @@ unsafe fn invert_miniswhite_rgba32f_row_sse41(
         let one = _mm_set1_ps(1.0);
         while *x + 4 <= width {
             let base = *x * 4;
-            let v = _mm_set_ps(
-                row[base + 12],
-                row[base + 8],
-                row[base + 4],
-                row[base],
-            );
+            let v = _mm_set_ps(row[base + 12], row[base + 8], row[base + 4], row[base]);
             let g = _mm_max_ps(_mm_sub_ps(pivot_v, v), zero);
             store_m128_rgb_pixels(row, *x, g, g, g, 4);
             let dst = row.as_mut_ptr().add(base);
@@ -776,7 +759,11 @@ unsafe fn invert_miniswhite_rgba32f_row_neon(
                 row[base + 12],
                 vsetq_lane_f32(
                     row[base + 8],
-                    vsetq_lane_f32(row[base + 4], vsetq_lane_f32(row[base], vdupq_n_f32(0.0), 0), 1),
+                    vsetq_lane_f32(
+                        row[base + 4],
+                        vsetq_lane_f32(row[base], vdupq_n_f32(0.0), 0),
+                        1,
+                    ),
                     2,
                 ),
                 3,
@@ -834,12 +821,7 @@ pub fn ieee_f32_gray_scanline_to_rgba32f(
     }
 
     while x < width {
-        let raw = f32::from_ne_bytes([
-            src[x * 4],
-            src[x * 4 + 1],
-            src[x * 4 + 2],
-            src[x * 4 + 3],
-        ]);
+        let raw = f32::from_ne_bytes([src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]]);
         let v = finite_f32(raw);
         let g = match invert_pivot {
             Some(pivot) => (pivot - v).max(0.0),
@@ -900,11 +882,7 @@ unsafe fn ieee_f32_gray_scanline_to_rgba32f_neon(
         let pivot_v = invert_pivot.map(vdupq_n_f32);
         while *x + 4 <= width {
             let v = vld1q_f32(src.as_ptr().add(*x * 4) as *const f32);
-            let finite = vbslq_f32(
-                vreinterpretq_u32_f32(vceqq_f32(v, v)),
-                v,
-                zero,
-            );
+            let finite = vbslq_f32(vreinterpretq_u32_f32(vceqq_f32(v, v)), v, zero);
             let g = if let Some(pivot) = pivot_v {
                 vmaxq_f32(vsubq_f32(pivot, finite), zero)
             } else {
@@ -917,12 +895,7 @@ unsafe fn ieee_f32_gray_scanline_to_rgba32f_neon(
 }
 
 /// Contiguous IEEE-f32 RGB (3 or 4 samples per pixel) -> RGBA f32 row.
-pub fn ieee_f32_rgb_scanline_to_rgba32f(
-    src: &[u8],
-    dst: &mut [f32],
-    width: usize,
-    spp: usize,
-) {
+pub fn ieee_f32_rgb_scanline_to_rgba32f(src: &[u8], dst: &mut [f32], width: usize, spp: usize) {
     if dst.len() < width * 4 {
         return;
     }
@@ -981,22 +954,82 @@ unsafe fn ieee_f32_rgb3_scanline_to_rgba32f_sse41(
             let base = *x * 12;
             let s = src.as_ptr().add(base);
             let r = _mm_set_ps(
-                finite_f32(f32::from_ne_bytes([*s.add(36), *s.add(37), *s.add(38), *s.add(39)])),
-                finite_f32(f32::from_ne_bytes([*s.add(24), *s.add(25), *s.add(26), *s.add(27)])),
-                finite_f32(f32::from_ne_bytes([*s.add(12), *s.add(13), *s.add(14), *s.add(15)])),
-                finite_f32(f32::from_ne_bytes([*s.add(0), *s.add(1), *s.add(2), *s.add(3)])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(36),
+                    *s.add(37),
+                    *s.add(38),
+                    *s.add(39),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(24),
+                    *s.add(25),
+                    *s.add(26),
+                    *s.add(27),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(12),
+                    *s.add(13),
+                    *s.add(14),
+                    *s.add(15),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(0),
+                    *s.add(1),
+                    *s.add(2),
+                    *s.add(3),
+                ])),
             );
             let g = _mm_set_ps(
-                finite_f32(f32::from_ne_bytes([*s.add(40), *s.add(41), *s.add(42), *s.add(43)])),
-                finite_f32(f32::from_ne_bytes([*s.add(28), *s.add(29), *s.add(30), *s.add(31)])),
-                finite_f32(f32::from_ne_bytes([*s.add(16), *s.add(17), *s.add(18), *s.add(19)])),
-                finite_f32(f32::from_ne_bytes([*s.add(4), *s.add(5), *s.add(6), *s.add(7)])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(40),
+                    *s.add(41),
+                    *s.add(42),
+                    *s.add(43),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(28),
+                    *s.add(29),
+                    *s.add(30),
+                    *s.add(31),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(16),
+                    *s.add(17),
+                    *s.add(18),
+                    *s.add(19),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(4),
+                    *s.add(5),
+                    *s.add(6),
+                    *s.add(7),
+                ])),
             );
             let b = _mm_set_ps(
-                finite_f32(f32::from_ne_bytes([*s.add(44), *s.add(45), *s.add(46), *s.add(47)])),
-                finite_f32(f32::from_ne_bytes([*s.add(32), *s.add(33), *s.add(34), *s.add(35)])),
-                finite_f32(f32::from_ne_bytes([*s.add(20), *s.add(21), *s.add(22), *s.add(23)])),
-                finite_f32(f32::from_ne_bytes([*s.add(8), *s.add(9), *s.add(10), *s.add(11)])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(44),
+                    *s.add(45),
+                    *s.add(46),
+                    *s.add(47),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(32),
+                    *s.add(33),
+                    *s.add(34),
+                    *s.add(35),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(20),
+                    *s.add(21),
+                    *s.add(22),
+                    *s.add(23),
+                ])),
+                finite_f32(f32::from_ne_bytes([
+                    *s.add(8),
+                    *s.add(9),
+                    *s.add(10),
+                    *s.add(11),
+                ])),
             );
             store_m128_rgb_pixels(dst, *x, r, g, b, 4);
             *x += 4;
@@ -1232,9 +1265,7 @@ mod tests {
     #[test]
     fn invert_miniswhite_rgba32f_matches_scalar() {
         for width in [1, 3, 4, 7, 8, 15] {
-            let mut simd_buf: Vec<f32> = (0..width * 4)
-                .map(|i| (i as f32 * 0.03) % 2.0)
-                .collect();
+            let mut simd_buf: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.03) % 2.0).collect();
             let mut scalar_buf = simd_buf.clone();
             let pivot = 1.25_f32;
             invert_miniswhite_rgba32f(&mut simd_buf, width, 1, pivot);

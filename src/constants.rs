@@ -187,19 +187,21 @@ pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 pub const PSD_V1_ASYNC_DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Maximum size for the log file (10MB) before rotation.
-#[cfg_attr(feature = "preload-debug", allow(dead_code))]
+#[cfg(not(feature = "preload-debug"))]
 pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 
 /// Larger rotation threshold when built with `--features preload-debug`.
 /// Preload diagnostics emit many info lines per frame; 10 MiB fills in minutes and
 /// pushes strip / directory-tree logs into rotated files that are soon deleted.
+#[cfg(feature = "preload-debug")]
 pub const LOG_FILE_SIZE_LIMIT_PRELOAD_DEBUG: u64 = 100 * 1024 * 1024;
 
 /// Number of rotated log files flexi_logger retains (default builds).
-#[cfg_attr(feature = "preload-debug", allow(dead_code))]
+#[cfg(not(feature = "preload-debug"))]
 pub const LOG_FILE_KEEP_COUNT: usize = 3;
 
 /// Retain more numbered logs in preload-debug builds so a long repro session stays grep-able.
+#[cfg(feature = "preload-debug")]
 pub const LOG_FILE_KEEP_COUNT_PRELOAD_DEBUG: usize = 8;
 
 /// The clipping threshold for LibRaw's auto-brightness adjustment.

@@ -402,7 +402,7 @@ fn decode_heif_hdr_from_opened_primary(
             {
                 let headroom_span = headroom.linear_headroom - 1.0;
                 match crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(
-                    hdr,
+                    &hdr,
                     gain_w,
                     gain_h,
                     gain_rgba,
@@ -413,9 +413,8 @@ fn decode_heif_hdr_from_opened_primary(
                     Ok(new_hdr) => {
                         hdr = new_hdr;
                     }
-                    Err((original, err)) => {
+                    Err(err) => {
                         log::warn!("[HDR] Apple HDR Gain Map GPU deferred attach failed: {err}");
-                        hdr = original;
                     }
                 }
             }

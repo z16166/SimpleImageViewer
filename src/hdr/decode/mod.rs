@@ -27,9 +27,9 @@ mod tests;
 
 pub use decode_image::decode_hdr_image;
 pub use decode_image::is_hdr_candidate_ext;
-pub use tone_map::hdr_to_sdr_rgba8;
 pub(crate) use exr::decode_exr_display_image_from_mmap;
 pub(crate) use radiance::{RadianceHeaderParams, decode_radiance_hdr_image_from_mmap};
+pub use tone_map::hdr_to_sdr_rgba8;
 pub(crate) use tone_map::{
     bt709_nonlinear_channel_to_linear, decode_transfer_to_display_linear,
     hlg_nonlinear_to_scene_linear, linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8,

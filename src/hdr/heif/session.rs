@@ -69,10 +69,7 @@ pub(crate) fn append_mini_format_read_hint(action: &str, msg: String) -> String 
 // --- libheif session (context + primary handle) ---------------------------------------------
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifCtxGuard<'a>(
-    pub libheif_sys::HeifContextGuard,
-    PhantomData<&'a [u8]>,
-);
+pub(crate) struct HeifCtxGuard<'a>(pub libheif_sys::HeifContextGuard, PhantomData<&'a [u8]>);
 
 #[cfg(feature = "heif-native")]
 impl HeifCtxGuard<'_> {

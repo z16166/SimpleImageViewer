@@ -958,8 +958,14 @@ unsafe fn pack_rgba_u8_pixel4_neon(
         let rgba01 = vzip1_u32(vreinterpret_u32_u16(rg01), vreinterpret_u32_u16(ba01));
         vst1_u8(dst, vreinterpret_u8_u32(rgba01));
 
-        let rg23 = vzip2_u16(vcombine_u16(ri, vdup_n_u16(0)), vcombine_u16(gi, vdup_n_u16(0)));
-        let ba23 = vzip2_u16(vcombine_u16(bi, vdup_n_u16(0)), vcombine_u16(ai, vdup_n_u16(0)));
+        let rg23 = vzip2_u16(
+            vcombine_u16(ri, vdup_n_u16(0)),
+            vcombine_u16(gi, vdup_n_u16(0)),
+        );
+        let ba23 = vzip2_u16(
+            vcombine_u16(bi, vdup_n_u16(0)),
+            vcombine_u16(ai, vdup_n_u16(0)),
+        );
         let rgba23 = vzip1_u32(
             vreinterpret_u32_u16(vget_low_u16(rg23)),
             vreinterpret_u32_u16(vget_low_u16(ba23)),
@@ -1006,8 +1012,8 @@ mod tests {
     }
 
     fn assert_strip_simd_matches_scalar(buffer: &HdrImageBuffer, tone: &HdrToneMapSettings) {
-        let scalar =
-            hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone).expect("scalar");
+        let scalar = hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone)
+            .expect("scalar");
         let simd = hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, tone).expect("simd");
         assert_eq!(scalar, simd, "strip SIMD must match scalar tone-map");
     }
@@ -1078,7 +1084,13 @@ mod tests {
         assert_strip_simd_matches_scalar(&buffer, &tone);
     }
 
-    fn pack_rgba_u8_pixel4_scalar(dst: &mut [u8; 16], r: [f32; 4], g: [f32; 4], b: [f32; 4], a: [f32; 4]) {
+    fn pack_rgba_u8_pixel4_scalar(
+        dst: &mut [u8; 16],
+        r: [f32; 4],
+        g: [f32; 4],
+        b: [f32; 4],
+        a: [f32; 4],
+    ) {
         for lane in 0..4 {
             dst[lane * 4] = float_to_u8_scalar(r[lane]);
             dst[lane * 4 + 1] = float_to_u8_scalar(g[lane]);

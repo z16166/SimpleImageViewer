@@ -346,8 +346,7 @@ impl ImageViewerApp {
         } else if let Some((w, h)) = self.current_image_res {
             res_w = w;
             res_h = h;
-            let threshold =
-                crate::tile_cache::get_tiled_threshold();
+            let threshold = crate::tile_cache::get_tiled_threshold();
             if w as u64 * h as u64 > threshold {
                 osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
             }

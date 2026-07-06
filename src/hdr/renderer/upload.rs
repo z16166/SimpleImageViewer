@@ -268,7 +268,7 @@ pub(crate) fn pack_rows_for_texture_copy<'a>(
 
     thread_local! {
         static TEXTURE_ROW_PAD_BUFFER: std::cell::RefCell<Vec<u8>> =
-            std::cell::RefCell::new(Vec::new());
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     let padded_len = (bytes_per_row * height) as usize;
@@ -321,6 +321,14 @@ pub(crate) struct Rgba8TextureUpload<'a> {
     pub(crate) height: u32,
     pub(crate) rgba: &'a [u8],
     pub(crate) format: wgpu::TextureFormat,
+    pub(crate) max_texture_dimension_2d: u32,
+}
+
+pub(crate) struct R16UintTextureUpload<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: &'a [u16],
     pub(crate) max_texture_dimension_2d: u32,
 }
 
@@ -380,13 +388,16 @@ pub(crate) fn upload_rgba8_texture(
 pub(crate) fn upload_r16_uint_texture(
     device: &wgpu::Device,
     sink: GpuUploadSink<'_>,
-    label: &str,
-    width: u32,
-    height: u32,
-    pixels: &[u16],
-    max_texture_dimension_2d: u32,
+    upload: R16UintTextureUpload<'_>,
     texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
+    let R16UintTextureUpload {
+        label,
+        width,
+        height,
+        pixels,
+        max_texture_dimension_2d,
+    } = upload;
     if width == 0 || height == 0 {
         return Err(format!(
             "{label} requires non-zero dimensions, got {width}x{height}"
@@ -503,11 +514,13 @@ pub(crate) fn upload_image_plane_with_sink(
         let raw_pixels = upload_r16_uint_texture(
             device,
             sink,
-            "simple-image-viewer-hdr-raw-pixels-texture",
-            raw_source.width,
-            raw_source.height,
-            raw_source.raw_pixels.as_slice(),
-            device.limits().max_texture_dimension_2d,
+            R16UintTextureUpload {
+                label: "simple-image-viewer-hdr-raw-pixels-texture",
+                width: raw_source.width,
+                height: raw_source.height,
+                pixels: raw_source.raw_pixels.as_slice(),
+                max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
+            },
             texture_pool,
         )?;
 

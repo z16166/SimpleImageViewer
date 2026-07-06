@@ -819,13 +819,12 @@ impl ImageViewerApp {
                     let list = self.directory_tree.list.lock();
                     list.image_list_sort_ascending
                 })
+                && let Some(mut list) = self.directory_tree.list.try_lock()
             {
-                if let Some(mut list) = self.directory_tree.list.try_lock() {
-                    let _ = self.sync_directory_tree_list_images(&mut list);
-                    list.image_list_generation = list.image_list_generation.wrapping_add(1);
-                    list.current_index = self.current_index;
-                    list.scroll_image_list_to_current = true;
-                }
+                let _ = self.sync_directory_tree_list_images(&mut list);
+                list.image_list_generation = list.image_list_generation.wrapping_add(1);
+                list.current_index = self.current_index;
+                list.scroll_image_list_to_current = true;
             }
             if metadata_repaint {
                 ctx.request_repaint();
@@ -1769,8 +1768,7 @@ impl ImageViewerApp {
         let command_tx = self.directory_tree.command_tx.clone();
         let cross_viewport_hotkeys_blocked =
             Arc::clone(&self.directory_tree.cross_viewport_hotkeys_blocked);
-        let toggle_nav_hotkey_chords =
-            Arc::clone(&self.directory_tree.toggle_nav_hotkey_chords);
+        let toggle_nav_hotkey_chords = Arc::clone(&self.directory_tree.toggle_nav_hotkey_chords);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1810,10 +1808,7 @@ impl ImageViewerApp {
             if !cross_viewport_hotkeys_blocked.load(Ordering::Acquire) {
                 let chords = toggle_nav_hotkey_chords.load();
                 if let Some(chord) = ui.ctx().input(|input| {
-                    crate::app::input::detect_cross_viewport_hotkey(
-                        input,
-                        chords.as_ref(),
-                    )
+                    crate::app::input::detect_cross_viewport_hotkey(input, chords.as_ref())
                 }) {
                     super::send_directory_tree_command(
                         &command_tx,

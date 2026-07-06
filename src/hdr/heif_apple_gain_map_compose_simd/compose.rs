@@ -29,10 +29,10 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 
 thread_local! {
-    static GAIN_ROW_SCRATCH: RefCell<GainRowLinear> = RefCell::new(GainRowLinear {
+    static GAIN_ROW_SCRATCH: RefCell<GainRowLinear> = const { RefCell::new(GainRowLinear {
         encoded: Vec::new(),
         rgb: Vec::new(),
-    });
+    }) };
 }
 
 fn compose_row(

@@ -58,10 +58,11 @@ pub(crate) use load::{
     heif_should_use_embedded_sdr_primary_load, load_heif_embedded_sdr_primary_from_bytes,
     load_heif_hdr_from_bytes, load_heif_with_optional_embedded_sdr_from_bytes,
 };
+#[cfg(all(test, feature = "heif-native"))]
+pub(crate) use orientation::libheif_manual_geometry_exif_orientation_from_bytes;
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{
     decoded_pixels_match_swapped_ispe, libheif_heif_display_orientation_candidates_from_bytes,
-    libheif_manual_geometry_exif_orientation_from_bytes,
 };
 #[cfg(feature = "heif-native")]
 pub(crate) use thumbnail::{

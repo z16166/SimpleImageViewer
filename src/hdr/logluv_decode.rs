@@ -47,20 +47,20 @@ const UVSCALE: f64 = 410.0;
 
 static LOG_L10_LUT: LazyLock<[f64; 1024]> = LazyLock::new(|| {
     let mut lut = [0.0_f64; 1024];
-    for p10 in 1..1024 {
+    for (p10, value) in lut.iter_mut().enumerate().skip(1) {
         let e =
             (std::f64::consts::LN_2 / 64.0) * ((p10 as f64) + 0.5) - std::f64::consts::LN_2 * 12.0;
-        lut[p10] = e.exp();
+        *value = e.exp();
     }
     lut
 });
 
 static LOG_L16_LUT: LazyLock<[f64; 32768]> = LazyLock::new(|| {
     let mut lut = [0.0_f64; 32768];
-    for le in 1..32768 {
+    for (le, value) in lut.iter_mut().enumerate().skip(1) {
         let e =
             (std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5) - std::f64::consts::LN_2 * 64.0;
-        lut[le] = e.exp();
+        *value = e.exp();
     }
     lut
 });

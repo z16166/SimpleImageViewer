@@ -101,17 +101,15 @@ pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
 
 /// Build deferred GPU planes from a pre-compose primary buffer and decoded gain-map RGBA8.
 pub(crate) fn attach_apple_heic_gpu_deferred(
-    hdr: HdrImageBuffer,
+    hdr: &HdrImageBuffer,
     gain_w: u32,
     gain_h: u32,
     gain_rgba: Vec<u8>,
     headroom_span: f32,
     stops: f32,
     hdr_target_capacity: f32,
-) -> Result<HdrImageBuffer, (HdrImageBuffer, String)> {
-    if let Err(err) = validate_apple_deferred_planes(&hdr, gain_w, gain_h, &gain_rgba) {
-        return Err((hdr, err));
-    }
+) -> Result<HdrImageBuffer, String> {
+    validate_apple_deferred_planes(hdr, gain_w, gain_h, &gain_rgba)?;
 
     let gain_rgba = Arc::new(gain_rgba);
     let weight = apple_gain_map_display_weight(hdr_target_capacity, stops);
@@ -135,7 +133,10 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
         iso_deferred: None,
     });
 
-    Ok(HdrImageBuffer { metadata, ..hdr })
+    Ok(HdrImageBuffer {
+        metadata,
+        ..hdr.clone()
+    })
 }
 
 pub(crate) fn apple_heic_deferred_from_metadata(
@@ -181,7 +182,7 @@ mod tests {
             ]),
         };
         let gain = vec![128u8; 2 * 2 * 4];
-        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
+        let out = attach_apple_heic_gpu_deferred(&hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
     }
@@ -259,7 +260,7 @@ mod tests {
 
         // New deferred path
         let deferred =
-            attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity)
+            attach_apple_heic_gpu_deferred(&hdr, 2, 2, gain, headroom_span, stops, target_capacity)
                 .expect("attach");
         let new_composed = compose_apple_heic_deferred_to_scene_linear(&deferred, target_capacity)
             .expect("composed");

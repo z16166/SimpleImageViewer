@@ -37,10 +37,8 @@ const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 128);
 
 const PREVIEW_READBACK_POLL_SLICE: Duration = Duration::from_millis(1);
 const PREVIEW_READBACK_MAX_WAIT: Duration = Duration::from_secs(120);
-use super::upload::{
-    upload_callback_image, wgpu_copy_bytes_per_row, write_rgba32f_to_texture,
-};
 use super::CallbackUpload;
+use super::upload::{upload_callback_image, wgpu_copy_bytes_per_row, write_rgba32f_to_texture};
 use crate::hdr::decode::{hdr_to_sdr_rgba8_strip_preview, hdr_to_sdr_rgba8_with_tone_settings};
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings, HdrTransferFunction};
 use eframe::egui;

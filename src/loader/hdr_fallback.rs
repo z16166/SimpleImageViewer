@@ -121,10 +121,10 @@ pub(crate) fn index_hdr_gain_map_sdr_display_mode_affects(
     ultra_hdr_capacity_sensitive: bool,
     has_sdr_fallback_cache: bool,
 ) -> bool {
-    if let Some(hdr) = hdr {
-        if hdr_gain_map_sdr_display_mode_affects_image(hdr, path) {
-            return true;
-        }
+    if let Some(hdr) = hdr
+        && hdr_gain_map_sdr_display_mode_affects_image(hdr, path)
+    {
+        return true;
     }
     if ultra_hdr_capacity_sensitive {
         return true;

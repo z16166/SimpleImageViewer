@@ -148,7 +148,7 @@ pub(crate) fn configure_mimalloc_for_image_viewer() {
 pub(crate) fn mimalloc_version() -> i32 {
     #[cfg(feature = "mimalloc-allocator")]
     {
-        return mimalloc_policy::version();
+        mimalloc_policy::version()
     }
     #[cfg(not(feature = "mimalloc-allocator"))]
     0

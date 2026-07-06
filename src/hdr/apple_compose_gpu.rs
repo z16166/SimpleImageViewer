@@ -373,30 +373,36 @@ fn compose_tone_map_uniform(
     uniform
 }
 
-pub(super) fn ensure_apple_compose_bind_group<'a>(
-    device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    bind_groups: &'a mut HashMap<u64, wgpu::BindGroup>,
+pub(super) struct AppleComposeBindGroupResources<'a> {
+    device: &'a wgpu::Device,
+    bind_group_layout: &'a wgpu::BindGroupLayout,
     binding_size: u64,
-    encoded_primary_buffer: &wgpu::Buffer,
-    gain_view: &wgpu::TextureView,
-    compose_tone_map_buffer: &wgpu::Buffer,
-    display_storage_view: &wgpu::TextureView,
+    encoded_primary_buffer: &'a wgpu::Buffer,
+    gain_view: &'a wgpu::TextureView,
+    compose_tone_map_buffer: &'a wgpu::Buffer,
+    display_storage_view: &'a wgpu::TextureView,
+}
+
+pub(super) fn ensure_apple_compose_bind_group<'a>(
+    bind_groups: &'a mut HashMap<u64, wgpu::BindGroup>,
+    resources: AppleComposeBindGroupResources<'_>,
 ) -> &'a wgpu::BindGroup {
-    bind_groups.entry(binding_size).or_insert_with(|| {
-        super::compose_bind_group::create_compose_bind_group(
-            device,
-            bind_group_layout,
-            "simple-image-viewer-hdr-apple-compose-bind-group",
-            super::compose_bind_group::ComposePrimaryBinding::StorageBuffer {
-                buffer: encoded_primary_buffer,
-                size: binding_size,
-            },
-            gain_view,
-            compose_tone_map_buffer,
-            display_storage_view,
-        )
-    })
+    bind_groups
+        .entry(resources.binding_size)
+        .or_insert_with(|| {
+            super::compose_bind_group::create_compose_bind_group(
+                resources.device,
+                resources.bind_group_layout,
+                "simple-image-viewer-hdr-apple-compose-bind-group",
+                super::compose_bind_group::ComposePrimaryBinding::StorageBuffer {
+                    buffer: resources.encoded_primary_buffer,
+                    size: resources.binding_size,
+                },
+                resources.gain_view,
+                resources.compose_tone_map_buffer,
+                resources.display_storage_view,
+            )
+        })
 }
 
 pub(super) struct AppleComposePass<'a> {
@@ -475,14 +481,16 @@ pub(super) fn encode_compose_compute_pass(
                 .get();
 
             let bind_group = ensure_apple_compose_bind_group(
-                device,
-                bind_group_layout,
                 apple_compose_bind_groups,
-                binding_size,
-                encoded_primary_buffer,
-                gain_view,
-                compose_tone_map_buffer,
-                display_storage_view,
+                AppleComposeBindGroupResources {
+                    device,
+                    bind_group_layout,
+                    binding_size,
+                    encoded_primary_buffer,
+                    gain_view,
+                    compose_tone_map_buffer,
+                    display_storage_view,
+                },
             );
 
             pass.set_bind_group(0, bind_group, &[]);

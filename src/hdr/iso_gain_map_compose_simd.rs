@@ -30,11 +30,11 @@ use crate::hdr::gain_map::{
     GainMapMetadata, compose_gain_map_pixel, gain_map_weight, precompute_gain_map_row_encoded,
     validate_iso_deferred_planes,
 };
-use crate::hdr::types::IsoGainMapGpuSource;
 #[cfg(target_arch = "aarch64")]
 use crate::hdr::simd_fast_pow::{exp2_4_neon, pow4_neon};
 #[cfg(target_arch = "x86_64")]
 use crate::hdr::simd_fast_pow::{exp2_4_sse41, pow4_sse41};
+use crate::hdr::types::IsoGainMapGpuSource;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -219,9 +219,8 @@ unsafe fn compose_iso_row_sse41(
             let gain_base = *x as usize * 3;
             let (enc_r, enc_g, enc_b) = load_sdr_rgb_encoded4_sse41(sdr_row.as_ptr().add(base));
             let (gain_r, gain_g, gain_b) = load_gain_rgb4_sse41(gain_row.as_ptr(), gain_base);
-            let (out_r, out_g, out_b) = recover_hdr_rgb4_sse41(
-                enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants,
-            );
+            let (out_r, out_g, out_b) =
+                recover_hdr_rgb4_sse41(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
             store_rgba4_sse41(
                 row_out.as_mut_ptr().add(base),
                 sdr_row.as_ptr().add(base),
@@ -250,9 +249,8 @@ unsafe fn compose_iso_row_neon(
             let gain_base = *x as usize * 3;
             let (enc_r, enc_g, enc_b) = load_sdr_rgb_encoded4_neon(sdr_row.as_ptr().add(base));
             let (gain_r, gain_g, gain_b) = load_gain_rgb4_neon(gain_row.as_ptr(), gain_base);
-            let (out_r, out_g, out_b) = recover_hdr_rgb4_neon(
-                enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants,
-            );
+            let (out_r, out_g, out_b) =
+                recover_hdr_rgb4_neon(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
             store_rgba4_neon(
                 row_out.as_mut_ptr().add(base),
                 sdr_row.as_ptr().add(base),
@@ -501,7 +499,10 @@ unsafe fn recover_channel4_neon(
         let offset_hdr = vdupq_n_f32(constants.metadata.offset_hdr[channel]);
         let zero = vdupq_n_f32(0.0);
         vmaxq_f32(
-            vsubq_f32(vmulq_f32(vaddq_f32(linear_sdr, offset_sdr), boost), offset_hdr),
+            vsubq_f32(
+                vmulq_f32(vaddq_f32(linear_sdr, offset_sdr), boost),
+                offset_hdr,
+            ),
             zero,
         )
     }
@@ -509,13 +510,7 @@ unsafe fn recover_channel4_neon(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn store_rgba4_sse41(
-    dst: *mut f32,
-    sdr: *const u8,
-    r: __m128,
-    g: __m128,
-    b: __m128,
-) {
+unsafe fn store_rgba4_sse41(dst: *mut f32, sdr: *const u8, r: __m128, g: __m128, b: __m128) {
     unsafe {
         let mut rf = [0.0_f32; 4];
         let mut gf = [0.0_f32; 4];

@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 
 use super::decode::{
-    TiffPaletteMaps, TiffSampleDecodeParams, ensure_tiff_scanline_size,
+    TiffLinearScratchStats, TiffPaletteMaps, TiffSampleDecodeParams, ensure_tiff_scanline_size,
     finalize_linear_scratch_to_rgba, process_scanline_contig, process_scanline_separate,
     write_contig_scanline_linear_scratch, write_separate_scanline_linear_scratch,
 };
@@ -70,11 +70,9 @@ impl LibTiffScanlineSource {
         }
 
         let rps = self.rows_per_strip;
-        let Some(strip_len) =
-            (unsafe { tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), self.width, self.height) })
-        else {
-            return None;
-        };
+        let strip_len = (unsafe {
+            tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), self.width, self.height)
+        })?;
         let read_row = strip_idx * rps;
         let actual_rows = if (strip_idx + 1) * rps > self.height {
             self.height - strip_idx * rps
@@ -200,7 +198,7 @@ impl TiledImageSource for LibTiffScanlineSource {
 
                 for py in intersect_y_start..intersect_y_end {
                     let row_in_strip = (py - strip_y_start) as usize;
-                    let Some(src_offset) = (row_in_strip as usize)
+                    let Some(src_offset) = row_in_strip
                         .checked_mul(self.width as usize)
                         .and_then(|row| row.checked_add(intersect_x_start as usize))
                         .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
@@ -219,11 +217,11 @@ impl TiledImageSource for LibTiffScanlineSource {
                     if let (Some(src_end), Some(dst_end)) = (
                         src_offset.checked_add(copy_bytes),
                         dst_offset.checked_add(copy_bytes),
-                    ) {
-                        if src_end <= strip_data.len() && dst_end <= result.len() {
-                            result[dst_offset..dst_offset + copy_bytes]
-                                .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
-                        }
+                    ) && src_end <= strip_data.len()
+                        && dst_end <= result.len()
+                    {
+                        result[dst_offset..dst_offset + copy_bytes]
+                            .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
                     }
                 }
             }
@@ -340,16 +338,15 @@ impl TiledImageSource for LibTiffScanlineSource {
                             continue;
                         }
                         let pixel = strip_buf[src_idx].to_ne_bytes();
-                        let Some(dst_byte_offset) = (tx as usize)
-                            .checked_mul(crate::constants::RGBA_CHANNELS)
+                        let Some(dst_byte_offset) =
+                            (tx as usize).checked_mul(crate::constants::RGBA_CHANNELS)
                         else {
                             continue;
                         };
                         let Some(dst_idx) = dst_y_offset.checked_add(dst_byte_offset) else {
                             continue;
                         };
-                        let Some(dst_end) =
-                            dst_idx.checked_add(crate::constants::RGBA_CHANNELS)
+                        let Some(dst_end) = dst_idx.checked_add(crate::constants::RGBA_CHANNELS)
                         else {
                             continue;
                         };
@@ -419,7 +416,10 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
         actual_min,
         actual_max,
     } = pass;
-    let TiffSampleDecodeParams { bps, format, .. } = params;
+    let mut linear_stats = TiffLinearScratchStats {
+        actual_min,
+        actual_max,
+    };
     if config == CONFIG_CONTIG {
         if linear_deferred_scale {
             let scratch = linear_scratch
@@ -436,10 +436,8 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                     &mut scratch[row_offset..row_offset + width as usize * 4],
                     width,
                     spp,
-                    bps,
-                    format,
-                    actual_min,
-                    actual_max,
+                    params,
+                    &mut linear_stats,
                 );
             }
         } else {
@@ -453,9 +451,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
             }
         }
     } else if linear_deferred_scale {
-        let scratch = linear_scratch
-            .as_deref_mut()
-            .expect("deferred linear scale requires scratch");
+        let scratch = linear_scratch.expect("deferred linear scale requires scratch");
         for s in 0..samples_to_process {
             for y in 0..height {
                 if unsafe {
@@ -470,10 +466,8 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                     &mut scratch[row_offset..row_offset + width as usize * 4],
                     width,
                     s,
-                    bps,
-                    format,
-                    actual_min,
-                    actual_max,
+                    params,
+                    &mut linear_stats,
                 );
             }
         }
@@ -604,7 +598,7 @@ pub(crate) unsafe fn manual_decode_scanline(
     } else {
         None
     };
-    let decode_params = TiffSampleDecodeParams {
+    let mut decode_params = TiffSampleDecodeParams {
         bps,
         photo,
         format,
@@ -635,14 +629,12 @@ pub(crate) unsafe fn manual_decode_scanline(
     if use_linear_deferred_scale {
         if actual_max > actual_min {
             if !smin_provided {
-                smin = actual_min;
+                decode_params.smin = actual_min;
             }
-            smax = actual_max;
+            decode_params.smax = actual_max;
         }
         if let Some(scratch) = linear_scratch.as_ref() {
-            finalize_linear_scratch_to_rgba(
-                scratch, &mut rgba, width, height, spp, photo, smin, smax,
-            );
+            finalize_linear_scratch_to_rgba(scratch, &mut rgba, width, height, spp, decode_params);
         }
     }
 

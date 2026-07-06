@@ -48,6 +48,12 @@ pub(super) struct TiledImageInstall<'a> {
     pub(super) ctx: &'a egui::Context,
 }
 
+struct HdrAnimatedRemainderMergeState {
+    preserved_textures: std::sync::Arc<Vec<egui::TextureHandle>>,
+    preserved_delays: std::sync::Arc<Vec<std::time::Duration>>,
+    next_frame: usize,
+}
+
 impl ImageViewerApp {
     /// True when the canvas is actually drawing through the HDR float plane for `index`,
     /// not merely when an HDR buffer exists in cache (e.g. ISO gain-map embedded SDR master on SDR output).
@@ -677,15 +683,17 @@ impl ImageViewerApp {
         if frame_count <= 1 {
             return false;
         }
-        if let Some(cached) = self.animation_cache.get(&idx) {
-            if cached.hdr_frames.is_some() && cached.textures.len() == frame_count {
-                return true;
-            }
+        if let Some(cached) = self.animation_cache.get(&idx)
+            && cached.hdr_frames.is_some()
+            && cached.textures.len() == frame_count
+        {
+            return true;
         }
-        if let Some(pending) = self.pending_anim_frames.get(&idx) {
-            if pending.hdr_frames.is_some() && pending.frames.len() == frame_count {
-                return true;
-            }
+        if let Some(pending) = self.pending_anim_frames.get(&idx)
+            && pending.hdr_frames.is_some()
+            && pending.frames.len() == frame_count
+        {
+            return true;
         }
         false
     }
@@ -694,15 +702,17 @@ impl ImageViewerApp {
         if frame_count <= 1 {
             return false;
         }
-        if let Some(cached) = self.animation_cache.get(&idx) {
-            if cached.hdr_frames.is_none() && cached.textures.len() == frame_count {
-                return true;
-            }
+        if let Some(cached) = self.animation_cache.get(&idx)
+            && cached.hdr_frames.is_none()
+            && cached.textures.len() == frame_count
+        {
+            return true;
         }
-        if let Some(pending) = self.pending_anim_frames.get(&idx) {
-            if pending.hdr_frames.is_none() && pending.frames.len() == frame_count {
-                return true;
-            }
+        if let Some(pending) = self.pending_anim_frames.get(&idx)
+            && pending.hdr_frames.is_none()
+            && pending.frames.len() == frame_count
+        {
+            return true;
         }
         false
     }
@@ -712,9 +722,7 @@ impl ImageViewerApp {
         idx: usize,
         frames: &[crate::loader::HdrAnimationFrame],
         ultra_hdr_capacity_sensitive: bool,
-        preserved_textures: std::sync::Arc<Vec<egui::TextureHandle>>,
-        preserved_delays: std::sync::Arc<Vec<std::time::Duration>>,
-        next_frame: usize,
+        preserved: HdrAnimatedRemainderMergeState,
         ctx: &egui::Context,
     ) {
         let (hdr_frames, sdr_frames) = Self::build_hdr_animation_pending_parts(frames);
@@ -744,6 +752,12 @@ impl ImageViewerApp {
         } else {
             self.hdr_placeholder_fallback_indices.remove(&idx);
         }
+
+        let HdrAnimatedRemainderMergeState {
+            preserved_textures,
+            preserved_delays,
+            next_frame,
+        } = preserved;
 
         self.pending_anim_frames.insert(
             idx,
@@ -804,16 +818,16 @@ impl ImageViewerApp {
             if frames[0].width() != first.width || frames[0].height() != first.height {
                 return false;
             }
-            let preserved_textures = std::sync::Arc::clone(&existing.textures);
-            let preserved_delays = std::sync::Arc::clone(&existing.delays);
-            let next_frame = existing.next_frame;
+            let preserved = HdrAnimatedRemainderMergeState {
+                preserved_textures: std::sync::Arc::clone(&existing.textures),
+                preserved_delays: std::sync::Arc::clone(&existing.delays),
+                next_frame: existing.next_frame,
+            };
             self.apply_hdr_animated_remainder_merge(
                 idx,
                 frames,
                 ultra_hdr_capacity_sensitive,
-                preserved_textures,
-                preserved_delays,
-                next_frame,
+                preserved,
                 ctx,
             );
             return true;
@@ -838,16 +852,16 @@ impl ImageViewerApp {
                 .animation_cache
                 .remove(&idx)
                 .expect("cache entry present");
-            let preserved_textures = std::sync::Arc::clone(&cached.textures);
-            let preserved_delays = std::sync::Arc::clone(&cached.delays);
-            let next_frame = cached.textures.len();
+            let preserved = HdrAnimatedRemainderMergeState {
+                preserved_textures: std::sync::Arc::clone(&cached.textures),
+                preserved_delays: std::sync::Arc::clone(&cached.delays),
+                next_frame: cached.textures.len(),
+            };
             self.apply_hdr_animated_remainder_merge(
                 idx,
                 frames,
                 ultra_hdr_capacity_sensitive,
-                preserved_textures,
-                preserved_delays,
-                next_frame,
+                preserved,
                 ctx,
             );
             return true;
@@ -865,16 +879,16 @@ impl ImageViewerApp {
         next_frame: usize,
         ctx: &egui::Context,
     ) {
-        if idx == self.current_index {
-            if let Some(first) = frames.first() {
-                self.set_current_image_resolution(Some((first.width, first.height)));
-                self.tile_manager = None;
-                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
-                    width: first.width,
-                    height: first.height,
-                    pixels: first.arc_pixels(),
-                });
-            }
+        if idx == self.current_index
+            && let Some(first) = frames.first()
+        {
+            self.set_current_image_resolution(Some((first.width, first.height)));
+            self.tile_manager = None;
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: first.width,
+                height: first.height,
+                pixels: first.arc_pixels(),
+            });
         }
         self.pending_anim_frames.insert(
             idx,

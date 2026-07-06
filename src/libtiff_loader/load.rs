@@ -424,9 +424,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
         }
 
         let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
-            return Err(format!(
-                "Static TIFF dimension overflow ({width}x{height})"
-            ));
+            return Err(format!("Static TIFF dimension overflow ({width}x{height})"));
         };
         if total_pixels > MAX_STATIC_HDR_DECODE_PIXELS as usize {
             return Err("Static TIFF TOO LARGE for single pass decode".to_string());

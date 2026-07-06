@@ -39,14 +39,14 @@ mod x86 {
 
     const INV_MANT_MASK: i32 = !0x7f80_0000_u32 as i32;
     const EXP_BIAS: i32 = 0x7f;
-    const EXP_HI: f32 = 88.376_262_664_794_9;
-    const EXP_LO: f32 = -88.376_262_664_794_9;
-    const LOG2EF: f32 = 1.442_695_040_888_963_4;
-    const LOG_Q1: f32 = -2.121_944_40e-4;
-    const LOG_Q2: f32 = 0.693_359_375;
-    const EXP_C1: f32 = 0.693_359_375;
-    const EXP_C2: f32 = -2.121_944_40e-4;
-    const SQRTHF: f32 = 0.707_106_781_186_547_5;
+    const EXP_HI: f32 = 88.376_26;
+    const EXP_LO: f32 = -88.376_26;
+    const LOG2EF: f32 = std::f32::consts::LOG2_E;
+    const LOG_Q1: f32 = -2.121_944_4e-4;
+    const LOG_Q2: f32 = 0.693_359_4;
+    const EXP_C1: f32 = 0.693_359_4;
+    const EXP_C2: f32 = -2.121_944_4e-4;
+    const SQRTHF: f32 = 0.707_106_77;
 
     #[target_feature(enable = "sse4.1")]
     #[inline]
@@ -69,15 +69,15 @@ mod x86 {
         x = _mm_add_ps(x, tmp);
 
         let z = _mm_mul_ps(x, x);
-        let mut y = _mm_set1_ps(7.037_683_629_2e-2);
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.151_461_031_0e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.167_699_874_0e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.242_014_084_6e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.424_932_278_7e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.666_805_766_5e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(2.000_071_476_5e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-2.499_999_399_3e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(3.333_333_117_4e-1));
+        let mut y = _mm_set1_ps(7.037_683_6e-2);
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.151_461e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.167_699_84e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.242_014_1e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.424_932_3e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-1.666_805_7e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(2.000_071_4e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(-2.499_999_4e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(3.333_333e-1));
         y = _mm_mul_ps(_mm_mul_ps(y, x), z);
 
         let mut tmp = _mm_mul_ps(e, _mm_set1_ps(LOG_Q1));
@@ -107,12 +107,12 @@ mod x86 {
         x = _mm_sub_ps(x, z);
         let z2 = _mm_mul_ps(x, x);
 
-        let mut y = _mm_set1_ps(1.987_569_150_0e-4);
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.398_199_950_7e-3));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(8.333_451_907_3e-3));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(4.166_579_589_4e-2));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.666_666_545_9e-1));
-        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(5.000_000_120_1e-1));
+        let mut y = _mm_set1_ps(1.987_569_1e-4);
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.398_199_9e-3));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(8.333_452e-3));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(4.166_579_6e-2));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(1.666_666_6e-1));
+        y = _mm_add_ps(_mm_mul_ps(y, x), _mm_set1_ps(5e-1));
         y = _mm_add_ps(_mm_mul_ps(y, z2), x);
         y = _mm_add_ps(y, one);
 
@@ -181,7 +181,7 @@ mod arm {
     const EXP_BIAS: i32 = 0x7f;
     const EXP_HI: f32 = 88.376_262_664_794_9;
     const EXP_LO: f32 = -88.376_262_664_794_9;
-    const LOG2EF: f32 = 1.442_695_040_888_963_4;
+    const LOG2EF: f32 = std::f32::consts::LOG2_E;
     const LOG_Q1: f32 = -2.121_944_40e-4;
     const LOG_Q2: f32 = 0.693_359_375;
     const EXP_C1: f32 = 0.693_359_375;
@@ -301,10 +301,7 @@ mod arm {
     #[target_feature(enable = "neon")]
     #[inline]
     pub(super) unsafe fn exp2_4_neon(exponents: float32x4_t) -> float32x4_t {
-        exp_ps(vmulq_f32(
-            exponents,
-            vdupq_n_f32(std::f32::consts::LN_2),
-        ))
+        exp_ps(vmulq_f32(exponents, vdupq_n_f32(std::f32::consts::LN_2)))
     }
 
     #[target_feature(enable = "neon")]

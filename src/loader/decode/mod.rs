@@ -404,7 +404,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
         }
 
-        return load_primary_with_detection_fallback(
+        load_primary_with_detection_fallback(
             path,
             file_name,
             hdr_target_capacity,
@@ -415,7 +415,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     load_static_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
                 })
             },
-        );
+        )
     })();
 
     let mut preview: Option<DecodedImage> = None;

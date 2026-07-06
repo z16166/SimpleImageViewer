@@ -146,8 +146,7 @@ pub(crate) fn detect_cross_viewport_hotkey(
     i: &egui::InputState,
     chords: &[KeyChord],
 ) -> Option<KeyChord> {
-    input_hotkey_chords(i)
-        .find(|chord| chords.contains(chord))
+    input_hotkey_chords(i).find(|chord| chords.contains(chord))
 }
 
 pub(crate) fn consume_cross_viewport_hotkey(ctx: &Context, chord: KeyChord) {

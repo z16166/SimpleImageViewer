@@ -495,8 +495,8 @@ pub(crate) fn hdr_buffer_from_ycbcr(
             let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
             let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
             let subsamp_h = chroma != libheif_sys::heif_chroma_444;
-            for x_px in 0..y_w {
-                let y_raw = y_u16[x_px] as u32;
+            for (x_px, &y_sample) in y_u16.iter().enumerate() {
+                let y_raw = y_sample as u32;
                 let xc = if subsamp_h {
                     (x_px / 2).min(cb_w.saturating_sub(1))
                 } else {

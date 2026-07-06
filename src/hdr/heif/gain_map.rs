@@ -63,9 +63,8 @@ pub(crate) fn rotate_gain_rgba_90_cw(
         .expect("rotate_gain_rgba_90_cw: dimension overflow");
     assert_eq!(len, expected_len);
     let src = gain_rgba;
-    let mut out = Vec::with_capacity(len);
+    let mut out = vec![0; len];
     unsafe {
-        out.set_len(len);
         let out_ptr: *mut u8 = out.as_mut_ptr();
         for y in 0..h {
             for x in 0..w {
@@ -98,9 +97,8 @@ pub(crate) fn rotate_gain_rgba_90_ccw(
         .expect("rotate_gain_rgba_90_ccw: dimension overflow");
     assert_eq!(len, expected_len);
     let src = gain_rgba;
-    let mut out = Vec::with_capacity(len);
+    let mut out = vec![0; len];
     unsafe {
-        out.set_len(len);
         let out_ptr: *mut u8 = out.as_mut_ptr();
         for y in 0..h {
             for x in 0..w {

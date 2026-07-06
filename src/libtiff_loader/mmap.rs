@@ -105,12 +105,12 @@ pub(crate) unsafe extern "C" fn tiff_seek_proc(
                 .saturating_add(off as i64)
                 .clamp(0, len_i64);
             (*ctx).offset = next as u64;
-        }
+        },
         2 => unsafe {
             // SEEK_END
             let next = len_i64.saturating_add(off as i64).clamp(0, len_i64);
             (*ctx).offset = next as u64;
-        }
+        },
         _ => {}
     }
     unsafe { (*ctx).offset }

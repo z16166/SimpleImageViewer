@@ -428,11 +428,11 @@ impl ImageViewerApp {
             return;
         }
         let mut old_to_new = vec![usize::MAX; old_len];
-        for old_idx in 0..old_len {
+        for (old_idx, mapped_idx) in old_to_new.iter_mut().enumerate() {
             if old_idx < removed_index {
-                old_to_new[old_idx] = old_idx;
+                *mapped_idx = old_idx;
             } else if old_idx > removed_index {
-                old_to_new[old_idx] = old_idx - 1;
+                *mapped_idx = old_idx - 1;
             }
         }
         self.directory_tree_strip_cache.permute(&old_to_new);

@@ -185,6 +185,19 @@ pub(crate) struct TiffPaletteMaps {
     pub(crate) entries: usize,
 }
 
+pub(crate) struct TiffLinearScratchStats<'a> {
+    pub(crate) actual_min: &'a mut f64,
+    pub(crate) actual_max: &'a mut f64,
+}
+
+impl TiffLinearScratchStats<'_> {
+    #[inline]
+    fn record(&mut self, value: f64) {
+        *self.actual_min = self.actual_min.min(value);
+        *self.actual_max = self.actual_max.max(value);
+    }
+}
+
 pub(crate) fn process_scanline_contig(
     buf: &[u8],
     rgba_row: &mut [u8],
@@ -807,8 +820,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
                     let val = sample as f64;
                     actual_min = actual_min.min(val);
                     actual_max = actual_max.max(val);
-                    row[dst_base + c] =
-                        ((sample as f32 - smin_f32) * inv_range).clamp(0.0, 1.0);
+                    row[dst_base + c] = ((sample as f32 - smin_f32) * inv_range).clamp(0.0, 1.0);
                 }
                 row[dst_base + 3] = if spp >= 4 {
                     let sample = read_uint16_sample(&buf, src_base + 3);
@@ -989,19 +1001,17 @@ pub(crate) fn write_contig_scanline_linear_scratch(
     scratch_row: &mut [f32],
     width: u32,
     spp: u16,
-    bps: u16,
-    format: u16,
-    actual_min: &mut f64,
-    actual_max: &mut f64,
+    params: TiffSampleDecodeParams,
+    stats: &mut TiffLinearScratchStats<'_>,
 ) {
+    let TiffSampleDecodeParams { bps, format, .. } = params;
     for x in 0..width as usize {
         let dst_idx = x * 4;
         for s in 0..(spp as usize).min(4) {
             let idx = x * spp as usize + s;
             let val = get_raw_value(buf, idx, bps, format);
             if val.is_finite() {
-                *actual_min = actual_min.min(val);
-                *actual_max = actual_max.max(val);
+                stats.record(val);
                 scratch_row[dst_idx + s] = val as f32;
             }
         }
@@ -1014,19 +1024,17 @@ pub(crate) fn write_separate_scanline_linear_scratch(
     scratch_row: &mut [f32],
     width: u32,
     sample_idx: usize,
-    bps: u16,
-    format: u16,
-    actual_min: &mut f64,
-    actual_max: &mut f64,
+    params: TiffSampleDecodeParams,
+    stats: &mut TiffLinearScratchStats<'_>,
 ) {
+    let TiffSampleDecodeParams { bps, format, .. } = params;
     if sample_idx >= 4 {
         return;
     }
     for x in 0..width as usize {
         let val = get_raw_value(buf, x, bps, format);
         if val.is_finite() {
-            *actual_min = actual_min.min(val);
-            *actual_max = actual_max.max(val);
+            stats.record(val);
             scratch_row[x * 4 + sample_idx] = val as f32;
         }
     }
@@ -1039,10 +1047,11 @@ pub(crate) fn finalize_linear_scratch_to_rgba(
     width: u32,
     height: u32,
     spp: u16,
-    photo: u16,
-    smin: f64,
-    smax: f64,
+    params: TiffSampleDecodeParams,
 ) {
+    let TiffSampleDecodeParams {
+        photo, smin, smax, ..
+    } = params;
     let range = (smax - smin).max(f64::EPSILON);
     for y in 0..height as usize {
         let row_scratch = &scratch[y * width as usize * 4..(y + 1) * width as usize * 4];
