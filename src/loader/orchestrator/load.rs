@@ -677,7 +677,10 @@ impl ImageLoader {
                                         ),
                                     }));
                                     let _ =
-                                        worker_tx.send(LoaderOutput::Refined(req.index));
+                                        worker_tx.send(LoaderOutput::Refined {
+                                            index: req.index,
+                                            source_key: req.source_key,
+                                        });
                                     crate::preload_debug!(
                                         "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
                                         req.index,

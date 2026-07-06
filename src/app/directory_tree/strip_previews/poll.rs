@@ -90,23 +90,11 @@ impl ImageViewerApp {
     }
 
     fn image_strip_path_index(&mut self) -> &HashMap<PathBuf, usize> {
-        // Use the existing image_list_generation counter (bumped at every
-        // mutation site) as the cache key instead of (ptr, len). This is
-        // immune to in-place mutations like sort/retain that preserve the
-        // allocation pointer — no such mutations exist today, but a
-        // generation key costs nothing and is strictly more robust.
-        let current_gen = self
-            .directory_tree
-            .list
-            .try_lock()
-            .map(|list| list.image_list_generation);
-        // If the lock is contended, conservatively rebuild; it's a cheap
-        // fallback that guarantees correctness.
-        let stale = current_gen.is_none_or(|generation| {
-            self.cached_image_strip_path_index
-                .as_ref()
-                .is_none_or(|(g, _)| *g != generation)
-        });
+        let generation = self.directory_tree.list.lock().image_list_generation;
+        let stale = self
+            .cached_image_strip_path_index
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation);
         if stale {
             let map: HashMap<PathBuf, usize> = self
                 .image_files
@@ -114,10 +102,7 @@ impl ImageViewerApp {
                 .enumerate()
                 .map(|(i, p)| (p.clone(), i))
                 .collect();
-            // If we couldn't read the generation (lock contended), store 0 —
-            // the next successful try_lock with a non-zero gen will detect
-            // the mismatch and rebuild.
-            self.cached_image_strip_path_index = Some((current_gen.unwrap_or(0), map));
+            self.cached_image_strip_path_index = Some((generation, map));
         }
         &self
             .cached_image_strip_path_index
@@ -221,14 +206,7 @@ impl ImageViewerApp {
                     result.image_list_generation != list.image_list_generation,
                     list.image_list_generation,
                 ),
-                None => {
-                    let snapshot_gen = self
-                        .directory_tree
-                        .list_snapshot
-                        .load()
-                        .image_list_generation;
-                    (result.image_list_generation < snapshot_gen, snapshot_gen)
-                }
+                None => (true, 0),
             };
             if stale {
                 #[cfg(feature = "preload-debug")]

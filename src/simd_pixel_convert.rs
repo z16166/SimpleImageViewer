@@ -37,7 +37,9 @@ const F32S_PER_NEON_STEP: usize = 4;
 
 /// Zero-extend packed u8 samples into u16 lanes (one lane per channel sample).
 pub fn unpack_u8_to_u16_lanes(dst: &mut [u16], src: &[u8]) {
-    debug_assert_eq!(dst.len(), src.len());
+    if dst.len() != src.len() {
+        return;
+    }
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -68,7 +70,9 @@ pub fn unpack_u8_to_u16_lanes(dst: &mut [u16], src: &[u8]) {
 
 /// Copy little-endian u16 pairs from `src` bytes into `dst` lanes.
 pub fn copy_le_u16_lanes(dst: &mut [u16], src: &[u8]) {
-    debug_assert_eq!(dst.len() * 2, src.len());
+    if dst.len().saturating_mul(2) != src.len() {
+        return;
+    }
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -100,7 +104,9 @@ pub fn copy_le_u16_lanes(dst: &mut [u16], src: &[u8]) {
 
 /// Normalize u16 lanes to f32 in `[0, 1]` via `lane * inv_scale`.
 pub fn u16_lanes_to_f32(dst: &mut [f32], src: &[u16], inv_scale: f32) {
-    debug_assert_eq!(dst.len(), src.len());
+    if dst.len() != src.len() {
+        return;
+    }
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -137,9 +143,9 @@ pub fn normalize_uint16_rgb_scanline_to_rgba32f(
     smin: f32,
     inv_range: f32,
 ) {
-    debug_assert!(matches!(spp, 3 | 4));
-    debug_assert_eq!(dst.len(), width * 4);
-    debug_assert!(src.len() >= width * spp * 2);
+    if !matches!(spp, 3 | 4) || dst.len() != width * 4 || src.len() < width * spp * 2 {
+        return;
+    }
 
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]

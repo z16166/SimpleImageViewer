@@ -629,7 +629,14 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
 
-        let mut pixels = vec![255u8; (out_w * out_h * 4) as usize];
+        let Some(pixel_len) = out_w
+            .checked_mul(out_h)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|len| len as usize)
+        else {
+            return (0, 0, Vec::new());
+        };
+        let mut pixels = vec![255u8; pixel_len];
 
         // 1. Pre-calculate channel mappings to avoid hot-loop allocations
         let channel_mappings: Vec<Vec<usize>> = (0..self.channels)
@@ -668,8 +675,10 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                     if src_x < row_len {
                         let val = row_data[src_x];
                         let dst_off = (row_start_idx + out_x) * 4;
-                        for &target in ch_target {
-                            pixels[dst_off + target] = val;
+                        if dst_off + 3 < pixels.len() {
+                            for &target in ch_target {
+                                pixels[dst_off + target] = val;
+                            }
                         }
                     }
                 }

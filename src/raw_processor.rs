@@ -1162,6 +1162,17 @@ impl RawProcessor {
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
                     let count = img.width as usize * img.height as usize;
+                    let required_rgb = count
+                        .checked_mul(crate::constants::RGB_CHANNELS)
+                        .filter(|&len| len <= slice.len());
+                    if required_rgb.is_none() {
+                        return Err(rust_i18n::t!(
+                            "error.decode_thumb_failed",
+                            err = "bitmap size mismatch"
+                        )
+                        .to_string());
+                    }
+                    let rgb_len = required_rgb.unwrap_or(0);
                     let mut rgba = vec![
                         crate::constants::MAX_CHANNEL_VALUE;
                         count * crate::constants::RGBA_CHANNELS
@@ -1170,7 +1181,7 @@ impl RawProcessor {
                     if let Some(rgb) = image::RgbImage::from_raw(
                         img.width as u32,
                         img.height as u32,
-                        slice.to_vec(),
+                        slice[..rgb_len].to_vec(),
                     ) {
                         let rgba_img = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
                         Ok(crate::loader::DecodedImage::new(
@@ -1181,12 +1192,13 @@ impl RawProcessor {
                     } else {
                         // Fallback to manual if RgbImage::from_raw fails (shouldn't happen)
                         for i in 0..count {
-                            rgba[i * crate::constants::RGBA_CHANNELS] =
-                                slice[i * crate::constants::RGB_CHANNELS];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 1] =
-                                slice[i * crate::constants::RGB_CHANNELS + 1];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 2] =
-                                slice[i * crate::constants::RGB_CHANNELS + 2];
+                            let src = i * crate::constants::RGB_CHANNELS;
+                            if src + 2 >= slice.len() {
+                                break;
+                            }
+                            rgba[i * crate::constants::RGBA_CHANNELS] = slice[src];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 1] = slice[src + 1];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 2] = slice[src + 2];
                         }
                         Ok(crate::loader::DecodedImage::new(
                             img.width as u32,

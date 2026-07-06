@@ -70,11 +70,10 @@ impl ImageViewerApp {
         if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
-        let Some(list) = self.directory_tree.list.try_lock() else {
-            return false;
+        let list_generation = {
+            let list = self.directory_tree.list.lock();
+            list.image_list_generation
         };
-        let list_generation = list.image_list_generation;
-        drop(list);
 
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -140,11 +139,10 @@ impl ImageViewerApp {
         if !self.strip_needs_hdr_cache_sync_for_hdr(index, hdr.as_ref()) {
             return false;
         }
-        let Some(list) = self.directory_tree.list.try_lock() else {
-            return false;
+        let list_generation = {
+            let list = self.directory_tree.list.lock();
+            list.image_list_generation
         };
-        let list_generation = list.image_list_generation;
-        drop(list);
 
         let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
@@ -494,10 +492,10 @@ impl ImageViewerApp {
         let skip_slow_primary =
             self.strip_cold_skip_slow_embedded_sdr_primary(index) && shares_main_embedded_sdr;
         let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active() && skip_slow_primary;
-        let Some(list) = self.directory_tree.list.try_lock() else {
-            return;
+        let list_generation = {
+            let list = self.directory_tree.list.lock();
+            list.image_list_generation
         };
-        let list_generation = list.image_list_generation;
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -627,10 +625,10 @@ impl ImageViewerApp {
         }
 
         let path = self.image_files.get(index).cloned().unwrap_or_default();
-        let Some(list) = self.directory_tree.list.try_lock() else {
-            return;
+        let list_generation = {
+            let list = self.directory_tree.list.lock();
+            list.image_list_generation
         };
-        let list_generation = list.image_list_generation;
         self.directory_tree_strip_tiled_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
@@ -731,15 +729,7 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        let list_generation = match self.directory_tree.list.try_lock() {
-            Some(list) => list.image_list_generation,
-            None => {
-                self.directory_tree
-                    .list_snapshot
-                    .load()
-                    .image_list_generation
-            }
-        };
+        let list_generation = self.directory_tree.list.lock().image_list_generation;
         self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();

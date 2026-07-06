@@ -220,9 +220,15 @@ impl LruOrder<usize> {
         });
     }
 
-    /// Rebuild keys via `old_to_new`, dropping indices outside the remap table.
+    /// Rebuild keys via `old_to_new`, dropping entries mapped to [`usize::MAX`].
     pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
-        self.remap_ordered(|index| (index < old_to_new.len()).then_some(old_to_new[index]));
+        self.remap_ordered(|index| {
+            if index >= old_to_new.len() {
+                return None;
+            }
+            let new_idx = old_to_new[index];
+            (new_idx != usize::MAX).then_some(new_idx)
+        });
     }
 }
 

@@ -378,6 +378,17 @@ pub(crate) fn process_scanline_separate(
     sample_idx: usize,
     params: TiffSampleDecodeParams,
 ) {
+    let dst_len = width as usize * 4;
+    if rgba_row.len() < dst_len {
+        #[cfg(debug_assertions)]
+        log::warn!(
+            "[libtiff_loader] process_scanline_separate: rgba_row buffer too small ({} < {})",
+            rgba_row.len(),
+            dst_len
+        );
+        return;
+    }
+
     let TiffSampleDecodeParams { photo, .. } = params;
     let is_palette = photo == PHOTO_PALETTE;
     for x in 0..width as usize {

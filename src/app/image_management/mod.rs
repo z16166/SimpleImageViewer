@@ -1121,8 +1121,8 @@ impl ImageViewerApp {
                         }
                         profile_ok
                     }
-                    LoaderOutput::Refined(idx) => gate_ctx
-                        .retention_for(*idx, is_loading(*idx))
+                    LoaderOutput::Refined { index, .. } => gate_ctx
+                        .retention_for(*index, is_loading(*index))
                         .should_retain(),
                     LoaderOutput::Tile(t) => gate_ctx
                         .retention_for(t.index, is_loading(t.index))

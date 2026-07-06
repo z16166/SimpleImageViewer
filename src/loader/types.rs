@@ -701,7 +701,10 @@ pub enum LoaderOutput {
     Tile(TileResult),
     Preview(PreviewResult),
     /// Background refinement finished (e.g. LibRaw demosaic)
-    Refined(usize),
+    Refined {
+        index: usize,
+        source_key: SourceKey,
+    },
 }
 
 pub struct RefinementRequest {

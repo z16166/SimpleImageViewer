@@ -554,19 +554,24 @@ impl ImageViewerApp {
                     self.handle_tile_load_result(tile_result, ctx);
                 }
 
-                LoaderOutput::Refined(idx) => {
+                LoaderOutput::Refined { index, source_key } => {
+                    if !result_gate::source_key_matches_index(&self.image_files, index, source_key)
+                    {
+                        log::debug!("[App] Refined: ignoring idx={} stale source_key", index);
+                        continue;
+                    }
                     if self
                         .image_files
-                        .get(idx)
+                        .get(index)
                         .is_some_and(|p| crate::preload_debug::path_is_raw(p))
                     {
                         crate::preload_debug!(
                             "[PreloadDebug][RAW] refined_notify idx={} current={}",
-                            idx,
-                            idx == self.current_index
+                            index,
+                            index == self.current_index
                         );
                     }
-                    self.handle_refined_notification(idx, ctx);
+                    self.handle_refined_notification(index, ctx);
                 }
             }
 

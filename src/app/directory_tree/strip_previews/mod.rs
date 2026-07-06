@@ -30,6 +30,7 @@ use super::{
     MAX_DIRECTORY_TREE_STRIP_BOOTSTRAP_FRAMES, MAX_STRIP_GENERATE_INFLIGHT,
     MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
+use crate::app::index_cache_permute::permute_usize_set;
 
 mod checks;
 mod gpu;
@@ -379,12 +380,7 @@ impl ImageViewerApp {
         // is bumped on every structural list mutation — only run the O(n) retain when
         // the generation has actually changed. When the directory is idle this skips
         // 4 × HashSet::retain that can each grow to directory scale (10k+ entries).
-        let current_gen = self
-            .directory_tree
-            .list
-            .try_lock()
-            .map(|list| list.image_list_generation)
-            .unwrap_or(self.strip_stale_retain_last_generation);
+        let current_gen = self.directory_tree.list.lock().image_list_generation;
         if current_gen != self.strip_stale_retain_last_generation {
             self.strip_stale_retain_last_generation = current_gen;
             self.directory_tree_strip_cache
@@ -395,19 +391,6 @@ impl ImageViewerApp {
                 .retain(|index| *index < self.image_files.len());
             self.directory_tree_strip_cold_attempted
                 .retain(|index| *index < self.image_files.len());
-        }
-    }
-
-    fn permute_strip_index_set(set: &mut std::collections::HashSet<usize>, old_to_new: &[usize]) {
-        let previous: Vec<usize> = set.iter().copied().collect();
-        set.clear();
-        for index in previous {
-            if index < old_to_new.len() {
-                let new_idx = old_to_new[index];
-                if new_idx != usize::MAX {
-                    set.insert(new_idx);
-                }
-            }
         }
     }
 
@@ -431,15 +414,56 @@ impl ImageViewerApp {
         permute_deque(&mut self.directory_tree_strip_pending_gpu_refined);
     }
 
+    /// Remap strip preview state after a single file is removed from `image_files`
+    /// (delete/cut). Call after `remove` so `image_files.len() + 1` is the old length.
+    pub(crate) fn permute_directory_tree_strip_after_single_removal(
+        &mut self,
+        removed_index: usize,
+    ) {
+        if !self.directory_tree_list_previews_active() {
+            return;
+        }
+        let old_len = self.image_files.len() + 1;
+        if removed_index >= old_len {
+            return;
+        }
+        let mut old_to_new = vec![usize::MAX; old_len];
+        for old_idx in 0..old_len {
+            if old_idx < removed_index {
+                old_to_new[old_idx] = old_idx;
+            } else if old_idx > removed_index {
+                old_to_new[old_idx] = old_idx - 1;
+            }
+        }
+        self.directory_tree_strip_cache.permute(&old_to_new);
+        permute_usize_set(
+            &mut self.directory_tree_strip_generate_inflight,
+            &old_to_new,
+        );
+        permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
+        permute_usize_set(
+            &mut self.directory_tree_strip_cold_awaiting_main_loader,
+            &old_to_new,
+        );
+        self.permute_directory_tree_strip_pending_gpu(&old_to_new);
+        self.cached_image_strip_path_index = None;
+        {
+            let mut list = self.directory_tree.list.lock();
+            list.image_list_generation = list.image_list_generation.wrapping_add(1);
+            list.mark_snapshot_dirty();
+        }
+    }
+
     pub(crate) fn permute_directory_tree_strip_after_image_list_reorder(
         &mut self,
         old_to_new: &[usize],
     ) {
         self.directory_tree_strip_cache.permute(old_to_new);
-        Self::permute_strip_index_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
-        Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
-        Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
-        Self::permute_strip_index_set(
+        permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
+        permute_usize_set(
             &mut self.directory_tree_strip_cold_awaiting_main_loader,
             old_to_new,
         );
@@ -547,13 +571,13 @@ impl ImageViewerApp {
 
         log::debug!("[DirectoryTree] Partial strip cache reorder retaining mapped entries");
         self.directory_tree_strip_cache.partial_remap(&old_to_new);
-        Self::permute_strip_index_set(
+        permute_usize_set(
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
-        Self::permute_strip_index_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
-        Self::permute_strip_index_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
-        Self::permute_strip_index_set(
+        permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
+        permute_usize_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
+        permute_usize_set(
             &mut self.directory_tree_strip_cold_awaiting_main_loader,
             &old_to_new,
         );

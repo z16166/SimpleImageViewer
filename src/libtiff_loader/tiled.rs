@@ -117,6 +117,11 @@ impl LibTiffTiledSource {
             let mut cache = self.tile_cache.lock();
             let mut lru = self.tile_lru.lock();
 
+            if let Some(existing) = cache.get(&tile_idx) {
+                lru.touch(tile_idx);
+                return Some(Arc::clone(existing));
+            }
+
             while lru.len() >= self.max_cached_tiles {
                 if let Some(oldest) = lru.pop_oldest() {
                     cache.remove(&oldest);
@@ -237,7 +242,17 @@ impl TiledImageSource for LibTiffTiledSource {
             return (0, 0, vec![]);
         }
 
-        let mut result = vec![0u8; (pw * ph * 4) as usize];
+        let Some(result_len) = super::constants::checked_rgba_byte_len(pw, ph) else {
+            log::error!(
+                "[{}] libtiff: preview buffer size overflow ({}x{})",
+                self.path.display(),
+                pw,
+                ph
+            );
+            self.release_handle(handle);
+            return (0, 0, vec![]);
+        };
+        let mut result = vec![0u8; result_len];
         log::info!(
             "libtiff: Generating stride-based fallback preview ({}x{})",
             pw,
@@ -303,7 +318,9 @@ impl TiledImageSource for LibTiffTiledSource {
                     if src_idx < tile_buf.len() {
                         let pixel = tile_buf[src_idx].to_ne_bytes();
                         let dst_idx = dst_y_offset + (tx as usize) * 4;
-                        result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                        if dst_idx + 4 <= result.len() {
+                            result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                        }
                     }
                 }
             }

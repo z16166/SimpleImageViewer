@@ -29,11 +29,7 @@ use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 impl ImageViewerApp {
     #[cfg(feature = "avif-native")]
     fn avif_strip_probe_cache_generation(&self) -> u64 {
-        self.directory_tree
-            .list
-            .try_lock()
-            .map(|list| list.image_list_generation)
-            .unwrap_or(0)
+        self.directory_tree.list.lock().image_list_generation
     }
 
     #[cfg(feature = "avif-native")]
@@ -71,7 +67,7 @@ impl ImageViewerApp {
                 ))
             })()
             .flatten();
-            let _ = tx.send(crate::app::types::AvifStripProbeJobResult {
+            let _ = tx.try_send(crate::app::types::AvifStripProbeJobResult {
                 path: path_buf,
                 image_list_generation: generation,
                 probe,
@@ -127,9 +123,7 @@ impl ImageViewerApp {
         }
         // Bootstrap first frame matches the main-window SDR fallback; once both strip cache and
         // texture cache are populated, allow texture_cache sync instead of blocking for remainder.
-        if self.directory_tree_strip_cache.contains(index)
-            && self.texture_cache.contains(index)
-        {
+        if self.directory_tree_strip_cache.contains(index) && self.texture_cache.contains(index) {
             return false;
         }
         true
