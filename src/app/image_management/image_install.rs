@@ -650,15 +650,15 @@ impl ImageViewerApp {
             strip_preview.height,
             !hdr.rgba_f32.is_empty(),
         );
-        let strip_tag = if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
-        {
-            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
-        } else {
-            crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
-                !hdr.rgba_f32.is_empty(),
-                strip_preview.is_sdr_deferred_placeholder(),
-            )
-        };
+        let strip_tag =
+            if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
+            } else {
+                crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+                    !hdr.rgba_f32.is_empty(),
+                    strip_preview.is_sdr_deferred_placeholder(),
+                )
+            };
         self.cache_directory_tree_strip_thumbnail(
             crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                 index: idx,
@@ -834,7 +834,10 @@ impl ImageViewerApp {
             if frames[0].width() != hdr_first.width || frames[0].height() != hdr_first.height {
                 return false;
             }
-            let cached = self.animation_cache.remove(&idx).expect("cache entry present");
+            let cached = self
+                .animation_cache
+                .remove(&idx)
+                .expect("cache entry present");
             let preserved_textures = std::sync::Arc::clone(&cached.textures);
             let preserved_delays = std::sync::Arc::clone(&cached.delays);
             let next_frame = cached.textures.len();
@@ -953,7 +956,10 @@ impl ImageViewerApp {
             if !super::animation_remainder_extends_existing(existing_count, new_count) {
                 return false;
             }
-            let cached = self.animation_cache.remove(&idx).expect("cache entry present");
+            let cached = self
+                .animation_cache
+                .remove(&idx)
+                .expect("cache entry present");
             let preserved_textures = std::sync::Arc::clone(&cached.textures);
             let preserved_delays = std::sync::Arc::clone(&cached.delays);
             let next_frame = cached.textures.len();

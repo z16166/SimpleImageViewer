@@ -293,14 +293,10 @@ fn initialize_places_clears_provisional_bootstrap_children() {
         .restore_tree_selection(browse.clone(), Some(via_mount.clone()));
     let _requests = state.tree.reveal_selected_namespace();
     assert!(
-        state
-            .tree
-            .nodes
-            .get(&mount_root)
-            .is_some_and(|node| node
-                .children
-                .iter()
-                .any(|child| child.as_os_str() == iphone15_ns.as_os_str())),
+        state.tree.nodes.get(&mount_root).is_some_and(|node| node
+            .children
+            .iter()
+            .any(|child| child.as_os_str() == iphone15_ns.as_os_str())),
         "bootstrap reveal should link the selected chain child before Places loads"
     );
 
@@ -325,7 +321,9 @@ fn initialize_places_clears_provisional_bootstrap_children() {
 
     let requests = state.children_requests_for_selection(&browse);
     assert!(
-        requests.iter().any(|request| request.namespace_path == mount_root),
+        requests
+            .iter()
+            .any(|request| request.namespace_path == mount_root),
         "post-Places reveal should reload the mount root on the saved chain"
     );
     assert!(

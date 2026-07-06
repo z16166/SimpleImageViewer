@@ -18,6 +18,7 @@ use super::*;
 use crate::loader::ImageData;
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use walkdir::WalkDir;
 
 unsafe extern "C" fn tiff_error_handler(
@@ -159,6 +160,133 @@ fn ieee_float_sample_assets_load_as_hdr() {
             }
         }
     }
+}
+
+#[test]
+fn heic_hubble_rgba_strip_read_smoke() {
+    unsafe {
+        lib::TIFFSetErrorHandler(Some(tiff_error_handler));
+        lib::TIFFSetWarningHandler(Some(tiff_warning_handler));
+    }
+
+    for (name, width, height, strips) in [
+        (
+            "heic0601a.tif",
+            18000u32,
+            18000u32,
+            [0u32, 198, 199, 201, 202] as [u32; 5],
+        ),
+        ("heic0604a.tif", 9500u32, 7400u32, [0u32, 0, 0, 0, 0]),
+    ] {
+        let path = PathBuf::from(r"F:\win7\top100").join(name);
+        if !path.exists() {
+            continue;
+        }
+        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap"));
+        let handle = super::handle::create_tiff_handle(mmap, &path).expect("open");
+        let Some(strip_len) = (unsafe {
+            super::rgba_buffer::tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), width, height)
+        }) else {
+            panic!("{name}: strip buffer size unavailable");
+        };
+        let mut strip = vec![0u32; strip_len];
+        let rps =
+            unsafe { super::rgba_buffer::tiff_effective_rows_per_strip(handle.as_ptr(), height) };
+        let strip_list: &[u32] = if name == "heic0604a.tif" {
+            &[0]
+        } else {
+            &strips
+        };
+        for strip_idx in strip_list {
+            let read_row = strip_idx * rps;
+            let ok =
+                unsafe { lib::TIFFReadRGBAStrip(handle.as_ptr(), read_row, strip.as_mut_ptr()) };
+            assert_ne!(
+                ok, 0,
+                "{name}: TIFFReadRGBAStrip failed at strip {strip_idx} row {read_row}"
+            );
+        }
+    }
+}
+
+#[test]
+fn heic0601a_then_heic0604a_preview_smoke() {
+    unsafe {
+        lib::TIFFSetErrorHandler(Some(tiff_error_handler));
+        lib::TIFFSetWarningHandler(Some(tiff_warning_handler));
+    }
+
+    for name in ["heic0601a.tif", "heic0604a.tif"] {
+        let path = Path::new(r"F:\win7\top100").join(name);
+        if !path.exists() {
+            return;
+        }
+        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap"));
+        let image = load_via_libtiff_from_mmap(
+            &path,
+            mmap,
+            1.0,
+            crate::hdr::types::HdrToneMapSettings::default(),
+        )
+        .expect("load");
+        let ImageData::Tiled(source) = image else {
+            panic!("expected tiled");
+        };
+        let (pw, ph, pixels) = source.generate_preview(256, 256);
+        assert!(pw > 0 && ph > 0, "{}", path.display());
+        assert_eq!(pixels.len(), (pw as usize) * (ph as usize) * 4);
+    }
+}
+
+#[test]
+fn top100_strip_preview_parallel_smoke() {
+    unsafe {
+        lib::TIFFSetErrorHandler(Some(tiff_error_handler));
+        lib::TIFFSetWarningHandler(Some(tiff_warning_handler));
+    }
+
+    let root = Path::new(r"F:\win7\top100");
+    if !root.exists() {
+        return;
+    }
+
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(root)
+        .expect("read_dir")
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            if ext == "tif" || ext == "tiff" {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    paths.sort();
+
+    use rayon::prelude::*;
+    paths.par_iter().for_each(|path| {
+        let mmap = Arc::new(crate::mmap_util::map_file(path).expect("mmap"));
+        let image = load_via_libtiff_from_mmap(
+            path,
+            mmap,
+            1.0,
+            crate::hdr::types::HdrToneMapSettings::default(),
+        )
+        .expect("load");
+        let ImageData::Tiled(source) = image else {
+            return;
+        };
+        let (pw, ph, pixels) = source.generate_preview(256, 256);
+        assert!(pw > 0 && ph > 0, "{} -> empty preview", path.display());
+        assert_eq!(
+            pixels.len(),
+            (pw as usize) * (ph as usize) * 4,
+            "{} -> preview bytes",
+            path.display()
+        );
+    });
 }
 
 #[test]

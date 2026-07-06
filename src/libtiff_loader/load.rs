@@ -395,16 +395,16 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     max_cached_tiles: max_cached,
                 })));
             } else {
-                let mut rps: lib::uint32 = 0;
-                if lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ROWSPERSTRIP, &mut rps) == 0
-                    || rps == 0
-                {
-                    rps = height;
+                let rps =
+                    super::rgba_buffer::tiff_effective_rows_per_strip(handle.as_ptr(), height);
+                if rps == 0 {
+                    return Err("TIFF strip height is zero".to_string());
                 }
 
                 let strip_bytes = (width as usize)
                     .checked_mul(rps as usize)
-                    .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
+                    .and_then(|base| base.checked_add(width as usize))
+                    .and_then(|pixels| pixels.checked_mul(std::mem::size_of::<lib::uint32>()));
                 let max_cached =
                     if let Some(strip_bytes) = strip_bytes.and_then(std::num::NonZeroUsize::new) {
                         (STRIP_CACHE_BUDGET_BYTES / strip_bytes.get()).max(16)

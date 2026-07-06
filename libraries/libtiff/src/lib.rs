@@ -78,6 +78,7 @@ unsafe extern "C" {
     ) -> *mut TIFF;
     pub fn TIFFClose(tif: *mut TIFF);
     pub fn TIFFGetField(tif: *mut TIFF, tag: uint32, ...) -> c_int;
+    pub fn TIFFGetFieldDefaulted(tif: *mut TIFF, tag: uint32, ...) -> c_int;
     pub fn TIFFIsTiled(tif: *mut TIFF) -> c_int;
     pub fn TIFFReadRGBATile(tif: *mut TIFF, x: uint32, y: uint32, raster: *mut uint32) -> c_int;
     pub fn TIFFReadRGBAStrip(tif: *mut TIFF, row: uint32, raster: *mut uint32) -> c_int;

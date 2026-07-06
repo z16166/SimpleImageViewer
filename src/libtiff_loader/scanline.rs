@@ -30,6 +30,9 @@ use super::decode::{
     finalize_linear_scratch_to_rgba, process_scanline_contig, process_scanline_separate,
     write_contig_scanline_linear_scratch, write_separate_scanline_linear_scratch,
 };
+use super::rgba_buffer::tiff_rgba_strip_buffer_u32_count;
+#[cfg(feature = "preload-debug")]
+use super::rgba_buffer::{log_tiff_rgba_strip_call, tiff_rgba_strip_call_debug};
 use super::scratch::{
     with_scanline_extract_result, with_scanline_strip_buf, with_scanline_strip_scratch,
 };
@@ -68,7 +71,12 @@ impl LibTiffScanlineSource {
         }
 
         let rps = self.rows_per_strip;
-        let strip_len = (self.width as usize) * (rps as usize);
+        let Some(strip_len) =
+            (unsafe { tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), self.width, self.height) })
+        else {
+            return None;
+        };
+        let read_row = strip_idx * rps;
         let actual_rows = if (strip_idx + 1) * rps > self.height {
             self.height - strip_idx * rps
         } else {
@@ -79,11 +87,30 @@ impl LibTiffScanlineSource {
         let (decoded, rgba) = with_scanline_strip_scratch(strip_len, rgba_len, |scratch| {
             let strip_buf = &mut scratch.strip;
             let rgba = &mut scratch.rgba;
+            #[cfg(feature = "preload-debug")]
+            {
+                let dbg = unsafe {
+                    tiff_rgba_strip_call_debug(
+                        "get_or_decode_strip",
+                        &self.path,
+                        handle.as_ptr(),
+                        self.width,
+                        self.height,
+                        rps,
+                        strip_idx,
+                        read_row,
+                        strip_len,
+                        actual_rows,
+                        rgba_len,
+                        strip_buf.as_ptr(),
+                    )
+                };
+                log_tiff_rgba_strip_call(&dbg);
+            }
             let decoded = {
                 // SAFETY: `handle` is pool-exclusive; `strip_buf` matches libtiff RGBA strip length.
                 unsafe {
-                    lib::TIFFReadRGBAStrip(handle.as_ptr(), strip_idx * rps, strip_buf.as_mut_ptr())
-                        != 0
+                    lib::TIFFReadRGBAStrip(handle.as_ptr(), read_row, strip_buf.as_mut_ptr()) != 0
                 }
             };
 
@@ -260,7 +287,16 @@ impl TiledImageSource for LibTiffScanlineSource {
 
         let tif_ptr = handle.as_ptr();
         let rps = self.rows_per_strip;
-        let strip_len = (self.width as usize) * (rps as usize);
+        let Some(strip_len) =
+            (unsafe { tiff_rgba_strip_buffer_u32_count(tif_ptr, self.width, self.height) })
+        else {
+            log::error!(
+                "[{}] libtiff: invalid RGBA strip buffer size",
+                self.path.display()
+            );
+            self.release_handle(handle);
+            return (0, 0, vec![]);
+        };
         let mut last_strip_idx = u32::MAX;
 
         let stride_x_fp = ((self.width as u64) << 16) / pw as u64;
@@ -271,13 +307,35 @@ impl TiledImageSource for LibTiffScanlineSource {
                 let y = ((ty as u64 * stride_y_fp) >> 16) as u32;
                 let strip_idx = y / rps;
                 let y_in_strip = y % rps;
+                let read_row = strip_idx * rps;
                 let dst_y_offset = (ty * pw) as usize * 4;
 
                 unsafe {
                     if strip_idx != last_strip_idx {
-                        if lib::TIFFReadRGBAStrip(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr())
-                            != 0
+                        #[cfg(feature = "preload-debug")]
                         {
+                            let preview_actual_rows = if (strip_idx + 1) * rps > self.height {
+                                self.height - strip_idx * rps
+                            } else {
+                                rps
+                            };
+                            let dbg = tiff_rgba_strip_call_debug(
+                                "generate_preview",
+                                &self.path,
+                                tif_ptr,
+                                self.width,
+                                self.height,
+                                rps,
+                                strip_idx,
+                                read_row,
+                                strip_len,
+                                preview_actual_rows,
+                                0,
+                                strip_buf.as_ptr(),
+                            );
+                            log_tiff_rgba_strip_call(&dbg);
+                        }
+                        if lib::TIFFReadRGBAStrip(tif_ptr, read_row, strip_buf.as_mut_ptr()) != 0 {
                             last_strip_idx = strip_idx;
                         } else {
                             continue;

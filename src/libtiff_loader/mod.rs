@@ -20,6 +20,7 @@ mod handle;
 mod load;
 mod mmap;
 mod orientation;
+mod rgba_buffer;
 mod scanline;
 mod scratch;
 mod thumbnail;

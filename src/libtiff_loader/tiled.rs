@@ -76,10 +76,15 @@ impl LibTiffTiledSource {
 
         let tw = self.tile_width;
         let th = self.tile_height;
-        let tile_len = checked_tile_pixel_count(tw, th)?;
-        let rgba_len = tile_len.checked_mul(crate::constants::RGBA_CHANNELS)?;
         let curr_tx = tile_col * tw;
         let curr_ty = tile_row * th;
+
+        let Some(tile_len) =
+            (unsafe { super::rgba_buffer::tiff_rgba_tile_buffer_u32_count(handle.as_ptr()) })
+        else {
+            return None;
+        };
+        let rgba_len = tile_len.checked_mul(crate::constants::RGBA_CHANNELS)?;
 
         let (_, rgba) = with_tiled_decode_scratch(tile_len, rgba_len, |scratch| {
             let tile_buf = &mut scratch.tile;

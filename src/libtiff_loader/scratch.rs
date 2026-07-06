@@ -41,13 +41,17 @@ pub(crate) struct ScanlineStripScratch {
 fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
     buf.clear();
     if buf.capacity() < len {
-        buf.reserve(len - buf.capacity());
+        // `Vec::reserve(additional)` grows until `len() + additional <= capacity()`.
+        // After `clear()`, `len()` is 0, so `reserve(len)` (not `len - capacity()`) is
+        // required when reusing a buffer whose capacity is still below the new length.
+        buf.reserve(len.saturating_sub(buf.len()));
     }
     unsafe {
         // SAFETY: `reserve` above ensures capacity >= `len`. `set_len` exposes uninitialized
         // slots; callers must write every element before reading (libtiff TIFFReadRGBA*
         // callbacks fill strip/tile buffers; RGBA conversion loops fill rgba). All call sites
         // of `prepare_uninit` satisfy this contract.
+        debug_assert!(buf.capacity() >= len);
         buf.set_len(len);
     }
 }
@@ -153,6 +157,19 @@ pub(crate) fn with_scanline_strip_buf<R>(strip_len: usize, f: impl FnOnce(&mut [
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn prepare_uninit_grows_when_new_len_exceeds_reused_capacity() {
+        let mut buf: Vec<u32> = Vec::new();
+        prepare_uninit(&mut buf, 90_000);
+        assert_eq!(buf.len(), 90_000);
+        assert!(buf.capacity() >= 90_000);
+
+        // heic0604a-style strip on same thread-local scratch: need 95_000 after 90_000 cap.
+        prepare_uninit(&mut buf, 95_000);
+        assert_eq!(buf.len(), 95_000);
+        assert!(buf.capacity() >= 95_000);
+    }
 
     #[test]
     fn tiled_decode_and_extract_scratch_do_not_reenter() {

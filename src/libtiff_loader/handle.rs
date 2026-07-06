@@ -55,6 +55,16 @@ impl TiffHandle {
     pub(crate) fn as_ptr(&self) -> *mut lib::TIFF {
         self.guard.as_ptr()
     }
+
+    pub(crate) fn reset_for_reuse(&mut self) -> Result<(), String> {
+        self._context.offset = 0;
+        unsafe {
+            if lib::TIFFSetDirectory(self.as_ptr(), 0) == 0 {
+                return Err("TIFFSetDirectory(0) failed on pooled handle reuse".to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 // A LibTIFF `TIFF` handle is not documented as safe for concurrent use from multiple threads.
@@ -77,7 +87,8 @@ impl TiffHandlePool {
     }
 
     pub(crate) fn acquire(&self, mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
-        if let Some(handle) = self.pool.lock().pop() {
+        if let Some(mut handle) = self.pool.lock().pop() {
+            handle.reset_for_reuse()?;
             return Ok(handle);
         }
         loop {

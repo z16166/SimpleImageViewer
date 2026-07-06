@@ -31,6 +31,39 @@ macro_rules! preload_debug {
     };
 }
 
+/// Crash-safe diagnostics: stderr (flushed) + Windows `OutputDebugStringW` for WinDbg/VS.
+#[macro_export]
+macro_rules! preload_debugger {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "preload-debug")]
+        {
+            $crate::preload_debug::debugger_line(format!($($arg)*));
+        }
+    };
+}
+
+#[cfg(feature = "preload-debug")]
+pub(crate) fn debugger_line(message: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{message}");
+    let _ = std::io::stderr().flush();
+    #[cfg(windows)]
+    output_debug_string(&message);
+}
+
+#[cfg(all(feature = "preload-debug", windows))]
+fn output_debug_string(message: &str) {
+    use winapi::um::debugapi::OutputDebugStringW;
+    let mut line = String::from(message);
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+    let mut wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        OutputDebugStringW(wide.as_mut_ptr());
+    }
+}
+
 #[inline]
 pub(crate) fn path_is_raw(path: &std::path::Path) -> bool {
     path.extension()
