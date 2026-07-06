@@ -554,6 +554,556 @@ unsafe fn normalize_uint16_rgb3_scanline_neon(
     }
 }
 
+static SRGB8_TO_LINEAR_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+    let mut lut = [0.0_f32; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let c = i as f32 / 255.0;
+        *slot = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        };
+    }
+    lut
+});
+
+static LINEAR_TO_SRGB8_LUT: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
+    let mut lut = [0_u8; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let l = i as f32 / 255.0;
+        let s = if l <= 0.0031308 {
+            12.92 * l
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        };
+        *slot = (s * 255.0).round() as u8;
+    }
+    lut
+});
+
+const INV_255: f32 = 1.0 / 255.0;
+
+/// Display-referred sRGB8 RGBA -> scene-linear RGBA f32 (IEC 61966-2-1 decode on RGB; alpha linear).
+pub fn srgb8_rgba_to_scene_linear_f32(src: &[u8], dst: &mut [f32]) {
+    if src.len() != dst.len() || !src.len().is_multiple_of(4) {
+        return;
+    }
+    let lut = &*SRGB8_TO_LINEAR_LUT;
+    let mut px = 0;
+    let pixel_count = src.len() / 4;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                srgb8_rgba_to_scene_linear_f32_sse41(src, dst, lut, &mut px);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            srgb8_rgba_to_scene_linear_f32_neon(src, dst, lut, &mut px);
+        }
+    }
+
+    while px < pixel_count {
+        let base = px * 4;
+        dst[base] = lut[src[base] as usize];
+        dst[base + 1] = lut[src[base + 1] as usize];
+        dst[base + 2] = lut[src[base + 2] as usize];
+        dst[base + 3] = src[base + 3] as f32 * INV_255;
+        px += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn srgb8_rgba_to_scene_linear_f32_sse41(
+    src: &[u8],
+    dst: &mut [f32],
+    lut: &[f32; 256],
+    px: &mut usize,
+) {
+    unsafe {
+        let pixel_count = src.len() / 4;
+        while *px + 4 <= pixel_count {
+            let base = *px * 4;
+            let s = src.as_ptr().add(base);
+            let d = dst.as_mut_ptr().add(base);
+            for p in 0..4 {
+                let o = p * 4;
+                let r = lut[*s.add(o) as usize];
+                let g = lut[*s.add(o + 1) as usize];
+                let b = lut[*s.add(o + 2) as usize];
+                let a = *s.add(o + 3) as f32 * INV_255;
+                _mm_storeu_ps(d.add(o), _mm_set_ps(a, b, g, r));
+            }
+            *px += 4;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn srgb8_rgba_to_scene_linear_f32_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    lut: &[f32; 256],
+    px: &mut usize,
+) {
+    unsafe {
+        let pixel_count = src.len() / 4;
+        while *px + 2 <= pixel_count {
+            let base = *px * 4;
+            let s = src.as_ptr().add(base);
+            let d = dst.as_mut_ptr().add(base);
+            for p in 0..2 {
+                let o = p * 4;
+                let rgba = [
+                    lut[*s.add(o) as usize],
+                    lut[*s.add(o + 1) as usize],
+                    lut[*s.add(o + 2) as usize],
+                    *s.add(o + 3) as f32 * INV_255,
+                ];
+                vst1q_f32(d.add(o), vld1q_f32(rgba.as_ptr()));
+            }
+            *px += 2;
+        }
+    }
+}
+
+#[inline]
+fn finite_f32(v: f32) -> f32 {
+    if v.is_finite() { v } else { 0.0 }
+}
+
+#[inline]
+fn linear_to_srgb8_index(linear: f32) -> u8 {
+    let index = (linear.clamp(0.0, 1.0) * 255.0).round() as usize;
+    LINEAR_TO_SRGB8_LUT[index.min(255)]
+}
+
+/// `(pivot - v).max(0)` on gray stored in every RGBA pixel (stride-4 layout).
+pub fn invert_miniswhite_rgba32f(buf: &mut [f32], width: usize, height: usize, pivot: f32) {
+    if width == 0 || height == 0 || buf.len() < width * height * 4 {
+        return;
+    }
+    let pivot_v = pivot;
+    for y in 0..height {
+        let row = &mut buf[y * width * 4..(y + 1) * width * 4];
+        invert_miniswhite_rgba32f_row(row, width, pivot_v);
+    }
+}
+
+fn invert_miniswhite_rgba32f_row(row: &mut [f32], width: usize, pivot: f32) {
+    let mut x = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                invert_miniswhite_rgba32f_row_sse41(row, width, pivot, &mut x);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            invert_miniswhite_rgba32f_row_neon(row, width, pivot, &mut x);
+        }
+    }
+
+    while x < width {
+        let i = x * 4;
+        let g = (pivot - row[i]).max(0.0);
+        row[i] = g;
+        row[i + 1] = g;
+        row[i + 2] = g;
+        row[i + 3] = 1.0;
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn invert_miniswhite_rgba32f_row_sse41(
+    row: &mut [f32],
+    width: usize,
+    pivot: f32,
+    x: &mut usize,
+) {
+    unsafe {
+        let pivot_v = _mm_set1_ps(pivot);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
+        while *x + 4 <= width {
+            let base = *x * 4;
+            let v = _mm_set_ps(
+                row[base + 12],
+                row[base + 8],
+                row[base + 4],
+                row[base],
+            );
+            let g = _mm_max_ps(_mm_sub_ps(pivot_v, v), zero);
+            store_m128_rgb_pixels(row, *x, g, g, g, 4);
+            let dst = row.as_mut_ptr().add(base);
+            for p in 0..4 {
+                *dst.add(p * 4 + 3) = 1.0;
+            }
+            *x += 4;
+        }
+        let _ = one;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn invert_miniswhite_rgba32f_row_neon(
+    row: &mut [f32],
+    width: usize,
+    pivot: f32,
+    x: &mut usize,
+) {
+    unsafe {
+        let pivot_v = vdupq_n_f32(pivot);
+        let zero = vdupq_n_f32(0.0);
+        while *x + 4 <= width {
+            let base = *x * 4;
+            let v = vsetq_lane_f32(
+                row[base + 12],
+                vsetq_lane_f32(
+                    row[base + 8],
+                    vsetq_lane_f32(row[base + 4], vsetq_lane_f32(row[base], vdupq_n_f32(0.0), 0), 1),
+                    2,
+                ),
+                3,
+            );
+            let g = vmaxq_f32(vsubq_f32(pivot_v, v), zero);
+            store_f32x4_gray_as_rgba(row, *x, g);
+            *x += 4;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn store_f32x4_gray_as_rgba(row: &mut [f32], x: usize, g: float32x4_t) {
+    unsafe {
+        let mut lanes = [0.0_f32; 4];
+        vst1q_f32(lanes.as_mut_ptr(), g);
+        for p in 0..4 {
+            let gp = lanes[p];
+            let o = (x + p) * 4;
+            row[o] = gp;
+            row[o + 1] = gp;
+            row[o + 2] = gp;
+            row[o + 3] = 1.0;
+        }
+    }
+}
+
+/// One IEEE-f32 gray scanline -> RGBA f32 row. `invert_pivot = Some(p)` applies MINISWHITE inversion.
+pub fn ieee_f32_gray_scanline_to_rgba32f(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    invert_pivot: Option<f32>,
+) {
+    if dst.len() < width * 4 || src.len() < width * 4 {
+        return;
+    }
+    let mut x = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                ieee_f32_gray_scanline_to_rgba32f_sse41(src, dst, width, invert_pivot, &mut x);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            ieee_f32_gray_scanline_to_rgba32f_neon(src, dst, width, invert_pivot, &mut x);
+        }
+    }
+
+    while x < width {
+        let raw = f32::from_ne_bytes([
+            src[x * 4],
+            src[x * 4 + 1],
+            src[x * 4 + 2],
+            src[x * 4 + 3],
+        ]);
+        let v = finite_f32(raw);
+        let g = match invert_pivot {
+            Some(pivot) => (pivot - v).max(0.0),
+            None => v,
+        };
+        let o = x * 4;
+        dst[o] = g;
+        dst[o + 1] = g;
+        dst[o + 2] = g;
+        dst[o + 3] = 1.0;
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ieee_f32_gray_scanline_to_rgba32f_sse41(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    invert_pivot: Option<f32>,
+    x: &mut usize,
+) {
+    unsafe {
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
+        let pivot_v = invert_pivot.map(|p| _mm_set1_ps(p));
+        while *x + 4 <= width {
+            let v = _mm_loadu_ps(src.as_ptr().add(*x * 4) as *const f32);
+            let finite = _mm_and_ps(v, _mm_cmpord_ps(v, v));
+            let g = if let Some(pivot) = pivot_v {
+                _mm_max_ps(_mm_sub_ps(pivot, finite), zero)
+            } else {
+                finite
+            };
+            store_m128_rgb_pixels(dst, *x, g, g, g, 4);
+            let dst_ptr = dst.as_mut_ptr().add(*x * 4);
+            for p in 0..4 {
+                *dst_ptr.add(p * 4 + 3) = 1.0;
+            }
+            *x += 4;
+        }
+        let _ = one;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ieee_f32_gray_scanline_to_rgba32f_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    invert_pivot: Option<f32>,
+    x: &mut usize,
+) {
+    unsafe {
+        let zero = vdupq_n_f32(0.0);
+        let pivot_v = invert_pivot.map(vdupq_n_f32);
+        while *x + 4 <= width {
+            let v = vld1q_f32(src.as_ptr().add(*x * 4) as *const f32);
+            let finite = vbslq_f32(
+                vreinterpretq_u32_f32(vceqq_f32(v, v)),
+                v,
+                zero,
+            );
+            let g = if let Some(pivot) = pivot_v {
+                vmaxq_f32(vsubq_f32(pivot, finite), zero)
+            } else {
+                finite
+            };
+            store_f32x4_gray_as_rgba(dst, *x, g);
+            *x += 4;
+        }
+    }
+}
+
+/// Contiguous IEEE-f32 RGB (3 or 4 samples per pixel) -> RGBA f32 row.
+pub fn ieee_f32_rgb_scanline_to_rgba32f(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    spp: usize,
+) {
+    if dst.len() < width * 4 {
+        return;
+    }
+    let bytes_per_pixel = spp * 4;
+    if src.len() < width * bytes_per_pixel {
+        return;
+    }
+    let mut x = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") && spp == 3 {
+            unsafe {
+                ieee_f32_rgb3_scanline_to_rgba32f_sse41(src, dst, width, &mut x);
+            }
+        }
+    }
+
+    while x < width {
+        let src_base = x * bytes_per_pixel;
+        let dst_base = x * 4;
+        for c in 0..3 {
+            let raw = f32::from_ne_bytes([
+                src[src_base + c * 4],
+                src[src_base + c * 4 + 1],
+                src[src_base + c * 4 + 2],
+                src[src_base + c * 4 + 3],
+            ]);
+            dst[dst_base + c] = finite_f32(raw);
+        }
+        dst[dst_base + 3] = if spp >= 4 {
+            let raw = f32::from_ne_bytes([
+                src[src_base + 12],
+                src[src_base + 13],
+                src[src_base + 14],
+                src[src_base + 15],
+            ]);
+            finite_f32(raw)
+        } else {
+            1.0
+        };
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn ieee_f32_rgb3_scanline_to_rgba32f_sse41(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+        while *x + 4 <= width {
+            let base = *x * 12;
+            let s = src.as_ptr().add(base);
+            let r = _mm_set_ps(
+                finite_f32(f32::from_ne_bytes([*s.add(36), *s.add(37), *s.add(38), *s.add(39)])),
+                finite_f32(f32::from_ne_bytes([*s.add(24), *s.add(25), *s.add(26), *s.add(27)])),
+                finite_f32(f32::from_ne_bytes([*s.add(12), *s.add(13), *s.add(14), *s.add(15)])),
+                finite_f32(f32::from_ne_bytes([*s.add(0), *s.add(1), *s.add(2), *s.add(3)])),
+            );
+            let g = _mm_set_ps(
+                finite_f32(f32::from_ne_bytes([*s.add(40), *s.add(41), *s.add(42), *s.add(43)])),
+                finite_f32(f32::from_ne_bytes([*s.add(28), *s.add(29), *s.add(30), *s.add(31)])),
+                finite_f32(f32::from_ne_bytes([*s.add(16), *s.add(17), *s.add(18), *s.add(19)])),
+                finite_f32(f32::from_ne_bytes([*s.add(4), *s.add(5), *s.add(6), *s.add(7)])),
+            );
+            let b = _mm_set_ps(
+                finite_f32(f32::from_ne_bytes([*s.add(44), *s.add(45), *s.add(46), *s.add(47)])),
+                finite_f32(f32::from_ne_bytes([*s.add(32), *s.add(33), *s.add(34), *s.add(35)])),
+                finite_f32(f32::from_ne_bytes([*s.add(20), *s.add(21), *s.add(22), *s.add(23)])),
+                finite_f32(f32::from_ne_bytes([*s.add(8), *s.add(9), *s.add(10), *s.add(11)])),
+            );
+            store_m128_rgb_pixels(dst, *x, r, g, b, 4);
+            *x += 4;
+        }
+    }
+}
+
+/// Normalize one grayscale scratch row to 8-bit RGBA (MINISBLACK / MINISWHITE).
+pub fn finalize_gray_linear_scratch_row_to_rgba8(
+    scratch_row: &[f32],
+    rgba_row: &mut [u8],
+    width: usize,
+    smin: f64,
+    smax: f64,
+    miniswhite: bool,
+) {
+    if scratch_row.len() < width * 4 || rgba_row.len() < width * 4 {
+        return;
+    }
+    let range = (smax - smin).max(f64::EPSILON);
+    let inv_range = 1.0 / range;
+    let mut x = 0;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                finalize_gray_linear_scratch_row_to_rgba8_sse41(
+                    scratch_row,
+                    rgba_row,
+                    width,
+                    smin,
+                    inv_range,
+                    miniswhite,
+                    &mut x,
+                );
+            }
+        }
+    }
+
+    while x < width {
+        let scratch_idx = x * 4;
+        let dst_idx = x * 4;
+        let f_val = scratch_row[scratch_idx] as f64;
+        let linear = ((f_val - smin) * inv_range).clamp(0.0, 1.0) as f32;
+        let sample = linear_to_srgb8_index(linear);
+        let v = if miniswhite {
+            255_u8.saturating_sub(sample)
+        } else {
+            sample
+        };
+        rgba_row[dst_idx] = v;
+        rgba_row[dst_idx + 1] = v;
+        rgba_row[dst_idx + 2] = v;
+        rgba_row[dst_idx + 3] = 255;
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
+    scratch_row: &[f32],
+    rgba_row: &mut [u8],
+    width: usize,
+    smin: f64,
+    inv_range: f64,
+    miniswhite: bool,
+    x: &mut usize,
+) {
+    unsafe {
+        let smin_v = _mm_set1_ps(smin as f32);
+        let inv_v = _mm_set1_ps(inv_range as f32);
+        let zero = _mm_setzero_ps();
+        let one = _mm_set1_ps(1.0);
+        while *x + 4 <= width {
+            let base = *x * 4;
+            let v = _mm_set_ps(
+                scratch_row[base + 12],
+                scratch_row[base + 8],
+                scratch_row[base + 4],
+                scratch_row[base],
+            );
+            let linear = _mm_min_ps(
+                _mm_max_ps(_mm_mul_ps(_mm_sub_ps(v, smin_v), inv_v), zero),
+                one,
+            );
+            let mut lanes = [0.0_f32; 4];
+            _mm_storeu_ps(lanes.as_mut_ptr(), linear);
+            for (p, &linear) in lanes.iter().enumerate() {
+                let sample = linear_to_srgb8_index(linear);
+                let byte = if miniswhite {
+                    255_u8.saturating_sub(sample)
+                } else {
+                    sample
+                };
+                let o = (base + p * 4) as isize;
+                *rgba_row.as_mut_ptr().offset(o) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 1) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 2) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 3) = 255;
+            }
+            *x += 4;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +1195,81 @@ mod tests {
                 inv_range,
             );
             normalize_rgb3_scalar(&src, &mut scalar_dst, width, smin, inv_range);
+            assert_eq!(simd_dst, scalar_dst, "width={width}");
+        }
+    }
+
+    fn srgb8_to_linear_scalar(src: &[u8]) -> Vec<f32> {
+        let mut dst = Vec::with_capacity(src.len());
+        for px in src.chunks_exact(4) {
+            for (i, &byte) in px.iter().enumerate() {
+                if i < 3 {
+                    let c = byte as f32 / 255.0;
+                    dst.push(if c <= 0.04045 {
+                        c / 12.92
+                    } else {
+                        ((c + 0.055) / 1.055).powf(2.4)
+                    });
+                } else {
+                    dst.push(byte as f32 * INV_255);
+                }
+            }
+        }
+        dst
+    }
+
+    #[test]
+    fn srgb8_rgba_to_scene_linear_matches_scalar() {
+        for len in [4, 8, 12, 16, 20, 32] {
+            let src: Vec<u8> = (0..len).map(|i| ((i * 19 + 7) % 256) as u8).collect();
+            let mut simd_dst = vec![0.0_f32; len];
+            srgb8_rgba_to_scene_linear_f32(&src, &mut simd_dst);
+            let scalar_dst = srgb8_to_linear_scalar(&src);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn invert_miniswhite_rgba32f_matches_scalar() {
+        for width in [1, 3, 4, 7, 8, 15] {
+            let mut simd_buf: Vec<f32> = (0..width * 4)
+                .map(|i| (i as f32 * 0.03) % 2.0)
+                .collect();
+            let mut scalar_buf = simd_buf.clone();
+            let pivot = 1.25_f32;
+            invert_miniswhite_rgba32f(&mut simd_buf, width, 1, pivot);
+            for x in 0..width {
+                let i = x * 4;
+                let g = (pivot - scalar_buf[i]).max(0.0);
+                scalar_buf[i] = g;
+                scalar_buf[i + 1] = g;
+                scalar_buf[i + 2] = g;
+                scalar_buf[i + 3] = 1.0;
+            }
+            assert_eq!(simd_buf, scalar_buf, "width={width}");
+        }
+    }
+
+    #[test]
+    fn ieee_f32_gray_scanline_matches_scalar() {
+        for width in [1, 4, 7, 8] {
+            let src: Vec<u8> = (0..width * 4)
+                .flat_map(|i| ((i as f32 * 0.11) as f32).to_ne_bytes())
+                .collect();
+            let mut simd_dst = vec![0.0_f32; width * 4];
+            let mut scalar_dst = vec![0.0_f32; width * 4];
+            ieee_f32_gray_scanline_to_rgba32f(&src, &mut simd_dst, width, None);
+            for x in 0..width {
+                let v = f32::from_ne_bytes([
+                    src[x * 4],
+                    src[x * 4 + 1],
+                    src[x * 4 + 2],
+                    src[x * 4 + 3],
+                ]);
+                let g = if v.is_finite() { v } else { 0.0 };
+                let o = x * 4;
+                scalar_dst[o..o + 4].copy_from_slice(&[g, g, g, 1.0]);
+            }
             assert_eq!(simd_dst, scalar_dst, "width={width}");
         }
     }

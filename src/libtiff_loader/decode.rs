@@ -849,18 +849,8 @@ fn rgba8_to_scene_linear_hdr_buffer(
         return Err("RGBA8 buffer size mismatch".to_string());
     }
     let mut rgba_f32 = Vec::with_capacity(pixels.len());
-    for px in pixels.chunks_exact(4) {
-        rgba_f32.push(crate::hdr::decode::srgb_nonlinear_channel_to_linear(
-            px[0] as f32 / 255.0,
-        ));
-        rgba_f32.push(crate::hdr::decode::srgb_nonlinear_channel_to_linear(
-            px[1] as f32 / 255.0,
-        ));
-        rgba_f32.push(crate::hdr::decode::srgb_nonlinear_channel_to_linear(
-            px[2] as f32 / 255.0,
-        ));
-        rgba_f32.push(px[3] as f32 / 255.0);
-    }
+    rgba_f32.resize(pixels.len(), 0.0);
+    simple_image_viewer::simd_pixel_convert::srgb8_rgba_to_scene_linear_f32(pixels, &mut rgba_f32);
     Ok(HdrImageBuffer {
         width,
         height,
@@ -984,17 +974,12 @@ fn ieee_grayscale_float_white_reference_from_max(gmax: f32) -> f32 {
 
 /// Apply `(pivot - v).max(0)` after a single I/O pass that stored raw gray samples in `out`.
 fn finalize_miniswhite_float_inversion(out: &mut [f32], width: u32, height: u32, pivot: f32) {
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let i = (y * width as usize + x) * 4;
-            let v = out[i];
-            let g = (pivot - v).max(0.0);
-            out[i] = g;
-            out[i + 1] = g;
-            out[i + 2] = g;
-            out[i + 3] = 1.0;
-        }
-    }
+    simple_image_viewer::simd_pixel_convert::invert_miniswhite_rgba32f(
+        out,
+        width as usize,
+        height as usize,
+        pivot,
+    );
 }
 
 /// Store raw high-depth samples (integer or IEEE float) in a row of `scratch` (RGBA layout)
@@ -1060,43 +1045,51 @@ pub(crate) fn finalize_linear_scratch_to_rgba(
 ) {
     let range = (smax - smin).max(f64::EPSILON);
     for y in 0..height as usize {
-        for x in 0..width as usize {
-            let dst_idx = (y * width as usize + x) * 4;
-            let scratch_idx = dst_idx;
-            let mut samples = [0u32; 4];
-            for s in 0..(spp as usize).min(4) {
-                let f_val = scratch[scratch_idx + s] as f64;
-                let linear = ((f_val - smin) / range).clamp(0.0, 1.0) as f32;
-                samples[s] = if photo == PHOTO_SEPARATED {
-                    (linear * 255.0) as u32
-                } else {
-                    to_srgb_8(linear) as u32
-                };
+        let row_scratch = &scratch[y * width as usize * 4..(y + 1) * width as usize * 4];
+        let row_rgba = &mut rgba[y * width as usize * 4..(y + 1) * width as usize * 4];
+        match photo {
+            PHOTO_MINISWHITE | PHOTO_MINISBLACK => {
+                simple_image_viewer::simd_pixel_convert::finalize_gray_linear_scratch_row_to_rgba8(
+                    row_scratch,
+                    row_rgba,
+                    width as usize,
+                    smin,
+                    smax,
+                    photo == PHOTO_MINISWHITE,
+                );
             }
-            match photo {
-                PHOTO_MINISWHITE | PHOTO_MINISBLACK => {
-                    let v = (if photo == PHOTO_MINISWHITE {
-                        255 - samples[0].min(255)
-                    } else {
-                        samples[0].min(255)
-                    }) as u8;
-                    rgba[dst_idx] = v;
-                    rgba[dst_idx + 1] = v;
-                    rgba[dst_idx + 2] = v;
-                    rgba[dst_idx + 3] = 255;
-                }
-                PHOTO_RGB => {
-                    rgba[dst_idx] = samples[0] as u8;
-                    rgba[dst_idx + 1] = samples[1] as u8;
-                    rgba[dst_idx + 2] = samples[2] as u8;
+            PHOTO_RGB => {
+                for x in 0..width as usize {
+                    let dst_idx = x * 4;
+                    let mut samples = [0u32; 4];
+                    for s in 0..(spp as usize).min(4) {
+                        let f_val = row_scratch[dst_idx + s] as f64;
+                        let linear = ((f_val - smin) / range).clamp(0.0, 1.0) as f32;
+                        samples[s] = to_srgb_8(linear) as u32;
+                    }
+                    row_rgba[dst_idx] = samples[0] as u8;
+                    row_rgba[dst_idx + 1] = samples[1] as u8;
+                    row_rgba[dst_idx + 2] = samples[2] as u8;
                     if spp >= 4 {
-                        rgba[dst_idx + 3] = samples[3] as u8;
+                        row_rgba[dst_idx + 3] = samples[3] as u8;
                     } else {
-                        rgba[dst_idx + 3] = 255;
+                        row_rgba[dst_idx + 3] = 255;
                     }
                 }
-                _ => {}
             }
+            PHOTO_SEPARATED => {
+                for x in 0..width as usize {
+                    let dst_idx = x * 4;
+                    let f_val = row_scratch[dst_idx] as f64;
+                    let linear = ((f_val - smin) / range).clamp(0.0, 1.0) as f32;
+                    let v = (linear * 255.0) as u8;
+                    row_rgba[dst_idx] = v;
+                    row_rgba[dst_idx + 1] = v;
+                    row_rgba[dst_idx + 2] = v;
+                    row_rgba[dst_idx + 3] = 255;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1156,39 +1149,66 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
             let row = &mut out[row_off..row_off + width as usize * 4];
             match photo {
                 PHOTO_RGB => {
-                    for x in 0..width as usize {
-                        let dst = x * 4;
-                        let base = x * spp as usize;
-                        row[dst] = read_ieee_sample_f32(&buf, base, bps);
-                        row[dst + 1] = read_ieee_sample_f32(&buf, base + 1, bps);
-                        row[dst + 2] = read_ieee_sample_f32(&buf, base + 2, bps);
-                        row[dst + 3] = if spp >= 4 {
-                            read_ieee_sample_f32(&buf, base + 3, bps)
-                        } else {
-                            1.0
-                        };
+                    if bps == 32 {
+                        simple_image_viewer::simd_pixel_convert::ieee_f32_rgb_scanline_to_rgba32f(
+                            &buf,
+                            row,
+                            width as usize,
+                            spp as usize,
+                        );
+                    } else {
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let base = x * spp as usize;
+                            row[dst] = read_ieee_sample_f32(&buf, base, bps);
+                            row[dst + 1] = read_ieee_sample_f32(&buf, base + 1, bps);
+                            row[dst + 2] = read_ieee_sample_f32(&buf, base + 2, bps);
+                            row[dst + 3] = if spp >= 4 {
+                                read_ieee_sample_f32(&buf, base + 3, bps)
+                            } else {
+                                1.0
+                            };
+                        }
                     }
                 }
                 PHOTO_MINISBLACK => {
-                    for x in 0..width as usize {
-                        let dst = x * 4;
-                        let v = read_ieee_sample_f32(&buf, x, bps);
-                        row[dst] = v;
-                        row[dst + 1] = v;
-                        row[dst + 2] = v;
-                        row[dst + 3] = 1.0;
+                    if bps == 32 {
+                        simple_image_viewer::simd_pixel_convert::ieee_f32_gray_scanline_to_rgba32f(
+                            &buf,
+                            row,
+                            width as usize,
+                            None,
+                        );
+                    } else {
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            row[dst] = v;
+                            row[dst + 1] = v;
+                            row[dst + 2] = v;
+                            row[dst + 3] = 1.0;
+                        }
                     }
                 }
                 PHOTO_MINISWHITE => {
                     if let Some(pivot) = miniswhite_pivot {
-                        for x in 0..width as usize {
-                            let dst = x * 4;
-                            let v = read_ieee_sample_f32(&buf, x, bps);
-                            let g = (pivot - v).max(0.0);
-                            row[dst] = g;
-                            row[dst + 1] = g;
-                            row[dst + 2] = g;
-                            row[dst + 3] = 1.0;
+                        if bps == 32 {
+                            simple_image_viewer::simd_pixel_convert::ieee_f32_gray_scanline_to_rgba32f(
+                                &buf,
+                                row,
+                                width as usize,
+                                Some(pivot),
+                            );
+                        } else {
+                            for x in 0..width as usize {
+                                let dst = x * 4;
+                                let v = read_ieee_sample_f32(&buf, x, bps);
+                                let g = (pivot - v).max(0.0);
+                                row[dst] = g;
+                                row[dst + 1] = g;
+                                row[dst + 2] = g;
+                                row[dst + 3] = 1.0;
+                            }
                         }
                     } else {
                         for x in 0..width as usize {
