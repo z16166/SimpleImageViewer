@@ -53,6 +53,13 @@ pub(crate) fn ycbcr_full_range_bt709_row_444_to_rgba8(
     dst: &mut [u8],
     width: usize,
 ) -> usize {
+    if y_row.len() < width
+        || cb_row.len() < width
+        || cr_row.len() < width
+        || dst.len() < width.saturating_mul(4)
+    {
+        return 0;
+    }
     debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= width);
     debug_assert!(cr_row.len() >= width);
@@ -94,8 +101,15 @@ pub(crate) fn ycbcr_full_range_bt709_row_420_to_rgba8(
     dst: &mut [u8],
     width: usize,
 ) -> usize {
-    debug_assert!(y_row.len() >= width);
     let chroma_len = width.div_ceil(2);
+    if y_row.len() < width
+        || cb_row.len() < chroma_len
+        || cr_row.len() < chroma_len
+        || dst.len() < width.saturating_mul(4)
+    {
+        return 0;
+    }
+    debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= chroma_len);
     debug_assert!(cr_row.len() >= chroma_len);
     debug_assert!(dst.len() >= width * 4);
@@ -137,6 +151,13 @@ pub(crate) fn ycbcr_limited_range_bt709_row_444_to_rgba8(
     dst: &mut [u8],
     width: usize,
 ) -> usize {
+    if y_row.len() < width
+        || cb_row.len() < width
+        || cr_row.len() < width
+        || dst.len() < width.saturating_mul(4)
+    {
+        return 0;
+    }
     debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= width);
     debug_assert!(cr_row.len() >= width);
@@ -178,8 +199,15 @@ pub(crate) fn ycbcr_limited_range_bt709_row_420_to_rgba8(
     dst: &mut [u8],
     width: usize,
 ) -> usize {
-    debug_assert!(y_row.len() >= width);
     let chroma_len = width.div_ceil(2);
+    if y_row.len() < width
+        || cb_row.len() < chroma_len
+        || cr_row.len() < chroma_len
+        || dst.len() < width.saturating_mul(4)
+    {
+        return 0;
+    }
+    debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= chroma_len);
     debug_assert!(cr_row.len() >= chroma_len);
     debug_assert!(dst.len() >= width * 4);
@@ -331,7 +359,7 @@ unsafe fn ycbcr_full_range_bt709_row_420_sse41(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_SSE41_STEP <= width {
+        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];
@@ -755,7 +783,7 @@ unsafe fn ycbcr_limited_range_bt709_row_420_sse41(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_SSE41_STEP <= width {
+        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];

@@ -366,7 +366,8 @@ impl WicTiledSource {
 // - In-box WIC codecs from Windows 7 onward are documented for MTA; third-party codecs may vary.
 //
 // This is still `unsafe`: Rust cannot prove COM/WIC or arbitrary decoder DLLs are free of data
-// races; correctness relies on the above coinit discipline and codec behavior.
+// races; correctness relies on the above coinit discipline and in-box codec behavior. Third-party
+// WIC codecs may not be MTA-safe -- prefer static decode or a serial tile path when using them.
 unsafe impl Send for WicTiledSource {}
 unsafe impl Sync for WicTiledSource {}
 

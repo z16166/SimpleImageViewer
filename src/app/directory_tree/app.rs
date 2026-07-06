@@ -969,6 +969,11 @@ impl ImageViewerApp {
                     self.queue_save();
                     ctx.request_repaint();
                 }
+                DirectoryTreeCommand::ToggleNavVisibility => {
+                    self.toggle_directory_tree_nav_visibility(ctx);
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
+                }
             }
         }
         self.publish_directory_tree_view_from_state(false);
@@ -976,6 +981,21 @@ impl ImageViewerApp {
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
         self.settings.directory_tree_nav_active() && !self.auto_hidden_directory_tree_nav
+    }
+
+    fn sync_directory_tree_cross_viewport_hotkeys(&self) {
+        use crate::hotkeys::model::HotkeyActionId;
+
+        self.directory_tree.cross_viewport_hotkeys_blocked.store(
+            self.active_modal.is_some() || self.show_settings,
+            Ordering::Release,
+        );
+        self.directory_tree.toggle_nav_hotkey_chords.store(Arc::new(
+            crate::hotkeys::chords_for_action(
+                &self.hotkeys_runtime.map,
+                HotkeyActionId::ToggleDirectoryTreeNav,
+            ),
+        ));
     }
 
     /// Temporarily hide directory-tree navigation (Settings toggle off, Ctrl+T, close nav window).
@@ -1735,7 +1755,12 @@ impl ImageViewerApp {
 
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
+        self.sync_directory_tree_cross_viewport_hotkeys();
         let command_tx = self.directory_tree.command_tx.clone();
+        let cross_viewport_hotkeys_blocked =
+            Arc::clone(&self.directory_tree.cross_viewport_hotkeys_blocked);
+        let toggle_nav_hotkey_chords =
+            Arc::clone(&self.directory_tree.toggle_nav_hotkey_chords);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1772,7 +1797,21 @@ impl ImageViewerApp {
 
             // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
             let app = unsafe { &mut *ptr };
-            app.handle_cross_viewport_hotkeys(ui.ctx());
+            if !cross_viewport_hotkeys_blocked.load(Ordering::Acquire) {
+                let chords = toggle_nav_hotkey_chords.load();
+                if let Some(chord) = ui.ctx().input(|input| {
+                    crate::app::input::detect_cross_viewport_hotkey(
+                        input,
+                        chords.as_ref(),
+                    )
+                }) {
+                    super::send_directory_tree_command(
+                        &command_tx,
+                        DirectoryTreeCommand::ToggleNavVisibility,
+                    );
+                    crate::app::input::consume_cross_viewport_hotkey(ui.ctx(), chord);
+                }
+            }
 
             if startup_maximized
                 && let Some(mut guard) = app.directory_tree.tree.try_lock()

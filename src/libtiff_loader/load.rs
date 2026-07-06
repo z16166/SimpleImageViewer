@@ -428,10 +428,19 @@ pub(crate) fn load_via_libtiff_from_mmap(
             }
         }
 
-        let total_pixels = (width as usize) * (height as usize);
+        let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
+            return Err(format!(
+                "Static TIFF dimension overflow ({width}x{height})"
+            ));
+        };
         if total_pixels > MAX_STATIC_HDR_DECODE_PIXELS as usize {
             return Err("Static TIFF TOO LARGE for single pass decode".to_string());
         }
+        let Some(rgba_byte_len) = total_pixels.checked_mul(4) else {
+            return Err(format!(
+                "Static TIFF RGBA buffer overflow ({width}x{height})"
+            ));
+        };
 
         // Try RGBA interface first (fast, handles color spaces)
         let mut bps: u16 = 0;
@@ -452,7 +461,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 0,
             ) != 0
             {
-                pixels = vec![0u8; total_pixels * 4];
+                pixels = vec![0u8; rgba_byte_len];
                 std::ptr::copy_nonoverlapping(
                     raster.as_ptr() as *const u8,
                     pixels.as_mut_ptr(),

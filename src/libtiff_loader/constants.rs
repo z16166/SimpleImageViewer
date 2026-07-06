@@ -43,8 +43,18 @@ pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
 /// Upper bound on concurrent libtiff handles per tiled/scanline source (2x img-loader threads).
 pub(crate) const MAX_TIFF_HANDLE_POOL_SIZE: usize = crate::loader::MAX_IMG_LOADER_THREADS * 2;
 
-/// RGBA byte length for `width` x `height` pixels; rejects u32 overflow.
+/// RGBA byte length for `width` x `height` pixels; rejects dimension overflow.
 pub(crate) fn checked_rgba_byte_len(width: u32, height: u32) -> Option<usize> {
-    let len = width.checked_mul(height)?.checked_mul(4)?;
-    Some(len as usize)
+    (width as u64)
+        .checked_mul(height as u64)?
+        .checked_mul(4)?
+        .try_into()
+        .ok()
+}
+
+/// Byte offset of RGBA pixel `(x, y)` in a row-major buffer with `row_stride` pixels per row.
+pub(crate) fn checked_rgba_byte_index(y: u32, x: u32, row_stride: u32) -> Option<usize> {
+    let row = (y as u64).checked_mul(row_stride as u64)?;
+    let pixel = row.checked_add(x as u64)?;
+    pixel.checked_mul(4)?.try_into().ok()
 }

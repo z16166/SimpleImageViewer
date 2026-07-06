@@ -24,7 +24,9 @@ use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::scratch::{with_tiled_decode_scratch, with_tiled_extract_scratch};
+use super::scratch::{
+    with_tiled_decode_scratch, with_tiled_extract_scratch, zero_rgba_tile_read_span,
+};
 use super::thumbnail::extract_embedded_thumbnail;
 
 fn checked_tile_pixel_count(tile_width: u32, tile_height: u32) -> Option<usize> {
@@ -89,6 +91,7 @@ impl LibTiffTiledSource {
         let (_, rgba) = with_tiled_decode_scratch(tile_len, rgba_len, |scratch| {
             let tile_buf = &mut scratch.tile;
             let rgba = &mut scratch.rgba;
+            zero_rgba_tile_read_span(tile_buf, tw, th);
             unsafe {
                 if lib::TIFFReadRGBATile(handle.as_ptr(), curr_tx, curr_ty, tile_buf.as_mut_ptr())
                     == 0
@@ -105,8 +108,15 @@ impl LibTiffTiledSource {
 
             for ty_in_p in 0..th {
                 for tx_in_p in 0..tw {
-                    let src_idx = (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
-                    let dst_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
+                    let src_idx = ((th - 1 - ty_in_p) as usize)
+                        .checked_mul(tw as usize)
+                        .and_then(|row| row.checked_add(tx_in_p as usize))
+                        .unwrap_or(usize::MAX);
+                    let dst_idx = (ty_in_p as usize)
+                        .checked_mul(tw as usize)
+                        .and_then(|row| row.checked_add(tx_in_p as usize))
+                        .and_then(|idx| idx.checked_mul(4))
+                        .unwrap_or(usize::MAX);
                     if src_idx < tile_buf.len() && dst_idx + 4 <= rgba.len() {
                         let pixel = tile_buf[src_idx].to_ne_bytes();
                         rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
@@ -195,8 +205,16 @@ impl TiledImageSource for LibTiffTiledSource {
                             }
                             let dest_x = px - x;
                             let dest_y = py - y;
-                            let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
-                            let src_idx = (ty_in_p as usize * tw as usize + tx_in_p as usize) * 4;
+                            let dest_idx = (dest_y as usize)
+                                .checked_mul(w as usize)
+                                .and_then(|row| row.checked_add(dest_x as usize))
+                                .and_then(|idx| idx.checked_mul(4))
+                                .unwrap_or(usize::MAX);
+                            let src_idx = (ty_in_p as usize)
+                                .checked_mul(tw as usize)
+                                .and_then(|row| row.checked_add(tx_in_p as usize))
+                                .and_then(|idx| idx.checked_mul(4))
+                                .unwrap_or(usize::MAX);
 
                             if src_idx + 4 <= tile_data.len() && dest_idx + 4 <= result.len() {
                                 result[dest_idx..dest_idx + 4]
@@ -290,7 +308,10 @@ impl TiledImageSource for LibTiffTiledSource {
             let y = ((ty as u64 * stride_y_fp) >> 16) as u32;
             let tile_row = y / th;
             let y_in_tile = y % th;
-            let dst_y_offset = (ty * pw) as usize * 4;
+            let dst_y_offset = (ty as usize)
+                .checked_mul(pw as usize)
+                .and_then(|row| row.checked_mul(4))
+                .unwrap_or(0);
 
             for tx in 0..pw {
                 let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
@@ -319,10 +340,15 @@ impl TiledImageSource for LibTiffTiledSource {
                         }
                     }
                     let x_in_tile = x % tw;
-                    let src_idx = (th - 1 - y_in_tile) as usize * tw as usize + x_in_tile as usize;
+                    let src_idx = ((th - 1 - y_in_tile) as usize)
+                        .checked_mul(tw as usize)
+                        .and_then(|row| row.checked_add(x_in_tile as usize))
+                        .unwrap_or(usize::MAX);
                     if src_idx < tile_buf.len() {
                         let pixel = tile_buf[src_idx].to_ne_bytes();
-                        let dst_idx = dst_y_offset + (tx as usize) * 4;
+                        let dst_idx = dst_y_offset
+                            .checked_add((tx as usize).checked_mul(4).unwrap_or(usize::MAX))
+                            .unwrap_or(usize::MAX);
                         if dst_idx + 4 <= result.len() {
                             result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
                         }

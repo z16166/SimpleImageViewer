@@ -157,6 +157,13 @@ pub(crate) fn ycbcr_studio_swing_row_444_u16_to_rgba_f32(
     dst: &mut [f32],
     width: usize,
 ) {
+    if y_row.len() < width
+        || cb_row.len() < width
+        || cr_row.len() < width
+        || dst.len() < width.saturating_mul(4)
+    {
+        return;
+    }
     debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= width);
     debug_assert!(cr_row.len() >= width);
@@ -209,8 +216,15 @@ pub(crate) fn ycbcr_studio_swing_row_420_u16_to_rgba_f32(
     dst: &mut [f32],
     width: usize,
 ) {
-    debug_assert!(y_row.len() >= width);
     let chroma_len = width.div_ceil(2);
+    if y_row.len() < width
+        || cb_row.len() < chroma_len
+        || cr_row.len() < chroma_len
+        || dst.len() < width.saturating_mul(4)
+    {
+        return;
+    }
+    debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= chroma_len);
     debug_assert!(cr_row.len() >= chroma_len);
     debug_assert!(dst.len() >= width * 4);
@@ -538,6 +552,13 @@ pub(crate) fn ycbcr_full_range_row_444_u16_to_rgba_f32(
     dst: &mut [f32],
     width: usize,
 ) {
+    if y_row.len() < width
+        || cb_row.len() < width
+        || cr_row.len() < width
+        || dst.len() < width.saturating_mul(4)
+    {
+        return;
+    }
     debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= width);
     debug_assert!(cr_row.len() >= width);
@@ -597,8 +618,15 @@ pub(crate) fn ycbcr_full_range_row_420_u16_to_rgba_f32(
     dst: &mut [f32],
     width: usize,
 ) {
-    debug_assert!(y_row.len() >= width);
     let chroma_len = width.div_ceil(2);
+    if y_row.len() < width
+        || cb_row.len() < chroma_len
+        || cr_row.len() < chroma_len
+        || dst.len() < width.saturating_mul(4)
+    {
+        return;
+    }
+    debug_assert!(y_row.len() >= width);
     debug_assert!(cb_row.len() >= chroma_len);
     debug_assert!(cr_row.len() >= chroma_len);
     debug_assert!(dst.len() >= width * 4);

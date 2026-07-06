@@ -18,6 +18,14 @@
 //!
 //! Tile decode and tile extraction use separate thread-local buffers so
 //! `extract_tile` can call `get_or_decode_tile` without `RefCell` reentrancy.
+//!
+//! ## Buffer initialization policy
+//!
+//! 1. [`prepare_uninit`] -- caller **must** overwrite every byte/slot in `0..len` before any read.
+//! 2. [`prepare_zeroed_u8`] -- sparse or uncertain fill; safe to read any index (gaps are 0).
+//! 3. libtiff RGBA strip/tile **u32** scratch -- sized with [`grow_vec_uninit`], then only the
+//!    read span is cleared via [`zero_rgba_strip_read_span`] / [`zero_rgba_tile_read_span`]
+//!    before libtiff and before conversion (libtiff does not guarantee full-buffer writes).
 
 use std::cell::RefCell;
 
@@ -35,10 +43,9 @@ pub(crate) struct ScanlineStripScratch {
     pub(crate) rgba: Vec<u8>,
 }
 
-/// Grow `buf` to `len` without zero-filling. Safe when the caller overwrites every
-/// element before the slice is read (e.g. libtiff strip decode, full RGBA conversion).
+/// Grow `buf` to `len` without initializing elements (internal building block only).
 #[inline]
-fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
+fn grow_vec_uninit<T>(buf: &mut Vec<T>, len: usize) {
     buf.clear();
     if buf.capacity() < len {
         // Regression (nightly UB check, dir-tree strip worker): after `clear()`, `len()` is 0
@@ -51,20 +58,66 @@ fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
         buf.reserve(len.saturating_sub(buf.len()));
     }
     unsafe {
-        // SAFETY: `reserve` above ensures capacity >= `len`. `set_len` exposes uninitialized
-        // slots; callers must write every element before reading (libtiff TIFFReadRGBA*
-        // callbacks fill strip/tile buffers; RGBA conversion loops fill rgba). All call sites
-        // of `prepare_uninit` satisfy this contract.
         debug_assert!(buf.capacity() >= len);
         buf.set_len(len);
     }
 }
 
-/// Zero-fill is required for sparse tile extraction where missing tiles leave gaps.
+/// Resize `buf` to `len` **without initializing** its contents.
+///
+/// # Contract (mandatory)
+///
+/// - This function does **not** initialize the buffer.
+/// - The caller **must** completely overwrite every element in `buf[0..len]` with valid data
+///   **before any read** of any element in that range (including implicit reads such as
+///   `copy_from_slice`, hashing, or comparisons).
+/// - If any slot may remain unfilled -- for example libtiff RGBA APIs, sparse tile compositing,
+///   or conditional loops that skip output pixels -- **do not call this function**; use
+///   [`prepare_zeroed_u8`], or zero the readable sub-range explicitly after [`grow_vec_uninit`].
+#[inline]
+fn prepare_uninit<T>(buf: &mut Vec<T>, len: usize) {
+    grow_vec_uninit(buf, len);
+}
+
+/// Zero-filled u8 buffer for outputs that may contain gaps (e.g. sparse tile extract).
 #[inline]
 fn prepare_zeroed_u8(buf: &mut Vec<u8>, len: usize) {
     buf.clear();
     buf.resize(len, 0);
+}
+
+/// Zero only the u32 strip rows that the RGBA strip converter reads after `TIFFReadRGBAStrip`.
+///
+/// Call after [`grow_vec_uninit`] and **before** libtiff / conversion. libtiff may return success
+/// without filling the whole libtiff-sized buffer on malformed input; clearing this span ensures
+/// read slots are defined (0) instead of uninitialized.
+#[inline]
+pub(crate) fn zero_rgba_strip_read_span(
+    strip: &mut [u32],
+    width: u32,
+    rows_per_strip: u32,
+    actual_rows: u32,
+) {
+    let first_src_row = (rows_per_strip - actual_rows) as usize;
+    let read_start = first_src_row.saturating_mul(width as usize);
+    let read_end = (rows_per_strip as usize)
+        .saturating_mul(width as usize)
+        .min(strip.len());
+    if read_start < read_end {
+        strip[read_start..read_end].fill(0);
+    }
+}
+
+/// Zero the `tw * th` tile pixels read by the RGBA tile flip loop after `TIFFReadRGBATile`.
+///
+/// Same contract as [`zero_rgba_strip_read_span`]: required before libtiff when using
+/// [`grow_vec_uninit`] rather than [`prepare_uninit`].
+#[inline]
+pub(crate) fn zero_rgba_tile_read_span(tile: &mut [u32], tile_width: u32, tile_height: u32) {
+    let count = (tile_width as usize)
+        .saturating_mul(tile_height as usize)
+        .min(tile.len());
+    tile[..count].fill(0);
 }
 
 // Tile workers call extract_tile in parallel; per-thread scratch avoids Mutex contention.
@@ -93,6 +146,11 @@ thread_local! {
 ///
 /// Returns `None` when `f` fails (e.g. `TIFFReadRGBATile` error). On success the
 /// RGBA bytes are moved out via `mem::replace` to avoid an extra copy.
+///
+/// - `scratch.tile`: sized with [`grow_vec_uninit`]; closure **must** call
+///   [`zero_rgba_tile_read_span`] before `TIFFReadRGBATile` and must only read inside that span.
+/// - `scratch.rgba`: [`prepare_uninit`]; closure **must** write all `rgba_len` bytes (full tile
+///   RGBA conversion loop).
 pub(crate) fn with_tiled_decode_scratch<R>(
     tile_len: usize,
     rgba_len: usize,
@@ -100,7 +158,7 @@ pub(crate) fn with_tiled_decode_scratch<R>(
 ) -> Option<(R, Vec<u8>)> {
     TILED_DECODE_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_uninit(&mut scratch.tile, tile_len);
+        grow_vec_uninit(&mut scratch.tile, tile_len);
         prepare_uninit(&mut scratch.rgba, rgba_len);
         let r = f(&mut scratch)?;
         let output = std::mem::replace(&mut scratch.rgba, Vec::with_capacity(rgba_len));
@@ -108,6 +166,7 @@ pub(crate) fn with_tiled_decode_scratch<R>(
     })
 }
 
+/// Sparse tile extract: missing tiles leave transparent gaps -- fully zeroed output.
 pub(crate) fn with_tiled_extract_scratch<R>(
     result_len: usize,
     f: impl FnOnce(&mut TiledExtractScratch) -> R,
@@ -121,6 +180,7 @@ pub(crate) fn with_tiled_extract_scratch<R>(
     })
 }
 
+/// Scanline mock-tile extract: same sparse semantics as [`with_tiled_extract_scratch`].
 pub(crate) fn with_scanline_extract_result<R>(
     result_len: usize,
     f: impl FnOnce(&mut [u8]) -> R,
@@ -134,6 +194,11 @@ pub(crate) fn with_scanline_extract_result<R>(
     })
 }
 
+/// Decode one libtiff RGBA strip plus conversion into reusable thread-local buffers.
+///
+/// - `scratch.strip`: [`grow_vec_uninit`]; closure **must** call [`zero_rgba_strip_read_span`]
+///   before `TIFFReadRGBAStrip` and must only read inside that span.
+/// - `scratch.rgba`: [`prepare_uninit`]; closure **must** write all `rgba_len` bytes.
 pub(crate) fn with_scanline_strip_scratch<R>(
     strip_len: usize,
     rgba_len: usize,
@@ -141,7 +206,7 @@ pub(crate) fn with_scanline_strip_scratch<R>(
 ) -> (R, Vec<u8>) {
     SCANLINE_STRIP_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_uninit(&mut scratch.strip, strip_len);
+        grow_vec_uninit(&mut scratch.strip, strip_len);
         prepare_uninit(&mut scratch.rgba, rgba_len);
         let r = f(&mut scratch);
         let output = std::mem::replace(&mut scratch.rgba, Vec::with_capacity(rgba_len));
@@ -149,10 +214,14 @@ pub(crate) fn with_scanline_strip_scratch<R>(
     })
 }
 
+/// Reusable libtiff RGBA strip u32 buffer (preview stride sampling).
+///
+/// Sized with [`grow_vec_uninit`]; closure **must** call [`zero_rgba_strip_read_span`] before
+/// each `TIFFReadRGBAStrip` for the strip being read and must only read inside that span.
 pub(crate) fn with_scanline_strip_buf<R>(strip_len: usize, f: impl FnOnce(&mut [u32]) -> R) -> R {
     SCANLINE_STRIP_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        prepare_uninit(&mut scratch.strip, strip_len);
+        grow_vec_uninit(&mut scratch.strip, strip_len);
         f(&mut scratch.strip)
     })
 }
@@ -168,12 +237,14 @@ mod tests {
         prepare_uninit(&mut buf, 90_000);
         assert_eq!(buf.len(), 90_000);
         assert!(buf.capacity() >= 90_000);
+        // Caller contract: overwrite before read.
+        buf.fill(0);
 
         // heic0604a-style strip on same thread-local scratch: need 95_000 after 90_000 cap.
-        // Mirrors the dir-tree preview panic when `reserve(len - capacity())` was used.
         prepare_uninit(&mut buf, 95_000);
         assert_eq!(buf.len(), 95_000);
         assert!(buf.capacity() >= 95_000);
+        buf.fill(0);
     }
 
     #[test]

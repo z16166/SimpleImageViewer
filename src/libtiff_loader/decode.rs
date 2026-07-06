@@ -482,6 +482,9 @@ fn get_sample_value(
             return 0;
         }
         let bit_in_byte = bit_offset % 8;
+        if bit_in_byte + bps as usize > 24 {
+            return 0;
+        }
 
         let mut val: u32 = (buf[byte_idx] as u32) << 16;
         if byte_idx + 1 < buf.len() {

@@ -41,6 +41,15 @@ pub fn rebuild_runtime_state(config: &HotkeyConfigFile) -> RuntimeHotkeyState {
     build_runtime_state(validate::validate_hotkey_config(config))
 }
 
+pub fn chords_for_action(
+    map: &HashMap<KeyChord, HotkeyActionId>,
+    action: HotkeyActionId,
+) -> Vec<KeyChord> {
+    map.iter()
+        .filter_map(|(chord, &id)| (id == action).then(|| chord.clone()))
+        .collect()
+}
+
 fn build_runtime_state(validation: ValidationOutput) -> RuntimeHotkeyState {
     let map = validate::bindings_to_map(&validation.runtime_bindings);
     RuntimeHotkeyState {

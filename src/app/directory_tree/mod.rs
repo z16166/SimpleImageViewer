@@ -166,6 +166,7 @@ pub(crate) enum DirectoryTreeCommand {
     SelectImageAndHideNav(usize),
     SortImageList(ImageListSortColumn),
     CloseWindow,
+    ToggleNavVisibility,
 }
 
 /// Non-blocking UI -> logic command; drops with a warning if the bounded channel is full.
@@ -475,6 +476,10 @@ pub(crate) struct DirectoryTreeRuntime {
     /// - The app outlives all viewport callbacks because it is owned by eframe as `Box<dyn App>`.
     /// - Never dereference from worker threads or from `logic()`; use locked state / snapshots instead.
     pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
+    /// When true, detached viewport must not dispatch cross-window hotkeys (modal/settings open on ROOT).
+    pub(crate) cross_viewport_hotkeys_blocked: Arc<AtomicBool>,
+    /// Snapshot of chords bound to [`HotkeyActionId::ToggleDirectoryTreeNav`] for detached viewport input.
+    pub(crate) toggle_nav_hotkey_chords: Arc<ArcSwap<Vec<crate::hotkeys::model::KeyChord>>>,
     workers_shutdown: Arc<AtomicBool>,
     children_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
     metadata_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
@@ -584,6 +589,8 @@ impl DirectoryTreeRuntime {
             result_rx,
             metadata_result_rx,
             viewpaint_app: Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())),
+            cross_viewport_hotkeys_blocked: Arc::new(AtomicBool::new(false)),
+            toggle_nav_hotkey_chords: Arc::new(ArcSwap::from_pointee(Vec::new())),
             workers_shutdown,
             children_worker: parking_lot::Mutex::new(children_worker),
             metadata_worker: parking_lot::Mutex::new(metadata_worker),

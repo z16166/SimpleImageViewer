@@ -91,7 +91,6 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
 }
 
 pub(crate) struct ExrMmapCookieGuard {
-    cookie: Arc<ExrMmapReadCookie>,
     c_ref: *const ExrMmapReadCookie,
     context_alive: bool,
 }
@@ -102,13 +101,11 @@ impl ExrMmapCookieGuard {
     }
 
     pub(crate) fn from_shared(mmap: Arc<Mmap>) -> Self {
-        let cookie = Arc::new(ExrMmapReadCookie {
+        let c_ref = Arc::into_raw(Arc::new(ExrMmapReadCookie {
             mmap,
             destroy_called: AtomicBool::new(false),
-        });
-        let c_ref = Arc::into_raw(Arc::clone(&cookie));
+        }));
         Self {
-            cookie,
             c_ref,
             context_alive: false,
         }
@@ -125,9 +122,9 @@ impl ExrMmapCookieGuard {
     /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn` and drops the
     /// C-held `Arc` reference.
     ///
-    /// The Rust guard keeps its own `Arc`, so the callback can signal whether cleanup happened. If
-    /// `exr_start_read` fails before creating a context and never calls `destroy_fn`, the guard drops
-    /// the C-held reference itself.
+    /// The Rust guard keeps a single `Arc` handed to OpenEXRCore via `c_ref`. If header parsing
+    /// fails before creating a context and never calls `destroy_fn`, the guard drops the C-held
+    /// reference itself. When a context is alive, only `destroy_fn` may reclaim that reference.
     pub(crate) fn mark_context_alive(&mut self) {
         self.context_alive = true;
     }
@@ -135,10 +132,14 @@ impl ExrMmapCookieGuard {
 
 impl Drop for ExrMmapCookieGuard {
     fn drop(&mut self) {
-        if self.context_alive || self.cookie.destroy_called.load(Ordering::Acquire) {
+        if self.context_alive {
             return;
         }
         unsafe {
+            let cookie = &*self.c_ref;
+            if cookie.destroy_called.load(Ordering::Acquire) {
+                return;
+            }
             drop(Arc::from_raw(self.c_ref));
         }
     }

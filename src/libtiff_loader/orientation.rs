@@ -13,6 +13,9 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::constants::{checked_rgba_byte_index, checked_rgba_byte_len};
+
 pub(crate) fn apply_orientation_buffer_f32(
     pixels: Vec<f32>,
     w: u32,
@@ -28,7 +31,13 @@ pub(crate) fn apply_orientation_buffer_f32(
     } else {
         (w, h)
     };
-    let mut out = vec![0.0_f32; (out_w * out_h * 4) as usize];
+    let Some(out_len) = checked_rgba_byte_len(out_w, out_h) else {
+        log::warn!(
+            "orientation f32 buffer overflow for {out_w}x{out_h}; keeping original orientation"
+        );
+        return (w, h, pixels);
+    };
+    let mut out = vec![0.0_f32; out_len];
 
     for y in 0..h {
         for x in 0..w {
@@ -42,8 +51,12 @@ pub(crate) fn apply_orientation_buffer_f32(
                 8 => (y, w - 1 - x),
                 _ => (x, y),
             };
-            let src_idx = (y * w + x) as usize * 4;
-            let dst_idx = (ny * out_w + nx) as usize * 4;
+            let Some(src_idx) = checked_rgba_byte_index(y, x, w) else {
+                continue;
+            };
+            let Some(dst_idx) = checked_rgba_byte_index(ny, nx, out_w) else {
+                continue;
+            };
             if dst_idx + 4 <= out.len() && src_idx + 4 <= pixels.len() {
                 out[dst_idx..dst_idx + 4].copy_from_slice(&pixels[src_idx..src_idx + 4]);
             }
@@ -62,7 +75,13 @@ fn apply_orientation_rgba8_inner(
     } else {
         (w, h)
     };
-    let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+    let Some(out_len) = checked_rgba_byte_len(out_w, out_h) else {
+        log::warn!(
+            "orientation RGBA8 buffer overflow for {out_w}x{out_h}; keeping original orientation"
+        );
+        return (w, h, pixels.to_vec());
+    };
+    let mut out = vec![0u8; out_len];
 
     for y in 0..h {
         for x in 0..w {
@@ -76,8 +95,12 @@ fn apply_orientation_rgba8_inner(
                 8 => (y, w - 1 - x),
                 _ => (x, y),
             };
-            let src_idx = (y * w + x) as usize * 4;
-            let dst_idx = (ny * out_w + nx) as usize * 4;
+            let Some(src_idx) = checked_rgba_byte_index(y, x, w) else {
+                continue;
+            };
+            let Some(dst_idx) = checked_rgba_byte_index(ny, nx, out_w) else {
+                continue;
+            };
             if dst_idx + 4 <= out.len() && src_idx + 4 <= pixels.len() {
                 out[dst_idx..dst_idx + 4].copy_from_slice(&pixels[src_idx..src_idx + 4]);
             }
