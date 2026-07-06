@@ -223,6 +223,16 @@ impl ImageViewerApp {
                     self.try_sync_strip_from_texture_cache(current + delta);
                 }
             }
+            // Preloaded neighbors can sit in texture_cache while strip LRU evicts them.
+            // Cold strip scheduling skips those indices; resync when they scroll into view.
+            if !(scroll_to_current_pending && !bootstrap_visible)
+                && let Some((start, end)) = visible_row_range
+            {
+                for index in start..end.min(file_count) {
+                    self.directory_tree_strip_cache.touch_cached_index(index);
+                    self.try_sync_strip_from_texture_cache(index);
+                }
+            }
         }
 
         let mut generated_this_frame = 0usize;

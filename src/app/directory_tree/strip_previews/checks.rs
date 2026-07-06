@@ -485,7 +485,15 @@ impl ImageViewerApp {
             return false;
         }
         if self.directory_tree_strip_cold_attempted.contains(&index) {
-            return false;
+            // Successful decodes that were LRU-evicted keep logical_sizes; allow visible retry.
+            let evicted_after_success = !self.directory_tree_strip_cache.contains(index)
+                && self
+                    .directory_tree_strip_cache
+                    .logical_sizes()
+                    .contains_key(&index);
+            if !evicted_after_success {
+                return false;
+            }
         }
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
             if self

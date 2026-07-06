@@ -160,6 +160,13 @@ impl DirectoryTreeStripCache {
         self.lru_order.touch(index);
     }
 
+    /// Mark a cached strip entry recently used so LRU eviction skips visible rows.
+    pub(crate) fn touch_cached_index(&mut self, index: usize) {
+        if self.textures.contains_key(&index) {
+            self.touch_lru(index);
+        }
+    }
+
     pub(crate) fn remove_index(&mut self, index: usize) {
         self.textures.remove(&index);
         self.preview_buffer_tag.remove(&index);
@@ -530,7 +537,8 @@ impl DirectoryTreeStripCache {
                 self.textures.remove(&idx);
                 self.preview_buffer_tag.remove(&idx);
                 self.preview_stage.remove(&idx);
-                self.logical_sizes.remove(&idx);
+                // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
+                self.lru_order.remove(idx);
                 evicted = true;
             }
         }
@@ -1209,6 +1217,31 @@ mod tests {
         cache.clear_gpu_textures();
         assert!(!cache.contains(0));
         assert_eq!(cache.logical_sizes().get(&0), Some(&(640, 320)));
+    }
+
+    #[test]
+    fn lru_eviction_keeps_logical_sizes_for_regeneration() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        for index in 0..DIRECTORY_TREE_STRIP_CACHE_MAX + 1 {
+            let decoded = DecodedImage::new(8, 8, vec![128; 8 * 8 * 4]);
+            cache.upsert_from_decoded(
+                index,
+                &decoded,
+                StripDecodedUpsert {
+                    stage: PreviewStage::Initial,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    logical_size: Some((800, 600)),
+                    path: Path::new("/test/strip.jpg"),
+                    ctx: &ctx,
+                    strip_max_side: 128,
+                    strip_max_side_used: Some(128),
+                },
+            );
+        }
+        assert!(!cache.contains(0));
+        assert_eq!(cache.logical_sizes().get(&0), Some(&(800, 600)));
+        assert!(cache.contains(DIRECTORY_TREE_STRIP_CACHE_MAX));
     }
 
     #[test]
