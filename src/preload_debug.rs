@@ -19,6 +19,9 @@
 //! Build: `cargo build --features preload-debug`
 //! Run:   `SIV_LOG_LEVEL=info` (and optional `SIV_LOG_FILE=1` for a log file).
 //! Logs use `info` so they appear without raising the global log level to `debug`.
+//! With `SIV_LOG_FILE=1`, preload-debug builds rotate at 100 MiB (vs 10 MiB) and keep
+//! eight numbered files so per-frame preload spam is less likely to push strip logs out
+//! of `simple_image_viewer_rCURRENT.log` during a single repro session.
 
 /// Preload / RAW pipeline diagnostics. No-op unless `--features preload-debug`.
 #[macro_export]

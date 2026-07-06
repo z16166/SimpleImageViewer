@@ -330,16 +330,29 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     // faster and 64× less peak memory than a full-resolution decode followed
     // by a software downsample.
     if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_deref(), max_side) {
-        return result.map(|(preview, logical_size)| {
-            log_strip_decode_path(
-                path,
-                "jpeg_dct",
-                logical_size,
-                preview.width,
-                preview.height,
-            );
-            DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
-        });
+        match result {
+            Ok((preview, logical_size)) => {
+                log_strip_decode_path(
+                    path,
+                    "jpeg_dct",
+                    logical_size,
+                    preview.width,
+                    preview.height,
+                );
+                return Ok(DirectoryTreeThumbDecode::new(
+                    preview,
+                    logical_size,
+                    None,
+                    false,
+                ));
+            }
+            Err(err) => {
+                log::debug!(
+                    "[DirectoryTree] jpeg_dct strip fast path failed for {:?}: {err}; falling back to regular decode",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
     }
     if options.skip_slow_embedded_sdr_primary {
         #[cfg(feature = "preload-debug")]

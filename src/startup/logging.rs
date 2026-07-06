@@ -24,6 +24,16 @@ use std::time::Instant;
 
 const LOG_LEVEL_ENV: &str = "SIV_LOG_LEVEL";
 const LOG_FILE_ENV: &str = "SIV_LOG_FILE";
+
+#[cfg(feature = "preload-debug")]
+const LOG_ROTATE_SIZE: u64 = crate::constants::LOG_FILE_SIZE_LIMIT_PRELOAD_DEBUG;
+#[cfg(not(feature = "preload-debug"))]
+const LOG_ROTATE_SIZE: u64 = crate::constants::LOG_FILE_SIZE_LIMIT;
+
+#[cfg(feature = "preload-debug")]
+const LOG_KEEP_FILES: usize = crate::constants::LOG_FILE_KEEP_COUNT_PRELOAD_DEBUG;
+#[cfg(not(feature = "preload-debug"))]
+const LOG_KEEP_FILES: usize = crate::constants::LOG_FILE_KEEP_COUNT;
 /// Local wall-clock timestamp prefix for log lines (`2026-06-18 15:04:05`).
 const LOG_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
@@ -124,9 +134,9 @@ pub fn init_logging() -> StartupPhases {
     );
 
     let logger = logger.write_mode(flexi_logger::WriteMode::Async).rotate(
-        flexi_logger::Criterion::Size(crate::constants::LOG_FILE_SIZE_LIMIT),
+        flexi_logger::Criterion::Size(LOG_ROTATE_SIZE),
         flexi_logger::Naming::Numbers,
-        flexi_logger::Cleanup::KeepLogFiles(3),
+        flexi_logger::Cleanup::KeepLogFiles(LOG_KEEP_FILES),
     );
     #[cfg(feature = "startup-timing")]
     startup_capture_phase(
@@ -148,6 +158,14 @@ pub fn init_logging() -> StartupPhases {
 
     let handle = logger.start().expect("Failed to start logger");
     LOGGER_HANDLE.lock().replace(handle);
+    #[cfg(feature = "preload-debug")]
+    if logging.enable_file {
+        log::info!(
+            "Preload-debug file logging: rotate at {} MiB, keep {} numbered files",
+            LOG_ROTATE_SIZE / (1024 * 1024),
+            LOG_KEEP_FILES
+        );
+    }
     #[cfg(feature = "startup-timing")]
     startup_capture_phase(&mut phases, &mut prev, t0, "init_logging: start");
 
@@ -379,6 +397,26 @@ mod tests {
             Some(""),
         ] {
             assert!(!parse_env_bool(value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn log_rotate_policy_matches_build_profile() {
+        #[cfg(feature = "preload-debug")]
+        {
+            assert_eq!(
+                super::LOG_ROTATE_SIZE,
+                crate::constants::LOG_FILE_SIZE_LIMIT_PRELOAD_DEBUG
+            );
+            assert_eq!(
+                super::LOG_KEEP_FILES,
+                crate::constants::LOG_FILE_KEEP_COUNT_PRELOAD_DEBUG
+            );
+        }
+        #[cfg(not(feature = "preload-debug"))]
+        {
+            assert_eq!(super::LOG_ROTATE_SIZE, crate::constants::LOG_FILE_SIZE_LIMIT);
+            assert_eq!(super::LOG_KEEP_FILES, crate::constants::LOG_FILE_KEEP_COUNT);
         }
     }
 }
