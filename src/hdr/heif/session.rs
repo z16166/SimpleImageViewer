@@ -16,6 +16,8 @@
 
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
+#[cfg(feature = "heif-native")]
+use std::marker::PhantomData;
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn append_heif_unci_build_hint(msg: String) -> String {
@@ -67,10 +69,13 @@ pub(crate) fn append_mini_format_read_hint(action: &str, msg: String) -> String 
 // --- libheif session (context + primary handle) ---------------------------------------------
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifCtxGuard(pub libheif_sys::HeifContextGuard);
+pub(crate) struct HeifCtxGuard<'a>(
+    pub libheif_sys::HeifContextGuard,
+    PhantomData<&'a [u8]>,
+);
 
 #[cfg(feature = "heif-native")]
-impl HeifCtxGuard {
+impl HeifCtxGuard<'_> {
     #[inline]
     pub(crate) fn as_ptr(&self) -> *mut libheif_sys::heif_context {
         self.0.as_ptr()
@@ -78,10 +83,13 @@ impl HeifCtxGuard {
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) struct HeifPrimaryGuard(pub libheif_sys::HeifImageHandleGuard);
+pub(crate) struct HeifPrimaryGuard<'a>(
+    pub libheif_sys::HeifImageHandleGuard,
+    PhantomData<&'a [u8]>,
+);
 
 #[cfg(feature = "heif-native")]
-impl HeifPrimaryGuard {
+impl HeifPrimaryGuard<'_> {
     #[inline]
     pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_image_handle {
         self.0.as_ptr()
@@ -114,7 +122,7 @@ pub(crate) fn ensure_heif_ok_lib(err: libheif_sys::heif_error, action: &str) -> 
 #[cfg(feature = "heif-native")]
 pub(crate) fn open_heif_primary_from_bytes(
     bytes: &[u8],
-) -> Result<(HeifCtxGuard, HeifPrimaryGuard), String> {
+) -> Result<(HeifCtxGuard<'_>, HeifPrimaryGuard<'_>), String> {
     {
         use std::sync::Once;
         static LOG_VERSION: Once = Once::new();
@@ -132,6 +140,7 @@ pub(crate) fn open_heif_primary_from_bytes(
     let context = HeifCtxGuard(
         libheif_sys::HeifContextGuard::new()
             .ok_or_else(|| "Failed to allocate libheif context".to_string())?,
+        PhantomData,
     );
 
     ensure_heif_ok_lib(
@@ -159,7 +168,10 @@ pub(crate) fn open_heif_primary_from_bytes(
 
     Ok((
         context,
-        HeifPrimaryGuard(unsafe { libheif_sys::HeifImageHandleGuard::from_ptr(handle_ptr) }),
+        HeifPrimaryGuard(
+            unsafe { libheif_sys::HeifImageHandleGuard::from_ptr(handle_ptr) },
+            PhantomData,
+        ),
     ))
 }
 

@@ -678,8 +678,10 @@ unsafe fn bt709_to_linear4_neon(v: float32x4_t) -> float32x4_t {
 }
 
 fn bt709_linearize_gain_row(nonlinear: &[f32], out: &mut [f32], width: u32) {
-    debug_assert_eq!(nonlinear.len(), width as usize * 3);
-    debug_assert!(out.len() >= width as usize * 3);
+    let expected = width as usize * 3;
+    if nonlinear.len() != expected || out.len() < expected {
+        return;
+    }
 
     let mut x = 0_u32;
     #[cfg(target_arch = "x86_64")]

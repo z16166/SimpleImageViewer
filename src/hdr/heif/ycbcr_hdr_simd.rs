@@ -164,10 +164,6 @@ pub(crate) fn ycbcr_studio_swing_row_444_u16_to_rgba_f32(
     {
         return;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= width);
-    debug_assert!(cr_row.len() >= width);
-    debug_assert!(dst.len() >= width * 4);
     let Some(coeffs) = HdrYcbcrSimdConvert {
         inv_scale_y: 1.0,
         inv_scale_cb: 1.0,
@@ -224,10 +220,6 @@ pub(crate) fn ycbcr_studio_swing_row_420_u16_to_rgba_f32(
     {
         return;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= chroma_len);
-    debug_assert!(cr_row.len() >= chroma_len);
-    debug_assert!(dst.len() >= width * 4);
     let Some(coeffs) = HdrYcbcrSimdConvert {
         inv_scale_y: 1.0,
         inv_scale_cb: 1.0,
@@ -559,10 +551,6 @@ pub(crate) fn ycbcr_full_range_row_444_u16_to_rgba_f32(
     {
         return;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= width);
-    debug_assert!(cr_row.len() >= width);
-    debug_assert!(dst.len() >= width * 4);
     let Some(ctx) = HdrYcbcrRowSimdCtx::new(convert) else {
         return;
     };
@@ -626,10 +614,6 @@ pub(crate) fn ycbcr_full_range_row_420_u16_to_rgba_f32(
     {
         return;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= chroma_len);
-    debug_assert!(cr_row.len() >= chroma_len);
-    debug_assert!(dst.len() >= width * 4);
     let Some(ctx) = HdrYcbcrRowSimdCtx::new(convert) else {
         return;
     };

@@ -83,11 +83,6 @@ pub(crate) fn ycbcr_full_range_bt709_row_444_to_rgba8(
     {
         return 0;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= width);
-    debug_assert!(cr_row.len() >= width);
-    debug_assert!(dst.len() >= width * 4);
-
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {
@@ -132,11 +127,6 @@ pub(crate) fn ycbcr_full_range_bt709_row_420_to_rgba8(
     {
         return 0;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= chroma_len);
-    debug_assert!(cr_row.len() >= chroma_len);
-    debug_assert!(dst.len() >= width * 4);
-
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {
@@ -181,11 +171,6 @@ pub(crate) fn ycbcr_limited_range_bt709_row_444_to_rgba8(
     {
         return 0;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= width);
-    debug_assert!(cr_row.len() >= width);
-    debug_assert!(dst.len() >= width * 4);
-
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {
@@ -230,11 +215,6 @@ pub(crate) fn ycbcr_limited_range_bt709_row_420_to_rgba8(
     {
         return 0;
     }
-    debug_assert!(y_row.len() >= width);
-    debug_assert!(cb_row.len() >= chroma_len);
-    debug_assert!(cr_row.len() >= chroma_len);
-    debug_assert!(dst.len() >= width * 4);
-
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {

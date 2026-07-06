@@ -57,6 +57,11 @@ pub(crate) fn rotate_gain_rgba_90_cw(
     let h = height as usize;
     let nw = new_w as usize;
     let len = gain_rgba.len();
+    let expected_len = w
+        .checked_mul(h)
+        .and_then(|p| p.checked_mul(4))
+        .expect("rotate_gain_rgba_90_cw: dimension overflow");
+    assert_eq!(len, expected_len);
     let src = gain_rgba;
     let mut out = Vec::with_capacity(len);
     unsafe {
@@ -87,6 +92,11 @@ pub(crate) fn rotate_gain_rgba_90_ccw(
     let h = height as usize;
     let nw = new_w as usize;
     let len = gain_rgba.len();
+    let expected_len = w
+        .checked_mul(h)
+        .and_then(|p| p.checked_mul(4))
+        .expect("rotate_gain_rgba_90_ccw: dimension overflow");
+    assert_eq!(len, expected_len);
     let src = gain_rgba;
     let mut out = Vec::with_capacity(len);
     unsafe {
@@ -111,7 +121,14 @@ pub(crate) fn rotate_gain_rgba_180(
     height: u32,
     mut gain_rgba: Vec<u8>,
 ) -> (u32, u32, Vec<u8>) {
-    let pixels = width as usize * height as usize;
+    let w = width as usize;
+    let h = height as usize;
+    let expected_len = w
+        .checked_mul(h)
+        .and_then(|p| p.checked_mul(4))
+        .expect("rotate_gain_rgba_180: dimension overflow");
+    assert_eq!(gain_rgba.len(), expected_len);
+    let pixels = w * h;
     for i in 0..pixels / 2 {
         let a = i * 4;
         let b = (pixels - 1 - i) * 4;

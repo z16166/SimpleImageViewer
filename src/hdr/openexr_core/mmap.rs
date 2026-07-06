@@ -85,8 +85,15 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
         return;
     }
     unsafe {
-        let cookie = Arc::from_raw(userdata.cast::<ExrMmapReadCookie>());
-        cookie.destroy_called.store(true, Ordering::Release);
+        let cookie = &*userdata.cast::<ExrMmapReadCookie>();
+        if cookie
+            .destroy_called
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        drop(Arc::from_raw(userdata.cast::<ExrMmapReadCookie>()));
     }
 }
 

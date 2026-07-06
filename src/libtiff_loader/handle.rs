@@ -130,7 +130,7 @@ impl TiffHandlePool {
 }
 
 pub(crate) fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
-    let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap));
 
     unsafe {
         // SAFETY: `ctx` outlives the TIFF handle; I/O callbacks use the mmap-backed context.

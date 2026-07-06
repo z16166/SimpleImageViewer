@@ -235,7 +235,7 @@ fn store_m256_rgb_pixels(dst: &mut [f32], x: usize, r: __m256, g: __m256, b: __m
 
 #[inline]
 fn read_native_u16(buf: &[u8], byte_offset: usize) -> u16 {
-    debug_assert!(byte_offset + 1 < buf.len());
+    assert!(byte_offset + 1 < buf.len());
     unsafe { std::ptr::read_unaligned(buf.as_ptr().add(byte_offset) as *const u16) }
 }
 

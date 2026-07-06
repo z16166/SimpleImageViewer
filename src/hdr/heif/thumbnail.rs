@@ -77,15 +77,15 @@ type HeifStripThumbProbeResult = (
 
 /// One libheif open shared by container-thumb probe and primary-SDR strip fallback.
 #[cfg(feature = "heif-native")]
-struct HeifStripOpened {
-    _ctx: HeifCtxGuard,
-    primary: HeifPrimaryGuard,
+struct HeifStripOpened<'a> {
+    _ctx: HeifCtxGuard<'a>,
+    primary: HeifPrimaryGuard<'a>,
     _decode_geo_holder: Option<super::orientation::HeifDecodeOptionsIgnoredGeometryOwned>,
     decode_opts_ptr: *const libheif_sys::heif_decoding_options,
 }
 
 #[cfg(feature = "heif-native")]
-fn open_heif_strip_session(bytes: &[u8]) -> Result<HeifStripOpened, ()> {
+fn open_heif_strip_session(bytes: &[u8]) -> Result<HeifStripOpened<'_>, ()> {
     let (ctx, primary) = open_heif_primary_from_bytes(bytes).map_err(|_| ())?;
     let (decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
     Ok(HeifStripOpened {

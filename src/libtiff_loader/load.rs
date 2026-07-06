@@ -46,7 +46,7 @@ use crate::loader::{DecodedImage, ImageData};
 #[cfg(test)]
 pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap));
     unsafe {
         let c_path = path_to_tiff_name(path);
         let c_mode = CString::new("r").map_err(|_| "Invalid mode".to_string())?;
@@ -103,10 +103,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mut ctx = Box::new(TiffMmapContext {
-        mmap: mmap.clone(),
-        offset: 0,
-    });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap.clone()));
 
     unsafe {
         let c_path = path_to_tiff_name(path);
