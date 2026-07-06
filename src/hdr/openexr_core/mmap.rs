@@ -91,6 +91,9 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
 }
 
 pub(crate) struct ExrMmapCookieGuard {
+    /// Keeps the cookie allocation alive so `Drop` can read `destroy_called` without
+    /// dereferencing `c_ref` after OpenEXRCore's `destroy_fn` has reclaimed the raw pointer.
+    cookie: Arc<ExrMmapReadCookie>,
     c_ref: *const ExrMmapReadCookie,
     context_alive: bool,
 }
@@ -101,11 +104,13 @@ impl ExrMmapCookieGuard {
     }
 
     pub(crate) fn from_shared(mmap: Arc<Mmap>) -> Self {
-        let c_ref = Arc::into_raw(Arc::new(ExrMmapReadCookie {
+        let cookie = Arc::new(ExrMmapReadCookie {
             mmap,
             destroy_called: AtomicBool::new(false),
-        }));
+        });
+        let c_ref = Arc::into_raw(Arc::clone(&cookie));
         Self {
+            cookie,
             c_ref,
             context_alive: false,
         }
@@ -135,11 +140,10 @@ impl Drop for ExrMmapCookieGuard {
         if self.context_alive {
             return;
         }
+        if self.cookie.destroy_called.load(Ordering::Acquire) {
+            return;
+        }
         unsafe {
-            let cookie = &*self.c_ref;
-            if cookie.destroy_called.load(Ordering::Acquire) {
-                return;
-            }
             drop(Arc::from_raw(self.c_ref));
         }
     }

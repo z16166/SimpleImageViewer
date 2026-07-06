@@ -39,7 +39,13 @@ const PIXELS_PER_SSE41_STEP: usize = 4;
 const PIXELS_PER_NEON_STEP: usize = 4;
 const PIXELS_PER_AVX2_STEP: usize = 8;
 
-/// 4:2:0 SIMD loads 8 chroma bytes from `cb_row[xc..]`; require that span fits.
+/// 4:2:0 SSE41/NEON scalar chroma indexing uses `cb_row[xc]` and `cb_row[xc + 1]`.
+#[inline]
+fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
+    x / 2 + 2 <= chroma_len
+}
+
+/// 4:2:0 AVX2/NEON vector chroma loads read 8 bytes from `cb_row[xc..]`.
 #[inline]
 fn ycbcr420_chroma_load8_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 8 <= chroma_len
@@ -359,7 +365,7 @@ unsafe fn ycbcr_full_range_bt709_row_420_sse41(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load2_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];
@@ -783,7 +789,7 @@ unsafe fn ycbcr_limited_range_bt709_row_420_sse41(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_SSE41_STEP <= width && ycbcr420_chroma_load2_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let cb = [cb_row[xc], cb_row[xc + 1]];
             let cr = [cr_row[xc], cr_row[xc + 1]];

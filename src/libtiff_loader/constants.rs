@@ -52,7 +52,7 @@ pub(crate) fn checked_rgba_byte_len(width: u32, height: u32) -> Option<usize> {
         .ok()
 }
 
-/// Byte offset of RGBA pixel `(x, y)` in a row-major buffer with `row_stride` pixels per row.
+/// Byte offset of RGBA pixel at row `y`, column `x` in a row-major buffer with `row_stride` pixels per row.
 pub(crate) fn checked_rgba_byte_index(y: u32, x: u32, row_stride: u32) -> Option<usize> {
     let row = (y as u64).checked_mul(row_stride as u64)?;
     let pixel = row.checked_add(x as u64)?;

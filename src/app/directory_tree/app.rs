@@ -983,13 +983,23 @@ impl ImageViewerApp {
         self.settings.directory_tree_nav_active() && !self.auto_hidden_directory_tree_nav
     }
 
-    fn sync_directory_tree_cross_viewport_hotkeys(&self) {
+    fn sync_directory_tree_cross_viewport_hotkey_block(&self) {
+        let blocked = self.active_modal.is_some() || self.show_settings;
+        if self
+            .directory_tree
+            .cross_viewport_hotkeys_blocked
+            .load(Ordering::Relaxed)
+            != blocked
+        {
+            self.directory_tree
+                .cross_viewport_hotkeys_blocked
+                .store(blocked, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn refresh_directory_tree_toggle_nav_hotkey_chords(&self) {
         use crate::hotkeys::model::HotkeyActionId;
 
-        self.directory_tree.cross_viewport_hotkeys_blocked.store(
-            self.active_modal.is_some() || self.show_settings,
-            Ordering::Release,
-        );
         self.directory_tree.toggle_nav_hotkey_chords.store(Arc::new(
             crate::hotkeys::chords_for_action(
                 &self.hotkeys_runtime.map,
@@ -1755,7 +1765,7 @@ impl ImageViewerApp {
 
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
-        self.sync_directory_tree_cross_viewport_hotkeys();
+        self.sync_directory_tree_cross_viewport_hotkey_block();
         let command_tx = self.directory_tree.command_tx.clone();
         let cross_viewport_hotkeys_blocked =
             Arc::clone(&self.directory_tree.cross_viewport_hotkeys_blocked);

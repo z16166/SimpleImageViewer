@@ -781,6 +781,7 @@ impl ImageViewerApp {
         );
 
         app.refresh_audio_devices();
+        app.refresh_directory_tree_toggle_nav_hotkey_chords();
 
         // Restore last session state
         if app.directory_tree_settings_active() {

@@ -104,47 +104,17 @@ impl ImageViewerApp {
     }
 
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
-        for ev in &i.events {
-            if let egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } = ev
-            {
-                let chord = KeyChord::from_input_event(*key, *modifiers);
-                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
-                    return Some(app_action_from_hotkey_action_id(action_id));
-                }
+        for chord in input_hotkey_chords(i) {
+            if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                return Some(app_action_from_hotkey_action_id(action_id));
             }
         }
-
-        // Some keyboard layouts report zoom keys as text input rather than plain key presses.
-        let current_mods = get_modifiers_mask(i.modifiers);
-        for ev in &i.events {
-            if let egui::Event::Text(text) = ev {
-                let logical = text_event_to_hotkey_logical_key(text);
-                if let Some(logical) = logical {
-                    let chord = KeyChord {
-                        modifiers: current_mods,
-                        key: logical,
-                    };
-                    if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
-                        return Some(app_action_from_hotkey_action_id(action_id));
-                    }
-                }
-            }
-        }
-
         None
     }
 }
 
-pub(crate) fn detect_cross_viewport_hotkey(
-    i: &egui::InputState,
-    chords: &[KeyChord],
-) -> Option<KeyChord> {
-    for ev in &i.events {
+fn input_hotkey_chords(i: &egui::InputState) -> impl Iterator<Item = KeyChord> + '_ {
+    let key_chords = i.events.iter().filter_map(|ev| {
         let egui::Event::Key {
             key,
             pressed: true,
@@ -152,36 +122,38 @@ pub(crate) fn detect_cross_viewport_hotkey(
             ..
         } = ev
         else {
-            continue;
+            return None;
         };
-        let chord = KeyChord::from_input_event(*key, *modifiers);
-        if chords.contains(&chord) {
-            return Some(chord);
-        }
-    }
+        Some(KeyChord::from_input_event(*key, *modifiers))
+    });
 
     let current_mods = get_modifiers_mask(i.modifiers);
-    for ev in &i.events {
+    let text_chords = i.events.iter().filter_map(move |ev| {
         let egui::Event::Text(text) = ev else {
-            continue;
+            return None;
         };
-        let Some(logical) = text_event_to_hotkey_logical_key(text) else {
-            continue;
-        };
-        let chord = KeyChord {
+        let logical = text_event_to_hotkey_logical_key(text)?;
+        Some(KeyChord {
             modifiers: current_mods,
             key: logical,
-        };
-        if chords.contains(&chord) {
-            return Some(chord);
-        }
-    }
+        })
+    });
 
-    None
+    key_chords.chain(text_chords)
+}
+
+pub(crate) fn detect_cross_viewport_hotkey(
+    i: &egui::InputState,
+    chords: &[KeyChord],
+) -> Option<KeyChord> {
+    input_hotkey_chords(i)
+        .find(|chord| chords.contains(chord))
 }
 
 pub(crate) fn consume_cross_viewport_hotkey(ctx: &Context, chord: KeyChord) {
     ctx.input_mut(|input| {
+        let current_mods = get_modifiers_mask(input.modifiers);
+
         let mut keys_to_consume = Vec::new();
         for ev in &input.events {
             let egui::Event::Key {
@@ -201,5 +173,18 @@ pub(crate) fn consume_cross_viewport_hotkey(ctx: &Context, chord: KeyChord) {
         for (modifiers, key) in keys_to_consume {
             input.consume_key(modifiers, key);
         }
+
+        input.events.retain(|ev| {
+            let egui::Event::Text(text) = ev else {
+                return true;
+            };
+            let Some(logical) = text_event_to_hotkey_logical_key(text) else {
+                return true;
+            };
+            KeyChord {
+                modifiers: current_mods,
+                key: logical,
+            } != chord
+        });
     });
 }

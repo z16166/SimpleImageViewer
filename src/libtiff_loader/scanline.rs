@@ -153,7 +153,7 @@ impl TiledImageSource for LibTiffScanlineSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
         let result_len = (w as usize)
             .checked_mul(h as usize)
-            .and_then(|p| p.checked_mul(4))
+            .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
             .unwrap_or(0);
 
         let ((), result) = with_scanline_extract_result(result_len, |result| {
@@ -195,27 +195,35 @@ impl TiledImageSource for LibTiffScanlineSource {
                     continue;
                 }
 
-                let copy_bytes = (intersect_x_end - intersect_x_start) as usize * 4;
+                let copy_bytes = (intersect_x_end - intersect_x_start) as usize
+                    * crate::constants::RGBA_CHANNELS;
 
                 for py in intersect_y_start..intersect_y_end {
                     let row_in_strip = (py - strip_y_start) as usize;
-                    let src_offset = (row_in_strip as usize)
+                    let Some(src_offset) = (row_in_strip as usize)
                         .checked_mul(self.width as usize)
                         .and_then(|row| row.checked_add(intersect_x_start as usize))
-                        .and_then(|idx| idx.checked_mul(4))
-                        .unwrap_or(usize::MAX);
+                        .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
+                    else {
+                        continue;
+                    };
                     let dst_y = (py - y) as usize;
-                    let dst_offset = dst_y
+                    let Some(dst_offset) = dst_y
                         .checked_mul(w as usize)
                         .and_then(|row| row.checked_add((intersect_x_start - x) as usize))
-                        .and_then(|idx| idx.checked_mul(4))
-                        .unwrap_or(usize::MAX);
+                        .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
+                    else {
+                        continue;
+                    };
 
-                    if src_offset + copy_bytes <= strip_data.len()
-                        && dst_offset + copy_bytes <= result.len()
-                    {
-                        result[dst_offset..dst_offset + copy_bytes]
-                            .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
+                    if let (Some(src_end), Some(dst_end)) = (
+                        src_offset.checked_add(copy_bytes),
+                        dst_offset.checked_add(copy_bytes),
+                    ) {
+                        if src_end <= strip_data.len() && dst_end <= result.len() {
+                            result[dst_offset..dst_offset + copy_bytes]
+                                .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
+                        }
                     }
                 }
             }
@@ -322,18 +330,31 @@ impl TiledImageSource for LibTiffScanlineSource {
 
                     for tx in 0..pw {
                         let x = ((tx as u64 * stride_x_fp) >> 16) as u32;
-                        let src_idx = ((rps - 1 - y_in_strip) as usize)
+                        let Some(src_idx) = ((rps - 1 - y_in_strip) as usize)
                             .checked_mul(self.width as usize)
                             .and_then(|row| row.checked_add(x as usize))
-                            .unwrap_or(usize::MAX);
-                        if src_idx < strip_buf.len() {
-                            let pixel = strip_buf[src_idx].to_ne_bytes();
-                            let dst_idx = dst_y_offset
-                                .checked_add((tx as usize).checked_mul(4).unwrap_or(usize::MAX))
-                                .unwrap_or(usize::MAX);
-                            if dst_idx + 4 <= result.len() {
-                                result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
-                            }
+                        else {
+                            continue;
+                        };
+                        if src_idx >= strip_buf.len() {
+                            continue;
+                        }
+                        let pixel = strip_buf[src_idx].to_ne_bytes();
+                        let Some(dst_byte_offset) = (tx as usize)
+                            .checked_mul(crate::constants::RGBA_CHANNELS)
+                        else {
+                            continue;
+                        };
+                        let Some(dst_idx) = dst_y_offset.checked_add(dst_byte_offset) else {
+                            continue;
+                        };
+                        let Some(dst_end) =
+                            dst_idx.checked_add(crate::constants::RGBA_CHANNELS)
+                        else {
+                            continue;
+                        };
+                        if dst_end <= result.len() {
+                            result[dst_idx..dst_end].copy_from_slice(&pixel);
                         }
                     }
                 }

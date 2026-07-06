@@ -108,18 +108,27 @@ impl LibTiffTiledSource {
 
             for ty_in_p in 0..th {
                 for tx_in_p in 0..tw {
-                    let src_idx = ((th - 1 - ty_in_p) as usize)
+                    let Some(src_idx) = ((th - 1 - ty_in_p) as usize)
                         .checked_mul(tw as usize)
                         .and_then(|row| row.checked_add(tx_in_p as usize))
-                        .unwrap_or(usize::MAX);
-                    let dst_idx = (ty_in_p as usize)
+                    else {
+                        continue;
+                    };
+                    let Some(dst_idx) = (ty_in_p as usize)
                         .checked_mul(tw as usize)
                         .and_then(|row| row.checked_add(tx_in_p as usize))
-                        .and_then(|idx| idx.checked_mul(4))
-                        .unwrap_or(usize::MAX);
-                    if src_idx < tile_buf.len() && dst_idx + 4 <= rgba.len() {
+                        .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
+                    else {
+                        continue;
+                    };
+                    if src_idx < tile_buf.len()
+                        && dst_idx
+                            .checked_add(crate::constants::RGBA_CHANNELS)
+                            .is_some_and(|end| end <= rgba.len())
+                    {
                         let pixel = tile_buf[src_idx].to_ne_bytes();
-                        rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                        rgba[dst_idx..dst_idx + crate::constants::RGBA_CHANNELS]
+                            .copy_from_slice(&pixel);
                     }
                 }
             }
@@ -205,20 +214,32 @@ impl TiledImageSource for LibTiffTiledSource {
                             }
                             let dest_x = px - x;
                             let dest_y = py - y;
-                            let dest_idx = (dest_y as usize)
+                            let Some(dest_idx) = (dest_y as usize)
                                 .checked_mul(w as usize)
                                 .and_then(|row| row.checked_add(dest_x as usize))
-                                .and_then(|idx| idx.checked_mul(4))
-                                .unwrap_or(usize::MAX);
-                            let src_idx = (ty_in_p as usize)
+                                .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
+                            else {
+                                continue;
+                            };
+                            let Some(src_idx) = (ty_in_p as usize)
                                 .checked_mul(tw as usize)
                                 .and_then(|row| row.checked_add(tx_in_p as usize))
-                                .and_then(|idx| idx.checked_mul(4))
-                                .unwrap_or(usize::MAX);
+                                .and_then(|idx| idx.checked_mul(crate::constants::RGBA_CHANNELS))
+                            else {
+                                continue;
+                            };
 
-                            if src_idx + 4 <= tile_data.len() && dest_idx + 4 <= result.len() {
-                                result[dest_idx..dest_idx + 4]
-                                    .copy_from_slice(&tile_data[src_idx..src_idx + 4]);
+                            if src_idx
+                                .checked_add(crate::constants::RGBA_CHANNELS)
+                                .is_some_and(|end| end <= tile_data.len())
+                                && dest_idx
+                                    .checked_add(crate::constants::RGBA_CHANNELS)
+                                    .is_some_and(|end| end <= result.len())
+                            {
+                                result[dest_idx..dest_idx + crate::constants::RGBA_CHANNELS]
+                                    .copy_from_slice(
+                                        &tile_data[src_idx..src_idx + crate::constants::RGBA_CHANNELS],
+                                    );
                             }
                         }
                     }
@@ -340,18 +361,29 @@ impl TiledImageSource for LibTiffTiledSource {
                         }
                     }
                     let x_in_tile = x % tw;
-                    let src_idx = ((th - 1 - y_in_tile) as usize)
+                    let Some(src_idx) = ((th - 1 - y_in_tile) as usize)
                         .checked_mul(tw as usize)
                         .and_then(|row| row.checked_add(x_in_tile as usize))
-                        .unwrap_or(usize::MAX);
-                    if src_idx < tile_buf.len() {
-                        let pixel = tile_buf[src_idx].to_ne_bytes();
-                        let dst_idx = dst_y_offset
-                            .checked_add((tx as usize).checked_mul(4).unwrap_or(usize::MAX))
-                            .unwrap_or(usize::MAX);
-                        if dst_idx + 4 <= result.len() {
-                            result[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
-                        }
+                    else {
+                        continue;
+                    };
+                    if src_idx >= tile_buf.len() {
+                        continue;
+                    }
+                    let pixel = tile_buf[src_idx].to_ne_bytes();
+                    let Some(dst_byte_offset) = (tx as usize)
+                        .checked_mul(crate::constants::RGBA_CHANNELS)
+                    else {
+                        continue;
+                    };
+                    let Some(dst_idx) = dst_y_offset.checked_add(dst_byte_offset) else {
+                        continue;
+                    };
+                    let Some(dst_end) = dst_idx.checked_add(crate::constants::RGBA_CHANNELS) else {
+                        continue;
+                    };
+                    if dst_end <= result.len() {
+                        result[dst_idx..dst_end].copy_from_slice(&pixel);
                     }
                 }
             }

@@ -379,7 +379,7 @@ unsafe fn ycbcr_studio_swing_row_420_u16_sse41(
         let one = _mm_set1_ps(1.0);
         let chroma_len = row.width.div_ceil(2);
         while *x < row.width {
-            if *x + PIXELS_PER_SSE41_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len)
+            if *x + PIXELS_PER_SSE41_STEP <= row.width && ycbcr420_chroma_load2_fits(*x, chroma_len)
             {
                 let xc = *x / 2;
                 let cb0 = row.cb[xc];
@@ -712,6 +712,13 @@ fn store_rgba_f32x4(dst: &mut [f32], x: usize, r: [f32; 4], g: [f32; 4], b: [f32
 }
 
 #[inline]
+fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
+    x / 2 + 2 <= chroma_len
+}
+
+/// 4:2:0 NEON `vld1_u16` loads four chroma samples from `cb_row[xc..]`.
+#[cfg(target_arch = "aarch64")]
+#[inline]
 fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len
 }
@@ -805,7 +812,7 @@ unsafe fn ycbcr_full_range_row_420_u16_sse41(
         let one = _mm_set1_ps(1.0);
 
         while *x + PIXELS_PER_SSE41_STEP <= row.width
-            && ycbcr420_chroma_load4_fits(*x, row.cb.len())
+            && ycbcr420_chroma_load2_fits(*x, row.cb.len())
         {
             let xc = *x / 2;
             let cb0 = row.cb[xc];
