@@ -119,9 +119,20 @@ impl ImageViewerApp {
     }
 
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
-        self.pending_anim_frames
-            .get(&index)
-            .is_some_and(|pending| pending.hdr_frames.is_some())
+        let Some(pending) = self.pending_anim_frames.get(&index) else {
+            return false;
+        };
+        if pending.hdr_frames.is_none() {
+            return false;
+        }
+        // Bootstrap first frame matches the main-window SDR fallback; once both strip cache and
+        // texture cache are populated, allow texture_cache sync instead of blocking for remainder.
+        if self.directory_tree_strip_cache.contains(index)
+            && self.texture_cache.contains(index)
+        {
+            return false;
+        }
+        true
     }
 
     pub(crate) fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {

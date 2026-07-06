@@ -598,12 +598,388 @@ impl ImageViewerApp {
         }
     }
 
+    fn build_hdr_animation_pending_parts(
+        frames: &[crate::loader::HdrAnimationFrame],
+    ) -> (
+        Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
+        Vec<crate::loader::AnimationFrame>,
+    ) {
+        let hdr_frames: Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>> = frames
+            .iter()
+            .map(|frame| std::sync::Arc::new(frame.hdr.clone()))
+            .collect();
+        let sdr_frames: Vec<crate::loader::AnimationFrame> = frames
+            .iter()
+            .map(|frame| {
+                crate::loader::AnimationFrame::from_arc(
+                    frame.width(),
+                    frame.height(),
+                    frame.fallback.arc_pixels(),
+                    frame.delay,
+                )
+            })
+            .collect();
+        (hdr_frames, sdr_frames)
+    }
+
+    fn cache_eager_hdr_animated_strip_preview(
+        &mut self,
+        idx: usize,
+        hdr: &crate::hdr::types::HdrImageBuffer,
+        fallback: &DecodedImage,
+        sdr_fallback_is_placeholder: bool,
+        ctx: &egui::Context,
+    ) {
+        if !self.should_eager_cache_install_hdr_strip(idx) {
+            return;
+        }
+        let Some(strip_preview) = self.installed_hdr_directory_tree_strip_preview(
+            hdr,
+            fallback,
+            sdr_fallback_is_placeholder,
+        ) else {
+            return;
+        };
+        let strip_stage = crate::loader::PreviewStage::Refined;
+        let strip_logical = crate::loader::directory_tree_strip_logical_for_preview(
+            hdr.width,
+            hdr.height,
+            fallback.width,
+            fallback.height,
+            strip_preview.width,
+            strip_preview.height,
+            !hdr.rgba_f32.is_empty(),
+        );
+        let strip_tag = if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty()
+        {
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag::IsoGainMapBaseline
+        } else {
+            crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
+                !hdr.rgba_f32.is_empty(),
+                strip_preview.is_sdr_deferred_placeholder(),
+            )
+        };
+        self.cache_directory_tree_strip_thumbnail(
+            crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                index: idx,
+                decoded: &strip_preview,
+                stage: strip_stage,
+                logical_size: Some(strip_logical),
+                buffer_tag: strip_tag,
+                strip_max_side_used: None,
+                ctx,
+                bypass_detach_queue: false,
+            },
+        );
+    }
+
+    fn hdr_animated_install_is_redundant(&self, idx: usize, frame_count: usize) -> bool {
+        if frame_count <= 1 {
+            return false;
+        }
+        if let Some(cached) = self.animation_cache.get(&idx) {
+            if cached.hdr_frames.is_some() && cached.textures.len() == frame_count {
+                return true;
+            }
+        }
+        if let Some(pending) = self.pending_anim_frames.get(&idx) {
+            if pending.hdr_frames.is_some() && pending.frames.len() == frame_count {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn sdr_animated_install_is_redundant(&self, idx: usize, frame_count: usize) -> bool {
+        if frame_count <= 1 {
+            return false;
+        }
+        if let Some(cached) = self.animation_cache.get(&idx) {
+            if cached.hdr_frames.is_none() && cached.textures.len() == frame_count {
+                return true;
+            }
+        }
+        if let Some(pending) = self.pending_anim_frames.get(&idx) {
+            if pending.hdr_frames.is_none() && pending.frames.len() == frame_count {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn apply_hdr_animated_remainder_merge(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::HdrAnimationFrame],
+        ultra_hdr_capacity_sensitive: bool,
+        preserved_textures: std::sync::Arc<Vec<egui::TextureHandle>>,
+        preserved_delays: std::sync::Arc<Vec<std::time::Duration>>,
+        next_frame: usize,
+        ctx: &egui::Context,
+    ) {
+        let (hdr_frames, sdr_frames) = Self::build_hdr_animation_pending_parts(frames);
+        if let Some(first_hdr) = hdr_frames.first() {
+            self.insert_hdr_image_cache_tracked(idx, std::sync::Arc::clone(first_hdr));
+        }
+        self.hdr_sdr_fallback_indices.insert(idx);
+        if ultra_hdr_capacity_sensitive {
+            self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+        }
+        if let Some(first) = frames.first() {
+            if first.fallback.is_sdr_deferred_placeholder() {
+                self.hdr_placeholder_fallback_indices.insert(idx);
+            } else {
+                self.hdr_placeholder_fallback_indices.remove(&idx);
+            }
+            if idx == self.current_index {
+                self.set_current_image_resolution(Some((first.width(), first.height())));
+                if let Some(hdr) = hdr_frames.first() {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        idx,
+                        std::sync::Arc::clone(hdr),
+                    ));
+                }
+                self.refresh_hdr_view_status();
+            }
+        } else {
+            self.hdr_placeholder_fallback_indices.remove(&idx);
+        }
+
+        self.pending_anim_frames.insert(
+            idx,
+            PendingAnimUpload {
+                image_index: idx,
+                hdr_frames: Some(hdr_frames.clone()),
+                frames: sdr_frames.clone(),
+                textures: preserved_textures,
+                delays: preserved_delays,
+                next_frame,
+            },
+        );
+        if idx == self.current_index {
+            self.sync_active_animation_after_remainder_merge(idx, &hdr_frames, &sdr_frames);
+        }
+        crate::preload_debug!(
+            "[PreloadDebug] merge hdr animation remainder: idx={} current={} frames={} uploaded={}",
+            idx,
+            self.current_index,
+            frames.len(),
+            next_frame,
+        );
+        ctx.request_repaint();
+        if idx == self.current_index {
+            self.ensure_current_animation_playback();
+        }
+    }
+
+    fn try_merge_hdr_animated_remainder(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::HdrAnimationFrame],
+        ultra_hdr_capacity_sensitive: bool,
+        ctx: &egui::Context,
+    ) -> bool {
+        let new_count = frames.len();
+        if new_count <= 1 {
+            return false;
+        }
+        if self.hdr_animated_install_is_redundant(idx, new_count) {
+            crate::preload_debug!(
+                "[PreloadDebug] skip hdr animation reinstall: idx={} frames={}",
+                idx,
+                new_count,
+            );
+            return true;
+        }
+
+        if let Some(existing) = self.pending_anim_frames.get(&idx) {
+            if existing.hdr_frames.is_none() {
+                return false;
+            }
+            let existing_count = existing.frames.len();
+            if !super::animation_remainder_extends_existing(existing_count, new_count) {
+                return false;
+            }
+            let first = &existing.frames[0];
+            if frames[0].width() != first.width || frames[0].height() != first.height {
+                return false;
+            }
+            let preserved_textures = std::sync::Arc::clone(&existing.textures);
+            let preserved_delays = std::sync::Arc::clone(&existing.delays);
+            let next_frame = existing.next_frame;
+            self.apply_hdr_animated_remainder_merge(
+                idx,
+                frames,
+                ultra_hdr_capacity_sensitive,
+                preserved_textures,
+                preserved_delays,
+                next_frame,
+                ctx,
+            );
+            return true;
+        }
+
+        if let Some(cached) = self.animation_cache.get(&idx) {
+            if cached.hdr_frames.is_none() {
+                return false;
+            }
+            let existing_count = cached.textures.len();
+            if !super::animation_remainder_extends_existing(existing_count, new_count) {
+                return false;
+            }
+            let Some(hdr_first) = cached.hdr_frames.as_ref().and_then(|frames| frames.first())
+            else {
+                return false;
+            };
+            if frames[0].width() != hdr_first.width || frames[0].height() != hdr_first.height {
+                return false;
+            }
+            let cached = self.animation_cache.remove(&idx).expect("cache entry present");
+            let preserved_textures = std::sync::Arc::clone(&cached.textures);
+            let preserved_delays = std::sync::Arc::clone(&cached.delays);
+            let next_frame = cached.textures.len();
+            self.apply_hdr_animated_remainder_merge(
+                idx,
+                frames,
+                ultra_hdr_capacity_sensitive,
+                preserved_textures,
+                preserved_delays,
+                next_frame,
+                ctx,
+            );
+            return true;
+        }
+
+        false
+    }
+
+    fn apply_sdr_animated_remainder_merge(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::AnimationFrame],
+        preserved_textures: std::sync::Arc<Vec<egui::TextureHandle>>,
+        preserved_delays: std::sync::Arc<Vec<std::time::Duration>>,
+        next_frame: usize,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index {
+            if let Some(first) = frames.first() {
+                self.set_current_image_resolution(Some((first.width, first.height)));
+                self.tile_manager = None;
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                    width: first.width,
+                    height: first.height,
+                    pixels: first.arc_pixels(),
+                });
+            }
+        }
+        self.pending_anim_frames.insert(
+            idx,
+            PendingAnimUpload {
+                image_index: idx,
+                hdr_frames: None,
+                frames: frames.to_vec(),
+                textures: preserved_textures,
+                delays: preserved_delays,
+                next_frame,
+            },
+        );
+        if idx == self.current_index {
+            self.sync_active_animation_after_remainder_merge(idx, &[], frames);
+        }
+        crate::preload_debug!(
+            "[PreloadDebug] merge animation remainder: idx={} current={} frames={} uploaded={}",
+            idx,
+            self.current_index,
+            frames.len(),
+            next_frame,
+        );
+        ctx.request_repaint();
+        if idx == self.current_index {
+            self.ensure_current_animation_playback();
+        }
+    }
+
+    fn try_merge_sdr_animated_remainder(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::AnimationFrame],
+        ctx: &egui::Context,
+    ) -> bool {
+        let new_count = frames.len();
+        if new_count <= 1 {
+            return false;
+        }
+        if self.sdr_animated_install_is_redundant(idx, new_count) {
+            crate::preload_debug!(
+                "[PreloadDebug] skip animation reinstall: idx={} frames={}",
+                idx,
+                new_count,
+            );
+            return true;
+        }
+
+        if let Some(existing) = self.pending_anim_frames.get(&idx) {
+            if existing.hdr_frames.is_some() {
+                return false;
+            }
+            let existing_count = existing.frames.len();
+            if !super::animation_remainder_extends_existing(existing_count, new_count) {
+                return false;
+            }
+            let first = &existing.frames[0];
+            if frames[0].width != first.width || frames[0].height != first.height {
+                return false;
+            }
+            let preserved_textures = std::sync::Arc::clone(&existing.textures);
+            let preserved_delays = std::sync::Arc::clone(&existing.delays);
+            let next_frame = existing.next_frame;
+            self.apply_sdr_animated_remainder_merge(
+                idx,
+                frames,
+                preserved_textures,
+                preserved_delays,
+                next_frame,
+                ctx,
+            );
+            return true;
+        }
+
+        if let Some(cached) = self.animation_cache.get(&idx) {
+            if cached.hdr_frames.is_some() {
+                return false;
+            }
+            let existing_count = cached.textures.len();
+            if !super::animation_remainder_extends_existing(existing_count, new_count) {
+                return false;
+            }
+            let cached = self.animation_cache.remove(&idx).expect("cache entry present");
+            let preserved_textures = std::sync::Arc::clone(&cached.textures);
+            let preserved_delays = std::sync::Arc::clone(&cached.delays);
+            let next_frame = cached.textures.len();
+            self.apply_sdr_animated_remainder_merge(
+                idx,
+                frames,
+                preserved_textures,
+                preserved_delays,
+                next_frame,
+                ctx,
+            );
+            return true;
+        }
+
+        false
+    }
+
     pub(super) fn install_animated_image(
         &mut self,
         idx: usize,
         frames: &[crate::loader::AnimationFrame],
         ctx: &egui::Context,
     ) {
+        if self.try_merge_sdr_animated_remainder(idx, frames, ctx) {
+            return;
+        }
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Animated);
         self.remove_hdr_image_resources(idx);
         if let Some(first) = frames.first() {
@@ -650,6 +1026,9 @@ impl ImageViewerApp {
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
+        if self.try_merge_hdr_animated_remainder(idx, frames, ultra_hdr_capacity_sensitive, ctx) {
+            return;
+        }
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Animated);
         self.remove_hdr_image_resources(idx);
         let hdr_frames: Vec<Arc<crate::hdr::types::HdrImageBuffer>> = frames
@@ -724,7 +1103,19 @@ impl ImageViewerApp {
             self.current_index,
             frames.len()
         );
+        if let Some(first) = frames.first() {
+            self.cache_eager_hdr_animated_strip_preview(
+                idx,
+                &first.hdr,
+                &first.fallback,
+                first.fallback.is_sdr_deferred_placeholder(),
+                ctx,
+            );
+        }
         ctx.request_repaint();
+        if idx == self.current_index {
+            self.ensure_current_animation_playback();
+        }
     }
 
     pub(super) fn install_image_error(&mut self, idx: usize, error: &str) {

@@ -646,6 +646,11 @@ pub(crate) fn startup_preload_defer_can_release(
     false
 }
 
+/// True when an async animation remainder extends a bootstrap install (more frames, same first frame).
+pub(crate) fn animation_remainder_extends_existing(existing: usize, incoming: usize) -> bool {
+    existing >= 1 && incoming > existing
+}
+
 /// True only while GPU RAW demosaic is still in progress and the embedded bootstrap SDR preview
 /// should be shown. When the HDR plane is already ready (pending cleared or demosaic baked),
 /// returns false so navigation draws HDR directly without an SDR preview flash.
@@ -1421,6 +1426,23 @@ mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
         assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
             0, &pending, &baked, &cache, true, true,
         ));
+    }
+}
+
+#[cfg(test)]
+mod animation_remainder_extends_existing_tests {
+    use super::animation_remainder_extends_existing;
+
+    #[test]
+    fn accepts_bootstrap_to_full_sequence() {
+        assert!(animation_remainder_extends_existing(1, 24));
+    }
+
+    #[test]
+    fn rejects_equal_or_shrinking_frame_counts() {
+        assert!(!animation_remainder_extends_existing(0, 10));
+        assert!(!animation_remainder_extends_existing(10, 10));
+        assert!(!animation_remainder_extends_existing(12, 8));
     }
 }
 

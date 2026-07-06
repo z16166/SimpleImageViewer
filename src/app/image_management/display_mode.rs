@@ -216,6 +216,58 @@ impl ImageViewerApp {
         });
     }
 
+    /// Extend active playback when a bootstrap animation remainder adds frames without resetting
+    /// GPU uploads or clearing the active player.
+    pub(crate) fn sync_active_animation_after_remainder_merge(
+        &mut self,
+        idx: usize,
+        hdr_frames: &[std::sync::Arc<crate::hdr::types::HdrImageBuffer>],
+        sdr_frames: &[crate::loader::AnimationFrame],
+    ) {
+        let Some(pending) = self.pending_anim_frames.get(&idx) else {
+            return;
+        };
+        let Some(anim) = self.animation.as_mut() else {
+            return;
+        };
+        if anim.image_index != idx {
+            return;
+        }
+        if !hdr_frames.is_empty() {
+            anim.hdr_frames = Some(hdr_frames.to_vec());
+        }
+        anim.textures = std::sync::Arc::clone(&pending.textures);
+        anim.delays = std::sync::Arc::clone(&pending.delays);
+        let uploaded = anim.textures.len();
+        match anim.cpu_frames.as_mut() {
+            Some(cpu_frames) => {
+                cpu_frames.truncate(uploaded);
+                cpu_frames.extend(
+                    sdr_frames
+                        .iter()
+                        .skip(cpu_frames.len())
+                        .map(|frame| frame.arc_pixels()),
+                );
+            }
+            None if uploaded > 0 => {
+                anim.cpu_frames = Some(
+                    sdr_frames
+                        .iter()
+                        .take(uploaded)
+                        .map(|frame| frame.arc_pixels())
+                        .collect(),
+                );
+            }
+            None => {}
+        }
+        if let Some(hdr) = hdr_frames.get(anim.current_frame) {
+            self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                idx,
+                std::sync::Arc::clone(hdr),
+            ));
+        }
+    }
+
     /// Extend active playback as deferred SDR textures finish uploading.
     pub(crate) fn sync_active_animation_from_pending(&mut self, idx: usize) {
         let Some(pending) = self.pending_anim_frames.get(&idx) else {
