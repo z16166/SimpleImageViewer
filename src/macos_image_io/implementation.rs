@@ -1120,12 +1120,31 @@ pub fn load_via_image_io(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> Result<ImageData, String> {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+}
+
+/// Decode from an already-mapped file buffer (avoids reopening the file on recovery paths).
+pub fn load_via_image_io_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> Result<ImageData, String> {
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+}
+
+fn load_via_image_io_with_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> Result<ImageData, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     let orientation = orientation_override.unwrap_or_else(|| {
         crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
     }) as u32;

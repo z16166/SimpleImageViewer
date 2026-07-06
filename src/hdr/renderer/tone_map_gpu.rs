@@ -227,6 +227,8 @@ struct PreviewOutputResources {
     output_view: wgpu::TextureView,
     readback_buffer: wgpu::Buffer,
     tone_map_buffer: wgpu::Buffer,
+    bind_group: Option<wgpu::BindGroup>,
+    bind_group_hdr_view_key: usize,
 }
 
 struct PreviewGpuScopeGuard {
@@ -273,7 +275,7 @@ fn with_preview_output_resources<R>(
     height: u32,
     padded_bytes_per_row: u32,
     readback_size: u64,
-    f: impl FnOnce(&wgpu::Texture, &wgpu::TextureView, &wgpu::Buffer, &wgpu::Buffer) -> R,
+    f: impl FnOnce(&mut PreviewOutputResources) -> R,
 ) -> R {
     PREVIEW_OUTPUT_POOL.with(|slot| {
         let mut guard = slot.borrow_mut();
@@ -323,15 +325,12 @@ fn with_preview_output_resources<R>(
                 output_view,
                 readback_buffer,
                 tone_map_buffer,
+                bind_group: None,
+                bind_group_hdr_view_key: 0,
             });
         }
-        let pool = guard.as_ref().expect("preview output pool");
-        f(
-            &pool.output_texture,
-            &pool.output_view,
-            &pool.readback_buffer,
-            &pool.tone_map_buffer,
-        )
+        let pool = guard.as_mut().expect("preview output pool");
+        f(pool)
     })
 }
 
@@ -608,26 +607,34 @@ fn hdr_to_sdr_rgba8_gpu(
             height,
             padded_bytes_per_row,
             readback_size,
-            |output_texture, output_view, readback_buffer, tone_map_buffer| {
-                queue.write_buffer(tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group"),
-                    layout: bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&uploaded.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: tone_map_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(output_view),
-                        },
-                    ],
-                });
+            |pool| {
+                queue.write_buffer(&pool.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+                let hdr_view_key = std::ptr::from_ref(&uploaded.view) as usize;
+                if pool.bind_group.is_none() || pool.bind_group_hdr_view_key != hdr_view_key {
+                    pool.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group"),
+                        layout: bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&uploaded.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: pool.tone_map_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&pool.output_view),
+                            },
+                        ],
+                    }));
+                    pool.bind_group_hdr_view_key = hdr_view_key;
+                }
+                let bind_group = pool
+                    .bind_group
+                    .as_ref()
+                    .expect("preview tone-map bind group");
 
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("simple-image-viewer-hdr-preview-tone-map"),
@@ -638,13 +645,13 @@ fn hdr_to_sdr_rgba8_gpu(
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.set_bind_group(0, bind_group, &[]);
                     pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
                 }
                 encoder.copy_texture_to_buffer(
-                    output_texture.as_image_copy(),
+                    pool.output_texture.as_image_copy(),
                     wgpu::TexelCopyBufferInfo {
-                        buffer: readback_buffer,
+                        buffer: &pool.readback_buffer,
                         layout: wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(padded_bytes_per_row),
@@ -660,20 +667,20 @@ fn hdr_to_sdr_rgba8_gpu(
 
                 let (tx, rx) = std::sync::mpsc::sync_channel(1);
                 queue.submit(Some(encoder.finish()));
-                readback_buffer
+                pool.readback_buffer
                     .slice(..)
                     .map_async(wgpu::MapMode::Read, move |result| {
                         let _ = tx.send(result);
                     });
                 wait_for_preview_readback(device, &rx)?;
 
-                let mapped = readback_buffer.slice(..).get_mapped_range();
+                let mapped = pool.readback_buffer.slice(..).get_mapped_range();
                 let mut pixels = Vec::with_capacity(expected_len as usize);
                 for row in mapped.chunks(padded_bytes_per_row as usize) {
                     pixels.extend_from_slice(&row[..unpadded_bytes_per_row as usize]);
                 }
                 drop(mapped);
-                readback_buffer.unmap();
+                pool.readback_buffer.unmap();
                 Ok(pixels)
             },
         )

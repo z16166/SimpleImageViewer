@@ -144,6 +144,12 @@ mod x86 {
     pub(super) unsafe fn exp2_4_sse41(exponents: __m128) -> __m128 {
         unsafe { exp_ps(_mm_mul_ps(exponents, _mm_set1_ps(std::f32::consts::LN_2))) }
     }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    pub(super) unsafe fn exp4_sse41(x: __m128) -> __m128 {
+        unsafe { exp_ps(x) }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -158,6 +164,13 @@ pub(crate) unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
 #[inline]
 pub(crate) unsafe fn exp2_4_sse41(exponents: __m128) -> __m128 {
     unsafe { x86::exp2_4_sse41(exponents) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[inline]
+pub(crate) unsafe fn exp4_sse41(x: __m128) -> __m128 {
+    unsafe { x86::exp4_sse41(x) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -293,6 +306,12 @@ mod arm {
             vdupq_n_f32(std::f32::consts::LN_2),
         ))
     }
+
+    #[target_feature(enable = "neon")]
+    #[inline]
+    pub(super) unsafe fn exp4_neon(x: float32x4_t) -> float32x4_t {
+        exp_ps(x)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -307,6 +326,13 @@ pub(crate) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t 
 #[inline]
 pub(crate) unsafe fn exp2_4_neon(exponents: float32x4_t) -> float32x4_t {
     unsafe { arm::exp2_4_neon(exponents) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+pub(crate) unsafe fn exp4_neon(x: float32x4_t) -> float32x4_t {
+    unsafe { arm::exp4_neon(x) }
 }
 
 #[cfg(test)]

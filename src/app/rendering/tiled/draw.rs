@@ -331,12 +331,15 @@ impl ImageViewerApp {
             let primary_visible_coords = &self.tiled_primary_visible_scratch;
             let visible_coords = &self.tiled_visible_coords_scratch;
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                let protected_keys: Vec<_> = self
-                    .tiled_primary_visible_tiles_scratch
-                    .iter()
-                    .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
-                    .collect();
-                hdr_source.protect_cached_tiles(&protected_keys);
+                self.tiled_protected_keys_scratch.clear();
+                self.tiled_protected_keys_scratch.extend(
+                    self.tiled_primary_visible_tiles_scratch
+                        .iter()
+                        .map(|(coord, _, _)| {
+                            hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord)
+                        }),
+                );
+                hdr_source.protect_cached_tiles(&self.tiled_protected_keys_scratch);
             }
             if let Some(tm) = &mut self.tile_manager {
                 tm.retain_pending_tiles(visible_coords);

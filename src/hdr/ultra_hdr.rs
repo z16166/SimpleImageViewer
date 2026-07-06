@@ -527,6 +527,14 @@ pub(crate) fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegI
     if !bytes.starts_with(&JPEG_SOI) {
         return Err("not a JPEG stream".to_string());
     }
+    if !jpeg_bytes_might_contain_ultra_hdr_metadata(bytes) {
+        return Ok(UltraHdrJpegInfo {
+            is_ultra_hdr: false,
+            primary_xmp_has_gain_map: false,
+            gain_map_item_count: 0,
+            mpf_has_gain_map: false,
+        });
+    }
 
     let mut primary_xmp_has_gain_map = false;
     let mut gain_map_item_count = 0;
@@ -967,6 +975,18 @@ fn primary_metadata_segments(bytes: &[u8]) -> Result<Vec<JpegSegment<'_>>, Strin
 
 fn marker_has_no_payload(marker: u8) -> bool {
     marker == 0x01 || (0xD0..=0xD7).contains(&marker)
+}
+
+/// Fast reject for ordinary JPEGs: Ultra HDR requires Adobe XMP and/or MPF gain-map markers.
+fn jpeg_bytes_might_contain_ultra_hdr_metadata(bytes: &[u8]) -> bool {
+    const HDR_GAIN_MAP_NAMESPACE_BYTES: &[u8] = b"http://ns.adobe.com/hdr-gain-map/1.0/";
+    const MPF_SIGNATURE: &[u8] = b"MPF\x00";
+    bytes
+        .windows(HDR_GAIN_MAP_NAMESPACE_BYTES.len())
+        .any(|window| window == HDR_GAIN_MAP_NAMESPACE_BYTES)
+        || bytes
+            .windows(MPF_SIGNATURE.len())
+            .any(|window| window == MPF_SIGNATURE)
 }
 
 #[cfg(test)]

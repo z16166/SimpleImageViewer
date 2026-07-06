@@ -39,7 +39,7 @@ impl<'a> TextureUploadBytes<'a> {
 
     fn stage_for_pending(self) -> StagedTextureBytes {
         match self {
-            Self::Cow(Cow::Borrowed(slice)) => StagedTextureBytes::Bytes(Arc::from(slice.to_vec())),
+            Self::Cow(Cow::Borrowed(slice)) => StagedTextureBytes::Bytes(Arc::from(slice)),
             Self::Cow(Cow::Owned(vec)) => StagedTextureBytes::Bytes(Arc::from(vec)),
             Self::Arc(arc) => StagedTextureBytes::Bytes(arc),
             Self::Rgba32f(rgba) => StagedTextureBytes::Rgba32f(rgba),

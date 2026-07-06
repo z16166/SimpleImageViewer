@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, TrySendError};
 use parking_lot::Mutex;
 use rust_i18n::t;
 
@@ -46,12 +46,17 @@ fn send_worker_result<T>(tx: &Sender<T>, mut msg: T, shutdown: &AtomicBool) -> b
                     log::debug!("[DirectoryTree] Dropping worker result: shutting down");
                     return false;
                 }
-                if std::time::Instant::now() >= deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
                     log::warn!("[DirectoryTree] Dropping worker result: result channel full");
                     return false;
                 }
                 msg = pending;
-                std::thread::sleep(Duration::from_millis(2));
+                match tx.send_timeout(msg, remaining) {
+                    Ok(()) => return true,
+                    Err(SendTimeoutError::Timeout(retry)) => msg = retry,
+                    Err(SendTimeoutError::Disconnected(_)) => return false,
+                }
             }
             Err(TrySendError::Disconnected(_)) => return false,
         }

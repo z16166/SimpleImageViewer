@@ -628,14 +628,21 @@ fn get_sample_value(
 }
 
 fn to_srgb_8(linear: f32) -> u8 {
-    // Simple sRGB / Gamma 2.2 mapping
-    let l = linear.clamp(0.0, 1.0);
-    let s = if l <= 0.0031308 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    };
-    (s * 255.0) as u8
+    static SRGB_ENCODE_LUT: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
+        let mut lut = [0_u8; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            let l = i as f32 / 255.0;
+            let s = if l <= 0.0031308 {
+                12.92 * l
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            };
+            *slot = (s * 255.0).round() as u8;
+        }
+        lut
+    });
+    let index = (linear.clamp(0.0, 1.0) * 255.0).round() as usize;
+    SRGB_ENCODE_LUT[index.min(255)]
 }
 
 pub(crate) fn tiff_ieee_scene_linear_eligible(
@@ -782,27 +789,36 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
         let row = &mut out[row_off..row_off + width as usize * 4];
         let inv_range = (1.0 / provisional_range) as f32;
         let smin_f32 = provisional_smin as f32;
-        simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
-            &buf,
-            row,
-            width as usize,
-            spp as usize,
-            smin_f32,
-            inv_range,
-        );
-        if !smax_provided {
+        if smax_provided {
+            simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
+                &buf,
+                row,
+                width as usize,
+                spp as usize,
+                smin_f32,
+                inv_range,
+            );
+        } else {
             for x in 0..width as usize {
-                let base = x * spp as usize;
+                let src_base = x * spp as usize;
+                let dst_base = x * 4;
                 for c in 0..3 {
-                    let val = read_uint16_sample(&buf, base + c) as f64;
+                    let sample = read_uint16_sample(&buf, src_base + c);
+                    let val = sample as f64;
                     actual_min = actual_min.min(val);
                     actual_max = actual_max.max(val);
+                    row[dst_base + c] =
+                        ((sample as f32 - smin_f32) * inv_range).clamp(0.0, 1.0);
                 }
-                if spp >= 4 {
-                    let val = read_uint16_sample(&buf, base + 3) as f64;
+                row[dst_base + 3] = if spp >= 4 {
+                    let sample = read_uint16_sample(&buf, src_base + 3);
+                    let val = sample as f64;
                     actual_min = actual_min.min(val);
                     actual_max = actual_max.max(val);
-                }
+                    ((sample as f32 - smin_f32) * inv_range).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
             }
         }
     }

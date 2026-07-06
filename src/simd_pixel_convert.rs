@@ -187,50 +187,57 @@ pub fn normalize_uint16_rgb_scanline_to_rgba32f(
     }
 }
 
-#[inline]
-fn store_normalized_rgb_pixels(
-    dst: &mut [f32],
-    x: usize,
-    r: [f32; 4],
-    g: [f32; 4],
-    b: [f32; 4],
-    count: usize,
-) {
-    for i in 0..count {
-        let base = (x + i) * 4;
-        dst[base] = r[i];
-        dst[base + 1] = g[i];
-        dst[base + 2] = b[i];
-        dst[base + 3] = 1.0;
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn store_m128_rgb_pixels(dst: &mut [f32], x: usize, r: __m128, g: __m128, b: __m128, count: usize) {
-    let mut rf = [0.0_f32; 4];
-    let mut gf = [0.0_f32; 4];
-    let mut bf = [0.0_f32; 4];
+    debug_assert!(count <= 4);
     unsafe {
-        _mm_storeu_ps(rf.as_mut_ptr(), r);
-        _mm_storeu_ps(gf.as_mut_ptr(), g);
-        _mm_storeu_ps(bf.as_mut_ptr(), b);
+        let one = _mm_set1_ps(1.0);
+        let rg_lo = _mm_unpacklo_ps(r, g);
+        let rg_hi = _mm_unpackhi_ps(r, g);
+        let ba_lo = _mm_unpacklo_ps(b, one);
+        let ba_hi = _mm_unpackhi_ps(b, one);
+        if count > 0 {
+            _mm_storeu_ps(
+                dst[(x) * 4..].as_mut_ptr(),
+                _mm_movelh_ps(rg_lo, ba_lo),
+            );
+        }
+        if count > 1 {
+            _mm_storeu_ps(
+                dst[(x + 1) * 4..].as_mut_ptr(),
+                _mm_movehl_ps(ba_lo, rg_lo),
+            );
+        }
+        if count > 2 {
+            _mm_storeu_ps(
+                dst[(x + 2) * 4..].as_mut_ptr(),
+                _mm_movelh_ps(rg_hi, ba_hi),
+            );
+        }
+        if count > 3 {
+            _mm_storeu_ps(
+                dst[(x + 3) * 4..].as_mut_ptr(),
+                _mm_movehl_ps(ba_hi, rg_hi),
+            );
+        }
     }
-    store_normalized_rgb_pixels(dst, x, rf, gf, bf, count);
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn store_m256_rgb_pixels(dst: &mut [f32], x: usize, r: __m256, g: __m256, b: __m256, count: usize) {
-    let mut rf = [0.0_f32; 4];
-    let mut gf = [0.0_f32; 4];
-    let mut bf = [0.0_f32; 4];
+    debug_assert!(count <= 4);
     unsafe {
-        _mm_storeu_ps(rf.as_mut_ptr(), _mm256_castps256_ps128(r));
-        _mm_storeu_ps(gf.as_mut_ptr(), _mm256_castps256_ps128(g));
-        _mm_storeu_ps(bf.as_mut_ptr(), _mm256_castps256_ps128(b));
+        store_m128_rgb_pixels(
+            dst,
+            x,
+            _mm256_castps256_ps128(r),
+            _mm256_castps256_ps128(g),
+            _mm256_castps256_ps128(b),
+            count,
+        );
     }
-    store_normalized_rgb_pixels(dst, x, rf, gf, bf, count);
 }
 
 #[inline]
@@ -536,13 +543,12 @@ unsafe fn normalize_uint16_rgb3_scanline_neon(
                 one,
             );
 
-            let mut r = [0.0_f32; 4];
-            let mut g = [0.0_f32; 4];
-            let mut b = [0.0_f32; 4];
-            vst1q_f32(r.as_mut_ptr(), rf);
-            vst1q_f32(g.as_mut_ptr(), gf);
-            vst1q_f32(b.as_mut_ptr(), bf);
-            store_normalized_rgb_pixels(dst, *x, r, g, b, 2);
+            let rg = vzipq_f32(rf, gf);
+            let ba = vzipq_f32(bf, one);
+            let rgba0 = vcombine_f32(vget_low_f32(rg.0), vget_low_f32(ba.0));
+            let rgba1 = vcombine_f32(vget_high_f32(rg.0), vget_high_f32(ba.0));
+            vst1q_f32(dst.as_mut_ptr().add(*x * 4), rgba0);
+            vst1q_f32(dst.as_mut_ptr().add((*x + 1) * 4), rgba1);
             *x += 2;
         }
     }

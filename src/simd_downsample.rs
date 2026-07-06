@@ -27,6 +27,29 @@ use core::arch::aarch64::*;
 use std::num::NonZeroU64;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+struct AlignedU32Buffer {
+    storage: Vec<u32>,
+    offset: usize,
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl AlignedU32Buffer {
+    fn new(len: usize, align: usize) -> Self {
+        let align = align.max(std::mem::align_of::<u32>());
+        let pad = align / std::mem::size_of::<u32>() + 1;
+        let storage = vec![0_u32; len.saturating_add(pad).saturating_add(pad)];
+        let base = storage.as_ptr() as usize;
+        let byte_off = (align - (base % align)) % align;
+        let offset = byte_off / std::mem::size_of::<u32>();
+        Self { storage, offset }
+    }
+
+    fn as_mut_slice(&mut self, len: usize) -> &mut [u32] {
+        &mut self.storage[self.offset..self.offset + len]
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 struct DownsampleSimdParams<'a> {
     src: &'a [u8],
     src_w: u32,
@@ -73,8 +96,10 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     // identical x0/x1 arrays, so computing them here avoids duplicating the
     // allocation and math across three kernels.
     let dst_w_u = dst_w as usize;
-    let mut x0 = vec![0_u32; dst_w_u];
-    let mut x1 = vec![0_u32; dst_w_u];
+    let mut x0_buf = AlignedU32Buffer::new(dst_w_u, 32);
+    let mut x1_buf = AlignedU32Buffer::new(dst_w_u, 32);
+    let x0 = x0_buf.as_mut_slice(dst_w_u);
+    let x1 = x1_buf.as_mut_slice(dst_w_u);
     for dx in 0..dst_w_u {
         x0[dx] = ((dx as u64 * src_w as u64) / dst_w as u64) as u32;
         x1[dx] = ((dx + 1) as u64 * src_w as u64)
@@ -251,8 +276,8 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                 let mut acc_a = _mm_setzero_si128();
                 let mut acc_cnt = _mm_setzero_si128();
 
-                let x0_v = _mm_loadu_si128(x0.as_ptr().add(base_x) as *const __m128i);
-                let x1_v = _mm_loadu_si128(x1.as_ptr().add(base_x) as *const __m128i);
+                let x0_v = _mm_load_si128(x0.as_ptr().add(base_x) as *const __m128i);
+                let x1_v = _mm_load_si128(x1.as_ptr().add(base_x) as *const __m128i);
 
                 let merged_x0 = core::cmp::min(
                     core::cmp::min(x0[base_x], x0[base_x + 1]),
@@ -262,6 +287,11 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     core::cmp::max(x1[base_x], x1[base_x + 1]),
                     core::cmp::max(x1[base_x + 2], x1[base_x + 3]),
                 );
+
+                // Flip the sign bit to use signed comparison intrinsics for unsigned u32.
+                let sign_bit128 = _mm_set1_epi32(i32::MIN);
+                let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
+                let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
 
                 for sy in y0..y1 {
                     let row_off = sy as usize * row_stride;
@@ -275,12 +305,6 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                         ]);
 
                         let sx_v = _mm_set1_epi32(sx as i32);
-                        // Flip the sign bit to use signed comparison intrinsics
-                        // (`_mm_cmpgt_epi32`) for unsigned u32 values.  Without the
-                        // flip, coordinates ≥ 2^31 would be treated as negative.
-                        let sign_bit128 = _mm_set1_epi32(i32::MIN);
-                        let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
-                        let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
                         let sx_v_u = _mm_xor_si128(sx_v, sign_bit128);
                         // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge =
@@ -403,11 +427,15 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                 let mut acc_a = _mm256_setzero_si256();
                 let mut acc_cnt = _mm256_setzero_si256();
 
-                let x0_v = _mm256_loadu_si256(x0.as_ptr().add(base_x) as *const __m256i);
-                let x1_v = _mm256_loadu_si256(x1.as_ptr().add(base_x) as *const __m256i);
+                let x0_v = _mm256_load_si256(x0.as_ptr().add(base_x) as *const __m256i);
+                let x1_v = _mm256_load_si256(x1.as_ptr().add(base_x) as *const __m256i);
 
                 let merged_x0 = (0..8).fold(u32::MAX, |m, i| core::cmp::min(m, x0[base_x + i]));
                 let merged_x1 = (0..8).fold(0_u32, |m, i| core::cmp::max(m, x1[base_x + i]));
+
+                let sign_bit256 = _mm256_set1_epi32(i32::MIN);
+                let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
+                let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
 
                 for sy in y0..y1 {
                     let row_off = sy as usize * row_stride;
@@ -421,11 +449,6 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                         ]);
 
                         let sx_v = _mm256_set1_epi32(sx as i32);
-                        // Flip the sign bit to use signed comparison intrinsics
-                        // (`_mm256_cmpgt_epi32`) for unsigned u32 values.
-                        let sign_bit256 = _mm256_set1_epi32(i32::MIN);
-                        let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
-                        let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
                         let sx_v_u = _mm256_xor_si256(sx_v, sign_bit256);
                         // sx >= x0  →  NOT(x0 > sx)
                         let mask_ge = _mm256_andnot_si256(

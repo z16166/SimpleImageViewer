@@ -16,7 +16,7 @@
 
 mod implementation;
 
-pub use implementation::{discover_imageio_codecs, load_via_image_io};
+pub use implementation::{discover_imageio_codecs, load_via_image_io, load_via_image_io_from_mmap};
 
 #[cfg(test)]
 pub(crate) use implementation::exif_display_to_physical_pixel;

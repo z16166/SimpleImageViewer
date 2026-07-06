@@ -241,7 +241,15 @@ pub(crate) fn recover_via_platform_and_content_detection(
     }
 
     #[cfg(target_os = "windows")]
-    if let Ok(image) = crate::wic::load_via_wic(path, high_quality, None) {
+    if let Ok(image) = match detection_mmap.as_ref() {
+        Some(mmap) => crate::wic::load_via_wic_from_mmap(
+            path,
+            std::sync::Arc::clone(mmap),
+            high_quality,
+            None,
+        ),
+        None => crate::wic::load_via_wic_stream_sniff(path, high_quality, None),
+    } {
         log::info!(
             "[{}] Recovered via WIC after extension-first decode failed",
             file_name
@@ -250,7 +258,15 @@ pub(crate) fn recover_via_platform_and_content_detection(
         return Ok(image);
     }
     #[cfg(target_os = "macos")]
-    if let Ok(image) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
+    if let Ok(image) = match detection_mmap.as_ref() {
+        Some(mmap) => crate::macos_image_io::load_via_image_io_from_mmap(
+            path,
+            std::sync::Arc::clone(mmap),
+            high_quality,
+            None,
+        ),
+        None => crate::macos_image_io::load_via_image_io(path, high_quality, None),
+    } {
         log::info!(
             "[{}] Recovered via ImageIO after extension-first decode failed",
             file_name

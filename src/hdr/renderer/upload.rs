@@ -374,6 +374,7 @@ pub(crate) fn upload_r16_uint_texture(
     height: u32,
     pixels: &[u16],
     max_texture_dimension_2d: u32,
+    texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     if width == 0 || height == 0 {
         return Err(format!(
@@ -389,20 +390,24 @@ pub(crate) fn upload_r16_uint_texture(
     let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(tight_bytes, width, height, 2)
         .map_err(|err| format!("{label}: {err}"))?;
 
-    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
+    let texture = create_poolable_texture(
+        device,
+        texture_pool,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R16Uint,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    }));
+    );
 
     submit_texture_write(
         match sink {
@@ -492,6 +497,7 @@ pub(crate) fn upload_image_plane_with_sink(
             raw_source.height,
             raw_source.raw_pixels.as_slice(),
             device.limits().max_texture_dimension_2d,
+            texture_pool,
         )?;
 
         let raw_green_plane = create_empty_r32f_storage_texture(

@@ -23,7 +23,7 @@ pub fn load_via_wic(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
-    load_via_wic_inner(path, high_quality, orientation_override, false)
+    load_via_wic_inner(path, high_quality, orientation_override, false, None)
 }
 
 /// Decode by sniffing the bitstream (ISO BMFF / QuickTime / mislabeled extensions), not the path suffix.
@@ -32,7 +32,17 @@ pub fn load_via_wic_stream_sniff(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
-    load_via_wic_inner(path, high_quality, orientation_override, true)
+    load_via_wic_inner(path, high_quality, orientation_override, true, None)
+}
+
+/// Decode from an already-mapped file buffer (avoids reopening the file on recovery paths).
+pub fn load_via_wic_from_mmap(
+    path: &std::path::Path,
+    mmap: std::sync::Arc<memmap2::Mmap>,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> std::result::Result<crate::loader::ImageData, String> {
+    load_via_wic_inner(path, high_quality, orientation_override, true, Some(mmap))
 }
 
 fn load_via_wic_inner(
@@ -40,6 +50,7 @@ fn load_via_wic_inner(
     high_quality: bool,
     orientation_override: Option<u16>,
     prefer_stream_sniff: bool,
+    existing_mmap: Option<std::sync::Arc<memmap2::Mmap>>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
@@ -63,45 +74,46 @@ fn load_via_wic_inner(
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 
         if prefer_stream_sniff {
-            match crate::mmap_util::map_file(path) {
-                Ok(mmap) => {
-                    let m_arc = std::sync::Arc::new(mmap);
-                    match factory.CreateStream() {
-                        Ok(stream) => {
-                            if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                                decoder_res = factory.CreateDecoderFromStream(
-                                    &stream,
-                                    std::ptr::null(),
-                                    WICDecodeMetadataCacheOnDemand,
-                                );
-                                if decoder_res.is_ok() {
-                                    stream_out = Some(stream);
-                                    mmap_out = Some(m_arc);
-                                } else {
-                                    log::debug!(
-                                        "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
-                                        path
-                                    );
-                                }
+            let mmap_source = existing_mmap.or_else(|| {
+                crate::mmap_util::map_file(path)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            });
+            if let Some(m_arc) = mmap_source {
+                match factory.CreateStream() {
+                    Ok(stream) => {
+                        if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
+                            decoder_res = factory.CreateDecoderFromStream(
+                                &stream,
+                                std::ptr::null(),
+                                WICDecodeMetadataCacheOnDemand,
+                            );
+                            if decoder_res.is_ok() {
+                                stream_out = Some(stream);
+                                mmap_out = Some(m_arc);
                             } else {
                                 log::debug!(
-                                    "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                    "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
                                     path
                                 );
                             }
-                        }
-                        Err(e) => {
+                        } else {
                             log::debug!(
-                                "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
-                                path,
-                                e
+                                "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                path
                             );
                         }
                     }
+                    Err(e) => {
+                        log::debug!(
+                            "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
+                            path,
+                            e
+                        );
+                    }
                 }
-                Err(e) => {
-                    log::debug!("[WIC] stream_sniff map_file failed for {:?}: {:?}", path, e);
-                }
+            } else {
+                log::debug!("[WIC] stream_sniff map_file failed for {:?}", path);
             }
         }
 
