@@ -26,6 +26,16 @@ use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 #[cfg(test)]
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
+fn path_extension_matches_any(path: &std::path::Path, candidates: &[&str]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            candidates
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        })
+}
+
 impl ImageViewerApp {
     #[cfg(feature = "avif-native")]
     fn avif_strip_probe_cache_generation(&self) -> u64 {
@@ -327,13 +337,64 @@ impl ImageViewerApp {
 
     fn strip_index_within_prefetch_window(&self, index: usize) -> bool {
         let count = self.image_files.len();
-        if count == 0 || index >= count || !self.settings.preload {
+        if count == 0 || !self.settings.preload {
             return false;
         }
-        let current = self.current_index.min(count - 1);
-        let forward = (index + count - current) % count;
-        let backward = (current + count - index) % count;
-        forward.min(backward) <= self.prefetch_window_max_distance
+        super::strip_full_decode_reuse_allowed(
+            index,
+            self.current_index.min(count - 1),
+            count,
+            self.prefetch_window_max_distance,
+            true,
+        )
+    }
+
+    fn strip_full_decode_share_window_contains(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 {
+            return false;
+        }
+        super::strip_full_decode_reuse_allowed(
+            index,
+            self.current_index.min(count - 1),
+            count,
+            self.prefetch_window_max_distance,
+            self.settings.preload,
+        )
+    }
+
+    /// Static/full-raster formats whose strip cold decode can publish reusable SDR pixels.
+    /// AVIF/HEIF/JXL are handled by embedded-SDR / ISO gain-map sharing instead.
+    pub(crate) fn strip_path_provides_reusable_static_full_decode(
+        &self,
+        path: &std::path::Path,
+    ) -> bool {
+        path_extension_matches_any(
+            path,
+            &[
+                "png", "webp", "bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi", "tif",
+                "tiff", "psd", "psb", "hdr", "exr",
+            ],
+        )
+    }
+
+    pub(crate) fn strip_cold_static_full_decode_can_share_with_main(
+        &self,
+        index: usize,
+        path: &std::path::Path,
+    ) -> bool {
+        self.strip_full_decode_share_window_contains(index)
+            && self.strip_path_provides_reusable_static_full_decode(path)
+    }
+
+    pub(crate) fn strip_full_decode_inflight_should_block_main_load(&self, index: usize) -> bool {
+        if !self.directory_tree_strip_generate_inflight.contains(&index) {
+            return false;
+        }
+        let Some(path) = self.image_files.get(index) else {
+            return false;
+        };
+        self.strip_cold_static_full_decode_can_share_with_main(index, path)
     }
 
     /// True when Viewing settings use embedded SDR master on an SDR tone-mapped output path.
@@ -351,17 +412,10 @@ impl ImageViewerApp {
         &self,
         path: &std::path::Path,
     ) -> bool {
-        let ext = path
-            .extension()
-            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        if !matches!(
-            ext.as_str(),
-            "avif" | "avifs" | "heif" | "heic" | "hif" | "jxl"
-        ) {
+        if !path_extension_matches_any(path, &["avif", "avifs", "heif", "heic", "hif", "jxl"]) {
             return false;
         }
-        if ext == "avif" || ext == "avifs" {
+        if path_extension_matches_any(path, &["avif", "avifs"]) {
             #[cfg(feature = "avif-native")]
             {
                 return matches!(
@@ -375,12 +429,21 @@ impl ImageViewerApp {
                 return false;
             }
         }
-        matches!(ext.as_str(), "heif" | "heic" | "hif" | "jxl")
+        path_extension_matches_any(path, &["heif", "heic", "hif", "jxl"])
+    }
+
+    fn strip_main_sdr_decode_available_or_in_flight(&self, index: usize) -> bool {
+        if self.strip_main_loader_decode_in_flight(index) {
+            return true;
+        }
+        !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && (self.deferred_sdr_uploads.contains_key(&index)
+                || self.texture_cache.contains(index))
     }
 
     /// Skip strip paths that duplicate the main loader; cheap embedded previews still run.
     pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
-        if self.strip_main_loader_decode_in_flight(index) {
+        if self.strip_main_sdr_decode_available_or_in_flight(index) {
             return true;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
@@ -389,14 +452,22 @@ impl ImageViewerApp {
         }) {
             return true;
         }
-        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
-            && (self.deferred_sdr_uploads.contains_key(&index)
-                || self.texture_cache.contains(index))
-        {
-            return true;
-        }
         if !self.strip_index_within_prefetch_window(index) {
             return false;
+        }
+        self.strip_prefetch_window_defers_to_main_loader(index)
+    }
+
+    /// Skip static raster full decode when the main loader is already or imminently responsible.
+    pub(crate) fn strip_cold_skip_slow_static_full_decode_primary(&self, index: usize) -> bool {
+        let Some(path) = self.image_files.get(index) else {
+            return false;
+        };
+        if !self.strip_cold_static_full_decode_can_share_with_main(index, path) {
+            return false;
+        }
+        if self.strip_main_sdr_decode_available_or_in_flight(index) {
+            return true;
         }
         self.strip_prefetch_window_defers_to_main_loader(index)
     }

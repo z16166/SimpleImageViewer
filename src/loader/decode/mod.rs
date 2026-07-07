@@ -35,7 +35,8 @@ mod strip_downsample;
 mod tiff_raw_sniff;
 
 pub(crate) use directory_tree_thumb::{
-    DirectoryTreeThumbDecodeOptions, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    DirectoryTreeThumbDecodeOptions, DirectoryTreeThumbSlowPrimarySkipReason,
+    STRIP_DEFER_SLOW_EMBEDDED_SDR, STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
     generate_directory_tree_thumb_decode_from_path,
 };
 pub(crate) use raster::is_maybe_animated;

@@ -27,27 +27,6 @@ use crate::app::directory_tree_strip_cache::{
 };
 use crate::loader::preview_aspect_matches_logical;
 
-fn strip_full_decode_reuse_allowed(
-    index: usize,
-    current_index: usize,
-    image_count: usize,
-    max_preload_distance: usize,
-    preload_enabled: bool,
-) -> bool {
-    if image_count == 0 || index >= image_count || current_index >= image_count {
-        return false;
-    }
-    if index == current_index {
-        return true;
-    }
-    if !preload_enabled {
-        return false;
-    }
-    let forward = (index + image_count - current_index) % image_count;
-    let backward = (current_index + image_count - index) % image_count;
-    forward.min(backward) <= max_preload_distance
-}
-
 impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
@@ -166,7 +145,7 @@ impl ImageViewerApp {
         if full.is_sdr_deferred_placeholder() || (full.width, full.height) != logical {
             return;
         }
-        if !strip_full_decode_reuse_allowed(
+        if !super::strip_full_decode_reuse_allowed(
             index,
             self.current_index,
             self.image_files.len(),
@@ -195,8 +174,6 @@ impl ImageViewerApp {
             self.clear_strip_preview_attempt_state(index);
         }
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
-            self.directory_tree_strip_generate_inflight
-                .remove(&result.index);
             // Lock available: exact generation match rejects any reorder since the job started.
             // Lock contended: snapshot may lag the live list; accept result.gen >= snapshot.gen
             // so we do not discard valid work, and rely on path/index relocate for edge cases.
@@ -306,8 +283,7 @@ impl ImageViewerApp {
                 );
             }
             if !cache_valid {
-                self.directory_tree_strip_tiled_attempted
-                    .remove(&result.index);
+                self.finish_strip_preview_job(result.index);
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
                     "[PreloadDebug][StripPoll] idx={} no repaint (cache not valid until GPU flush)",
@@ -329,7 +305,7 @@ impl ImageViewerApp {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_full_decode_reuse_allowed;
+    use super::super::strip_full_decode_reuse_allowed;
 
     #[test]
     fn strip_full_decode_reuse_keeps_current_even_when_preload_disabled() {

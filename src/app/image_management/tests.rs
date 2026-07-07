@@ -3906,3 +3906,34 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
 
     assert!(!app.directory_tree_strip_cache.contains(0));
 }
+
+#[test]
+fn strip_static_full_decode_inflight_blocks_main_preload_in_ring() {
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("current.png"),
+        PathBuf::from("neighbor.png"),
+        PathBuf::from("outside.png"),
+        PathBuf::from("backward_neighbor.png"),
+    ];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+    app.directory_tree_strip_generate_inflight.insert(2);
+
+    assert!(app.strip_full_decode_inflight_should_block_main_load(1));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
+}
+
+#[test]
+fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("current.png"), PathBuf::from("neighbor.jpg")];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+}

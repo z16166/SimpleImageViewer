@@ -25,7 +25,8 @@ use crate::app::directory_tree_strip_cache::{
 use crate::app::image_management::should_defer_neighbor_work_for_current_main;
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, DirectoryTreeThumbDecodeOptions, PreviewStage, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    DecodedImage, DirectoryTreeThumbDecodeOptions, DirectoryTreeThumbSlowPrimarySkipReason,
+    PreviewStage, STRIP_DEFER_SLOW_EMBEDDED_SDR, STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
     downsample_decoded_for_strip, generate_directory_tree_thumb_decode_from_path,
     preview_aspect_matches_logical,
 };
@@ -489,9 +490,19 @@ impl ImageViewerApp {
         let path = self.image_files[index].clone();
         let shares_main_embedded_sdr =
             self.strip_path_benefits_from_main_loader_embedded_sdr_share(&path);
-        let skip_slow_primary =
+        let skip_slow_embedded_sdr_primary =
             self.strip_cold_skip_slow_embedded_sdr_primary(index) && shares_main_embedded_sdr;
-        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active() && skip_slow_primary;
+        let skip_slow_static_full_decode =
+            self.strip_cold_skip_slow_static_full_decode_primary(index);
+        let slow_primary_skip_reason = if skip_slow_embedded_sdr_primary {
+            DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr
+        } else if skip_slow_static_full_decode {
+            DirectoryTreeThumbSlowPrimarySkipReason::StaticFullDecode
+        } else {
+            DirectoryTreeThumbSlowPrimarySkipReason::None
+        };
+        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active()
+            && slow_primary_skip_reason == DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr;
         let list_generation = {
             let list = self.directory_tree.list.lock();
             list.image_list_generation
@@ -526,7 +537,7 @@ impl ImageViewerApp {
             let mut cold_deferred_to_main_loader = false;
             if com_ok {
                 let decode_options = DirectoryTreeThumbDecodeOptions {
-                    skip_slow_embedded_sdr_primary: skip_slow_primary,
+                    skip_slow_primary: slow_primary_skip_reason,
                     defer_iso_gain_map_baseline: defer_iso_baseline,
                 };
                 match generate_directory_tree_thumb_decode_from_path(
@@ -542,7 +553,10 @@ impl ImageViewerApp {
                             buffer_tag = StripPreviewBufferTag::PreloadSdrFallback;
                         }
                     }
-                    Err(err) if err == STRIP_DEFER_SLOW_EMBEDDED_SDR => {
+                    Err(err)
+                        if err == STRIP_DEFER_SLOW_EMBEDDED_SDR
+                            || err == STRIP_DEFER_SLOW_STATIC_FULL_DECODE =>
+                    {
                         cold_deferred_to_main_loader = true;
                         #[cfg(feature = "preload-debug")]
                         crate::preload_debug!(

@@ -59,7 +59,8 @@ pub use types::*;
 
 pub(crate) use decode::downsample_decoded_for_strip;
 pub(crate) use decode::{
-    DirectoryTreeThumbDecodeOptions, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    DirectoryTreeThumbDecodeOptions, DirectoryTreeThumbSlowPrimarySkipReason,
+    STRIP_DEFER_SLOW_EMBEDDED_SDR, STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
     generate_directory_tree_thumb_decode_from_path,
 };
 pub(crate) use hdr_fallback::{

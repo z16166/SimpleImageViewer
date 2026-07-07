@@ -37,6 +37,27 @@ mod gpu;
 mod poll;
 mod schedule;
 
+fn strip_full_decode_reuse_allowed(
+    index: usize,
+    current_index: usize,
+    image_count: usize,
+    max_preload_distance: usize,
+    preload_enabled: bool,
+) -> bool {
+    if image_count == 0 || index >= image_count || current_index >= image_count {
+        return false;
+    }
+    if index == current_index {
+        return true;
+    }
+    if !preload_enabled {
+        return false;
+    }
+    let forward = (index + image_count - current_index) % image_count;
+    let backward = (current_index + image_count - index) % image_count;
+    forward.min(backward) <= max_preload_distance
+}
+
 pub(super) fn send_strip_inflight_release(
     release_tx: &crossbeam_channel::Sender<usize>,
     index: usize,

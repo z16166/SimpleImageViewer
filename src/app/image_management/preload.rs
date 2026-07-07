@@ -52,7 +52,8 @@ impl ImageViewerApp {
 
         let cur = self.current_index.min(n.saturating_sub(1));
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading(cur);
+        let current_is_loading = self.loader.is_loading(cur)
+            || self.strip_full_decode_inflight_should_block_main_load(cur);
         let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
             &self.image_files,
             cur,
@@ -125,12 +126,16 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let mut current_is_loading = self.loader.is_loading(cur);
+        let current_strip_full_decode_inflight =
+            self.strip_full_decode_inflight_should_block_main_load(cur);
+        let mut current_is_loading =
+            self.loader.is_loading(cur) || current_strip_full_decode_inflight;
         preload_debug!(
-            "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
+            "[PreloadDebug] current state: idx={} has_asset={} is_loading={} strip_full_decode_inflight={}",
             cur,
             current_has_asset,
-            current_is_loading
+            current_is_loading,
+            current_strip_full_decode_inflight
         );
         let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
             &self.image_files,
@@ -323,13 +328,17 @@ impl ImageViewerApp {
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
             let is_loading = in_flight.contains(&idx);
-            if has_asset || is_loading {
+            let strip_full_decode_inflight = !has_asset
+                && !is_loading
+                && self.strip_full_decode_inflight_should_block_main_load(idx);
+            if has_asset || is_loading || strip_full_decode_inflight {
                 preload_debug!(
-                    "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
+                    "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} strip_full_decode_inflight={} count_before={}",
                     direction_name,
                     idx,
                     has_asset,
                     is_loading,
+                    strip_full_decode_inflight,
                     count
                 );
                 count += 1;

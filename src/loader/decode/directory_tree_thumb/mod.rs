@@ -57,21 +57,50 @@ use static_raster::try_static_raster_strip_fast_path;
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DirectoryTreeThumbSlowPrimarySkipReason {
+    #[default]
+    None,
+    /// Main loader owns embedded-SDR / ISO gain-map primary decode work.
+    EmbeddedSdr,
+    /// Main loader owns reusable static full-raster decode work.
+    StaticFullDecode,
+}
+
+impl DirectoryTreeThumbSlowPrimarySkipReason {
+    fn deferred_error(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::EmbeddedSdr => Some(STRIP_DEFER_SLOW_EMBEDDED_SDR),
+            Self::StaticFullDecode => Some(STRIP_DEFER_SLOW_STATIC_FULL_DECODE),
+        }
+    }
+
+    fn skips_primary(self) -> bool {
+        self.deferred_error().is_some()
+    }
+}
+
 /// Controls which strip cold-decode fallbacks are allowed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DirectoryTreeThumbDecodeOptions {
-    /// When set, skip strip paths that duplicate the main loader's full-image decode
+    /// Why strip should skip paths that duplicate the main loader's full-image decode
     /// (`static_raster`, `open_image_data_for_directory_tree_thumb`). Cheap strip paths
     /// (EXIF/HEIF container thumb, JPEG DCT scale, HDR float preview) still run.
-    pub skip_slow_embedded_sdr_primary: bool,
-    /// When set (together with [`Self::skip_slow_embedded_sdr_primary`]), skip ISO gain-map
+    pub skip_slow_primary: DirectoryTreeThumbSlowPrimarySkipReason,
+    /// When set with [`DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr`], skip ISO gain-map
     /// baseline strip decode so the main loader's embedded SDR master path owns that work.
     pub defer_iso_gain_map_baseline: bool,
 }
 
-/// Returned when only a full decode would apply while the main loader should own it;
-/// caller waits for preload install or texture/HDR-cache strip sync.
+/// Returned when only an embedded-SDR / ISO gain-map primary decode would apply while the main
+/// loader should own it; caller waits for preload install or texture/HDR-cache strip sync.
 pub(crate) const STRIP_DEFER_SLOW_EMBEDDED_SDR: &str = "strip_deferred_slow_embedded_sdr_primary";
+
+/// Returned when only a static full-raster decode would apply while the main loader should own it;
+/// caller waits for preload install or texture-cache strip sync.
+pub(crate) const STRIP_DEFER_SLOW_STATIC_FULL_DECODE: &str =
+    "strip_deferred_slow_static_full_decode";
 
 pub(crate) struct DirectoryTreeThumbDecode {
     pub(crate) preview: DecodedImage,
@@ -190,7 +219,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
 
     #[cfg(feature = "heif-native")]
     if super::modern::is_heif_path(path) {
-        let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
+        let allow_primary_sdr = !options.skip_slow_primary.skips_primary();
         let heif_outcome = match mmap.as_deref() {
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
@@ -354,13 +383,13 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             }
         }
     }
-    if options.skip_slow_embedded_sdr_primary {
+    if let Some(defer_reason) = options.skip_slow_primary.deferred_error() {
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][Strip] defer cold path={} reason=await_main_loader_full_decode",
             path.display()
         );
-        return Err(STRIP_DEFER_SLOW_EMBEDDED_SDR.to_string());
+        return Err(defer_reason.to_string());
     }
     if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_deref(), max_side) {
         match result {
@@ -936,6 +965,10 @@ mod tests {
             super::STRIP_DEFER_SLOW_EMBEDDED_SDR,
             "strip_deferred_slow_embedded_sdr_primary"
         );
+        assert_eq!(
+            super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
+            "strip_deferred_slow_static_full_decode"
+        );
     }
 
     #[test]
@@ -957,12 +990,12 @@ mod tests {
             &path,
             256,
             super::DirectoryTreeThumbDecodeOptions {
-                skip_slow_embedded_sdr_primary: true,
+                skip_slow_primary: super::DirectoryTreeThumbSlowPrimarySkipReason::StaticFullDecode,
                 defer_iso_gain_map_baseline: false,
             },
         );
         match defer_err {
-            Err(err) => assert_eq!(err, super::STRIP_DEFER_SLOW_EMBEDDED_SDR),
+            Err(err) => assert_eq!(err, super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE),
             Ok(_) => panic!("PNG strip should defer when main loader owns full decode"),
         }
 
