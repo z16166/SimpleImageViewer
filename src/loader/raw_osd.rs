@@ -230,12 +230,20 @@ impl RawOsdInfo {
     /// those slots are `(0, 0)` / `None`. GPU demosaic completion uses
     /// `promote_gpu_demosaic_complete` instead of this factory.
     pub(crate) fn refine_complete(width: u32, height: u32, cpu_demosaic_ms: u32) -> Self {
+        Self::refine_complete_with_timing(width, height, Some(cpu_demosaic_ms))
+    }
+
+    pub(crate) fn refine_complete_without_timing(width: u32, height: u32) -> Self {
+        Self::refine_complete_with_timing(width, height, None)
+    }
+
+    fn refine_complete_with_timing(width: u32, height: u32, cpu_demosaic_ms: Option<u32>) -> Self {
         Self {
             sensor_size: (0, 0),
             embedded_preview: None,
             render_pixels: RawRenderPixels::FullDevelop { width, height },
             demosaic_backend: Some(RawDemosaicBackend::Host),
-            cpu_demosaic_ms: Some(cpu_demosaic_ms),
+            cpu_demosaic_ms,
             gpu_extract_ms: None,
             gpu_demosaic_ms: None,
         }
@@ -508,6 +516,34 @@ mod tests {
             gpu_demosaic_ms: None,
         };
         info.merge_loader_fields(&capped);
+        assert_eq!(
+            info.render_pixels,
+            RawRenderPixels::FullDevelop {
+                width: 11662,
+                height: 8746
+            }
+        );
+    }
+
+    #[test]
+    fn refine_notification_without_timing_preserves_measured_cpu_ms() {
+        let mut info = RawOsdInfo {
+            sensor_size: (11662, 8746),
+            embedded_preview: Some((4416, 3312)),
+            render_pixels: RawRenderPixels::HqBootstrap {
+                width: 4416,
+                height: 3312,
+            },
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
+        };
+
+        info.merge_loader_fields(&RawOsdInfo::refine_complete(11662, 8746, 4321));
+        info.merge_loader_fields(&RawOsdInfo::refine_complete_without_timing(11662, 8746));
+
+        assert_eq!(info.cpu_demosaic_ms, Some(4321));
         assert_eq!(
             info.render_pixels,
             RawRenderPixels::FullDevelop {

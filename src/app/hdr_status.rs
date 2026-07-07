@@ -143,7 +143,7 @@ impl ImageViewerApp {
         if width == 0 || height == 0 {
             return;
         }
-        let osd = crate::loader::RawOsdInfo::refine_complete(width, height, 0);
+        let osd = crate::loader::RawOsdInfo::refine_complete_without_timing(width, height);
         self.set_raw_metadata_for_index(index, Some(osd), ctx);
     }
 
