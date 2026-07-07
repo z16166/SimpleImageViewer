@@ -235,6 +235,11 @@ impl Default for TransitionParams {
     }
 }
 
+fn push_terminal_prev_offset(is_next: bool) -> Vec2 {
+    let dir = if is_next { 1.0 } else { -1.0 };
+    Vec2::new(-dir, 0.0)
+}
+
 pub(crate) struct ComplexTransitionDraw<'a> {
     pub(crate) screen_rect: Rect,
     pub(crate) texture: &'a egui::TextureHandle,
@@ -341,9 +346,14 @@ impl ImageViewerApp {
                         p.prev_alpha = 0.0;
                         p.prev_scale = 1.0;
                     }
-                    TransitionStyle::Slide | TransitionStyle::Push => {
+                    TransitionStyle::Slide => {
                         p.offset = Vec2::ZERO;
                         p.prev_offset = Vec2::ZERO;
+                        p.prev_alpha = 1.0;
+                    }
+                    TransitionStyle::Push => {
+                        p.offset = Vec2::ZERO;
+                        p.prev_offset = push_terminal_prev_offset(self.is_next);
                         p.prev_alpha = 1.0;
                     }
                     TransitionStyle::PageFlip
@@ -417,6 +427,12 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_terminal_prev_offset_keeps_outgoing_frame_off_canvas() {
+        assert_eq!(push_terminal_prev_offset(true), Vec2::new(-1.0, 0.0));
+        assert_eq!(push_terminal_prev_offset(false), Vec2::new(1.0, 0.0));
+    }
 
     #[test]
     fn ripple_old_image_mesh_outer_boundary_includes_corners() {
