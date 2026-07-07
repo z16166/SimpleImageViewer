@@ -128,7 +128,7 @@ fn open_with_embedded_preview_defers_sensor_unpack() {
 }
 
 #[test]
-fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
+fn epson_rd1_erf_hq_load_uses_static_hdr_when_file_present() {
     use crossbeam_channel::unbounded;
 
     let path = PathBuf::from(r"F:\win7\raws\epson\rd1\RAW_EPSON_RD1.ERF");
@@ -153,23 +153,63 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
     .expect("load_raw hq");
 
     match result.image {
-        ImageData::HdrTiled { fallback, .. } => {
-            assert_eq!(fallback.width(), 3040);
-            assert_eq!(fallback.height(), 2024);
+        ImageData::Hdr { hdr, fallback } => {
+            assert_eq!((hdr.width, hdr.height), (3040, 2024));
+            assert_eq!((fallback.width, fallback.height), (3040, 2024));
             eprintln!(
-                "HQ load: tiled bootstrap {}x{}",
-                fallback.width(),
-                fallback.height()
+                "HQ load: static HDR {}x{} fallback {}x{}",
+                hdr.width, hdr.height, fallback.width, fallback.height
             );
         }
         other => panic!(
-            "expected HdrTiled HQ bootstrap, got {:?}",
+            "expected static HDR HQ load for sub-threshold RAW, got {:?}",
             std::mem::discriminant(&other)
         ),
     }
     assert!(
         refine_rx.try_recv().is_err(),
-        "refinement is deferred until the image becomes active"
+        "static HDR HQ load must not queue a deferred refinement"
+    );
+}
+
+#[test]
+fn large_hq_raw_load_uses_hdr_tiled_bootstrap_when_file_present() {
+    use crossbeam_channel::unbounded;
+
+    let path = PathBuf::from(r"F:\win7\64MP_Raw\DSCF0096.RAF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+
+    let (refine_tx, refine_rx) = unbounded();
+    let result = load_raw(RawLoadRequest {
+        index: 0,
+        path: &path,
+        refine_tx,
+        load_tx: dummy_load_tx(),
+        decode_profile: crate::loader::decode_profile_stub(),
+        high_quality: true,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
+        hdr_target_capacity: 1.0,
+        hdr_tone_map: HdrToneMapSettings::default(),
+        raw_open_prefetch: None,
+    })
+    .expect("load large RAW hq");
+
+    match result.image {
+        ImageData::HdrTiled { hdr, fallback } => {
+            assert_eq!((hdr.width(), hdr.height()), (11662, 8746));
+            assert_eq!((fallback.width(), fallback.height()), (11662, 8746));
+        }
+        other => panic!(
+            "expected HdrTiled HQ bootstrap for large RAW, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+    assert!(
+        refine_rx.try_recv().is_err(),
+        "large RAW HQ refinement is deferred until the image becomes active"
     );
 }
 
@@ -415,7 +455,7 @@ fn fuji_x20_rejects_gpu_bayer_path_when_sample_present() {
 }
 
 #[test]
-fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
+fn canon_s90_hq_load_routes_static_hdr_when_below_tiled_threshold() {
     use crossbeam_channel::unbounded;
 
     let path = PathBuf::from(r"F:\win7\raws\canon\RAW_CANON_S90.CR2");
@@ -440,19 +480,16 @@ fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
     .expect("load_raw hq hdr");
 
     match result.image {
-        ImageData::HdrTiled { hdr, fallback } => {
-            assert_eq!(fallback.width(), 3684);
-            assert_eq!(fallback.height(), 2760);
-            assert_eq!(hdr.width(), 3684);
-            assert_eq!(hdr.height(), 2760);
+        ImageData::Hdr { hdr, fallback } => {
+            assert_eq!((hdr.width, hdr.height), (3684, 2760));
+            assert_eq!((fallback.width, fallback.height), (3684, 2760));
             eprintln!(
-                "Canon S90 HQ HDR bootstrap: logical {}x{}",
-                fallback.width(),
-                fallback.height()
+                "Canon S90 HQ static HDR: {}x{} fallback {}x{}",
+                hdr.width, hdr.height, fallback.width, fallback.height
             );
         }
         other => panic!(
-            "expected HdrTiled on HDR display for Canon S90 HQ, got {:?}",
+            "expected static HDR for sub-threshold Canon S90 HQ, got {:?}",
             std::mem::discriminant(&other)
         ),
     }

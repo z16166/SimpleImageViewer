@@ -74,6 +74,33 @@ fn preload_debug_hq_refinement_skip(
 ) {
 }
 
+fn send_raw_hq_refined_notifications(
+    worker_tx: &LoaderOutputSender,
+    req: &RefinementRequest,
+    preview_bundle: PreviewBundle,
+    preview_w: u32,
+    preview_h: u32,
+    cpu_demosaic_ms: u32,
+    sdr_texture_tag: Option<crate::loader::TexturePreviewBufferTag>,
+) {
+    let refine_osd =
+        crate::loader::RawOsdInfo::refine_complete(preview_w, preview_h, cpu_demosaic_ms);
+    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+        index: req.index,
+        decode_profile: req.decode_profile.clone(),
+        source_key: req.source_key,
+        preview_bundle,
+        error: None,
+        cpu_demosaic_ms: Some(cpu_demosaic_ms),
+        raw_bootstrap_osd: Some(refine_osd),
+        sdr_texture_tag,
+    }));
+    let _ = worker_tx.send(LoaderOutput::Refined {
+        index: req.index,
+        source_key: req.source_key,
+    });
+}
+
 /// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
 struct CurrentImageOsThreadGuard(Arc<AtomicUsize>);
 
@@ -551,6 +578,16 @@ impl ImageLoader {
                                 );
                                 continue;
                             }
+                            if let Some(slot) = req.hdr_developed_image.as_ref()
+                                && slot.read().is_some()
+                            {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][RAW] refine_skip idx={} reason=hdr_tiled_already_developed path={}",
+                                    req.index,
+                                    req.path.display()
+                                );
+                                continue;
+                            }
 
                             crate::preload_debug!(
                                 "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
@@ -632,6 +669,36 @@ impl ImageLoader {
 
                                     if let Some(slot) = req.hdr_developed_image.as_ref() {
                                         *slot.write() = Some(hdr.clone());
+                                        // HdrTiled RAW uses the HDR tile source for both native HDR and
+                                        // SDR tone-mapped output. Do not build a full-frame CPU SDR
+                                        // fallback here: render shape is size-driven, and large RAWs must
+                                        // stay tiled while exposure remains live in the HDR shader path.
+                                        let bundle =
+                                            PreviewBundle::refined().with_hdr(Arc::new(hdr));
+                                        send_raw_hq_refined_notifications(
+                                            &worker_tx,
+                                            &req,
+                                            bundle,
+                                            preview_w,
+                                            preview_h,
+                                            cpu_demosaic_ms,
+                                            None,
+                                        );
+                                        crate::preload_debug!(
+                                            "[PreloadDebug][RAW] refine_done idx={} mode=HdrTiled preview={}x{} elapsed={:.1}s path={}",
+                                            req.index,
+                                            preview_w,
+                                            preview_h,
+                                            elapsed.as_secs_f64(),
+                                            req.path.display()
+                                        );
+                                        log::debug!(
+                                            "[Refinement] HQ HDR tiled completed {}x{} in {:.1}s",
+                                            preview_w,
+                                            preview_h,
+                                            elapsed.as_secs_f64()
+                                        );
+                                        continue;
                                     }
 
                                     let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
@@ -676,30 +743,19 @@ impl ImageLoader {
                                         RawDevelopedImageRank::FullResolutionDeveloped;
 
                                     let bundle = PreviewBundle::refined()
-                                        .with_hdr(std::sync::Arc::new(hdr))
+                                        .with_hdr(Arc::new(hdr))
                                         .with_sdr(preview);
-                                    let refine_osd = crate::loader::RawOsdInfo::refine_complete(
+                                    send_raw_hq_refined_notifications(
+                                        &worker_tx,
+                                        &req,
+                                        bundle,
                                         preview_w,
                                         preview_h,
                                         cpu_demosaic_ms,
-                                    );
-                                    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                        index: req.index,
-                                        decode_profile: req.decode_profile.clone(),
-                                        source_key: req.source_key,
-                                        preview_bundle: bundle,
-                                        error: None,
-                                        cpu_demosaic_ms: Some(cpu_demosaic_ms),
-                                        raw_bootstrap_osd: Some(refine_osd),
-                                        sdr_texture_tag: Some(
+                                        Some(
                                             crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
                                         ),
-                                    }));
-                                    let _ =
-                                        worker_tx.send(LoaderOutput::Refined {
-                                            index: req.index,
-                                            source_key: req.source_key,
-                                        });
+                                    );
                                     crate::preload_debug!(
                                         "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
                                         req.index,

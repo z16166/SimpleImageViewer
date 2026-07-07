@@ -188,6 +188,29 @@ impl ImageViewerApp {
         strip_preview_quality_rank(item.buffer_tag, item.stage)
     }
 
+    fn pending_strip_upload_ready_for_gpu(
+        item: &DirectoryTreeStripPendingGpuUpload,
+        strip_max_side: u32,
+    ) -> bool {
+        strip_decoded_ready_for_gpu_upload(&item.decoded, strip_max_side, item.strip_max_side_used)
+    }
+
+    fn has_ready_pending_strip_upload_at_least_rank(
+        &self,
+        index: usize,
+        incoming_rank: u16,
+        strip_max_side: u32,
+    ) -> bool {
+        self.directory_tree_strip_pending_gpu_initial
+            .iter()
+            .chain(self.directory_tree_strip_pending_gpu_refined.iter())
+            .any(|item| {
+                item.key.index == index
+                    && Self::pending_strip_upload_quality_rank(item) >= incoming_rank
+                    && Self::pending_strip_upload_ready_for_gpu(item, strip_max_side)
+            })
+    }
+
     fn coalesce_pending_gpu_upload_for_index(
         &mut self,
         index: usize,
@@ -263,6 +286,49 @@ impl ImageViewerApp {
         };
         if !self.directory_tree_strip_key_matches_current_list(&key) {
             self.clear_strip_preview_attempt_state_for_key(&key);
+            return;
+        }
+        let strip_max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        if !strip_decoded_ready_for_gpu_upload(&decoded, strip_max_side, strip_max_side_used) {
+            let incoming_rank = strip_preview_quality_rank(buffer_tag, stage);
+            if self.has_ready_pending_strip_upload_at_least_rank(
+                index,
+                incoming_rank,
+                strip_max_side,
+            ) {
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug_throttled!(
+                    &format!(
+                        "strip_gpu:skip_full_size_pending_ready:{index}:{buffer_tag:?}:{stage:?}"
+                    ),
+                    crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                    "[PreloadDebug][StripGpu] skip queue idx={} tag={buffer_tag:?} stage={:?} reason=ready_pending_upload",
+                    index,
+                    stage
+                );
+                return;
+            }
+            let _scheduled = self.schedule_strip_pending_gpu_resample(
+                index,
+                decoded,
+                stage,
+                logical,
+                buffer_tag,
+                Some(key),
+            );
+            #[cfg(feature = "preload-debug")]
+            if !_scheduled {
+                crate::preload_debug_throttled!(
+                    &format!("strip_gpu:resample_not_scheduled:{index}:{buffer_tag:?}:{stage:?}"),
+                    crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                    "[PreloadDebug][StripGpu] skip queue idx={} tag={buffer_tag:?} stage={:?} reason=resample_not_scheduled",
+                    index,
+                    stage
+                );
+            }
             return;
         }
         let coalesce = self.coalesce_pending_gpu_upload_for_index(index, stage, buffer_tag);
@@ -807,7 +873,12 @@ mod tests {
     }
 
     fn decoded_with_marker(marker: u8) -> DecodedImage {
-        DecodedImage::new(1, 1, vec![marker; 4])
+        decoded_with_size_marker(1, 1, marker)
+    }
+
+    fn decoded_with_size_marker(width: u32, height: u32, marker: u8) -> DecodedImage {
+        let len = width as usize * height as usize * 4;
+        DecodedImage::new(width, height, vec![marker; len])
     }
 
     fn pending_upload(
@@ -963,6 +1034,67 @@ mod tests {
         assert_eq!(upload.key.index, 0);
         assert_eq!(upload.buffer_tag, StripPreviewBufferTag::IsoGainMapBaseline);
         assert_eq!(upload.decoded.rgba()[0], 3);
+    }
+
+    #[test]
+    fn strip_gpu_queue_routes_full_size_upload_to_resample() {
+        let mut app = make_strip_test_app();
+        app.image_files = vec![PathBuf::from("image-0.png")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_size_marker(256, 128, 5),
+            stage: PreviewStage::Initial,
+            logical: Some((256, 128)),
+            buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+            strip_max_side_used: None,
+            job_key: None,
+        });
+
+        assert!(app.directory_tree_strip_pending_gpu_initial.is_empty());
+        assert!(app.directory_tree_strip_pending_gpu_refined.is_empty());
+        assert!(app.directory_tree_strip_generate_inflight.contains(&0));
+    }
+
+    #[test]
+    fn strip_gpu_queue_keeps_ready_pending_upload_over_full_size_repeat() {
+        let mut app = make_strip_test_app();
+        app.image_files = vec![PathBuf::from("image-0.png")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+        let strip_max_side = app
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_marker(6),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+            strip_max_side_used: Some(strip_max_side),
+            job_key: None,
+        });
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_size_marker(256, 128, 7),
+            stage: PreviewStage::Initial,
+            logical: Some((256, 128)),
+            buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+            strip_max_side_used: None,
+            job_key: None,
+        });
+
+        assert_eq!(app.directory_tree_strip_pending_gpu_initial.len(), 1);
+        assert!(app.directory_tree_strip_pending_gpu_refined.is_empty());
+        assert!(!app.directory_tree_strip_generate_inflight.contains(&0));
+        let upload = app
+            .directory_tree_strip_pending_gpu_initial
+            .front()
+            .expect("ready upload should remain");
+        assert_eq!(upload.decoded.rgba()[0], 6);
+        assert_eq!(upload.logical, Some((1, 1)));
     }
 
     #[test]

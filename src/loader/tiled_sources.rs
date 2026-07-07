@@ -302,6 +302,7 @@ impl TiledImageSource for MemoryImageSource {
 
 pub(crate) struct RawHdrRefiningSource {
     buffer: Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>,
+    tile_cache: Mutex<crate::hdr::tiled::HdrTileCache>,
     logical_width: u32,
     logical_height: u32,
 }
@@ -312,11 +313,36 @@ impl RawHdrRefiningSource {
         logical_width: u32,
         logical_height: u32,
     ) -> Self {
-        Self {
+        Self::new_with_cache_budget(
             buffer,
             logical_width,
             logical_height,
+            crate::hdr::tiled::configured_hdr_tile_cache_max_bytes(),
+        )
+    }
+
+    pub(crate) fn new_with_cache_budget(
+        buffer: Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>,
+        logical_width: u32,
+        logical_height: u32,
+        max_cache_bytes: usize,
+    ) -> Self {
+        Self {
+            buffer,
+            tile_cache: Mutex::new(crate::hdr::tiled::HdrTileCache::new(max_cache_bytes)),
+            logical_width,
+            logical_height,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_tile_count(&self) -> usize {
+        self.tile_cache.lock().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_tile_bytes(&self) -> usize {
+        self.tile_cache.lock().current_bytes()
     }
 }
 
@@ -361,6 +387,22 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
         crate::hdr::tiled::sdr_preview_from_hdr_image_nearest(image, max_w, max_h)
     }
 
+    fn cached_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Arc<crate::hdr::tiled::HdrTileBuffer>> {
+        self.tile_cache.lock().get((x, y, width, height))
+    }
+
+    fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
+        self.tile_cache
+            .lock()
+            .set_protected_keys(tiles.iter().copied());
+    }
+
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
@@ -368,6 +410,14 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
         width: u32,
         height: u32,
     ) -> Result<Arc<crate::hdr::tiled::HdrTileBuffer>, String> {
+        let key = (x, y, width, height);
+        {
+            let mut cache = self.tile_cache.lock();
+            if let Some(tile) = cache.get(key) {
+                return Ok(tile);
+            }
+        }
+
         let guard = self.buffer.read();
         let image = guard
             .as_ref()
@@ -411,15 +461,18 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
             return Err("RAW HDR tile length mismatch".to_string());
         }
 
-        Ok(Arc::new(
-            crate::hdr::tiled::HdrTileBuffer::new_with_metadata(
-                width,
-                height,
-                image.color_space,
-                image.metadata.clone(),
-                Arc::new(tile),
-            ),
-        ))
+        let tile = Arc::new(crate::hdr::tiled::HdrTileBuffer::new_with_metadata(
+            width,
+            height,
+            image.color_space,
+            image.metadata.clone(),
+            Arc::new(tile),
+        ));
+        drop(guard);
+
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
+
+        Ok(tile)
     }
 
     fn defers_loader_hq_preview(&self) -> bool {
@@ -1007,6 +1060,53 @@ mod memory_preview_tests {
         let source = raw_hdr_source_with_pixels(2, 2, Arc::new(vec![0.0; 3]));
 
         assert!(source.extract_tile_rgba32f_arc(0, 0, 1, 1).is_err());
+    }
+
+    #[test]
+    fn raw_hdr_refining_source_caches_extracted_tiles() {
+        let source = raw_hdr_source_with_pixels(2, 1, Arc::new(vec![0.0; 8]));
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("first tile");
+        let second = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("cached tile");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(
+            source.cached_tile_rgba32f_arc(0, 0, 1, 1).is_some(),
+            "tile worker readiness requires RAW HDR sources to expose cached tiles"
+        );
+        assert_eq!(source.cached_tile_count(), 1);
+        assert_eq!(source.cached_tile_bytes(), 16);
+    }
+
+    #[test]
+    fn raw_hdr_refining_source_evicts_tiles_by_budget() {
+        let source = RawHdrRefiningSource::new_with_cache_budget(
+            Arc::new(PLRwLock::new(Some(crate::hdr::types::HdrImageBuffer {
+                width: 3,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::default(),
+                rgba_f32: Arc::new(vec![0.0; 12]),
+            }))),
+            3,
+            1,
+            32,
+        );
+
+        source.extract_tile_rgba32f_arc(0, 0, 1, 1).expect("tile 0");
+        source.extract_tile_rgba32f_arc(1, 0, 1, 1).expect("tile 1");
+        source.extract_tile_rgba32f_arc(2, 0, 1, 1).expect("tile 2");
+
+        assert!(source.cached_tile_rgba32f_arc(0, 0, 1, 1).is_none());
+        assert!(source.cached_tile_rgba32f_arc(1, 0, 1, 1).is_some());
+        assert!(source.cached_tile_rgba32f_arc(2, 0, 1, 1).is_some());
+        assert_eq!(source.cached_tile_count(), 2);
+        assert!(source.cached_tile_bytes() <= 32);
     }
 
     #[test]
