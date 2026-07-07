@@ -3937,3 +3937,23 @@ fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
 
     assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
 }
+
+#[test]
+fn strip_hdr_fallback_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("current.png"),
+        PathBuf::from("neighbor.hdr"),
+        PathBuf::from("neighbor.exr"),
+    ];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 2;
+    app.directory_tree_strip_generate_inflight.insert(1);
+    app.directory_tree_strip_generate_inflight.insert(2);
+
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
+}

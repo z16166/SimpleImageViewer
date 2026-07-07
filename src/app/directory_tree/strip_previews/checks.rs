@@ -364,7 +364,8 @@ impl ImageViewerApp {
     }
 
     /// Static/full-raster formats whose strip cold decode can publish reusable SDR pixels.
-    /// AVIF/HEIF/JXL are handled by embedded-SDR / ISO gain-map sharing instead.
+    /// AVIF/HEIF/JXL are handled by embedded-SDR / ISO gain-map sharing instead. HDR/EXR are
+    /// excluded because their strip reusable buffer is only a tone-mapped SDR fallback.
     pub(crate) fn strip_path_provides_reusable_static_full_decode(
         &self,
         path: &std::path::Path,
@@ -373,7 +374,7 @@ impl ImageViewerApp {
             path,
             &[
                 "png", "webp", "bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi", "tif",
-                "tiff", "psd", "psb", "hdr", "exr",
+                "tiff", "psd", "psb",
             ],
         )
     }

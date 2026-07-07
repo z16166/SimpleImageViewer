@@ -474,9 +474,10 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
 fn reusable_full_decoded_from_image_data(image_data: &ImageData) -> Option<DecodedImage> {
     match image_data {
         ImageData::Static(image) => Some(image.clone()),
-        ImageData::Hdr { fallback, .. } if !fallback.is_sdr_deferred_placeholder() => {
-            Some(fallback.clone())
-        }
+        // HDR fallback is only a tone-mapped SDR preview, not the full HDR asset that the main
+        // loader owns. Do not publish it as reusable full decode or `has_loaded_asset` may treat
+        // the index as loaded before the HDR plane exists.
+        ImageData::Hdr { .. } => None,
         ImageData::Animated(frames) => frames
             .first()
             .map(|frame| DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())),
@@ -969,6 +970,23 @@ mod tests {
             super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
             "strip_deferred_slow_static_full_decode"
         );
+    }
+
+    #[test]
+    fn hdr_sdr_fallback_is_not_reusable_full_decode() {
+        let image_data = crate::loader::ImageData::Hdr {
+            hdr: Box::new(crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::default(),
+                rgba_f32: std::sync::Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+            }),
+            fallback: crate::loader::DecodedImage::new(1, 1, vec![255, 255, 255, 255]),
+        };
+
+        assert!(super::reusable_full_decoded_from_image_data(&image_data).is_none());
     }
 
     #[test]
