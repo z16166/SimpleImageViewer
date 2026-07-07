@@ -77,7 +77,7 @@ fn request_tile_decodes_hdr_source_into_hdr_cache_and_reports_hdr_ready() {
     loader.request_tile(
         3,
         crate::loader::decode_profile_stub(),
-        1.0,
+        1,
         TileDecodeSource::Hdr(Arc::clone(&source)),
         0,
         0,
@@ -140,7 +140,7 @@ fn request_tile_reports_ready_when_hdr_tile_is_already_cached() {
     loader.request_tile(
         3,
         crate::loader::decode_profile_stub(),
-        1.0,
+        1,
         TileDecodeSource::Hdr(source),
         0,
         0,
@@ -211,7 +211,7 @@ fn request_tile_reports_ready_when_hdr_decode_fails() {
     loader.request_tile(
         5,
         crate::loader::decode_profile_stub(),
-        1.0,
+        1,
         TileDecodeSource::Hdr(source),
         0,
         0,

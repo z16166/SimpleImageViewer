@@ -7,12 +7,12 @@ impl ImageLoader {
         &self,
         index: usize,
         decode_profile: DecodeProfile,
-        priority: f32,
+        priority: usize,
         source: TileDecodeSource,
         col: u32,
         row: u32,
     ) -> bool {
-        if !priority.is_finite() || col >= source.tile_cols() || row >= source.tile_rows() {
+        if col >= source.tile_cols() || row >= source.tile_rows() {
             return false;
         }
 

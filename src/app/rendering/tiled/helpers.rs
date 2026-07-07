@@ -344,8 +344,8 @@ pub(crate) fn tile_visits_for_backend(
     out
 }
 
-pub(crate) fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> f32 {
-    tile_visit_count.saturating_sub(visit_idx) as f32
+pub(crate) fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> usize {
+    tile_visit_count.saturating_sub(visit_idx)
 }
 
 pub(crate) fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {

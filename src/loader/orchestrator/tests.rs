@@ -129,7 +129,7 @@ fn cancel_all_clears_capacity_requeue_counts() {
 }
 
 #[test]
-fn request_tile_rejects_non_finite_priority_and_invalid_coords() {
+fn request_tile_rejects_invalid_coords() {
     let loader = ImageLoader::new();
     let pixels = std::sync::Arc::new(vec![
         0;
@@ -144,14 +144,7 @@ fn request_tile_rejects_non_finite_priority_and_invalid_coords() {
             pixels,
         ));
 
-    for (priority, col, row) in [
-        (f32::NAN, 0, 0),
-        (f32::INFINITY, 0, 0),
-        (1.0, 1, 0),
-        (1.0, 0, 1),
-        (1.0, u32::MAX, 0),
-        (1.0, 0, u32::MAX),
-    ] {
+    for (priority, col, row) in [(1, 1, 0), (1, 0, 1), (1, u32::MAX, 0), (1, 0, u32::MAX)] {
         assert!(!loader.request_tile(
             1,
             decode_profile_stub(),
@@ -178,7 +171,7 @@ fn tile_worker_drops_stale_invalid_tile_request_without_reporting_ready() {
         let (lock, cvar) = &*loader.tile_queue;
         lock.lock().push(super::types::TileRequest {
             profile_epoch: profile.profile_epoch,
-            priority: 2.0,
+            priority: 2,
             index: 9,
             col: u32::MAX,
             row: u32::MAX,
@@ -190,7 +183,7 @@ fn tile_worker_drops_stale_invalid_tile_request_without_reporting_ready() {
     assert!(loader.request_tile(
         9,
         profile,
-        1.0,
+        1,
         crate::loader::TileDecodeSource::Sdr(source),
         0,
         0,

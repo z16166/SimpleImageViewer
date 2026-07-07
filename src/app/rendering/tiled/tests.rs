@@ -453,10 +453,10 @@ fn tile_request_budget_marks_pending_once_and_records_schedule() {
 
 #[test]
 fn tile_request_priority_is_derived_from_shared_visit_order() {
-    assert_eq!(tile_request_priority(4, 0), 4.0);
-    assert_eq!(tile_request_priority(4, 3), 1.0);
-    assert_eq!(tile_request_priority(0, 0), 0.0);
-    assert_eq!(tile_request_priority(2, 7), 0.0);
+    assert_eq!(tile_request_priority(4, 0), 4);
+    assert_eq!(tile_request_priority(4, 3), 1);
+    assert_eq!(tile_request_priority(0, 0), 0);
+    assert_eq!(tile_request_priority(2, 7), 0);
 }
 
 #[test]

@@ -198,7 +198,7 @@ impl TileInFlightKey {
 
 pub(crate) struct TileRequest {
     pub(crate) profile_epoch: u64,
-    pub(crate) priority: f32, // Higher is better
+    pub(crate) priority: usize, // Higher is better
     pub(crate) index: usize,
     pub(crate) col: u32,
     pub(crate) row: u32,
@@ -218,11 +218,9 @@ impl PartialOrd for TileRequest {
 }
 impl Ord for TileRequest {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.profile_epoch.cmp(&other.profile_epoch).then_with(|| {
-            self.priority
-                .partial_cmp(&other.priority)
-                .unwrap_or(Ordering::Equal)
-        })
+        self.profile_epoch
+            .cmp(&other.profile_epoch)
+            .then_with(|| self.priority.cmp(&other.priority))
     }
 }
 
