@@ -30,6 +30,25 @@ pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 pub const RGB_CHANNELS: usize = 3;
 /// Standard number of color channels for RGBA images.
 pub const RGBA_CHANNELS: usize = 4;
+
+/// Computes `width * channels` without overflow.
+#[inline]
+pub fn checked_pixel_row_len(width: usize, channels: usize) -> Option<usize> {
+    width.checked_mul(channels)
+}
+
+/// Computes the element count for an RGBA row without overflow.
+#[inline]
+pub fn checked_rgba_row_len(width: usize) -> Option<usize> {
+    checked_pixel_row_len(width, RGBA_CHANNELS)
+}
+
+/// Computes the element count for an RGBA image without overflow.
+#[inline]
+pub fn checked_rgba_buffer_len(width: usize, height: usize) -> Option<usize> {
+    checked_rgba_row_len(width).and_then(|row_len| row_len.checked_mul(height))
+}
+
 /// Standard bit depth for 8-bit image formats.
 pub const BIT_DEPTH_8: usize = 8;
 /// Maximum value for a single 8-bit color channel.

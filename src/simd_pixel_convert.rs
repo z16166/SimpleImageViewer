@@ -25,6 +25,8 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
+use crate::constants::{checked_pixel_row_len, checked_rgba_buffer_len, checked_rgba_row_len};
+
 const LANES_PER_AVX2_STEP: usize = 16;
 const LANES_PER_SSE41_STEP: usize = 8;
 const F32S_PER_SSE41_STEP: usize = 4;
@@ -34,6 +36,17 @@ const LANES_PER_NEON_STEP: usize = 8;
 
 #[cfg(target_arch = "aarch64")]
 const F32S_PER_NEON_STEP: usize = 4;
+
+#[inline]
+fn checked_scanline_bytes(width: usize, bytes_per_pixel: usize) -> Option<usize> {
+    width.checked_mul(bytes_per_pixel)
+}
+
+#[inline]
+fn checked_u16_sample_scanline_bytes(width: usize, samples_per_pixel: usize) -> Option<usize> {
+    checked_pixel_row_len(width, samples_per_pixel)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
+}
 
 /// Zero-extend packed u8 samples into u16 lanes (one lane per channel sample).
 pub fn unpack_u8_to_u16_lanes(dst: &mut [u16], src: &[u8]) {
@@ -143,7 +156,13 @@ pub fn normalize_uint16_rgb_scanline_to_rgba32f(
     smin: f32,
     inv_range: f32,
 ) {
-    if !matches!(spp, 3 | 4) || dst.len() != width * 4 || src.len() < width * spp * 2 {
+    let Some(dst_len) = checked_rgba_row_len(width) else {
+        return;
+    };
+    let Some(src_len) = checked_u16_sample_scanline_bytes(width, spp) else {
+        return;
+    };
+    if !matches!(spp, 3 | 4) || dst.len() != dst_len || src.len() < src_len {
         return;
     }
 
@@ -675,12 +694,22 @@ fn linear_to_srgb8_index(linear: f32) -> u8 {
 
 /// `(pivot - v).max(0)` on gray stored in every RGBA pixel (stride-4 layout).
 pub fn invert_miniswhite_rgba32f(buf: &mut [f32], width: usize, height: usize, pivot: f32) {
-    if width == 0 || height == 0 || buf.len() < width * height * 4 {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let Some(row_len) = checked_rgba_row_len(width) else {
+        return;
+    };
+    let Some(total_len) = checked_rgba_buffer_len(width, height) else {
+        return;
+    };
+    if buf.len() < total_len {
         return;
     }
     let pivot_v = pivot;
     for y in 0..height {
-        let row = &mut buf[y * width * 4..(y + 1) * width * 4];
+        let row_start = y * row_len;
+        let row = &mut buf[row_start..row_start + row_len];
         invert_miniswhite_rgba32f_row(row, width, pivot_v);
     }
 }
@@ -799,7 +828,10 @@ pub fn ieee_f32_gray_scanline_to_rgba32f(
     width: usize,
     invert_pivot: Option<f32>,
 ) {
-    if dst.len() < width * 4 || src.len() < width * 4 {
+    let Some(row_len) = checked_rgba_row_len(width) else {
+        return;
+    };
+    if dst.len() < row_len || src.len() < row_len {
         return;
     }
     let mut x = 0;
@@ -896,11 +928,19 @@ unsafe fn ieee_f32_gray_scanline_to_rgba32f_neon(
 
 /// Contiguous IEEE-f32 RGB (3 or 4 samples per pixel) -> RGBA f32 row.
 pub fn ieee_f32_rgb_scanline_to_rgba32f(src: &[u8], dst: &mut [f32], width: usize, spp: usize) {
-    if dst.len() < width * 4 {
+    let Some(dst_len) = checked_rgba_row_len(width) else {
+        return;
+    };
+    if !matches!(spp, 3 | 4) || dst.len() < dst_len {
         return;
     }
-    let bytes_per_pixel = spp * 4;
-    if src.len() < width * bytes_per_pixel {
+    let Some(bytes_per_pixel) = std::mem::size_of::<f32>().checked_mul(spp) else {
+        return;
+    };
+    let Some(src_len) = checked_scanline_bytes(width, bytes_per_pixel) else {
+        return;
+    };
+    if src.len() < src_len {
         return;
     }
     let mut x = 0;
@@ -1046,7 +1086,10 @@ pub fn finalize_gray_linear_scratch_row_to_rgba8(
     smax: f64,
     miniswhite: bool,
 ) {
-    if scratch_row.len() < width * 4 || rgba_row.len() < width * 4 {
+    let Some(row_len) = checked_rgba_row_len(width) else {
+        return;
+    };
+    if scratch_row.len() < row_len || rgba_row.len() < row_len {
         return;
     }
     let range = (smax - smin).max(f64::EPSILON);
@@ -1140,6 +1183,44 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::RGBA_CHANNELS;
+
+    #[test]
+    fn public_scanline_entrypoints_reject_overflowing_width() {
+        let overflowing_width = usize::MAX / RGBA_CHANNELS + 1;
+
+        let mut rgba32f = Vec::<f32>::new();
+        normalize_uint16_rgb_scanline_to_rgba32f(
+            &[],
+            &mut rgba32f,
+            overflowing_width,
+            RGBA_CHANNELS,
+            0.0,
+            1.0,
+        );
+        invert_miniswhite_rgba32f(&mut rgba32f, overflowing_width, 1, 1.0);
+        ieee_f32_gray_scanline_to_rgba32f(&[], &mut rgba32f, overflowing_width, None);
+        ieee_f32_rgb_scanline_to_rgba32f(&[], &mut rgba32f, overflowing_width, RGBA_CHANNELS);
+
+        let mut rgba8 = Vec::<u8>::new();
+        finalize_gray_linear_scratch_row_to_rgba8(
+            &rgba32f,
+            &mut rgba8,
+            overflowing_width,
+            0.0,
+            1.0,
+            false,
+        );
+        assert!(rgba32f.is_empty());
+        assert!(rgba8.is_empty());
+    }
+
+    #[test]
+    fn ieee_f32_rgb_scanline_rejects_invalid_samples_per_pixel() {
+        let mut dst = vec![0.0_f32; RGBA_CHANNELS];
+        ieee_f32_rgb_scanline_to_rgba32f(&[], &mut dst, 1, 0);
+        assert_eq!(dst, vec![0.0_f32; RGBA_CHANNELS]);
+    }
 
     fn unpack_u8_scalar(dst: &mut [u16], src: &[u8]) {
         for (lane, &byte) in dst.iter_mut().zip(src.iter()) {

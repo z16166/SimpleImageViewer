@@ -26,6 +26,8 @@ use core::arch::x86_64::*;
 use core::arch::aarch64::*;
 use std::num::NonZeroU64;
 
+use crate::constants::checked_rgba_buffer_len;
+
 #[inline]
 unsafe fn load_rgba_u32_le(src: &[u8], byte_offset: usize) -> u32 {
     // SAFETY: caller guarantees `byte_offset..byte_offset+4` is in bounds.
@@ -86,17 +88,16 @@ pub fn downsample_rgba8_box(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_
     if dst_w > src_w || dst_h > src_h {
         return Vec::new();
     }
-    let Some(expected_len) = src_w
-        .checked_mul(src_h)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .map(|len| len as usize)
-    else {
+    let Some(expected_len) = checked_rgba_buffer_len(src_w as usize, src_h as usize) else {
         return Vec::new();
     };
     if src.len() < expected_len {
         return Vec::new();
     }
-    let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+    let Some(dst_len) = checked_rgba_buffer_len(dst_w as usize, dst_h as usize) else {
+        return Vec::new();
+    };
+    let mut dst = vec![0_u8; dst_len];
 
     // Pre-compute column-to-source-range mapping once — all SIMD kernels need
     // identical x0/x1 arrays, so computing them here avoids duplicating the
@@ -697,18 +698,17 @@ pub fn downsample_rgba8_nearest(
     if dst_w > src_w || dst_h > src_h {
         return Vec::new();
     }
-    let Some(expected_len) = src_w
-        .checked_mul(src_h)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .map(|len| len as usize)
-    else {
+    let Some(expected_len) = checked_rgba_buffer_len(src_w as usize, src_h as usize) else {
         return Vec::new();
     };
     if src.len() < expected_len {
         return Vec::new();
     }
+    let Some(dst_len) = checked_rgba_buffer_len(dst_w as usize, dst_h as usize) else {
+        return Vec::new();
+    };
 
-    let mut dst = vec![0_u8; dst_w as usize * dst_h as usize * 4];
+    let mut dst = vec![0_u8; dst_len];
     let dst_w_u = dst_w as usize;
     let row_stride = src_w as usize * 4;
 
@@ -852,6 +852,12 @@ mod tests {
     fn simd_box_accumulator_overflow_detects_extreme_ratio() {
         assert!(simd_box_accumulator_would_overflow(4096, 4096, 1, 1));
         assert!(!simd_box_accumulator_would_overflow(256, 256, 64, 64));
+    }
+
+    #[test]
+    fn downsample_rgba8_rejects_overflowing_dimensions() {
+        assert!(downsample_rgba8_box(&[], u32::MAX, u32::MAX, u32::MAX, u32::MAX).is_empty());
+        assert!(downsample_rgba8_nearest(&[], u32::MAX, u32::MAX, u32::MAX, u32::MAX).is_empty());
     }
 
     #[test]

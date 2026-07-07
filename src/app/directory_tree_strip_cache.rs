@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
 
+use crate::constants::checked_rgba_buffer_len;
 use crate::loader::{DecodedImage, PreviewStage, preview_aspect_matches_logical};
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
@@ -562,7 +563,8 @@ fn remap_partial_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
 }
 
 pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
-    decoded.rgba().len() == decoded.width as usize * decoded.height as usize * 4
+    checked_rgba_buffer_len(decoded.width as usize, decoded.height as usize)
+        .is_some_and(|expected_len| decoded.rgba().len() == expected_len)
 }
 
 pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: PreviewStage) -> u16 {
@@ -824,6 +826,12 @@ mod tests {
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
     use std::path::Path;
+
+    #[test]
+    fn decoded_rgba_size_valid_rejects_overflowing_dimensions() {
+        let decoded = DecodedImage::new(1_u32 << 31, 1_u32 << 31, Vec::new());
+        assert!(!decoded_rgba_size_valid(&decoded));
+    }
 
     #[test]
     fn strip_decoded_ready_for_gpu_upload_matches_worker_max_side() {
