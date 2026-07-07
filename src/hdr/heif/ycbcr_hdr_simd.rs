@@ -1079,9 +1079,9 @@ mod tests {
         width: usize,
     ) -> Vec<f32> {
         let mut dst = vec![0.0_f32; width * 4];
-        for x in 0..width {
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
             let xc = x / 2;
-            let yy = y_row[x] as f32 * convert.inv_scale_y;
+            let yy = y_value as f32 * convert.inv_scale_y;
             let pb = cb_row[xc] as f32 * convert.inv_scale_cb - CHROMA_CENTER;
             let pr = cr_row[xc] as f32 * convert.inv_scale_cr - CHROMA_CENTER;
             let [r, g, b] = ycbcr_linear_to_rgb(yy, pb, pr, convert.matrix);

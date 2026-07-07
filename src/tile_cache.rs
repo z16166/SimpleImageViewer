@@ -74,6 +74,58 @@ pub struct TileCoord {
     pub row: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TileRect {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+const RGBA8_CHANNELS: usize = 4;
+
+pub(crate) fn tile_count_for_extent(extent: u32) -> u32 {
+    let tile_size = get_tile_size();
+    if tile_size == 0 {
+        return 0;
+    }
+    extent.div_ceil(tile_size)
+}
+
+pub(crate) fn tile_rect_for_dimensions(
+    full_width: u32,
+    full_height: u32,
+    coord: TileCoord,
+) -> Option<TileRect> {
+    let tile_size = get_tile_size();
+    if tile_size == 0 {
+        return None;
+    }
+
+    let x = coord.col.checked_mul(tile_size)?;
+    let y = coord.row.checked_mul(tile_size)?;
+    let remaining_width = full_width.checked_sub(x)?;
+    let remaining_height = full_height.checked_sub(y)?;
+    let width = tile_size.min(remaining_width);
+    let height = tile_size.min(remaining_height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    Some(TileRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+pub(crate) fn rgba8_len_for_dimensions(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(RGBA8_CHANNELS))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PendingTileKey {
     pub coord: TileCoord,
@@ -291,134 +343,6 @@ impl TilePixelCache {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct DummyTileSource {
-        width: u32,
-        height: u32,
-    }
-
-    impl crate::loader::TiledImageSource for DummyTileSource {
-        fn width(&self) -> u32 {
-            self.width
-        }
-
-        fn height(&self) -> u32 {
-            self.height
-        }
-
-        fn extract_tile(&self, _x: u32, _y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-            Arc::new(vec![0; w as usize * h as usize * 4])
-        }
-
-        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
-            (1, 1, vec![0, 0, 0, 255])
-        }
-
-        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-            None
-        }
-    }
-
-    #[test]
-    fn visible_tiles_into_emits_primary_subset_in_same_pass() {
-        let source = Arc::new(DummyTileSource {
-            width: 4096,
-            height: 4096,
-        });
-        let manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
-        let viewport = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
-        let screen_clip =
-            egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(700.0, 550.0));
-        let padding = 64.0;
-
-        let mut padded = Vec::new();
-        let mut primary = Vec::new();
-        manager.visible_tiles_into(
-            viewport,
-            screen_clip,
-            padding,
-            &mut padded,
-            Some(&mut primary),
-        );
-
-        assert!(!padded.is_empty());
-        assert!(!primary.is_empty());
-        assert!(primary.len() <= padded.len());
-
-        let mut padded_only = Vec::new();
-        let mut primary_only = Vec::new();
-        manager.visible_tiles_into(viewport, screen_clip, padding, &mut padded_only, None);
-        manager.visible_tiles_into(viewport, screen_clip, 0.0, &mut primary_only, None);
-        assert_eq!(padded, padded_only);
-        assert_eq!(primary, primary_only);
-    }
-
-    #[test]
-    fn retain_pending_tiles_drops_offscreen_entries() {
-        let source = Arc::new(DummyTileSource {
-            width: 4096,
-            height: 4096,
-        });
-        let mut manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
-        manager.pending_tiles.insert(PendingTileKey::new(
-            TileCoord { col: 0, row: 0 },
-            crate::loader::TilePixelKind::Sdr,
-        ));
-        manager.pending_tiles.insert(PendingTileKey::new(
-            TileCoord { col: 4, row: 4 },
-            crate::loader::TilePixelKind::Sdr,
-        ));
-
-        manager.retain_pending_tiles(&HashSet::from([TileCoord { col: 0, row: 0 }]));
-
-        assert!(manager.pending_tiles.contains(&PendingTileKey::new(
-            TileCoord { col: 0, row: 0 },
-            crate::loader::TilePixelKind::Sdr,
-        )));
-        assert!(!manager.pending_tiles.contains(&PendingTileKey::new(
-            TileCoord { col: 4, row: 4 },
-            crate::loader::TilePixelKind::Sdr,
-        )));
-    }
-
-    #[test]
-    fn pending_tile_keys_distinguish_sdr_and_hdr_for_same_coord() {
-        let coord = TileCoord { col: 1, row: 2 };
-
-        assert_ne!(
-            PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr),
-            PendingTileKey::new(coord, crate::loader::TilePixelKind::Hdr)
-        );
-    }
-
-    #[test]
-    fn test_tile_pixel_cache_relocate_and_remove_except() {
-        let mut cache = TilePixelCache::new(512);
-        let pixels = Arc::new(vec![0; 100]);
-
-        cache.insert(3, TileCoord { col: 1, row: 2 }, Arc::clone(&pixels));
-        cache.insert(5, TileCoord { col: 3, row: 4 }, Arc::clone(&pixels));
-
-        // Test relocate
-        cache.relocate_image(3, 7);
-        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_some());
-        assert!(cache.get(3, TileCoord { col: 1, row: 2 }).is_none());
-
-        // Test remove_except
-        cache.remove_images_except(5);
-        assert!(cache.get(5, TileCoord { col: 3, row: 4 }).is_some());
-        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_none());
-
-        // Test remove_tile
-        assert!(cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
-        assert!(!cache.contains_tile(5, TileCoord { col: 3, row: 4 }));
-        assert!(!cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
-    }
-}
-
 /// The global tile pixel cache instance.
 pub static PIXEL_CACHE: LazyLock<RwLock<TilePixelCache>> = LazyLock::new(|| {
     RwLock::new(TilePixelCache::new(512)) // Default 512MB, will be updated by settings
@@ -611,16 +535,27 @@ impl TileManager {
             Some(ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR));
     }
 
+    fn tile_rect(&self, coord: TileCoord) -> Option<TileRect> {
+        tile_rect_for_dimensions(self.full_width, self.full_height, coord)
+    }
+
+    fn rgba8_upload_dimensions(&self, coord: TileCoord, pixel_len: usize) -> Option<[usize; 2]> {
+        let rect = self.tile_rect(coord)?;
+        let expected_len = rgba8_len_for_dimensions(rect.width, rect.height)?;
+        if pixel_len != expected_len {
+            return None;
+        }
+        Some([rect.width as usize, rect.height as usize])
+    }
+
     /// Number of tile columns in the grid.
     pub fn cols(&self) -> u32 {
-        let ts = get_tile_size();
-        self.full_width.div_ceil(ts)
+        tile_count_for_extent(self.full_width)
     }
 
     /// Number of tile rows in the grid.
     pub fn rows(&self) -> u32 {
-        let ts = get_tile_size();
-        self.full_height.div_ceil(ts)
+        tile_count_for_extent(self.full_height)
     }
 
     /// Get or create a tile texture for the given coordinate.
@@ -632,6 +567,17 @@ impl TileManager {
         allow_upload: bool,
         visible_coords: &HashSet<TileCoord>,
     ) -> (TileStatus, bool) {
+        let pending_key = PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr);
+        if self.tile_rect(coord).is_none() {
+            self.tiles.remove(&coord);
+            self.ready_times.remove(&coord);
+            self.evictable_lru.remove(coord);
+            self.visible_pinned.remove(&coord);
+            self.pending_tiles.remove(&pending_key);
+            PIXEL_CACHE.write().remove_tile(self.image_index, coord);
+            return (TileStatus::Pending(false), false);
+        }
+
         let is_visible = visible_coords.contains(&coord);
 
         // check if exists in GPU
@@ -646,6 +592,12 @@ impl TileManager {
         let cached_pixels: Option<Arc<Vec<u8>>> = PIXEL_CACHE.read().get(self.image_index, coord);
 
         if let Some(pixels) = cached_pixels {
+            let Some(upload_dimensions) = self.rgba8_upload_dimensions(coord, pixels.len()) else {
+                PIXEL_CACHE.write().remove_tile(self.image_index, coord);
+                self.pending_tiles.remove(&pending_key);
+                return (TileStatus::Pending(true), false);
+            };
+
             if allow_upload {
                 // Strict eviction: Never exceed the base limit determined by HardwareTier.
                 // We no longer expand the limit based on visible_count to prevent crashes.
@@ -656,12 +608,8 @@ impl TileManager {
                 self.sync_gpu_visible_protection(visible_coords);
                 self.evict_gpu_tiles_over_limit(current_limit);
 
-                let ts = get_tile_size();
-                let tw = ts.min(self.full_width - coord.col * ts);
-                let th = ts.min(self.full_height - coord.row * ts);
-
                 let color_image =
-                    egui::ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &pixels);
+                    egui::ColorImage::from_rgba_unmultiplied(upload_dimensions, &pixels);
                 let name = format!("tile_{}_{}_{}", self.image_index, coord.col, coord.row);
                 let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                 self.tiles.insert(coord, handle.clone());
@@ -671,10 +619,7 @@ impl TileManager {
                 self.touch_gpu_lru(coord, is_visible);
 
                 // Remove from pending if it was there
-                self.pending_tiles.remove(&PendingTileKey::new(
-                    coord,
-                    crate::loader::TilePixelKind::Sdr,
-                ));
+                self.pending_tiles.remove(&pending_key);
 
                 return (TileStatus::Ready(handle, Some(now)), true);
             }
@@ -685,10 +630,7 @@ impl TileManager {
         }
 
         // If we reach here, it's not in GPU and not in CPU cache.
-        let needs_request = !self.pending_tiles.contains(&PendingTileKey::new(
-            coord,
-            crate::loader::TilePixelKind::Sdr,
-        ));
+        let needs_request = !self.pending_tiles.contains(&pending_key);
         (TileStatus::Pending(needs_request), false)
     }
 
@@ -892,4 +834,211 @@ fn visible_tile_index_bounds(
     let end_row = max_row.min(total_rows.saturating_sub(1));
 
     Some((start_col, end_col, start_row, end_row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyTileSource {
+        width: u32,
+        height: u32,
+    }
+
+    impl crate::loader::TiledImageSource for DummyTileSource {
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; w as usize * h as usize * 4])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    #[test]
+    fn visible_tiles_into_emits_primary_subset_in_same_pass() {
+        let source = Arc::new(DummyTileSource {
+            width: 4096,
+            height: 4096,
+        });
+        let manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
+        let viewport = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+        let screen_clip =
+            egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(700.0, 550.0));
+        let padding = 64.0;
+
+        let mut padded = Vec::new();
+        let mut primary = Vec::new();
+        manager.visible_tiles_into(
+            viewport,
+            screen_clip,
+            padding,
+            &mut padded,
+            Some(&mut primary),
+        );
+
+        assert!(!padded.is_empty());
+        assert!(!primary.is_empty());
+        assert!(primary.len() <= padded.len());
+
+        let mut padded_only = Vec::new();
+        let mut primary_only = Vec::new();
+        manager.visible_tiles_into(viewport, screen_clip, padding, &mut padded_only, None);
+        manager.visible_tiles_into(viewport, screen_clip, 0.0, &mut primary_only, None);
+        assert_eq!(padded, padded_only);
+        assert_eq!(primary, primary_only);
+    }
+
+    #[test]
+    fn retain_pending_tiles_drops_offscreen_entries() {
+        let source = Arc::new(DummyTileSource {
+            width: 4096,
+            height: 4096,
+        });
+        let mut manager = TileManager::with_source(0, crate::loader::decode_profile_stub(), source);
+        manager.pending_tiles.insert(PendingTileKey::new(
+            TileCoord { col: 0, row: 0 },
+            crate::loader::TilePixelKind::Sdr,
+        ));
+        manager.pending_tiles.insert(PendingTileKey::new(
+            TileCoord { col: 4, row: 4 },
+            crate::loader::TilePixelKind::Sdr,
+        ));
+
+        manager.retain_pending_tiles(&HashSet::from([TileCoord { col: 0, row: 0 }]));
+
+        assert!(manager.pending_tiles.contains(&PendingTileKey::new(
+            TileCoord { col: 0, row: 0 },
+            crate::loader::TilePixelKind::Sdr,
+        )));
+        assert!(!manager.pending_tiles.contains(&PendingTileKey::new(
+            TileCoord { col: 4, row: 4 },
+            crate::loader::TilePixelKind::Sdr,
+        )));
+    }
+
+    #[test]
+    fn pending_tile_keys_distinguish_sdr_and_hdr_for_same_coord() {
+        let coord = TileCoord { col: 1, row: 2 };
+
+        assert_ne!(
+            PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr),
+            PendingTileKey::new(coord, crate::loader::TilePixelKind::Hdr)
+        );
+    }
+
+    #[test]
+    fn tile_rect_rejects_out_of_bounds_and_overflow_coords() {
+        let valid = tile_rect_for_dimensions(1, 1, TileCoord { col: 0, row: 0 })
+            .expect("origin tile is valid");
+        assert_eq!(valid.width, 1);
+        assert_eq!(valid.height, 1);
+
+        assert_eq!(
+            tile_rect_for_dimensions(1, 1, TileCoord { col: 1, row: 0 }),
+            None
+        );
+        assert_eq!(
+            tile_rect_for_dimensions(1, 1, TileCoord { col: 0, row: 1 }),
+            None
+        );
+        assert_eq!(
+            tile_rect_for_dimensions(
+                1,
+                1,
+                TileCoord {
+                    col: u32::MAX,
+                    row: 0
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_invalid_cached_tile_does_not_upload_or_stay_pending() {
+        let image_index = 7001;
+        let source = Arc::new(DummyTileSource {
+            width: 1,
+            height: 1,
+        });
+        let mut manager =
+            TileManager::with_source(image_index, crate::loader::decode_profile_stub(), source);
+        let coord = TileCoord { col: 1, row: 0 };
+        let pending_key = PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr);
+
+        PIXEL_CACHE
+            .write()
+            .insert(image_index, coord, Arc::new(vec![0; 4]));
+        manager.pending_tiles.insert(pending_key);
+
+        let ctx = egui::Context::default();
+        let (status, uploaded) = manager.get_or_create_tile(coord, &ctx, true, &HashSet::new());
+
+        assert!(matches!(status, TileStatus::Pending(false)));
+        assert!(!uploaded);
+        assert!(!manager.pending_tiles.contains(&pending_key));
+        assert!(!PIXEL_CACHE.read().contains_tile(image_index, coord));
+    }
+
+    #[test]
+    fn malformed_cached_tile_pixels_are_removed_before_upload() {
+        let image_index = 7002;
+        let source = Arc::new(DummyTileSource {
+            width: 1,
+            height: 1,
+        });
+        let mut manager =
+            TileManager::with_source(image_index, crate::loader::decode_profile_stub(), source);
+        let coord = TileCoord { col: 0, row: 0 };
+        let pending_key = PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr);
+
+        PIXEL_CACHE
+            .write()
+            .insert(image_index, coord, Arc::new(vec![0; 3]));
+        manager.pending_tiles.insert(pending_key);
+
+        let ctx = egui::Context::default();
+        let (status, uploaded) = manager.get_or_create_tile(coord, &ctx, true, &HashSet::new());
+
+        assert!(matches!(status, TileStatus::Pending(true)));
+        assert!(!uploaded);
+        assert!(!manager.pending_tiles.contains(&pending_key));
+        assert!(!PIXEL_CACHE.read().contains_tile(image_index, coord));
+    }
+    #[test]
+    fn test_tile_pixel_cache_relocate_and_remove_except() {
+        let mut cache = TilePixelCache::new(512);
+        let pixels = Arc::new(vec![0; 100]);
+
+        cache.insert(3, TileCoord { col: 1, row: 2 }, Arc::clone(&pixels));
+        cache.insert(5, TileCoord { col: 3, row: 4 }, Arc::clone(&pixels));
+
+        // Test relocate
+        cache.relocate_image(3, 7);
+        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_some());
+        assert!(cache.get(3, TileCoord { col: 1, row: 2 }).is_none());
+
+        // Test remove_except
+        cache.remove_images_except(5);
+        assert!(cache.get(5, TileCoord { col: 3, row: 4 }).is_some());
+        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_none());
+
+        // Test remove_tile
+        assert!(cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
+        assert!(!cache.contains_tile(5, TileCoord { col: 3, row: 4 }));
+        assert!(!cache.remove_tile(5, TileCoord { col: 3, row: 4 }));
+    }
 }

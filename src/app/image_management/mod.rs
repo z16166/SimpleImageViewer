@@ -1360,26 +1360,29 @@ mod tiled_hq_preview_apply_tests {
 #[cfg(test)]
 mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
     use super::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending;
+    use crate::hdr::types::HdrImageMetadata;
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     fn gpu_raw_pending_hdr() -> Arc<crate::hdr::types::HdrImageBuffer> {
-        let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
-            raw_width: 4,
-            raw_height: 4,
-            width: 4,
-            height: 4,
-            raw_pixels: Arc::new(vec![0; 16]),
-            black_level: [0.0; 4],
-            cfa_scale: [1.0; 4],
-            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            maximum: 65535.0,
-            bayer_pattern: [0, 1, 1, 2],
-            scene_color_scale: [1.0, 1.0, 1.0],
-            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
-            bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
-        });
+        let metadata = HdrImageMetadata {
+            raw_gpu_source: Some(crate::hdr::types::RawGpuSource {
+                raw_width: 4,
+                raw_height: 4,
+                width: 4,
+                height: 4,
+                raw_pixels: Arc::new(vec![0; 16]),
+                black_level: [0.0; 4],
+                cfa_scale: [1.0; 4],
+                rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                maximum: 65535.0,
+                bayer_pattern: [0, 1, 1, 2],
+                scene_color_scale: [1.0, 1.0, 1.0],
+                demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+                bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
+            }),
+            ..Default::default()
+        };
         Arc::new(crate::hdr::types::HdrImageBuffer {
             width: 4,
             height: 4,

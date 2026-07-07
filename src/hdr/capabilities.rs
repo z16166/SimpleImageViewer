@@ -123,6 +123,87 @@ impl HdrCapabilities {
     }
 }
 
+#[allow(dead_code)]
+pub fn detect_from_wgpu_state(state: Option<&eframe::egui_wgpu::RenderState>) -> HdrCapabilities {
+    let Some(state) = state else {
+        return HdrCapabilities::sdr("wgpu render state unavailable");
+    };
+
+    detect_from_backend_and_surface_format(
+        state.adapter.get_info().backend,
+        Some(state.target_format),
+    )
+}
+
+#[cfg(test)]
+/// Fixed SDR surface format for backend-only capability tests (no live wgpu surface).
+fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
+    detect_from_backend_and_surface_format(backend, Some(wgpu::TextureFormat::Bgra8Unorm))
+}
+
+/// Whether the active wgpu backend can drive a native HDR swap-chain format on this OS.
+pub fn backend_supports_native_hdr_swapchain(backend: wgpu::Backend) -> bool {
+    match backend {
+        #[cfg(target_os = "windows")]
+        wgpu::Backend::Dx12 => true,
+        #[cfg(target_os = "macos")]
+        wgpu::Backend::Metal => true,
+        #[cfg(target_os = "linux")]
+        wgpu::Backend::Vulkan => crate::hdr::platform::linux_native_hdr_platform_eligible(),
+        _ => false,
+    }
+}
+
+pub fn detect_from_backend_and_surface_format(
+    backend: wgpu::Backend,
+    current_surface_format: Option<wgpu::TextureFormat>,
+) -> HdrCapabilities {
+    match backend {
+        #[cfg(target_os = "windows")]
+        wgpu::Backend::Dx12 => HdrCapabilities::candidate(
+            backend,
+            current_surface_format,
+            HdrPresentationPath::WindowsDx12ScRgb,
+            HdrOutputMode::WindowsScRgb,
+            wgpu::TextureFormat::Rgba16Float,
+            if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
+                "DX12 backend with float surface format; Windows scRGB native presentation path is active"
+            } else {
+                "DX12 backend detected, scRGB/HDR swapchain configuration candidate"
+            },
+        ),
+        #[cfg(target_os = "macos")]
+        wgpu::Backend::Metal => HdrCapabilities::candidate(
+            backend,
+            current_surface_format,
+            HdrPresentationPath::MacOsMetalEdr,
+            HdrOutputMode::MacOsEdr,
+            wgpu::TextureFormat::Rgba16Float,
+            if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
+                "Metal backend with float surface format; macOS EDR native presentation path is active"
+            } else {
+                "Metal backend detected, EDR CAMetalLayer configuration candidate"
+            },
+        ),
+        #[cfg(target_os = "linux")]
+        wgpu::Backend::Vulkan if crate::hdr::platform::linux_native_hdr_platform_eligible() => {
+            HdrCapabilities::candidate(
+                backend,
+                current_surface_format,
+                HdrPresentationPath::LinuxVulkanWayland,
+                HdrOutputMode::WaylandHdr,
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
+                    "Vulkan backend with HDR surface format; Wayland HDR10 native presentation path is active"
+                } else {
+                    "Vulkan backend detected, Wayland HDR10 swapchain configuration candidate"
+                },
+            )
+        }
+        _ => HdrCapabilities::unsupported_backend(backend, current_surface_format),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,86 +417,5 @@ mod tests {
                 "[HDR] candidate_texture_format=None",
             ]
         );
-    }
-}
-
-#[allow(dead_code)]
-pub fn detect_from_wgpu_state(state: Option<&eframe::egui_wgpu::RenderState>) -> HdrCapabilities {
-    let Some(state) = state else {
-        return HdrCapabilities::sdr("wgpu render state unavailable");
-    };
-
-    detect_from_backend_and_surface_format(
-        state.adapter.get_info().backend,
-        Some(state.target_format),
-    )
-}
-
-#[cfg(test)]
-/// Fixed SDR surface format for backend-only capability tests (no live wgpu surface).
-fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
-    detect_from_backend_and_surface_format(backend, Some(wgpu::TextureFormat::Bgra8Unorm))
-}
-
-/// Whether the active wgpu backend can drive a native HDR swap-chain format on this OS.
-pub fn backend_supports_native_hdr_swapchain(backend: wgpu::Backend) -> bool {
-    match backend {
-        #[cfg(target_os = "windows")]
-        wgpu::Backend::Dx12 => true,
-        #[cfg(target_os = "macos")]
-        wgpu::Backend::Metal => true,
-        #[cfg(target_os = "linux")]
-        wgpu::Backend::Vulkan => crate::hdr::platform::linux_native_hdr_platform_eligible(),
-        _ => false,
-    }
-}
-
-pub fn detect_from_backend_and_surface_format(
-    backend: wgpu::Backend,
-    current_surface_format: Option<wgpu::TextureFormat>,
-) -> HdrCapabilities {
-    match backend {
-        #[cfg(target_os = "windows")]
-        wgpu::Backend::Dx12 => HdrCapabilities::candidate(
-            backend,
-            current_surface_format,
-            HdrPresentationPath::WindowsDx12ScRgb,
-            HdrOutputMode::WindowsScRgb,
-            wgpu::TextureFormat::Rgba16Float,
-            if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
-                "DX12 backend with float surface format; Windows scRGB native presentation path is active"
-            } else {
-                "DX12 backend detected, scRGB/HDR swapchain configuration candidate"
-            },
-        ),
-        #[cfg(target_os = "macos")]
-        wgpu::Backend::Metal => HdrCapabilities::candidate(
-            backend,
-            current_surface_format,
-            HdrPresentationPath::MacOsMetalEdr,
-            HdrOutputMode::MacOsEdr,
-            wgpu::TextureFormat::Rgba16Float,
-            if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
-                "Metal backend with float surface format; macOS EDR native presentation path is active"
-            } else {
-                "Metal backend detected, EDR CAMetalLayer configuration candidate"
-            },
-        ),
-        #[cfg(target_os = "linux")]
-        wgpu::Backend::Vulkan if crate::hdr::platform::linux_native_hdr_platform_eligible() => {
-            HdrCapabilities::candidate(
-                backend,
-                current_surface_format,
-                HdrPresentationPath::LinuxVulkanWayland,
-                HdrOutputMode::WaylandHdr,
-                wgpu::TextureFormat::Rgb10a2Unorm,
-                if crate::hdr::surface::is_native_hdr_surface_format(current_surface_format) {
-                    "Vulkan backend with HDR surface format; Wayland HDR10 native presentation path is active"
-                } else {
-                    "Vulkan backend detected, Wayland HDR10 swapchain configuration candidate"
-                },
-            )
-        }
-        _ => HdrCapabilities::unsupported_backend(backend, current_surface_format),
     }
 }

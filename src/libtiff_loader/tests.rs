@@ -330,10 +330,7 @@ fn tiff_stress_test() {
                         // Debug tags
                         unsafe {
                             let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-                            let tif = lib::TIFFOpen(
-                                c_path.as_ptr(),
-                                b"r\0".as_ptr() as *const std::ffi::c_char,
-                            );
+                            let tif = lib::TIFFOpen(c_path.as_ptr(), c"r".as_ptr());
                             if !tif.is_null() {
                                 let mut w: u32 = 0;
                                 let mut h: u32 = 0;

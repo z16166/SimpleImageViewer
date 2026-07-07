@@ -58,21 +58,20 @@ fn assert_gray_ramp_loads_with_visible_fallback(root: &Path, relative_path: &str
     };
     let fallback_max_rgb = max_rgba8_rgb(&fallback_pixels);
 
-    if fallback_max_rgb == 0 {
-        if let ImageData::Hdr { hdr, .. } = &image_data {
-            if let Ok(pixels) = crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(
-                hdr.as_ref(),
-                &HdrToneMapSettings::default(),
-            ) {
-                let tone_mapped_max = max_rgba8_rgb(&pixels);
-                assert!(
-                    tone_mapped_max > 0,
-                    "CPU tone-map fallback should be visible for {} (hdr_max_rgb={hdr_max_rgb:?})",
-                    path.display(),
-                );
-                return;
-            }
-        }
+    if fallback_max_rgb == 0
+        && let ImageData::Hdr { hdr, .. } = &image_data
+        && let Ok(pixels) = crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(
+            hdr.as_ref(),
+            &HdrToneMapSettings::default(),
+        )
+    {
+        let tone_mapped_max = max_rgba8_rgb(&pixels);
+        assert!(
+            tone_mapped_max > 0,
+            "CPU tone-map fallback should be visible for {} (hdr_max_rgb={hdr_max_rgb:?})",
+            path.display(),
+        );
+        return;
     }
 
     assert!(

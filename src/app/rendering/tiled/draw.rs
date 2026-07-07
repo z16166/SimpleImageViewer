@@ -460,9 +460,11 @@ impl ImageViewerApp {
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
+                                let pending_key =
+                                    tile_pending_key_for_backend(*coord, plane_backend);
                                 if !tile_request_budget.try_mark_pending(
                                     &mut tm.pending_tiles,
-                                    tile_pending_key_for_backend(*coord, plane_backend),
+                                    pending_key,
                                     is_primary_visible,
                                 ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
@@ -474,14 +476,18 @@ impl ImageViewerApp {
                                     Some(source),
                                     hdr_source_for_frame.as_ref(),
                                 ) {
-                                    loader.request_tile(
+                                    if !loader.request_tile(
                                         current_index,
                                         tm.decode_profile.clone(),
                                         priority,
                                         source,
                                         coord.col,
                                         coord.row,
-                                    );
+                                    ) {
+                                        tm.pending_tiles.remove(&pending_key);
+                                    }
+                                } else {
+                                    tm.pending_tiles.remove(&pending_key);
                                 }
                             }
                         }
@@ -499,7 +505,7 @@ impl ImageViewerApp {
             #[cfg(feature = "tile-debug")]
             if self.settings.show_osd {
                 let (vis_gpu, vis_ready, vis_pending) =
-                    self.tile_manager().stats_for_visible(&visible_coords);
+                    self.tile_manager().stats_for_visible(visible_coords);
                 let (total_gpu, total_mem, _total_pnd) = self.tile_manager().tiles_and_pending();
 
                 let debug_text = format!(

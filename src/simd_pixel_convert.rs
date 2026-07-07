@@ -1285,7 +1285,7 @@ mod tests {
     fn ieee_f32_gray_scanline_matches_scalar() {
         for width in [1, 4, 7, 8] {
             let src: Vec<u8> = (0..width * 4)
-                .flat_map(|i| ((i as f32 * 0.11) as f32).to_ne_bytes())
+                .flat_map(|i| (i as f32 * 0.11).to_ne_bytes())
                 .collect();
             let mut simd_dst = vec![0.0_f32; width * 4];
             let mut scalar_dst = vec![0.0_f32; width * 4];

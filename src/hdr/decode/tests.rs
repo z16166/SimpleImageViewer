@@ -151,7 +151,7 @@ fn pq_sdr_fallback_highlights_grade_with_reinhard_not_iec_hard_clip() {
     assert!(
         sdr[0] < 255 && sdr[4] < 255,
         "Reinhard path should roll off HDR peaks instead of pinning to 255: {:?}",
-        &sdr
+        sdr
     );
     assert_ne!(
         sdr[0], sdr[4],
@@ -274,7 +274,7 @@ fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
 
     let code = display_linear_nits_to_pq(203.0);
     assert!(
-        (code - 0.580_688_88).abs() < 1e-4,
+        (code - 0.580_688_9).abs() < 1e-4,
         "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
     );
     assert!(
@@ -290,13 +290,15 @@ fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
 
 #[test]
 fn pq_transfer_eotf_and_rec2020_matrix_produce_reasonable_sdr_fallback() {
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Pq;
-    meta.color_profile = HdrColorProfile::Cicp {
-        color_primaries: 9,
-        transfer_characteristics: 16,
-        matrix_coefficients: 0,
-        full_range: true,
+    let meta = HdrImageMetadata {
+        transfer_function: HdrTransferFunction::Pq,
+        color_profile: HdrColorProfile::Cicp {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 0,
+            full_range: true,
+        },
+        ..Default::default()
     };
     let buffer = HdrImageBuffer {
         width: 1,
@@ -318,13 +320,15 @@ fn pq_transfer_eotf_and_rec2020_matrix_produce_reasonable_sdr_fallback() {
 
 #[test]
 fn hdr_to_sdr_rgba8_with_tone_settings_respects_max_display_nits() {
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Pq;
-    meta.color_profile = HdrColorProfile::Cicp {
-        color_primaries: 9,
-        transfer_characteristics: 16,
-        matrix_coefficients: 0,
-        full_range: true,
+    let meta = HdrImageMetadata {
+        transfer_function: HdrTransferFunction::Pq,
+        color_profile: HdrColorProfile::Cicp {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 0,
+            full_range: true,
+        },
+        ..Default::default()
     };
     let buffer = HdrImageBuffer {
         width: 1,
@@ -358,14 +362,19 @@ fn hdr_to_sdr_rgba8_with_tone_settings_respects_max_display_nits() {
 fn strip_pinned_max_display_nits_not_raised_by_mastering_peak() {
     use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Pq;
-    meta.luminance.mastering_max_nits = Some(1000.0);
-    meta.color_profile = HdrColorProfile::Cicp {
-        color_primaries: 9,
-        transfer_characteristics: 16,
-        matrix_coefficients: 0,
-        full_range: true,
+    let meta = HdrImageMetadata {
+        transfer_function: HdrTransferFunction::Pq,
+        luminance: crate::hdr::types::HdrLuminanceMetadata {
+            mastering_max_nits: Some(1000.0),
+            ..Default::default()
+        },
+        color_profile: HdrColorProfile::Cicp {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 0,
+            full_range: true,
+        },
+        ..Default::default()
     };
     let buffer = HdrImageBuffer {
         width: 1,

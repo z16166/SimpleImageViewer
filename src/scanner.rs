@@ -770,18 +770,13 @@ mod tests {
         );
 
         let mut files = Vec::new();
-        loop {
-            match rx.recv().expect("scan message") {
-                ScanMessage::Batch { files: batch, .. } => {
-                    files.extend(batch.into_iter().map(|(path, _, _)| {
-                        path.file_name()
-                            .expect("file name")
-                            .to_string_lossy()
-                            .into_owned()
-                    }));
-                }
-                ScanMessage::Done { .. } => break,
-            }
+        while let ScanMessage::Batch { files: batch, .. } = rx.recv().expect("scan message") {
+            files.extend(batch.into_iter().map(|(path, _, _)| {
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned()
+            }));
         }
         files.sort();
         files

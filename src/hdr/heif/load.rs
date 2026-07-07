@@ -534,21 +534,23 @@ mod tests {
     fn heif_fallback_without_recovered_sdr_uses_placeholder_for_apple_deferred() {
         use crate::hdr::types::{AppleHeicGainMapGpuSource, HdrGainMapMetadata};
 
-        let mut metadata = HdrImageMetadata::default();
-        metadata.gain_map = Some(HdrGainMapMetadata {
-            source: "HEIF",
-            target_hdr_capacity: None,
-            diagnostic: String::new(),
-            capped_display_referred: false,
-            apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
-                gain_rgba: Arc::new(vec![0; 4]),
-                gain_width: 1,
-                gain_height: 1,
-                headroom_span: 1.0,
-                stops: 2.0,
+        let metadata = HdrImageMetadata {
+            gain_map: Some(HdrGainMapMetadata {
+                source: "HEIF",
+                target_hdr_capacity: None,
+                diagnostic: String::new(),
+                capped_display_referred: false,
+                apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
+                    gain_rgba: Arc::new(vec![0; 4]),
+                    gain_width: 1,
+                    gain_height: 1,
+                    headroom_span: 1.0,
+                    stops: 2.0,
+                }),
+                iso_deferred: None,
             }),
-            iso_deferred: None,
-        });
+            ..Default::default()
+        };
         let hdr = HdrImageBuffer {
             width: 1,
             height: 1,

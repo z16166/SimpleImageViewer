@@ -17,6 +17,7 @@
 use super::*;
 use crate::app::{HardwareTier, SettingsTab};
 use crate::audio::AudioPlayer;
+use crate::hdr::types::HdrImageMetadata;
 use crate::loader::PreviewBundle;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
@@ -27,10 +28,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) fn write_min_sized_test_image(path: &Path) {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(
         path,
@@ -401,7 +402,7 @@ fn preload_budget_requests_unknown_or_fitting_candidate() {
 fn oversized_preload_candidate_allows_near_budget_or_large_file() {
     let budget = 100 * 1024 * 1024;
     assert!(should_request_oversized_preload_candidate(
-        1 * 1024 * 1024,
+        1024 * 1024,
         150 * 1024 * 1024,
         budget
     ));
@@ -411,7 +412,7 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
         budget
     ));
     assert!(!should_request_oversized_preload_candidate(
-        1 * 1024 * 1024,
+        1024 * 1024,
         151 * 1024 * 1024,
         budget
     ));
@@ -421,7 +422,7 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
 fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
     let mut app = make_test_app();
     set_test_image_files(&mut app, &["current.jpg", "huge.jpg", "small.jpg"]);
-    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1 * 1024 * 1024];
+    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
@@ -1085,15 +1086,17 @@ fn hdr_gain_map_sdr_display_change_refreshes_cached_heic_without_reload() {
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: true,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: true,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1374,15 +1377,17 @@ fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() 
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: true,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: true,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1411,15 +1416,17 @@ fn hdr_gain_map_sdr_display_change_evicts_heif_tone_map_primary_cache() {
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
-        target_hdr_capacity: None,
-        diagnostic: "AppleHdrGainMap".to_string(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: None,
+            diagnostic: "AppleHdrGainMap".to_string(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1451,21 +1458,23 @@ fn hdr_gain_map_sdr_display_change_evicts_apple_heic_tone_map_cache() {
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
-        target_hdr_capacity: Some(2.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            headroom_span: 1.0,
-            stops: 1.0,
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: Some(2.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                headroom_span: 1.0,
+                stops: 1.0,
+            }),
+            iso_deferred: None,
         }),
-        iso_deferred: None,
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1495,30 +1504,32 @@ fn capture_transition_prefers_sdr_texture_for_embedded_iso_gain_map() {
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: Some(4.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -1552,30 +1563,32 @@ fn capture_transition_keeps_hdr_plane_for_tone_mapped_iso_gain_map() {
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: Some(4.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -1605,30 +1618,32 @@ fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(Vec::new()),
-            gain_width: 0,
-            gain_height: 0,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(Vec::new()),
+                gain_width: 0,
+                gain_height: 0,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -3312,7 +3327,7 @@ fn test_gpu_raw_pending_hdr(raw_pixels: Arc<Vec<u16>>) -> Arc<crate::hdr::types:
         raw_height: 4,
         width: 4,
         height: 4,
-        raw_pixels: raw_pixels,
+        raw_pixels,
         black_level: [0.0; 4],
         cfa_scale: [1.0; 4],
         rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
@@ -3832,7 +3847,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
     let old_files = paths.clone();
     let new_files = vec![paths[2].clone(), paths[0].clone(), paths[1].clone()];
 
-    for index in 0..3 {
+    for (index, _) in paths.iter().enumerate() {
         let fill = ((index + 1) * 40) as u8;
         let decoded = crate::loader::DecodedImage::new(8, 8, vec![fill; 8 * 8 * 4]);
         app.directory_tree_strip_cache.upsert_from_decoded(

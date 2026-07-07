@@ -493,9 +493,9 @@ fn luminance_chroma_exr_decodes_via_imf_rgba_input_when_corpus_present() {
             core_tile.rgba[2]
         );
         // Imf::RgbaInputFile is the reference; core path may differ slightly on subsampled chroma.
-        for i in 0..3 {
-            assert!(tile[i].is_finite() && tile[i] >= 0.0);
-            assert!(core_tile.rgba[i].is_finite());
+        for (&tile_channel, &core_channel) in tile.iter().zip(core_tile.rgba.iter()).take(3) {
+            assert!(tile_channel.is_finite() && tile_channel >= 0.0);
+            assert!(core_channel.is_finite());
         }
     }
 }

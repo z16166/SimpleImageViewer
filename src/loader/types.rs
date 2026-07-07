@@ -650,6 +650,30 @@ impl TileDecodeSource {
             Self::Hdr(_) => TilePixelKind::Hdr,
         }
     }
+
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Sdr(source) => (source.width(), source.height()),
+            Self::Hdr(source) => (source.width(), source.height()),
+        }
+    }
+
+    pub(crate) fn tile_cols(&self) -> u32 {
+        crate::tile_cache::tile_count_for_extent(self.dimensions().0)
+    }
+
+    pub(crate) fn tile_rows(&self) -> u32 {
+        crate::tile_cache::tile_count_for_extent(self.dimensions().1)
+    }
+
+    pub(crate) fn tile_rect(&self, col: u32, row: u32) -> Option<crate::tile_cache::TileRect> {
+        let (width, height) = self.dimensions();
+        crate::tile_cache::tile_rect_for_dimensions(
+            width,
+            height,
+            crate::tile_cache::TileCoord { col, row },
+        )
+    }
 }
 
 pub struct PreviewResult {

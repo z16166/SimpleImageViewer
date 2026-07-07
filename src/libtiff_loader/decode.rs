@@ -329,61 +329,6 @@ fn process_rgb8_scanline_contig_fast(
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rgb8_params() -> TiffSampleDecodeParams {
-        TiffSampleDecodeParams {
-            bps: 8,
-            photo: PHOTO_RGB,
-            format: FORMAT_UINT,
-            swapped: false,
-            smin: 0.0,
-            smax: 255.0,
-        }
-    }
-
-    fn empty_palette() -> TiffPaletteMaps {
-        TiffPaletteMaps {
-            r_map: std::ptr::null_mut(),
-            g_map: std::ptr::null_mut(),
-            b_map: std::ptr::null_mut(),
-            entries: 0,
-        }
-    }
-
-    #[test]
-    fn rgb8_contig_fast_path_expands_rgb24_to_rgba() {
-        let src = [10, 20, 30, 40, 50, 60];
-        let mut dst = [0; 8];
-
-        process_scanline_contig(&src, &mut dst, 2, 3, rgb8_params(), empty_palette());
-
-        assert_eq!(dst, [10, 20, 30, 255, 40, 50, 60, 255]);
-    }
-
-    #[test]
-    fn get_raw_value_reads_ieee_half_float_bits() {
-        let bits = half::f16::from_f32(2.5).to_bits();
-        let buf = bits.to_ne_bytes();
-        let got = get_raw_value(&buf, 0, 16, FORMAT_IEEEFP);
-        assert!((got - 2.5).abs() < 1.0e-3);
-        let as_uint = get_raw_value(&buf, 0, 16, FORMAT_UINT);
-        assert_ne!(as_uint, got);
-    }
-
-    #[test]
-    fn rgb8_contig_fast_path_copies_rgba32() {
-        let src = [10, 20, 30, 128, 40, 50, 60, 64];
-        let mut dst = [0; 8];
-
-        process_scanline_contig(&src, &mut dst, 2, 4, rgb8_params(), empty_palette());
-
-        assert_eq!(dst, src);
-    }
-}
-
 pub(crate) fn process_scanline_separate(
     buf: &[u8],
     rgba_row: &mut [u8],
@@ -1472,4 +1417,59 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
     }
 
     Err("not LogL/LogLuv photometric".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgb8_params() -> TiffSampleDecodeParams {
+        TiffSampleDecodeParams {
+            bps: 8,
+            photo: PHOTO_RGB,
+            format: FORMAT_UINT,
+            swapped: false,
+            smin: 0.0,
+            smax: 255.0,
+        }
+    }
+
+    fn empty_palette() -> TiffPaletteMaps {
+        TiffPaletteMaps {
+            r_map: std::ptr::null_mut(),
+            g_map: std::ptr::null_mut(),
+            b_map: std::ptr::null_mut(),
+            entries: 0,
+        }
+    }
+
+    #[test]
+    fn rgb8_contig_fast_path_expands_rgb24_to_rgba() {
+        let src = [10, 20, 30, 40, 50, 60];
+        let mut dst = [0; 8];
+
+        process_scanline_contig(&src, &mut dst, 2, 3, rgb8_params(), empty_palette());
+
+        assert_eq!(dst, [10, 20, 30, 255, 40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn get_raw_value_reads_ieee_half_float_bits() {
+        let bits = half::f16::from_f32(2.5).to_bits();
+        let buf = bits.to_ne_bytes();
+        let got = get_raw_value(&buf, 0, 16, FORMAT_IEEEFP);
+        assert!((got - 2.5).abs() < 1.0e-3);
+        let as_uint = get_raw_value(&buf, 0, 16, FORMAT_UINT);
+        assert_ne!(as_uint, got);
+    }
+
+    #[test]
+    fn rgb8_contig_fast_path_copies_rgba32() {
+        let src = [10, 20, 30, 128, 40, 50, 60, 64];
+        let mut dst = [0; 8];
+
+        process_scanline_contig(&src, &mut dst, 2, 4, rgb8_params(), empty_palette());
+
+        assert_eq!(dst, src);
+    }
 }

@@ -1033,34 +1033,34 @@ mod tests {
 
     fn scalar_row_444(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
         let mut dst = vec![0_u8; width * 4];
-        for x in 0..width {
-            write_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[x], cr_row[x]);
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
+            write_bt709_pixel(dst.as_mut_slice(), x, y_value, cb_row[x], cr_row[x]);
         }
         dst
     }
 
     fn scalar_row_420(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
         let mut dst = vec![0_u8; width * 4];
-        for x in 0..width {
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
             let xc = x / 2;
-            write_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[xc], cr_row[xc]);
+            write_bt709_pixel(dst.as_mut_slice(), x, y_value, cb_row[xc], cr_row[xc]);
         }
         dst
     }
 
     fn scalar_limited_row_444(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
         let mut dst = vec![0_u8; width * 4];
-        for x in 0..width {
-            write_limited_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[x], cr_row[x]);
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
+            write_limited_bt709_pixel(dst.as_mut_slice(), x, y_value, cb_row[x], cr_row[x]);
         }
         dst
     }
 
     fn scalar_limited_row_420(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], width: usize) -> Vec<u8> {
         let mut dst = vec![0_u8; width * 4];
-        for x in 0..width {
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
             let xc = x / 2;
-            write_limited_bt709_pixel(dst.as_mut_slice(), x, y_row[x], cb_row[xc], cr_row[xc]);
+            write_limited_bt709_pixel(dst.as_mut_slice(), x, y_value, cb_row[xc], cr_row[xc]);
         }
         dst
     }

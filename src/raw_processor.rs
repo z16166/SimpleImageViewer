@@ -76,6 +76,20 @@ pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
     }
 }
 
+#[cfg(test)]
+type RawColorDiag = (
+    i32,
+    i32,
+    i32,
+    [u32; 4],
+    u32,
+    u32,
+    [f32; 4],
+    [f32; 4],
+    [f32; 4],
+    [f32; 4],
+);
+
 pub struct RawProcessor {
     data: *mut ffi::libraw_data_t,
     is_unpacked: bool,
@@ -385,20 +399,7 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_color_diag_after_unpack(
-        &self,
-    ) -> (
-        i32,
-        i32,
-        i32,
-        [u32; 4],
-        u32,
-        u32,
-        [f32; 4],
-        [f32; 4],
-        [f32; 4],
-        [f32; 4],
-    ) {
+    pub(crate) fn test_color_diag_after_unpack(&self) -> RawColorDiag {
         let mut black = 0i32;
         let mut maximum = 0i32;
         let mut data_maximum = 0i32;

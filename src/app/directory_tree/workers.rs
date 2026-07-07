@@ -303,25 +303,6 @@ fn read_child_directories_with_timeout(path: &Path) -> Result<Vec<PathBuf>, Stri
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_child_directories_with_timeout_rejects_duplicate_inflight_path() {
-        let unique_suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let path = std::env::temp_dir().join(format!("siv-dir-inflight-test-{unique_suffix}"));
-        READ_DIR_INFLIGHT_PATHS.lock().insert(path.clone());
-        let _cleanup = ReadDirPathGuard(path.clone());
-
-        let result = read_child_directories_with_timeout(&path);
-
-        assert!(result.is_err());
-    }
-}
-
 pub(super) fn read_child_directories(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut children = Vec::new();
     let entries = std::fs::read_dir(path)
@@ -368,5 +349,24 @@ pub(super) fn ensure_strip_worker_com_initialized() -> bool {
     unsafe {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
         hr.is_ok() || hr == RPC_E_CHANGED_MODE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_child_directories_with_timeout_rejects_duplicate_inflight_path() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = std::env::temp_dir().join(format!("siv-dir-inflight-test-{unique_suffix}"));
+        READ_DIR_INFLIGHT_PATHS.lock().insert(path.clone());
+        let _cleanup = ReadDirPathGuard(path.clone());
+
+        let result = read_child_directories_with_timeout(&path);
+
+        assert!(result.is_err());
     }
 }

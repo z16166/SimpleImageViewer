@@ -290,21 +290,13 @@ pub(crate) use domains::{
 
 /// Combined writer access for tests and legacy call sites (separate runtime mutexes in production).
 #[cfg(test)]
+#[derive(Default)]
 pub(crate) struct DirectoryTreeState {
     pub tree: DirectoryTreeTreeState,
     pub list: DirectoryTreeListState,
 }
 
 #[cfg(test)]
-impl Default for DirectoryTreeState {
-    fn default() -> Self {
-        Self {
-            tree: DirectoryTreeTreeState::default(),
-            list: DirectoryTreeListState::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(dead_code)]
 impl DirectoryTreeState {

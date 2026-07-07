@@ -281,7 +281,7 @@ mod tests {
         out.extend_from_slice(kind);
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(data);
-        if data.len() % 2 != 0 {
+        if !data.len().is_multiple_of(2) {
             out.push(0);
         }
     }

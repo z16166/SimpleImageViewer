@@ -357,9 +357,13 @@ impl ImageLoader {
                             pixel_kind,
                         );
 
-                        let tile_size = crate::tile_cache::get_tile_size();
-                        let x = request.col * tile_size;
-                        let y = request.row * tile_size;
+                        let Some(tile_rect) = request.source.tile_rect(request.col, request.row) else {
+                            continue;
+                        };
+                        let x = tile_rect.x;
+                        let y = tile_rect.y;
+                        let tw = tile_rect.width;
+                        let th = tile_rect.height;
 
                         let already_cached = match &request.source {
                             TileDecodeSource::Sdr(_) => {
@@ -372,8 +376,6 @@ impl ImageLoader {
                                     .contains_tile(request.index, coord)
                             }
                             TileDecodeSource::Hdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
                                 source.cached_tile_rgba32f_arc(x, y, tw, th).is_some()
                             }
                         };
@@ -400,9 +402,6 @@ impl ImageLoader {
 
                         match request.source {
                             TileDecodeSource::Sdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
-
                                 #[cfg(feature = "tile-debug")]
                                 let t0 = std::time::Instant::now();
                                 let pixels = source.extract_tile(x, y, tw, th);
@@ -436,8 +435,6 @@ impl ImageLoader {
                                 }
                             }
                             TileDecodeSource::Hdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
                                 #[cfg(feature = "tile-debug")]
                                 let t0 = std::time::Instant::now();
                                 let result = source.extract_tile_rgba32f_arc(x, y, tw, th);

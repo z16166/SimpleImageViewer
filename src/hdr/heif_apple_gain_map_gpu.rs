@@ -429,18 +429,32 @@ mod tests {
     /// Simulate the WGSL compute shader `cs_compose_apple_gain` output for the
     /// entire image.  Returns a flat `Vec<f32>` in RGBA order, same layout as
     /// the CPU SIMD `composed_pixels`.
-    fn wgsl_compose_apple_gain(
-        primary_pixels: &[f32],
+    struct WgslComposeAppleGainInput<'a> {
+        primary_pixels: &'a [f32],
         primary_w: u32,
         primary_h: u32,
-        gain_rgba: &[u8],
+        gain_rgba: &'a [u8],
         gain_w: u32,
         gain_h: u32,
         input_color_space: u32,
         input_transfer_function: u32,
         headroom_span: f32,
         weight: f32,
-    ) -> Vec<f32> {
+    }
+
+    fn wgsl_compose_apple_gain(input: WgslComposeAppleGainInput<'_>) -> Vec<f32> {
+        let WgslComposeAppleGainInput {
+            primary_pixels,
+            primary_w,
+            primary_h,
+            gain_rgba,
+            gain_w,
+            gain_h,
+            input_color_space,
+            input_transfer_function,
+            headroom_span,
+            weight,
+        } = input;
         let pixel_count = primary_w as usize * primary_h as usize * 4;
         let mut out = vec![0.0_f32; pixel_count];
         for py in 0..primary_h {
@@ -487,7 +501,7 @@ mod tests {
             }
         }
         let gain: Vec<u8> = (0..GW * GH * 4)
-            .map(|i| ((i as u32 * 37 + 17) % 251) as u8)
+            .map(|i| ((i * 37 + 17) % 251) as u8)
             .collect();
 
         let color_space = HdrColorSpace::DisplayP3Linear;
@@ -518,18 +532,18 @@ mod tests {
         );
 
         // GPU shader simulation
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            color_space as u32,
-            transfer as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: PW,
+            primary_h: PH,
+            gain_rgba: &gain,
+            gain_w: GW,
+            gain_h: GH,
+            input_color_space: color_space as u32,
+            input_transfer_function: transfer as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         let mut max_diff = 0.0_f32;
@@ -566,7 +580,7 @@ mod tests {
             primary.extend_from_slice(&[v, v * 0.8, v * 0.6, 1.0]);
         }
         let gain: Vec<u8> = (0..GW * GH * 4)
-            .map(|i| ((i as u32 * 53 + 31) % 241) as u8)
+            .map(|i| ((i * 53 + 31) % 241) as u8)
             .collect();
 
         let metadata = HdrImageMetadata::default();
@@ -592,18 +606,18 @@ mod tests {
             },
         );
 
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            HdrColorSpace::LinearSrgb as u32,
-            HdrTransferFunction::Linear as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: PW,
+            primary_h: PH,
+            gain_rgba: &gain,
+            gain_w: GW,
+            gain_h: GH,
+            input_color_space: HdrColorSpace::LinearSrgb as u32,
+            input_transfer_function: HdrTransferFunction::Linear as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {
@@ -655,18 +669,18 @@ mod tests {
             },
         );
 
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            N,
-            N,
-            &gain,
-            N,
-            N,
-            HdrColorSpace::DisplayP3Linear as u32,
-            HdrTransferFunction::Srgb as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: N,
+            primary_h: N,
+            gain_rgba: &gain,
+            gain_w: N,
+            gain_h: N,
+            input_color_space: HdrColorSpace::DisplayP3Linear as u32,
+            input_transfer_function: HdrTransferFunction::Srgb as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {

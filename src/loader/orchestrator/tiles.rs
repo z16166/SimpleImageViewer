@@ -11,7 +11,11 @@ impl ImageLoader {
         source: TileDecodeSource,
         col: u32,
         row: u32,
-    ) {
+    ) -> bool {
+        if !priority.is_finite() || col >= source.tile_cols() || row >= source.tile_rows() {
+            return false;
+        }
+
         let (lock, cvar) = &*self.tile_queue;
         let mut heap = lock.lock();
         heap.push(TileRequest {
@@ -23,5 +27,6 @@ impl ImageLoader {
             source,
         });
         cvar.notify_one();
+        true
     }
 }

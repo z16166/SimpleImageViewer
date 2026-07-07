@@ -89,7 +89,7 @@ pub fn effective_native_hdr_swapchain_request_at_startup(
     #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
     {
         let _windows_wgpu_force_dx12 = windows_wgpu_force_dx12;
-        return false;
+        false
     }
     #[cfg(not(target_os = "windows"))]
     {

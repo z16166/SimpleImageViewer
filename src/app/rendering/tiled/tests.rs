@@ -141,7 +141,7 @@ fn test_prev_transition_params_for_tiled_draw() {
     assert_eq!(prev_tp.alpha, 0.5);
     assert_eq!(prev_tp.scale, 2.0);
     assert_eq!(prev_tp.offset, Vec2::new(10.0, 20.0));
-    assert_eq!(prev_tp.is_animating, true);
+    assert!(prev_tp.is_animating);
     assert_eq!(prev_tp.t, 0.3);
 }
 
@@ -365,25 +365,31 @@ fn tile_request_scheduling_is_budgeted() {
 
 #[test]
 fn sdr_tile_request_uses_shared_primary_visible_overcommit_policy() {
+    let input = TileSchedulePolicyTestInput {
+        is_cached: false,
+        pending_count: 96,
+        pending_cap: 96,
+        hard_pending_cap: 192,
+        scheduled_this_frame: 0,
+        frame_schedule_cap: 32,
+        is_primary_visible: true,
+    };
     assert!(tile_kind_uses_shared_schedule_policy(
         TilePixelKind::Sdr,
-        false,
-        96,
-        96,
-        192,
-        0,
-        32,
-        true
+        input
     ));
+    let input = TileSchedulePolicyTestInput {
+        is_cached: false,
+        pending_count: 96,
+        pending_cap: 96,
+        hard_pending_cap: 192,
+        scheduled_this_frame: 0,
+        frame_schedule_cap: 32,
+        is_primary_visible: true,
+    };
     assert!(tile_kind_uses_shared_schedule_policy(
         TilePixelKind::Hdr,
-        false,
-        96,
-        96,
-        192,
-        0,
-        32,
-        true
+        input
     ));
 }
 

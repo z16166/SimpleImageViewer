@@ -784,12 +784,12 @@ mod tests {
 
         for dst_y in 0..dst_h {
             let src_y0 = (dst_y as u64 * src_h as u64) / dst_h as u64;
-            let src_y1 = ((dst_y + 1) as u64 * src_h as u64 + dst_h as u64 - 1) / dst_h as u64;
+            let src_y1 = ((dst_y + 1) as u64 * src_h as u64).div_ceil(dst_h as u64);
             let src_y1 = src_y1.min(src_h as u64);
 
             for dst_x in 0..dst_w {
                 let src_x0 = (dst_x as u64 * src_w as u64) / dst_w as u64;
-                let src_x1 = ((dst_x + 1) as u64 * src_w as u64 + dst_w as u64 - 1) / dst_w as u64;
+                let src_x1 = ((dst_x + 1) as u64 * src_w as u64).div_ceil(dst_w as u64);
                 let src_x1 = src_x1.min(src_w as u64);
 
                 let mut sum_r: u64 = 0;

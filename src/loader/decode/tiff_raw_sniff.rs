@@ -342,8 +342,8 @@ mod tests {
         let probe = crate::raw_processor::probe_libraw_can_open(path);
         eprintln!("sniff={sniff} libraw_probe={probe}");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let sdr = crate::libtiff_loader::load_via_libtiff(path, 1.0, tone.clone())
-            .expect("libtiff sdr load");
+        let sdr =
+            crate::libtiff_loader::load_via_libtiff(path, 1.0, tone).expect("libtiff sdr load");
         let hdr =
             crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
         if let crate::loader::ImageData::Static(d) = &sdr {

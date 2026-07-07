@@ -141,8 +141,7 @@ fn read_hdr_module(name: &str) -> String {
             .into_iter()
             .filter_map(Result::ok)
         {
-            if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs")
-            {
+            if entry.file_type().is_file() && entry.path().extension().is_some_and(|e| e == "rs") {
                 out.push_str(&fs::read_to_string(entry.path()).unwrap());
             }
         }
@@ -162,7 +161,7 @@ fn read_loader_source() -> String {
     let mut out = String::new();
     for entry in walkdir::WalkDir::new(loader_dir) {
         let entry = entry.unwrap();
-        if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs") {
+        if entry.file_type().is_file() && entry.path().extension().is_some_and(|e| e == "rs") {
             out.push_str(&fs::read_to_string(entry.path()).unwrap());
         }
     }

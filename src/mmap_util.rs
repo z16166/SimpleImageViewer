@@ -79,7 +79,7 @@ mod tests {
         fs::write(&path, []).unwrap();
         assert!(reject_if_image_file_too_small(&path).is_err());
 
-        fs::write(&path, &[0u8; 4]).unwrap();
+        fs::write(&path, [0u8; 4]).unwrap();
         assert!(reject_if_image_file_too_small(&path).is_err());
 
         fs::write(&path, vec![0u8; MIN_IMAGE_FILE_BYTES as usize]).unwrap();

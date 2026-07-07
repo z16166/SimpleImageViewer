@@ -844,18 +844,17 @@ fn image_list_sort_desc_mirrors_asc_index_even_with_tied_keys() {
         &sizes,
         &modified,
     );
-    let mut asc_to_desc = vec![0usize; LEN];
+    let mut asc_to_desc = [0usize; LEN];
     for (new_idx, &old_idx) in desc_order.iter().enumerate() {
         asc_to_desc[old_idx] = new_idx;
     }
 
-    let mut unsorted_to_asc = vec![0usize; LEN];
+    let mut unsorted_to_asc = [0usize; LEN];
     for (new_idx, &old_idx) in asc_order.iter().enumerate() {
         unsorted_to_asc[old_idx] = new_idx;
     }
 
-    for original_index in 0..LEN {
-        let asc_index = unsorted_to_asc[original_index];
+    for (original_index, &asc_index) in unsorted_to_asc.iter().enumerate() {
         let desc_index = asc_to_desc[asc_index];
         assert_eq!(
             asc_index + desc_index,
@@ -1206,12 +1205,12 @@ fn reveal_mount_path_skips_root_slash_ancestor_chain() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run"))
+            .any(|request| request.namespace_path == *"/run")
     );
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run/media"))
+            .any(|request| request.namespace_path == *"/run/media")
     );
     assert!(
         requests
@@ -1622,8 +1621,10 @@ fn pre_places_folder_display_root_returns_mount_when_bootstrap_node_exists() {
 #[test]
 fn fs_path_for_namespace_node_pre_places_none_without_mount_roots() {
     let mount = super::namespace::drive_mount_namespace_path(Path::new(r"Z:\"));
-    let mut tree = DirectoryTreeTreeState::default();
-    tree.selected_fs_path = Some(PathBuf::from("relative/no/volume/file.jpg"));
+    let tree = DirectoryTreeTreeState {
+        selected_fs_path: Some(PathBuf::from("relative/no/volume/file.jpg")),
+        ..Default::default()
+    };
     assert!(
         tree.fs_path_for_namespace_node_pre_places(&mount).is_none(),
         "unresolved relative paths yield no mount roots and no fs mapping"
@@ -1928,7 +1929,7 @@ fn reveal_selected_namespace_follows_namespace_path_not_browse_alias() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run")),
+            .any(|request| request.namespace_path == *"/run"),
         "reveal must not expand filesystem-derived /run branch when namespace branch is selected"
     );
     assert!(
@@ -2102,9 +2103,11 @@ fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
     use super::view::DirectoryTreeUiChrome;
 
     let tree = DirectoryTreeTreeState::default();
-    let mut list = DirectoryTreeListState::default();
-    list.scroll_image_list_to_current = true;
-    list.snapshot_dirty = false;
+    let mut list = DirectoryTreeListState {
+        scroll_image_list_to_current: true,
+        snapshot_dirty: false,
+        ..Default::default()
+    };
     let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
     chrome.scroll_image_list_to_current = false;
 
@@ -2119,8 +2122,10 @@ fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
 fn apply_to_domains_marks_tree_snapshot_dirty_when_left_panel_resized() {
     use super::view::DirectoryTreeUiChrome;
 
-    let mut tree = DirectoryTreeTreeState::default();
-    tree.snapshot_dirty = false;
+    let mut tree = DirectoryTreeTreeState {
+        snapshot_dirty: false,
+        ..Default::default()
+    };
     let mut list = DirectoryTreeListState::default();
     let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
     chrome.left_panel_width = tree.left_panel_width + 24.0;

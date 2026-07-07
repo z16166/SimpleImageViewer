@@ -134,9 +134,9 @@ mod embedded_side_panel_layout_diag {
             .map(|(prev, now)| now - prev)
             .unwrap_or(0.0);
         let first_sample = diag.last_panel_width.is_none();
-        let interval_elapsed = diag.last_log_at.map_or(true, |last| {
-            now.saturating_duration_since(last) >= LOG_INTERVAL
-        });
+        let interval_elapsed = diag
+            .last_log_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= LOG_INTERVAL);
         let changed = first_sample
             || available_delta.abs() >= WIDTH_CHANGE_EPS
             || panel_delta.abs() >= WIDTH_CHANGE_EPS

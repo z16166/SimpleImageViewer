@@ -458,24 +458,24 @@ pub(crate) fn enqueue_hdr_plane_tile_decode(
         is_primary_visible,
         hdr_source,
     } = request;
-    if !budget.try_mark_pending(
-        &mut tm.pending_tiles,
-        tile_pending_key_for_backend(coord, plane_backend),
-        is_primary_visible,
-    ) {
+    let pending_key = tile_pending_key_for_backend(coord, plane_backend);
+    if !budget.try_mark_pending(&mut tm.pending_tiles, pending_key, is_primary_visible) {
         return;
     }
     let Some(source) = tile_decode_source_for_backend(plane_backend, None, Some(hdr_source)) else {
+        tm.pending_tiles.remove(&pending_key);
         return;
     };
-    loader.request_tile(
+    if !loader.request_tile(
         current_index,
         tm.decode_profile.clone(),
         tile_request_priority(tile_visits_len, visit_idx),
         source,
         coord.col,
         coord.row,
-    );
+    ) {
+        tm.pending_tiles.remove(&pending_key);
+    }
 }
 
 /// HDR tiled plane: enqueue decode on cache miss, otherwise draw cached RGBA32F.
@@ -585,23 +585,28 @@ pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVi
 }
 
 #[cfg(test)]
+pub(crate) struct TileSchedulePolicyTestInput {
+    pub(crate) is_cached: bool,
+    pub(crate) pending_count: usize,
+    pub(crate) pending_cap: usize,
+    pub(crate) hard_pending_cap: usize,
+    pub(crate) scheduled_this_frame: usize,
+    pub(crate) frame_schedule_cap: usize,
+    pub(crate) is_primary_visible: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn tile_kind_uses_shared_schedule_policy(
     _pixel_kind: TilePixelKind,
-    is_cached: bool,
-    pending_count: usize,
-    pending_cap: usize,
-    hard_pending_cap: usize,
-    scheduled_this_frame: usize,
-    frame_schedule_cap: usize,
-    is_primary_visible: bool,
+    input: TileSchedulePolicyTestInput,
 ) -> bool {
     should_schedule_tile_request(
-        is_cached,
-        pending_count,
-        pending_cap,
-        hard_pending_cap,
-        scheduled_this_frame,
-        frame_schedule_cap,
-        is_primary_visible,
+        input.is_cached,
+        input.pending_count,
+        input.pending_cap,
+        input.hard_pending_cap,
+        input.scheduled_this_frame,
+        input.frame_schedule_cap,
+        input.is_primary_visible,
     )
 }
