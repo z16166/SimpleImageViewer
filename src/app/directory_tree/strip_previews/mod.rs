@@ -16,11 +16,13 @@
 
 //! Directory-tree strip thumbnail generation, polling, and cache invalidation.
 
+use std::num::NonZeroU64;
+
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
 use crate::app::MAX_CONCURRENT_DECODER_LOADS;
-use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
+use crate::app::directory_tree_strip_cache::{DirectoryTreeStripJobToken, StripPreviewBufferTag};
 use crate::loader::{DecodedImage, PreviewStage};
 
 use super::{
@@ -59,21 +61,127 @@ fn strip_full_decode_reuse_allowed(
 }
 
 pub(super) fn send_strip_inflight_release(
-    release_tx: &crossbeam_channel::Sender<usize>,
-    index: usize,
-) {
-    if let Err(err) = release_tx.try_send(index) {
+    release_tx: &crossbeam_channel::Sender<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightRelease,
+    >,
+    key: crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
+    kind: crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightReleaseKind,
+    root_wake: Option<&crate::app::RootRedrawWake>,
+) -> bool {
+    let index = key.index;
+    let release =
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightRelease { key, kind };
+    if let Err(err) = release_tx.try_send(release) {
         log::warn!("[DirectoryTree] Strip inflight release dropped for index {index}: {err}");
+        return false;
     }
+    if let Some(wake) = root_wake {
+        wake();
+    }
+    true
 }
 
 impl ImageViewerApp {
+    /// Begin a strip worker job for `index`.
+    ///
+    /// Must be called without holding `directory_tree.list`; this function briefly locks it
+    /// to snapshot `image_list_generation` for stale-result rejection.
+    pub(super) fn begin_directory_tree_strip_job(
+        &mut self,
+        index: usize,
+    ) -> Option<crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey> {
+        debug_assert!(
+            !self.directory_tree_strip_generate_inflight.contains(&index),
+            "begin_directory_tree_strip_job called while strip job is already in-flight"
+        );
+        debug_assert!(
+            !self
+                .directory_tree_strip_inflight_tokens
+                .contains_key(&index),
+            "begin_directory_tree_strip_job would overwrite active strip job token"
+        );
+        if self.directory_tree_strip_generate_inflight.contains(&index)
+            || self
+                .directory_tree_strip_inflight_tokens
+                .contains_key(&index)
+        {
+            return None;
+        }
+        let path = self.image_files.get(index)?.clone();
+        let image_list_generation = self.directory_tree.list.lock().image_list_generation;
+        self.directory_tree_strip_next_job_token = self
+            .directory_tree_strip_next_job_token
+            .wrapping_add(1)
+            .max(1);
+        let job_token = NonZeroU64::new(self.directory_tree_strip_next_job_token)?;
+        self.directory_tree_strip_generate_inflight.insert(index);
+        self.directory_tree_strip_inflight_tokens
+            .insert(index, job_token);
+        Some(
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey {
+                index,
+                path,
+                image_list_generation,
+                job_token: DirectoryTreeStripJobToken::Worker(job_token),
+            },
+        )
+    }
+
+    /// Build a strip upload key for pixels produced synchronously from the current list.
+    ///
+    /// `SynchronousUpload` marks an upload that has no worker in-flight state, so
+    /// token-matched release and cleanup paths must ignore it.
+    pub(super) fn directory_tree_strip_upload_key_for_current_index(
+        &self,
+        index: usize,
+    ) -> Option<crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey> {
+        Some(
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey {
+                index,
+                path: self.image_files.get(index)?.clone(),
+                image_list_generation: self.directory_tree.list.lock().image_list_generation,
+                job_token: DirectoryTreeStripJobToken::SynchronousUpload,
+            },
+        )
+    }
+
+    pub(super) fn directory_tree_strip_key_matches_current_list(
+        &self,
+        key: &crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
+    ) -> bool {
+        self.image_files.get(key.index) == Some(&key.path)
+            && self.directory_tree.list.lock().image_list_generation == key.image_list_generation
+    }
+
+    pub(super) fn directory_tree_strip_key_matches_active_job(
+        &self,
+        key: &crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
+    ) -> bool {
+        key.job_token.worker_token().is_some_and(|token| {
+            self.directory_tree_strip_inflight_tokens.get(&key.index) == Some(&token)
+        })
+    }
+
+    pub(super) fn directory_tree_strip_active_index_for_job_token(
+        &self,
+        key: &crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
+    ) -> Option<usize> {
+        let token = key.job_token.worker_token()?;
+        if self.directory_tree_strip_key_matches_active_job(key) {
+            return Some(key.index);
+        }
+        self.directory_tree_strip_inflight_tokens
+            .iter()
+            .find_map(|(&index, &active_token)| (active_token == token).then_some(index))
+    }
+
     pub(crate) fn invalidate_directory_tree_strip_preview_for_index(&mut self, index: usize) {
         self.directory_tree_strip_cache.remove_index(index);
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_cold_awaiting_main_loader
             .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_inflight_tokens.remove(&index);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
@@ -324,12 +432,15 @@ impl ImageViewerApp {
                     continue;
                 };
                 self.queue_directory_tree_strip_gpu_upload(
-                    index,
-                    decoded,
-                    PreviewStage::Initial,
-                    self.directory_tree_strip_logical_size(index),
-                    StripPreviewBufferTag::PreloadSdrFallback,
-                    None,
+                    crate::app::directory_tree_strip_cache::DirectoryTreeStripGpuUploadRequest {
+                        index,
+                        decoded,
+                        stage: PreviewStage::Initial,
+                        logical: self.directory_tree_strip_logical_size(index),
+                        buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+                        strip_max_side_used: None,
+                        job_key: None,
+                    },
                 );
                 deferred_processed += 1;
             }
@@ -424,14 +535,14 @@ impl ImageViewerApp {
             crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload,
         >| {
             deque.retain_mut(|pending| {
-                if pending.index >= old_to_new.len() {
+                if pending.key.index >= old_to_new.len() {
                     return false;
                 }
-                let new_idx = old_to_new[pending.index];
+                let new_idx = old_to_new[pending.key.index];
                 if new_idx == usize::MAX {
                     return false;
                 }
-                pending.index = new_idx;
+                pending.key.index = new_idx;
                 true
             });
         };
@@ -465,6 +576,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_tokens,
+            &old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             &old_to_new,
@@ -490,6 +605,10 @@ impl ImageViewerApp {
     ) {
         self.directory_tree_strip_cache.permute(old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_tokens,
+            old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             old_to_new,
@@ -608,6 +727,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_tokens,
+            &old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             &old_to_new,
@@ -636,6 +759,7 @@ impl ImageViewerApp {
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
         self.directory_tree_strip_generate_inflight.clear();
+        self.directory_tree_strip_inflight_tokens.clear();
         self.directory_tree_strip_static_full_decode_inflight
             .clear();
         self.directory_tree_strip_tiled_attempted.clear();
@@ -702,18 +826,51 @@ impl ImageViewerApp {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
+
     use super::send_strip_inflight_release;
+    use crate::app::directory_tree_strip_cache::{
+        DirectoryTreeStripInflightReleaseKind, DirectoryTreeStripJobKey, DirectoryTreeStripJobToken,
+    };
+
+    fn strip_job_key(index: usize, job_token: u64) -> DirectoryTreeStripJobKey {
+        let Some(job_token) = NonZeroU64::new(job_token) else {
+            panic!("test token must be non-zero");
+        };
+        DirectoryTreeStripJobKey {
+            index,
+            path: PathBuf::from(format!("image-{index}.png")),
+            image_list_generation: 7,
+            job_token: DirectoryTreeStripJobToken::Worker(job_token),
+        }
+    }
 
     #[test]
-    fn strip_inflight_release_sends_index_on_bounded_channel() {
+    fn strip_inflight_release_sends_key_on_bounded_channel() {
         let (tx, rx) = crossbeam_channel::bounded(4);
-        send_strip_inflight_release(&tx, 42);
-        assert_eq!(rx.try_recv().ok(), Some(42));
+        assert!(send_strip_inflight_release(
+            &tx,
+            strip_job_key(42, 9),
+            DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+            None,
+        ));
+        let release = rx.try_recv().expect("release should be queued");
+        assert_eq!(release.key, strip_job_key(42, 9));
+        assert!(matches!(
+            release.kind,
+            DirectoryTreeStripInflightReleaseKind::ClearAttempt
+        ));
     }
 
     #[test]
     fn strip_inflight_release_try_send_when_full_does_not_panic() {
         let (tx, _rx) = crossbeam_channel::bounded(0);
-        send_strip_inflight_release(&tx, 1);
+        assert!(!send_strip_inflight_release(
+            &tx,
+            strip_job_key(1, 3),
+            DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+            None,
+        ));
     }
 }

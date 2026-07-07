@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPreviewJobResult, StripPreviewBufferTag,
+    DirectoryTreeStripInflightReleaseKind, DirectoryTreeStripJobKey,
+    DirectoryTreeStripPreviewFailure, DirectoryTreeStripPreviewJobResult,
+    DirectoryTreeStripPreviewSuccess, StripPreviewBufferTag, decoded_rgba_size_valid,
 };
 use crate::app::image_management::should_defer_neighbor_work_for_current_main;
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
@@ -71,15 +73,11 @@ impl ImageViewerApp {
         if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
-        let list_generation = {
-            let list = self.directory_tree.list.lock();
-            list.image_list_generation
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            return false;
         };
-
-        self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -99,32 +97,45 @@ impl ImageViewerApp {
                     log::debug!(
                         "[DirectoryTree] Strip ISO baseline sync failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
             if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
                 return;
             }
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded: strip,
-                reusable_full_decoded: None,
-                logical: (width, height),
-                stage: PreviewStage::Initial,
-                buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded: strip,
+                    reusable_full_decoded: None,
+                    logical: (width, height),
+                    stage: PreviewStage::Initial,
+                    buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true
@@ -140,11 +151,6 @@ impl ImageViewerApp {
         if !self.strip_needs_hdr_cache_sync_for_hdr(index, hdr.as_ref()) {
             return false;
         }
-        let list_generation = {
-            let list = self.directory_tree.list.lock();
-            list.image_list_generation
-        };
-
         let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
@@ -160,10 +166,11 @@ impl ImageViewerApp {
         }
         let stage = PreviewStage::Refined;
 
-        self.directory_tree_strip_generate_inflight.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            return false;
+        };
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -188,7 +195,12 @@ impl ImageViewerApp {
                     log::debug!(
                         "[DirectoryTree] Strip HDR cache sync failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
@@ -210,24 +222,27 @@ impl ImageViewerApp {
                     hdr_has_float_pixels,
                     decoded.is_sdr_deferred_placeholder(),
                 );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded: None,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true
@@ -505,12 +520,11 @@ impl ImageViewerApp {
         };
         let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active()
             && slow_primary_skip_reason == DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr;
-        let list_generation = {
-            let list = self.directory_tree.list.lock();
-            list.image_list_generation
-        };
         self.directory_tree_strip_cold_attempted.insert(index);
-        self.directory_tree_strip_generate_inflight.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            self.directory_tree_strip_cold_attempted.remove(&index);
+            return;
+        };
         if shares_main_static_full_decode {
             self.directory_tree_strip_static_full_decode_inflight
                 .insert(index);
@@ -601,19 +615,38 @@ impl ImageViewerApp {
                 buffer_tag,
                 stage
             );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader,
-                strip_max_side_used: max_side,
+            let send_result = if cold_deferred_to_main_loader {
+                let job = DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(
+                    DirectoryTreeStripPreviewFailure {
+                        key: job_key.clone(),
+                        reason: "await_main_loader_primary",
+                    },
+                );
+                tx.try_send(job)
+            } else if decoded.width == 0
+                || decoded.height == 0
+                || !decoded_rgba_size_valid(&decoded)
+                || !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1)
+            {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                    root_wake.as_ref(),
+                );
+                return;
+            } else {
+                let job = DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
+                tx.try_send(job)
             };
-            let send_result = tx.try_send(job);
             if send_result.is_ok() {
                 if let Some(wake) = &root_wake {
                     wake();
@@ -622,7 +655,12 @@ impl ImageViewerApp {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
     }
@@ -644,13 +682,13 @@ impl ImageViewerApp {
             return;
         }
 
+        #[cfg(feature = "preload-debug")]
         let path = self.image_files.get(index).cloned().unwrap_or_default();
-        let list_generation = {
-            let list = self.directory_tree.list.lock();
-            list.image_list_generation
-        };
         self.directory_tree_strip_tiled_attempted.insert(index);
-        self.directory_tree_strip_generate_inflight.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            self.directory_tree_strip_tiled_attempted.remove(&index);
+            return;
+        };
         let source = Arc::clone(&source);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
@@ -709,18 +747,34 @@ impl ImageViewerApp {
                 logical.1,
                 preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1,)
             );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded: None,
-                logical,
-                stage: PreviewStage::Refined,
-                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            if decoded.width == 0
+                || decoded.height == 0
+                || !decoded_rgba_size_valid(&decoded)
+                || !preview_aspect_matches_logical(
+                    decoded.width,
+                    decoded.height,
+                    logical.0,
+                    logical.1,
+                )
+            {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage: PreviewStage::Refined,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    strip_max_side_used: max_side,
+                });
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
                 if let Some(wake) = &root_wake {
@@ -728,7 +782,12 @@ impl ImageViewerApp {
                 }
             } else if let Err(err) = send_result {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
     }
@@ -742,18 +801,25 @@ impl ImageViewerApp {
         stage: PreviewStage,
         logical: Option<(u32, u32)>,
         buffer_tag: StripPreviewBufferTag,
+        source_job_key: Option<DirectoryTreeStripJobKey>,
     ) -> bool {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+            return false;
+        }
+        if let Some(key) = source_job_key.as_ref()
+            && !self.directory_tree_strip_key_matches_current_list(key)
+        {
+            self.clear_strip_preview_attempt_state_for_key(key);
             return false;
         }
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        let list_generation = self.directory_tree.list.lock().image_list_generation;
-        self.directory_tree_strip_generate_inflight.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            return false;
+        };
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -773,32 +839,45 @@ impl ImageViewerApp {
                     log::warn!(
                         "[DirectoryTree] Strip pending GPU resample failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
             if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
                 return;
             }
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded: strip,
-                reusable_full_decoded: None,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded: strip,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true

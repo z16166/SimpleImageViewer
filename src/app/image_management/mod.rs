@@ -1634,4 +1634,4 @@ fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

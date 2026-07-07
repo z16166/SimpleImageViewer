@@ -421,7 +421,7 @@ impl ImageViewerApp {
         let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
             crossbeam_channel::bounded(16);
         let (directory_tree_strip_inflight_release_tx, directory_tree_strip_inflight_release_rx) =
-            crossbeam_channel::bounded(64);
+            crossbeam_channel::unbounded();
         #[cfg(feature = "avif-native")]
         let (avif_strip_probe_result_tx, avif_strip_probe_result_rx) =
             crossbeam_channel::bounded(64);
@@ -604,6 +604,8 @@ impl ImageViewerApp {
             directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+            directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
+            directory_tree_strip_next_job_token: 0,
             directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,
@@ -612,6 +614,7 @@ impl ImageViewerApp {
             directory_tree_strip_pending_gpu_initial: VecDeque::new(),
             directory_tree_strip_pending_gpu_refined: VecDeque::new(),
             directory_tree_strip_pending_gpu_next_seq: 0,
+            directory_tree_strip_pending_drop_scratch: Vec::new(),
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,

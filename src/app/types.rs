@@ -538,6 +538,9 @@ pub struct ImageViewerApp {
     /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
     pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_inflight_tokens:
+        std::collections::HashMap<usize, std::num::NonZeroU64>,
+    pub(crate) directory_tree_strip_next_job_token: u64,
     /// Cold strip jobs known to produce reusable full-SDR pixels for the main loader.
     /// This is not derived from `generate_inflight`: PNG/WebP need an animation probe.
     pub(crate) directory_tree_strip_static_full_decode_inflight: std::collections::HashSet<usize>,
@@ -547,8 +550,12 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_preview_rx: crossbeam_channel::Receiver<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,
-    pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<usize>,
-    pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<usize>,
+    pub(crate) directory_tree_strip_inflight_release_tx: crossbeam_channel::Sender<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightRelease,
+    >,
+    pub(crate) directory_tree_strip_inflight_release_rx: crossbeam_channel::Receiver<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightRelease,
+    >,
     /// Pending GPU uploads with `PreviewStage::Initial`, drained first on eviction.
     pub(crate) directory_tree_strip_pending_gpu_initial:
         VecDeque<crate::app::directory_tree_strip_cache::DirectoryTreeStripPendingGpuUpload>,
@@ -558,6 +565,9 @@ pub struct ImageViewerApp {
     /// Monotonic counter assigned to each pending upload; used to merge both queues in FIFO order
     /// during flush.
     pub(crate) directory_tree_strip_pending_gpu_next_seq: u64,
+    /// Reused buffer for pending GPU upload keys that need in-flight cleanup.
+    pub(crate) directory_tree_strip_pending_drop_scratch:
+        Vec<crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey>,
     /// Background Places loader; polled from `logic()`.
     pub(crate) directory_tree_places_load_rx:
         Option<crossbeam_channel::Receiver<Result<DirectoryTreePlaces, String>>>,

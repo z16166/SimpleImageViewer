@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
@@ -71,10 +72,33 @@ impl StripPreviewBufferTag {
     }
 }
 
-pub(crate) struct DirectoryTreeStripPreviewJobResult {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryTreeStripJobToken {
+    /// Synchronous pixels copied from an already available preview/cache path.
+    SynchronousUpload,
+    /// Background worker attempt that must match active in-flight bookkeeping.
+    Worker(NonZeroU64),
+}
+
+impl DirectoryTreeStripJobToken {
+    pub(crate) fn worker_token(self) -> Option<NonZeroU64> {
+        match self {
+            Self::SynchronousUpload => None,
+            Self::Worker(token) => Some(token),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirectoryTreeStripJobKey {
     pub index: usize,
     pub path: PathBuf,
     pub image_list_generation: u64,
+    pub job_token: DirectoryTreeStripJobToken,
+}
+
+pub(crate) struct DirectoryTreeStripPreviewSuccess {
+    pub key: DirectoryTreeStripJobKey,
     pub decoded: DecodedImage,
     /// Full static SDR decode produced while generating a cold strip thumbnail.
     /// When present, the app can reuse it as a preloaded main image instead of
@@ -83,15 +107,47 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub logical: (u32, u32),
     pub stage: PreviewStage,
     pub buffer_tag: StripPreviewBufferTag,
-    /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
-    pub cold_deferred_to_main_loader: bool,
     /// `strip_max_side()` used when the worker last sized `decoded` for strip upload.
     pub strip_max_side_used: u32,
+}
+
+pub(crate) struct DirectoryTreeStripPreviewFailure {
+    pub key: DirectoryTreeStripJobKey,
+    pub reason: &'static str,
+}
+
+pub(crate) enum DirectoryTreeStripPreviewJobResult {
+    Success(DirectoryTreeStripPreviewSuccess),
+    /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
+    DeferredToMainLoader(DirectoryTreeStripPreviewFailure),
+}
+
+pub(crate) enum DirectoryTreeStripInflightReleaseKind {
+    ClearAttempt,
+    PermanentFailure,
+}
+
+pub(crate) struct DirectoryTreeStripInflightRelease {
+    pub key: DirectoryTreeStripJobKey,
+    pub kind: DirectoryTreeStripInflightReleaseKind,
 }
 
 pub(crate) struct StripThumbnailCacheRequest<'a> {
     pub index: usize,
     pub decoded: &'a DecodedImage,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
+    pub stage: PreviewStage,
+    pub logical_size: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    pub strip_max_side_used: Option<u32>,
+    pub ctx: &'a egui::Context,
+    pub bypass_detach_queue: bool,
+}
+
+pub(crate) struct StripThumbnailCacheOwnedRequest<'a> {
+    pub index: usize,
+    pub decoded: DecodedImage,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
     pub stage: PreviewStage,
     pub logical_size: Option<(u32, u32)>,
     pub buffer_tag: StripPreviewBufferTag,
@@ -102,7 +158,7 @@ pub(crate) struct StripThumbnailCacheRequest<'a> {
 
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
 pub(crate) struct DirectoryTreeStripPendingGpuUpload {
-    pub index: usize,
+    pub key: DirectoryTreeStripJobKey,
     pub decoded: DecodedImage,
     pub stage: PreviewStage,
     pub logical: Option<(u32, u32)>,
@@ -115,9 +171,26 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub strip_max_side_used: Option<u32>,
 }
 
+pub(crate) struct DirectoryTreeStripGpuUploadRequest {
+    pub index: usize,
+    pub decoded: DecodedImage,
+    pub stage: PreviewStage,
+    pub logical: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    pub strip_max_side_used: Option<u32>,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
+}
+
 /// Limit GPU texture uploads per paint pass (checklist #3).
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
+const MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE: usize = 256;
+const DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL: usize = 4;
+/// Pixel memory cap for strip uploads waiting for paint-thread GPU upload.
+pub(crate) const MAX_STRIP_PENDING_GPU_UPLOAD_BYTES: usize = MAX_STRIP_PENDING_GPU_UPLOADS
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL;
 
 #[derive(Default)]
 pub(crate) struct DirectoryTreeStripCache {

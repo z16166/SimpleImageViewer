@@ -374,6 +374,7 @@ impl ImageViewerApp {
         self.cache_directory_tree_strip_thumbnail(
             crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                 index: idx,
+                job_key: None,
                 decoded,
                 stage: crate::loader::PreviewStage::Refined,
                 logical_size: Some((decoded.width, decoded.height)),
@@ -504,6 +505,7 @@ impl ImageViewerApp {
             self.cache_directory_tree_strip_thumbnail(
                 crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                     index: idx,
+                    job_key: None,
                     decoded: &strip_preview,
                     stage: strip_stage,
                     logical_size: Some(strip_logical),
@@ -668,6 +670,7 @@ impl ImageViewerApp {
         self.cache_directory_tree_strip_thumbnail(
             crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                 index: idx,
+                job_key: None,
                 decoded: &strip_preview,
                 stage: strip_stage,
                 logical_size: Some(strip_logical),
