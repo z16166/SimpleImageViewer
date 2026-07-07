@@ -604,6 +604,7 @@ impl ImageViewerApp {
             directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+            directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,
             directory_tree_strip_inflight_release_tx,

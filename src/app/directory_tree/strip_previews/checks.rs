@@ -370,13 +370,7 @@ impl ImageViewerApp {
         &self,
         path: &std::path::Path,
     ) -> bool {
-        path_extension_matches_any(
-            path,
-            &[
-                "png", "webp", "bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi", "tif",
-                "tiff", "psd", "psb",
-            ],
-        )
+        crate::loader::strip_path_provides_reusable_static_full_decode(path)
     }
 
     pub(crate) fn strip_cold_static_full_decode_can_share_with_main(
@@ -389,13 +383,11 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn strip_full_decode_inflight_should_block_main_load(&self, index: usize) -> bool {
-        if !self.directory_tree_strip_generate_inflight.contains(&index) {
-            return false;
-        }
-        let Some(path) = self.image_files.get(index) else {
-            return false;
-        };
-        self.strip_cold_static_full_decode_can_share_with_main(index, path)
+        self.directory_tree_strip_generate_inflight.contains(&index)
+            && self
+                .directory_tree_strip_static_full_decode_inflight
+                .contains(&index)
+            && self.strip_full_decode_share_window_contains(index)
     }
 
     /// True when Viewing settings use embedded SDR master on an SDR tone-mapped output path.
@@ -460,11 +452,12 @@ impl ImageViewerApp {
     }
 
     /// Skip static raster full decode when the main loader is already or imminently responsible.
-    pub(crate) fn strip_cold_skip_slow_static_full_decode_primary(&self, index: usize) -> bool {
-        let Some(path) = self.image_files.get(index) else {
-            return false;
-        };
-        if !self.strip_cold_static_full_decode_can_share_with_main(index, path) {
+    pub(crate) fn strip_cold_skip_slow_static_full_decode_primary(
+        &self,
+        index: usize,
+        can_share_with_main: bool,
+    ) -> bool {
+        if !can_share_with_main {
             return false;
         }
         if self.strip_main_sdr_decode_available_or_in_flight(index) {

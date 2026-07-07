@@ -492,8 +492,10 @@ impl ImageViewerApp {
             self.strip_path_benefits_from_main_loader_embedded_sdr_share(&path);
         let skip_slow_embedded_sdr_primary =
             self.strip_cold_skip_slow_embedded_sdr_primary(index) && shares_main_embedded_sdr;
-        let skip_slow_static_full_decode =
-            self.strip_cold_skip_slow_static_full_decode_primary(index);
+        let shares_main_static_full_decode =
+            self.strip_cold_static_full_decode_can_share_with_main(index, &path);
+        let skip_slow_static_full_decode = self
+            .strip_cold_skip_slow_static_full_decode_primary(index, shares_main_static_full_decode);
         let slow_primary_skip_reason = if skip_slow_embedded_sdr_primary {
             DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr
         } else if skip_slow_static_full_decode {
@@ -509,6 +511,10 @@ impl ImageViewerApp {
         };
         self.directory_tree_strip_cold_attempted.insert(index);
         self.directory_tree_strip_generate_inflight.insert(index);
+        if shares_main_static_full_decode {
+            self.directory_tree_strip_static_full_decode_inflight
+                .insert(index);
+        }
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
         let root_wake = self.root_redraw_wake_handle();

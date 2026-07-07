@@ -74,6 +74,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_awaiting_main_loader
             .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_static_full_decode_inflight
+            .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
     }
 
@@ -410,6 +412,8 @@ impl ImageViewerApp {
                 .retain(|index| *index < self.image_files.len());
             self.directory_tree_strip_generate_inflight
                 .retain(|index| *index < self.image_files.len());
+            self.directory_tree_strip_static_full_decode_inflight
+                .retain(|index| *index < self.image_files.len());
             self.directory_tree_strip_cold_attempted
                 .retain(|index| *index < self.image_files.len());
         }
@@ -461,6 +465,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
+        permute_usize_set(
+            &mut self.directory_tree_strip_static_full_decode_inflight,
+            &old_to_new,
+        );
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
         permute_usize_set(
@@ -482,6 +490,10 @@ impl ImageViewerApp {
     ) {
         self.directory_tree_strip_cache.permute(old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
+        permute_usize_set(
+            &mut self.directory_tree_strip_static_full_decode_inflight,
+            old_to_new,
+        );
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
         permute_usize_set(
@@ -596,6 +608,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_generate_inflight,
             &old_to_new,
         );
+        permute_usize_set(
+            &mut self.directory_tree_strip_static_full_decode_inflight,
+            &old_to_new,
+        );
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, &old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, &old_to_new);
         permute_usize_set(
@@ -620,6 +636,8 @@ impl ImageViewerApp {
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
         self.directory_tree_strip_cache.clear_all();
         self.directory_tree_strip_generate_inflight.clear();
+        self.directory_tree_strip_static_full_decode_inflight
+            .clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
         self.directory_tree_strip_cold_awaiting_main_loader.clear();

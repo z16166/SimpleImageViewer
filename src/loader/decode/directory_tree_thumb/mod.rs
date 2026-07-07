@@ -52,7 +52,9 @@ mod static_raster;
 #[cfg(feature = "heif-native")]
 use probe_log::log_strip_heif_probe;
 use probe_log::{log_strip_decode_path, log_strip_exif_probe};
-use static_raster::try_static_raster_strip_fast_path;
+use static_raster::{
+    static_raster_path_provides_reusable_full_decode, try_static_raster_strip_fast_path,
+};
 
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
@@ -101,6 +103,18 @@ pub(crate) const STRIP_DEFER_SLOW_EMBEDDED_SDR: &str = "strip_deferred_slow_embe
 /// caller waits for preload install or texture-cache strip sync.
 pub(crate) const STRIP_DEFER_SLOW_STATIC_FULL_DECODE: &str =
     "strip_deferred_slow_static_full_decode";
+
+pub(crate) fn strip_path_provides_reusable_static_full_decode(path: &Path) -> bool {
+    if static_raster_path_provides_reusable_full_decode(path) {
+        return true;
+    }
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    ["tif", "tiff", "psd", "psb"]
+        .iter()
+        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+}
 
 pub(crate) struct DirectoryTreeThumbDecode {
     pub(crate) preview: DecodedImage,

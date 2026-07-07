@@ -38,6 +38,7 @@ pub(crate) use directory_tree_thumb::{
     DirectoryTreeThumbDecodeOptions, DirectoryTreeThumbSlowPrimarySkipReason,
     STRIP_DEFER_SLOW_EMBEDDED_SDR, STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
     generate_directory_tree_thumb_decode_from_path,
+    strip_path_provides_reusable_static_full_decode,
 };
 pub(crate) use raster::is_maybe_animated;
 pub(crate) use strip_downsample::downsample_decoded_for_strip;

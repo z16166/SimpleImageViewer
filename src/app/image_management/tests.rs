@@ -2271,6 +2271,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+        directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
         directory_tree_strip_preview_tx: {
             let (tx, _rx) = crossbeam_channel::unbounded();
             tx
@@ -3907,13 +3908,59 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
     assert!(!app.directory_tree_strip_cache.contains(0));
 }
 
+fn write_strip_test_png(name: &str) -> PathBuf {
+    use image::ImageEncoder;
+
+    let path = std::env::temp_dir().join(format!(
+        "siv_strip_full_decode_{name}_{}.png",
+        std::process::id()
+    ));
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ColorType::Rgba8.into())
+        .expect("encode test png");
+    std::fs::write(&path, encoded).expect("write test png");
+    path
+}
+
+fn png_chunk_crc(chunk_type: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in chunk_type.iter().chain(data.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn insert_apng_actl_chunk(mut png: Vec<u8>) -> Vec<u8> {
+    let ihdr_len = u32::from_be_bytes(png[8..12].try_into().expect("ihdr length")) as usize;
+    let insert_at = 8 + 4 + 4 + ihdr_len + 4;
+    let chunk_type = *b"acTL";
+    let mut data = Vec::new();
+    data.extend_from_slice(&1u32.to_be_bytes());
+    data.extend_from_slice(&0u32.to_be_bytes());
+    let crc = png_chunk_crc(&chunk_type, &data);
+
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    chunk.extend_from_slice(&chunk_type);
+    chunk.extend_from_slice(&data);
+    chunk.extend_from_slice(&crc.to_be_bytes());
+    png.splice(insert_at..insert_at, chunk);
+    png
+}
+
 #[test]
 fn strip_static_full_decode_inflight_blocks_main_preload_in_ring() {
     let mut app = make_test_app();
+    let neighbor = write_strip_test_png("static_neighbor");
     app.image_files = vec![
         PathBuf::from("current.png"),
-        PathBuf::from("neighbor.png"),
-        PathBuf::from("outside.png"),
+        neighbor.clone(),
+        PathBuf::from("outside.bmp"),
         PathBuf::from("backward_neighbor.png"),
     ];
     app.set_current_index(0);
@@ -3921,9 +3968,36 @@ fn strip_static_full_decode_inflight_blocks_main_preload_in_ring() {
     app.prefetch_window_max_distance = 1;
     app.directory_tree_strip_generate_inflight.insert(1);
     app.directory_tree_strip_generate_inflight.insert(2);
+    assert!(app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]) {
+        app.directory_tree_strip_static_full_decode_inflight
+            .insert(1);
+    }
+    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]) {
+        app.directory_tree_strip_static_full_decode_inflight
+            .insert(2);
+    }
 
     assert!(app.strip_full_decode_inflight_should_block_main_load(1));
     assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
+    let _ = std::fs::remove_file(neighbor);
+}
+
+#[test]
+fn strip_animated_png_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    let animated = write_strip_test_png("animated_neighbor");
+    let png = std::fs::read(&animated).expect("read test png");
+    std::fs::write(&animated, insert_apng_actl_chunk(png)).expect("write test apng");
+    app.image_files = vec![PathBuf::from("current.png"), animated.clone()];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+    let _ = std::fs::remove_file(animated);
 }
 
 #[test]

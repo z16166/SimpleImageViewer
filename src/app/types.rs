@@ -538,6 +538,9 @@ pub struct ImageViewerApp {
     /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
     pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
+    /// Cold strip jobs known to produce reusable full-SDR pixels for the main loader.
+    /// This is not derived from `generate_inflight`: PNG/WebP need an animation probe.
+    pub(crate) directory_tree_strip_static_full_decode_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,

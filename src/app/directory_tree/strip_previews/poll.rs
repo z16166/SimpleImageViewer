@@ -30,6 +30,8 @@ use crate::loader::preview_aspect_matches_logical;
 impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_static_full_decode_inflight
+            .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_cold_awaiting_main_loader
@@ -39,6 +41,8 @@ impl ImageViewerApp {
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
     fn finish_strip_preview_job(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_static_full_decode_inflight
+            .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
     }
 
