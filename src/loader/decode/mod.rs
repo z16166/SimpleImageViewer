@@ -60,8 +60,8 @@ use super::{
 };
 
 use animation_bootstrap::{
-    load_gif_with_bootstrap_from_bytes, load_png_with_bootstrap_from_bytes,
-    load_webp_with_bootstrap_from_bytes, spawn_raster_animation_remainder_decode,
+    load_gif_with_bootstrap_from_mmap, load_png_with_bootstrap_from_mmap,
+    load_webp_with_bootstrap_from_mmap, spawn_raster_animation_remainder_decode,
 };
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{
@@ -365,25 +365,24 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 high_quality,
                 || {
                     primary_with_retainable_mmap(path, |mmap| {
-                        let bytes: Arc<[u8]> = Arc::from(mmap.as_ref().as_ref());
                         let outcome = match ext.as_str() {
-                            "gif" => load_gif_with_bootstrap_from_bytes(
+                            "gif" => load_gif_with_bootstrap_from_mmap(
                                 path,
-                                bytes,
+                                Arc::clone(&mmap),
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
                             ),
-                            "png" | "apng" => load_png_with_bootstrap_from_bytes(
+                            "png" | "apng" => load_png_with_bootstrap_from_mmap(
                                 path,
-                                bytes,
+                                Arc::clone(&mmap),
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
                             ),
-                            "webp" => load_webp_with_bootstrap_from_bytes(
+                            "webp" => load_webp_with_bootstrap_from_mmap(
                                 path,
-                                bytes,
+                                Arc::clone(&mmap),
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
