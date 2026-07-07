@@ -39,7 +39,7 @@ use crate::loader::raw_osd::RawOsdContext;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource, RawImageSourceParams};
 use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult,
-    RawLoadOutput, RefinementRequest, source_key_for_path,
+    RawDevelopedImageRank, RawLoadOutput, RefinementRequest, source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -181,6 +181,7 @@ fn load_raw_with_embedded_bootstrap(
             raw_width: width,
             raw_height: height,
             refine_tx,
+            initial_image_rank: RawDevelopedImageRank::EmbeddedPreview,
             orientation_override: final_lr_flip,
             needs_refinement: true,
             hdr_target_capacity,

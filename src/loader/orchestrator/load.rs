@@ -26,8 +26,8 @@ use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
     MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
-    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
+    RawDevelopedImageRank, RefinementRequest, TileDecodeSource, TileResult,
+    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
     in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
     source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
@@ -541,7 +541,9 @@ impl ImageLoader {
                                 continue;
                             }
 
-                            if req.developed_image.read().is_some() {
+                            if *req.developed_image_rank.read()
+                                == RawDevelopedImageRank::FullResolutionDeveloped
+                            {
                                 crate::preload_debug!(
                                     "[PreloadDebug][RAW] refine_skip idx={} reason=already_developed path={}",
                                     req.index,
@@ -670,6 +672,8 @@ impl ImageLoader {
                                         let mut dev_lock = req.developed_image.write();
                                         *dev_lock = Some(dynamic);
                                     }
+                                    *req.developed_image_rank.write() =
+                                        RawDevelopedImageRank::FullResolutionDeveloped;
 
                                     let bundle = PreviewBundle::refined()
                                         .with_hdr(std::sync::Arc::new(hdr))

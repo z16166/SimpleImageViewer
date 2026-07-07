@@ -261,6 +261,34 @@ impl ImageLoader {
     }
 }
 
+fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> bool {
+    let n = pool.current_num_threads();
+    if n == 0 {
+        return true;
+    }
+    let (tx, rx) = crossbeam_channel::bounded(n);
+    for _ in 0..n {
+        let tx = tx.clone();
+        pool.spawn(move || {
+            let _ = tx.send(());
+        });
+    }
+    drop(tx);
+
+    let deadline = Instant::now() + timeout;
+    for _ in 0..n {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if rx.recv_timeout(remaining).is_err() {
+            log::warn!(
+                "[Loader] Timed out after {:?} waiting for {n} img-loader thread(s) during shutdown",
+                timeout
+            );
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,32 +342,4 @@ mod tests {
             &queued, &incoming
         ));
     }
-}
-
-fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> bool {
-    let n = pool.current_num_threads();
-    if n == 0 {
-        return true;
-    }
-    let (tx, rx) = crossbeam_channel::bounded(n);
-    for _ in 0..n {
-        let tx = tx.clone();
-        pool.spawn(move || {
-            let _ = tx.send(());
-        });
-    }
-    drop(tx);
-
-    let deadline = Instant::now() + timeout;
-    for _ in 0..n {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if rx.recv_timeout(remaining).is_err() {
-            log::warn!(
-                "[Loader] Timed out after {:?} waiting for {n} img-loader thread(s) during shutdown",
-                timeout
-            );
-            return false;
-        }
-    }
-    true
 }

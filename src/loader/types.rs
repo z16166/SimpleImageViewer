@@ -425,6 +425,12 @@ pub enum PreviewStage {
     Refined,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RawDevelopedImageRank {
+    EmbeddedPreview,
+    FullResolutionDeveloped,
+}
+
 /// Provenance of pixels stored in the main-window [`crate::loader::TextureCache`].
 ///
 /// HQ/sync decisions use tag + stage, not decoded or GPU texture dimensions.
@@ -740,6 +746,7 @@ pub struct RefinementRequest {
     pub logical_width: u32,
     pub logical_height: u32,
     pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+    pub developed_image_rank: Arc<PLRwLock<RawDevelopedImageRank>>,
     /// Shared with [`crate::loader::tiled_sources::RawHdrRefiningSource`] on HDR displays.
     pub hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]

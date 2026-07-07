@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::constants::RGBA_CHANNELS;
 use crate::loader::types::{
-    DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
+    DecodedImage, RawDevelopedImageRank, RefinementRequest, TiledImageSource, source_key_for_path,
 };
 use simple_image_viewer::simd_downsample::downsample_rgba8_box;
 
@@ -439,6 +439,7 @@ pub(crate) struct RawImageSource {
     /// Initially holds the embedded preview at its ORIGINAL resolution (NOT upscaled).
     /// After HQ refinement, holds the full demosaiced preview at develop resolution.
     developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+    developed_image_rank: Arc<PLRwLock<RawDevelopedImageRank>>,
     refine_tx: Sender<RefinementRequest>,
     orientation_override: i32,
     /// When false, [`Self::request_refinement`] is a no-op (performance mode uses embedded only).
@@ -452,6 +453,7 @@ pub(crate) struct RawImageSourceParams {
     pub(crate) raw_width: u32,
     pub(crate) raw_height: u32,
     pub(crate) refine_tx: Sender<RefinementRequest>,
+    pub(crate) initial_image_rank: RawDevelopedImageRank,
     pub(crate) orientation_override: i32,
     pub(crate) needs_refinement: bool,
     pub(crate) hdr_target_capacity: f32,
@@ -470,6 +472,7 @@ impl RawImageSource {
             raw_width,
             raw_height,
             refine_tx,
+            initial_image_rank,
             orientation_override,
             needs_refinement,
             hdr_target_capacity,
@@ -494,6 +497,7 @@ impl RawImageSource {
             )
         })?;
         let developed_image = Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
+        let developed_image_rank = Arc::new(PLRwLock::new(initial_image_rank));
 
         let refine_tx = refine_tx.clone();
 
@@ -502,6 +506,7 @@ impl RawImageSource {
             width: raw_width,
             height: raw_height,
             developed_image,
+            developed_image_rank,
             refine_tx,
             orientation_override,
             needs_refinement,
@@ -529,8 +534,21 @@ impl TiledImageSource for RawImageSource {
         let img_lock = self.developed_image.read();
         if let Some(ref img) = *img_lock {
             let (iw, ih) = img.dimensions();
-            if iw == self.width && ih == self.height {
-                // Full-res developed image available -- direct crop, no scaling needed.
+            let rank = *self.developed_image_rank.read();
+            if rank == RawDevelopedImageRank::FullResolutionDeveloped {
+                // Rank, not dimensions, decides whether this buffer is full develop output.
+                // Dimensions are validated only as a corruption guard before direct tiling.
+                if iw != self.width || ih != self.height {
+                    log::error!(
+                        "[RawImageSource] Full-resolution RAW buffer dimensions mismatch: got {}x{}, expected {}x{} for {:?}",
+                        iw,
+                        ih,
+                        self.width,
+                        self.height,
+                        self.path.file_name().unwrap_or_default()
+                    );
+                    return empty_tile_pixels();
+                }
                 if let Some(rgba) = img.as_rgba8() {
                     extract_rgba8_tile_from_pixels(iw, ih, rgba.as_raw(), x, y, w, h)
                         .map(Arc::new)
@@ -540,7 +558,7 @@ impl TiledImageSource for RawImageSource {
                     Arc::new(crop.into_rgba8().into_raw())
                 }
             } else {
-                // Preview image (smaller than RAW dimensions).
+                // Embedded preview image: map RAW-space tile coordinates into preview space.
                 let scale_x = iw as f64 / self.width as f64;
                 let scale_y = ih as f64 / self.height as f64;
                 let px = (x as f64 * scale_x) as u32;
@@ -572,20 +590,27 @@ impl TiledImageSource for RawImageSource {
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        let img_lock = self.developed_image.read();
-        if let Some(ref img) = *img_lock {
-            let (iw, ih) = img.dimensions();
-            // Only return pixels when we have the full-res developed image.
-            // If it's still the small preview, the stride would mismatch
-            // self.width/self.height and corrupt downstream consumers (e.g. printing).
-            if iw == self.width && ih == self.height {
-                Some(Arc::new(img.to_rgba8().into_raw()))
-            } else {
-                None
-            }
-        } else {
-            None
+        if *self.developed_image_rank.read() != RawDevelopedImageRank::FullResolutionDeveloped {
+            return None;
         }
+
+        let img_lock = self.developed_image.read();
+        let img = (*img_lock).as_ref()?;
+
+        let (iw, ih) = img.dimensions();
+        if iw != self.width || ih != self.height {
+            log::error!(
+                "[RawImageSource] Full-resolution RAW buffer dimensions mismatch: got {}x{}, expected {}x{} for {:?}",
+                iw,
+                ih,
+                self.width,
+                self.height,
+                self.path.file_name().unwrap_or_default()
+            );
+            return None;
+        }
+
+        Some(Arc::new(img.to_rgba8().into_raw()))
     }
 
     fn request_refinement(&self, index: usize, decode_profile: crate::loader::DecodeProfile) {
@@ -621,6 +646,7 @@ impl TiledImageSource for RawImageSource {
             logical_width: self.width,
             logical_height: self.height,
             developed_image: self.developed_image.clone(),
+            developed_image_rank: self.developed_image_rank.clone(),
             hdr_developed_image: self.hdr_developed_image.clone(),
             hdr_target_capacity: self.hdr_target_capacity,
             hdr_tone_map: self.hdr_tone_map,
@@ -861,10 +887,13 @@ impl TiledImageSource for PsdV1AsyncSource {
 mod memory_preview_tests {
     use super::{
         MemoryImageSource, PSD_V1_PLACEHOLDER_RGBA, PsdV1AsyncSource, PsdV1DecodeState,
-        RawHdrRefiningSource, memory_rgba_preview,
+        RawHdrRefiningSource, RawImageSource, RawImageSourceParams, memory_rgba_preview,
     };
     use crate::hdr::tiled::HdrTiledSource;
-    use crate::loader::{TiledImageSource, preview_aspect_matches_logical};
+    use crate::loader::{
+        DecodedImage, RawDevelopedImageRank, TiledImageSource, decode_profile_stub,
+        preview_aspect_matches_logical,
+    };
     use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
     use std::sync::Arc;
 
@@ -903,6 +932,67 @@ mod memory_preview_tests {
             width,
             height,
         )
+    }
+
+    fn raw_source_with_rank(rank: RawDevelopedImageRank) -> RawImageSource {
+        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
+        RawImageSource::new(
+            "rank-test.raw".into(),
+            DecodedImage::new(2, 2, vec![0; 16]),
+            RawImageSourceParams {
+                raw_width: 2,
+                raw_height: 2,
+                refine_tx,
+                initial_image_rank: rank,
+                orientation_override: 0,
+                needs_refinement: true,
+                hdr_target_capacity: 1.0,
+                hdr_tone_map: crate::hdr::types::HdrToneMapSettings::default(),
+                hdr_developed_image: None,
+            },
+        )
+        .expect("raw source")
+    }
+
+    #[test]
+    fn raw_full_pixels_uses_rank_not_dimensions() {
+        let embedded = raw_source_with_rank(RawDevelopedImageRank::EmbeddedPreview);
+        assert!(
+            embedded.full_pixels().is_none(),
+            "embedded preview rank must not be treated as full pixels even when dimensions match"
+        );
+
+        let full = raw_source_with_rank(RawDevelopedImageRank::FullResolutionDeveloped);
+        assert_eq!(full.full_pixels().expect("full pixels").len(), 16);
+    }
+
+    #[test]
+    fn raw_refinement_request_preserves_embedded_rank() {
+        let (refine_tx, refine_rx) = crossbeam_channel::unbounded();
+        let source = RawImageSource::new(
+            "rank-test.raw".into(),
+            DecodedImage::new(2, 2, vec![0; 16]),
+            RawImageSourceParams {
+                raw_width: 2,
+                raw_height: 2,
+                refine_tx,
+                initial_image_rank: RawDevelopedImageRank::EmbeddedPreview,
+                orientation_override: 0,
+                needs_refinement: true,
+                hdr_target_capacity: 1.0,
+                hdr_tone_map: crate::hdr::types::HdrToneMapSettings::default(),
+                hdr_developed_image: None,
+            },
+        )
+        .expect("raw source");
+
+        source.request_refinement(7, decode_profile_stub());
+        let request = refine_rx.try_recv().expect("refinement request");
+        assert_eq!(
+            *request.developed_image_rank.read(),
+            RawDevelopedImageRank::EmbeddedPreview
+        );
+        assert!(request.developed_image.read().is_some());
     }
 
     #[test]
