@@ -192,7 +192,7 @@ impl ImageViewerApp {
 
     pub(crate) fn effective_hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
         let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
-            self.hdr_target_format,
+            self.effective_hdr_target_format(),
             self.effective_hdr_monitor_selection().as_ref(),
         );
         self.settings.hdr_tone_map_settings_for_monitor(

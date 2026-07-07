@@ -175,17 +175,8 @@ impl ImageViewerApp {
             .frame_effective_hdr_monitor_selection
             .clone()
             .or_else(|| self.effective_hdr_monitor_selection());
-        let prefer_embedded_iso_gain_map_sdr_master =
-            crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
-                &self.settings,
-                crate::hdr::monitor::effective_render_output_mode(
-                    self.effective_hdr_target_format(),
-                    effective_selection.as_ref(),
-                ),
-                self.hdr_image_cache
-                    .get(&self.current_index)
-                    .map(|entry| entry.as_ref()),
-            );
+        let prefer_embedded_iso_gain_map_sdr_master = self
+            .prefer_embedded_iso_gain_map_sdr_master_for_selection(effective_selection.as_ref());
         self.cached_frame_hdr_render_path = hdr_render_path_for_render_plan(
             &plan,
             shape,
@@ -249,15 +240,8 @@ impl ImageViewerApp {
             .clone()
             .or_else(|| self.effective_hdr_monitor_selection());
 
-        let prefer_embedded_iso_gain_map_sdr_master =
-            crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
-                &self.settings,
-                crate::hdr::monitor::effective_render_output_mode(
-                    self.effective_hdr_target_format(),
-                    effective_selection.as_ref(),
-                ),
-                self.hdr_image_cache.get(&idx).map(|entry| entry.as_ref()),
-            );
+        let prefer_embedded_iso_gain_map_sdr_master = self
+            .prefer_embedded_iso_gain_map_sdr_master_for_selection(effective_selection.as_ref());
 
         let plan = crate::app::rendering::plan::build_render_plan_for_state(
             crate::app::rendering::plan::RenderPlanStateInput {

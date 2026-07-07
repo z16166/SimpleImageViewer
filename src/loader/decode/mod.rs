@@ -58,7 +58,7 @@ use super::{
 };
 use super::{
     extract_exif_thumbnail, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_is_placeholder_for_load,
+    hdr_sdr_fallback_is_placeholder_for_load, should_use_embedded_sdr_master_load,
 };
 
 use animation_bootstrap::{
@@ -546,8 +546,13 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr.height(),
                 (hdr.width() as f64 * hdr.height() as f64) / 1_000_000.0
             );
-            let (tiled_preview, tiled_hdr_preview) =
-                compute_hdr_tiled_initial_preview(file_name, &hdr, &fallback, hdr_target_capacity);
+            let (tiled_preview, tiled_hdr_preview) = compute_hdr_tiled_initial_preview(
+                file_name,
+                &hdr,
+                &fallback,
+                hdr_target_capacity,
+                prefer_embedded_sdr_master,
+            );
             preview = tiled_preview;
             hdr_preview = tiled_hdr_preview;
 
@@ -726,6 +731,7 @@ fn compute_hdr_tiled_initial_preview(
     hdr: &std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource>,
     fallback: &std::sync::Arc<dyn crate::loader::TiledImageSource>,
     hdr_target_capacity: f32,
+    prefer_embedded_sdr_master: bool,
 ) -> (
     Option<crate::loader::DecodedImage>,
     Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
@@ -733,7 +739,11 @@ fn compute_hdr_tiled_initial_preview(
     let mut preview = None;
     let mut hdr_preview = None;
 
-    if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
+    if hdr_tiled_initial_preview_needs_hdr_plane(
+        hdr_target_capacity,
+        prefer_embedded_sdr_master,
+        hdr.embedded_sdr_master_available(),
+    ) {
         let hdr_preview_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             hdr.generate_hdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
         }));
@@ -835,6 +845,15 @@ fn compute_hdr_tiled_initial_preview(
     (preview, hdr_preview)
 }
 
+fn hdr_tiled_initial_preview_needs_hdr_plane(
+    hdr_target_capacity: f32,
+    prefer_embedded_sdr_master: bool,
+    embedded_sdr_master_available: bool,
+) -> bool {
+    !(should_use_embedded_sdr_master_load(prefer_embedded_sdr_master, hdr_target_capacity)
+        && embedded_sdr_master_available)
+}
+
 fn sdr_preview_to_hdr_preview(
     w: u32,
     h: u32,
@@ -886,6 +905,7 @@ pub(super) fn compute_hdr_tiled_initial_preview_for_test(
     file_name: &str,
     image_data: &crate::loader::ImageData,
     hdr_target_capacity: f32,
+    prefer_embedded_sdr_master: bool,
 ) -> (
     Option<crate::loader::DecodedImage>,
     Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
@@ -894,7 +914,13 @@ pub(super) fn compute_hdr_tiled_initial_preview_for_test(
         panic!("compute_hdr_tiled_initial_preview_for_test requires ImageData::HdrTiled");
     };
 
-    compute_hdr_tiled_initial_preview(file_name, hdr, fallback, hdr_target_capacity)
+    compute_hdr_tiled_initial_preview(
+        file_name,
+        hdr,
+        fallback,
+        hdr_target_capacity,
+        prefer_embedded_sdr_master,
+    )
 }
 
 #[cfg(test)]

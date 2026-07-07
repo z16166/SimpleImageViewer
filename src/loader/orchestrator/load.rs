@@ -27,9 +27,10 @@ use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
     MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
     RawDevelopedImageRank, RefinementRequest, TileDecodeSource, TileResult,
-    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
+    hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
     in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
-    source_key_for_path, static_hdr_background_plane_upload_eligible,
+    should_use_embedded_sdr_master_load, source_key_for_path,
+    static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -1552,8 +1553,10 @@ impl ImageLoader {
                         let _refine_epoch = result_profile.profile_epoch;
                         let _refine_source_w = source.width();
                         let _refine_source_h = source.height();
-                        let refine_hdr_mode =
-                            !hdr_display_requests_sdr_preview(hdr_target_capacity);
+                        let refine_hdr_mode = !(should_use_embedded_sdr_master_load(
+                            embedded_iso_gain_map_sdr_master_live.load(Ordering::Acquire),
+                            hdr_target_capacity,
+                        ) && source.embedded_sdr_master_available());
                         crate::preload_debug!(
                             "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
                             index,

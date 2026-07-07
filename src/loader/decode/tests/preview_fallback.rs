@@ -49,6 +49,7 @@ struct StubHdrSource {
     color_space: HdrColorSpace,
     hdr_result: Result<crate::hdr::types::HdrImageBuffer, String>,
     sdr_result: Result<(u32, u32, Vec<u8>), String>,
+    embedded_sdr_master_available: bool,
 }
 
 impl crate::hdr::tiled::HdrTiledSource for StubHdrSource {
@@ -66,6 +67,10 @@ impl crate::hdr::tiled::HdrTiledSource for StubHdrSource {
 
     fn color_space(&self) -> HdrColorSpace {
         self.color_space
+    }
+
+    fn embedded_sdr_master_available(&self) -> bool {
+        self.embedded_sdr_master_available
     }
 
     fn generate_hdr_preview(
@@ -136,6 +141,7 @@ fn hdr_mode_err_skips_source_sdr_preview_path() {
                 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
             ],
         )),
+        embedded_sdr_master_available: false,
     });
     let fallback_source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(StubFallbackSource {
         width: 16,
@@ -146,8 +152,12 @@ fn hdr_mode_err_skips_source_sdr_preview_path() {
         fallback: fallback_source,
     };
 
-    let (preview, hdr_preview) =
-        super::super::compute_hdr_tiled_initial_preview_for_test("stub.exr", &image_data, 2.0);
+    let (preview, hdr_preview) = super::super::compute_hdr_tiled_initial_preview_for_test(
+        "stub.exr",
+        &image_data,
+        2.0,
+        false,
+    );
     assert!(preview.is_none());
     let hdr_preview = hdr_preview.expect("expects fallback-generated HDR preview");
     assert_eq!(hdr_preview.color_space, HdrColorSpace::LinearSrgb);
@@ -168,6 +178,7 @@ fn hdr_mode_zero_sized_hdr_can_use_source_sdr_preview() {
             rgba_f32: Arc::new(Vec::new()),
         }),
         sdr_result: Ok((1, 1, vec![255, 255, 255, 255])),
+        embedded_sdr_master_available: false,
     });
     let fallback_source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(StubFallbackSource {
         width: 16,
@@ -178,10 +189,118 @@ fn hdr_mode_zero_sized_hdr_can_use_source_sdr_preview() {
         fallback: fallback_source,
     };
 
-    let (_preview, hdr_preview) =
-        super::super::compute_hdr_tiled_initial_preview_for_test("stub-zero.exr", &image_data, 2.0);
+    let (_preview, hdr_preview) = super::super::compute_hdr_tiled_initial_preview_for_test(
+        "stub-zero.exr",
+        &image_data,
+        2.0,
+        false,
+    );
     let hdr_preview = hdr_preview.expect("source SDR fallback should produce HDR preview");
     assert_eq!(hdr_preview.color_space, HdrColorSpace::LinearSrgb);
     assert_eq!(hdr_preview.width, 1);
     assert_eq!(hdr_preview.height, 1);
+}
+
+#[test]
+fn sdr_capacity_without_embedded_master_still_builds_hdr_preview() {
+    let hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(StubHdrSource {
+        width: 16,
+        height: 16,
+        color_space: HdrColorSpace::Rec2020Linear,
+        hdr_result: Ok(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear),
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        }),
+        sdr_result: Ok((1, 1, vec![32, 32, 32, 255])),
+        embedded_sdr_master_available: true,
+    });
+    let fallback_source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(StubFallbackSource {
+        width: 16,
+        height: 16,
+    });
+    let image_data = crate::loader::ImageData::HdrTiled {
+        hdr: hdr_source,
+        fallback: fallback_source,
+    };
+
+    let (preview, hdr_preview) = super::super::compute_hdr_tiled_initial_preview_for_test(
+        "stub-sdr-tone-map.exr",
+        &image_data,
+        1.0,
+        false,
+    );
+
+    assert!(preview.is_none());
+    assert!(hdr_preview.is_some());
+}
+
+#[test]
+fn sdr_capacity_with_embedded_master_uses_sdr_preview() {
+    let hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(StubHdrSource {
+        width: 16,
+        height: 16,
+        color_space: HdrColorSpace::Rec2020Linear,
+        hdr_result: Err("HDR preview should not be requested".to_string()),
+        sdr_result: Ok((1, 1, vec![32, 32, 32, 255])),
+        embedded_sdr_master_available: true,
+    });
+    let fallback_source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(StubFallbackSource {
+        width: 16,
+        height: 16,
+    });
+    let image_data = crate::loader::ImageData::HdrTiled {
+        hdr: hdr_source,
+        fallback: fallback_source,
+    };
+
+    let (preview, hdr_preview) = super::super::compute_hdr_tiled_initial_preview_for_test(
+        "stub-embedded-master.exr",
+        &image_data,
+        1.0,
+        true,
+    );
+
+    assert!(preview.is_some());
+    assert!(hdr_preview.is_none());
+}
+
+#[test]
+fn sdr_capacity_embedded_mode_without_embedded_master_still_builds_hdr_preview() {
+    let hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(StubHdrSource {
+        width: 16,
+        height: 16,
+        color_space: HdrColorSpace::Rec2020Linear,
+        hdr_result: Ok(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear),
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        }),
+        sdr_result: Ok((1, 1, vec![32, 32, 32, 255])),
+        embedded_sdr_master_available: false,
+    });
+    let fallback_source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(StubFallbackSource {
+        width: 16,
+        height: 16,
+    });
+    let image_data = crate::loader::ImageData::HdrTiled {
+        hdr: hdr_source,
+        fallback: fallback_source,
+    };
+
+    let (preview, hdr_preview) = super::super::compute_hdr_tiled_initial_preview_for_test(
+        "stub-no-embedded-master.exr",
+        &image_data,
+        1.0,
+        true,
+    );
+
+    assert!(preview.is_none());
+    assert!(hdr_preview.is_some());
 }

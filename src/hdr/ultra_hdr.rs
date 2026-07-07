@@ -378,6 +378,10 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         hdr_metadata_for_ultra_hdr_gain_map(self.metadata)
     }
 
+    fn embedded_sdr_master_available(&self) -> bool {
+        !self.metadata.backward_direction
+    }
+
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let (preview_width, preview_height) =
             crate::hdr::tiled::preview_dimensions(self.width, self.height, max_w, max_h);

@@ -46,6 +46,11 @@ pub trait HdrTiledSource: Send + Sync {
     fn metadata(&self) -> HdrImageMetadata {
         HdrImageMetadata::from_color_space(self.color_space())
     }
+    /// True when this tiled HDR source has an SDR base image that can be shown directly for
+    /// embedded-SDR-master mode on SDR outputs.
+    fn embedded_sdr_master_available(&self) -> bool {
+        false
+    }
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String>;
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
     fn cached_tile_rgba32f_arc(

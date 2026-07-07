@@ -186,17 +186,38 @@ impl ImageViewerApp {
         })
     }
 
-    fn prefer_embedded_iso_gain_map_sdr_master(&self) -> bool {
+    pub(crate) fn prefer_embedded_iso_gain_map_sdr_master(&self) -> bool {
+        let selection = self.effective_hdr_monitor_selection();
+        self.prefer_embedded_iso_gain_map_sdr_master_for_selection(selection.as_ref())
+    }
+
+    pub(crate) fn prefer_embedded_iso_gain_map_sdr_master_for_selection(
+        &self,
+        monitor_selection: Option<&HdrMonitorSelection>,
+    ) -> bool {
         let output_mode = crate::hdr::monitor::effective_render_output_mode(
             self.effective_hdr_target_format(),
-            self.effective_hdr_monitor_selection().as_ref(),
+            monitor_selection,
         );
         let hdr = self.hdr_image_cache.get(&self.current_index);
-        crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
+        if crate::loader::prefer_embedded_iso_gain_map_sdr_on_sdr_output(
             &self.settings,
             output_mode,
             hdr.map(|entry| entry.as_ref()),
-        )
+        ) {
+            return true;
+        }
+        if output_mode != HdrRenderOutputMode::SdrToneMapped
+            || self.settings.hdr_gain_map_sdr_display
+                != crate::settings::HdrGainMapSdrDisplayMode::EmbeddedSdrMaster
+        {
+            return false;
+        }
+        self.current_hdr_tiled_image
+            .as_ref()
+            .and_then(|current| current.source_for_index(self.current_index))
+            .or_else(|| self.hdr_tiled_source_cache.get(&self.current_index))
+            .is_some_and(|source| source.embedded_sdr_master_available())
     }
 }
 

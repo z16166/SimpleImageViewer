@@ -144,7 +144,7 @@ impl ImageViewerApp {
     /// `hdr_exposure_ev_native`, tone-mapped SDR output exposes `hdr_exposure_ev_sdr`).
     pub(crate) fn adjust_hdr_exposure_by_ev(&mut self, delta_ev: f32, ctx: &Context) {
         let slot = match crate::hdr::monitor::effective_render_output_mode(
-            self.hdr_target_format,
+            self.effective_hdr_target_format(),
             self.effective_hdr_monitor_selection().as_ref(),
         ) {
             crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped => {
