@@ -19,6 +19,7 @@
 use crossbeam_channel::Sender;
 use image::{DynamicImage, GenericImageView};
 use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,6 +28,109 @@ use crate::loader::types::{
     DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
 };
 use simple_image_viewer::simd_downsample::downsample_rgba8_box;
+
+fn checked_rgba8_len(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(RGBA_CHANNELS))
+}
+
+fn checked_rgba8_row_len(width: u32) -> Option<usize> {
+    (width as usize).checked_mul(RGBA_CHANNELS)
+}
+
+fn checked_tile_rect_inside(
+    full_width: u32,
+    full_height: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Option<()> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let end_x = x.checked_add(width)?;
+    let end_y = y.checked_add(height)?;
+    if end_x > full_width || end_y > full_height {
+        return None;
+    }
+    Some(())
+}
+
+fn checked_tile_row_range(
+    full_width: u32,
+    full_height: u32,
+    pixels_len: usize,
+    x: u32,
+    row: u32,
+    width: u32,
+) -> Option<Range<usize>> {
+    if row >= full_height || x.checked_add(width)? > full_width {
+        return None;
+    }
+    let stride = checked_rgba8_row_len(full_width)?;
+    let row_start = (row as usize).checked_mul(stride)?;
+    let x_offset = checked_rgba8_row_len(x)?;
+    let row_len = checked_rgba8_row_len(width)?;
+    let start = row_start.checked_add(x_offset)?;
+    let end = start.checked_add(row_len)?;
+    if end > pixels_len {
+        return None;
+    }
+    Some(start..end)
+}
+
+fn extract_rgba8_tile_from_pixels(
+    full_width: u32,
+    full_height: u32,
+    pixels: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    checked_tile_rect_inside(full_width, full_height, x, y, width, height)?;
+    let expected_source_len = checked_rgba8_len(full_width, full_height)?;
+    if pixels.len() < expected_source_len {
+        return None;
+    }
+
+    let expected_tile_len = checked_rgba8_len(width, height)?;
+    let end_y = y.checked_add(height)?;
+    let mut tile_pixels = Vec::with_capacity(expected_tile_len);
+    for row in y..end_y {
+        let range = checked_tile_row_range(full_width, full_height, pixels.len(), x, row, width)?;
+        tile_pixels.extend_from_slice(&pixels[range]);
+    }
+    (tile_pixels.len() == expected_tile_len).then_some(tile_pixels)
+}
+
+fn empty_tile_pixels() -> Arc<Vec<u8>> {
+    Arc::new(Vec::new())
+}
+
+fn solid_rgba8_tile(
+    full_width: u32,
+    full_height: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    rgba: [u8; RGBA_CHANNELS],
+) -> Arc<Vec<u8>> {
+    if checked_tile_rect_inside(full_width, full_height, x, y, width, height).is_none() {
+        return empty_tile_pixels();
+    }
+    let Some(len) = checked_rgba8_len(width, height) else {
+        return empty_tile_pixels();
+    };
+    let mut pixels = vec![0_u8; len];
+    for px in pixels.chunks_exact_mut(RGBA_CHANNELS) {
+        px.copy_from_slice(&rgba);
+    }
+    Arc::new(pixels)
+}
 
 /// Aspect-preserving downscale for in-memory RGBA8 tiles.
 ///
@@ -45,7 +149,10 @@ fn memory_rgba_preview(
     }
     // Guard against mismatched buffer length (downstream SIMD paths use
     // get_unchecked which is UB when the slice is too short).
-    if pixels.len() < (width as usize * height as usize * 4) {
+    let Some(expected_input_bytes) = checked_rgba8_len(width, height) else {
+        return (0, 0, Vec::new());
+    };
+    if pixels.len() < expected_input_bytes {
         return (0, 0, Vec::new());
     }
     let scale = (max_w as f64 / width as f64)
@@ -54,11 +161,7 @@ fn memory_rgba_preview(
     let out_w = (width as f64 * scale).round().max(1.0) as u32;
     let out_h = (height as f64 * scale).round().max(1.0) as u32;
     let out = downsample_rgba8_box(pixels, width, height, out_w, out_h);
-    let Some(expected_out_bytes) = out_w
-        .checked_mul(out_h)
-        .and_then(|px| px.checked_mul(4))
-        .map(|len| len as usize)
-    else {
+    let Some(expected_out_bytes) = checked_rgba8_len(out_w, out_h) else {
         return (0, 0, Vec::new());
     };
     if out.len() != expected_out_bytes {
@@ -129,13 +232,7 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let _ = (x, y, self);
-        let byte_len = w as usize * h as usize * 4;
-        let mut pixels = vec![0_u8; byte_len];
-        for px in pixels.chunks_exact_mut(4) {
-            px[3] = 255;
-        }
-        Arc::new(pixels)
+        solid_rgba8_tile(self.width(), self.height(), x, y, w, h, [0, 0, 0, 255])
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -143,12 +240,18 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
             .generate_sdr_preview(max_w, max_h)
             .unwrap_or_else(|err| {
                 log::warn!("[Loader] HDR SDR preview fallback failed: {err}");
+                if self.width() == 0 || self.height() == 0 {
+                    return (0, 0, Vec::new());
+                }
                 let scale = (max_w as f32 / self.width() as f32)
                     .min(max_h as f32 / self.height() as f32)
                     .min(1.0);
                 let width = ((self.width() as f32 * scale).round() as u32).max(1);
                 let height = ((self.height() as f32 * scale).round() as u32).max(1);
-                (width, height, vec![0; width as usize * height as usize * 4])
+                let Some(byte_len) = checked_rgba8_len(width, height) else {
+                    return (0, 0, Vec::new());
+                };
+                (width, height, vec![0; byte_len])
             })
     }
 
@@ -171,20 +274,9 @@ impl TiledImageSource for MemoryImageSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
-        let stride = self.width as usize * 4;
-
-        for row in y..(y + h) {
-            let start = (row as usize * stride) + (x as usize * 4);
-            let end = start + (w as usize * 4);
-            if end <= self.pixels.len() {
-                tile_pixels.extend_from_slice(&self.pixels[start..end]);
-            } else {
-                // Safety fallback for out-of-bounds
-                tile_pixels.resize(tile_pixels.len() + (w * 4) as usize, 0);
-            }
-        }
-        Arc::new(tile_pixels)
+        extract_rgba8_tile_from_pixels(self.width, self.height, &self.pixels, x, y, w, h)
+            .map(Arc::new)
+            .unwrap_or_else(empty_tile_pixels)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -282,15 +374,41 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
             .ok_or_else(|| "RAW HDR buffer not yet refined".to_string())?;
         crate::hdr::tiled::validate_tile_bounds(image.width, image.height, x, y, width, height)?;
 
-        let mut tile = Vec::with_capacity((width as usize) * (height as usize) * 4);
-        let source_stride = image.width as usize * 4;
-        let row_len = width as usize * 4;
-        let start_x = x as usize * 4;
+        let expected_source_len = checked_rgba8_len(image.width, image.height)
+            .ok_or_else(|| "RAW HDR source dimensions overflow".to_string())?;
+        if image.rgba_f32.len() < expected_source_len {
+            return Err("RAW HDR source buffer is shorter than dimensions".to_string());
+        }
+        let tile_len = checked_rgba8_len(width, height)
+            .ok_or_else(|| "RAW HDR tile dimensions overflow".to_string())?;
+        let source_stride = checked_rgba8_row_len(image.width)
+            .ok_or_else(|| "RAW HDR source stride overflow".to_string())?;
+        let row_len = checked_rgba8_row_len(width)
+            .ok_or_else(|| "RAW HDR tile row length overflow".to_string())?;
+        let start_x =
+            checked_rgba8_row_len(x).ok_or_else(|| "RAW HDR tile x offset overflow".to_string())?;
+        let end_y = y
+            .checked_add(height)
+            .ok_or_else(|| "RAW HDR tile y range overflow".to_string())?;
 
-        for row in y..(y + height) {
-            let start = row as usize * source_stride + start_x;
-            let end = start + row_len;
+        let mut tile = Vec::with_capacity(tile_len);
+        for row in y..end_y {
+            let row_start = (row as usize)
+                .checked_mul(source_stride)
+                .ok_or_else(|| "RAW HDR tile row offset overflow".to_string())?;
+            let start = row_start
+                .checked_add(start_x)
+                .ok_or_else(|| "RAW HDR tile start offset overflow".to_string())?;
+            let end = start
+                .checked_add(row_len)
+                .ok_or_else(|| "RAW HDR tile end offset overflow".to_string())?;
+            if end > image.rgba_f32.len() {
+                return Err("RAW HDR tile range exceeds source buffer".to_string());
+            }
             tile.extend_from_slice(&image.rgba_f32[start..end]);
+        }
+        if tile.len() != tile_len {
+            return Err("RAW HDR tile length mismatch".to_string());
         }
 
         Ok(Arc::new(
@@ -404,25 +522,19 @@ impl TiledImageSource for RawImageSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+        if checked_tile_rect_inside(self.width, self.height, x, y, w, h).is_none() {
+            return empty_tile_pixels();
+        }
+
         let img_lock = self.developed_image.read();
         if let Some(ref img) = *img_lock {
             let (iw, ih) = img.dimensions();
             if iw == self.width && ih == self.height {
-                // Full-res developed image available — direct crop, no scaling needed.
+                // Full-res developed image available -- direct crop, no scaling needed.
                 if let Some(rgba) = img.as_rgba8() {
-                    let mut result = vec![0u8; (w * h * 4) as usize];
-                    for row in 0..h {
-                        let src_y = y + row;
-                        let src_offset = (src_y * iw + x) as usize * 4;
-                        let dst_offset = (row * w) as usize * 4;
-                        let len =
-                            (w as usize * 4).min(rgba.as_raw().len().saturating_sub(src_offset));
-                        if len > 0 {
-                            result[dst_offset..dst_offset + len]
-                                .copy_from_slice(&rgba.as_raw()[src_offset..src_offset + len]);
-                        }
-                    }
-                    Arc::new(result)
+                    extract_rgba8_tile_from_pixels(iw, ih, rgba.as_raw(), x, y, w, h)
+                        .map(Arc::new)
+                        .unwrap_or_else(empty_tile_pixels)
                 } else {
                     let crop = img.crop_imm(x, y, w, h);
                     Arc::new(crop.into_rgba8().into_raw())
@@ -444,7 +556,7 @@ impl TiledImageSource for RawImageSource {
                 Arc::new(resized.into_rgba8().into_raw())
             }
         } else {
-            Arc::new(vec![0; (w * h * RGBA_CHANNELS as u32) as usize])
+            solid_rgba8_tile(self.width, self.height, x, y, w, h, [0, 0, 0, 0])
         }
     }
 
@@ -675,24 +787,11 @@ impl TiledImageSource for PsdV1AsyncSource {
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         if let Some(px) = self.pixels.read().as_ref() {
-            let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
-            let stride = self.width as usize * 4;
-            for row in y..(y + h) {
-                let start = row as usize * stride + x as usize * 4;
-                let end = start + w as usize * 4;
-                if end <= px.len() {
-                    tile_pixels.extend_from_slice(&px[start..end]);
-                } else {
-                    tile_pixels.resize(tile_pixels.len() + w as usize * 4, 0);
-                }
-            }
-            return Arc::new(tile_pixels);
+            return extract_rgba8_tile_from_pixels(self.width, self.height, px, x, y, w, h)
+                .map(Arc::new)
+                .unwrap_or_else(empty_tile_pixels);
         }
-        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
-        for _ in 0..(w * h) {
-            tile_pixels.extend_from_slice(&PSD_V1_PLACEHOLDER_RGBA);
-        }
-        Arc::new(tile_pixels)
+        solid_rgba8_tile(self.width, self.height, x, y, w, h, PSD_V1_PLACEHOLDER_RGBA)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -739,8 +838,65 @@ impl TiledImageSource for PsdV1AsyncSource {
 
 #[cfg(test)]
 mod memory_preview_tests {
-    use super::memory_rgba_preview;
-    use crate::loader::preview_aspect_matches_logical;
+    use super::{
+        MemoryImageSource, PSD_V1_PLACEHOLDER_RGBA, PsdV1AsyncSource, PsdV1DecodeState,
+        RawHdrRefiningSource, memory_rgba_preview,
+    };
+    use crate::hdr::tiled::HdrTiledSource;
+    use crate::loader::{TiledImageSource, preview_aspect_matches_logical};
+    use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
+    use std::sync::Arc;
+
+    fn psd_v1_source_with_pixels(
+        width: u32,
+        height: u32,
+        pixels: Option<Arc<Vec<u8>>>,
+    ) -> PsdV1AsyncSource {
+        let state = if pixels.is_some() {
+            PsdV1DecodeState::Ready
+        } else {
+            PsdV1DecodeState::Pending
+        };
+        PsdV1AsyncSource {
+            width,
+            height,
+            pixels: Arc::new(PLRwLock::new(pixels)),
+            decode_state: Arc::new((Mutex::new(state), Condvar::new())),
+        }
+    }
+
+    fn raw_hdr_source_with_pixels(
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<f32>>,
+    ) -> RawHdrRefiningSource {
+        RawHdrRefiningSource::new(
+            Arc::new(PLRwLock::new(Some(crate::hdr::types::HdrImageBuffer {
+                width,
+                height,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::default(),
+                rgba_f32: pixels,
+            }))),
+            width,
+            height,
+        )
+    }
+
+    #[test]
+    fn raw_hdr_refining_source_rejects_overflowing_dimensions() {
+        let source = raw_hdr_source_with_pixels(u32::MAX, u32::MAX, Arc::new(Vec::new()));
+
+        assert!(source.extract_tile_rgba32f_arc(0, 0, 1, 1).is_err());
+    }
+
+    #[test]
+    fn raw_hdr_refining_source_rejects_short_source_buffer() {
+        let source = raw_hdr_source_with_pixels(2, 2, Arc::new(vec![0.0; 3]));
+
+        assert!(source.extract_tile_rgba32f_arc(0, 0, 1, 1).is_err());
+    }
 
     #[test]
     fn memory_rgba_preview_preserves_panorama_aspect() {
@@ -765,5 +921,52 @@ mod memory_preview_tests {
         assert_eq!(out_pixels.len(), out_w as usize * out_h as usize * 4);
         assert_eq!(out_w, out_h);
         assert!(preview_aspect_matches_logical(out_w, out_h, side, side));
+    }
+
+    #[test]
+    fn memory_rgba_preview_rejects_overflowing_dimensions() {
+        let (out_w, out_h, out_pixels) =
+            memory_rgba_preview(u32::MAX, u32::MAX, &[0, 0, 0, 0], 128, 128);
+
+        assert_eq!((out_w, out_h), (0, 0));
+        assert!(out_pixels.is_empty());
+    }
+
+    #[test]
+    fn memory_image_source_rejects_invalid_tile_ranges() {
+        let pixels = Arc::new((0u8..64).collect::<Vec<_>>());
+        let source = MemoryImageSource::new(4, 4, pixels);
+
+        assert_eq!(source.extract_tile(1, 1, 2, 2).len(), 16);
+        assert!(source.extract_tile(3, 0, 2, 1).is_empty());
+        assert!(source.extract_tile(u32::MAX, 0, 1, 1).is_empty());
+        assert!(source.extract_tile(0, u32::MAX, 1, 1).is_empty());
+        assert!(source.extract_tile(0, 0, u32::MAX, 1).is_empty());
+    }
+
+    #[test]
+    fn memory_image_source_rejects_short_source_buffer() {
+        let source = MemoryImageSource::new(4, 4, Arc::new(vec![0; 4]));
+
+        assert!(source.extract_tile(0, 0, 1, 1).is_empty());
+    }
+
+    #[test]
+    fn psd_v1_pending_placeholder_checks_tile_bounds() {
+        let source = psd_v1_source_with_pixels(2, 2, None);
+
+        assert_eq!(
+            source.extract_tile(0, 0, 1, 1).as_slice(),
+            PSD_V1_PLACEHOLDER_RGBA
+        );
+        assert!(source.extract_tile(2, 0, 1, 1).is_empty());
+        assert!(source.extract_tile(u32::MAX, 0, 1, 1).is_empty());
+    }
+
+    #[test]
+    fn psd_v1_ready_pixels_reject_short_source_buffer() {
+        let source = psd_v1_source_with_pixels(2, 2, Some(Arc::new(vec![1; 3])));
+
+        assert!(source.extract_tile(0, 0, 1, 1).is_empty());
     }
 }
