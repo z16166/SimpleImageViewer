@@ -80,9 +80,13 @@ pub(crate) fn upload_callback_tile(
     texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
-    let (upload_bytes, bytes_per_row) =
-        pack_rgba32f_for_texture_upload(&tile.rgba_f32, tile.width, tile.height)
-            .map_err(|err| format!("HDR tile upload: {err}"))?;
+    let upload_bytes = pack_rgba32f_for_texture_upload(
+        &tile.rgba_f32,
+        tile.width,
+        tile.height,
+        layout.bytes_per_row,
+    )
+    .map_err(|err| format!("HDR tile upload: {err}"))?;
     let texture = create_poolable_texture(
         device,
         texture_pool,
@@ -108,7 +112,7 @@ pub(crate) fn upload_callback_tile(
         },
         Arc::clone(&texture),
         upload_bytes,
-        bytes_per_row,
+        layout.bytes_per_row,
         layout.size.height,
         layout.size,
     )?;
@@ -129,7 +133,7 @@ pub(crate) fn write_rgba32f_to_texture(
     height: u32,
     rgba_f32: &[f32],
 ) -> Result<(), String> {
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+    let (upload_bytes, bytes_per_row) = rows_for_texture_write(
         rgba32f_as_bytes(rgba_f32),
         width,
         height,
@@ -139,7 +143,7 @@ pub(crate) fn write_rgba32f_to_texture(
     submit_texture_write(
         sink,
         texture,
-        TextureUploadBytes::Cow(upload_bytes),
+        TextureUploadBytes::Borrowed(upload_bytes),
         bytes_per_row,
         height,
         wgpu::Extent3d {
@@ -157,9 +161,13 @@ pub(crate) fn upload_callback_image(
     texture_pool: Option<&SharedGpuTexturePool>,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
-    let (upload_bytes, bytes_per_row) =
-        pack_rgba32f_for_texture_upload(&image.rgba_f32, image.width, image.height)
-            .map_err(|err| format!("HDR upload: {err}"))?;
+    let upload_bytes = pack_rgba32f_for_texture_upload(
+        &image.rgba_f32,
+        image.width,
+        image.height,
+        layout.bytes_per_row,
+    )
+    .map_err(|err| format!("HDR upload: {err}"))?;
     let texture = create_poolable_texture(
         device,
         texture_pool,
@@ -185,7 +193,7 @@ pub(crate) fn upload_callback_image(
         },
         Arc::clone(&texture),
         upload_bytes,
-        bytes_per_row,
+        layout.bytes_per_row,
         layout.size.height,
         layout.size,
     )?;
@@ -199,60 +207,71 @@ pub(crate) fn upload_callback_image(
     })
 }
 
+/// Row pitch required by `Queue::write_texture` for tightly packed source rows.
+///
+/// `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT` is a buffer-texture copy requirement. It does not apply
+/// to `Queue::write_texture`; wgpu validates that path with row-pitch alignment disabled and
+/// stages the data internally. Keeping the upload stride tight avoids allocating and filling a
+/// full-size padded temporary buffer for large HDR images or tiles.
+fn texture_write_bytes_per_row(width: u32, bytes_per_pixel: u32) -> Result<u32, String> {
+    width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| format!("row byte count overflows for width {width}"))
+}
+
+/// Row pitch required by `copy_buffer_to_texture` / `copy_texture_to_buffer` operations.
 pub(crate) fn wgpu_copy_bytes_per_row(unpadded_bytes_per_row: u32) -> u32 {
     wgpu::util::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
 }
 
-/// Pack RGBA32F rows for texture upload, sharing the source `Arc<Vec<f32>>` when WGSL row
-/// alignment already matches the tight layout (common for full image/tile plane uploads).
+/// Prepare RGBA32F rows for `Queue::write_texture`.
+///
+/// This intentionally keeps the original tight `Arc<Vec<f32>>` even when the row byte count is not
+/// a multiple of `COPY_BYTES_PER_ROW_ALIGNMENT`. That alignment only applies to explicit
+/// buffer-texture copies, not to `Queue::write_texture`, so padding here would only add a large CPU
+/// allocation and row copy before wgpu performs its own staging upload.
 pub(crate) fn pack_rgba32f_for_texture_upload(
     rgba_f32: &Arc<Vec<f32>>,
     width: u32,
     height: u32,
-) -> Result<(TextureUploadBytes<'_>, u32), String> {
-    let bytes_per_pixel = std::mem::size_of::<f32>() as u32 * 4;
-    let unpadded_bytes_per_row = width
-        .checked_mul(bytes_per_pixel)
-        .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
-    let bytes_per_row = wgpu_copy_bytes_per_row(unpadded_bytes_per_row);
-    let expected_len = unpadded_bytes_per_row
-        .checked_mul(height)
-        .map(|len| len as usize)
-        .ok_or_else(|| format!("tight buffer length overflows for {width}x{height}"))?;
-    let tight = rgba32f_as_bytes(rgba_f32.as_slice());
-    if tight.len() != expected_len {
-        return Err(format!(
-            "RGBA32F byte length mismatch: expected {expected_len} bytes for {width}x{height}, got {}",
-            tight.len()
-        ));
-    }
-    if bytes_per_row == unpadded_bytes_per_row {
-        return Ok((
-            TextureUploadBytes::Rgba32f(Arc::clone(rgba_f32)),
-            bytes_per_row,
-        ));
-    }
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+    bytes_per_row: u32,
+) -> Result<TextureUploadBytes<'_>, String> {
+    validate_tight_texture_write_rows(
         rgba32f_as_bytes(rgba_f32.as_slice()),
         width,
         height,
-        bytes_per_pixel,
+        bytes_per_row,
     )?;
-    Ok((TextureUploadBytes::Cow(upload_bytes), bytes_per_row))
+
+    Ok(TextureUploadBytes::Rgba32f(Arc::clone(rgba_f32)))
 }
 
-/// Pack tightly laid-out RGBA rows into the pitch required by [`wgpu::Queue::write_texture`].
-pub(crate) fn pack_rows_for_texture_copy<'a>(
-    tight: &'a [u8],
+/// Validate tightly laid-out rows for `Queue::write_texture` without adding row padding.
+///
+/// Unlike `CommandEncoder::copy_buffer_to_texture`, `Queue::write_texture` accepts unaligned
+/// `bytes_per_row`. Returning the original slice here keeps the upload path zero-copy at the
+/// application layer while preserving the checked length validation that protects wgpu calls from
+/// malformed image buffers.
+pub(crate) fn rows_for_texture_write(
+    tight: &[u8],
     width: u32,
     height: u32,
     bytes_per_pixel: u32,
-) -> Result<(Cow<'a, [u8]>, u32), String> {
-    let unpadded_bytes_per_row = width
-        .checked_mul(bytes_per_pixel)
-        .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
-    let bytes_per_row = wgpu_copy_bytes_per_row(unpadded_bytes_per_row);
-    let expected_len = unpadded_bytes_per_row
+) -> Result<(&[u8], u32), String> {
+    let bytes_per_row = texture_write_bytes_per_row(width, bytes_per_pixel)?;
+    Ok((
+        validate_tight_texture_write_rows(tight, width, height, bytes_per_row)?,
+        bytes_per_row,
+    ))
+}
+
+fn validate_tight_texture_write_rows(
+    tight: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+) -> Result<&[u8], String> {
+    let expected_len = bytes_per_row
         .checked_mul(height)
         .map(|len| len as usize)
         .ok_or_else(|| format!("tight buffer length overflows for {width}x{height}"))?;
@@ -262,57 +281,8 @@ pub(crate) fn pack_rows_for_texture_copy<'a>(
             tight.len()
         ));
     }
-    if bytes_per_row == unpadded_bytes_per_row {
-        return Ok((Cow::Borrowed(tight), bytes_per_row));
-    }
 
-    thread_local! {
-        static TEXTURE_ROW_PAD_BUFFER: std::cell::RefCell<Vec<u8>> =
-            const { std::cell::RefCell::new(Vec::new()) };
-    }
-
-    let padded_len = (bytes_per_row * height) as usize;
-    let padded = TEXTURE_ROW_PAD_BUFFER.with(|buffer| {
-        let mut buffer = buffer.borrow_mut();
-        buffer.clear();
-        buffer.resize(padded_len, 0);
-        copy_padded_rows(
-            tight,
-            &mut buffer,
-            unpadded_bytes_per_row as usize,
-            bytes_per_row as usize,
-        );
-        std::mem::take(&mut *buffer)
-    });
-    Ok((Cow::Owned(padded), bytes_per_row))
-}
-
-fn copy_padded_rows(
-    tight: &[u8],
-    padded: &mut [u8],
-    unpadded_bytes_per_row: usize,
-    bytes_per_row: usize,
-) {
-    const PARALLEL_ROW_THRESHOLD: usize = 8;
-
-    if tight.len() / unpadded_bytes_per_row.max(1) < PARALLEL_ROW_THRESHOLD {
-        for (dst_row, src_row) in padded
-            .chunks_mut(bytes_per_row)
-            .zip(tight.chunks(unpadded_bytes_per_row))
-        {
-            dst_row[..unpadded_bytes_per_row].copy_from_slice(src_row);
-        }
-        return;
-    }
-
-    use rayon::prelude::*;
-
-    padded
-        .par_chunks_mut(bytes_per_row)
-        .zip(tight.par_chunks(unpadded_bytes_per_row))
-        .for_each(|(dst_row, src_row)| {
-            dst_row[..unpadded_bytes_per_row].copy_from_slice(src_row);
-        });
+    Ok(tight)
 }
 
 pub(crate) struct Rgba8TextureUpload<'a> {
@@ -349,7 +319,7 @@ pub(crate) fn upload_rgba8_texture(
     } = upload;
     let layout =
         validate_rgba8_upload_layout(width, height, rgba.len(), max_texture_dimension_2d, label)?;
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(rgba, width, height, 4)
+    let upload_bytes = validate_tight_texture_write_rows(rgba, width, height, layout.bytes_per_row)
         .map_err(|err| format!("{label}: {err}"))?;
     let texture = create_poolable_texture(
         device,
@@ -372,8 +342,8 @@ pub(crate) fn upload_rgba8_texture(
     submit_texture_write(
         sink,
         Arc::clone(&texture),
-        TextureUploadBytes::Cow(upload_bytes),
-        bytes_per_row,
+        TextureUploadBytes::Borrowed(upload_bytes),
+        layout.bytes_per_row,
         layout.size.height,
         layout.size,
     )?;
@@ -409,7 +379,7 @@ pub(crate) fn upload_r16_uint_texture(
         ));
     }
     let tight_bytes = bytemuck::cast_slice(pixels);
-    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(tight_bytes, width, height, 2)
+    let (upload_bytes, bytes_per_row) = rows_for_texture_write(tight_bytes, width, height, 2)
         .map_err(|err| format!("{label}: {err}"))?;
 
     let texture = create_poolable_texture(
@@ -440,7 +410,7 @@ pub(crate) fn upload_r16_uint_texture(
             },
         },
         Arc::clone(&texture),
-        TextureUploadBytes::Cow(upload_bytes),
+        TextureUploadBytes::Borrowed(upload_bytes),
         bytes_per_row,
         height,
         wgpu::Extent3d {
@@ -838,12 +808,9 @@ pub(crate) fn validate_rgba32f_upload_layout(
         ));
     }
 
-    let bytes_per_row = wgpu_copy_bytes_per_row(
-        width
-            .checked_mul(4)
-            .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
-            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
-    );
+    let bytes_per_row =
+        texture_write_bytes_per_row(width, std::mem::size_of::<f32>() as u32 * 4)
+            .map_err(|_| format!("{label} row byte count overflows for width {width}"))?;
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
@@ -887,11 +854,8 @@ pub(crate) fn validate_rgba8_upload_layout(
         ));
     }
 
-    let bytes_per_row = wgpu_copy_bytes_per_row(
-        width
-            .checked_mul(4)
-            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
-    );
+    let bytes_per_row = texture_write_bytes_per_row(width, 4)
+        .map_err(|_| format!("{label} row byte count overflows for width {width}"))?;
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
@@ -906,35 +870,4 @@ pub(crate) fn validate_rgba8_upload_layout(
 
 pub(crate) fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
     bytemuck::cast_slice(values)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copy_padded_rows_preserves_tight_rows_and_zero_padding() {
-        let unpadded_bytes_per_row = 5_usize;
-        let bytes_per_row = 8_usize;
-        let height = 3_usize;
-        let tight: Vec<u8> = (0..unpadded_bytes_per_row * height)
-            .map(|value| value as u8)
-            .collect();
-        let mut padded = vec![0_u8; bytes_per_row * height];
-
-        copy_padded_rows(&tight, &mut padded, unpadded_bytes_per_row, bytes_per_row);
-
-        for y in 0..height {
-            let src = y * unpadded_bytes_per_row;
-            let dst = y * bytes_per_row;
-            assert_eq!(
-                &padded[dst..dst + unpadded_bytes_per_row],
-                &tight[src..src + unpadded_bytes_per_row],
-            );
-            assert_eq!(
-                &padded[dst + unpadded_bytes_per_row..dst + bytes_per_row],
-                &[0, 0, 0]
-            );
-        }
-    }
 }

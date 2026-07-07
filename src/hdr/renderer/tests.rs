@@ -17,7 +17,7 @@
 use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
 use super::upload::{
-    pack_rows_for_texture_copy, rgba32f_as_bytes, validate_rgba8_upload_layout,
+    rgba32f_as_bytes, rows_for_texture_write, validate_rgba8_upload_layout,
     validate_tile_upload_layout,
 };
 use super::*;
@@ -63,16 +63,13 @@ fn upload_layout_matches_rgba32f_rows() {
     assert_eq!(layout.size.height, 2);
     assert_eq!(
         layout.bytes_per_row,
-        wgpu::util::align_to(
-            3 * 4 * std::mem::size_of::<f32>() as u32,
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-        )
+        3 * 4 * std::mem::size_of::<f32>() as u32
     );
     assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
 }
 
 #[test]
-fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
+fn rgba8_upload_layout_uses_tight_queue_write_row_pitch() {
     let width = 3024;
     let height = 4032;
     let layout = validate_rgba8_upload_layout(
@@ -84,15 +81,11 @@ fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
     )
     .expect("valid rgba8 upload layout");
 
-    assert_eq!(
-        layout.bytes_per_row,
-        wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-    );
-    assert_eq!(layout.bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
+    assert_eq!(layout.bytes_per_row, width * 4);
 }
 
 #[test]
-fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
+fn rows_for_texture_write_borrows_even_when_copy_alignment_would_need_padding() {
     let width = 3024;
     let height = 2;
     let unpadded = (width * 4) as usize;
@@ -101,34 +94,19 @@ fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
         tight[y as usize * unpadded] = 100 + y as u8;
     }
 
-    let (padded, bytes_per_row) =
-        pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
-
-    assert_eq!(
-        bytes_per_row,
-        wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-    );
-    assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
-    assert_eq!(padded[0], 100);
-    assert_eq!(padded[bytes_per_row as usize], 101);
-    assert!(matches!(padded, Cow::Owned(_)));
-}
-
-#[test]
-fn pack_rows_for_texture_copy_borrows_when_already_aligned() {
-    let width = 64;
-    let height = 2;
-    let tight = vec![0u8; width as usize * height as usize * 4];
     let (packed, bytes_per_row) =
-        pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
+        rows_for_texture_write(&tight, width, height, 4).expect("prepare rows");
+
     assert_eq!(bytes_per_row, width * 4);
-    assert!(matches!(packed, Cow::Borrowed(_)));
+    assert_eq!(packed.len(), tight.len());
+    assert_eq!(packed[0], 100);
+    assert_eq!(packed[bytes_per_row as usize], 101);
     assert!(std::ptr::eq(packed.as_ptr(), tight.as_ptr()));
 }
 
 #[test]
-fn pack_rows_rgba32f_round_trip_preserves_data() {
-    // bytes_per_pixel=16 ->unpadded row = width * 16 bytes.
+fn rows_for_texture_write_rgba32f_keeps_tight_data() {
+    // bytes_per_pixel=16 -> unpadded row = width * 16 bytes.
     // Test widths that are / are not multiples of 16 (alignment boundary).
     for &(width, height) in &[(13, 7), (16, 4), (17, 11), (64, 64), (4033, 3)] {
         let pixel_count = width as usize * height as usize * 4;
@@ -138,22 +116,12 @@ fn pack_rows_rgba32f_round_trip_preserves_data() {
         let tight: &[u8] = bytemuck::cast_slice(&original);
         assert_eq!(tight.len(), width as usize * height as usize * 16);
 
-        let (padded, bytes_per_row) =
-            pack_rows_for_texture_copy(tight, width, height, 16).expect("pack rows");
+        let (packed, bytes_per_row) =
+            rows_for_texture_write(tight, width, height, 16).expect("prepare rows");
 
-        assert_eq!(bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
-        assert!(bytes_per_row >= width * 16);
-        assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
-
-        // Simulate what `write_texture` does: extract each row's data (width * 16 bytes)
-        // from the padded buffer, skipping padding.
-        let unpadded_row = (width * 16) as usize;
-        let mut unpacked = Vec::with_capacity(tight.len());
-        for y in 0..height as usize {
-            let src_start = y * bytes_per_row as usize;
-            unpacked.extend_from_slice(&padded[src_start..src_start + unpadded_row]);
-        }
-        assert_eq!(unpacked, tight, "round-trip failed for {width}x{height}");
+        assert_eq!(bytes_per_row, width * 16);
+        assert_eq!(packed.len(), tight.len());
+        assert!(std::ptr::eq(packed.as_ptr(), tight.as_ptr()));
     }
 }
 
@@ -210,10 +178,7 @@ fn tile_upload_layout_matches_rgba32f_rows() {
     assert_eq!(layout.size.height, 5);
     assert_eq!(
         layout.bytes_per_row,
-        wgpu::util::align_to(
-            7 * 4 * std::mem::size_of::<f32>() as u32,
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-        )
+        7 * 4 * std::mem::size_of::<f32>() as u32
     );
     assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
 }

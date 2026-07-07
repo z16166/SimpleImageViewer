@@ -14,24 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// Pixel payload for [`submit_texture_write`]. Immediate uploads may borrow; pending uploads
-/// stage shared ownership without an extra `Vec` clone when rows are already WGSL-aligned.
+/// stage shared ownership without an extra `Vec` clone for already shared pixel planes.
 pub(crate) enum TextureUploadBytes<'a> {
-    Cow(Cow<'a, [u8]>),
+    Borrowed(&'a [u8]),
     #[allow(dead_code)]
     Arc(Arc<[u8]>),
-    /// Row-aligned RGBA32F plane backed by `Arc<Vec<f32>>` (zero-copy pending queue).
+    /// Tight RGBA32F plane backed by `Arc<Vec<f32>>` (zero-copy pending queue).
     Rgba32f(Arc<Vec<f32>>),
 }
 
 impl<'a> TextureUploadBytes<'a> {
     pub(crate) fn as_slice(&self) -> &[u8] {
         match self {
-            Self::Cow(cow) => cow.as_ref(),
+            Self::Borrowed(bytes) => bytes,
             Self::Arc(arc) => arc.as_ref(),
             Self::Rgba32f(rgba) => rgba32f_as_bytes(rgba.as_slice()),
         }
@@ -39,8 +38,7 @@ impl<'a> TextureUploadBytes<'a> {
 
     fn stage_for_pending(self) -> StagedTextureBytes {
         match self {
-            Self::Cow(Cow::Borrowed(slice)) => StagedTextureBytes::Bytes(Arc::from(slice)),
-            Self::Cow(Cow::Owned(vec)) => StagedTextureBytes::Bytes(Arc::from(vec)),
+            Self::Borrowed(slice) => StagedTextureBytes::Bytes(Arc::from(slice)),
             Self::Arc(arc) => StagedTextureBytes::Bytes(arc),
             Self::Rgba32f(rgba) => StagedTextureBytes::Rgba32f(rgba),
         }
@@ -318,11 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_cow_owned_moves_vec_into_arc_without_extra_clone() {
-        let vec = vec![1_u8, 2, 3, 4];
-        let staged = TextureUploadBytes::Cow(Cow::Owned(vec)).stage_for_pending();
+    fn staged_borrowed_bytes_are_copied_for_pending_queue() {
+        let bytes = [1_u8, 2, 3, 4];
+        let staged = TextureUploadBytes::Borrowed(&bytes).stage_for_pending();
         match staged {
-            StagedTextureBytes::Bytes(arc) => assert_eq!(arc.as_ref(), &[1, 2, 3, 4]),
+            StagedTextureBytes::Bytes(arc) => assert_eq!(arc.as_ref(), &bytes),
             StagedTextureBytes::Rgba32f(_) => panic!("expected Bytes staging"),
         }
     }

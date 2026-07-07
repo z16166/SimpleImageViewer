@@ -120,7 +120,6 @@ use eframe::{
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
 use parking_lot::Mutex;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
