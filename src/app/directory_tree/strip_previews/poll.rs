@@ -303,7 +303,9 @@ impl ImageViewerApp {
             .is_valid_for_logical(index, logical);
         #[cfg(feature = "preload-debug")]
         {
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!("strip:poll:{index}:{stage:?}:{cache_valid}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][StripPoll] idx={} path={} stage={:?} decoded={}x{} logical={}x{} \
                  cache_valid_before_flush={cache_valid} cold_attempted={} pending_len={}",
                 index,
@@ -329,7 +331,9 @@ impl ImageViewerApp {
             );
         } else {
             #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!("strip:poll_no_repaint:{index}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][StripPoll] idx={} no repaint (cache not valid until GPU flush)",
                 index
             );

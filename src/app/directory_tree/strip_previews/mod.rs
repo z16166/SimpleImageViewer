@@ -504,7 +504,15 @@ impl ImageViewerApp {
             || !self.directory_tree_strip_generate_inflight.is_empty()
         {
             let ui_preview_count = self.directory_tree.preview_snapshot.load().textures.len();
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!(
+                    "strip:ensure:{}:{}:{}:{}",
+                    self.current_index,
+                    cold_scheduled,
+                    scroll_to_current_pending,
+                    bootstrap_visible
+                ),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][DirTree] ensure_strip current={} rows={} cache={} ui_preview={} rev={} inflight={} cold_sched={} visible={:?} scroll_pending={} bootstrap={}",
                 self.current_index,
                 self.image_files.len(),

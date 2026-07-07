@@ -34,6 +34,62 @@ macro_rules! preload_debug {
     };
 }
 
+/// Default repeat interval for high-frequency preload-debug breadcrumbs.
+#[cfg(feature = "preload-debug")]
+pub(crate) const PRELOAD_DEBUG_THROTTLE_INTERVAL: u64 = 64;
+
+/// Throttled preload / RAW diagnostics. No-op unless `--features preload-debug`.
+#[macro_export]
+macro_rules! preload_debug_throttled {
+    ($key:expr, $interval:expr, $($arg:tt)*) => {
+        #[cfg(feature = "preload-debug")]
+        {
+            if let Some(suppressed) =
+                $crate::preload_debug::should_log_throttled($key, $interval)
+            {
+                if suppressed == 0 {
+                    log::info!($($arg)*);
+                } else {
+                    log::info!(
+                        "{} suppressed_repeats={}",
+                        format_args!($($arg)*),
+                        suppressed
+                    );
+                }
+            }
+        }
+    };
+}
+
+#[cfg(feature = "preload-debug")]
+#[derive(Default)]
+struct PreloadDebugThrottleState {
+    total: u64,
+    skipped_since_log: u64,
+}
+
+#[cfg(feature = "preload-debug")]
+static PRELOAD_DEBUG_THROTTLES: std::sync::OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<String, PreloadDebugThrottleState>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(feature = "preload-debug")]
+pub(crate) fn should_log_throttled(key: &str, interval: u64) -> Option<u64> {
+    let interval = interval.max(1);
+    let throttles = PRELOAD_DEBUG_THROTTLES
+        .get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let mut throttles = throttles.lock();
+    let state = throttles.entry(key.to_owned()).or_default();
+    state.total = state.total.saturating_add(1);
+    if state.total == 1 || state.skipped_since_log.saturating_add(1) >= interval {
+        let suppressed = state.skipped_since_log;
+        state.skipped_since_log = 0;
+        return Some(suppressed);
+    }
+    state.skipped_since_log = state.skipped_since_log.saturating_add(1);
+    None
+}
+
 #[inline]
 pub(crate) fn path_is_raw(path: &std::path::Path) -> bool {
     path.extension()

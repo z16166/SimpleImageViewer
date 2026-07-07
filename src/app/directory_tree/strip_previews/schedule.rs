@@ -84,7 +84,9 @@ impl ImageViewerApp {
             .strip_max_side();
         let root_wake = self.root_redraw_wake_handle();
         #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("strip:iso_baseline_submit:{index}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug][Strip] pool submit idx={} kind=iso_baseline_sync max_side={}",
             index,
             max_side

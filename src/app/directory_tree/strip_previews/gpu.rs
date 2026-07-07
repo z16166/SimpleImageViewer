@@ -28,7 +28,7 @@ use crate::app::directory_tree_strip_cache::{
     MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT, MAX_STRIP_GPU_UPLOADS_PER_PAINT,
     MAX_STRIP_PENDING_GPU_UPLOAD_BYTES, MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag,
     StripPreviewReplaceParams, StripThumbnailCacheOwnedRequest, StripThumbnailCacheRequest,
-    decide_strip_preview_replace, strip_decoded_ready_for_gpu_upload,
+    decide_strip_preview_replace, strip_decoded_ready_for_gpu_upload, strip_preview_quality_rank,
 };
 use crate::loader::{DecodedImage, PreviewStage, hdr_has_iso_deferred_gain_map};
 
@@ -47,6 +47,11 @@ enum StripThumbnailCacheDecision {
     Drop,
     Resample,
     Proceed { strip_max_side: u32 },
+}
+
+struct StripPendingGpuCoalesce {
+    dropped: usize,
+    keep_incoming: bool,
 }
 
 struct StripThumbnailCacheUpsert<'a> {
@@ -179,16 +184,36 @@ impl ImageViewerApp {
         (dropped, released_bytes)
     }
 
+    fn pending_strip_upload_quality_rank(item: &DirectoryTreeStripPendingGpuUpload) -> u16 {
+        strip_preview_quality_rank(item.buffer_tag, item.stage)
+    }
+
     fn coalesce_pending_gpu_upload_for_index(
         &mut self,
         index: usize,
         incoming_stage: PreviewStage,
-    ) -> usize {
+        incoming_tag: StripPreviewBufferTag,
+    ) -> StripPendingGpuCoalesce {
         // Coalesced uploads either have no worker state or were released by result
-        // polling, so this path only needs to count dropped queued pixels.
+        // polling, so this path only needs to count dropped queued pixels. Do not let
+        // a lower-rank source (for example a full-size SDR fallback) replace an already
+        // queued strip-sized result for the same row; otherwise the fallback can fail the
+        // pre-upload size gate and leave the row stuck on the placeholder.
+        let incoming_rank = strip_preview_quality_rank(incoming_tag, incoming_stage);
+        let mut retained_higher_rank = false;
+
         let initial_before = self.directory_tree_strip_pending_gpu_initial.len();
         self.directory_tree_strip_pending_gpu_initial
-            .retain(|item| item.key.index != index);
+            .retain(|item| {
+                if item.key.index != index {
+                    return true;
+                }
+                if Self::pending_strip_upload_quality_rank(item) > incoming_rank {
+                    retained_higher_rank = true;
+                    return true;
+                }
+                false
+            });
         let mut dropped = initial_before - self.directory_tree_strip_pending_gpu_initial.len();
 
         // Initial uploads do not evict pending Refined uploads for the same index: Refined
@@ -196,10 +221,23 @@ impl ImageViewerApp {
         if incoming_stage == PreviewStage::Refined {
             let refined_before = self.directory_tree_strip_pending_gpu_refined.len();
             self.directory_tree_strip_pending_gpu_refined
-                .retain(|item| item.key.index != index);
+                .retain(|item| {
+                    if item.key.index != index {
+                        return true;
+                    }
+                    if Self::pending_strip_upload_quality_rank(item) > incoming_rank {
+                        retained_higher_rank = true;
+                        return true;
+                    }
+                    false
+                });
             dropped += refined_before - self.directory_tree_strip_pending_gpu_refined.len();
         }
-        dropped
+
+        StripPendingGpuCoalesce {
+            dropped,
+            keep_incoming: !retained_higher_rank,
+        }
     }
 
     pub(super) fn queue_directory_tree_strip_gpu_upload(
@@ -227,10 +265,23 @@ impl ImageViewerApp {
             self.clear_strip_preview_attempt_state_for_key(&key);
             return;
         }
+        let coalesce = self.coalesce_pending_gpu_upload_for_index(index, stage, buffer_tag);
+        if !coalesce.keep_incoming {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug_throttled!(
+                &format!("strip_gpu:skip_pending_higher_rank:{index}:{buffer_tag:?}:{stage:?}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                "[PreloadDebug][StripGpu] skip queue idx={} tag={buffer_tag:?} stage={:?} reason=pending_higher_rank coalesced={}",
+                index,
+                stage,
+                coalesce.dropped
+            );
+            return;
+        }
         #[cfg(feature = "preload-debug")]
-        let coalesced = self.coalesce_pending_gpu_upload_for_index(index, stage);
+        let coalesced = coalesce.dropped;
         #[cfg(not(feature = "preload-debug"))]
-        self.coalesce_pending_gpu_upload_for_index(index, stage);
+        let _ = coalesce.dropped;
         let visible_range = self.strip_visible_image_list_range();
         let incoming_visible = Self::strip_pending_key_is_visible(visible_range, &key);
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
@@ -287,7 +338,9 @@ impl ImageViewerApp {
         {
             let pending_len2 = self.directory_tree_strip_pending_gpu_initial.len()
                 + self.directory_tree_strip_pending_gpu_refined.len();
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!("strip_gpu:queue:{index}:{buffer_tag:?}:{stage:?}:{logical:?}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][StripGpu] queue idx={} tag={buffer_tag:?} stage={:?} decoded={}x{} logical={:?} \
                  cache_contains={} cache_count={} pending_len={} coalesced={}",
                 index,
@@ -380,7 +433,9 @@ impl ImageViewerApp {
             let indices: Vec<usize> = batch.iter().map(|item| item.key.index).collect();
             let remaining = self.directory_tree_strip_pending_gpu_initial.len()
                 + self.directory_tree_strip_pending_gpu_refined.len();
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                "strip_gpu:flush_take",
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][StripGpu] flush take={} bytes={} budget={} pending_left={remaining} indices={indices:?}",
                 batch.len(),
                 upload_bytes,
@@ -411,7 +466,12 @@ impl ImageViewerApp {
             {
                 let cache_after = self.directory_tree_strip_cache.contains(item.key.index);
                 let cache_count = self.directory_tree_strip_cache.textures().len();
-                crate::preload_debug!(
+                crate::preload_debug_throttled!(
+                    &format!(
+                        "strip_gpu:flush_done:{}:{cache_before}:{cache_after}",
+                        item.key.index
+                    ),
+                    crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                     "[PreloadDebug][StripGpu] flush done idx={} cache_before={} \
                      cache_after={} cache_count={} rev={}",
                     item.key.index,
@@ -429,7 +489,11 @@ impl ImageViewerApp {
         #[cfg(feature = "preload-debug")]
         {
             let flush_ms = crate::preload_debug::elapsed_ms(flush_started);
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!(
+                    "strip_gpu:flush_summary:{cache_revision_changed}:{pending_uploads_remain}"
+                ),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][StripGpu] flush summary count={} bytes={} elapsed_ms={} rev {} -> {} pending_remain={}",
                 upload_count,
                 upload_bytes,
@@ -829,6 +893,76 @@ mod tests {
             .expect("coalesced upload should remain");
         assert_eq!(upload.key.index, 0);
         assert_eq!(upload.decoded.rgba()[0], 2);
+    }
+
+    #[test]
+    fn strip_pending_queue_keeps_higher_rank_initial_upload() {
+        let mut app = make_strip_test_app();
+        app.image_files = vec![PathBuf::from("image-0.png")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_marker(1),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+            strip_max_side_used: Some(1),
+            job_key: None,
+        });
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_marker(2),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+            strip_max_side_used: Some(1),
+            job_key: None,
+        });
+
+        assert_eq!(app.directory_tree_strip_pending_gpu_initial.len(), 1);
+        let upload = app
+            .directory_tree_strip_pending_gpu_initial
+            .front()
+            .expect("higher-rank upload should remain");
+        assert_eq!(upload.key.index, 0);
+        assert_eq!(upload.buffer_tag, StripPreviewBufferTag::StripDecodedPixels);
+        assert_eq!(upload.decoded.rgba()[0], 1);
+    }
+
+    #[test]
+    fn strip_pending_queue_keeps_iso_baseline_over_sdr_fallback() {
+        let mut app = make_strip_test_app();
+        app.image_files = vec![PathBuf::from("image-0.png")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_marker(3),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
+            strip_max_side_used: Some(1),
+            job_key: None,
+        });
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 0,
+            decoded: decoded_with_marker(4),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::PreloadSdrFallback,
+            strip_max_side_used: Some(1),
+            job_key: None,
+        });
+
+        assert_eq!(app.directory_tree_strip_pending_gpu_initial.len(), 1);
+        let upload = app
+            .directory_tree_strip_pending_gpu_initial
+            .front()
+            .expect("ISO baseline upload should remain");
+        assert_eq!(upload.key.index, 0);
+        assert_eq!(upload.buffer_tag, StripPreviewBufferTag::IsoGainMapBaseline);
+        assert_eq!(upload.decoded.rgba()[0], 3);
     }
 
     #[test]
