@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_WORKER_IDLE_POLL,
-    LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey, TileRequest, should_spawn_load_task,
+    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_OUTPUT_CHANNEL_CAPACITY,
+    LOADER_WORKER_IDLE_POLL, LoaderOutputSender, LoaderWorkerLifetime,
+    REFINEMENT_REQUEST_CHANNEL_CAPACITY, TileInFlightKey, TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -107,9 +108,9 @@ struct LoadWorkerInput {
 impl ImageLoader {
     pub fn new() -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (output_tx, rx) = crossbeam_channel::bounded(LOADER_OUTPUT_CHANNEL_CAPACITY);
         let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
-            crossbeam_channel::unbounded();
+            crossbeam_channel::bounded(REFINEMENT_REQUEST_CHANNEL_CAPACITY);
         let pool_builder = rayon::ThreadPoolBuilder::new()
             .num_threads(MAX_IMG_LOADER_THREADS)
             .thread_name(|i| format!("img-loader-{i}"));
@@ -152,6 +153,11 @@ impl ImageLoader {
         };
 
         let preload_plan = Arc::new(super::preload_plan::PreloadPlanSnapshot::new());
+        let tx = LoaderOutputSender::with_shutdown_and_plan(
+            output_tx,
+            Arc::clone(&shutdown),
+            Some(Arc::clone(&preload_plan)),
+        );
         let output_mode_bits = Arc::new(AtomicU32::new(0));
         let hdr_target_capacity_bits = Arc::new(AtomicU32::new(
             HdrToneMapSettings::default()
@@ -535,6 +541,15 @@ impl ImageLoader {
                                 continue;
                             }
 
+                            if req.developed_image.read().is_some() {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][RAW] refine_skip idx={} reason=already_developed path={}",
+                                    req.index,
+                                    req.path.display()
+                                );
+                                continue;
+                            }
+
                             crate::preload_debug!(
                                 "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
                                 req.index,
@@ -719,7 +734,7 @@ impl ImageLoader {
             worker_lifetime,
             refine_tx,
             raw_open_prefetch,
-            tx: LoaderOutputSender::new(tx),
+            tx,
             rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
             preload_plan,
@@ -1043,7 +1058,7 @@ impl ImageLoader {
                 device_id: None,
                 staged_gpu_plane_upload: false,
             };
-            let _ = self.tx.send(LoaderOutput::Image(Box::new(load_result)));
+            let _ = self.tx.try_send(LoaderOutput::Image(Box::new(load_result)));
             self.loading.lock().remove(&index);
             return;
         }

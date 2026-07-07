@@ -22,7 +22,7 @@ use crate::loader::{
     ProfileSpawnRelation, RefinementRequest, TileDecodeSource, TilePixelKind,
     profile_spawn_relation,
 };
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TrySendError};
 use parking_lot::{Condvar, Mutex};
 
 use std::cmp::Ordering;
@@ -42,6 +42,16 @@ pub(crate) const LOADER_WORKER_IDLE_POLL: Duration = Duration::from_millis(50);
 
 /// Best-effort join budget for dedicated loader worker threads during [`LoaderWorkerLifetime`] drop.
 pub(crate) const LOADER_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Bounded loader output queue: enough for bursty workers, small enough to cap large results.
+pub(crate) const LOADER_OUTPUT_CHANNEL_CAPACITY: usize = 64;
+/// Keep the UI-local deferred queue bounded; the crossbeam channel provides backpressure above this.
+pub(crate) const LOADER_LOCAL_QUEUE_MAX_OUTPUTS: usize = LOADER_OUTPUT_CHANNEL_CAPACITY;
+/// Bounded HQ refinement request queue to avoid retaining unlimited full-size RAW state.
+pub(crate) const REFINEMENT_REQUEST_CHANNEL_CAPACITY: usize = 32;
+/// Initial retry interval while back-pressuring decode workers on a full output queue.
+const LOADER_OUTPUT_SEND_RETRY_INITIAL: Duration = Duration::from_millis(8);
+/// Maximum retry interval after repeated bounded-channel backpressure.
+const LOADER_OUTPUT_SEND_RETRY_MAX: Duration = Duration::from_millis(128);
 
 /// RAII shutdown for dedicated loader worker threads. Ensures `signal_shutdown` runs even if
 /// [`ImageLoader`] is dropped during stack unwinding (e.g. after `catch_unwind`).
@@ -144,13 +154,26 @@ type SharedRootWake = Arc<parking_lot::Mutex<Option<RootWakeCallback>>>;
 pub(crate) struct LoaderOutputSender {
     inner: Sender<LoaderOutput>,
     root_wake: SharedRootWake,
+    shutdown: Arc<AtomicBool>,
+    preload_plan: Option<Arc<PreloadPlanSnapshot>>,
 }
 
 impl LoaderOutputSender {
+    #[cfg(test)]
     pub(crate) fn new(inner: Sender<LoaderOutput>) -> Self {
+        Self::with_shutdown_and_plan(inner, Arc::new(AtomicBool::new(false)), None)
+    }
+
+    pub(crate) fn with_shutdown_and_plan(
+        inner: Sender<LoaderOutput>,
+        shutdown: Arc<AtomicBool>,
+        preload_plan: Option<Arc<PreloadPlanSnapshot>>,
+    ) -> Self {
         Self {
             inner,
             root_wake: Arc::new(parking_lot::Mutex::new(None)),
+            shutdown,
+            preload_plan,
         }
     }
 
@@ -158,14 +181,80 @@ impl LoaderOutputSender {
         *self.root_wake.lock() = Some(wake);
     }
 
-    pub(crate) fn send(&self, output: LoaderOutput) -> Result<(), ()> {
-        let result = self.inner.send(output).map_err(|_| ());
-        if result.is_ok()
-            && let Some(wake) = self.root_wake.lock().as_ref()
-        {
+    fn wake_root(&self) {
+        if let Some(wake) = self.root_wake.lock().as_ref() {
             wake();
         }
-        result
+    }
+
+    fn output_profile_epoch(output: &LoaderOutput) -> Option<u64> {
+        match output {
+            LoaderOutput::Image(result) => Some(result.decode_profile.profile_epoch),
+            LoaderOutput::Tile(tile) => Some(tile.decode_profile.profile_epoch),
+            LoaderOutput::Preview(preview) => Some(preview.decode_profile.profile_epoch),
+            LoaderOutput::Refined { .. } => None,
+        }
+    }
+
+    fn output_is_stale(&self, output: &LoaderOutput) -> bool {
+        let Some(preload_plan) = self.preload_plan.as_ref() else {
+            return false;
+        };
+        Self::output_profile_epoch(output).is_some_and(|epoch| epoch < preload_plan.profile_epoch())
+    }
+
+    pub(crate) fn try_send(&self, output: LoaderOutput) -> Result<(), ()> {
+        if self.output_is_stale(&output) {
+            return Err(());
+        }
+        self.inner
+            .try_send(output)
+            .map(|()| self.wake_root())
+            .map_err(|_| ())
+    }
+
+    pub(crate) fn send(&self, mut output: LoaderOutput) -> Result<(), ()> {
+        if self.output_is_stale(&output) {
+            return Err(());
+        }
+        let mut retry = LOADER_OUTPUT_SEND_RETRY_INITIAL;
+        let mut woke_after_full = false;
+        loop {
+            if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(());
+            }
+            match self.inner.try_send(output) {
+                Ok(()) => {
+                    self.wake_root();
+                    return Ok(());
+                }
+                Err(TrySendError::Full(returned)) => {
+                    output = returned;
+                    if self.output_is_stale(&output) {
+                        return Err(());
+                    }
+                    if !woke_after_full {
+                        self.wake_root();
+                        woke_after_full = true;
+                    }
+                    match self.inner.send_timeout(output, retry) {
+                        Ok(()) => {
+                            self.wake_root();
+                            return Ok(());
+                        }
+                        Err(SendTimeoutError::Timeout(returned)) => {
+                            output = returned;
+                            let next_ms = (retry.as_millis() as u64)
+                                .saturating_mul(2)
+                                .min(LOADER_OUTPUT_SEND_RETRY_MAX.as_millis() as u64);
+                            retry = Duration::from_millis(next_ms);
+                        }
+                        Err(SendTimeoutError::Disconnected(_)) => return Err(()),
+                    }
+                }
+                Err(TrySendError::Disconnected(_)) => return Err(()),
+            }
+        }
     }
 }
 

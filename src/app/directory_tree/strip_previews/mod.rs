@@ -145,11 +145,21 @@ impl ImageViewerApp {
         )
     }
 
+    pub(super) fn directory_tree_strip_index_path_matches_current_list(
+        &self,
+        index: usize,
+        path: &std::path::Path,
+    ) -> bool {
+        self.image_files
+            .get(index)
+            .is_some_and(|current| current == path)
+    }
+
     pub(super) fn directory_tree_strip_key_matches_current_list(
         &self,
         key: &crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
     ) -> bool {
-        self.image_files.get(key.index) == Some(&key.path)
+        self.directory_tree_strip_index_path_matches_current_list(key.index, &key.path)
             && self.directory_tree.list.lock().image_list_generation == key.image_list_generation
     }
 

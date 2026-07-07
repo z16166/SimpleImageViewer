@@ -16,12 +16,16 @@
 
 //! Directory-tree strip GPU upload pipeline and cache write-through.
 
+#[cfg(feature = "preload-debug")]
+use std::time::Instant;
+
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripGpuUploadRequest, DirectoryTreeStripJobKey,
-    DirectoryTreeStripPendingGpuUpload, MAX_STRIP_GPU_UPLOADS_PER_PAINT,
+    DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL, DirectoryTreeStripGpuUploadRequest,
+    DirectoryTreeStripJobKey, DirectoryTreeStripPendingGpuUpload,
+    MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT, MAX_STRIP_GPU_UPLOADS_PER_PAINT,
     MAX_STRIP_PENDING_GPU_UPLOAD_BYTES, MAX_STRIP_PENDING_GPU_UPLOADS, StripPreviewBufferTag,
     StripPreviewReplaceParams, StripThumbnailCacheOwnedRequest, StripThumbnailCacheRequest,
     decide_strip_preview_replace, strip_decoded_ready_for_gpu_upload,
@@ -71,8 +75,14 @@ impl ImageViewerApp {
         visible_range.is_some_and(|(start, end)| key.index >= start && key.index < end)
     }
 
+    fn decoded_strip_upload_bytes(decoded: &DecodedImage) -> usize {
+        (decoded.width as usize)
+            .saturating_mul(decoded.height as usize)
+            .saturating_mul(DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL)
+    }
+
     fn pending_strip_upload_bytes(item: &DirectoryTreeStripPendingGpuUpload) -> usize {
-        item.decoded.rgba().len()
+        item.upload_bytes
     }
 
     fn total_pending_strip_upload_bytes(&self) -> usize {
@@ -225,7 +235,7 @@ impl ImageViewerApp {
         let incoming_visible = Self::strip_pending_key_is_visible(visible_range, &key);
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
             + self.directory_tree_strip_pending_gpu_refined.len();
-        let incoming_bytes = decoded.rgba().len();
+        let incoming_bytes = Self::decoded_strip_upload_bytes(&decoded);
         let pending_bytes = self.total_pending_strip_upload_bytes();
         let (need_by_count, need_by_bytes) =
             Self::pending_strip_upload_budget_need(pending_len, pending_bytes, incoming_bytes);
@@ -261,6 +271,7 @@ impl ImageViewerApp {
         let upload = DirectoryTreeStripPendingGpuUpload {
             key,
             decoded,
+            upload_bytes: incoming_bytes,
             stage,
             logical,
             buffer_tag,
@@ -326,10 +337,13 @@ impl ImageViewerApp {
         if pending_len == 0 {
             return;
         }
+        #[cfg(feature = "preload-debug")]
+        let flush_started = Instant::now();
         let revision_before = self.directory_tree_strip_cache.gpu_revision();
         let take = MAX_STRIP_GPU_UPLOADS_PER_PAINT.min(pending_len);
         // Merge the per-stage queues in FIFO order by comparing sequence numbers.
         let mut batch = Vec::with_capacity(take);
+        let mut upload_bytes = 0usize;
         for _ in 0..take {
             let from_initial = self
                 .directory_tree_strip_pending_gpu_initial
@@ -348,7 +362,18 @@ impl ImageViewerApp {
                 (None, Some(_)) => &mut self.directory_tree_strip_pending_gpu_refined,
                 (None, None) => break,
             };
-            batch.push(source.pop_front().unwrap());
+            let Some(item) = source.pop_front() else {
+                break;
+            };
+            let item_bytes = Self::pending_strip_upload_bytes(&item);
+            if !batch.is_empty()
+                && upload_bytes.saturating_add(item_bytes) > MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT
+            {
+                source.push_front(item);
+                break;
+            }
+            upload_bytes = upload_bytes.saturating_add(item_bytes);
+            batch.push(item);
         }
         #[cfg(feature = "preload-debug")]
         {
@@ -356,10 +381,14 @@ impl ImageViewerApp {
             let remaining = self.directory_tree_strip_pending_gpu_initial.len()
                 + self.directory_tree_strip_pending_gpu_refined.len();
             crate::preload_debug!(
-                "[PreloadDebug][StripGpu] flush take={} pending_left={remaining} indices={indices:?}",
+                "[PreloadDebug][StripGpu] flush take={} bytes={} budget={} pending_left={remaining} indices={indices:?}",
                 batch.len(),
+                upload_bytes,
+                MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT,
             );
         }
+        #[cfg(feature = "preload-debug")]
+        let upload_count = batch.len();
         for item in batch {
             if !self.directory_tree_strip_key_matches_current_list(&item.key) {
                 self.clear_strip_preview_attempt_state_for_key(&item.key);
@@ -398,12 +427,24 @@ impl ImageViewerApp {
         let pending_uploads_remain = !self.directory_tree_strip_pending_gpu_initial.is_empty()
             || !self.directory_tree_strip_pending_gpu_refined.is_empty();
         #[cfg(feature = "preload-debug")]
-        if cache_revision_changed && !pending_uploads_remain {
+        {
+            let flush_ms = crate::preload_debug::elapsed_ms(flush_started);
             crate::preload_debug!(
-                "[PreloadDebug][StripGpu] flush installed rev {revision_before} -> {} \
-                 repaint coalesced",
-                self.directory_tree_strip_cache.gpu_revision()
+                "[PreloadDebug][StripGpu] flush summary count={} bytes={} elapsed_ms={} rev {} -> {} pending_remain={}",
+                upload_count,
+                upload_bytes,
+                flush_ms,
+                revision_before,
+                self.directory_tree_strip_cache.gpu_revision(),
+                pending_uploads_remain,
             );
+            if cache_revision_changed && !pending_uploads_remain {
+                crate::preload_debug!(
+                    "[PreloadDebug][StripGpu] flush installed rev {revision_before} -> {} \
+                     repaint coalesced",
+                    self.directory_tree_strip_cache.gpu_revision()
+                );
+            }
         }
         self.request_directory_tree_strip_flush_repaint(
             ctx,
@@ -557,10 +598,12 @@ impl ImageViewerApp {
             ctx,
             bypass_detach_queue,
         } = request;
+        let effective_job_key =
+            job_key.or_else(|| self.directory_tree_strip_upload_key_for_current_index(index));
         match self.prepare_directory_tree_strip_thumbnail_cache(StripThumbnailCachePrepare {
             index,
             decoded,
-            job_key: job_key.as_ref(),
+            job_key: effective_job_key.as_ref(),
             stage,
             logical_size,
             buffer_tag,
@@ -575,7 +618,7 @@ impl ImageViewerApp {
                     stage,
                     logical_size,
                     buffer_tag,
-                    job_key.clone(),
+                    effective_job_key.clone(),
                 );
             }
             StripThumbnailCacheDecision::Proceed { strip_max_side } => {
@@ -588,7 +631,7 @@ impl ImageViewerApp {
                             logical: logical_size,
                             buffer_tag,
                             strip_max_side_used,
-                            job_key,
+                            job_key: effective_job_key,
                         },
                     );
                 } else {
@@ -622,10 +665,12 @@ impl ImageViewerApp {
             ctx,
             bypass_detach_queue,
         } = request;
+        let effective_job_key =
+            job_key.or_else(|| self.directory_tree_strip_upload_key_for_current_index(index));
         match self.prepare_directory_tree_strip_thumbnail_cache(StripThumbnailCachePrepare {
             index,
             decoded: &decoded,
-            job_key: job_key.as_ref(),
+            job_key: effective_job_key.as_ref(),
             stage,
             logical_size,
             buffer_tag,
@@ -640,7 +685,7 @@ impl ImageViewerApp {
                     stage,
                     logical_size,
                     buffer_tag,
-                    job_key,
+                    effective_job_key,
                 );
             }
             StripThumbnailCacheDecision::Proceed { strip_max_side } => {
@@ -653,7 +698,7 @@ impl ImageViewerApp {
                             logical: logical_size,
                             buffer_tag,
                             strip_max_side_used,
-                            job_key,
+                            job_key: effective_job_key,
                         },
                     );
                 } else {
@@ -707,9 +752,12 @@ mod tests {
         job_token: u64,
         seq: u64,
     ) -> DirectoryTreeStripPendingGpuUpload {
+        let decoded = decoded_with_marker(index as u8);
+        let upload_bytes = ImageViewerApp::decoded_strip_upload_bytes(&decoded);
         DirectoryTreeStripPendingGpuUpload {
             key: strip_job_key_with_token(index, job_token),
-            decoded: decoded_with_marker(index as u8),
+            decoded,
+            upload_bytes,
             stage,
             logical: Some((1, 1)),
             buffer_tag: StripPreviewBufferTag::StripDecodedPixels,

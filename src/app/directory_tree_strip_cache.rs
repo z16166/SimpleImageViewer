@@ -160,6 +160,8 @@ pub(crate) struct StripThumbnailCacheOwnedRequest<'a> {
 pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub key: DirectoryTreeStripJobKey,
     pub decoded: DecodedImage,
+    /// Precomputed RGBA8 upload byte size for queue and per-frame budgets.
+    pub upload_bytes: usize,
     pub stage: PreviewStage,
     pub logical: Option<(u32, u32)>,
     pub buffer_tag: StripPreviewBufferTag,
@@ -185,7 +187,13 @@ pub(crate) struct DirectoryTreeStripGpuUploadRequest {
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
 const MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE: usize = 256;
-const DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL: usize = 4;
+pub(crate) const DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL: usize = 4;
+/// Pixel memory cap for one paint-thread strip GPU upload batch.
+pub(crate) const MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT: usize = MAX_STRIP_GPU_UPLOADS_PER_PAINT
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL;
+
 /// Pixel memory cap for strip uploads waiting for paint-thread GPU upload.
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOAD_BYTES: usize = MAX_STRIP_PENDING_GPU_UPLOADS
     * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE

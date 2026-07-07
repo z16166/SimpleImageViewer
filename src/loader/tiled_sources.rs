@@ -16,7 +16,7 @@
 
 //! [`TiledImageSource`] implementations: in-memory raster, HDR SDR fallback, LibRAW refinement.
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Sender, TrySendError};
 use image::{DynamicImage, GenericImageView};
 use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
 use std::ops::Range;
@@ -611,11 +611,12 @@ impl TiledImageSource for RawImageSource {
             "[RawImageSource] Triggering HQ refinement for index={}",
             index
         );
-        let _ = self.refine_tx.send(RefinementRequest {
+        let source_key = source_key_for_path(&self.path);
+        let request = RefinementRequest {
             path: self.path.clone(),
             index,
             decode_profile,
-            source_key: source_key_for_path(&self.path),
+            source_key,
             orientation_override: Some(self.orientation_override),
             logical_width: self.width,
             logical_height: self.height,
@@ -623,7 +624,27 @@ impl TiledImageSource for RawImageSource {
             hdr_developed_image: self.hdr_developed_image.clone(),
             hdr_target_capacity: self.hdr_target_capacity,
             hdr_tone_map: self.hdr_tone_map,
-        });
+        };
+        match self.refine_tx.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] refine_drop idx={} reason=queue_full path={}",
+                    index,
+                    self.path.display()
+                );
+                log::debug!(
+                    "[RawImageSource] Dropping HQ refinement request for index={} because queue is full",
+                    index
+                );
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                log::debug!(
+                    "[RawImageSource] Dropping HQ refinement request for index={} because worker is closed",
+                    index
+                );
+            }
+        }
     }
 
     fn defers_loader_hq_preview(&self) -> bool {
