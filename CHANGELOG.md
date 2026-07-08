@@ -4,37 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- **Home and End in the file list**: Keyboard Home and End now jump to the first and last image in the navigation list.
-- **File list selection after canvas wheel**: Scrolling through images with the mouse wheel on the canvas keeps the highlighted row in the file list in sync.
-- **HEIC gain-map SDR display toggle**: Switching embedded-SDR vs tone-mapped presentation for HEIC gain-map photos now refreshes correctly from cached planes.
-- **Reload after folder scan resort**: When a background scan re-sorts the file list, the currently open image reloads reliably instead of staying on stale data.
-- **File list size drift**: The navigation list and internal image index stay aligned when files are added or removed during scanning.
-- **PSD navigation strip previews**: Large PSD files no longer flash a blank placeholder in the file list while decoding finishes in the background.
-- **PSD previews refresh when ready**: Strip thumbnails update once background PSD decoding completes instead of staying blank.
-- **PSD strip decode reliability**: Restored dependable strip previews for PSD files after an async-decode regression.
-- **Page transitions stay on canvas**: Cross-fade and slide transitions no longer spill outside the main viewing area.
-- **Zoom and rotate anchor**: Mouse-wheel zoom and rotation stay centered on the main canvas instead of drifting with window chrome.
-- **Animated AVIF timing**: Frame pacing for animated AVIF files is correct again after HDR GPU uploads complete.
-- **AVIF strip thumbnail orientation**: Navigation strip thumbnails respect AVIF container orientation metadata.
-- **AVIF color on 8-bit sources**: 8-bit AVIF images display with smoother gradients instead of banding from an incorrect color conversion path.
-
-## [2.8.5] - 2026-07-04
+## [2.9.0] - 2026-07-08
 
 ### Improved
 - **Faster HDR previews on SDR displays**: Large HDR photos now use GPU tone mapping for quicker SDR previews while keeping full HDR output on compatible monitors.
-- **Faster AVIF, HEIF, and HDR loading**: The viewer decodes these formats in fewer passes and reuses file data more efficiently, so large photos open and appear sooner.
-- **Smoother navigation strip thumbnails**: File-list previews build with less redundant decoding, and thumbnail GPU work no longer blocks the main interface while you browse.
-- **Smoother browsing in large folders**: Smarter background preloading and cache retention keep nearby images ready longer, with lower memory overhead from reduced buffer copying.
-- **Faster TIFF, Radiance, and tiled image display**: Optimized tile decoding and scanline processing improve responsiveness for large TIFF, EXR, and HDR files.
+- **Faster AVIF, HEIF, and HDR loading**: These formats decode in fewer passes, reuse mapped file data across sniffing and decoding, and share one full decode between the main view and navigation strip where possible.
+- **Accelerated SIMD decode paths**: AVIF, HEIF, TIFF, Radiance, and HDR YCbCr conversion use wider SIMD processing for faster opening and smoother gradients on large photos.
+- **Smoother navigation strip thumbnails**: File-list previews build with less redundant decoding, reuse full-image work for small thumbnails, and move GPU downsample work off the paint thread so browsing stays responsive.
+- **Smoother browsing in large folders**: Smarter background preloading, O(1) cache eviction, and staged HDR GPU uploads keep nearby images ready longer with lower memory overhead.
+- **Faster TIFF and tiled image display**: Tiled TIFFs gain tile-level caching; high bit-depth and IEEE-float TIFFs decode in a single pass; strip and main-view paths share mmap and scratch buffers more aggressively.
+- **Faster EXR and Radiance display**: Subsampled EXR previews use optimized scanline paths; Radiance tile and preview decode run in parallel for large HDR files.
+- **Faster RAW opening and strip previews**: RAW files defer expensive sensor unpack until demosaic is needed, and developed previews rank and refresh more reliably in the navigation strip.
+- **Faster PSD and PSB browsing**: Large layered files decode in the background without blocking the interface, and strip thumbnails refresh once decoding completes.
+- **Faster animated format startup**: GIF, APNG, WebP, AVIF, and JPEG XL animations reuse bootstrap file mappings and show the first frame sooner while later frames load in the background.
+- **Apple Silicon HDR previews**: HDR preview tone mapping on Apple Silicon uses accelerated NEON paths for smoother browsing.
+- **Directory tree responsiveness**: Expanding the folder tree at launch lists subfolders correctly; changing file-list sort order keeps the canvas, preloads, and strip thumbnails aligned.
 
 ### Fixed
 - **EXIF rotation on Windows and macOS**: Images decoded through the system codecs no longer appear rotated twice when orientation metadata is present.
-- **Navigation strip preview orientation**: Thumbnails now match the main viewer orientation when a full decode is reused for the strip preview.
-- **HDR tiled viewing stability**: Fixed cases where HDR tile uploads could drop image data during fast panning and zooming.
-- **SDR preview paths for HDR photos**: SDR previews avoid unnecessary HDR processing, reducing memory use and startup delay on standard displays.
-- **Damaged or unusual files**: Improved handling of malformed PSB, TIFF, and Radiance files so the viewer fails gracefully instead of hanging or crashing.
-- **Cleaner shutdown**: Background loading workers now stop more reliably when you close the viewer.
+- **Navigation strip preview orientation**: Thumbnails match the main viewer orientation when a full decode is reused, including AVIF container rotation metadata.
+- **HDR tiled viewing stability**: Tile uploads, GPU write queues, image bindings, and fast pan/zoom no longer drop HDR image data or rebuild textures unnecessarily.
+- **HDR tiled previews on HDR displays**: Cached HDR tiles tone-map correctly for SDR preview tiles in HDR mode, and tiled high-quality navigation stays in sync with partial cache states.
+- **SDR preview paths for HDR photos**: SDR previews avoid unnecessary HDR buffers and processing, reducing memory use and startup delay on standard displays.
+- **HDR status indicator accuracy**: SDR preview tiles no longer show an HDR indicator when only a standard-dynamic-range preview is displayed.
+- **HEIC gain-map SDR display toggle**: Switching embedded-SDR vs tone-mapped presentation for HEIC gain-map photos refreshes correctly, including the full HDR preload window after display-mode changes.
+- **HEIF studio-range color**: HEIF photos encoded with studio (limited) color range display more accurate SDR colors.
+- **AVIF color on 8-bit sources**: 8-bit AVIF images display with smoother gradients instead of banding from an incorrect color conversion path.
+- **Animated AVIF timing**: Frame pacing for animated AVIF files is correct again after HDR GPU uploads complete.
+- **Animated HDR startup**: First frames of animated AVIF and JPEG XL HDR files appear without a visible flash while loading completes.
+- **Animated strip thumbnails**: Navigation-strip previews for animated files no longer block the interface while frames decode.
+- **Home and End in the file list**: Keyboard Home and End jump to the first and last image in the navigation list, including detached navigation windows.
+- **File list selection after canvas wheel**: Scrolling through images with the mouse wheel on the canvas keeps the highlighted row in the file list in sync.
+- **Reload after folder scan resort**: When a background scan re-sorts the file list, the currently open image reloads reliably instead of staying on stale data.
+- **File list size drift**: The navigation list and internal image index stay aligned when files are added or removed during scanning.
+- **PSD navigation strip previews**: Large PSD files no longer flash a blank placeholder in the file list while decoding finishes in the background.
+- **PSD strip decode reliability**: Restored dependable strip previews for PSD files after an async-decode regression left gray placeholders without refreshing the UI.
+- **Strip thumbnails after scrolling**: Thumbnails reappear correctly after scrolling long file lists instead of staying blank after cache eviction.
+- **TIFF strip preview stability**: Fixed crashes and missing previews when opening large TIFF files in the navigation strip, including unusual JPEG-compressed TIFF strips.
+- **macOS strip thumbnail timing**: Navigation-strip previews on macOS publish decoded results before clearing in-flight state so thumbnails do not disappear briefly.
+- **RAW demosaic timing**: RAW development preserves intended preview timing so strip and main views do not show stale intermediate results.
+- **Tiled HDR exposure fallback**: HDR tiled viewing handles missing exposure metadata more gracefully instead of showing incorrect brightness.
+- **Page transitions stay on canvas**: Cross-fade, slide, and push transitions no longer spill outside the main viewing area.
+- **Zoom and rotate anchor**: Mouse-wheel zoom and rotation stay centered on the main canvas instead of drifting with window chrome or embedded navigation panels.
+- **Damaged or unusual files**: Improved handling of empty, tiny, malformed PSB, TIFF, and Radiance files so the viewer fails gracefully instead of hanging or crashing.
+- **Cleaner shutdown**: Background loading, directory-tree, and IPC workers stop more reliably when you close the viewer.
 
 ## [2.8.4] - 2026-07-02
 
