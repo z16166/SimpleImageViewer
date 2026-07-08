@@ -144,8 +144,35 @@ fn shell_execute(file: &str, parameters: Option<&str>) -> Result<(), String> {
 fn parse_windows_command_line(line: &str) -> Result<Vec<String>, String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use winapi::shared::minwindef::HLOCAL;
     use winapi::um::shellapi::CommandLineToArgvW;
     use winapi::um::winbase::LocalFree;
+
+    struct LocalArgvGuard(HLOCAL);
+
+    impl LocalArgvGuard {
+        fn new(argv: HLOCAL) -> Result<Self, String> {
+            if argv.is_null() {
+                Err("CommandLineToArgvW failed".to_string())
+            } else {
+                Ok(Self(argv))
+            }
+        }
+
+        fn as_argv_ptr(&self) -> *mut winapi::shared::ntdef::LPWSTR {
+            self.0 as _
+        }
+    }
+
+    impl Drop for LocalArgvGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    let _ = LocalFree(self.0);
+                }
+            }
+        }
+    }
 
     let wide: Vec<u16> = OsStr::new(line)
         .encode_wide()
@@ -153,22 +180,20 @@ fn parse_windows_command_line(line: &str) -> Result<Vec<String>, String> {
         .collect();
 
     let mut argc = 0;
-    let argv = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut argc) };
-    if argv.is_null() {
-        return Err("CommandLineToArgvW failed".to_string());
-    }
+    let argv =
+        LocalArgvGuard::new(unsafe { CommandLineToArgvW(wide.as_ptr(), &mut argc) as HLOCAL })?;
 
     let mut parsed = Vec::new();
     unsafe {
+        let argv_ptr = argv.as_argv_ptr();
         for index in 0..argc as usize {
-            let arg_ptr = *argv.add(index);
+            let arg_ptr = *argv_ptr.add(index);
             let len = (0..)
                 .take_while(|&offset| *arg_ptr.add(offset) != 0)
                 .count();
             let slice = std::slice::from_raw_parts(arg_ptr, len);
             parsed.push(String::from_utf16_lossy(slice));
         }
-        LocalFree(argv as _);
     }
     Ok(parsed)
 }
