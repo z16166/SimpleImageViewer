@@ -1626,7 +1626,11 @@ pub(super) fn image_list_home_end_index(
         egui::Key::End => len - 1,
         _ => return None,
     };
-    if target == current { None } else { Some(target) }
+    if target == current {
+        None
+    } else {
+        Some(target)
+    }
 }
 
 fn apply_image_list_row_selection(chrome: &mut DirectoryTreeUiChrome, index: usize) {

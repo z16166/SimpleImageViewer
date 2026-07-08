@@ -332,7 +332,7 @@ impl ImageViewerApp {
                     self.gpu_demosaic_failed_indices.insert(idx);
                     self.prefetched_tiles.remove(&idx);
                     self.deferred_sdr_uploads.remove(&idx);
-                    crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                    crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
                     if let Some(path) = self.image_files.get(idx).cloned() {
                         // Clear any stale loading-map slot so profile spawn accepts the CPU retry.
                         self.loader.finish_image_request(idx);

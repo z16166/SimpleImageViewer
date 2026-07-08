@@ -425,6 +425,12 @@ pub enum PreviewStage {
     Refined,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RawDevelopedImageRank {
+    EmbeddedPreview,
+    FullResolutionDeveloped,
+}
+
 /// Provenance of pixels stored in the main-window [`crate::loader::TextureCache`].
 ///
 /// HQ/sync decisions use tag + stage, not decoded or GPU texture dimensions.
@@ -463,7 +469,10 @@ impl TexturePreviewBufferTag {
     }
 
     pub fn satisfies_tiled_sdr_hq(self, stage: PreviewStage) -> bool {
-        matches!((self, stage), (Self::TiledRefinedLoader, PreviewStage::Refined))
+        matches!(
+            (self, stage),
+            (Self::TiledRefinedLoader, PreviewStage::Refined)
+        )
     }
 }
 
@@ -647,6 +656,30 @@ impl TileDecodeSource {
             Self::Hdr(_) => TilePixelKind::Hdr,
         }
     }
+
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Sdr(source) => (source.width(), source.height()),
+            Self::Hdr(source) => (source.width(), source.height()),
+        }
+    }
+
+    pub(crate) fn tile_cols(&self) -> u32 {
+        crate::tile_cache::tile_count_for_extent(self.dimensions().0)
+    }
+
+    pub(crate) fn tile_rows(&self) -> u32 {
+        crate::tile_cache::tile_count_for_extent(self.dimensions().1)
+    }
+
+    pub(crate) fn tile_rect(&self, col: u32, row: u32) -> Option<crate::tile_cache::TileRect> {
+        let (width, height) = self.dimensions();
+        crate::tile_cache::tile_rect_for_dimensions(
+            width,
+            height,
+            crate::tile_cache::TileCoord { col, row },
+        )
+    }
 }
 
 pub struct PreviewResult {
@@ -698,7 +731,10 @@ pub enum LoaderOutput {
     Tile(TileResult),
     Preview(PreviewResult),
     /// Background refinement finished (e.g. LibRaw demosaic)
-    Refined(usize),
+    Refined {
+        index: usize,
+        source_key: SourceKey,
+    },
 }
 
 pub struct RefinementRequest {
@@ -710,6 +746,7 @@ pub struct RefinementRequest {
     pub logical_width: u32,
     pub logical_height: u32,
     pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+    pub developed_image_rank: Arc<PLRwLock<RawDevelopedImageRank>>,
     /// Shared with [`crate::loader::tiled_sources::RawHdrRefiningSource`] on HDR displays.
     pub hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]

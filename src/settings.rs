@@ -990,8 +990,10 @@ mod tests {
 
     #[test]
     fn directory_tree_nav_active_requires_tree_mode_and_visible_nav() {
-        let mut settings = Settings::default();
-        settings.recursive = true;
+        let mut settings = Settings {
+            recursive: true,
+            ..Default::default()
+        };
         assert!(!settings.directory_tree_nav_active());
 
         settings.browse_mode = BrowseMode::Tree;
@@ -1002,10 +1004,12 @@ mod tests {
 
     #[test]
     fn hidden_tree_nav_is_not_active() {
-        let mut settings = Settings::default();
-        settings.browse_mode = BrowseMode::Tree;
-        settings.show_directory_tree_nav = true;
-        settings.recursive = true;
+        let mut settings = Settings {
+            browse_mode: BrowseMode::Tree,
+            show_directory_tree_nav: true,
+            recursive: true,
+            ..Default::default()
+        };
         assert!(settings.directory_tree_nav_active());
 
         settings.show_directory_tree_nav = false;
@@ -1015,10 +1019,12 @@ mod tests {
 
     #[test]
     fn linear_browse_mode_is_not_tree_nav_active() {
-        let mut settings = Settings::default();
-        settings.browse_mode = BrowseMode::Tree;
-        settings.show_directory_tree_nav = true;
-        settings.recursive = true;
+        let mut settings = Settings {
+            browse_mode: BrowseMode::Tree,
+            show_directory_tree_nav: true,
+            recursive: true,
+            ..Default::default()
+        };
         assert!(settings.directory_tree_nav_active());
 
         settings.show_directory_tree_nav = false;
@@ -1029,10 +1035,12 @@ mod tests {
 
     #[test]
     fn directory_tree_nav_active_ignores_stored_recursive_flag() {
-        let mut settings = Settings::default();
-        settings.recursive = true;
-        settings.browse_mode = BrowseMode::Tree;
-        settings.show_directory_tree_nav = true;
+        let settings = Settings {
+            recursive: true,
+            browse_mode: BrowseMode::Tree,
+            show_directory_tree_nav: true,
+            ..Default::default()
+        };
 
         assert!(settings.directory_tree_nav_active());
         assert!(settings.recursive);
@@ -1236,10 +1244,12 @@ directory_tree_window_maximized_screen_center: [960, 540]
 
     #[test]
     fn transient_image_dir_yaml_is_runtime_only() {
-        let mut settings = Settings::default();
-        settings.last_image_dir = Some(PathBuf::from("/gallery/saved"));
-        settings.transient_image_dir = Some(PathBuf::from("/gallery/double-clicked"));
-        settings.keep_gallery_dir_on_double_click = true;
+        let settings = Settings {
+            last_image_dir: Some(PathBuf::from("/gallery/saved")),
+            transient_image_dir: Some(PathBuf::from("/gallery/double-clicked")),
+            keep_gallery_dir_on_double_click: true,
+            ..Default::default()
+        };
 
         let yaml = serde_yaml::to_string(&settings).expect("serialize settings");
         assert!(yaml.contains("keep_gallery_dir_on_double_click: true"));

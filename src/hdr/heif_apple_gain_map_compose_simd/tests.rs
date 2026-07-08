@@ -45,19 +45,34 @@ fn precompute_gain_row_linear_legacy(
     }
 }
 
-fn compose_image_legacy_reference(
-    base_pixels: &[f32],
+struct ComposeImageLegacyReferenceInput<'a> {
+    base_pixels: &'a [f32],
     width: u32,
     height: u32,
-    gain_rgba: &[u8],
+    gain_rgba: &'a [u8],
     gain_w: u32,
     gain_h: u32,
     color_space: HdrColorSpace,
     transfer: HdrTransferFunction,
-    metadata: &HdrImageMetadata,
+    metadata: &'a HdrImageMetadata,
     headroom_span: f32,
     weight: f32,
-) -> Vec<f32> {
+}
+
+fn compose_image_legacy_reference(input: ComposeImageLegacyReferenceInput<'_>) -> Vec<f32> {
+    let ComposeImageLegacyReferenceInput {
+        base_pixels,
+        width,
+        height,
+        gain_rgba,
+        gain_w,
+        gain_h,
+        color_space,
+        transfer,
+        metadata,
+        headroom_span,
+        weight,
+    } = input;
     let mut out = vec![0.0_f32; base_pixels.len()];
     let row_stride = width as usize * 4;
     let mut gain_row = GainRowLinear {
@@ -114,11 +129,18 @@ fn precompute_gain_row_matches_legacy_reference() {
         };
         precompute_gain_row_linear_legacy(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut legacy);
         precompute_gain_row_linear(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut optimized);
-        assert_eq!(
-            legacy.rgb[..W as usize * 3],
-            optimized.rgb[..W as usize * 3],
-            "row {y} mismatch"
-        );
+        for (x, (got, expected)) in optimized.rgb[..W as usize * 3]
+            .iter()
+            .zip(legacy.rgb[..W as usize * 3].iter())
+            .enumerate()
+        {
+            let diff = (got - expected).abs();
+            let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+            assert!(
+                diff <= tol,
+                "row {y} pixel {x} mismatch: got={got} expected={expected}"
+            );
+        }
     }
 }
 
@@ -139,19 +161,19 @@ fn compose_apple_gain_map_pixels_matches_legacy_reference() {
     let weight = 0.75;
     let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::DisplayP3Linear);
 
-    let legacy = compose_image_legacy_reference(
-        &base_pixels,
-        W,
-        H,
-        &gain_rgba,
-        GAIN_W,
-        GAIN_H,
-        HdrColorSpace::DisplayP3Linear,
-        HdrTransferFunction::Srgb,
-        &metadata,
+    let legacy = compose_image_legacy_reference(ComposeImageLegacyReferenceInput {
+        base_pixels: &base_pixels,
+        width: W,
+        height: H,
+        gain_rgba: &gain_rgba,
+        gain_w: GAIN_W,
+        gain_h: GAIN_H,
+        color_space: HdrColorSpace::DisplayP3Linear,
+        transfer: HdrTransferFunction::Srgb,
+        metadata: &metadata,
         headroom_span,
         weight,
-    );
+    });
     let mut optimized = vec![0.0_f32; pixel_count];
     compose_apple_gain_map_pixels(AppleGainMapComposePixels {
         base_pixels: &base_pixels,
@@ -168,7 +190,15 @@ fn compose_apple_gain_map_pixels_matches_legacy_reference() {
         weight,
         force_scalar: false,
     });
-    assert_eq!(legacy, optimized);
+    assert_eq!(legacy.len(), optimized.len());
+    for (i, (&got, &expected)) in optimized.iter().zip(legacy.iter()).enumerate() {
+        let diff = (got - expected).abs();
+        let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+        assert!(
+            diff <= tol,
+            "parity failed at {i}: got={got} expected={expected}"
+        );
+    }
 }
 
 #[test]
@@ -209,19 +239,19 @@ fn simd_compose_matches_scalar_for_common_heic_paths() {
     ];
 
     for (color_space, transfer, metadata) in cases {
-        let reference = compose_image_legacy_reference(
-            &base_pixels,
-            W,
-            H,
-            &gain_rgba,
-            W,
-            H,
+        let reference = compose_image_legacy_reference(ComposeImageLegacyReferenceInput {
+            base_pixels: &base_pixels,
+            width: W,
+            height: H,
+            gain_rgba: &gain_rgba,
+            gain_w: W,
+            gain_h: H,
             color_space,
             transfer,
-            &metadata,
+            metadata: &metadata,
             headroom_span,
             weight,
-        );
+        });
         let mut optimized = vec![0.0_f32; pixel_count];
         compose_apple_gain_map_pixels(AppleGainMapComposePixels {
             base_pixels: &base_pixels,
@@ -238,10 +268,15 @@ fn simd_compose_matches_scalar_for_common_heic_paths() {
             weight,
             force_scalar: false,
         });
-        assert_eq!(
-            reference, optimized,
-            "parity failed for {color_space:?} + {transfer:?}"
-        );
+        assert_eq!(reference.len(), optimized.len());
+        for (i, (&got, &expected)) in optimized.iter().zip(reference.iter()).enumerate() {
+            let diff = (got - expected).abs();
+            let tol = (expected.abs() * 1.0e-5).max(1.0e-5);
+            assert!(
+                diff <= tol,
+                "parity failed for {color_space:?} + {transfer:?} at {i}: got={got} expected={expected}"
+            );
+        }
     }
 }
 

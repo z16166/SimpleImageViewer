@@ -22,9 +22,13 @@
 use super::constants::{INVERSE_DISPLAY_GAMMA, MAX_HDR_TONE_MAP_INPUT};
 use super::tone_map::{
     STRIP_PREVIEW_NITS_PIN_EPSILON, decode_transfer_to_display_linear,
-    encode_linear_display_referred_srgb8, encode_sdr_rgb8, hdr_to_sdr_rgba8_with_tone_settings,
-    should_use_iec61966_tone_map_fallback,
+    encode_linear_display_referred_srgb8, encode_sdr_rgb8,
+    hdr_to_sdr_rgba8_with_tone_settings_scalar, should_use_iec61966_tone_map_fallback,
 };
+#[cfg(target_arch = "aarch64")]
+use crate::hdr::simd_fast_pow::{exp4_neon, pow4_neon};
+#[cfg(target_arch = "x86_64")]
+use crate::hdr::simd_fast_pow::{exp4_sse41, pow4_sse41};
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrToneMapSettings,
     HdrTransferFunction,
@@ -93,8 +97,8 @@ struct StripToneMapContext {
     path: StripSimdPath,
 }
 
-/// Directory-tree strip tone-map: SIMD fast paths when possible, scalar otherwise.
-pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
+/// CPU HDR -> SDR tone-map: SIMD fast paths when possible, scalar otherwise.
+pub fn hdr_to_sdr_rgba8_with_tone_settings(
     buffer: &HdrImageBuffer,
     exposure_ev: f32,
     tone: &HdrToneMapSettings,
@@ -135,7 +139,7 @@ pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
     let tf = buffer.metadata.transfer_function;
     let path = classify_strip_simd_path(buffer, tf);
     if path == StripSimdPath::Scalar {
-        return hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, &tone);
+        return hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, exposure_ev, &tone);
     }
 
     let apply_peak_scaler = matches!(tf, HdrTransferFunction::Pq | HdrTransferFunction::Hlg);
@@ -156,6 +160,15 @@ pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
     let mut pixels = vec![0_u8; expected_len];
     tone_map_strip_simd(&buffer.rgba_f32, &mut pixels, ctx);
     Ok(pixels)
+}
+
+/// Directory-tree strip tone-map (same SIMD path as full-image CPU tone-map).
+pub(crate) fn hdr_to_sdr_rgba8_strip_preview(
+    buffer: &HdrImageBuffer,
+    exposure_ev: f32,
+    tone: &HdrToneMapSettings,
+) -> Result<Vec<u8>, String> {
+    hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, tone)
 }
 
 fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) -> StripSimdPath {
@@ -685,37 +698,6 @@ unsafe fn sanitize_hdr_rgb4_neon(v: float32x4_t) -> float32x4_t {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
-    unsafe {
-        let mut lanes = [0.0_f32; 4];
-        _mm_storeu_ps(lanes.as_mut_ptr(), base);
-        _mm_set_ps(
-            lanes[3].powf(exponent),
-            lanes[2].powf(exponent),
-            lanes[1].powf(exponent),
-            lanes[0].powf(exponent),
-        )
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
-    let mut lanes = [0.0_f32; 4];
-    unsafe {
-        vst1q_f32(lanes.as_mut_ptr(), base);
-    }
-    let result = [
-        lanes[0].powf(exponent),
-        lanes[1].powf(exponent),
-        lanes[2].powf(exponent),
-        lanes[3].powf(exponent),
-    ];
-    unsafe { vld1q_f32(result.as_ptr()) }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
 unsafe fn pq_to_display_linear4_sse41(code: __m128, sdr_white_nits: f32) -> __m128 {
     unsafe {
         let m2 = crate::constants::PQ_M2;
@@ -773,13 +755,9 @@ unsafe fn hlg_to_scene_linear4_sse41(e_prime: __m128) -> __m128 {
             _mm_max_ps(_mm_sub_ps(clamped, _mm_set1_ps(HLG_C)), zero),
             _mm_set1_ps(HLG_A),
         );
-        let mut lanes = [0.0_f32; 4];
-        _mm_storeu_ps(lanes.as_mut_ptr(), adjusted);
-        let high = _mm_set_ps(
-            (lanes[3].exp() + HLG_B) / 12.0,
-            (lanes[2].exp() + HLG_B) / 12.0,
-            (lanes[1].exp() + HLG_B) / 12.0,
-            (lanes[0].exp() + HLG_B) / 12.0,
+        let high = _mm_div_ps(
+            _mm_add_ps(exp4_sse41(adjusted), _mm_set1_ps(HLG_B)),
+            _mm_set1_ps(12.0),
         );
         _mm_blendv_ps(high, low, low_mask)
     }
@@ -799,16 +777,9 @@ unsafe fn hlg_to_scene_linear4_neon(e_prime: float32x4_t) -> float32x4_t {
             vmaxq_f32(vsubq_f32(clamped, vdupq_n_f32(HLG_C)), zero),
             vdupq_n_f32(HLG_A),
         );
-        let mut lanes = [0.0_f32; 4];
-        vst1q_f32(lanes.as_mut_ptr(), adjusted);
-        let high = vld1q_f32(
-            [
-                (lanes[0].exp() + HLG_B) / 12.0,
-                (lanes[1].exp() + HLG_B) / 12.0,
-                (lanes[2].exp() + HLG_B) / 12.0,
-                (lanes[3].exp() + HLG_B) / 12.0,
-            ]
-            .as_ptr(),
+        let high = vdivq_f32(
+            vaddq_f32(exp4_neon(adjusted), vdupq_n_f32(HLG_B)),
+            vdupq_n_f32(12.0),
         );
         vbslq_f32(low_mask, low, high)
     }
@@ -926,25 +897,45 @@ unsafe fn encode_iec61966_channel4_neon(linear: float32x4_t, scale: f32) -> floa
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn float_lane_to_u8_sse41(v: __m128, lane: usize) -> u8 {
-    unsafe {
-        let mut lanes = [0.0_f32; 4];
-        _mm_storeu_ps(lanes.as_mut_ptr(), v);
-        (lanes[lane].clamp(0.0, 1.0) * 255.0).round() as u8
-    }
+unsafe fn float4_to_i16x4_sse41(v: __m128) -> __m128i {
+    let zero = _mm_setzero_ps();
+    let one = _mm_set1_ps(1.0);
+    let half = _mm_set1_ps(0.5);
+    let clamped = _mm_min_ps(_mm_max_ps(v, zero), one);
+    let scaled = _mm_mul_ps(clamped, _mm_set1_ps(255.0));
+    let rounded = _mm_cvttps_epi32(_mm_add_ps(scaled, half));
+    _mm_packs_epi32(rounded, rounded)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn pack_rgba_u8_pixel4_sse41(dst: *mut u8, r: __m128, g: __m128, b: __m128, a: __m128) {
     unsafe {
-        for lane in 0..4 {
-            dst.add(lane * 4).write(float_lane_to_u8_sse41(r, lane));
-            dst.add(lane * 4 + 1).write(float_lane_to_u8_sse41(g, lane));
-            dst.add(lane * 4 + 2).write(float_lane_to_u8_sse41(b, lane));
-            dst.add(lane * 4 + 3).write(float_lane_to_u8_sse41(a, lane));
-        }
+        let ri = float4_to_i16x4_sse41(r);
+        let gi = float4_to_i16x4_sse41(g);
+        let bi = float4_to_i16x4_sse41(b);
+        let ai = float4_to_i16x4_sse41(a);
+
+        let rg01 = _mm_unpacklo_epi16(ri, gi);
+        let ba01 = _mm_unpacklo_epi16(bi, ai);
+        let rgba_i16_01 = _mm_unpacklo_epi32(rg01, ba01);
+        let rgba_i16_23 = _mm_unpackhi_epi32(rg01, ba01);
+        let rgba01 = _mm_packus_epi16(rgba_i16_01, _mm_setzero_si128());
+        let rgba23 = _mm_packus_epi16(rgba_i16_23, _mm_setzero_si128());
+        _mm_storel_epi64(dst as *mut __m128i, rgba01);
+        _mm_storel_epi64(dst.add(8) as *mut __m128i, rgba23);
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn float4_to_u16x4_neon(v: float32x4_t) -> uint16x4_t {
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+    let clamped = vminq_f32(vmaxq_f32(v, zero), one);
+    let scaled = vmulq_f32(clamped, vdupq_n_f32(255.0));
+    let rounded = vaddq_f32(scaled, vdupq_n_f32(0.5));
+    vmovn_u32(vcvtq_u32_f32(rounded))
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -957,21 +948,21 @@ unsafe fn pack_rgba_u8_pixel4_neon(
     a: float32x4_t,
 ) {
     unsafe {
-        let mut rs = [0.0_f32; 4];
-        let mut gs = [0.0_f32; 4];
-        let mut bs = [0.0_f32; 4];
-        let mut alphas = [0.0_f32; 4];
-        vst1q_f32(rs.as_mut_ptr(), r);
-        vst1q_f32(gs.as_mut_ptr(), g);
-        vst1q_f32(bs.as_mut_ptr(), b);
-        vst1q_f32(alphas.as_mut_ptr(), a);
-        for lane in 0..4 {
-            dst.add(lane * 4).write(float_to_u8_scalar(rs[lane]));
-            dst.add(lane * 4 + 1).write(float_to_u8_scalar(gs[lane]));
-            dst.add(lane * 4 + 2).write(float_to_u8_scalar(bs[lane]));
-            dst.add(lane * 4 + 3)
-                .write(float_to_u8_scalar(alphas[lane]));
-        }
+        let ri = float4_to_u16x4_neon(r);
+        let gi = float4_to_u16x4_neon(g);
+        let bi = float4_to_u16x4_neon(b);
+        let ai = float4_to_u16x4_neon(a);
+
+        let rgba = uint8x8x4_t(
+            vmovn_u16(vcombine_u16(ri, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(gi, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(bi, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(ai, vdup_n_u16(0))),
+        );
+        vst4_lane_u8(dst, rgba, 0);
+        vst4_lane_u8(dst.add(4), rgba, 1);
+        vst4_lane_u8(dst.add(8), rgba, 2);
+        vst4_lane_u8(dst.add(12), rgba, 3);
     }
 }
 
@@ -1013,8 +1004,8 @@ mod tests {
     }
 
     fn assert_strip_simd_matches_scalar(buffer: &HdrImageBuffer, tone: &HdrToneMapSettings) {
-        let scalar =
-            hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone).expect("scalar");
+        let scalar = hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone)
+            .expect("scalar");
         let simd = hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, tone).expect("simd");
         assert_eq!(scalar, simd, "strip SIMD must match scalar tone-map");
     }
@@ -1083,5 +1074,56 @@ mod tests {
             ..HdrToneMapSettings::default()
         };
         assert_strip_simd_matches_scalar(&buffer, &tone);
+    }
+
+    fn pack_rgba_u8_pixel4_scalar(
+        dst: &mut [u8; 16],
+        r: [f32; 4],
+        g: [f32; 4],
+        b: [f32; 4],
+        a: [f32; 4],
+    ) {
+        for lane in 0..4 {
+            dst[lane * 4] = float_to_u8_scalar(r[lane]);
+            dst[lane * 4 + 1] = float_to_u8_scalar(g[lane]);
+            dst[lane * 4 + 2] = float_to_u8_scalar(b[lane]);
+            dst[lane * 4 + 3] = float_to_u8_scalar(a[lane]);
+        }
+    }
+
+    #[test]
+    fn pack_rgba_u8_pixel4_matches_scalar_reference() {
+        let r = [0.0_f32, 0.25, 0.5, 1.0];
+        let g = [0.1, 0.35, 0.6, 0.9];
+        let b = [0.2, 0.45, 0.7, 0.8];
+        let a = [1.0_f32; 4];
+        let mut expected = [0_u8; 16];
+        pack_rgba_u8_pixel4_scalar(&mut expected, r, g, b, a);
+
+        let mut simd = [0_u8; 16];
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            if is_x86_feature_detected!("sse4.1") {
+                pack_rgba_u8_pixel4_sse41(
+                    simd.as_mut_ptr(),
+                    _mm_loadu_ps(r.as_ptr()),
+                    _mm_loadu_ps(g.as_ptr()),
+                    _mm_loadu_ps(b.as_ptr()),
+                    _mm_loadu_ps(a.as_ptr()),
+                );
+                assert_eq!(simd, expected, "SSE4.1 pack must match scalar");
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            pack_rgba_u8_pixel4_neon(
+                simd.as_mut_ptr(),
+                vld1q_f32(r.as_ptr()),
+                vld1q_f32(g.as_ptr()),
+                vld1q_f32(b.as_ptr()),
+                vld1q_f32(a.as_ptr()),
+            );
+            assert_eq!(simd, expected, "NEON pack must match scalar");
+        }
     }
 }

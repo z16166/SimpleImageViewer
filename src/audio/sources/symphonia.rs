@@ -130,7 +130,7 @@ impl SymphoniaSource {
 
     fn refill_buffer(&mut self) -> bool {
         loop {
-            if self.shutdown_flag.load(Ordering::Relaxed) {
+            if self.shutdown_flag.load(Ordering::Acquire) {
                 return false;
             }
 

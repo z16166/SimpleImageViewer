@@ -30,7 +30,7 @@ pub(crate) fn make_image_data(img: DecodedImage) -> ImageData {
     // The GPU's actual texture limit (often 16384) is used only at the wgpu device
     // level to allow tile textures of any supported size.
     let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
-    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let tiled_limit = crate::tile_cache::get_tiled_threshold();
 
     if pixel_count >= tiled_limit || max_side > limit {
         log::info!(
@@ -64,7 +64,7 @@ pub(crate) fn make_hdr_image_data_for_limit(
     max_texture_side: u32,
 ) -> ImageData {
     let pixel_count = hdr.width as u64 * hdr.height as u64;
-    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let tiled_limit = crate::tile_cache::get_tiled_threshold();
     let max_side = hdr.width.max(hdr.height);
 
     if pixel_count >= tiled_limit || max_side > max_texture_side {

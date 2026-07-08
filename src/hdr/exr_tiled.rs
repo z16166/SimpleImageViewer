@@ -45,7 +45,6 @@ pub struct ExrTiledImageSource {
     part_index: usize,
     storage: i32,
     color_space: HdrColorSpace,
-    has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
     scanline_band_prefills: Mutex<HashSet<(u32, u32)>>,
     scanline_band_prefills_ready: Condvar,
@@ -109,10 +108,6 @@ impl ExrTiledImageSource {
             return Err("deep data not supported yet by OpenEXRCore flat image path".to_string());
         }
         validate_openexr_core_channels(&part.channels)?;
-        let has_subsampled_channels = part
-            .channels
-            .iter()
-            .any(|channel| channel.x_sampling != 1 || channel.y_sampling != 1);
         let color_space =
             crate::hdr::openexr_core_backend::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(
                 path,
@@ -126,7 +121,6 @@ impl ExrTiledImageSource {
             part_index,
             storage: part.storage,
             color_space,
-            has_subsampled_channels,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
             scanline_band_prefills: Mutex::new(HashSet::new()),
             scanline_band_prefills_ready: Condvar::new(),
@@ -301,9 +295,7 @@ impl HdrTiledSource for ExrTiledImageSource {
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let context = exr_file_context("generate EXR HDR preview", &self.path);
         catch_exr_panic(&context, || {
-            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
-                && !self.has_subsampled_channels
-            {
+            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE {
                 let preview = self.context.extract_scanline_rgba32f_preview_nearest(
                     self.part_index,
                     max_w,
@@ -340,9 +332,7 @@ impl HdrTiledSource for ExrTiledImageSource {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
         let metadata = HdrImageMetadata::from_color_space(self.color_space);
         catch_exr_panic(&context, || {
-            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
-                && !self.has_subsampled_channels
-            {
+            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE {
                 let preview = self.context.extract_scanline_rgba32f_preview_nearest(
                     self.part_index,
                     max_w,

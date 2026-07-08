@@ -23,13 +23,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{
     HeifDirectoryTreeStripOutcome, HeifThumbProbe, try_heif_directory_tree_strip,
 };
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::apply_exif_orientation_to_image_data;
-use crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT;
 use crate::loader::downsample_decoded_for_strip;
 use crate::loader::metadata::ExifThumbProbe;
 use crate::loader::{
@@ -38,13 +38,11 @@ use crate::loader::{
 };
 
 use super::assemble::make_image_data;
-use super::detect::load_primary_with_detection_fallback;
+use super::detect::{
+    PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
+};
 use super::hdr_formats::load_hdr;
 use super::is_maybe_animated;
-use super::jpeg::load_jpeg_with_target_capacity;
-use super::modern::{
-    load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
-};
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
 
@@ -54,26 +52,69 @@ mod static_raster;
 #[cfg(feature = "heif-native")]
 use probe_log::log_strip_heif_probe;
 use probe_log::{log_strip_decode_path, log_strip_exif_probe};
-use static_raster::try_static_raster_strip_fast_path;
+use static_raster::{
+    static_raster_path_provides_reusable_full_decode, try_static_raster_strip_fast_path,
+};
 
 type StripWithLogicalSize = (DecodedImage, (u32, u32));
 type OptionalStripResult = Option<Result<StripWithLogicalSize, String>>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DirectoryTreeThumbSlowPrimarySkipReason {
+    #[default]
+    None,
+    /// Main loader owns embedded-SDR / ISO gain-map primary decode work.
+    EmbeddedSdr,
+    /// Main loader owns reusable static full-raster decode work.
+    StaticFullDecode,
+}
+
+impl DirectoryTreeThumbSlowPrimarySkipReason {
+    fn deferred_error(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::EmbeddedSdr => Some(STRIP_DEFER_SLOW_EMBEDDED_SDR),
+            Self::StaticFullDecode => Some(STRIP_DEFER_SLOW_STATIC_FULL_DECODE),
+        }
+    }
+
+    fn skips_primary(self) -> bool {
+        self.deferred_error().is_some()
+    }
+}
+
 /// Controls which strip cold-decode fallbacks are allowed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DirectoryTreeThumbDecodeOptions {
-    /// When set, skip strip paths that duplicate the main loader's full-image decode
+    /// Why strip should skip paths that duplicate the main loader's full-image decode
     /// (`static_raster`, `open_image_data_for_directory_tree_thumb`). Cheap strip paths
     /// (EXIF/HEIF container thumb, JPEG DCT scale, HDR float preview) still run.
-    pub skip_slow_embedded_sdr_primary: bool,
-    /// When set (together with [`Self::skip_slow_embedded_sdr_primary`]), skip ISO gain-map
+    pub skip_slow_primary: DirectoryTreeThumbSlowPrimarySkipReason,
+    /// When set with [`DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr`], skip ISO gain-map
     /// baseline strip decode so the main loader's embedded SDR master path owns that work.
     pub defer_iso_gain_map_baseline: bool,
 }
 
-/// Returned when only a full decode would apply while the main loader should own it;
-/// caller waits for preload install or texture/HDR-cache strip sync.
+/// Returned when only an embedded-SDR / ISO gain-map primary decode would apply while the main
+/// loader should own it; caller waits for preload install or texture/HDR-cache strip sync.
 pub(crate) const STRIP_DEFER_SLOW_EMBEDDED_SDR: &str = "strip_deferred_slow_embedded_sdr_primary";
+
+/// Returned when only a static full-raster decode would apply while the main loader should own it;
+/// caller waits for preload install or texture-cache strip sync.
+pub(crate) const STRIP_DEFER_SLOW_STATIC_FULL_DECODE: &str =
+    "strip_deferred_slow_static_full_decode";
+
+pub(crate) fn strip_path_provides_reusable_static_full_decode(path: &Path) -> bool {
+    if static_raster_path_provides_reusable_full_decode(path) {
+        return true;
+    }
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    ["tif", "tiff", "psd", "psb"]
+        .iter()
+        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+}
 
 pub(crate) struct DirectoryTreeThumbDecode {
     pub(crate) preview: DecodedImage,
@@ -133,6 +174,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     max_side: u32,
     options: DirectoryTreeThumbDecodeOptions,
 ) -> Result<DirectoryTreeThumbDecode, String> {
+    crate::mmap_util::reject_if_image_file_too_small(path)?;
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
@@ -191,7 +233,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
 
     #[cfg(feature = "heif-native")]
     if super::modern::is_heif_path(path) {
-        let allow_primary_sdr = !options.skip_slow_embedded_sdr_primary;
+        let allow_primary_sdr = !options.skip_slow_primary.skips_primary();
         let heif_outcome = match mmap.as_deref() {
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
@@ -331,24 +373,37 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     // faster and 64× less peak memory than a full-resolution decode followed
     // by a software downsample.
     if let Some(result) = try_jpeg_dct_strip_fast_path(path, mmap.as_deref(), max_side) {
-        return result.map(|(preview, logical_size)| {
-            log_strip_decode_path(
-                path,
-                "jpeg_dct",
-                logical_size,
-                preview.width,
-                preview.height,
-            );
-            DirectoryTreeThumbDecode::new(preview, logical_size, None, false)
-        });
+        match result {
+            Ok((preview, logical_size)) => {
+                log_strip_decode_path(
+                    path,
+                    "jpeg_dct",
+                    logical_size,
+                    preview.width,
+                    preview.height,
+                );
+                return Ok(DirectoryTreeThumbDecode::new(
+                    preview,
+                    logical_size,
+                    None,
+                    false,
+                ));
+            }
+            Err(err) => {
+                log::debug!(
+                    "[DirectoryTree] jpeg_dct strip fast path failed for {:?}: {err}; falling back to regular decode",
+                    path.file_name().unwrap_or_default()
+                );
+            }
+        }
     }
-    if options.skip_slow_embedded_sdr_primary {
+    if let Some(defer_reason) = options.skip_slow_primary.deferred_error() {
         #[cfg(feature = "preload-debug")]
         crate::preload_debug!(
             "[PreloadDebug][Strip] defer cold path={} reason=await_main_loader_full_decode",
             path.display()
         );
-        return Err(STRIP_DEFER_SLOW_EMBEDDED_SDR.to_string());
+        return Err(defer_reason.to_string());
     }
     if let Some(result) = try_static_raster_strip_fast_path(path, mmap.as_deref(), max_side) {
         match result {
@@ -371,7 +426,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.as_deref())?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.clone())?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()
@@ -433,9 +488,10 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
 fn reusable_full_decoded_from_image_data(image_data: &ImageData) -> Option<DecodedImage> {
     match image_data {
         ImageData::Static(image) => Some(image.clone()),
-        ImageData::Hdr { fallback, .. } if !fallback.is_sdr_deferred_placeholder() => {
-            Some(fallback.clone())
-        }
+        // HDR fallback is only a tone-mapped SDR preview, not the full HDR asset that the main
+        // loader owns. Do not publish it as reusable full decode or `has_loaded_asset` may treat
+        // the index as loaded before the HDR plane exists.
+        ImageData::Hdr { .. } => None,
         ImageData::Animated(frames) => frames
             .first()
             .map(|frame| DecodedImage::from_arc(frame.width, frame.height, frame.arc_pixels())),
@@ -494,9 +550,9 @@ pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
 
 fn open_image_data_for_directory_tree_thumb(
     path: &Path,
-    file_mmap: Option<&memmap2::Mmap>,
+    file_mmap: Option<Arc<memmap2::Mmap>>,
 ) -> Result<ImageData, String> {
-    let file_bytes = file_mmap.map(|m| m.as_ref());
+    let file_bytes = file_mmap.as_deref().map(|m| m.as_ref());
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -513,7 +569,7 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_hdr(path, hdr_target_capacity, hdr_tone_map),
+            || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
         );
     }
 
@@ -528,7 +584,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
-        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
+        return open_raw_image_data_for_directory_tree_thumb(path, file_mmap.as_deref());
     }
 
     if path_has_extension(path, "jpg") || path_has_extension(path, "jpeg") {
@@ -539,16 +595,22 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_tone_map,
             high_quality,
             || {
-                if let Some(mmap) = file_mmap {
-                    super::jpeg::load_jpeg_from_mapped(
+                if let Some(mmap) = file_mmap.clone() {
+                    let result = super::jpeg::load_jpeg_from_mapped(
                         path,
-                        mmap,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        false,
+                    );
+                    PrimaryDecodeAttempt::with_mmap(result, Some(mmap))
+                } else {
+                    super::jpeg::load_jpeg_primary_attempt(
+                        path,
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
                     )
-                } else {
-                    load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false)
                 }
             },
         );
@@ -556,14 +618,16 @@ fn open_image_data_for_directory_tree_thumb(
 
     if path_has_extension(path, "tif") || path_has_extension(path, "tiff") {
         let tiff_is_raw = file_mmap
+            .as_deref()
             .map(|data| super::tiff_raw_sniff::tiff_may_be_camera_raw_bytes(data))
             .unwrap_or_else(|| crate::loader::tiff_may_be_camera_raw(path));
         if tiff_is_raw
             && file_mmap
+                .as_deref()
                 .map(|data| crate::raw_processor::probe_libraw_can_open_bytes(data))
                 .unwrap_or_else(|| crate::raw_processor::probe_libraw_can_open(path))
         {
-            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap);
+            return open_raw_image_data_for_directory_tree_thumb(path, file_mmap.as_deref());
         }
         return load_primary_with_detection_fallback(
             path,
@@ -571,7 +635,16 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map),
+            || {
+                primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
+                    crate::libtiff_loader::load_via_libtiff_from_mmap(
+                        path,
+                        mmap,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    )
+                })
+            },
         );
     }
 
@@ -582,7 +655,17 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false),
+            || {
+                primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
+                    super::modern::load_avif_with_target_capacity_from_mmap(
+                        path,
+                        &mmap,
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        false,
+                    )
+                })
+            },
         );
     }
 
@@ -593,7 +676,17 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map, false),
+            || {
+                primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
+                    super::modern::load_jxl_with_target_capacity_from_mmap(
+                        path,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        false,
+                    )
+                })
+            },
         );
     }
 
@@ -608,24 +701,25 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_tone_map,
             high_quality,
             || {
-                load_heif_hdr_aware(
-                    path,
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                    crate::hdr::heif::HeifHdrDecodeDiag {
-                        idx: None,
-                        path: Some(path),
-                    },
-                    false,
-                )
+                primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
+                    super::modern::load_heif_hdr_aware_from_mmap(
+                        path,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        crate::hdr::heif::HeifHdrDecodeDiag {
+                            idx: None,
+                            path: Some(path),
+                        },
+                        false,
+                    )
+                })
             },
         );
     }
 
     let reg = crate::formats::get_registry().read();
-    if reg.extensions.contains(&ext)
-        && !is_maybe_animated(&ext)
-    {
+    if reg.extensions.contains(&ext) && !is_maybe_animated(&ext) {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
@@ -642,11 +736,13 @@ fn open_image_data_for_directory_tree_thumb(
         hdr_target_capacity,
         hdr_tone_map,
         high_quality,
-        || match ext.as_str() {
-            "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
-            "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
-            "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+        || {
+            PrimaryDecodeAttempt::from_result(match ext.as_str() {
+                "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
+                "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
+                "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
+                _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+            })
         },
     )
 }
@@ -884,6 +980,27 @@ mod tests {
             super::STRIP_DEFER_SLOW_EMBEDDED_SDR,
             "strip_deferred_slow_embedded_sdr_primary"
         );
+        assert_eq!(
+            super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
+            "strip_deferred_slow_static_full_decode"
+        );
+    }
+
+    #[test]
+    fn hdr_sdr_fallback_is_not_reusable_full_decode() {
+        let image_data = crate::loader::ImageData::Hdr {
+            hdr: Box::new(crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::default(),
+                rgba_f32: std::sync::Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+            }),
+            fallback: crate::loader::DecodedImage::new(1, 1, vec![255, 255, 255, 255]),
+        };
+
+        assert!(super::reusable_full_decoded_from_image_data(&image_data).is_none());
     }
 
     #[test]
@@ -905,12 +1022,12 @@ mod tests {
             &path,
             256,
             super::DirectoryTreeThumbDecodeOptions {
-                skip_slow_embedded_sdr_primary: true,
+                skip_slow_primary: super::DirectoryTreeThumbSlowPrimarySkipReason::StaticFullDecode,
                 defer_iso_gain_map_baseline: false,
             },
         );
         match defer_err {
-            Err(err) => assert_eq!(err, super::STRIP_DEFER_SLOW_EMBEDDED_SDR),
+            Err(err) => assert_eq!(err, super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE),
             Ok(_) => panic!("PNG strip should defer when main loader owns full decode"),
         }
 

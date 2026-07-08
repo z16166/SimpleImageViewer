@@ -34,7 +34,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::handle::{TiffHandle, path_to_tiff_name};
+use super::handle::{TiffHandle, TiffHandlePool, path_to_tiff_name};
 use super::mmap::{
     TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
@@ -46,7 +46,7 @@ use crate::loader::{DecodedImage, ImageData};
 #[cfg(test)]
 pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap));
     unsafe {
         let c_path = path_to_tiff_name(path);
         let c_mode = CString::new("r").map_err(|_| "Invalid mode".to_string())?;
@@ -87,6 +87,7 @@ pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     }
 }
 
+#[cfg(test)]
 pub fn load_via_libtiff(
     path: &Path,
     hdr_target_capacity: f32,
@@ -102,10 +103,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mut ctx = Box::new(TiffMmapContext {
-        mmap: mmap.clone(),
-        offset: 0,
-    });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap.clone()));
 
     unsafe {
         let c_path = path_to_tiff_name(path);
@@ -349,10 +347,8 @@ pub(crate) fn load_via_libtiff_from_mmap(
             force_static = true;
         }
 
-        let pixel_count = width as u64 * height as u64;
         let limit = crate::tile_cache::get_max_texture_side();
-        let tiled_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         let is_large = pixel_count >= tiled_threshold || width > limit || height > limit;
 
         if !force_static && is_large {
@@ -371,6 +367,16 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     ));
                 }
 
+                let tile_bytes = (tile_width as usize)
+                    .checked_mul(tile_height as usize)
+                    .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
+                let max_cached =
+                    if let Some(tile_bytes) = tile_bytes.and_then(std::num::NonZeroUsize::new) {
+                        (TILE_CACHE_BUDGET_BYTES / tile_bytes.get()).max(16)
+                    } else {
+                        64
+                    };
+
                 return Ok(ImageData::Tiled(Arc::new(LibTiffTiledSource {
                     path: path.to_path_buf(),
                     mmap: mmap.clone(),
@@ -378,19 +384,24 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     height,
                     tile_width,
                     tile_height,
-                    pool: Mutex::new(vec![handle]),
+                    handle_pool: TiffHandlePool::new(handle),
+                    tile_cache: Mutex::new(std::collections::HashMap::new()),
+                    tile_lru: Mutex::new(crate::lru_order::LruOrder::default()),
+                    max_cached_tiles: max_cached,
                 })));
             } else {
-                let mut rps: lib::uint32 = 0;
-                if lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ROWSPERSTRIP, &mut rps) == 0
-                    || rps == 0
-                {
-                    rps = height;
+                let rps =
+                    super::rgba_buffer::tiff_effective_rows_per_strip(handle.as_ptr(), height);
+                if rps == 0 {
+                    return Err("TIFF strip height is zero".to_string());
                 }
 
                 let strip_bytes = (width as usize)
                     .checked_mul(rps as usize)
-                    .and_then(|v| v.checked_mul(crate::constants::RGBA_CHANNELS));
+                    // Same +width slack as [`tiff_rgba_strip_buffer_u32_count`]: libtiff strip
+                    // RGBA decode can write one row past width*rps (see rgba_buffer.rs).
+                    .and_then(|base| base.checked_add(width as usize))
+                    .and_then(|pixels| pixels.checked_mul(std::mem::size_of::<lib::uint32>()));
                 let max_cached =
                     if let Some(strip_bytes) = strip_bytes.and_then(std::num::NonZeroUsize::new) {
                         (STRIP_CACHE_BUDGET_BYTES / strip_bytes.get()).max(16)
@@ -404,18 +415,25 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     width,
                     height,
                     rows_per_strip: rps,
-                    pool: Mutex::new(vec![handle]),
+                    handle_pool: TiffHandlePool::new(handle),
                     strip_cache: Mutex::new(std::collections::HashMap::new()),
-                    cache_order: Mutex::new(Vec::new()),
+                    cache_order: Mutex::new(crate::lru_order::LruOrder::default()),
                     max_cached_strips: max_cached,
                 })));
             }
         }
 
-        let total_pixels = (width as usize) * (height as usize);
+        let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
+            return Err(format!("Static TIFF dimension overflow ({width}x{height})"));
+        };
         if total_pixels > MAX_STATIC_HDR_DECODE_PIXELS as usize {
             return Err("Static TIFF TOO LARGE for single pass decode".to_string());
         }
+        let Some(rgba_byte_len) = total_pixels.checked_mul(4) else {
+            return Err(format!(
+                "Static TIFF RGBA buffer overflow ({width}x{height})"
+            ));
+        };
 
         // Try RGBA interface first (fast, handles color spaces)
         let mut bps: u16 = 0;
@@ -436,7 +454,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 0,
             ) != 0
             {
-                pixels = vec![0u8; total_pixels * 4];
+                pixels = vec![0u8; rgba_byte_len];
                 std::ptr::copy_nonoverlapping(
                     raster.as_ptr() as *const u8,
                     pixels.as_mut_ptr(),

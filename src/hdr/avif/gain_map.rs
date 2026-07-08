@@ -18,7 +18,7 @@
 
 use crate::hdr::gain_map::{GainMapMetadata, IsoGainMapFraction};
 
-use super::decode::{decode_avif_image_rgba_u16, rgb_channel_max_f};
+use super::decode::decode_avif_image_rgba_u8;
 
 pub(crate) fn decode_avif_gain_map<F: Fn(libavif_sys::avifResult) -> String>(
     image_ref: &libavif_sys::avifImage,
@@ -40,20 +40,13 @@ pub(crate) fn decode_avif_gain_map<F: Fn(libavif_sys::avifResult) -> String>(
         }
     };
     let gain_image = unsafe { &*gain_map.image };
-    let (gain_rgba_u16, gain_rgb_depth) =
-        match decode_avif_image_rgba_u16(gain_map.image, gain_image, result_to_string) {
-            Ok(pixels) => pixels,
-            Err(err) => {
-                log::warn!("[HDR] AVIF gain map pixel decode failed: {err}");
-                return None;
-            }
-        };
-    let scale = rgb_channel_max_f(gain_rgb_depth);
-    let denominator = scale / u8::MAX as f32;
-    let gain_rgba = gain_rgba_u16
-        .into_iter()
-        .map(|value| (value as f32 / denominator).round().clamp(0.0, 255.0) as u8)
-        .collect();
+    let gain_rgba = match decode_avif_image_rgba_u8(gain_map.image, gain_image, result_to_string) {
+        Ok(pixels) => pixels,
+        Err(err) => {
+            log::warn!("[HDR] AVIF gain map pixel decode failed: {err}");
+            return None;
+        }
+    };
     Some((metadata, gain_image.width, gain_image.height, gain_rgba))
 }
 

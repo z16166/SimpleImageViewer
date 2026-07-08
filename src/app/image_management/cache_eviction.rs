@@ -62,7 +62,7 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
         self.transition_start = None;
-        crate::tile_cache::PIXEL_CACHE.lock().clear();
+        crate::tile_cache::PIXEL_CACHE.write().clear();
         self.discard_stale_loader_outputs();
     }
 
@@ -190,7 +190,7 @@ impl ImageViewerApp {
 
         // 8. Global tile pixel cache
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .relocate_image(from, to);
     }
 
@@ -203,9 +203,7 @@ impl ImageViewerApp {
         // 1. Texture cache: remove everything except except_idx
         let to_remove_tex: Vec<usize> = self
             .texture_cache
-            .textures
-            .keys()
-            .copied()
+            .indices()
             .filter(|&idx| idx != except_idx)
             .collect();
         for idx in to_remove_tex {
@@ -295,7 +293,7 @@ impl ImageViewerApp {
 
         // Clear only non-except_idx entries from the global tile pixel cache
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images_except(except_idx);
     }
 
@@ -310,7 +308,7 @@ impl ImageViewerApp {
     pub(super) fn clear_preloaded_assets_for_capacity_change(&mut self) {
         let current = self.current_index;
         let mut indices = std::collections::BTreeSet::new();
-        indices.extend(self.texture_cache.textures.keys().copied());
+        indices.extend(self.texture_cache.indices());
         indices.extend(self.prefetched_tiles.keys().copied());
         indices.extend(self.hdr_image_cache.keys().copied());
         indices.extend(self.hdr_tiled_source_cache.keys().copied());
@@ -329,7 +327,7 @@ impl ImageViewerApp {
             .filter(|&idx| idx != current)
             .collect();
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images(&pixel_cache_indices);
 
         for idx in indices {
@@ -369,16 +367,23 @@ impl ImageViewerApp {
         };
 
         let mut distant_indices = std::collections::HashSet::new();
-        let mut all_prefetch_indices = self.prefetch_resource_indices.clone();
+        let prefetch_capacity = self.prefetch_resource_indices.len()
+            + self.prefetched_tiles.len()
+            + self.deferred_sdr_uploads.len()
+            + self.animation_cache.len()
+            + self.hdr_image_cache.len()
+            + self.hdr_tiled_source_cache.len();
+        let mut all_prefetch_indices = std::collections::HashSet::with_capacity(prefetch_capacity);
+        all_prefetch_indices.extend(self.prefetch_resource_indices.iter().copied());
         all_prefetch_indices.extend(self.prefetched_tiles.keys().copied());
         all_prefetch_indices.extend(self.deferred_sdr_uploads.keys().copied());
-        all_prefetch_indices.extend(self.texture_cache.textures.keys().copied());
+        all_prefetch_indices.extend(self.texture_cache.indices());
         all_prefetch_indices.extend(self.animation_cache.keys().copied());
         all_prefetch_indices.extend(self.hdr_image_cache.keys().copied());
         all_prefetch_indices.extend(self.hdr_tiled_source_cache.keys().copied());
         all_prefetch_indices.extend(
             crate::tile_cache::PIXEL_CACHE
-                .lock()
+                .read()
                 .distinct_image_indices(),
         );
 
@@ -420,7 +425,7 @@ impl ImageViewerApp {
             distant_indices
         );
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images(&distant_indices);
 
         self.prefetched_tiles
@@ -554,14 +559,8 @@ impl ImageViewerApp {
         }
 
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .permute_images(old_to_new);
-
-        if self.current_index < old_to_new.len() {
-            self.current_index = old_to_new[self.current_index];
-            self.image_status.set_current_index(self.current_index);
-            self.raw_metadata.set_current_index(self.current_index);
-        }
 
         permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
         permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
@@ -570,6 +569,15 @@ impl ImageViewerApp {
             old_to_new,
         );
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
+        permute_usize_hashmap(&mut self.directory_tree_strip_inflight_tokens, old_to_new);
+        permute_usize_hashmap(
+            &mut self.directory_tree_strip_pending_main_handoff,
+            old_to_new,
+        );
+        permute_usize_set(
+            &mut self.directory_tree_strip_static_full_decode_inflight,
+            old_to_new,
+        );
         self.invalidate_random_slideshow_order();
     }
 }

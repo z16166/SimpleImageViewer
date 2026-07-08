@@ -28,6 +28,7 @@
 //! Reference: Adobe Photoshop File Formats Specification (March 2013)
 
 use memmap2::Mmap;
+use std::cell::RefCell;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,26 +76,27 @@ pub struct PsbTiledSource {
 }
 
 impl PsbTiledSource {
-    /// Decode a single row without touching the cache. Pure computation.
-    fn decode_row_unlocked(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
+    /// Write one decompressed row into `buf` (length must be `self.width`).
+    fn decode_row_into(&self, buf: &mut Vec<u8>, ch_idx: u32, global_row: u32) {
+        let row_len = self.width as usize;
+        debug_assert_eq!(buf.len(), row_len);
+
         let idx = ch_idx as usize * self.height as usize + global_row as usize;
         match self.compression {
             0 => {
                 let offset = match self.row_offsets.get(idx) {
                     Some(&o) => o as usize,
-                    None => return vec![0u8; self.width as usize],
+                    None => return,
                 };
-                let end = offset + self.width as usize;
+                let end = offset + row_len;
                 if end <= self.mmap.len() {
-                    self.mmap[offset..end].to_vec()
-                } else {
-                    vec![0u8; self.width as usize]
+                    buf.copy_from_slice(&self.mmap[offset..end]);
                 }
             }
             1 => {
                 let offset = match self.row_offsets.get(idx) {
                     Some(&o) => o as usize,
-                    None => return vec![0u8; self.width as usize],
+                    None => return,
                 };
                 let next_offset = if (idx + 1) < self.row_offsets.len() {
                     self.row_offsets[idx + 1] as usize
@@ -106,15 +108,17 @@ impl PsbTiledSource {
                     && next_offset > offset
                 {
                     let compressed = &self.mmap[offset..next_offset];
-                    let mut decompressed = unpack_bits(compressed, self.width as usize);
-                    decompressed.resize(self.width as usize, 0);
-                    decompressed
-                } else {
-                    vec![0u8; self.width as usize]
+                    unpack_bits_into(buf, compressed, row_len);
                 }
             }
-            _ => vec![0u8; self.width as usize],
+            _ => {}
         }
+    }
+
+    /// Decode a single row without touching the cache. Pure computation.
+    fn decode_row_unlocked(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
+        let row_len = self.width as usize;
+        with_psb_row_scratch(row_len, |buf| self.decode_row_into(buf, ch_idx, global_row))
     }
 
     /// Get a decompressed row for a given channel and global row index.
@@ -258,6 +262,7 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
                         .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
                 }
                 1 => {
+                    let mut row_buf = Vec::with_capacity(width as usize);
                     for row in 0..height as usize {
                         let idx = ch_idx as usize * height as usize + row;
                         let compressed_len = *row_counts
@@ -266,11 +271,11 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
                         let mut compressed = vec![0u8; compressed_len];
                         r.read_exact(&mut compressed)
                             .map_err(|e| format!("Read RLE: {e}"))?;
-                        let decompressed = unpack_bits(&compressed, width as usize);
+                        unpack_bits_into(&mut row_buf, &compressed, width as usize);
                         let dst_start = row * width as usize;
-                        let copy_len = decompressed.len().min(width as usize);
+                        let copy_len = row_buf.len().min(width as usize);
                         ch_data[dst_start..dst_start + copy_len]
-                            .copy_from_slice(&decompressed[..copy_len]);
+                            .copy_from_slice(&row_buf[..copy_len]);
                     }
                 }
                 _ => return Err(format!("Unsupported compression: {compression}")),
@@ -624,7 +629,14 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
 
-        let mut pixels = vec![255u8; (out_w * out_h * 4) as usize];
+        let Some(pixel_len) = out_w
+            .checked_mul(out_h)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|len| len as usize)
+        else {
+            return (0, 0, Vec::new());
+        };
+        let mut pixels = vec![255u8; pixel_len];
 
         // 1. Pre-calculate channel mappings to avoid hot-loop allocations
         let channel_mappings: Vec<Vec<usize>> = (0..self.channels)
@@ -663,8 +675,10 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                     if src_x < row_len {
                         let val = row_data[src_x];
                         let dst_off = (row_start_idx + out_x) * 4;
-                        for &target in ch_target {
-                            pixels[dst_off + target] = val;
+                        if dst_off + 3 < pixels.len() {
+                            for &target in ch_target {
+                                pixels[dst_off + target] = val;
+                            }
                         }
                     }
                 }
@@ -679,9 +693,34 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
     }
 }
 
-/// PackBits RLE decompression (Macintosh PackBits variant).
-fn unpack_bits(data: &[u8], expected_len: usize) -> Vec<u8> {
-    let mut result = Vec::with_capacity(expected_len);
+// Tile workers decode rows in parallel; per-thread scratch avoids per-row allocations.
+thread_local! {
+    static PSB_ROW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+#[inline]
+fn prepare_psb_row_buf(buf: &mut Vec<u8>, row_len: usize) {
+    buf.clear();
+    buf.resize(row_len, 0);
+}
+
+/// Decode one row into reusable thread-local storage, then move the bytes out for caching.
+fn with_psb_row_scratch(row_len: usize, f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+    PSB_ROW_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        prepare_psb_row_buf(&mut scratch, row_len);
+        f(&mut scratch);
+        std::mem::replace(&mut *scratch, Vec::with_capacity(row_len))
+    })
+}
+
+/// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
+fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: usize) {
+    result.clear();
+    if result.capacity() < expected_len {
+        result.reserve(expected_len - result.capacity());
+    }
+
     let mut i = 0;
     while i < data.len() && result.len() < expected_len {
         let n = data[i] as i8;
@@ -707,7 +746,7 @@ fn unpack_bits(data: &[u8], expected_len: usize) -> Vec<u8> {
         }
         // n == -128: no-op
     }
-    result
+    result.resize(expected_len, 0);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

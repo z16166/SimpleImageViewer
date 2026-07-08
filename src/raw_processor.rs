@@ -35,24 +35,30 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     row_stride: usize,
     bytes_per_pixel: usize,
 ) -> Result<Vec<f32>, String> {
-    let tight_row_bytes = width as usize * bytes_per_pixel;
-    let mut rgba_f32 =
-        Vec::with_capacity(width as usize * height as usize * crate::constants::RGBA_CHANNELS);
-    for y in 0..height as usize {
+    if bytes_per_pixel != 6 {
+        return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let tight_row_bytes = w * bytes_per_pixel;
+    let inv_scale = 1.0 / 65535.0;
+    let mut rgba_f32 = Vec::with_capacity(w * h * crate::constants::RGBA_CHANNELS);
+    for y in 0..h {
         let row_off = y * row_stride;
         let row_end = row_off + tight_row_bytes;
         let row = rgb16_bytes
             .get(row_off..row_end)
             .ok_or_else(|| rust_i18n::t!("error.buffer_size_mismatch").to_string())?;
-        for px in row.chunks_exact(bytes_per_pixel) {
-            if bytes_per_pixel < 6 {
-                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
-            }
-            rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
-            rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
-            rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
-            rgba_f32.push(1.0);
-        }
+        let dst_start = y * w * 4;
+        rgba_f32.resize(dst_start + w * 4, 0.0);
+        simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
+            row,
+            &mut rgba_f32[dst_start..dst_start + w * 4],
+            w,
+            3,
+            0.0,
+            inv_scale,
+        );
     }
     Ok(rgba_f32)
 }
@@ -69,6 +75,20 @@ pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
         raw_gpu_source: None,
     }
 }
+
+#[cfg(test)]
+type RawColorDiag = (
+    i32,
+    i32,
+    i32,
+    [u32; 4],
+    u32,
+    u32,
+    [f32; 4],
+    [f32; 4],
+    [f32; 4],
+    [f32; 4],
+);
 
 pub struct RawProcessor {
     data: *mut ffi::libraw_data_t,
@@ -374,20 +394,12 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_color_diag_after_unpack(
-        &self,
-    ) -> (
-        i32,
-        i32,
-        i32,
-        [u32; 4],
-        u32,
-        u32,
-        [f32; 4],
-        [f32; 4],
-        [f32; 4],
-        [f32; 4],
-    ) {
+    pub(crate) fn is_sensor_data_unpacked(&self) -> bool {
+        self.is_unpacked
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_color_diag_after_unpack(&self) -> RawColorDiag {
         let mut black = 0i32;
         let mut maximum = 0i32;
         let mut data_maximum = 0i32;
@@ -1151,6 +1163,17 @@ impl RawProcessor {
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
                     let count = img.width as usize * img.height as usize;
+                    let required_rgb = count
+                        .checked_mul(crate::constants::RGB_CHANNELS)
+                        .filter(|&len| len <= slice.len());
+                    if required_rgb.is_none() {
+                        return Err(rust_i18n::t!(
+                            "error.decode_thumb_failed",
+                            err = "bitmap size mismatch"
+                        )
+                        .to_string());
+                    }
+                    let rgb_len = required_rgb.unwrap_or(0);
                     let mut rgba = vec![
                         crate::constants::MAX_CHANNEL_VALUE;
                         count * crate::constants::RGBA_CHANNELS
@@ -1159,7 +1182,7 @@ impl RawProcessor {
                     if let Some(rgb) = image::RgbImage::from_raw(
                         img.width as u32,
                         img.height as u32,
-                        slice.to_vec(),
+                        slice[..rgb_len].to_vec(),
                     ) {
                         let rgba_img = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
                         Ok(crate::loader::DecodedImage::new(
@@ -1170,12 +1193,13 @@ impl RawProcessor {
                     } else {
                         // Fallback to manual if RgbImage::from_raw fails (shouldn't happen)
                         for i in 0..count {
-                            rgba[i * crate::constants::RGBA_CHANNELS] =
-                                slice[i * crate::constants::RGB_CHANNELS];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 1] =
-                                slice[i * crate::constants::RGB_CHANNELS + 1];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 2] =
-                                slice[i * crate::constants::RGB_CHANNELS + 2];
+                            let src = i * crate::constants::RGB_CHANNELS;
+                            if src + 2 >= slice.len() {
+                                break;
+                            }
+                            rgba[i * crate::constants::RGBA_CHANNELS] = slice[src];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 1] = slice[src + 1];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 2] = slice[src + 2];
                         }
                         Ok(crate::loader::DecodedImage::new(
                             img.width as u32,
@@ -1278,16 +1302,24 @@ pub fn is_raw_extension(ext: &str) -> bool {
 /// store RAW in `.tif` containers; probe before the generic TIFF decoder so we demosaic IFD0
 /// instead of showing a tiny embedded RGB preview IFD.
 pub fn probe_libraw_can_open_bytes(bytes: &[u8]) -> bool {
-    let mut processor = match RawProcessor::new() {
-        Some(p) => p,
-        None => return false,
-    };
-    if processor.open_buffer(bytes).is_err() {
-        return false;
+    thread_local! {
+        static RAW_PROBE: std::cell::RefCell<Option<RawProcessor>> = const { std::cell::RefCell::new(None) };
     }
-    let w = processor.width();
-    let h = processor.height();
-    w > 0 && h > 0
+    RAW_PROBE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = RawProcessor::new();
+        }
+        let Some(processor) = slot.as_mut() else {
+            return false;
+        };
+        if processor.open_buffer(bytes).is_err() {
+            return false;
+        }
+        let w = processor.width();
+        let h = processor.height();
+        w > 0 && h > 0
+    })
 }
 
 pub fn probe_libraw_can_open(path: &Path) -> bool {

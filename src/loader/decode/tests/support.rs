@@ -27,9 +27,8 @@ pub(crate) struct TiledThresholdOverride {
 
 impl TiledThresholdOverride {
     pub(crate) fn set(value: u64) -> Self {
-        let old_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        crate::tile_cache::TILED_THRESHOLD.store(value, std::sync::atomic::Ordering::Relaxed);
+        let old_threshold = crate::tile_cache::get_tiled_threshold();
+        crate::tile_cache::TILED_THRESHOLD.store(value, std::sync::atomic::Ordering::Release);
         Self { old_threshold }
     }
 }
@@ -37,7 +36,7 @@ impl TiledThresholdOverride {
 impl Drop for TiledThresholdOverride {
     fn drop(&mut self) {
         crate::tile_cache::TILED_THRESHOLD
-            .store(self.old_threshold, std::sync::atomic::Ordering::Relaxed);
+            .store(self.old_threshold, std::sync::atomic::Ordering::Release);
     }
 }
 

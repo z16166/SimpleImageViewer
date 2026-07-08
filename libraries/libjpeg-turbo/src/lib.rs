@@ -24,6 +24,11 @@ type tjhandle = *mut c_void;
 /// `tjGetErrorCode` — warning vs fatal (libjpeg-turbo ≥ 1.6). See `turbojpeg.h` `enum TJERR`.
 const TJERR_WARNING: c_int = 0;
 
+/// `enum TJPARAM` in turbojpeg.h (TurboJPEG 3).
+const TJPARAM_SUBSAMP: c_int = 4;
+const TJPARAM_JPEGWIDTH: c_int = 5;
+const TJPARAM_JPEGHEIGHT: c_int = 6;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TJPF {
@@ -41,10 +46,12 @@ pub enum TJPF {
     CMYK = 11,
 }
 
-#[repr(C)]
+#[repr(i32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum TJSAMP {
+    /// `TJSAMP_UNKNOWN` in turbojpeg.h — packed-pixel decode is still supported.
+    UNKNOWN = -1,
     SAMP_444 = 0,
     SAMP_422 = 1,
     SAMP_420 = 2,
@@ -55,15 +62,8 @@ pub enum TJSAMP {
 
 unsafe extern "C" {
     fn tjInitDecompress() -> tjhandle;
-    fn tjDecompressHeader3(
-        handle: tjhandle,
-        jpegBuf: *const c_uchar,
-        jpegSize: c_ulong,
-        width: *mut c_int,
-        height: *mut c_int,
-        jpegSubsamp: *mut c_int,
-        jpegColorspace: *mut c_int,
-    ) -> c_int;
+    fn tj3DecompressHeader(handle: tjhandle, jpegBuf: *const c_uchar, jpegSize: usize) -> c_int;
+    fn tj3Get(handle: tjhandle, param: c_int) -> c_int;
     fn tjDecompress2(
         handle: tjhandle,
         jpegBuf: *const c_uchar,
@@ -111,6 +111,19 @@ fn turbo_jpeg_ok(handle: tjhandle, res: c_int) -> Result<(), String> {
     }
 }
 
+fn subsamp_from_tj(subsamp: c_int) -> TJSAMP {
+    match subsamp {
+        -1 => TJSAMP::UNKNOWN,
+        0 => TJSAMP::SAMP_444,
+        1 => TJSAMP::SAMP_422,
+        2 => TJSAMP::SAMP_420,
+        3 => TJSAMP::SAMP_GRAY,
+        4 => TJSAMP::SAMP_440,
+        5 => TJSAMP::SAMP_411,
+        _ => TJSAMP::SAMP_444,
+    }
+}
+
 impl Decompressor {
     pub fn new() -> Result<Self, String> {
         let handle = unsafe { tjInitDecompress() };
@@ -121,36 +134,19 @@ impl Decompressor {
     }
 
     pub fn decompress_header(&self, jpeg_data: &[u8]) -> Result<(i32, i32, TJSAMP), String> {
-        let mut width: c_int = 0;
-        let mut height: c_int = 0;
-        let mut subsamp: c_int = 0;
-        let mut colorspace: c_int = 0;
-
         let res = unsafe {
-            tjDecompressHeader3(
-                self.handle,
-                jpeg_data.as_ptr(),
-                jpeg_data.len() as c_ulong,
-                &mut width,
-                &mut height,
-                &mut subsamp,
-                &mut colorspace,
-            )
+            tj3DecompressHeader(self.handle, jpeg_data.as_ptr(), jpeg_data.len())
         };
-
         turbo_jpeg_ok(self.handle, res)?;
 
-        let subsamp_enum = match subsamp {
-            0 => TJSAMP::SAMP_444,
-            1 => TJSAMP::SAMP_422,
-            2 => TJSAMP::SAMP_420,
-            3 => TJSAMP::SAMP_GRAY,
-            4 => TJSAMP::SAMP_440,
-            5 => TJSAMP::SAMP_411,
-            _ => TJSAMP::SAMP_444, // Fallback
-        };
+        let width = unsafe { tj3Get(self.handle, TJPARAM_JPEGWIDTH) };
+        let height = unsafe { tj3Get(self.handle, TJPARAM_JPEGHEIGHT) };
+        let subsamp = unsafe { tj3Get(self.handle, TJPARAM_SUBSAMP) };
+        if width <= 0 || height <= 0 {
+            return Err(format!("Invalid JPEG dimensions: {width}x{height}"));
+        }
 
-        Ok((width, height, subsamp_enum))
+        Ok((width, height, subsamp_from_tj(subsamp)))
     }
 
     pub fn decompress(
@@ -349,8 +345,47 @@ pub fn decode_to_rgba_with_max_side(
 #[cfg(test)]
 mod tests {
     use super::best_dct_scaled_dims;
+    use super::decode_to_rgba;
+    use super::decode_to_rgba_with_max_side;
     use super::Decompressor;
     use super::TJPF;
+    use std::path::PathBuf;
+
+    fn workspace_asset(path: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(path)
+    }
+
+    #[test]
+    fn decode_to_rgba_with_max_side_handles_baseline_jpeg_fixture() {
+        let path = workspace_asset("assets/screenshot.jpg");
+        if !path.is_file() {
+            eprintln!("skip; missing {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(&path).expect("read fixture JPEG");
+        let (orig_w, orig_h, out_w, out_h, pixels) =
+            decode_to_rgba_with_max_side(&bytes, 256).expect("DCT strip decode");
+        assert!(orig_w > 0 && orig_h > 0);
+        assert!(out_w > 0 && out_h > 0);
+        assert!(out_w <= orig_w && out_h <= orig_h);
+        assert_eq!(pixels.len(), out_w as usize * out_h as usize * 4);
+    }
+
+    #[test]
+    fn decode_to_rgba_handles_baseline_jpeg_fixture() {
+        let path = workspace_asset("assets/screenshot.jpg");
+        if !path.is_file() {
+            eprintln!("skip; missing {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(&path).expect("read fixture JPEG");
+        let (w, h, pixels) = decode_to_rgba(&bytes).expect("full JPEG decode");
+        assert!(w > 0 && h > 0);
+        assert_eq!(pixels.len(), w as usize * h as usize * 4);
+    }
 
     #[test]
     fn decompress_rejects_dimensions_that_overflow_buffer_size() {

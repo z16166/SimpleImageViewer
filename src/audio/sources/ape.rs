@@ -146,7 +146,7 @@ impl ApeSource {
     }
 
     fn decode_next_blocks(&mut self) -> bool {
-        if self.shutdown_flag.load(Ordering::Relaxed) {
+        if self.shutdown_flag.load(Ordering::Acquire) {
             return false;
         }
 

@@ -301,7 +301,7 @@ impl ImageViewerApp {
         };
 
         crate::tile_cache::MAX_TEXTURE_SIDE
-            .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
+            .store(max_texture_side, std::sync::atomic::Ordering::Release);
 
         // --- Hardware Tier Detection ---
         use sysinfo::System;
@@ -353,10 +353,10 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::MAX_TILES_BASE
-            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Relaxed);
+            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Release);
         crate::tile_cache::TILED_THRESHOLD.store(
             tier.tiled_threshold_pixels(),
-            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Release,
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),
@@ -368,7 +368,7 @@ impl ImageViewerApp {
         let (cpu_cache_mb, hdr_tile_cache_mb) =
             crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .set_max_mb(cpu_cache_mb);
         crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
             hdr_tile_cache_mb * 1024 * 1024,
@@ -421,6 +421,9 @@ impl ImageViewerApp {
         let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
             crossbeam_channel::bounded(16);
         let (directory_tree_strip_inflight_release_tx, directory_tree_strip_inflight_release_rx) =
+            crossbeam_channel::unbounded();
+        #[cfg(feature = "avif-native")]
+        let (avif_strip_probe_result_tx, avif_strip_probe_result_rx) =
             crossbeam_channel::bounded(64);
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
@@ -480,6 +483,14 @@ impl ImageViewerApp {
             initial_image,
             image_files: Vec::new(),
             cached_image_strip_path_index: None,
+            #[cfg(feature = "avif-native")]
+            cached_avif_strip_probe: parking_lot::Mutex::new(None),
+            #[cfg(feature = "avif-native")]
+            avif_strip_probe_inflight: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            #[cfg(feature = "avif-native")]
+            avif_strip_probe_result_tx,
+            #[cfg(feature = "avif-native")]
+            avif_strip_probe_result_rx,
             file_byte_len_by_index: Vec::new(),
             file_modified_unix_by_index: Vec::new(),
             current_index: 0,
@@ -592,7 +603,11 @@ impl ImageViewerApp {
             directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
             directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
+            directory_tree_strip_pending_main_handoff: std::collections::HashMap::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+            directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
+            directory_tree_strip_next_job_token: 0,
+            directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,
             directory_tree_strip_preview_rx,
             directory_tree_strip_inflight_release_tx,
@@ -600,6 +615,7 @@ impl ImageViewerApp {
             directory_tree_strip_pending_gpu_initial: VecDeque::new(),
             directory_tree_strip_pending_gpu_refined: VecDeque::new(),
             directory_tree_strip_pending_gpu_next_seq: 0,
+            directory_tree_strip_pending_drop_scratch: Vec::new(),
             directory_tree_places_load_rx: None,
             font_families,
             font_families_rx: font_enumeration_rx,
@@ -645,6 +661,7 @@ impl ImageViewerApp {
             tiled_visible_tiles_scratch: Vec::new(),
             tiled_primary_visible_tiles_scratch: Vec::new(),
             tiled_tile_visits_scratch: Vec::new(),
+            tiled_protected_keys_scratch: Vec::new(),
             prefetched_tiles: std::collections::HashMap::new(),
             prefetch_resource_indices: HashSet::new(),
             theme_cache,
@@ -770,6 +787,7 @@ impl ImageViewerApp {
         );
 
         app.refresh_audio_devices();
+        app.refresh_directory_tree_toggle_nav_hotkey_chords();
 
         // Restore last session state
         if app.directory_tree_settings_active() {

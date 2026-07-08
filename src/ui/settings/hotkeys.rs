@@ -402,6 +402,7 @@ pub(super) fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx:
                 let validated = crate::hotkeys::rebuild_runtime_state(&draft);
                 if !has_empty_key && validated.conflicts.is_empty() {
                     app.hotkeys_runtime = validated;
+                    app.refresh_directory_tree_toggle_nav_hotkey_chords();
                     app.hotkeys_load_error = None;
                     app.hotkeys_apply_success_at = Some(Instant::now());
                     should_save = true;
@@ -621,6 +622,7 @@ pub(super) fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx:
         .any(|entry| entry.keys.iter().any(|key| key.trim().is_empty()));
     if !has_empty_key && validated.conflicts.is_empty() && should_save {
         app.hotkeys_runtime = validated.clone();
+        app.refresh_directory_tree_toggle_nav_hotkey_chords();
         app.hotkeys_draft_config = validated.config.clone();
         app.hotkeys_load_error = None;
         app.queue_hotkeys_save();

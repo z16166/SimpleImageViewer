@@ -22,7 +22,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 
@@ -442,7 +441,8 @@ pub struct TiffStripCachingSource {
     orientation: u32,
     // Key: chunk_idx, Value: Normalized RGBA8 buffer for that chunk
     strip_cache: Mutex<HashMap<u32, Arc<Vec<u8>>>>,
-    cache_order: Mutex<Vec<u32>>,
+    cache_order: Mutex<crate::lru_order::LruOrder<u32>>,
+    in_flight: Mutex<HashSet<u32>>,
 }
 
 unsafe impl Send for TiffStripCachingSource {}
@@ -618,25 +618,59 @@ impl TiffStripCachingSource {
             }
         }
 
-        // Decode
-        let data = self.decode_chunk_to_rgba8(chunk_idx)?;
-        let data_arc = Arc::new(data);
-
         {
-            let mut cache = self.strip_cache.lock();
-            let mut order = self.cache_order.lock();
-
-            cache.insert(chunk_idx, Arc::clone(&data_arc));
-            order.push(chunk_idx);
-
-            // Evict if too many strips (Max 32 strips ~ 1.5GB for very giant images)
-            if order.len() > 32 {
-                let to_remove = order.remove(0);
-                cache.remove(&to_remove);
+            let mut in_flight = self.in_flight.lock();
+            if !in_flight.insert(chunk_idx) {
+                drop(in_flight);
+                loop {
+                    {
+                        let cache = self.strip_cache.lock();
+                        if let Some(chunk) = cache.get(&chunk_idx) {
+                            return Some(Arc::clone(chunk));
+                        }
+                    }
+                    if !self.in_flight.lock().contains(&chunk_idx) {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                let cache = self.strip_cache.lock();
+                return cache.get(&chunk_idx).map(Arc::clone);
             }
         }
 
-        Some(data_arc)
+        let decode_result = self.decode_chunk_to_rgba8(chunk_idx).map(Arc::new);
+
+        let Some(data_arc) = decode_result else {
+            self.in_flight.lock().remove(&chunk_idx);
+            return None;
+        };
+
+        let cached = {
+            let mut cache = self.strip_cache.lock();
+            let mut order = self.cache_order.lock();
+
+            if let Some(existing) = cache.get(&chunk_idx) {
+                Arc::clone(existing)
+            } else {
+                cache.insert(chunk_idx, Arc::clone(&data_arc));
+                order.touch(chunk_idx);
+
+                while order.len() > 32 {
+                    if let Some(to_remove) = order.pop_oldest() {
+                        cache.remove(&to_remove);
+                    } else {
+                        break;
+                    }
+                }
+                data_arc
+            }
+        };
+
+        // Publish decoded bytes before clearing in_flight so waiters never miss the cache insert.
+        self.in_flight.lock().remove(&chunk_idx);
+
+        Some(cached)
     }
 
     fn decode_chunk_to_rgba8(&self, chunk_idx: u32) -> Option<Vec<u8>> {
@@ -1085,12 +1119,31 @@ pub fn load_via_image_io(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> Result<ImageData, String> {
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+}
+
+/// Decode from an already-mapped file buffer (avoids reopening the file on recovery paths).
+pub fn load_via_image_io_from_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> Result<ImageData, String> {
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+}
+
+fn load_via_image_io_with_mmap(
+    path: &Path,
+    mmap: Arc<memmap2::Mmap>,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> Result<ImageData, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     let orientation = orientation_override.unwrap_or_else(|| {
         crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
     }) as u32;
@@ -1124,6 +1177,7 @@ pub fn load_via_image_io(
 
         let props_ref =
             CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
+        let mut is_stripped = false;
         if !props_ref.is_null() {
             let props = CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
 
@@ -1142,6 +1196,7 @@ pub fn load_via_image_io(
                         "TIFF Diagnostics: [{}] is STRIPPED (Potentially slower random access)",
                         path.display()
                     );
+                    is_stripped = true;
                 }
             }
 
@@ -1163,7 +1218,7 @@ pub fn load_via_image_io(
             (physical_width, physical_height)
         };
 
-        let tiled_threshold = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
+        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         if (logical_width as u64 * logical_height as u64) < tiled_threshold {
             let options_decode = CFDictionary::from_CFType_pairs(&[(
                 CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
@@ -1189,30 +1244,6 @@ pub fn load_via_image_io(
         // --- Tiled Path Selection ---
         // Optimization: For giant STRIPPED TIFFs, use our custom caching loader to avoid CoreGraphics re-decoding overhead.
         let is_tiff = ext == "tif" || ext == "tiff";
-        let mut is_stripped = false;
-        if is_tiff {
-            let props_ref = CGImageSourceCopyPropertiesAtIndex(
-                source.as_concrete_TypeRef(),
-                0,
-                std::ptr::null(),
-            );
-            if !props_ref.is_null() {
-                let props =
-                    CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
-                let tiff_key = CFString::from_static_string("{TIFF}");
-                if let Some(tiff_props_ref) = props.find(&tiff_key) {
-                    let tiff_props = CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(
-                        *tiff_props_ref as _,
-                    );
-                    let tw_key = CFString::from_static_string("TileWidth");
-                    let th_key = CFString::from_static_string("TileHeight");
-                    if !tiff_props.contains_key(&tw_key) || !tiff_props.contains_key(&th_key) {
-                        is_stripped = true;
-                    }
-                }
-            }
-        }
-
         if is_tiff && is_stripped {
             log::info!(
                 "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}, orientation {}). Using TiffStripCachingSource.",
@@ -1263,7 +1294,8 @@ pub fn load_via_image_io(
                 chunk_h,
                 orientation,
                 strip_cache: Mutex::new(HashMap::new()),
-                cache_order: Mutex::new(Vec::new()),
+                cache_order: Mutex::new(crate::lru_order::LruOrder::default()),
+                in_flight: Mutex::new(HashSet::new()),
             })));
         }
 

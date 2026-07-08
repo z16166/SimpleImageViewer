@@ -123,7 +123,7 @@ pub(crate) fn run_audio_loop(
 
         // CUE track highlight update
         if !st.stopped && !st.paused {
-            if config.shutdown_flag.load(Ordering::Relaxed) {
+            if config.shutdown_flag.load(Ordering::Acquire) {
                 return;
             }
             if st.backend_player.as_ref().is_some_and(|p| !p.empty()) {

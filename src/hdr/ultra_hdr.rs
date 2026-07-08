@@ -25,12 +25,15 @@ use rayon::prelude::*;
 use std::cell::Cell;
 
 use crate::hdr::gain_map::{
-    GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    iso_gain_map_metadata, iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
+    GainMapMetadata, compose_gain_map_pixel, iso_gain_map_metadata, luminance_hints_from_gain_map,
     sample_gain_map_rgb, validate_gain_map_metadata,
 };
 #[cfg(test)]
-use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
+use crate::hdr::gain_map::{
+    append_hdr_pixel_from_sdr_and_gain, gain_map_weight, recover_hdr_channel_from_sdr_and_gain,
+};
+#[cfg(test)]
+use crate::hdr::gain_map::{gain_map_metadata_diagnostic, iso_gain_map_skips_forward_compose};
 #[cfg(test)]
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
 use crate::hdr::jpeg_gain_map_gpu::{
@@ -41,6 +44,7 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
+use crate::hdr::types::IsoGainMapGpuSource;
 use crate::hdr::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
 };
@@ -66,6 +70,7 @@ thread_local! {
     static BASE_JPEG_DECODE_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
+#[cfg(test)]
 fn decode_base_jpeg_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     #[cfg(test)]
     BASE_JPEG_DECODE_COUNT.with(|count| count.set(count.get() + 1));
@@ -240,9 +245,11 @@ pub struct UltraHdrTiledImageSource {
     metadata: GainMapMetadata,
     target_hdr_capacity: f32,
     tile_cache: Mutex<HdrTileCache>,
+    iso_deferred_metadata: Arc<HdrImageMetadata>,
 }
 
 impl UltraHdrTiledImageSource {
+    #[cfg(test)]
     pub(crate) fn open_with_target_capacity(
         path: PathBuf,
         orientation: u16,
@@ -271,6 +278,20 @@ impl UltraHdrTiledImageSource {
         );
         let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
+        let iso_deferred_metadata = Arc::new(attach_iso_deferred_tile_metadata(
+            crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
+                source: "JPEG_R",
+                sdr_rgba: Arc::new(sdr_rgba.clone()),
+                gain_rgba: Arc::new(gain_rgba.clone()),
+                gain_width,
+                gain_height,
+                metadata,
+                hdr_target_capacity: target_hdr_capacity,
+                physical_width,
+                physical_height,
+            },
+        ));
+
         Ok(Self {
             path,
             width,
@@ -285,6 +306,46 @@ impl UltraHdrTiledImageSource {
             metadata,
             target_hdr_capacity,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
+            iso_deferred_metadata,
+        })
+    }
+
+    /// Build from an already-decoded ISO deferred buffer (skips baseline JPEG re-decode).
+    pub(crate) fn open_from_iso_deferred(
+        path: PathBuf,
+        hdr: &HdrImageBuffer,
+        deferred: &IsoGainMapGpuSource,
+        target_hdr_capacity: f32,
+    ) -> Result<Self, String> {
+        let iso_deferred_metadata = Arc::new(attach_iso_deferred_tile_metadata(
+            crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
+                source: "JPEG_R",
+                sdr_rgba: Arc::clone(&deferred.sdr_rgba),
+                gain_rgba: Arc::clone(&deferred.gain_rgba),
+                gain_width: deferred.gain_width,
+                gain_height: deferred.gain_height,
+                metadata: deferred.metadata,
+                hdr_target_capacity: target_hdr_capacity,
+                physical_width: hdr.width,
+                physical_height: hdr.height,
+            },
+        ));
+        Ok(Self {
+            path,
+            width: hdr.width,
+            height: hdr.height,
+            // Primary SDR was orientation-corrected during decode; use identity mapping.
+            physical_width: hdr.width,
+            physical_height: hdr.height,
+            orientation: 1,
+            sdr_rgba: Arc::clone(&deferred.sdr_rgba),
+            gain_width: deferred.gain_width,
+            gain_height: deferred.gain_height,
+            gain_rgba: Arc::clone(&deferred.gain_rgba),
+            metadata: deferred.metadata,
+            target_hdr_capacity,
+            tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
+            iso_deferred_metadata,
         })
     }
 }
@@ -317,6 +378,10 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         hdr_metadata_for_ultra_hdr_gain_map(self.metadata)
     }
 
+    fn embedded_sdr_master_available(&self) -> bool {
+        !self.metadata.backward_direction
+    }
+
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let (preview_width, preview_height) =
             crate::hdr::tiled::preview_dimensions(self.width, self.height, max_w, max_h);
@@ -324,37 +389,73 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             return Err("HDR tiled preview dimensions must be non-zero".to_string());
         }
 
-        let mut rgba_f32 = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
-        for preview_y in 0..preview_height {
+        let pixel_count = preview_width as usize * preview_height as usize * 4;
+        let mut rgba_f32 = vec![0.0_f32; pixel_count];
+        let sdr = self.sdr_rgba.as_slice();
+        let gain = self.gain_rgba.as_slice();
+        let physical_width = self.physical_width;
+        let physical_height = self.physical_height;
+        let orientation = self.orientation;
+        let gain_width = self.gain_width;
+        let gain_height = self.gain_height;
+        let metadata = self.metadata;
+        let target_hdr_capacity = self.target_hdr_capacity;
+        let preview_w = preview_width;
+        let preview_h = preview_height;
+        let display_w = self.width;
+        let display_h = self.height;
+
+        let write_row = |preview_y: u32, row: &mut [f32]| {
             let display_y =
-                crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, self.height);
-            for preview_x in 0..preview_width {
+                crate::hdr::tiled::preview_sample_coord(preview_y, preview_h, display_h);
+            for preview_x in 0..preview_w {
                 let display_x =
-                    crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, self.width);
+                    crate::hdr::tiled::preview_sample_coord(preview_x, preview_w, display_w);
                 let (physical_x, physical_y) = display_to_physical_pixel(
                     display_x,
                     display_y,
-                    self.physical_width,
-                    self.physical_height,
-                    self.orientation,
+                    physical_width,
+                    physical_height,
+                    orientation,
                 );
                 let sdr_index =
-                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
+                    (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
                 let gain_value = sample_gain_map_rgb(
-                    &self.gain_rgba,
-                    self.gain_width,
-                    self.gain_height,
+                    gain,
+                    gain_width,
+                    gain_height,
                     physical_x,
                     physical_y,
-                    self.physical_width,
-                    self.physical_height,
+                    physical_width,
+                    physical_height,
                 );
-                append_hdr_pixel_from_sdr_and_gain(
-                    &mut rgba_f32,
-                    &self.sdr_rgba[sdr_index..sdr_index + 4],
+                let dst = preview_x as usize * 4;
+                let pixel = compose_gain_map_pixel(
+                    [
+                        sdr[sdr_index],
+                        sdr[sdr_index + 1],
+                        sdr[sdr_index + 2],
+                        sdr[sdr_index + 3],
+                    ],
                     gain_value,
-                    self.metadata,
-                    self.target_hdr_capacity,
+                    metadata,
+                    target_hdr_capacity,
+                );
+                row[dst..dst + 4].copy_from_slice(&pixel);
+            }
+        };
+
+        if preview_h >= 8 {
+            rgba_f32
+                .par_chunks_mut(preview_w as usize * 4)
+                .enumerate()
+                .for_each(|(preview_y, row)| write_row(preview_y as u32, row));
+        } else {
+            for preview_y in 0..preview_h {
+                let row_base = preview_y as usize * preview_w as usize * 4;
+                write_row(
+                    preview_y,
+                    &mut rgba_f32[row_base..row_base + preview_w as usize * 4],
                 );
             }
         }
@@ -405,19 +506,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let metadata = attach_iso_deferred_tile_metadata(
-            crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
-                source: "JPEG_R",
-                sdr_rgba: Arc::clone(&self.sdr_rgba),
-                gain_rgba: Arc::clone(&self.gain_rgba),
-                gain_width: self.gain_width,
-                gain_height: self.gain_height,
-                metadata: self.metadata,
-                hdr_target_capacity: self.target_hdr_capacity,
-                physical_width: self.physical_width,
-                physical_height: self.physical_height,
-            },
-        );
+        let metadata = (*self.iso_deferred_metadata).clone();
         let tile = Arc::new(HdrTileBuffer::new_iso_deferred_tile(
             width,
             height,
@@ -441,6 +530,14 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
 pub(crate) fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
     if !bytes.starts_with(&JPEG_SOI) {
         return Err("not a JPEG stream".to_string());
+    }
+    if !jpeg_bytes_might_contain_ultra_hdr_metadata(bytes) {
+        return Ok(UltraHdrJpegInfo {
+            is_ultra_hdr: false,
+            primary_xmp_has_gain_map: false,
+            gain_map_item_count: 0,
+            mpf_has_gain_map: false,
+        });
     }
 
     let mut primary_xmp_has_gain_map = false;
@@ -721,6 +818,7 @@ fn sample_oriented_ultra_hdr_sdr_preview_row(
     row
 }
 
+#[cfg(test)]
 fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) {
     if (5..=8).contains(&orientation) {
         (height, width)
@@ -881,6 +979,18 @@ fn primary_metadata_segments(bytes: &[u8]) -> Result<Vec<JpegSegment<'_>>, Strin
 
 fn marker_has_no_payload(marker: u8) -> bool {
     marker == 0x01 || (0xD0..=0xD7).contains(&marker)
+}
+
+/// Fast reject for ordinary JPEGs: Ultra HDR requires Adobe XMP and/or MPF gain-map markers.
+fn jpeg_bytes_might_contain_ultra_hdr_metadata(bytes: &[u8]) -> bool {
+    const HDR_GAIN_MAP_NAMESPACE_BYTES: &[u8] = b"http://ns.adobe.com/hdr-gain-map/1.0/";
+    const MPF_SIGNATURE: &[u8] = b"MPF\x00";
+    bytes
+        .windows(HDR_GAIN_MAP_NAMESPACE_BYTES.len())
+        .any(|window| window == HDR_GAIN_MAP_NAMESPACE_BYTES)
+        || bytes
+            .windows(MPF_SIGNATURE.len())
+            .any(|window| window == MPF_SIGNATURE)
 }
 
 #[cfg(test)]

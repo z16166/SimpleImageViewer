@@ -123,14 +123,8 @@ impl ImageViewerApp {
                     result_gate::GateDecision::Requeue => "requeue",
                 };
                 let incoming_stage = update.preview_bundle.stage();
-                let hdr_dims = update
-                    .preview_bundle
-                    .hdr()
-                    .map(|h| (h.width, h.height));
-                let sdr_dims = update
-                    .preview_bundle
-                    .sdr()
-                    .map(|s| (s.width, s.height));
+                let hdr_dims = update.preview_bundle.hdr().map(|h| (h.width, h.height));
+                let sdr_dims = update.preview_bundle.sdr().map(|s| (s.width, s.height));
                 crate::preload_debug!(
                     "[PreloadDebug][Gate] preview {} idx={} stage={:?} existing_stage={:?} is_loading={} hdr_dims={:?} sdr_dims={:?} epoch={} current={} path={}",
                     gate_label,
@@ -204,6 +198,7 @@ impl ImageViewerApp {
                 self.cache_directory_tree_strip_thumbnail(
                     crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                         index: update.index,
+                        job_key: None,
                         decoded: &preview,
                         stage: crate::loader::PreviewStage::Refined,
                         logical_size: self.directory_tree_strip_logical_size(update.index),
@@ -238,7 +233,7 @@ impl ImageViewerApp {
                         && tm.preview_texture.is_some()
                     {
                         crate::tile_cache::PIXEL_CACHE
-                            .lock()
+                            .write()
                             .remove_image(update.index);
                         tm.pending_tiles.clear();
                         tm.drop_gpu_tiles();
@@ -308,7 +303,7 @@ impl ImageViewerApp {
                     let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                     let texture_tag = update.effective_sdr_texture_tag();
                     let texture_stage = update.preview_bundle.stage();
-                    if let Some(evicted_idx) = self.texture_cache.insert(
+                    self.insert_texture_cache_tracked(
                         update.index,
                         handle,
                         crate::loader::TextureCacheInsert {
@@ -320,9 +315,7 @@ impl ImageViewerApp {
                             current_index: self.current_index,
                             total_count: self.image_files.len(),
                         },
-                    ) {
-                        self.handle_texture_cache_eviction(evicted_idx);
-                    }
+                    );
                 }
             }
             (None, Some(error)) => {
@@ -510,12 +503,8 @@ impl ImageViewerApp {
                     profile.profile_epoch,
                     self.current_index,
                 );
-                self.loader.trigger_hq_tiled_hdr_preview(
-                    idx,
-                    hdr_source,
-                    profile,
-                    source_key,
-                );
+                self.loader
+                    .trigger_hq_tiled_hdr_preview(idx, hdr_source, profile, source_key);
                 log::debug!(
                     "[App] Triggered on-demand HQ HDR tiled preview for idx={}",
                     idx
@@ -550,8 +539,8 @@ impl ImageViewerApp {
             return TiledSdrFromHdrCacheOutcome::Failed;
         };
         let texture_tag = tiled_sdr_texture_tag_for_stage(preview_stage);
-        let needs_tile_manager = self.texture_cache.needs_tile_manager(idx)
-            || self.index_requires_tile_manager(idx);
+        let needs_tile_manager =
+            self.texture_cache.needs_tile_manager(idx) || self.index_requires_tile_manager(idx);
         if !should_cache_tiled_sdr_preview(
             self.texture_cache.contains(idx),
             needs_tile_manager,
@@ -603,6 +592,7 @@ impl ImageViewerApp {
             self.cache_directory_tree_strip_thumbnail(
                 crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
                     index: idx,
+                    job_key: None,
                     decoded: &preview,
                     stage: crate::loader::PreviewStage::Refined,
                     logical_size: self.directory_tree_strip_logical_size(idx),
@@ -647,7 +637,7 @@ impl ImageViewerApp {
             );
             if texture_stage == crate::loader::PreviewStage::Refined && tm.preview_texture.is_some()
             {
-                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
                 tm.pending_tiles.clear();
                 tm.drop_gpu_tiles();
             }
@@ -713,7 +703,7 @@ impl ImageViewerApp {
                 preview.rgba(),
             );
             let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
-            if let Some(evicted_idx) = self.texture_cache.insert(
+            self.insert_texture_cache_tracked(
                 idx,
                 handle,
                 crate::loader::TextureCacheInsert {
@@ -725,9 +715,7 @@ impl ImageViewerApp {
                     current_index: self.current_index,
                     total_count: self.image_files.len(),
                 },
-            ) {
-                self.handle_texture_cache_eviction(evicted_idx);
-            }
+            );
         }
     }
 
@@ -824,7 +812,7 @@ impl ImageViewerApp {
         );
         let name = format!("img_preview_{}", idx);
         let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-        if let Some(evicted_idx) = self.texture_cache.insert(
+        self.insert_texture_cache_tracked(
             idx,
             handle,
             crate::loader::TextureCacheInsert {
@@ -836,10 +824,7 @@ impl ImageViewerApp {
                 current_index: self.current_index,
                 total_count: self.image_files.len(),
             },
-        ) {
-            self.handle_texture_cache_eviction(evicted_idx);
-        }
-        self.register_prefetch_resource(idx);
+        );
     }
 
     pub(super) fn cache_hdr_tiled_preview(

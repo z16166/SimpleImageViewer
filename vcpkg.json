@@ -1,6 +1,6 @@
 {
   "name": "simple-image-viewer",
-  "version-string": "2.8.5",
+  "version-string": "2.9.0",
   "builtin-baseline": "1600ce2ba1b6b621bfc5a31a785c4963b817a1c7",
   "dependencies": [
     {

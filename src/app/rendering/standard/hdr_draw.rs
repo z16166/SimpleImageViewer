@@ -17,9 +17,7 @@
 use super::helpers::curtain_hdr_transition_rotation;
 use crate::app::rendering::geometry::PlaneLayout;
 use crate::app::rendering::plan::RenderPlan;
-use crate::app::rendering::plane::{
-    PlaneBackendKind, PlaneDrawSource, draw_plane, hdr_image_plane_rect,
-};
+use crate::app::rendering::plane::{PlaneBackendKind, draw_hdr_image_plane, hdr_image_plane_rect};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -267,24 +265,23 @@ impl ImageViewerApp {
             alpha,
             ripple,
         } = draw;
-        let layout = PlaneLayout::from_dest(Vec2::new(rect.width(), rect.height()), rotation, rect);
-        draw_plane(
+        draw_hdr_image_plane(
             ui,
             clip,
             rect,
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            &layout,
-            PlaneDrawSource::HdrImage {
+            crate::hdr::renderer::HdrImagePlaneCallbackParams {
                 image: hdr_image,
                 tone_map,
                 target_format,
                 output_mode: hdr_output_mode,
                 rotation_steps: rotation as u32,
                 alpha,
+                uv_rect: Rect::NOTHING,
                 ripple,
                 keep_resident: self.hdr_plane_keep_resident(),
                 raw_demosaic_baked_notify: Some(Arc::clone(&self.raw_demosaic_baked_notify)),
-                hdr_pending_work: Some(Arc::clone(&self.hdr_pending_work)),
+                pending_work: Some(Arc::clone(&self.hdr_pending_work)),
                 sync_plane_upload_on_cache_miss: self.hdr_plane_sync_upload_on_cache_miss(),
             },
         );

@@ -13,9 +13,9 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::types::ImageLoader;
+use super::types::{ImageLoader, LOADER_LOCAL_QUEUE_MAX_OUTPUTS};
 
-use crate::loader::LoaderOutput;
+use crate::loader::{LoaderOutput, PreviewStage, ProfileSpawnRelation, profile_spawn_relation};
 use crossbeam_channel::TryRecvError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -78,9 +78,105 @@ impl ImageLoader {
     /// participate in the same FIFO as repushed neighbors (avoids starving the current
     /// image when a neighbor was deferred to the back of the local queue).
     pub fn drain_channel_into_local_queue(&mut self) {
-        while let Ok(output) = self.rx.try_recv() {
-            self.local_queue.push_back(output);
+        while self.local_queue.len() < LOADER_LOCAL_QUEUE_MAX_OUTPUTS {
+            match self.rx.try_recv() {
+                Ok(output) => self.push_local_back_coalesced(output),
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
         }
+    }
+
+    fn push_local_back_coalesced(&mut self, output: LoaderOutput) {
+        self.coalesce_local_queue_for_output(&output);
+        self.local_queue.push_back(output);
+    }
+
+    fn coalesce_local_queue_for_output(&mut self, incoming: &LoaderOutput) {
+        self.local_queue
+            .retain(|queued| !Self::queued_output_replaced_by_incoming(queued, incoming));
+    }
+
+    fn queued_output_replaced_by_incoming(queued: &LoaderOutput, incoming: &LoaderOutput) -> bool {
+        match (queued, incoming) {
+            (LoaderOutput::Image(old), LoaderOutput::Image(new)) => {
+                old.index == new.index
+                    && old.source_key == new.source_key
+                    && Self::profile_not_lower(&old.decode_profile, &new.decode_profile)
+                    && Self::image_payload_not_lower(old, new)
+            }
+            (LoaderOutput::Preview(old), LoaderOutput::Preview(new)) => {
+                old.index == new.index
+                    && old.source_key == new.source_key
+                    && Self::profile_not_lower(&old.decode_profile, &new.decode_profile)
+                    && Self::preview_stage_not_lower(
+                        old.preview_bundle.stage(),
+                        new.preview_bundle.stage(),
+                    )
+                    && Self::preview_payload_not_lower(old, new)
+            }
+            (LoaderOutput::Preview(old), LoaderOutput::Image(new)) => {
+                old.index == new.index
+                    && old.source_key == new.source_key
+                    && Self::profile_not_lower(&old.decode_profile, &new.decode_profile)
+                    && Self::preview_stage_not_lower(
+                        old.preview_bundle.stage(),
+                        new.preview_bundle.stage(),
+                    )
+            }
+            (LoaderOutput::Tile(old), LoaderOutput::Tile(new)) => {
+                old.index == new.index
+                    && old.col == new.col
+                    && old.row == new.row
+                    && old.pixel_kind == new.pixel_kind
+                    && Self::profile_not_lower(&old.decode_profile, &new.decode_profile)
+            }
+            (
+                LoaderOutput::Refined {
+                    index: old_index,
+                    source_key: old_source_key,
+                },
+                LoaderOutput::Refined {
+                    index: new_index,
+                    source_key: new_source_key,
+                },
+            ) => old_index == new_index && old_source_key == new_source_key,
+            _ => false,
+        }
+    }
+
+    fn profile_not_lower(
+        queued: &crate::loader::DecodeProfile,
+        incoming: &crate::loader::DecodeProfile,
+    ) -> bool {
+        matches!(
+            profile_spawn_relation(queued, incoming),
+            ProfileSpawnRelation::Equal | ProfileSpawnRelation::Upgrade
+        )
+    }
+
+    fn preview_stage_not_lower(queued: PreviewStage, incoming: PreviewStage) -> bool {
+        matches!(
+            (queued, incoming),
+            (_, PreviewStage::Refined) | (PreviewStage::Initial, PreviewStage::Initial)
+        )
+    }
+
+    fn preview_has_pixels(preview: &crate::loader::PreviewResult) -> bool {
+        preview.preview_bundle.sdr().is_some() || preview.preview_bundle.hdr().is_some()
+    }
+
+    fn preview_payload_not_lower(
+        queued: &crate::loader::PreviewResult,
+        incoming: &crate::loader::PreviewResult,
+    ) -> bool {
+        !Self::preview_has_pixels(queued) || Self::preview_has_pixels(incoming)
+    }
+
+    fn image_payload_not_lower(
+        queued: &crate::loader::LoadResult,
+        incoming: &crate::loader::LoadResult,
+    ) -> bool {
+        queued.result.is_err() || incoming.result.is_ok()
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {
@@ -191,4 +287,59 @@ fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> boo
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::{
+        PreviewBundle, PreviewResult, TexturePreviewBufferTag, decode_profile_with_epoch,
+    };
+
+    fn preview_output(index: usize, source_key: u64, stage: PreviewStage) -> LoaderOutput {
+        let preview_bundle = match stage {
+            PreviewStage::Initial => PreviewBundle::initial(),
+            PreviewStage::Refined => PreviewBundle::refined(),
+        };
+        LoaderOutput::Preview(PreviewResult {
+            index,
+            decode_profile: decode_profile_with_epoch(1),
+            source_key,
+            preview_bundle,
+            error: None,
+            cpu_demosaic_ms: None,
+            raw_bootstrap_osd: None,
+            sdr_texture_tag: Some(TexturePreviewBufferTag::TiledRefinedLoader),
+        })
+    }
+
+    #[test]
+    fn local_queue_coalescing_keeps_different_source_key_preview() {
+        let queued = preview_output(7, 11, PreviewStage::Initial);
+        let incoming = preview_output(7, 22, PreviewStage::Refined);
+
+        assert!(!ImageLoader::queued_output_replaced_by_incoming(
+            &queued, &incoming
+        ));
+    }
+
+    #[test]
+    fn local_queue_coalescing_does_not_replace_refined_with_initial() {
+        let queued = preview_output(7, 11, PreviewStage::Refined);
+        let incoming = preview_output(7, 11, PreviewStage::Initial);
+
+        assert!(!ImageLoader::queued_output_replaced_by_incoming(
+            &queued, &incoming
+        ));
+    }
+
+    #[test]
+    fn local_queue_coalescing_replaces_initial_with_refined_same_source() {
+        let queued = preview_output(7, 11, PreviewStage::Initial);
+        let incoming = preview_output(7, 11, PreviewStage::Refined);
+
+        assert!(ImageLoader::queued_output_replaced_by_incoming(
+            &queued, &incoming
+        ));
+    }
 }

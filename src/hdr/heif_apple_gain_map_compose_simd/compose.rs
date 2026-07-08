@@ -26,6 +26,14 @@ use super::core::{
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 use rayon::prelude::*;
+use std::cell::RefCell;
+
+thread_local! {
+    static GAIN_ROW_SCRATCH: RefCell<GainRowLinear> = const { RefCell::new(GainRowLinear {
+        encoded: Vec::new(),
+        rgb: Vec::new(),
+    }) };
+}
 
 fn compose_row(
     row_in: &[f32],
@@ -110,32 +118,32 @@ pub(crate) fn compose_apple_gain_map_pixels(input: AppleGainMapComposePixels<'_>
         .zip(base_pixels.par_chunks(row_stride))
         .enumerate()
         .for_each(|(y, (row_out, row_in))| {
-            let mut gain_row = GainRowLinear {
-                encoded: Vec::new(),
-                rgb: Vec::new(),
-            };
-            precompute_gain_row_linear(
-                gain_rgba,
-                gain_w,
-                gain_h,
-                y as u32,
-                width,
-                height,
-                &mut gain_row,
-            );
-            compose_row(
-                row_in,
-                row_out,
-                width,
-                &gain_row.rgb,
-                ComposeRowTransform {
-                    path,
-                    color_space,
-                    transfer,
-                    metadata,
-                    headroom_span,
-                    weight,
-                },
-            );
+            GAIN_ROW_SCRATCH.with(|scratch| {
+                let mut gain_row = scratch.borrow_mut();
+                gain_row.ensure_capacity(width as usize);
+                precompute_gain_row_linear(
+                    gain_rgba,
+                    gain_w,
+                    gain_h,
+                    y as u32,
+                    width,
+                    height,
+                    &mut gain_row,
+                );
+                compose_row(
+                    row_in,
+                    row_out,
+                    width,
+                    &gain_row.rgb,
+                    ComposeRowTransform {
+                        path,
+                        color_space,
+                        transfer,
+                        metadata,
+                        headroom_span,
+                        weight,
+                    },
+                );
+            });
         });
 }

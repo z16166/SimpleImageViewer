@@ -21,40 +21,64 @@ use std::sync::Arc;
 
 /// Context passed to libtiff callbacks
 pub(crate) struct TiffMmapContext {
+    /// Keeps the mmap mapping alive for `data_ptr`.
+    #[allow(dead_code)]
     pub(crate) mmap: Arc<Mmap>,
+    pub(crate) data_ptr: *const u8,
+    pub(crate) mmap_len: u64,
     pub(crate) offset: u64,
 }
 
+impl TiffMmapContext {
+    pub(crate) fn new(mmap: Arc<Mmap>) -> Self {
+        Self {
+            data_ptr: mmap.as_ptr(),
+            mmap_len: mmap.len() as u64,
+            offset: 0,
+            mmap,
+        }
+    }
+}
+
 // --- libtiff Callbacks over memmap2::Mmap ---
+//
+// Read-only policy: every `TIFFClientOpen` uses mode `"r"`, and `tiff_write_proc` always
+// returns 0 (libtiff requires a non-null writeproc). Explicit writes fail; `tiff_map_proc`
+// still exposes the mmap for zero-copy reads.
+//
+// Use raw pointer field access in every callback so libtiff never holds overlapping
+// `&mut TiffMmapContext` and `&TiffMmapContext` references at once (Rust noalias).
 
 pub(crate) unsafe extern "C" fn tiff_read_proc(
     handle: *mut c_void,
     buf: *mut c_void,
     size: lib::tsize_t,
 ) -> lib::tsize_t {
-    let ctx = unsafe { &mut *(handle as *mut TiffMmapContext) };
-    let mmap_len = ctx.mmap.len() as u64;
+    let ctx = handle.cast::<TiffMmapContext>();
+    let mmap_len = unsafe { (*ctx).mmap_len };
 
-    if ctx.offset >= mmap_len {
+    if unsafe { (*ctx).offset } >= mmap_len {
         return 0;
     }
 
-    let rem = mmap_len - ctx.offset;
+    let rem = mmap_len - unsafe { (*ctx).offset };
     let to_read = (size as u64).min(rem);
 
     if to_read > 0 {
         unsafe {
             std::ptr::copy_nonoverlapping(
-                ctx.mmap.as_ptr().add(ctx.offset as usize),
-                buf as *mut u8,
+                (*ctx).data_ptr.add((*ctx).offset as usize),
+                buf.cast::<u8>(),
                 to_read as usize,
             );
+            (*ctx).offset += to_read;
         }
-        ctx.offset += to_read;
     }
     to_read as lib::tsize_t
 }
 
+/// libtiff requires a non-null writeproc even in `"r"` mode; returning 0 rejects all writes.
+#[cold]
 pub(crate) unsafe extern "C" fn tiff_write_proc(
     _: *mut c_void,
     _: *mut c_void,
@@ -68,26 +92,28 @@ pub(crate) unsafe extern "C" fn tiff_seek_proc(
     off: lib::toff_t,
     whence: c_int,
 ) -> lib::toff_t {
-    let ctx = unsafe { &mut *(handle as *mut TiffMmapContext) };
-    let mmap_len = ctx.mmap.len() as u64;
-    let len_i64 = ctx.mmap.len() as i64;
+    let ctx = handle.cast::<TiffMmapContext>();
+    let mmap_len = unsafe { (*ctx).mmap_len };
+    let len_i64 = mmap_len as i64;
     match whence {
-        0 => ctx.offset = off.min(mmap_len), // SEEK_SET
-        1 => {
+        0 => unsafe {
+            (*ctx).offset = off.min(mmap_len);
+        }, // SEEK_SET
+        1 => unsafe {
             // SEEK_CUR: interpret `off` as signed per libtiff conventions (see `toff_t as i64`).
-            let next = (ctx.offset as i64)
+            let next = ((*ctx).offset as i64)
                 .saturating_add(off as i64)
                 .clamp(0, len_i64);
-            ctx.offset = next as u64;
-        }
-        2 => {
+            (*ctx).offset = next as u64;
+        },
+        2 => unsafe {
             // SEEK_END
             let next = len_i64.saturating_add(off as i64).clamp(0, len_i64);
-            ctx.offset = next as u64;
-        }
+            (*ctx).offset = next as u64;
+        },
         _ => {}
     }
-    ctx.offset
+    unsafe { (*ctx).offset }
 }
 
 pub(crate) unsafe extern "C" fn tiff_close_proc(_: *mut c_void) -> c_int {
@@ -95,8 +121,8 @@ pub(crate) unsafe extern "C" fn tiff_close_proc(_: *mut c_void) -> c_int {
 }
 
 pub(crate) unsafe extern "C" fn tiff_size_proc(handle: *mut c_void) -> lib::toff_t {
-    let ctx = unsafe { &*(handle as *const TiffMmapContext) };
-    ctx.mmap.len() as u64
+    let ctx = handle.cast::<TiffMmapContext>();
+    unsafe { (*ctx).mmap_len }
 }
 
 pub(crate) unsafe extern "C" fn tiff_map_proc(
@@ -104,10 +130,10 @@ pub(crate) unsafe extern "C" fn tiff_map_proc(
     base: *mut *mut c_void,
     size: *mut lib::toff_t,
 ) -> c_int {
-    let ctx = unsafe { &*(handle as *const TiffMmapContext) };
+    let ctx = handle.cast::<TiffMmapContext>();
     unsafe {
-        *base = ctx.mmap.as_ptr() as *mut c_void;
-        *size = ctx.mmap.len() as u64;
+        *base = (*ctx).data_ptr.cast::<c_void>().cast_mut();
+        *size = (*ctx).mmap_len;
     }
     1
 }

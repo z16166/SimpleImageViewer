@@ -20,6 +20,7 @@ mod background_yaml_saver;
 mod directory_tree;
 mod directory_tree_strip_cache;
 pub(crate) mod folder_picker;
+mod hdr_pending_dispatch;
 mod hdr_pending_work;
 mod hdr_prewarm;
 pub(crate) mod hdr_status;

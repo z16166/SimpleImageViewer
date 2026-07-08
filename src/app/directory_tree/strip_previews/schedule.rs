@@ -18,14 +18,19 @@
 
 use std::sync::Arc;
 
+use eframe::egui;
+
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPreviewJobResult, StripPreviewBufferTag,
+    DirectoryTreeStripInflightReleaseKind, DirectoryTreeStripJobKey,
+    DirectoryTreeStripPreviewFailure, DirectoryTreeStripPreviewJobResult,
+    DirectoryTreeStripPreviewSuccess, StripPreviewBufferTag, decoded_rgba_size_valid,
 };
 use crate::app::image_management::should_defer_neighbor_work_for_current_main;
 use crate::loader::DIRECTORY_TREE_STRIP_POOL;
 use crate::loader::{
-    DecodedImage, DirectoryTreeThumbDecodeOptions, PreviewStage, STRIP_DEFER_SLOW_EMBEDDED_SDR,
+    DecodedImage, DirectoryTreeThumbDecodeOptions, DirectoryTreeThumbSlowPrimarySkipReason,
+    PreviewStage, STRIP_DEFER_SLOW_EMBEDDED_SDR, STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
     downsample_decoded_for_strip, generate_directory_tree_thumb_decode_from_path,
     preview_aspect_matches_logical,
 };
@@ -70,23 +75,20 @@ impl ImageViewerApp {
         if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
-        let Some(list) = self.directory_tree.list.try_lock() else {
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
             return false;
         };
-        let list_generation = list.image_list_generation;
-        drop(list);
-
-        self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
             .strip_max_side();
         let root_wake = self.root_redraw_wake_handle();
         #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("strip:iso_baseline_submit:{index}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug][Strip] pool submit idx={} kind=iso_baseline_sync max_side={}",
             index,
             max_side
@@ -99,32 +101,45 @@ impl ImageViewerApp {
                     log::debug!(
                         "[DirectoryTree] Strip ISO baseline sync failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
             if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
                 return;
             }
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded: strip,
-                reusable_full_decoded: None,
-                logical: (width, height),
-                stage: PreviewStage::Initial,
-                buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded: strip,
+                    reusable_full_decoded: None,
+                    logical: (width, height),
+                    stage: PreviewStage::Initial,
+                    buffer_tag: StripPreviewBufferTag::IsoGainMapBaseline,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true
@@ -140,31 +155,21 @@ impl ImageViewerApp {
         if !self.strip_needs_hdr_cache_sync_for_hdr(index, hdr.as_ref()) {
             return false;
         }
-        let Some(list) = self.directory_tree.list.try_lock() else {
-            return false;
-        };
-        let list_generation = list.image_list_generation;
-        drop(list);
-
         let fallback = self.strip_fallback_for_hdr_cache_sync(index, hdr.as_ref());
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
             false,
         );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][Strip] skip hdr_cache_sync idx={} reason=deferred_placeholder_tag",
-                index
-            );
             return false;
         }
         let stage = PreviewStage::Refined;
 
-        self.directory_tree_strip_generate_inflight.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            return false;
+        };
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -189,7 +194,12 @@ impl ImageViewerApp {
                     log::debug!(
                         "[DirectoryTree] Strip HDR cache sync failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
@@ -211,24 +221,27 @@ impl ImageViewerApp {
                     hdr_has_float_pixels,
                     decoded.is_sdr_deferred_placeholder(),
                 );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded: None,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true
@@ -285,7 +298,7 @@ impl ImageViewerApp {
         );
     }
 
-    pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize) {
+    pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize, ctx: &egui::Context) {
         // GPU texture clone only; no CPU decode — do not defer while the current main loads.
         // Main-window texture_cache handles are ROOT-context textures; the detached
         // directory-tree viewport must upload strip thumbs via its own egui context.
@@ -317,6 +330,15 @@ impl ImageViewerApp {
         let size = texture.size();
         let preview_w = size[0] as u32;
         let preview_h = size[1] as u32;
+        let strip_max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        if preview_w.max(preview_h) > strip_max_side {
+            // Full-resolution main-window textures are replaced during HDR swap and
+            // resample; wait for strip-sized GPU upload instead of cloning them here.
+            return;
+        }
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
@@ -351,6 +373,7 @@ impl ImageViewerApp {
                 preview_h,
                 self.directory_tree_strip_cache.gpu_revision()
             );
+            self.publish_directory_tree_strip_preview_if_stale(ctx);
         }
     }
 
@@ -397,6 +420,19 @@ impl ImageViewerApp {
         let current = self.current_index.min(total.saturating_sub(1));
 
         if bootstrap_visible {
+            if let Some((start, end)) = visible_row_range {
+                for index in start..end.min(total) {
+                    if self.try_push_cold_strip_candidate(
+                        index,
+                        total,
+                        schedule_budget,
+                        bootstrap_visible,
+                        visible_row_range,
+                    ) {
+                        return self.strip_cold_candidates_scratch.len();
+                    }
+                }
+            }
             for index in 0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP) {
                 if self.try_push_cold_strip_candidate(
                     index,
@@ -405,7 +441,7 @@ impl ImageViewerApp {
                     bootstrap_visible,
                     visible_row_range,
                 ) {
-                    break;
+                    return self.strip_cold_candidates_scratch.len();
                 }
             }
             return self.strip_cold_candidates_scratch.len();
@@ -478,15 +514,30 @@ impl ImageViewerApp {
         let path = self.image_files[index].clone();
         let shares_main_embedded_sdr =
             self.strip_path_benefits_from_main_loader_embedded_sdr_share(&path);
-        let skip_slow_primary =
+        let skip_slow_embedded_sdr_primary =
             self.strip_cold_skip_slow_embedded_sdr_primary(index) && shares_main_embedded_sdr;
-        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active() && skip_slow_primary;
-        let Some(list) = self.directory_tree.list.try_lock() else {
+        let shares_main_static_full_decode =
+            self.strip_cold_static_full_decode_can_share_with_main(index, &path);
+        let skip_slow_static_full_decode = self
+            .strip_cold_skip_slow_static_full_decode_primary(index, shares_main_static_full_decode);
+        let slow_primary_skip_reason = if skip_slow_embedded_sdr_primary {
+            DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr
+        } else if skip_slow_static_full_decode {
+            DirectoryTreeThumbSlowPrimarySkipReason::StaticFullDecode
+        } else {
+            DirectoryTreeThumbSlowPrimarySkipReason::None
+        };
+        let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active()
+            && slow_primary_skip_reason == DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr;
+        self.directory_tree_strip_cold_attempted.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            self.directory_tree_strip_cold_attempted.remove(&index);
             return;
         };
-        let list_generation = list.image_list_generation;
-        self.directory_tree_strip_cold_attempted.insert(index);
-        self.directory_tree_strip_generate_inflight.insert(index);
+        if shares_main_static_full_decode {
+            self.directory_tree_strip_static_full_decode_inflight
+                .insert(index);
+        }
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
         let root_wake = self.root_redraw_wake_handle();
@@ -515,7 +566,7 @@ impl ImageViewerApp {
             let mut cold_deferred_to_main_loader = false;
             if com_ok {
                 let decode_options = DirectoryTreeThumbDecodeOptions {
-                    skip_slow_embedded_sdr_primary: skip_slow_primary,
+                    skip_slow_primary: slow_primary_skip_reason,
                     defer_iso_gain_map_baseline: defer_iso_baseline,
                 };
                 match generate_directory_tree_thumb_decode_from_path(
@@ -531,7 +582,10 @@ impl ImageViewerApp {
                             buffer_tag = StripPreviewBufferTag::PreloadSdrFallback;
                         }
                     }
-                    Err(err) if err == STRIP_DEFER_SLOW_EMBEDDED_SDR => {
+                    Err(err)
+                        if err == STRIP_DEFER_SLOW_EMBEDDED_SDR
+                            || err == STRIP_DEFER_SLOW_STATIC_FULL_DECODE =>
+                    {
                         cold_deferred_to_main_loader = true;
                         #[cfg(feature = "preload-debug")]
                         crate::preload_debug!(
@@ -570,19 +624,38 @@ impl ImageViewerApp {
                 buffer_tag,
                 stage
             );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader,
-                strip_max_side_used: max_side,
+            let send_result = if cold_deferred_to_main_loader {
+                let job = DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(
+                    DirectoryTreeStripPreviewFailure {
+                        key: job_key.clone(),
+                        reason: "await_main_loader_primary",
+                    },
+                );
+                tx.try_send(job)
+            } else if decoded.width == 0
+                || decoded.height == 0
+                || !decoded_rgba_size_valid(&decoded)
+                || !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1)
+            {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                    root_wake.as_ref(),
+                );
+                return;
+            } else {
+                let job = DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
+                tx.try_send(job)
             };
-            let send_result = tx.try_send(job);
             if send_result.is_ok() {
                 if let Some(wake) = &root_wake {
                     wake();
@@ -591,7 +664,12 @@ impl ImageViewerApp {
                 log::warn!(
                     "[DirectoryTree] Cold strip preview result dropped for index {index}: {err}"
                 );
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
     }
@@ -613,13 +691,13 @@ impl ImageViewerApp {
             return;
         }
 
+        #[cfg(feature = "preload-debug")]
         let path = self.image_files.get(index).cloned().unwrap_or_default();
-        let Some(list) = self.directory_tree.list.try_lock() else {
+        self.directory_tree_strip_tiled_attempted.insert(index);
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            self.directory_tree_strip_tiled_attempted.remove(&index);
             return;
         };
-        let list_generation = list.image_list_generation;
-        self.directory_tree_strip_tiled_attempted.insert(index);
-        self.directory_tree_strip_generate_inflight.insert(index);
         let source = Arc::clone(&source);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
@@ -678,18 +756,34 @@ impl ImageViewerApp {
                 logical.1,
                 preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1,)
             );
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded,
-                reusable_full_decoded: None,
-                logical,
-                stage: PreviewStage::Refined,
-                buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            if decoded.width == 0
+                || decoded.height == 0
+                || !decoded_rgba_size_valid(&decoded)
+                || !preview_aspect_matches_logical(
+                    decoded.width,
+                    decoded.height,
+                    logical.0,
+                    logical.1,
+                )
+            {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage: PreviewStage::Refined,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    strip_max_side_used: max_side,
+                });
             let send_result = tx.try_send(job);
             if send_result.is_ok() {
                 if let Some(wake) = &root_wake {
@@ -697,7 +791,12 @@ impl ImageViewerApp {
                 }
             } else if let Err(err) = send_result {
                 log::warn!("[DirectoryTree] Strip preview result dropped for index {index}: {err}");
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
     }
@@ -711,26 +810,25 @@ impl ImageViewerApp {
         stage: PreviewStage,
         logical: Option<(u32, u32)>,
         buffer_tag: StripPreviewBufferTag,
+        source_job_key: Option<DirectoryTreeStripJobKey>,
     ) -> bool {
         if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+            return false;
+        }
+        if let Some(key) = source_job_key.as_ref()
+            && !self.directory_tree_strip_key_matches_current_list(key)
+        {
+            self.clear_strip_preview_attempt_state_for_key(key);
             return false;
         }
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        let list_generation = match self.directory_tree.list.try_lock() {
-            Some(list) => list.image_list_generation,
-            None => {
-                self.directory_tree
-                    .list_snapshot
-                    .load()
-                    .image_list_generation
-            }
+        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+            return false;
         };
-        self.directory_tree_strip_generate_inflight.insert(index);
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
-        let path = self.image_files[index].clone();
         let max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -750,34 +848,136 @@ impl ImageViewerApp {
                     log::warn!(
                         "[DirectoryTree] Strip pending GPU resample failed for index {index}: {err}"
                     );
-                    send_strip_inflight_release(&release_tx, index);
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
                     return;
                 }
             };
             if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
                 return;
             }
-            let job = DirectoryTreeStripPreviewJobResult {
-                index,
-                path,
-                image_list_generation: list_generation,
-                decoded: strip,
-                reusable_full_decoded: None,
-                logical,
-                stage,
-                buffer_tag,
-                cold_deferred_to_main_loader: false,
-                strip_max_side_used: max_side,
-            };
+            let job =
+                DirectoryTreeStripPreviewJobResult::Success(DirectoryTreeStripPreviewSuccess {
+                    key: job_key.clone(),
+                    decoded: strip,
+                    reusable_full_decoded: None,
+                    logical,
+                    stage,
+                    buffer_tag,
+                    strip_max_side_used: max_side,
+                });
             if tx.try_send(job).is_ok() {
                 if let Some(wake) = root_wake {
                     wake();
                 }
             } else {
-                send_strip_inflight_release(&release_tx, index);
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
             }
         });
         true
+    }
+
+    pub(super) fn schedule_or_queue_strip_pending_gpu_resample(
+        &mut self,
+        index: usize,
+        decoded: DecodedImage,
+        stage: PreviewStage,
+        logical: Option<(u32, u32)>,
+        buffer_tag: StripPreviewBufferTag,
+        source_job_key: Option<DirectoryTreeStripJobKey>,
+    ) {
+        if self.schedule_strip_pending_gpu_resample(
+            index,
+            decoded.clone(),
+            stage,
+            logical,
+            buffer_tag,
+            source_job_key,
+        ) {
+            self.directory_tree_strip_pending_main_handoff
+                .remove(&index);
+            return;
+        }
+        if self.directory_tree_strip_cache.contains(index) {
+            return;
+        }
+        self.directory_tree_strip_pending_main_handoff.insert(
+            index,
+            super::DirectoryTreeStripPendingMainHandoff {
+                decoded,
+                stage,
+                logical_size: logical,
+                buffer_tag,
+            },
+        );
+    }
+
+    pub(super) fn flush_strip_pending_main_handoffs(&mut self) {
+        if self.directory_tree_strip_pending_main_handoff.is_empty() {
+            return;
+        }
+        let indices: Vec<usize> = self
+            .directory_tree_strip_pending_main_handoff
+            .keys()
+            .copied()
+            .collect();
+        for index in indices {
+            if self.directory_tree_strip_cache.contains(index) {
+                self.directory_tree_strip_pending_main_handoff
+                    .remove(&index);
+                continue;
+            }
+            let Some(handoff) = self
+                .directory_tree_strip_pending_main_handoff
+                .remove(&index)
+            else {
+                continue;
+            };
+            self.schedule_or_queue_strip_pending_gpu_resample(
+                index,
+                handoff.decoded,
+                handoff.stage,
+                handoff.logical_size,
+                handoff.buffer_tag,
+                None,
+            );
+        }
+    }
+
+    pub(super) fn flush_strip_pending_main_handoff_for_index(&mut self, index: usize) {
+        if self.directory_tree_strip_cache.contains(index) {
+            self.directory_tree_strip_pending_main_handoff
+                .remove(&index);
+            return;
+        }
+        let Some(handoff) = self
+            .directory_tree_strip_pending_main_handoff
+            .remove(&index)
+        else {
+            return;
+        };
+        self.schedule_or_queue_strip_pending_gpu_resample(
+            index,
+            handoff.decoded,
+            handoff.stage,
+            handoff.logical_size,
+            handoff.buffer_tag,
+            None,
+        );
     }
 }

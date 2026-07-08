@@ -74,10 +74,17 @@ pub(crate) use self::pending_work::{
 };
 
 mod pending_gpu_writes;
-pub(crate) use self::pending_gpu_writes::{GpuUploadSink, HdrGpuUploadStage};
+pub(crate) use self::pending_gpu_writes::{
+    GpuUploadSink, HdrGpuUploadStage, pending_gpu_write_queue_full_err,
+};
+
+mod texture_pool;
+pub(super) use self::texture_pool::{GpuTexturePool, SharedGpuTexturePool};
 
 mod tone_map_gpu;
 pub(crate) use self::tone_map_gpu::{hdr_to_sdr_rgba8_for_preview, with_preview_tone_map_gpu};
+
+mod compose_bind_group;
 
 pub(super) mod upload;
 #[cfg(test)]
@@ -113,7 +120,6 @@ use eframe::{
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
 use parking_lot::Mutex;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -171,6 +177,7 @@ impl HdrImageRenderer {
                 stage: HdrGpuUploadStage::PlaneCreate,
             },
             image,
+            None,
         )?;
         pending.flush_staged_writes_for_registration(queue);
 

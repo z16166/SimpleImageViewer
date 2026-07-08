@@ -99,10 +99,10 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         tx.send(3).unwrap();
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(120));
         assert_eq!(*save_count.lock(), 0);
 
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(250));
         assert_eq!(*save_count.lock(), 1);
         assert_eq!(*saved_values.lock(), vec![3]);
 

@@ -30,8 +30,8 @@ use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::{RawDemosaicBackend, RawOsdContext};
 use crate::loader::tiled_sources::{RawImageSource, RawImageSourceParams};
 use crate::loader::{
-    DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_or_placeholder,
+    DecodedImage, ImageData, RawDevelopedImageRank, RawLoadOutput, RefinementRequest,
+    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_or_placeholder,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -161,6 +161,7 @@ pub(crate) fn develop_full_resolution(
             raw_width: width,
             raw_height: height,
             refine_tx,
+            initial_image_rank: RawDevelopedImageRank::FullResolutionDeveloped,
             orientation_override: final_lr_flip,
             needs_refinement: false,
             hdr_target_capacity,

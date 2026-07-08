@@ -49,6 +49,7 @@ impl HdrImagePlaneCallback {
                 device,
                 GpuUploadSink::Immediate(queue),
                 &self.image,
+                Some(&resources.texture_pool),
             ) {
                 Ok(uploaded) => {
                     let binding = HdrImageBinding::from_uploaded(
@@ -79,9 +80,7 @@ impl HdrImagePlaneCallback {
             }
         } else {
             let Some(pending_work) = self.pending_work.as_ref() else {
-                log::debug!(
-                    "[HDR] Cache miss without pending work queues; deferring plane upload"
-                );
+                log::debug!("[HDR] Cache miss without pending work queues; deferring plane upload");
                 return false;
             };
             log::debug!("[HDR] Cache miss, queued async plane upload");
@@ -155,7 +154,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
             None
         };
 
-        if binding_missing && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key) {
+        if binding_missing
+            && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key)
+        {
             return Vec::new();
         }
 
@@ -292,16 +293,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         self.tone_map.target_hdr_capacity()
                     )
                 );
-                let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-                let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
-                let display_storage = binding
-                    .uploaded_display_storage_view
-                    .as_ref()
-                    .expect("jpeg display storage view");
-                let uniform_buf = binding
-                    .jpeg_compose_uniform_buffer
-                    .as_ref()
-                    .expect("jpeg compose uniform buffer");
                 compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
                     jpeg_compose_gpu::JpegComposePass {
                         device,
@@ -311,10 +302,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         image: &self.image,
                         deferred,
                         tone_map: &self.tone_map,
-                        sdr_view,
-                        gain_view,
-                        display_storage_view: display_storage,
-                        uniform_buffer: uniform_buf,
+                        binding,
                     },
                 ));
                 binding.baked_jpeg_image_key = Some(image_key);
@@ -369,10 +357,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         apple_compose_used_cpu = true;
                     }
                     Ok(()) => {
-                        let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                        let gain_view = binding.uploaded_gain_view.clone().expect("gain view");
                         let display_storage = binding
                             .uploaded_display_storage_view
-                            .as_ref()
+                            .clone()
                             .expect("display storage view");
                         let encoded_primary_buffer = binding
                             .encoded_primary_buffer
@@ -382,6 +370,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             .compose_tone_map_buffer
                             .as_ref()
                             .expect("apple compose tone map buffer");
+                        let apple_compose_bind_groups = &mut binding.apple_compose_bind_groups;
                         compose_command_buffers.push(
                             apple_compose_gpu::encode_compose_compute_pass(
                                 apple_compose_gpu::AppleComposePass {
@@ -393,10 +382,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                                     deferred,
                                     tone_map: &self.tone_map,
                                     encoded_primary_buffer,
-                                    gain_view,
-                                    display_storage_view: display_storage,
+                                    gain_view: &gain_view,
+                                    display_storage_view: &display_storage,
                                     upload_primary,
                                     compose_tone_map_buffer: compose_tone_map_buf,
+                                    apple_compose_bind_groups,
                                 },
                             ),
                         );
@@ -406,6 +396,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         binding.encoded_primary_buffer = None;
                         binding.encoded_primary_buffer_bytes = 0;
                         binding.encoded_primary_source_ptr = None;
+                        binding.apple_compose_bind_groups.clear();
                     }
                 }
             }
@@ -495,6 +486,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
+        // prepare-only scheduling (e.g. GPU RAW demosaic bake with alpha=0) must not submit a draw.
+        if self.alpha <= 0.0 {
+            return;
+        }
         let Some(resources) = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(self.target_format))

@@ -216,6 +216,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", cpp.display());
     let mut build = cc::Build::new();
     build.cpp(true);
+    build.warnings(false);
     // Linux: `link_linux_libstdcxx_static()` adds toolchain `-L` + `static=stdc++`; pair with
     // `-static-libstdc++` in `.cargo/config.toml` for the final artifact.
     if target_os == "linux" {

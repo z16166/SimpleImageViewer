@@ -16,6 +16,7 @@
 
 //! Strip preview need-checks, logical size lookup, and cache helper predicates.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app::ImageViewerApp;
@@ -25,11 +26,117 @@ use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 #[cfg(test)]
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
+fn path_extension_matches_any(path: &std::path::Path, candidates: &[&str]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            candidates
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        })
+}
+
 impl ImageViewerApp {
+    #[cfg(feature = "avif-native")]
+    fn avif_strip_probe_cache_generation(&self) -> u64 {
+        self.directory_tree.list.lock().image_list_generation
+    }
+
+    #[cfg(feature = "avif-native")]
+    fn schedule_avif_gain_map_strip_probe(&self, path: &std::path::Path) {
+        use crate::loader::DIRECTORY_TREE_STRIP_POOL;
+
+        let path_buf = path.to_path_buf();
+        {
+            let cache = self.cached_avif_strip_probe.lock();
+            if let Some((generation, map)) = cache.as_ref()
+                && *generation == self.avif_strip_probe_cache_generation()
+                && map.contains_key(&path_buf)
+            {
+                return;
+            }
+        }
+        {
+            let mut inflight = self.avif_strip_probe_inflight.lock();
+            if !inflight.insert(path_buf.clone()) {
+                return;
+            }
+        }
+
+        let generation = self.avif_strip_probe_cache_generation();
+        let tx = self.avif_strip_probe_result_tx.clone();
+        let root_wake = self.root_redraw_wake_handle();
+        DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            let probe = (|| -> Option<Option<crate::hdr::avif::AvifGainMapStripProbe>> {
+                let mmap = crate::mmap_util::map_file(&path_buf).ok()?;
+                if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
+                    return Some(None);
+                }
+                Some(crate::hdr::avif::avif_probe_gain_map_strip_kind(
+                    mmap.as_ref(),
+                ))
+            })()
+            .flatten();
+            let _ = tx.try_send(crate::app::types::AvifStripProbeJobResult {
+                path: path_buf,
+                image_list_generation: generation,
+                probe,
+            });
+            if let Some(wake) = root_wake {
+                wake();
+            }
+        });
+    }
+
+    #[cfg(feature = "avif-native")]
+    pub(crate) fn poll_avif_strip_probe_results(&mut self) {
+        while let Ok(result) = self.avif_strip_probe_result_rx.try_recv() {
+            let current_gen = self.avif_strip_probe_cache_generation();
+            if result.image_list_generation != current_gen {
+                continue;
+            }
+            let mut cache = self.cached_avif_strip_probe.lock();
+            if cache.as_ref().is_none_or(|(g, _)| *g != current_gen) {
+                *cache = Some((current_gen, HashMap::new()));
+            }
+            let (_, map) = cache.as_mut().expect("just inserted");
+            map.insert(result.path.clone(), result.probe);
+            self.avif_strip_probe_inflight.lock().remove(&result.path);
+        }
+    }
+
+    #[cfg(feature = "avif-native")]
+    fn cached_avif_gain_map_strip_probe(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::hdr::avif::AvifGainMapStripProbe> {
+        let current_gen = self.avif_strip_probe_cache_generation();
+        {
+            let cache = self.cached_avif_strip_probe.lock();
+            if let Some((generation, map)) = cache.as_ref()
+                && *generation == current_gen
+                && let Some(probe) = map.get(path)
+            {
+                return *probe;
+            }
+        }
+        self.schedule_avif_gain_map_strip_probe(path);
+        None
+    }
+
     fn strip_hdr_animated_awaiting_real_strip_preview(&self, index: usize) -> bool {
-        self.pending_anim_frames
-            .get(&index)
-            .is_some_and(|pending| pending.hdr_frames.is_some())
+        let Some(pending) = self.pending_anim_frames.get(&index) else {
+            return false;
+        };
+        if pending.hdr_frames.is_none() {
+            return false;
+        }
+        // Bootstrap first frame matches the main-window SDR fallback; once both strip cache and
+        // texture cache are populated, allow texture_cache sync instead of blocking for remainder.
+        if self.directory_tree_strip_cache.contains(index) && self.texture_cache.contains(index) {
+            return false;
+        }
+        true
     }
 
     pub(crate) fn strip_main_loader_sdr_unreliable_for_strip(&self, index: usize) -> bool {
@@ -230,13 +337,57 @@ impl ImageViewerApp {
 
     fn strip_index_within_prefetch_window(&self, index: usize) -> bool {
         let count = self.image_files.len();
-        if count == 0 || index >= count || !self.settings.preload {
+        if count == 0 || !self.settings.preload {
             return false;
         }
-        let current = self.current_index.min(count - 1);
-        let forward = (index + count - current) % count;
-        let backward = (current + count - index) % count;
-        forward.min(backward) <= self.prefetch_window_max_distance
+        super::strip_full_decode_reuse_allowed(
+            index,
+            self.current_index.min(count - 1),
+            count,
+            self.prefetch_window_max_distance,
+            true,
+        )
+    }
+
+    fn strip_full_decode_share_window_contains(&self, index: usize) -> bool {
+        let count = self.image_files.len();
+        if count == 0 {
+            return false;
+        }
+        super::strip_full_decode_reuse_allowed(
+            index,
+            self.current_index.min(count - 1),
+            count,
+            self.prefetch_window_max_distance,
+            self.settings.preload,
+        )
+    }
+
+    /// Static/full-raster formats whose strip cold decode can publish reusable SDR pixels.
+    /// AVIF/HEIF/JXL are handled by embedded-SDR / ISO gain-map sharing instead. HDR/EXR are
+    /// excluded because their strip reusable buffer is only a tone-mapped SDR fallback.
+    pub(crate) fn strip_path_provides_reusable_static_full_decode(
+        &self,
+        path: &std::path::Path,
+    ) -> bool {
+        crate::loader::strip_path_provides_reusable_static_full_decode(path)
+    }
+
+    pub(crate) fn strip_cold_static_full_decode_can_share_with_main(
+        &self,
+        index: usize,
+        path: &std::path::Path,
+    ) -> bool {
+        self.strip_full_decode_share_window_contains(index)
+            && self.strip_path_provides_reusable_static_full_decode(path)
+    }
+
+    pub(crate) fn strip_full_decode_inflight_should_block_main_load(&self, index: usize) -> bool {
+        self.directory_tree_strip_generate_inflight.contains(&index)
+            && self
+                .directory_tree_strip_static_full_decode_inflight
+                .contains(&index)
+            && self.strip_full_decode_share_window_contains(index)
     }
 
     /// True when Viewing settings use embedded SDR master on an SDR tone-mapped output path.
@@ -254,27 +405,14 @@ impl ImageViewerApp {
         &self,
         path: &std::path::Path,
     ) -> bool {
-        let ext = path
-            .extension()
-            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        if !matches!(
-            ext.as_str(),
-            "avif" | "avifs" | "heif" | "heic" | "hif" | "jxl"
-        ) {
+        if !path_extension_matches_any(path, &["avif", "avifs", "heif", "heic", "hif", "jxl"]) {
             return false;
         }
-        if ext == "avif" || ext == "avifs" {
+        if path_extension_matches_any(path, &["avif", "avifs"]) {
             #[cfg(feature = "avif-native")]
             {
-                if crate::hdr::avif::path_is_avif_image_sequence(path) {
-                    return false;
-                }
-                let Ok(mmap) = crate::mmap_util::map_file(path) else {
-                    return false;
-                };
                 return matches!(
-                    crate::hdr::avif::avif_probe_gain_map_strip_kind(mmap.as_ref()),
+                    self.cached_avif_gain_map_strip_probe(path),
                     Some(crate::hdr::avif::AvifGainMapStripProbe::ForwardIsoGainMap)
                         | Some(crate::hdr::avif::AvifGainMapStripProbe::PrecomposedHdr)
                 );
@@ -284,12 +422,21 @@ impl ImageViewerApp {
                 return false;
             }
         }
-        matches!(ext.as_str(), "heif" | "heic" | "hif" | "jxl")
+        path_extension_matches_any(path, &["heif", "heic", "hif", "jxl"])
+    }
+
+    fn strip_main_sdr_decode_available_or_in_flight(&self, index: usize) -> bool {
+        if self.strip_main_loader_decode_in_flight(index) {
+            return true;
+        }
+        !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && (self.deferred_sdr_uploads.contains_key(&index)
+                || self.texture_cache.contains(index))
     }
 
     /// Skip strip paths that duplicate the main loader; cheap embedded previews still run.
     pub(crate) fn strip_cold_skip_slow_embedded_sdr_primary(&self, index: usize) -> bool {
-        if self.strip_main_loader_decode_in_flight(index) {
+        if self.strip_main_sdr_decode_available_or_in_flight(index) {
             return true;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
@@ -298,14 +445,23 @@ impl ImageViewerApp {
         }) {
             return true;
         }
-        if !self.strip_main_loader_sdr_unreliable_for_strip(index)
-            && (self.deferred_sdr_uploads.contains_key(&index)
-                || self.texture_cache.contains(index))
-        {
-            return true;
-        }
         if !self.strip_index_within_prefetch_window(index) {
             return false;
+        }
+        self.strip_prefetch_window_defers_to_main_loader(index)
+    }
+
+    /// Skip static raster full decode when the main loader is already or imminently responsible.
+    pub(crate) fn strip_cold_skip_slow_static_full_decode_primary(
+        &self,
+        index: usize,
+        can_share_with_main: bool,
+    ) -> bool {
+        if !can_share_with_main {
+            return false;
+        }
+        if self.strip_main_sdr_decode_available_or_in_flight(index) {
+            return true;
         }
         self.strip_prefetch_window_defers_to_main_loader(index)
     }
@@ -388,7 +544,15 @@ impl ImageViewerApp {
             return false;
         }
         if self.directory_tree_strip_cold_attempted.contains(&index) {
-            return false;
+            // Successful decodes that were LRU-evicted keep logical_sizes; allow visible retry.
+            let evicted_after_success = !self.directory_tree_strip_cache.contains(index)
+                && self
+                    .directory_tree_strip_cache
+                    .logical_sizes()
+                    .contains_key(&index);
+            if !evicted_after_success {
+                return false;
+            }
         }
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
             if self
@@ -417,11 +581,14 @@ impl ImageViewerApp {
         if scroll_to_current_pending && !bootstrap_visible {
             return Vec::new();
         }
+        if bootstrap_visible {
+            if let Some((start, end)) = visible_row_range {
+                return (start..end.min(total)).collect();
+            }
+            return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
+        }
         if let Some((start, end)) = visible_row_range {
             return (start..end.min(total)).collect();
-        }
-        if bootstrap_visible {
-            return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
         }
         Vec::new()
     }

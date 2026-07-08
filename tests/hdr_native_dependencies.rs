@@ -77,7 +77,11 @@ fn native_hdr_backends_are_wired_past_initial_stubs() {
             "{name} backend should no longer be a native decode stub"
         );
     }
-    for decode_entry in ["decode_avif_hdr", "load_heif_hdr", "load_jxl_hdr"] {
+    for decode_entry in [
+        "load_avif_with_target_capacity",
+        "load_heif_hdr_aware",
+        "load_jxl_with_target_capacity",
+    ] {
         assert!(
             loader.contains(decode_entry),
             "loader should route through {decode_entry}"
@@ -137,8 +141,7 @@ fn read_hdr_module(name: &str) -> String {
             .into_iter()
             .filter_map(Result::ok)
         {
-            if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs")
-            {
+            if entry.file_type().is_file() && entry.path().extension().is_some_and(|e| e == "rs") {
                 out.push_str(&fs::read_to_string(entry.path()).unwrap());
             }
         }
@@ -158,7 +161,7 @@ fn read_loader_source() -> String {
     let mut out = String::new();
     for entry in walkdir::WalkDir::new(loader_dir) {
         let entry = entry.unwrap();
-        if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs") {
+        if entry.file_type().is_file() && entry.path().extension().is_some_and(|e| e == "rs") {
             out.push_str(&fs::read_to_string(entry.path()).unwrap());
         }
     }

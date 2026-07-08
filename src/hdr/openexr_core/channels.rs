@@ -497,10 +497,16 @@ pub(crate) fn exr_attr_string_to_string(value: sys::ExrAttrString) -> Result<Str
     String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
 }
 
+use std::sync::OnceLock;
+
+static CONFIGURED_DECODED_CHUNK_CACHE_MAX_BYTES: OnceLock<usize> = OnceLock::new();
+
 pub(crate) fn configured_decoded_chunk_cache_max_bytes() -> usize {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    decoded_chunk_cache_budget_for_memory(sys.total_memory() as usize)
+    *CONFIGURED_DECODED_CHUNK_CACHE_MAX_BYTES.get_or_init(|| {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        decoded_chunk_cache_budget_for_memory(sys.total_memory() as usize)
+    })
 }
 
 pub(crate) fn decoded_chunk_cache_budget_for_memory(total_memory_bytes: usize) -> usize {

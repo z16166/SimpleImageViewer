@@ -54,22 +54,46 @@ fn libavif_parse_gain_map_container(bytes: &[u8]) -> Option<libavif_sys::AvifDec
     Some(decoder)
 }
 
-/// Classify gain-map layout from container metadata only (`avifDecoderParse`, no YUV decode).
-pub(crate) fn avif_probe_gain_map_strip_kind(bytes: &[u8]) -> Option<AvifGainMapStripProbe> {
+#[cfg(feature = "avif-native")]
+fn avif_strip_kind_from_image(image: &libavif_sys::avifImage) -> Option<AvifGainMapStripProbe> {
+    if image.gainMap.is_null() {
+        return Some(AvifGainMapStripProbe::NoGainMap);
+    }
+    let gain_map = unsafe { &*image.gainMap };
+    let metadata = avif_gain_map_to_metadata(gain_map).ok()?;
+    Some(if iso_gain_map_skips_forward_compose(metadata) {
+        AvifGainMapStripProbe::PrecomposedHdr
+    } else {
+        AvifGainMapStripProbe::ForwardIsoGainMap
+    })
+}
+
+/// Single `avifDecoderParse`: strip kind, container layout, and decoder for follow-up decode.
+#[cfg(feature = "avif-native")]
+pub(crate) struct AvifContainerParse {
+    pub decoder: libavif_sys::AvifDecoderOwned,
+    pub strip_kind: AvifGainMapStripProbe,
+    pub layout: super::orientation::AvifContainerLayout,
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn avif_parse_container(bytes: &[u8]) -> Option<AvifContainerParse> {
     let decoder = libavif_parse_gain_map_container(bytes)?;
     let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
     if img.is_null() {
         return None;
     }
     let image = unsafe { &*img };
-    if image.gainMap.is_null() {
-        return Some(AvifGainMapStripProbe::NoGainMap);
-    }
-    let gain_map = unsafe { &*image.gainMap };
-    let metadata = avif_gain_map_to_metadata(gain_map).ok()?;
-    if iso_gain_map_skips_forward_compose(metadata) {
-        Some(AvifGainMapStripProbe::PrecomposedHdr)
-    } else {
-        Some(AvifGainMapStripProbe::ForwardIsoGainMap)
-    }
+    let layout = super::orientation::avif_container_layout_from_image(image)?;
+    let strip_kind = avif_strip_kind_from_image(image)?;
+    Some(AvifContainerParse {
+        decoder,
+        strip_kind,
+        layout,
+    })
+}
+
+/// Classify gain-map layout from container metadata only (`avifDecoderParse`, no YUV decode).
+pub(crate) fn avif_probe_gain_map_strip_kind(bytes: &[u8]) -> Option<AvifGainMapStripProbe> {
+    Some(avif_parse_container(bytes)?.strip_kind)
 }

@@ -17,6 +17,34 @@
 use super::*;
 
 impl ImageViewerApp {
+    pub(crate) fn startup_preload_swap_chain_formats(
+        &self,
+    ) -> (Option<wgpu::TextureFormat>, Option<wgpu::TextureFormat>) {
+        let selection = self.effective_hdr_monitor_selection();
+        let desired = crate::hdr::surface::desired_target_format_for_active_monitor(
+            self.native_hdr_swapchain_requests_enabled(),
+            selection.as_ref(),
+        );
+        let current = self.active_target_format.get().or(self.hdr_target_format);
+        (current, desired)
+    }
+
+    pub(crate) fn startup_preload_defer_can_release_now(&self) -> bool {
+        let selection = self.effective_hdr_monitor_selection();
+        let (current, desired) = self.startup_preload_swap_chain_formats();
+        super::startup_preload_defer_can_release(
+            self.hdr_monitor_state.runtime_probe_completed(),
+            self.native_hdr_swapchain_requests_enabled(),
+            selection.as_ref(),
+            self.hdr_capabilities.output_mode,
+            self.hdr_monitor_state.runtime_probe_completed_at(),
+            std::time::Instant::now(),
+            self.effective_ultra_hdr_decode_capacity(),
+            current,
+            desired,
+        )
+    }
+
     #[cfg(feature = "preload-debug")]
     pub(crate) fn debug_log_preload_defer_gate(&mut self, can_release: bool) {
         if !self.preload_deferred_for_hdr_capacity {
@@ -163,16 +191,7 @@ impl ImageViewerApp {
         if !self.preload_deferred_for_hdr_capacity {
             return;
         }
-        let selection = self.effective_hdr_monitor_selection();
-        if !super::startup_preload_defer_can_release(
-            self.hdr_monitor_state.runtime_probe_completed(),
-            self.native_hdr_swapchain_requests_enabled(),
-            selection.as_ref(),
-            self.hdr_capabilities.output_mode,
-            self.hdr_monitor_state.runtime_probe_completed_at(),
-            std::time::Instant::now(),
-            self.effective_ultra_hdr_decode_capacity(),
-        ) {
+        if !self.startup_preload_defer_can_release_now() {
             #[cfg(feature = "preload-debug")]
             self.debug_log_preload_defer_gate(false);
             return;
@@ -206,16 +225,7 @@ impl ImageViewerApp {
             // headroom updates are driven by didChangeScreenParametersNotification
             // (`macos_screen_parameters.rs`), not a timer poll.
             self.sync_hdr_tone_map_settings();
-            let selection = self.effective_hdr_monitor_selection();
-            let can_release = startup_preload_defer_can_release(
-                self.hdr_monitor_state.runtime_probe_completed(),
-                self.native_hdr_swapchain_requests_enabled(),
-                selection.as_ref(),
-                next_output_mode,
-                self.hdr_monitor_state.runtime_probe_completed_at(),
-                std::time::Instant::now(),
-                next_capacity,
-            );
+            let can_release = self.startup_preload_defer_can_release_now();
             #[cfg(feature = "preload-debug")]
             self.debug_log_preload_defer_gate(can_release);
             if can_release {
@@ -344,7 +354,7 @@ impl ImageViewerApp {
         for idx in &hard_invalidate {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(*idx);
             self.remove_hdr_image_index(*idx);
         }
 
@@ -387,7 +397,7 @@ impl ImageViewerApp {
         let idx = self.current_index;
         self.texture_cache.remove(idx);
         self.prefetched_tiles.remove(&idx);
-        crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+        crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
         self.remove_hdr_image_index(idx);
         self.tile_manager = None;
         self.set_current_image_resolution(None);

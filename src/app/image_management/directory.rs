@@ -147,7 +147,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.prefetched_tiles.clear();
         self.clear_prefetch_resource_indices();
-        crate::tile_cache::PIXEL_CACHE.lock().clear();
+        crate::tile_cache::PIXEL_CACHE.write().clear();
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
         self.current_file_name.clear();
@@ -270,9 +270,7 @@ impl ImageViewerApp {
         // GPU texture cache: remove all entries except current.
         let to_remove_tex: Vec<usize> = self
             .texture_cache
-            .textures
-            .keys()
-            .copied()
+            .indices()
             .filter(|&idx| idx != keep)
             .collect();
         for idx in to_remove_tex {
@@ -317,7 +315,7 @@ impl ImageViewerApp {
         // Tile pixel cache: retain the current image's tiles so they don't have to be reloaded,
         // keeping consistency with clear_index_keyed_state_after_list_reorder_except_index.
         crate::tile_cache::PIXEL_CACHE
-            .lock()
+            .write()
             .remove_images_except(keep);
 
         // Clear transition/pending state that references old indices.

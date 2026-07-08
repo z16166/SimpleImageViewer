@@ -17,7 +17,7 @@
 use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
 use super::upload::{
-    pack_rows_for_texture_copy, rgba32f_as_bytes, validate_rgba8_upload_layout,
+    rgba32f_as_bytes, rows_for_texture_write, validate_rgba8_upload_layout,
     validate_tile_upload_layout,
 };
 use super::*;
@@ -63,16 +63,13 @@ fn upload_layout_matches_rgba32f_rows() {
     assert_eq!(layout.size.height, 2);
     assert_eq!(
         layout.bytes_per_row,
-        wgpu::util::align_to(
-            3 * 4 * std::mem::size_of::<f32>() as u32,
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-        )
+        3 * 4 * std::mem::size_of::<f32>() as u32
     );
     assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
 }
 
 #[test]
-fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
+fn rgba8_upload_layout_uses_tight_queue_write_row_pitch() {
     let width = 3024;
     let height = 4032;
     let layout = validate_rgba8_upload_layout(
@@ -84,15 +81,11 @@ fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
     )
     .expect("valid rgba8 upload layout");
 
-    assert_eq!(
-        layout.bytes_per_row,
-        wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-    );
-    assert_eq!(layout.bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
+    assert_eq!(layout.bytes_per_row, width * 4);
 }
 
 #[test]
-fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
+fn rows_for_texture_write_borrows_even_when_copy_alignment_would_need_padding() {
     let width = 3024;
     let height = 2;
     let unpadded = (width * 4) as usize;
@@ -101,34 +94,19 @@ fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
         tight[y as usize * unpadded] = 100 + y as u8;
     }
 
-    let (padded, bytes_per_row) =
-        pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
-
-    assert_eq!(
-        bytes_per_row,
-        wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-    );
-    assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
-    assert_eq!(padded[0], 100);
-    assert_eq!(padded[bytes_per_row as usize], 101);
-    assert!(matches!(padded, Cow::Owned(_)));
-}
-
-#[test]
-fn pack_rows_for_texture_copy_borrows_when_already_aligned() {
-    let width = 64;
-    let height = 2;
-    let tight = vec![0u8; width as usize * height as usize * 4];
     let (packed, bytes_per_row) =
-        pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
+        rows_for_texture_write(&tight, width, height, 4).expect("prepare rows");
+
     assert_eq!(bytes_per_row, width * 4);
-    assert!(matches!(packed, Cow::Borrowed(_)));
+    assert_eq!(packed.len(), tight.len());
+    assert_eq!(packed[0], 100);
+    assert_eq!(packed[bytes_per_row as usize], 101);
     assert!(std::ptr::eq(packed.as_ptr(), tight.as_ptr()));
 }
 
 #[test]
-fn pack_rows_rgba32f_round_trip_preserves_data() {
-    // bytes_per_pixel=16 ->unpadded row = width * 16 bytes.
+fn rows_for_texture_write_rgba32f_keeps_tight_data() {
+    // bytes_per_pixel=16 -> unpadded row = width * 16 bytes.
     // Test widths that are / are not multiples of 16 (alignment boundary).
     for &(width, height) in &[(13, 7), (16, 4), (17, 11), (64, 64), (4033, 3)] {
         let pixel_count = width as usize * height as usize * 4;
@@ -138,22 +116,12 @@ fn pack_rows_rgba32f_round_trip_preserves_data() {
         let tight: &[u8] = bytemuck::cast_slice(&original);
         assert_eq!(tight.len(), width as usize * height as usize * 16);
 
-        let (padded, bytes_per_row) =
-            pack_rows_for_texture_copy(tight, width, height, 16).expect("pack rows");
+        let (packed, bytes_per_row) =
+            rows_for_texture_write(tight, width, height, 16).expect("prepare rows");
 
-        assert_eq!(bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
-        assert!(bytes_per_row >= width * 16);
-        assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
-
-        // Simulate what `write_texture` does: extract each row's data (width * 16 bytes)
-        // from the padded buffer, skipping padding.
-        let unpadded_row = (width * 16) as usize;
-        let mut unpacked = Vec::with_capacity(tight.len());
-        for y in 0..height as usize {
-            let src_start = y * bytes_per_row as usize;
-            unpacked.extend_from_slice(&padded[src_start..src_start + unpadded_row]);
-        }
-        assert_eq!(unpacked, tight, "round-trip failed for {width}x{height}");
+        assert_eq!(bytes_per_row, width * 16);
+        assert_eq!(packed.len(), tight.len());
+        assert!(std::ptr::eq(packed.as_ptr(), tight.as_ptr()));
     }
 }
 
@@ -210,10 +178,7 @@ fn tile_upload_layout_matches_rgba32f_rows() {
     assert_eq!(layout.size.height, 5);
     assert_eq!(
         layout.bytes_per_row,
-        wgpu::util::align_to(
-            7 * 4 * std::mem::size_of::<f32>() as u32,
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-        )
+        7 * 4 * std::mem::size_of::<f32>() as u32
     );
     assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
 }
@@ -850,7 +815,8 @@ fn shader_averages_hdr_texels_when_downscaling() {
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sample_hdr_for_display"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn bilinear_load_hdr"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("premultiply_hdr_rgba"));
-    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_SAMPLE_GRID"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_LIGHT_SAMPLE_GRID"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_HEAVY_SAMPLE_GRID"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("dpdx(uv)"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("sum += premultiply_hdr_rgba"));
 }
@@ -908,6 +874,7 @@ fn drain_pending_plane_uploads_for_test(
                 stage: HdrGpuUploadStage::PlaneCreate,
             },
             &request.image,
+            None,
         ) {
             Ok(uploaded) => {
                 let _ = pending.flush_staged_writes_for_registration(queue);
@@ -965,9 +932,10 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     set.insert_format(create_callback_resources(&device, target_format, None));
     callback_resources.insert(set);
 
-    let images: Vec<_> = (1..=9)
+    let max_bindings = crate::hdr::renderer::resources::MAX_HDR_IMAGE_PLANE_BINDINGS;
+    let images: Vec<_> = (1..=max_bindings + 1)
         .map(|i| {
-            let size = i * 10;
+            let size = i as u32 * 10;
             let pixels = (size * size * 4) as usize;
             Arc::new(hdr_image(
                 size,
@@ -986,8 +954,8 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
     let pending_work = HdrPendingWorkQueues::new_shared();
     const TEST_DEVICE_ID: u64 = 0;
 
-    // Prepare eight callbacks (sleeping so LRU timestamps are distinct).
-    for (i, img) in images.iter().take(8).enumerate() {
+    // Prepare callbacks up to the binding cap (sleeping so LRU timestamps are distinct).
+    for (i, img) in images.iter().take(max_bindings).enumerate() {
         if i > 0 {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -1038,38 +1006,38 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         }
     }
 
-    // Verify that we have exactly eight bindings in resources and they are independent
+    // Verify that we have exactly `max_bindings` bindings in resources and they are independent
     {
         let resources = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(target_format))
             .unwrap();
-        assert_eq!(resources.image_bindings.len(), 8);
+        assert_eq!(resources.image_bindings.len(), max_bindings);
 
         let key0 = HdrImageKey::from_image(&images[0]);
         let key1 = HdrImageKey::from_image(&images[1]);
-        let key7 = HdrImageKey::from_image(&images[7]);
+        let key_last = HdrImageKey::from_image(&images[max_bindings - 1]);
 
         let b0 = resources.image_bindings.get(&key0).unwrap();
         let b1 = resources.image_bindings.get(&key1).unwrap();
-        let b7 = resources.image_bindings.get(&key7).unwrap();
+        let b_last = resources.image_bindings.get(&key_last).unwrap();
 
         assert!(b0.bind_group.is_some());
         assert!(b1.bind_group.is_some());
-        assert!(b7.bind_group.is_some());
+        assert!(b_last.bind_group.is_some());
 
         assert_eq!(b0.uploaded_texture.width(), 10);
         assert_eq!(b1.uploaded_texture.width(), 20);
-        assert_eq!(b7.uploaded_texture.width(), 80);
+        assert_eq!(b_last.uploaded_texture.width(), (max_bindings as u32) * 10);
     }
 
-    // Age out the oldest binding past the eviction-protect window, then insert a ninth image.
+    // Age out the oldest binding past the eviction-protect window, then insert one more image.
     std::thread::sleep(std::time::Duration::from_millis(60));
 
-    // Now prepare the 9th image callback. This should trigger eviction of the oldest (the 1st one)
+    // Now prepare the extra image callback. This should trigger eviction of the oldest (the 1st one)
     {
         let callback = HdrImagePlaneCallback {
-            image: Arc::clone(&images[8]),
+            image: Arc::clone(&images[max_bindings]),
             tone_map: HdrToneMapSettings::default(),
             target_format,
             output_mode: HdrRenderOutputMode::SdrToneMapped,
@@ -1115,13 +1083,13 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
         }
     }
 
-    // Verify that resources has size 8 and images[0] has been evicted
+    // Verify that resources is at capacity and images[0] has been evicted
     {
         let resources = callback_resources
             .get::<HdrCallbackResourcesSet>()
             .and_then(|set| set.get_for(target_format))
             .unwrap();
-        assert_eq!(resources.image_bindings.len(), 8);
+        assert_eq!(resources.image_bindings.len(), max_bindings);
 
         let key_evicted = HdrImageKey::from_image(&images[0]);
         assert!(!resources.image_bindings.contains_key(&key_evicted));
@@ -1182,4 +1150,36 @@ fn gpu_preview_tone_map_matches_cpu_for_linear_srgb() {
             "preview tone-map mismatch at byte {idx}: cpu={c} gpu={g}"
         );
     }
+}
+
+#[test]
+fn test_has_active_work_detects_completed_and_request_queues() {
+    let pending = HdrPendingWorkQueues::new_shared();
+    assert!(!pending.has_active_work());
+
+    let image = hdr_image(1, 1, HdrPixelFormat::Rgba32Float, vec![0.0; 4]);
+    pending
+        .completed_compose_failures
+        .lock()
+        .push(HdrCompletedComposeFailure::IsoImage {
+            key: HdrImageKey::from_image(&image),
+            target_capacity_bits: 16,
+            target_format: wgpu::TextureFormat::Rgba16Float,
+        });
+    assert!(pending.has_active_work());
+
+    *pending.completed_compose_failures.lock() = Vec::new();
+    assert!(!pending.has_active_work());
+
+    pending
+        .iso_image_compose_requests
+        .lock()
+        .push(HdrPendingIsoImageComposeRequest {
+            key: HdrImageKey::from_image(&image),
+            target_capacity_bits: 16,
+            target_format: wgpu::TextureFormat::Rgba16Float,
+            image: Arc::new(image),
+            target_hdr_capacity: 1.0,
+        });
+    assert!(pending.has_active_work());
 }

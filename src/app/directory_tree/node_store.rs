@@ -115,4 +115,37 @@ impl DirectoryTreeNodeArena {
             .iter()
             .map(|(path, &id)| (path, &self.entries[id as usize]))
     }
+
+    pub(crate) fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&PathBuf) -> bool,
+    {
+        let to_remove: Vec<PathBuf> = self
+            .path_index
+            .keys()
+            .filter(|path| !keep(path))
+            .cloned()
+            .collect();
+        for path in to_remove {
+            self.remove_at_path(&path);
+        }
+    }
+
+    fn remove_at_path(&mut self, path: &PathBuf) {
+        let Some(id) = self.path_index.remove(path) else {
+            return;
+        };
+        let last_id = self.entries.len() as u32 - 1;
+        if id != last_id {
+            if let Some(moved_path) = self
+                .path_index
+                .iter()
+                .find_map(|(p, &idx)| (idx == last_id).then(|| p.clone()))
+            {
+                self.path_index.insert(moved_path, id);
+            }
+            self.entries.swap(id as usize, last_id as usize);
+        }
+        self.entries.pop();
+    }
 }

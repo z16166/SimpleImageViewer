@@ -182,7 +182,7 @@ impl AudioPlayer {
             let shutdown_flag = Arc::clone(&self.shutdown_flag);
             let needs_restart = Arc::clone(&self.needs_restart);
             let cue_markers_slot = Arc::clone(&self.cue_markers);
-            shutdown_flag.store(false, Ordering::Relaxed);
+            shutdown_flag.store(false, Ordering::Release);
             needs_restart.store(false, Ordering::Relaxed);
 
             let res = std::thread::Builder::new()
@@ -273,7 +273,7 @@ impl AudioPlayer {
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
-        self.shutdown_flag.store(true, Ordering::Relaxed);
+        self.shutdown_flag.store(true, Ordering::Release);
         if let Some(tx) = self.cmd_tx.take() {
             let _ = tx.send(AudioCommand::Shutdown);
         }

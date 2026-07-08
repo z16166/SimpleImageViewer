@@ -17,8 +17,74 @@
 use std::fs::File;
 use std::path::Path;
 
+/// User-facing error for empty or sub-header-sized image paths.
+pub(crate) fn image_file_too_small_error(len: u64) -> String {
+    if len == 0 {
+        rust_i18n::t!("error.empty_image_file").to_string()
+    } else {
+        rust_i18n::t!(
+            "error.image_file_too_small",
+            bytes = len,
+            min = crate::constants::MIN_IMAGE_FILE_BYTES
+        )
+        .to_string()
+    }
+}
+
+fn reject_len_below_image_minimum(len: u64) -> Result<(), String> {
+    if len < crate::constants::MIN_IMAGE_FILE_BYTES {
+        Err(image_file_too_small_error(len))
+    } else {
+        Ok(())
+    }
+}
+
+/// Cheap metadata probe before mmap/decode scheduling (one stat, no worker spawn).
+pub(crate) fn reject_if_image_file_too_small(path: &Path) -> Result<(), String> {
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    reject_len_below_image_minimum(len)
+}
+
 /// Memory-map an existing file for read-only decoding paths (checklist: avoid `read_to_end` duplication).
 pub(crate) fn map_file(path: &Path) -> Result<memmap2::Mmap, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
+    reject_len_below_image_minimum(file.metadata().map_err(|e| e.to_string())?.len())?;
     unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{image_file_too_small_error, reject_if_image_file_too_small};
+    use crate::constants::MIN_IMAGE_FILE_BYTES;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_image_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("siv-mmap-util-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn image_file_too_small_error_distinguishes_empty_and_sub_header() {
+        let empty = image_file_too_small_error(0);
+        assert!(empty.contains("empty") || empty.contains("空"));
+        let tiny = image_file_too_small_error(4);
+        assert!(tiny.contains('4') || tiny.contains("4"));
+    }
+
+    #[test]
+    fn reject_if_image_file_too_small_blocks_empty_and_sub_header_files() {
+        let path = temp_image_path("reject");
+        let _ = fs::remove_file(&path);
+
+        fs::write(&path, []).unwrap();
+        assert!(reject_if_image_file_too_small(&path).is_err());
+
+        fs::write(&path, [0u8; 4]).unwrap();
+        assert!(reject_if_image_file_too_small(&path).is_err());
+
+        fs::write(&path, vec![0u8; MIN_IMAGE_FILE_BYTES as usize]).unwrap();
+        assert!(reject_if_image_file_too_small(&path).is_ok());
+
+        let _ = fs::remove_file(&path);
+    }
 }

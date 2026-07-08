@@ -56,6 +56,7 @@ fn main() {
 
         let mut build = cc::Build::new();
         build.cpp(true);
+        build.warnings(false);
         if target_os == "linux" {
             build.cpp_link_stdlib(None);
         }
@@ -162,6 +163,7 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.cpp(true);
+    build.warnings(false);
     if target_os == "linux" {
         build.cpp_link_stdlib(None);
     }

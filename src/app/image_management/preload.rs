@@ -52,7 +52,8 @@ impl ImageViewerApp {
 
         let cur = self.current_index.min(n.saturating_sub(1));
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading(cur);
+        let current_is_loading = self.loader.is_loading(cur)
+            || self.strip_full_decode_inflight_should_block_main_load(cur);
         let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
             &self.image_files,
             cur,
@@ -76,6 +77,16 @@ impl ImageViewerApp {
         );
     }
 
+    /// Rebuild the ring preload queue around `current_index` after a cache-preserving list
+    /// reorder (directory-tree column sort).
+    pub(crate) fn reschedule_preloads_after_image_list_reorder(&mut self) {
+        self.sync_loader_preload_plan();
+        self.evict_distant_prefetch_caches();
+        self.cancel_outside_prefetch_window_loader_tasks();
+        self.schedule_preloads(true);
+        self.discard_stale_loader_outputs();
+    }
+
     pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, force_neighbors: bool) {
         let n = self.image_files.len();
         if n == 0 {
@@ -85,16 +96,7 @@ impl ImageViewerApp {
         if self.preload_deferred_for_hdr_capacity {
             #[cfg(feature = "preload-debug")]
             {
-                let selection = self.effective_hdr_monitor_selection();
-                let can_release = super::startup_preload_defer_can_release(
-                    self.hdr_monitor_state.runtime_probe_completed(),
-                    self.native_hdr_swapchain_requests_enabled(),
-                    selection.as_ref(),
-                    self.hdr_capabilities.output_mode,
-                    self.hdr_monitor_state.runtime_probe_completed_at(),
-                    std::time::Instant::now(),
-                    self.effective_ultra_hdr_decode_capacity(),
-                );
+                let can_release = self.startup_preload_defer_can_release_now();
                 self.debug_log_preload_defer_gate(can_release);
             }
             preload_debug!(
@@ -104,7 +106,12 @@ impl ImageViewerApp {
         }
         self.sync_loader_preload_plan();
         let cur = self.current_index;
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!(
+                "preload:schedule_start:{cur}:{forward}:{}",
+                self.settings.preload
+            ),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] schedule start: cur={} forward={} preload_enabled={}",
             cur,
             forward,
@@ -115,12 +122,20 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let mut current_is_loading = self.loader.is_loading(cur);
-        preload_debug!(
-            "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
+        let current_strip_full_decode_inflight =
+            self.strip_full_decode_inflight_should_block_main_load(cur);
+        let mut current_is_loading =
+            self.loader.is_loading(cur) || current_strip_full_decode_inflight;
+        crate::preload_debug_throttled!(
+            &format!(
+                "preload:current_state:{cur}:{current_has_asset}:{current_is_loading}:{current_strip_full_decode_inflight}"
+            ),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+            "[PreloadDebug] current state: idx={} has_asset={} is_loading={} strip_full_decode_inflight={}",
             cur,
             current_has_asset,
-            current_is_loading
+            current_is_loading,
+            current_strip_full_decode_inflight
         );
         let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
             &self.image_files,
@@ -165,7 +180,9 @@ impl ImageViewerApp {
             return;
         }
 
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("preload:neighbor_allowed:{cur}:{current_has_asset}:{current_is_loading}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] neighbor preload allowed: cur={} has_asset={} loading={}",
             cur,
             current_has_asset,
@@ -225,7 +242,9 @@ impl ImageViewerApp {
             self.clear_preloaded_assets_for_capacity_change();
             return;
         }
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("preload:memory_allow:{memory_guard_threshold_mb}:{total_memory_mb}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] memory guard: allow background preloads available_mb={} threshold_mb={} total_mb={}",
             available_memory_mb,
             memory_guard_threshold_mb,
@@ -256,7 +275,9 @@ impl ImageViewerApp {
         let secondary_indices =
             prefetch_retention::prefetch_window_neighbors_in_direction(cur, n, window, !forward);
 
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            "preload:direction_budgets",
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] direction budgets: primary_max={} primary_budget={} secondary_max={} secondary_budget={}",
             primary_max,
             primary_budget,
@@ -288,7 +309,9 @@ impl ImageViewerApp {
     ) {
         let mut count = 0usize;
         let mut new_bytes = 0u64;
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("preload:direction_start:{direction_name}:{max_count}:{budget}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] direction start: name={} max_count={} budget={} candidates={:?}",
             direction_name,
             max_count,
@@ -313,13 +336,21 @@ impl ImageViewerApp {
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
             let is_loading = in_flight.contains(&idx);
-            if has_asset || is_loading {
-                preload_debug!(
-                    "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
+            let strip_full_decode_inflight = !has_asset
+                && !is_loading
+                && self.strip_full_decode_inflight_should_block_main_load(idx);
+            if has_asset || is_loading || strip_full_decode_inflight {
+                crate::preload_debug_throttled!(
+                    &format!(
+                        "preload:candidate_counted_existing:{direction_name}:{idx}:{has_asset}:{is_loading}:{strip_full_decode_inflight}"
+                    ),
+                    crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                    "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} strip_full_decode_inflight={} count_before={}",
                     direction_name,
                     idx,
                     has_asset,
                     is_loading,
+                    strip_full_decode_inflight,
                     count
                 );
                 count += 1;
@@ -420,7 +451,9 @@ impl ImageViewerApp {
             };
             new_bytes = new_bytes.saturating_add(budget_charge);
         }
-        preload_debug!(
+        crate::preload_debug_throttled!(
+            &format!("preload:direction_done:{direction_name}:{count}:{new_bytes}"),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug] direction done: name={} count={} new_bytes={}",
             direction_name,
             count,

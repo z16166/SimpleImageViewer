@@ -88,6 +88,21 @@ where
         self.unlink(key);
     }
 
+    /// Drop keys for which `keep` returns false, preserving relative order of survivors.
+    pub(crate) fn retain_keys<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(K) -> bool,
+    {
+        let mut cur = self.head;
+        while let Some(key) = cur {
+            let next = self.nodes.get(&key).and_then(|links| links.next);
+            if !keep(key) {
+                self.unlink(key);
+            }
+            cur = next;
+        }
+    }
+
     pub(crate) fn pop_oldest(&mut self) -> Option<K> {
         let oldest = self.head?;
         self.unlink(oldest);
@@ -196,6 +211,42 @@ where
     }
 }
 
+impl LruOrder<usize> {
+    /// Drop indices for which `keep` returns false, preserving relative order of survivors.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
+        let mut cur = self.head;
+        while let Some(key) = cur {
+            let next = self.nodes.get(&key).and_then(|links| links.next);
+            if !keep(key) {
+                self.unlink(key);
+            }
+            cur = next;
+        }
+    }
+
+    /// Rebuild keys via `old_to_new`, dropping entries mapped to [`usize::MAX`].
+    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
+        self.remap_ordered(|index| {
+            if index >= old_to_new.len() {
+                return None;
+            }
+            let new_idx = old_to_new[index];
+            (new_idx != usize::MAX).then_some(new_idx)
+        });
+    }
+
+    /// Rebuild keys via `old_to_new`, dropping entries mapped to [`usize::MAX`].
+    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
+        self.remap_ordered(|index| {
+            if index >= old_to_new.len() {
+                return None;
+            }
+            let new_idx = old_to_new[index];
+            (new_idx != usize::MAX).then_some(new_idx)
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +285,42 @@ mod tests {
         assert_eq!(lru.pop_oldest(), Some(3));
         assert_eq!(lru.pop_oldest(), Some(1));
         assert_eq!(lru.pop_oldest(), Some(2));
+    }
+
+    #[test]
+    fn lru_order_retain_drops_without_rebuild() {
+        let mut lru = LruOrder::default();
+        lru.touch(1);
+        lru.touch(2);
+        lru.touch(3);
+        lru.retain(|index| index != 2);
+        assert!(!lru.contains(2));
+        assert_eq!(lru.pop_oldest(), Some(1));
+        assert_eq!(lru.pop_oldest(), Some(3));
+    }
+
+    #[test]
+    fn lru_order_permute_remaps_keys() {
+        let mut lru = LruOrder::default();
+        lru.touch(0);
+        lru.touch(1);
+        lru.touch(2);
+        lru.permute(&[10, 11, 12]);
+        assert!(!lru.contains(0));
+        assert!(lru.contains(10));
+        assert_eq!(lru.pop_oldest(), Some(10));
+        assert_eq!(lru.pop_oldest(), Some(11));
+        assert_eq!(lru.pop_oldest(), Some(12));
+    }
+
+    #[test]
+    fn lru_order_partial_remap_skips_max_sentinel() {
+        let mut lru = LruOrder::default();
+        lru.touch(0);
+        lru.touch(1);
+        lru.partial_remap(&[5, usize::MAX]);
+        assert!(lru.contains(5));
+        assert!(!lru.contains(1));
+        assert_eq!(lru.pop_oldest(), Some(5));
     }
 }

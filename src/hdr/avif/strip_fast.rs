@@ -45,6 +45,7 @@ fn finish_baseline_interim_strip(
     max_side: u32,
     bytes: &[u8],
     path: &Path,
+    layout: Option<super::orientation::AvifContainerLayout>,
 ) -> Result<AvifGainMapStripFastResult, String> {
     if width == 0 || height == 0 {
         return Err(format!(
@@ -52,7 +53,7 @@ fn finish_baseline_interim_strip(
             path.display()
         ));
     }
-    let layout = super::orientation::libavif_probe_container_layout(bytes);
+    let layout = layout.or_else(|| super::orientation::libavif_probe_container_layout(bytes));
     let logical = layout
         .map(|layout| layout.logical_size)
         .unwrap_or((width, height));
@@ -100,22 +101,23 @@ pub(crate) fn try_decode_avif_gain_map_strip_fast(
         Err(err) => return Some(Err(format!("{path:?}: parse gain map metadata: {err}"))),
     };
 
+    let layout = super::orientation::avif_container_layout_from_image(image_ref);
+
     if iso_gain_map_skips_forward_compose(gain_metadata) {
-        return decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side).map(
-            |opt| {
+        return decode_avif_strip_precomposed_hdr_from_image(image, bytes, path, max_side, layout)
+            .map(|opt| {
                 opt.map(|(preview, logical_size)| AvifGainMapStripFastResult {
                     preview,
                     logical_size,
                 })
-            },
-        );
+            });
     }
 
     if let Some(Ok((baseline, width, height))) =
         decode_avif_strip_iso_gain_map_baseline_from_image(&image, path)
     {
         return Some(finish_baseline_interim_strip(
-            baseline, width, height, max_side, bytes, path,
+            baseline, width, height, max_side, bytes, path, layout,
         ));
     }
     None

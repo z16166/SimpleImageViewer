@@ -22,4 +22,4 @@ mod tiled_source;
 
 pub use com::{ComGuard, init_rayon_with_com};
 pub use discovery::spawn_wic_discovery;
-pub use load::{load_via_wic, load_via_wic_stream_sniff};
+pub use load::{load_via_wic, load_via_wic_from_mmap, load_via_wic_stream_sniff};

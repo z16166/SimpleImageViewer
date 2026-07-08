@@ -85,12 +85,21 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
         return;
     }
     unsafe {
-        let cookie = Arc::from_raw(userdata.cast::<ExrMmapReadCookie>());
-        cookie.destroy_called.store(true, Ordering::Release);
+        let cookie = &*userdata.cast::<ExrMmapReadCookie>();
+        if cookie
+            .destroy_called
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        drop(Arc::from_raw(userdata.cast::<ExrMmapReadCookie>()));
     }
 }
 
 pub(crate) struct ExrMmapCookieGuard {
+    /// Keeps the cookie allocation alive so `Drop` can read `destroy_called` without
+    /// dereferencing `c_ref` after OpenEXRCore's `destroy_fn` has reclaimed the raw pointer.
     cookie: Arc<ExrMmapReadCookie>,
     c_ref: *const ExrMmapReadCookie,
     context_alive: bool,
@@ -125,9 +134,9 @@ impl ExrMmapCookieGuard {
     /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn` and drops the
     /// C-held `Arc` reference.
     ///
-    /// The Rust guard keeps its own `Arc`, so the callback can signal whether cleanup happened. If
-    /// `exr_start_read` fails before creating a context and never calls `destroy_fn`, the guard drops
-    /// the C-held reference itself.
+    /// The Rust guard keeps a single `Arc` handed to OpenEXRCore via `c_ref`. If header parsing
+    /// fails before creating a context and never calls `destroy_fn`, the guard drops the C-held
+    /// reference itself. When a context is alive, only `destroy_fn` may reclaim that reference.
     pub(crate) fn mark_context_alive(&mut self) {
         self.context_alive = true;
     }
@@ -135,7 +144,10 @@ impl ExrMmapCookieGuard {
 
 impl Drop for ExrMmapCookieGuard {
     fn drop(&mut self) {
-        if self.context_alive || self.cookie.destroy_called.load(Ordering::Acquire) {
+        if self.context_alive {
+            return;
+        }
+        if self.cookie.destroy_called.load(Ordering::Acquire) {
             return;
         }
         unsafe {

@@ -16,12 +16,11 @@
 
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
-// Use mimalloc for all platforms — the default Windows HeapAlloc has severe
-// lock contention when many threads concurrently allocate/free ~68KB buffers
-// (one per PSB row decode). mimalloc uses per-thread heaps to eliminate this.
-// Unit/integration tests use the system allocator: mimalloc + static CRT on
-// Windows CI has been observed to fault the test harness before any case runs.
-#[cfg(not(test))]
+// Default: mimalloc (`mimalloc-allocator` in Cargo.toml default features; matches CI/release).
+// For Page Heap on Rust allocations locally, build with `system-allocator` instead
+// (see Cargo.toml `system-allocator` feature comment).
+// Unit/integration tests always use the system allocator (`not(test)` below).
+#[cfg(all(not(test), feature = "mimalloc-allocator"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

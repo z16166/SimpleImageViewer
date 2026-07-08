@@ -325,20 +325,12 @@ pub(crate) fn prioritize_tile_visits_into(
 }
 
 pub(crate) fn tile_visits_for_backend_into(
-    plane_backend: PlaneBackendKind,
+    _plane_backend: PlaneBackendKind,
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
     out: &mut Vec<(TileCoord, Rect, Rect)>,
 ) {
-    match plane_backend {
-        PlaneBackendKind::Sdr => {
-            out.clear();
-            out.extend_from_slice(padded_visible);
-        }
-        PlaneBackendKind::Hdr => {
-            prioritize_tile_visits_into(out, primary_visible, padded_visible);
-        }
-    }
+    prioritize_tile_visits_into(out, primary_visible, padded_visible);
 }
 
 #[cfg(test)]
@@ -352,8 +344,8 @@ pub(crate) fn tile_visits_for_backend(
     out
 }
 
-pub(crate) fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> f32 {
-    tile_visit_count.saturating_sub(visit_idx) as f32
+pub(crate) fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> usize {
+    tile_visit_count.saturating_sub(visit_idx)
 }
 
 pub(crate) fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
@@ -466,24 +458,24 @@ pub(crate) fn enqueue_hdr_plane_tile_decode(
         is_primary_visible,
         hdr_source,
     } = request;
-    if !budget.try_mark_pending(
-        &mut tm.pending_tiles,
-        tile_pending_key_for_backend(coord, plane_backend),
-        is_primary_visible,
-    ) {
+    let pending_key = tile_pending_key_for_backend(coord, plane_backend);
+    if !budget.try_mark_pending(&mut tm.pending_tiles, pending_key, is_primary_visible) {
         return;
     }
     let Some(source) = tile_decode_source_for_backend(plane_backend, None, Some(hdr_source)) else {
+        tm.pending_tiles.remove(&pending_key);
         return;
     };
-    loader.request_tile(
+    if !loader.request_tile(
         current_index,
         tm.decode_profile.clone(),
         tile_request_priority(tile_visits_len, visit_idx),
         source,
         coord.col,
         coord.row,
-    );
+    ) {
+        tm.pending_tiles.remove(&pending_key);
+    }
 }
 
 /// HDR tiled plane: enqueue decode on cache miss, otherwise draw cached RGBA32F.
@@ -593,23 +585,28 @@ pub(crate) fn draw_hdr_plane_tile_visit(ui: &mut egui::Ui, visit: HdrPlaneTileVi
 }
 
 #[cfg(test)]
+pub(crate) struct TileSchedulePolicyTestInput {
+    pub(crate) is_cached: bool,
+    pub(crate) pending_count: usize,
+    pub(crate) pending_cap: usize,
+    pub(crate) hard_pending_cap: usize,
+    pub(crate) scheduled_this_frame: usize,
+    pub(crate) frame_schedule_cap: usize,
+    pub(crate) is_primary_visible: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn tile_kind_uses_shared_schedule_policy(
     _pixel_kind: TilePixelKind,
-    is_cached: bool,
-    pending_count: usize,
-    pending_cap: usize,
-    hard_pending_cap: usize,
-    scheduled_this_frame: usize,
-    frame_schedule_cap: usize,
-    is_primary_visible: bool,
+    input: TileSchedulePolicyTestInput,
 ) -> bool {
     should_schedule_tile_request(
-        is_cached,
-        pending_count,
-        pending_cap,
-        hard_pending_cap,
-        scheduled_this_frame,
-        frame_schedule_cap,
-        is_primary_visible,
+        input.is_cached,
+        input.pending_count,
+        input.pending_cap,
+        input.hard_pending_cap,
+        input.scheduled_this_frame,
+        input.frame_schedule_cap,
+        input.is_primary_visible,
     )
 }

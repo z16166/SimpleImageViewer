@@ -20,7 +20,10 @@ pub(crate) fn permute_usize_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: 
     let taken = std::mem::take(map);
     for (old_idx, value) in taken {
         if old_idx < old_to_new.len() {
-            map.insert(old_to_new[old_idx], value);
+            let new_idx = old_to_new[old_idx];
+            if new_idx != usize::MAX {
+                map.insert(new_idx, value);
+            }
         }
     }
 }
@@ -29,7 +32,10 @@ pub(crate) fn permute_usize_set(set: &mut HashSet<usize>, old_to_new: &[usize]) 
     let taken = std::mem::take(set);
     for old_idx in taken {
         if old_idx < old_to_new.len() {
-            set.insert(old_to_new[old_idx]);
+            let new_idx = old_to_new[old_idx];
+            if new_idx != usize::MAX {
+                set.insert(new_idx);
+            }
         }
     }
 }

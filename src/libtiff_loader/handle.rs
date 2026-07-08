@@ -15,10 +15,14 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use libtiff_viewer as lib;
 use memmap2::Mmap;
+use parking_lot::Mutex;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use super::constants::MAX_TIFF_HANDLE_POOL_SIZE;
 
 use super::mmap::{
     TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
@@ -51,6 +55,19 @@ impl TiffHandle {
     pub(crate) fn as_ptr(&self) -> *mut lib::TIFF {
         self.guard.as_ptr()
     }
+
+    pub(crate) fn reset_for_reuse(&mut self) -> Result<(), String> {
+        // Pooled handles must rewind mmap I/O and IFD state before the next decode on this
+        // thread; stale directory/offset caused hard-to-reproduce strip decode corruption
+        // when alternating large TIFFs on the same worker.
+        self._context.offset = 0;
+        unsafe {
+            if lib::TIFFSetDirectory(self.as_ptr(), 0) == 0 {
+                return Err("TIFFSetDirectory(0) failed on pooled handle reuse".to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 // A LibTIFF `TIFF` handle is not documented as safe for concurrent use from multiple threads.
@@ -58,10 +75,65 @@ impl TiffHandle {
 // thread uses each handle at a time.
 unsafe impl Send for TiffHandle {}
 
+/// Mutex-backed pool of [`TiffHandle`] with a hard cap on live handles.
+pub(crate) struct TiffHandlePool {
+    pool: Mutex<Vec<TiffHandle>>,
+    live_handles: AtomicUsize,
+}
+
+impl TiffHandlePool {
+    pub(crate) fn new(initial: TiffHandle) -> Self {
+        Self {
+            pool: Mutex::new(vec![initial]),
+            live_handles: AtomicUsize::new(1),
+        }
+    }
+
+    pub(crate) fn acquire(&self, mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
+        if let Some(mut handle) = self.pool.lock().pop() {
+            handle.reset_for_reuse()?;
+            return Ok(handle);
+        }
+        loop {
+            let current = self.live_handles.load(Ordering::Acquire);
+            if current >= MAX_TIFF_HANDLE_POOL_SIZE {
+                return Err(format!(
+                    "TIFF handle pool capacity ({MAX_TIFF_HANDLE_POOL_SIZE}) exceeded"
+                ));
+            }
+            if self
+                .live_handles
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        match create_tiff_handle(mmap, path) {
+            Ok(handle) => Ok(handle),
+            Err(e) => {
+                self.live_handles.fetch_sub(1, Ordering::AcqRel);
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) fn release(&self, handle: TiffHandle) {
+        let mut pool = self.pool.lock();
+        if pool.len() < MAX_TIFF_HANDLE_POOL_SIZE {
+            pool.push(handle);
+        } else {
+            drop(handle);
+            self.live_handles.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
 pub(crate) fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
-    let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
+    let mut ctx = Box::new(TiffMmapContext::new(mmap));
 
     unsafe {
+        // SAFETY: `ctx` outlives the TIFF handle; I/O callbacks use the mmap-backed context.
         let c_path = path_to_tiff_name(path);
         let c_mode = match CString::new("r") {
             Ok(c) => c,

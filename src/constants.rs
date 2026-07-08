@@ -30,6 +30,25 @@ pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 pub const RGB_CHANNELS: usize = 3;
 /// Standard number of color channels for RGBA images.
 pub const RGBA_CHANNELS: usize = 4;
+
+/// Computes `width * channels` without overflow.
+#[inline]
+pub fn checked_pixel_row_len(width: usize, channels: usize) -> Option<usize> {
+    width.checked_mul(channels)
+}
+
+/// Computes the element count for an RGBA row without overflow.
+#[inline]
+pub fn checked_rgba_row_len(width: usize) -> Option<usize> {
+    checked_pixel_row_len(width, RGBA_CHANNELS)
+}
+
+/// Computes the element count for an RGBA image without overflow.
+#[inline]
+pub fn checked_rgba_buffer_len(width: usize, height: usize) -> Option<usize> {
+    checked_rgba_row_len(width).and_then(|row_len| row_len.checked_mul(height))
+}
+
 /// Standard bit depth for 8-bit image formats.
 pub const BIT_DEPTH_8: usize = 8;
 /// Maximum value for a single 8-bit color channel.
@@ -184,11 +203,25 @@ pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Maximum wait for PSD v1 async full decode when building a directory-tree strip preview.
 /// Strip workers run on a 4-thread pool; this must stay well below main-loader decode
 /// deadlines to avoid thread-pool starvation.
-pub const PSD_V1_ASYNC_DECODE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(60);
+pub const PSD_V1_ASYNC_DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Maximum size for the log file (10MB) before rotation.
+#[cfg(not(feature = "preload-debug"))]
 pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Larger rotation threshold when built with `--features preload-debug`.
+/// Preload diagnostics emit many info lines per frame; 10 MiB fills in minutes and
+/// pushes strip / directory-tree logs into rotated files that are soon deleted.
+#[cfg(feature = "preload-debug")]
+pub const LOG_FILE_SIZE_LIMIT_PRELOAD_DEBUG: u64 = 100 * 1024 * 1024;
+
+/// Number of rotated log files flexi_logger retains (default builds).
+#[cfg(not(feature = "preload-debug"))]
+pub const LOG_FILE_KEEP_COUNT: usize = 3;
+
+/// Retain more numbered logs in preload-debug builds so a long repro session stays grep-able.
+#[cfg(feature = "preload-debug")]
+pub const LOG_FILE_KEEP_COUNT_PRELOAD_DEBUG: usize = 8;
 
 /// The clipping threshold for LibRaw's auto-brightness adjustment.
 /// A value of 0.01 (1%) provides robust normalization for high-dynamic range images
@@ -207,6 +240,9 @@ pub const MAX_ICC_TAG_COUNT: usize = 4096;
 
 /// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
 pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
+
+/// Minimum on-disk size that can hold a still-image container header (ISO BMFF `ftyp` is 12 bytes).
+pub const MIN_IMAGE_FILE_BYTES: u64 = 12;
 
 /// Default buffer/profile size for building ICC profiles in unit tests.
 #[cfg(test)]

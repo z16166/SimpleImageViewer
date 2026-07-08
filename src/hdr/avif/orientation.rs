@@ -116,13 +116,9 @@ pub(crate) struct AvifContainerLayout {
 }
 
 #[cfg(feature = "avif-native")]
-pub(crate) fn libavif_probe_container_layout(bytes: &[u8]) -> Option<AvifContainerLayout> {
-    let decoder = libavif_parse_container_image(bytes)?;
-    let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
-    if img.is_null() {
-        return None;
-    }
-    let image = unsafe { &*img };
+pub(crate) fn avif_container_layout_from_image(
+    image: &libavif_sys::avifImage,
+) -> Option<AvifContainerLayout> {
     let (width, height) = avif_display_dimensions(image);
     if width == 0 || height == 0 {
         return None;
@@ -133,6 +129,16 @@ pub(crate) fn libavif_probe_container_layout(bytes: &[u8]) -> Option<AvifContain
         logical_size: (width, height),
         exif_orientation,
     })
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_container_layout(bytes: &[u8]) -> Option<AvifContainerLayout> {
+    let decoder = libavif_parse_container_image(bytes)?;
+    let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
+    if img.is_null() {
+        return None;
+    }
+    avif_container_layout_from_image(unsafe { &*img })
 }
 
 #[cfg(feature = "avif-native")]

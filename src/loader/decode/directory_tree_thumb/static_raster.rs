@@ -21,6 +21,46 @@ use crate::loader::{DecodedImage, downsample_decoded_for_strip};
 use super::DirectoryTreeThumbDecode;
 use super::path_extension_ascii_lower;
 
+pub(super) fn static_raster_path_provides_reusable_full_decode(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    if ext.eq_ignore_ascii_case("png") {
+        return png_path_provides_reusable_full_decode(path);
+    }
+    if ext.eq_ignore_ascii_case("webp") {
+        return webp_path_provides_reusable_full_decode(path);
+    }
+    ["bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi"]
+        .iter()
+        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+}
+
+fn png_path_provides_reusable_full_decode(path: &Path) -> bool {
+    use image::codecs::png::PngDecoder;
+    use std::io::Cursor;
+
+    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+        return false;
+    };
+    PngDecoder::new(Cursor::new(mmap.as_ref()))
+        .and_then(|decoder| decoder.is_apng())
+        .map(|is_apng| !is_apng)
+        .unwrap_or(false)
+}
+
+fn webp_path_provides_reusable_full_decode(path: &Path) -> bool {
+    use image::codecs::webp::WebPDecoder;
+    use std::io::Cursor;
+
+    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+        return false;
+    };
+    WebPDecoder::new(Cursor::new(mmap.as_ref()))
+        .map(|decoder| !decoder.has_animation())
+        .unwrap_or(false)
+}
+
 pub(super) fn try_static_raster_strip_fast_path(
     path: &Path,
     mmap: Option<&memmap2::Mmap>,
@@ -281,7 +321,7 @@ mod tests {
         out.extend_from_slice(kind);
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(data);
-        if data.len() % 2 != 0 {
+        if !data.len().is_multiple_of(2) {
             out.push(0);
         }
     }

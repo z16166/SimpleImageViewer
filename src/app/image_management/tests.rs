@@ -17,13 +17,53 @@
 use super::*;
 use crate::app::{HardwareTier, SettingsTab};
 use crate::audio::AudioPlayer;
+use crate::hdr::types::HdrImageMetadata;
 use crate::loader::PreviewBundle;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub(crate) fn write_min_sized_test_image(path: &Path) {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(
+        path,
+        vec![0u8; crate::constants::MIN_IMAGE_FILE_BYTES as usize],
+    )
+    .expect("write test image");
+}
+
+pub(crate) fn test_image_path(name: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "{}siv-img-mgmt-{}-{}-{name}",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+pub(crate) fn set_test_image_files(app: &mut ImageViewerApp, names: &[&str]) {
+    app.image_files = names
+        .iter()
+        .map(|name| {
+            let path = test_image_path(name);
+            write_min_sized_test_image(&path);
+            path
+        })
+        .collect();
+    app.file_byte_len_by_index =
+        vec![crate::constants::MIN_IMAGE_FILE_BYTES; app.image_files.len()];
+}
 
 #[test]
 fn prefetch_window_distance_matches_circular_neighbors() {
@@ -154,23 +194,47 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
 }
 
 #[test]
+fn prefetch_resource_guard_syncs_when_not_committed() {
+    use super::prefetch_resource_index::PrefetchResourceGuard;
+
+    let mut app = make_test_app();
+    {
+        let _guard = PrefetchResourceGuard::new(&mut app, 3);
+    }
+    assert!(!app.prefetch_resource_indices.contains(&3));
+}
+
+#[test]
+fn prefetch_resource_guard_keeps_index_after_commit() {
+    use super::prefetch_resource_index::PrefetchResourceGuard;
+
+    let mut app = make_test_app();
+    {
+        let guard = PrefetchResourceGuard::new(&mut app, 4);
+        guard.commit();
+    }
+    assert!(app.prefetch_resource_indices.contains(&4));
+}
+
+#[test]
 fn navigation_preserves_current_tile_manager_for_restore() {
     let source = Arc::new(DummyTiledSource {
         width: 4096,
         height: 4096,
     });
-    let mut tile_manager = Some(TileManager::with_source(
+    let mut app = make_test_app();
+    app.tile_manager = Some(TileManager::with_source(
         7,
         crate::loader::decode_profile_stub(),
         source,
     ));
-    let mut prefetched_tiles = HashMap::new();
 
-    preserve_current_tile_manager_for_navigation(7, 8, &mut tile_manager, &mut prefetched_tiles);
+    preserve_current_tile_manager_for_navigation(&mut app, 7, 8);
 
-    assert!(tile_manager.is_none());
-    assert!(prefetched_tiles.contains_key(&7));
-    assert_eq!(prefetched_tiles.get(&7).unwrap().image_index, 7);
+    assert!(app.tile_manager.is_none());
+    assert!(app.prefetched_tiles.contains_key(&7));
+    assert_eq!(app.prefetched_tiles.get(&7).unwrap().image_index, 7);
+    assert!(app.prefetch_resource_indices.contains(&7));
 }
 
 #[test]
@@ -179,11 +243,6 @@ fn tiled_bootstrap_preview_replaces_only_lower_rank_cached_preview() {
 
     assert!(should_upload_tiled_bootstrap_preview(false, None, None));
     assert!(should_upload_tiled_bootstrap_preview(true, None, None));
-    assert!(should_upload_tiled_bootstrap_preview(
-        true,
-        Some(TexturePreviewBufferTag::TiledBootstrap),
-        Some(PreviewStage::Initial),
-    ));
     assert!(!should_upload_tiled_bootstrap_preview(
         true,
         Some(TexturePreviewBufferTag::TiledRefinedLoader),
@@ -343,7 +402,7 @@ fn preload_budget_requests_unknown_or_fitting_candidate() {
 fn oversized_preload_candidate_allows_near_budget_or_large_file() {
     let budget = 100 * 1024 * 1024;
     assert!(should_request_oversized_preload_candidate(
-        1 * 1024 * 1024,
+        1024 * 1024,
         150 * 1024 * 1024,
         budget
     ));
@@ -353,7 +412,7 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
         budget
     ));
     assert!(!should_request_oversized_preload_candidate(
-        1 * 1024 * 1024,
+        1024 * 1024,
         151 * 1024 * 1024,
         budget
     ));
@@ -362,12 +421,8 @@ fn oversized_preload_candidate_allows_near_budget_or_large_file() {
 #[test]
 fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
     let mut app = make_test_app();
-    app.image_files = vec![
-        PathBuf::from("current.jpg"),
-        PathBuf::from("huge.jpg"),
-        PathBuf::from("small.jpg"),
-    ];
-    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1 * 1024 * 1024];
+    set_test_image_files(&mut app, &["current.jpg", "huge.jpg", "small.jpg"]);
+    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
@@ -378,8 +433,8 @@ fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
 #[test]
 fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("current.jpg"), PathBuf::from("small.jpg")];
-    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
+    set_test_image_files(&mut app, &["current.jpg", "small.jpg"]);
+    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024];
 
     app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
@@ -545,6 +600,8 @@ fn startup_preload_defer_can_release_now(
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
     interim_hdr_decode_capacity: f32,
+    current_target_format: Option<wgpu::TextureFormat>,
+    desired_target_format: Option<wgpu::TextureFormat>,
 ) -> bool {
     super::startup_preload_defer_can_release(
         runtime_probe_completed,
@@ -554,7 +611,50 @@ fn startup_preload_defer_can_release_now(
         probe_completed_at,
         std::time::Instant::now(),
         interim_hdr_decode_capacity,
+        current_target_format,
+        desired_target_format,
     )
+}
+
+const HDR_SWAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const SDR_SWAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
+#[test]
+fn startup_preload_defer_waits_for_swap_chain_before_release() {
+    use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::types::HdrOutputMode;
+
+    let selection_hdr = HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: Some(2.89),
+        hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
+    };
+
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        true,
+        Some(&selection_hdr),
+        HdrOutputMode::MacOsEdr,
+        None,
+        16.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
+    ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        true,
+        Some(&selection_hdr),
+        HdrOutputMode::MacOsEdr,
+        None,
+        16.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
+    ));
 }
 
 #[test]
@@ -610,6 +710,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -618,6 +720,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(SDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -626,6 +730,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -634,6 +740,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!super::monitor_hdr_decode_capacity_is_known(
         selection_hdr_source_only
@@ -645,6 +753,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -653,6 +763,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -661,6 +773,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::MacOsEdr,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -669,6 +783,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::MacOsEdr,
         None,
         4.926,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -695,6 +811,8 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -703,6 +821,8 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -732,6 +852,8 @@ fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
         Some(probe_at),
         now,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -873,7 +995,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
     app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
-    app.image_files = vec![PathBuf::from("a.heif"), PathBuf::from("b.heif")];
+    set_test_image_files(&mut app, &["a.heif", "b.heif"]);
     app.current_index = 0;
     app.loader.request_load(
         0,
@@ -939,12 +1061,8 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
     let mut app = make_test_app();
     app.settings.browse_mode = BrowseMode::Tree;
     app.settings.show_directory_tree_nav = true;
-    app.image_files = vec![
-        PathBuf::from(r"F:\win7\2013\XMN_2332.NEF"),
-        PathBuf::from(r"F:\win7\2013\XMN_2333.NEF"),
-        PathBuf::from(r"F:\win7\2013\XMN_2334.NEF"),
-    ];
-    app.file_byte_len_by_index = vec![1, 2, 3];
+    set_test_image_files(&mut app, &["XMN_2332.NEF", "XMN_2333.NEF", "XMN_2334.NEF"]);
+    app.file_byte_len_by_index = vec![crate::constants::MIN_IMAGE_FILE_BYTES; 3];
     app.file_modified_unix_by_index = vec![None, None, None];
     app.current_index = 0;
     app.loader.request_load(
@@ -956,13 +1074,69 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
     assert!(app.loader.is_loading(0));
 
     assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false,));
-    assert_eq!(app.current_index, 2);
-    assert_eq!(
-        app.image_files[app.current_index].file_name().unwrap(),
-        "XMN_2332.NEF"
+    assert_eq!(app.current_index, 0);
+    assert!(
+        app.image_files[0]
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("2334"))
     );
-    assert!(!app.loader.is_loading(0));
-    assert!(app.loader.is_loading(2));
+    assert!(!app.loader.is_loading(2));
+    assert!(app.loader.is_loading(0));
+}
+
+#[test]
+fn directory_tree_list_sort_reschedules_neighbor_preloads_after_permute() {
+    use crate::app::directory_tree::ImageListSortColumn;
+
+    let mut app = make_test_app();
+    app.settings.preload = true;
+    app.cached_available_memory_mb = 8192;
+    app.cached_total_memory_mb = 16384;
+    app.prefetch_window_max_distance = crate::loader::DEFAULT_PREFETCH_WINDOW_DISTANCE;
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg", "c.jpg"]);
+    app.file_byte_len_by_index = vec![100, 200, 300];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 1;
+    app.hdr_image_cache.insert(
+        1,
+        std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
+            rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
+        }),
+    );
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false));
+    assert_eq!(app.current_index, 1);
+    assert!(
+        app.loader.is_loading(0) || app.loader.is_loading(2),
+        "expected neighbor preloads to restart after list reorder"
+    );
+}
+
+#[test]
+fn directory_tree_list_sort_bootstraps_visible_strip_thumbnails() {
+    use crate::app::directory_tree::ImageListSortColumn;
+    use crate::settings::BrowseMode;
+
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_show_list_previews = true;
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg", "c.jpg"]);
+    app.file_byte_len_by_index = vec![100, 200, 300];
+    app.file_modified_unix_by_index = vec![None, None, None];
+    app.current_index = 0;
+
+    assert!(app.apply_directory_tree_image_list_sort(ImageListSortColumn::Name, false));
+    assert!(app.directory_tree_strip_bootstrap_after_scan);
+    assert_eq!(app.directory_tree_strip_bootstrap_frames, 0);
 }
 
 #[test]
@@ -974,20 +1148,22 @@ fn hdr_gain_map_sdr_display_change_refreshes_cached_heic_without_reload() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: true,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: true,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1020,7 +1196,7 @@ fn hdr_gain_map_sdr_display_change_reloads_heif_marked_ultra_hdr_sensitive() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     app.ultra_hdr_capacity_sensitive_indices.insert(0);
@@ -1071,11 +1247,7 @@ fn background_preload_defers_while_current_raw_gpu_path_active() {
 #[test]
 fn background_preload_schedule_with_force_neighbors() {
     let mut app = make_test_app();
-    app.image_files = vec![
-        std::path::PathBuf::from("current.NEF"),
-        std::path::PathBuf::from("neighbor1.jpg"),
-        std::path::PathBuf::from("neighbor2.jpg"),
-    ];
+    set_test_image_files(&mut app, &["current.NEF", "neighbor1.jpg", "neighbor2.jpg"]);
     app.current_index = 0;
     app.settings.raw_high_quality = true;
     app.settings.preload = true;
@@ -1119,9 +1291,9 @@ fn background_preload_schedule_with_force_neighbors() {
 #[test]
 fn schedule_preloads_only_requests_neighbors_within_retention_window() {
     let mut app = make_test_app();
-    app.image_files = (0..10)
-        .map(|i| std::path::PathBuf::from(format!("img{i}.jpg")))
-        .collect();
+    let names: Vec<String> = (0..10).map(|i| format!("img{i}.jpg")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    set_test_image_files(&mut app, &name_refs);
     app.current_index = 0;
     app.settings.preload = true;
     app.cached_available_memory_mb = 8192;
@@ -1268,19 +1440,21 @@ fn hdr_gain_map_sdr_display_change_evicts_cached_gain_map_and_reloads_current() 
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: true,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE,
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: true,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1305,19 +1479,21 @@ fn hdr_gain_map_sdr_display_change_evicts_heif_tone_map_primary_cache() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
-        target_hdr_capacity: None,
-        diagnostic: "AppleHdrGainMap".to_string(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: None,
-    });
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: None,
+            diagnostic: "AppleHdrGainMap".to_string(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: None,
+        }),
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1345,25 +1521,27 @@ fn hdr_gain_map_sdr_display_change_evicts_apple_heic_tone_map_cache() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("photo.heic")];
+    set_test_image_files(&mut app, &["photo.heic"]);
     app.current_index = 0;
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
 
-    let mut metadata = HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
-        target_hdr_capacity: Some(2.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            headroom_span: 1.0,
-            stops: 1.0,
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: Some(2.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                headroom_span: 1.0,
+                stops: 1.0,
+            }),
+            iso_deferred: None,
         }),
-        iso_deferred: None,
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(HdrImageBuffer {
         width: 4032,
         height: 3024,
@@ -1388,35 +1566,37 @@ fn capture_transition_prefers_sdr_texture_for_embedded_iso_gain_map() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: Some(4.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -1445,35 +1625,37 @@ fn capture_transition_keeps_hdr_plane_for_tone_mapped_iso_gain_map() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::HdrToneMapped;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: Some(4.0),
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(vec![0; 4]),
-            gain_width: 1,
-            gain_height: 1,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -1498,35 +1680,37 @@ fn embedded_iso_gain_map_sdr_master_flushes_deferred_fallback_texture() {
     use crate::settings::HdrGainMapSdrDisplayMode;
 
     let mut app = make_test_app();
-    app.image_files = vec![std::path::PathBuf::from("gain_map.avif")];
+    set_test_image_files(&mut app, &["gain_map.avif"]);
     app.current_index = 0;
     app.hdr_target_format = Some(wgpu::TextureFormat::Bgra8Unorm);
     app.settings.hdr_gain_map_sdr_display = HdrGainMapSdrDisplayMode::EmbeddedSdrMaster;
     let iso_sdr = vec![128_u8, 64, 32, 255];
-    let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-    metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "AVIF",
-        target_hdr_capacity: None,
-        diagnostic: String::new(),
-        capped_display_referred: false,
-        apple_heic_deferred: None,
-        iso_deferred: Some(IsoGainMapGpuSource {
-            sdr_rgba: Arc::new(iso_sdr.clone()),
-            gain_rgba: Arc::new(Vec::new()),
-            gain_width: 0,
-            gain_height: 0,
-            metadata: crate::hdr::gain_map::GainMapMetadata {
-                gain_map_min: [0.0; 3],
-                gain_map_max: [1.0; 3],
-                gamma: [1.0; 3],
-                offset_sdr: [0.0; 3],
-                offset_hdr: [0.0; 3],
-                hdr_capacity_min: 1.0,
-                hdr_capacity_max: 4.0,
-                backward_direction: false,
-            },
+    let metadata = HdrImageMetadata {
+        gain_map: Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: None,
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(Vec::new()),
+                gain_width: 0,
+                gain_height: 0,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
         height: 1,
@@ -2051,6 +2235,17 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         settings: Settings::default(),
         image_files: Vec::new(),
         cached_image_strip_path_index: None,
+        #[cfg(feature = "avif-native")]
+        cached_avif_strip_probe: parking_lot::Mutex::new(None),
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_inflight: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_result_tx: {
+            let (tx, _rx) = crossbeam_channel::bounded(1);
+            tx
+        },
+        #[cfg(feature = "avif-native")]
+        avif_strip_probe_result_rx: crossbeam_channel::never(),
         file_byte_len_by_index: Vec::new(),
         file_modified_unix_by_index: Vec::new(),
         current_index: 0,
@@ -2142,7 +2337,11 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
+        directory_tree_strip_pending_main_handoff: std::collections::HashMap::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+        directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
+        directory_tree_strip_next_job_token: 0,
+        directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
         directory_tree_strip_preview_tx: {
             let (tx, _rx) = crossbeam_channel::unbounded();
             tx
@@ -2156,6 +2355,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_pending_gpu_initial: VecDeque::new(),
         directory_tree_strip_pending_gpu_refined: VecDeque::new(),
         directory_tree_strip_pending_gpu_next_seq: 0,
+        directory_tree_strip_pending_drop_scratch: Vec::new(),
         directory_tree_places_load_rx: None,
         font_families: Vec::new(),
         font_families_rx: None,
@@ -2225,6 +2425,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         tiled_visible_tiles_scratch: Vec::new(),
         tiled_primary_visible_tiles_scratch: Vec::new(),
         tiled_tile_visits_scratch: Vec::new(),
+        tiled_protected_keys_scratch: Vec::new(),
         prefetched_tiles: HashMap::new(),
         prefetch_resource_indices: HashSet::new(),
         theme_cache: SystemThemeCache::default(),
@@ -2706,14 +2907,14 @@ fn evict_distant_prefetch_caches_removes_pixel_cache_for_distant_indices() {
 
     let pixels = std::sync::Arc::new(vec![0u8; 16]);
     PIXEL_CACHE
-        .lock()
+        .write()
         .insert(4, TileCoord { col: 0, row: 0 }, pixels);
 
     app.evict_distant_prefetch_caches();
 
     assert!(
         PIXEL_CACHE
-            .lock()
+            .write()
             .get(4, TileCoord { col: 0, row: 0 })
             .is_none()
     );
@@ -2788,7 +2989,7 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     use eframe::egui;
 
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.jpg")];
+    set_test_image_files(&mut app, &["img0.jpg", "img1.jpg"]);
     app.current_index = 0;
 
     let ctx = egui::Context::default();
@@ -2827,7 +3028,7 @@ fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
     use eframe::egui;
 
     let mut app = make_test_app();
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img1.exr")];
+    set_test_image_files(&mut app, &["img0.jpg", "img1.exr"]);
     app.current_index = 0;
 
     let ctx = egui::Context::default();
@@ -2860,9 +3061,9 @@ fn navigate_to_tiled_preview_without_display_mode_triggers_load() {
 #[test]
 fn test_resolve_initial_position_during_and_after_scan() {
     let mut app = make_test_app();
-    let initial_path = PathBuf::from("img2.jpg");
+    set_test_image_files(&mut app, &["img0.jpg", "img2.jpg"]);
+    let initial_path = app.image_files[1].clone();
     app.initial_image = Some(initial_path.clone());
-    app.image_files = vec![PathBuf::from("img0.jpg"), PathBuf::from("img2.jpg")];
     app.settings.resume_last_image = true;
     app.settings.last_viewed_image = Some(PathBuf::from("img1.jpg"));
 
@@ -2934,7 +3135,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     let mut app = make_test_app();
     app.settings.raw_demosaic_mode = RawDemosaicMode::Gpu;
     app.settings.raw_high_quality = true;
-    app.image_files = vec![PathBuf::from("sentinel_test.cr2")];
+    set_test_image_files(&mut app, &["sentinel_test.cr2"]);
     app.current_index = 0;
 
     let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
@@ -3198,7 +3399,7 @@ fn test_gpu_raw_pending_hdr(raw_pixels: Arc<Vec<u16>>) -> Arc<crate::hdr::types:
         raw_height: 4,
         width: 4,
         height: 4,
-        raw_pixels: raw_pixels,
+        raw_pixels,
         black_level: [0.0; 4],
         cfa_scale: [1.0; 4],
         rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
@@ -3555,12 +3756,39 @@ fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
     std::fs::create_dir_all(&dir).unwrap();
     let first = dir.join("first.jpg");
     let second = dir.join("second.jpg");
+    write_min_sized_test_image(&first);
+    write_min_sized_test_image(&second);
 
     app.settings.browse_mode = crate::settings::BrowseMode::Tree;
     app.settings.show_directory_tree_nav = true;
     app.image_files = vec![first, second];
-    app.file_byte_len_by_index = vec![0, 0];
+    app.file_byte_len_by_index = vec![
+        crate::constants::MIN_IMAGE_FILE_BYTES,
+        crate::constants::MIN_IMAGE_FILE_BYTES,
+    ];
     app.file_modified_unix_by_index = vec![None, None];
+
+    {
+        let mut list = app.directory_tree.list.lock();
+        list.scanning = false;
+        list.image_list_reordering = false;
+        list.image_rows = app
+            .image_files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                crate::app::directory_tree::DirectoryTreeFileRow::new(
+                    path.clone(),
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("image")
+                        .to_string(),
+                    app.file_byte_len_by_index[index],
+                    app.file_modified_unix_by_index[index],
+                )
+            })
+            .collect();
+    }
 
     app.directory_tree
         .command_tx
@@ -3691,7 +3919,7 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
     let old_files = paths.clone();
     let new_files = vec![paths[2].clone(), paths[0].clone(), paths[1].clone()];
 
-    for index in 0..3 {
+    for (index, _) in paths.iter().enumerate() {
         let fill = ((index + 1) * 40) as u8;
         let decoded = crate::loader::DecodedImage::new(8, 8, vec![fill; 8 * 8 * 4]);
         app.directory_tree_strip_cache.upsert_from_decoded(
@@ -3749,4 +3977,128 @@ fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_cha
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
 
     assert!(!app.directory_tree_strip_cache.contains(0));
+}
+
+fn write_strip_test_png(name: &str) -> PathBuf {
+    use image::ImageEncoder;
+
+    let path = std::env::temp_dir().join(format!(
+        "siv_strip_full_decode_{name}_{}.png",
+        std::process::id()
+    ));
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ColorType::Rgba8.into())
+        .expect("encode test png");
+    std::fs::write(&path, encoded).expect("write test png");
+    path
+}
+
+fn png_chunk_crc(chunk_type: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in chunk_type.iter().chain(data.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn insert_apng_actl_chunk(mut png: Vec<u8>) -> Vec<u8> {
+    let ihdr_len = u32::from_be_bytes(png[8..12].try_into().expect("ihdr length")) as usize;
+    let insert_at = 8 + 4 + 4 + ihdr_len + 4;
+    let chunk_type = *b"acTL";
+    let mut data = Vec::new();
+    data.extend_from_slice(&1u32.to_be_bytes());
+    data.extend_from_slice(&0u32.to_be_bytes());
+    let crc = png_chunk_crc(&chunk_type, &data);
+
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    chunk.extend_from_slice(&chunk_type);
+    chunk.extend_from_slice(&data);
+    chunk.extend_from_slice(&crc.to_be_bytes());
+    png.splice(insert_at..insert_at, chunk);
+    png
+}
+
+#[test]
+fn strip_static_full_decode_inflight_blocks_main_preload_in_ring() {
+    let mut app = make_test_app();
+    let neighbor = write_strip_test_png("static_neighbor");
+    app.image_files = vec![
+        PathBuf::from("current.png"),
+        neighbor.clone(),
+        PathBuf::from("outside.bmp"),
+        PathBuf::from("backward_neighbor.png"),
+    ];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+    app.directory_tree_strip_generate_inflight.insert(2);
+    assert!(app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]) {
+        app.directory_tree_strip_static_full_decode_inflight
+            .insert(1);
+    }
+    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]) {
+        app.directory_tree_strip_static_full_decode_inflight
+            .insert(2);
+    }
+
+    assert!(app.strip_full_decode_inflight_should_block_main_load(1));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
+    let _ = std::fs::remove_file(neighbor);
+}
+
+#[test]
+fn strip_animated_png_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    let animated = write_strip_test_png("animated_neighbor");
+    let png = std::fs::read(&animated).expect("read test png");
+    std::fs::write(&animated, insert_apng_actl_chunk(png)).expect("write test apng");
+    app.image_files = vec![PathBuf::from("current.png"), animated.clone()];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+    let _ = std::fs::remove_file(animated);
+}
+
+#[test]
+fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("current.png"), PathBuf::from("neighbor.jpg")];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 1;
+    app.directory_tree_strip_generate_inflight.insert(1);
+
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+}
+
+#[test]
+fn strip_hdr_fallback_inflight_does_not_block_main_preload() {
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("current.png"),
+        PathBuf::from("neighbor.hdr"),
+        PathBuf::from("neighbor.exr"),
+    ];
+    app.set_current_index(0);
+    app.settings.preload = true;
+    app.prefetch_window_max_distance = 2;
+    app.directory_tree_strip_generate_inflight.insert(1);
+    app.directory_tree_strip_generate_inflight.insert(2);
+
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
+    assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
 }

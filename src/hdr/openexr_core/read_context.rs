@@ -28,16 +28,16 @@ type ScanlinePreviewRowsByChunk =
     std::collections::BTreeMap<i32, (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>)>;
 
 use super::channels::{
-    DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming,
-    OpenExrCoreDecodedChunkFetch, OpenExrCoreTileGrid, assign_channel_roles,
-    budgeted_scanline_preview_source_y, channel_sample_f32, channel_sample_f32_filtered,
-    configured_decoded_chunk_cache_max_bytes, copy_channels, copy_decoded_chunk_to_tile,
-    decode_pipeline_channels, decoded_chunk_key, exr_result, extent_from_window_axis,
-    sample_decoded_scanline_chunk_into_preview, scanline_preview_decode_parallelism,
-    scanline_preview_dimensions, scanline_preview_source_row_budget, validate_tile_bounds,
+    DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreDecodedChunkFetch,
+    OpenExrCoreTileGrid, assign_channel_roles, budgeted_scanline_preview_source_y,
+    channel_sample_f32, channel_sample_f32_filtered, configured_decoded_chunk_cache_max_bytes,
+    copy_channels, copy_decoded_chunk_to_tile, decode_pipeline_channels, decoded_chunk_key,
+    exr_result, extent_from_window_axis, sample_decoded_scanline_chunk_into_preview,
+    scanline_preview_decode_parallelism, scanline_preview_dimensions,
+    scanline_preview_source_row_budget, validate_tile_bounds,
 };
 #[cfg(feature = "tile-debug")]
-use super::channels::{compression_name, storage_name};
+use super::channels::{OpenExrCoreChunkDecodeTiming, compression_name, storage_name};
 use super::chromaticities::{
     hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path,
     openexr_luminance_weights_from_chromaticities_xy,
@@ -337,11 +337,14 @@ impl OpenExrCoreReadContext {
                     tile_grid.count_x,
                     tile_grid.count_y
                 );
+                use rayon::prelude::*;
+
                 let start_tile_x = x / tile_grid.tile_width;
                 let end_tile_x = (x + width - 1) / tile_grid.tile_width;
                 let start_tile_y = y / tile_grid.tile_height;
                 let end_tile_y = (y + height - 1) / tile_grid.tile_height;
 
+                let mut chunk_work = Vec::<(sys::ExrChunkInfo, u32, u32)>::new();
                 for tile_y_index in start_tile_y..=end_tile_y {
                     for tile_x_index in start_tile_x..=end_tile_x {
                         if tile_x_index >= tile_grid.count_x || tile_y_index >= tile_grid.count_y {
@@ -364,32 +367,41 @@ impl OpenExrCoreReadContext {
                         if chunk.height <= 0 || chunk.width <= 0 {
                             continue;
                         }
-                        let chunk_origin = (
-                            tile_x_index * tile_grid.tile_width,
-                            tile_y_index * tile_grid.tile_height,
-                        );
-                        let timing = self.decode_chunk_to_tile(
-                            part_index,
-                            &chunk,
-                            chunk_origin,
-                            (x, y, width, height),
-                            &mut rgba,
-                        )?;
-                        #[cfg(not(feature = "tile-debug"))]
-                        let _ = timing;
-                        #[cfg(feature = "tile-debug")]
-                        {
-                            decoded_chunk_count += 1;
-                            self.log_tile_chunk_decode(
-                                part_index,
-                                &part,
-                                &chunk,
-                                chunk_origin,
-                                (x, y, width, height),
-                                timing,
-                            );
-                        }
+                        let chunk_origin_x = tile_x_index * tile_grid.tile_width;
+                        let chunk_origin_y = tile_y_index * tile_grid.tile_height;
+                        chunk_work.push((chunk, chunk_origin_x, chunk_origin_y));
                     }
+                }
+
+                let fetched = chunk_work
+                    .par_iter()
+                    .map(|(chunk, ox, oy)| self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy)))
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                let tile_rect = (x, y, width, height);
+                for (i, fetch) in fetched.iter().enumerate() {
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = i;
+                    let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
+                    #[cfg(feature = "tile-debug")]
+                    {
+                        let (chunk, chunk_origin_x, chunk_origin_y) = &chunk_work[i];
+                        decoded_chunk_count += 1;
+                        self.log_tile_chunk_decode(
+                            part_index,
+                            &part,
+                            chunk,
+                            (*chunk_origin_x, *chunk_origin_y),
+                            tile_rect,
+                            OpenExrCoreChunkDecodeTiming {
+                                decode_ms: fetch.decode_ms,
+                                copy_ms,
+                                cache_hit: fetch.cache_hit,
+                            },
+                        );
+                    }
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = copy_ms;
                 }
             }
             _ => {
@@ -780,24 +792,6 @@ impl OpenExrCoreReadContext {
             width: out_w,
             height: out_h,
             rgba: preview,
-        })
-    }
-
-    fn decode_chunk_to_tile(
-        &self,
-        part_index: i32,
-        chunk: &sys::ExrChunkInfo,
-        chunk_origin: (u32, u32),
-        tile: (u32, u32, u32, u32),
-        rgba: &mut [f32],
-    ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
-        let fetched = self.fetch_decoded_chunk(part_index, chunk, chunk_origin)?;
-        let copy_ms = copy_decoded_chunk_to_tile(&fetched.decoded, tile, rgba)?;
-
-        Ok(OpenExrCoreChunkDecodeTiming {
-            decode_ms: fetched.decode_ms,
-            copy_ms,
-            cache_hit: fetched.cache_hit,
         })
     }
 

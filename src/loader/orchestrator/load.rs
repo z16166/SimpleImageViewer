@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_WORKER_IDLE_POLL,
-    LoaderOutputSender, LoaderWorkerLifetime, TileInFlightKey, TileRequest, should_spawn_load_task,
+    DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_OUTPUT_CHANNEL_CAPACITY,
+    LOADER_WORKER_IDLE_POLL, LoaderOutputSender, LoaderWorkerLifetime,
+    REFINEMENT_REQUEST_CHANNEL_CAPACITY, TileInFlightKey, TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -25,10 +26,11 @@ use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, InFlightLoad, LoadIntent, LoadResult, LoaderOutput,
     MAX_CURRENT_IMAGE_OS_THREADS, MAX_IMG_LOADER_THREADS, PreviewBundle, PreviewResult,
-    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
+    RawDevelopedImageRank, RefinementRequest, TileDecodeSource, TileResult,
     hdr_sdr_fallback_rgba8_or_placeholder, hq_preview_max_side,
     in_flight_profile_supersedes_hq_refinement, in_flight_profile_supersedes_load_result,
-    source_key_for_path, static_hdr_background_plane_upload_eligible,
+    should_use_embedded_sdr_master_load, source_key_for_path,
+    static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -73,6 +75,33 @@ fn preload_debug_hq_refinement_skip(
 ) {
 }
 
+fn send_raw_hq_refined_notifications(
+    worker_tx: &LoaderOutputSender,
+    req: &RefinementRequest,
+    preview_bundle: PreviewBundle,
+    preview_w: u32,
+    preview_h: u32,
+    cpu_demosaic_ms: u32,
+    sdr_texture_tag: Option<crate::loader::TexturePreviewBufferTag>,
+) {
+    let refine_osd =
+        crate::loader::RawOsdInfo::refine_complete(preview_w, preview_h, cpu_demosaic_ms);
+    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+        index: req.index,
+        decode_profile: req.decode_profile.clone(),
+        source_key: req.source_key,
+        preview_bundle,
+        error: None,
+        cpu_demosaic_ms: Some(cpu_demosaic_ms),
+        raw_bootstrap_osd: Some(refine_osd),
+        sdr_texture_tag,
+    }));
+    let _ = worker_tx.send(LoaderOutput::Refined {
+        index: req.index,
+        source_key: req.source_key,
+    });
+}
+
 /// RAII decrement for [`super::types::ImageLoader::current_image_os_threads`].
 struct CurrentImageOsThreadGuard(Arc<AtomicUsize>);
 
@@ -107,9 +136,9 @@ struct LoadWorkerInput {
 impl ImageLoader {
     pub fn new() -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (output_tx, rx) = crossbeam_channel::bounded(LOADER_OUTPUT_CHANNEL_CAPACITY);
         let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
-            crossbeam_channel::unbounded();
+            crossbeam_channel::bounded(REFINEMENT_REQUEST_CHANNEL_CAPACITY);
         let pool_builder = rayon::ThreadPoolBuilder::new()
             .num_threads(MAX_IMG_LOADER_THREADS)
             .thread_name(|i| format!("img-loader-{i}"));
@@ -152,6 +181,11 @@ impl ImageLoader {
         };
 
         let preload_plan = Arc::new(super::preload_plan::PreloadPlanSnapshot::new());
+        let tx = LoaderOutputSender::with_shutdown_and_plan(
+            output_tx,
+            Arc::clone(&shutdown),
+            Some(Arc::clone(&preload_plan)),
+        );
         let output_mode_bits = Arc::new(AtomicU32::new(0));
         let hdr_target_capacity_bits = Arc::new(AtomicU32::new(
             HdrToneMapSettings::default()
@@ -357,26 +391,25 @@ impl ImageLoader {
                             pixel_kind,
                         );
 
-                        let tile_size = crate::tile_cache::get_tile_size();
-                        let x = request.col * tile_size;
-                        let y = request.row * tile_size;
+                        let Some(tile_rect) = request.source.tile_rect(request.col, request.row) else {
+                            continue;
+                        };
+                        let x = tile_rect.x;
+                        let y = tile_rect.y;
+                        let tw = tile_rect.width;
+                        let th = tile_rect.height;
 
                         let already_cached = match &request.source {
                             TileDecodeSource::Sdr(_) => {
+                                let coord = crate::tile_cache::TileCoord {
+                                    col: request.col,
+                                    row: request.row,
+                                };
                                 crate::tile_cache::PIXEL_CACHE
-                                    .lock()
-                                    .get(
-                                        request.index,
-                                        crate::tile_cache::TileCoord {
-                                            col: request.col,
-                                            row: request.row,
-                                        },
-                                    )
-                                    .is_some()
+                                    .read()
+                                    .contains_tile(request.index, coord)
                             }
                             TileDecodeSource::Hdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
                                 source.cached_tile_rgba32f_arc(x, y, tw, th).is_some()
                             }
                         };
@@ -403,9 +436,6 @@ impl ImageLoader {
 
                         match request.source {
                             TileDecodeSource::Sdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
-
                                 #[cfg(feature = "tile-debug")]
                                 let t0 = std::time::Instant::now();
                                 let pixels = source.extract_tile(x, y, tw, th);
@@ -434,13 +464,11 @@ impl ImageLoader {
                                         col: request.col,
                                         row: request.row,
                                     };
-                                    let mut cache = crate::tile_cache::PIXEL_CACHE.lock();
+                                    let mut cache = crate::tile_cache::PIXEL_CACHE.write();
                                     cache.insert(request.index, coord, pixels);
                                 }
                             }
                             TileDecodeSource::Hdr(source) => {
-                                let tw = tile_size.min(source.width() - x);
-                                let th = tile_size.min(source.height() - y);
                                 #[cfg(feature = "tile-debug")]
                                 let t0 = std::time::Instant::now();
                                 let result = source.extract_tile_rgba32f_arc(x, y, tw, th);
@@ -541,6 +569,27 @@ impl ImageLoader {
                                 continue;
                             }
 
+                            if *req.developed_image_rank.read()
+                                == RawDevelopedImageRank::FullResolutionDeveloped
+                            {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][RAW] refine_skip idx={} reason=already_developed path={}",
+                                    req.index,
+                                    req.path.display()
+                                );
+                                continue;
+                            }
+                            if let Some(slot) = req.hdr_developed_image.as_ref()
+                                && slot.read().is_some()
+                            {
+                                crate::preload_debug!(
+                                    "[PreloadDebug][RAW] refine_skip idx={} reason=hdr_tiled_already_developed path={}",
+                                    req.index,
+                                    req.path.display()
+                                );
+                                continue;
+                            }
+
                             crate::preload_debug!(
                                 "[PreloadDebug][RAW] refine_start idx={} hdr_cap={:.3} path={}",
                                 req.index,
@@ -621,6 +670,36 @@ impl ImageLoader {
 
                                     if let Some(slot) = req.hdr_developed_image.as_ref() {
                                         *slot.write() = Some(hdr.clone());
+                                        // HdrTiled RAW uses the HDR tile source for both native HDR and
+                                        // SDR tone-mapped output. Do not build a full-frame CPU SDR
+                                        // fallback here: render shape is size-driven, and large RAWs must
+                                        // stay tiled while exposure remains live in the HDR shader path.
+                                        let bundle =
+                                            PreviewBundle::refined().with_hdr(Arc::new(hdr));
+                                        send_raw_hq_refined_notifications(
+                                            &worker_tx,
+                                            &req,
+                                            bundle,
+                                            preview_w,
+                                            preview_h,
+                                            cpu_demosaic_ms,
+                                            None,
+                                        );
+                                        crate::preload_debug!(
+                                            "[PreloadDebug][RAW] refine_done idx={} mode=HdrTiled preview={}x{} elapsed={:.1}s path={}",
+                                            req.index,
+                                            preview_w,
+                                            preview_h,
+                                            elapsed.as_secs_f64(),
+                                            req.path.display()
+                                        );
+                                        log::debug!(
+                                            "[Refinement] HQ HDR tiled completed {}x{} in {:.1}s",
+                                            preview_w,
+                                            preview_h,
+                                            elapsed.as_secs_f64()
+                                        );
+                                        continue;
                                     }
 
                                     let fb = match hdr_sdr_fallback_rgba8_or_placeholder(&hdr) {
@@ -634,12 +713,12 @@ impl ImageLoader {
                                             continue;
                                         }
                                     };
-                                    let preview = DecodedImage::from_hdr_sdr_fallback(
+                                    let mut preview = DecodedImage::from_hdr_sdr_fallback(
                                         hdr.width,
                                         hdr.height,
                                         fb,
                                     );
-                                    let tile_pixels = preview.rgba().to_vec();
+                                    let tile_pixels = preview.take_rgba_owned();
                                     let dynamic = match image::ImageBuffer::from_raw(
                                         hdr.width,
                                         hdr.height,
@@ -653,34 +732,31 @@ impl ImageLoader {
                                             continue;
                                         }
                                     };
+                                    if preview.rgba().is_empty() {
+                                        preview = DecodedImage::from(dynamic.to_rgba8());
+                                    }
 
                                     {
                                         let mut dev_lock = req.developed_image.write();
                                         *dev_lock = Some(dynamic);
                                     }
+                                    *req.developed_image_rank.write() =
+                                        RawDevelopedImageRank::FullResolutionDeveloped;
 
                                     let bundle = PreviewBundle::refined()
-                                        .with_hdr(std::sync::Arc::new(hdr))
+                                        .with_hdr(Arc::new(hdr))
                                         .with_sdr(preview);
-                                    let refine_osd = crate::loader::RawOsdInfo::refine_complete(
+                                    send_raw_hq_refined_notifications(
+                                        &worker_tx,
+                                        &req,
+                                        bundle,
                                         preview_w,
                                         preview_h,
                                         cpu_demosaic_ms,
-                                    );
-                                    let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                        index: req.index,
-                                        decode_profile: req.decode_profile.clone(),
-                                        source_key: req.source_key,
-                                        preview_bundle: bundle,
-                                        error: None,
-                                        cpu_demosaic_ms: Some(cpu_demosaic_ms),
-                                        raw_bootstrap_osd: Some(refine_osd),
-                                        sdr_texture_tag: Some(
+                                        Some(
                                             crate::loader::TexturePreviewBufferTag::TiledRefinedLoader,
                                         ),
-                                    }));
-                                    let _ =
-                                        worker_tx.send(LoaderOutput::Refined(req.index));
+                                    );
                                     crate::preload_debug!(
                                         "[PreloadDebug][RAW] refine_done idx={} mode=Hdr preview={}x{} elapsed={:.1}s path={}",
                                         req.index,
@@ -719,7 +795,7 @@ impl ImageLoader {
             worker_lifetime,
             refine_tx,
             raw_open_prefetch,
-            tx: LoaderOutputSender::new(tx),
+            tx,
             rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
             preload_plan,
@@ -1015,23 +1091,37 @@ impl ImageLoader {
         };
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
-        if load_intent == LoadIntent::NeighborPrefetch {
-            // Soft cap before registering the job. Two prefetches can both pass this read-only
-            // check while the pool is below the limit; the insert below serializes registration
-            // and `should_spawn_load_task` rejects the loser. Benign TOCTOU — do not merge the
-            // locks (would hold the mutex across `spawn_decode_profile`).
-            let loading_snapshot = self.loading.lock();
-            if loading_snapshot.len() >= MAX_IMG_LOADER_THREADS
-                && !loading_snapshot.contains_key(&index)
-            {
-                return;
-            }
-        }
         {
             let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
                 return;
             }
+        }
+
+        if let Err(e) = crate::mmap_util::reject_if_image_file_too_small(&path) {
+            log::debug!(
+                "[Loader] Rejecting load for index={}: {} path={}",
+                index,
+                e,
+                path.display()
+            );
+            let load_result = LoadResult {
+                index,
+                decode_profile: decode_profile_for_job.clone(),
+                source_key: source_key_for_path(&path),
+                result: Err(e),
+                preview_bundle: PreviewBundle::initial(),
+                ultra_hdr_capacity_sensitive: false,
+                sdr_fallback_is_placeholder: false,
+                target_hdr_capacity: self.hdr_target_capacity(),
+                raw_osd: None,
+                uploaded_planes: None,
+                device_id: None,
+                staged_gpu_plane_upload: false,
+            };
+            let _ = self.tx.try_send(LoaderOutput::Image(Box::new(load_result)));
+            self.loading.lock().remove(&index);
+            return;
         }
 
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1120,21 +1210,34 @@ impl ImageLoader {
             });
         };
         if load_intent == LoadIntent::Current {
-            // Soft cap before fetch_add. Two current-image loads can both pass this read-only
-            // check while the counter is below the limit; both then fetch_add. Benign TOCTOU --
-            // same pattern as the neighbor prefetch gate above.
-            let os_thread_cap_reached = self
-                .current_image_os_threads
-                .load(std::sync::atomic::Ordering::Acquire)
-                >= MAX_CURRENT_IMAGE_OS_THREADS;
-            if os_thread_cap_reached {
+            let mut acquired_os_thread = false;
+            loop {
+                let current = self
+                    .current_image_os_threads
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if current >= MAX_CURRENT_IMAGE_OS_THREADS {
+                    break;
+                }
+                if self
+                    .current_image_os_threads
+                    .compare_exchange_weak(
+                        current,
+                        current + 1,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    acquired_os_thread = true;
+                    break;
+                }
+            }
+            if !acquired_os_thread {
                 log::debug!(
                     "[Loader] current-image OS thread cap ({MAX_CURRENT_IMAGE_OS_THREADS}) reached; using pool"
                 );
                 self.pool.spawn(run_worker);
             } else {
-                self.current_image_os_threads
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 let thread_name = format!("img-loader-current-{index}");
                 // Keep the worker in an Arc so a failed OS-thread spawn can fall back to the pool
                 // instead of dropping the closure (which would leave only the 50ms delayed fallback).
@@ -1450,8 +1553,10 @@ impl ImageLoader {
                         let _refine_epoch = result_profile.profile_epoch;
                         let _refine_source_w = source.width();
                         let _refine_source_h = source.height();
-                        let refine_hdr_mode =
-                            !hdr_display_requests_sdr_preview(hdr_target_capacity);
+                        let refine_hdr_mode = !(should_use_embedded_sdr_master_load(
+                            embedded_iso_gain_map_sdr_master_live.load(Ordering::Acquire),
+                            hdr_target_capacity,
+                        ) && source.embedded_sdr_master_available());
                         crate::preload_debug!(
                             "[PreloadDebug][Refine] spawn_scheduled idx={} epoch={} limit={} hdr_mode={} source={}x{} path={}",
                             index,

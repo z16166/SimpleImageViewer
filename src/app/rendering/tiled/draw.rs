@@ -32,7 +32,7 @@ use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::tile_cache::TileStatus;
+use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
@@ -92,11 +92,14 @@ impl ImageViewerApp {
             hdr_source_for_frame.is_some(),
             has_sdr_fallback,
         );
+        // Align supplemental HDR OSD with [`ImageViewerApp::compute_hdr_render_path`]:
+        // ordinary SDR tiled images also carry a preview texture, but that is not HDR content.
         let has_hdr_content = hdr_source_for_frame.is_some()
             || self
                 .hdr_tiled_source_cache
                 .contains_key(&self.current_index)
-            || has_sdr_fallback;
+            || self.hdr_image_cache.contains_key(&self.current_index)
+            || self.hdr_sdr_fallback_indices.contains(&self.current_index);
         self.record_frame_render_plan(render_plan, RenderShape::Tiled, false, has_hdr_content);
         let plane_backend = render_plan.backend;
 
@@ -130,7 +133,10 @@ impl ImageViewerApp {
         let (tile_alpha, prev_alpha_eff) = effective_hdr_tiled_alphas(&tp, self.active_transition);
 
         if tp.is_animating {
-            ui.ctx().request_repaint();
+            crate::app::rendering::transitions::request_navigation_transition_repaint(
+                ui.ctx(),
+                true,
+            );
         }
 
         // Draw the previous image underneath for crossfade effect if we are animating
@@ -306,12 +312,7 @@ impl ImageViewerApp {
                     tile_clip,
                     padding,
                     &mut self.tiled_visible_tiles_scratch,
-                );
-                tm.visible_tiles_into(
-                    unrotated_dest,
-                    tile_clip,
-                    0.0,
-                    &mut self.tiled_primary_visible_tiles_scratch,
+                    Some(&mut self.tiled_primary_visible_tiles_scratch),
                 );
             }
             tile_visits_for_backend_into(
@@ -333,12 +334,15 @@ impl ImageViewerApp {
             let primary_visible_coords = &self.tiled_primary_visible_scratch;
             let visible_coords = &self.tiled_visible_coords_scratch;
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                let protected_keys: Vec<_> = self
-                    .tiled_primary_visible_tiles_scratch
-                    .iter()
-                    .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
-                    .collect();
-                hdr_source.protect_cached_tiles(&protected_keys);
+                self.tiled_protected_keys_scratch.clear();
+                self.tiled_protected_keys_scratch.extend(
+                    self.tiled_primary_visible_tiles_scratch
+                        .iter()
+                        .map(|(coord, _, _)| {
+                            hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord)
+                        }),
+                );
+                hdr_source.protect_cached_tiles(&self.tiled_protected_keys_scratch);
             }
             if let Some(tm) = &mut self.tile_manager {
                 tm.retain_pending_tiles(visible_coords);
@@ -373,6 +377,7 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
+            let mut uploaded_coords_scratch: Vec<TileCoord> = Vec::new();
             let mut tile_request_budget = TileRequestBudget::new(
                 tile_visits.len(),
                 crate::tile_cache::get_tile_size(),
@@ -430,6 +435,7 @@ impl ImageViewerApp {
 
                     if just_uploaded {
                         newly_uploaded += 1;
+                        uploaded_coords_scratch.push(*coord);
                     }
 
                     match status {
@@ -457,9 +463,11 @@ impl ImageViewerApp {
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
+                                let pending_key =
+                                    tile_pending_key_for_backend(*coord, plane_backend);
                                 if !tile_request_budget.try_mark_pending(
                                     &mut tm.pending_tiles,
-                                    tile_pending_key_for_backend(*coord, plane_backend),
+                                    pending_key,
                                     is_primary_visible,
                                 ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
@@ -471,18 +479,28 @@ impl ImageViewerApp {
                                     Some(source),
                                     hdr_source_for_frame.as_ref(),
                                 ) {
-                                    loader.request_tile(
+                                    if !loader.request_tile(
                                         current_index,
                                         tm.decode_profile.clone(),
                                         priority,
                                         source,
                                         coord.col,
                                         coord.row,
-                                    );
+                                    ) {
+                                        tm.pending_tiles.remove(&pending_key);
+                                    }
+                                } else {
+                                    tm.pending_tiles.remove(&pending_key);
                                 }
                             }
                         }
                     }
+                }
+
+                // GPU textures are authoritative after upload; drop redundant CPU copies
+                // in one write-lock batch rather than per-tile inside get_or_create_tile.
+                if !uploaded_coords_scratch.is_empty() {
+                    tm.release_cpu_pixels_for_coords(&uploaded_coords_scratch);
                 }
             }
 
@@ -490,7 +508,7 @@ impl ImageViewerApp {
             #[cfg(feature = "tile-debug")]
             if self.settings.show_osd {
                 let (vis_gpu, vis_ready, vis_pending) =
-                    self.tile_manager().stats_for_visible(&visible_coords);
+                    self.tile_manager().stats_for_visible(visible_coords);
                 let (total_gpu, total_mem, _total_pnd) = self.tile_manager().tiles_and_pending();
 
                 let debug_text = format!(
@@ -525,7 +543,8 @@ impl ImageViewerApp {
                     ),
             );
             if newly_uploaded > 0 || has_more_ready {
-                ui.ctx().request_repaint();
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(4));
             }
         }
     }

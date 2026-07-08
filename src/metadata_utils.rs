@@ -114,7 +114,9 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
 /// HEIF display orientation: prefer primary **`irot`/`imir`** over Exif **Orientation=1** (Apple HEIC).
 #[cfg(feature = "heif-native")]
 fn get_heif_display_orientation_from_bytes(bytes: &[u8]) -> u16 {
-    if let Some(o) = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(bytes)
+    let (manual, exif_tag) =
+        crate::hdr::heif::libheif_heif_display_orientation_candidates_from_bytes(bytes);
+    if let Some(o) = manual
         && o > 1
     {
         return o;
@@ -124,10 +126,10 @@ fn get_heif_display_orientation_from_bytes(bytes: &[u8]) -> u16 {
     if o > 1 {
         return o;
     }
-    if let Some(o) = crate::hdr::heif::libheif_exif_orientation_tag_from_bytes(bytes)
+    if let Some(o) = exif_tag
         && o > 1
     {
         return o;
     }
-    crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_bytes(bytes).unwrap_or(1)
+    manual.unwrap_or(1)
 }

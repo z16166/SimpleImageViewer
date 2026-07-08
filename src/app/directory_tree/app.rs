@@ -134,9 +134,9 @@ mod embedded_side_panel_layout_diag {
             .map(|(prev, now)| now - prev)
             .unwrap_or(0.0);
         let first_sample = diag.last_panel_width.is_none();
-        let interval_elapsed = diag.last_log_at.map_or(true, |last| {
-            now.saturating_duration_since(last) >= LOG_INTERVAL
-        });
+        let interval_elapsed = diag
+            .last_log_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= LOG_INTERVAL);
         let changed = first_sample
             || available_delta.abs() >= WIDTH_CHANGE_EPS
             || panel_delta.abs() >= WIDTH_CHANGE_EPS
@@ -228,9 +228,9 @@ impl ImageViewerApp {
         list: &DirectoryTreeListState,
         row_index: usize,
     ) -> Option<usize> {
-        list.image_rows.get(row_index).and_then(|row| {
-            self.image_files.iter().position(|path| path == &row.path)
-        })
+        list.image_rows
+            .get(row_index)
+            .and_then(|row| self.image_files.iter().position(|path| path == &row.path))
     }
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
@@ -244,15 +244,16 @@ impl ImageViewerApp {
             domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
             had_preview
         };
-        let (preview_cache_revision, preview_textures, preview_logical_sizes) =
+        let (preview_cache_revision, preview_textures, preview_logical_sizes, preview_buffer_tags) =
             if self.directory_tree_list_previews_active() {
                 (
                     Some(self.directory_tree_strip_cache.gpu_revision()),
                     Some(self.directory_tree_strip_cache.textures()),
                     Some(self.directory_tree_strip_cache.logical_sizes()),
+                    Some(self.directory_tree_strip_cache.preview_buffer_tags()),
                 )
             } else {
-                (None, None, None)
+                (None, None, None, None)
             };
         let changed = view::publish_directory_tree_domains(
             &self.directory_tree,
@@ -262,6 +263,7 @@ impl ImageViewerApp {
             preview_cache_revision,
             preview_textures,
             preview_logical_sizes,
+            preview_buffer_tags,
         );
         if preview_cleared && !changed {
             view::assemble_directory_tree_view(
@@ -271,6 +273,57 @@ impl ImageViewerApp {
                 &self.directory_tree.preview_snapshot,
             );
         }
+    }
+
+    /// True when the immutable preview snapshot does not reflect the strip GPU cache.
+    pub(crate) fn directory_tree_strip_preview_needs_publish(&self) -> bool {
+        if !self.directory_tree_list_previews_active() {
+            return false;
+        }
+        let cache_rev = self.directory_tree_strip_cache.gpu_revision();
+        let snap = self.directory_tree.preview_snapshot.load();
+        if cache_rev != snap.revision {
+            return true;
+        }
+        let cache_textures = self.directory_tree_strip_cache.textures();
+        if cache_textures.len() != snap.textures.len() {
+            return true;
+        }
+        for (&index, handle) in cache_textures {
+            match snap.textures.get(&index) {
+                None => return true,
+                Some(prev) if prev.id() != handle.id() => return true,
+                Some(_) => {}
+            }
+        }
+        for (&index, &logical) in self.directory_tree_strip_cache.logical_sizes() {
+            if snap.logical_sizes.get(&index) != Some(&logical) {
+                return true;
+            }
+        }
+        for (&index, &tag) in self.directory_tree_strip_cache.preview_buffer_tags() {
+            if snap.buffer_tags.get(&index) != Some(&tag) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Publish directory-tree preview textures when the strip cache has moved ahead of the UI snapshot.
+    pub(crate) fn publish_directory_tree_strip_preview_if_stale(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> bool {
+        if !self.directory_tree_strip_preview_needs_publish() {
+            return false;
+        }
+        self.publish_directory_tree_view_from_state(false);
+        self.mark_directory_tree_repaint_pending();
+        self.request_directory_tree_viewport_repaint(ctx);
+        if self.directory_tree_nav_is_embedded() {
+            ctx.request_repaint();
+        }
+        true
     }
 
     /// Paint from RCU view + frame chrome; no clone and no structural state lock during draw.
@@ -657,6 +710,19 @@ impl ImageViewerApp {
         }
     }
 
+    fn apply_directory_tree_file_metadata_to_image_files(
+        &mut self,
+        result: &super::FileMetadataResult,
+    ) {
+        for (path, modified_unix) in result.paths.iter().zip(result.modified_unix.iter()) {
+            if let Some(index) = self.image_files.iter().position(|entry| entry == path)
+                && index < self.file_modified_unix_by_index.len()
+            {
+                self.file_modified_unix_by_index[index] = *modified_unix;
+            }
+        }
+    }
+
     pub(crate) fn apply_directory_tree_image_list_sort(
         &mut self,
         column: ImageListSortColumn,
@@ -688,7 +754,7 @@ impl ImageViewerApp {
             return false;
         }
 
-        let current_path = self.image_files.get(self.current_index).cloned();
+        let pinned_index = self.current_index.min(len.saturating_sub(1));
         let mut old_to_new = vec![0usize; len];
         for (new_idx, &old_idx) in order.iter().enumerate() {
             old_to_new[old_idx] = new_idx;
@@ -696,16 +762,12 @@ impl ImageViewerApp {
 
         self.permute_image_file_arrays(&order);
         self.permute_index_keyed_caches(&old_to_new);
-        if let Some(path) = current_path
-            && let Some(index) = self.image_files.iter().position(|entry| entry == &path)
-        {
-            self.set_current_index(index);
-        }
-        // Re-sort permutes `image_files` and calls `loader.cancel_all()`; restart the current
-        // image if scan-time preload already ran against pre-sort indices (see resort_after_scan).
-        if !self.defer_main_preload_for_directory_tree_list() {
-            self.schedule_current_image_load_if_needed();
-        }
+        self.prepare_directory_tree_strip_scheduling_after_list_reorder(&old_to_new);
+        self.set_current_index(pinned_index);
+        self.refresh_current_image_presentation_after_list_reorder();
+        // Re-sort permutes `image_files`, cancels in-flight loads, and remaps caches; rebuild the
+        // ring preload queue around the pinned index (same as navigation housekeeping).
+        self.reschedule_preloads_after_image_list_reorder();
         true
     }
 
@@ -764,7 +826,10 @@ impl ImageViewerApp {
                     &tree,
                     &loaded_namespace,
                 );
-                let requests = tree.reveal_selected_namespace();
+                let requests = self
+                    .saved_directory_tree_selection_dir()
+                    .map(|dir| tree.children_requests_for_selection(&dir))
+                    .unwrap_or_else(|| tree.reveal_selected_namespace());
                 (requests, pending_folder_scroll, folder_repaint)
             };
             for request in requests {
@@ -782,7 +847,12 @@ impl ImageViewerApp {
         }
 
         while let Ok(result) = self.directory_tree.metadata_result_rx.try_recv() {
-            let metadata_repaint = {
+            let generation_ok =
+                self.directory_tree.list.lock().file_metadata_generation == result.generation;
+            if generation_ok {
+                self.apply_directory_tree_file_metadata_to_image_files(&result);
+            }
+            let (metadata_repaint, resort_modified) = {
                 let mut list = self.directory_tree.list.lock();
                 let visible = list.image_list_visible_row_range;
                 let metadata_repaint = super::visibility::metadata_paths_affect_visible_list(
@@ -791,8 +861,24 @@ impl ImageViewerApp {
                     visible,
                 );
                 list.apply_metadata_result(result);
-                metadata_repaint
+                let resort_modified = generation_ok
+                    && !self.scanning
+                    && list.image_list_sort_active
+                    && list.image_list_sort_column == ImageListSortColumn::Modified;
+                (metadata_repaint, resort_modified)
             };
+            if resort_modified
+                && self.apply_directory_tree_image_list_sort(ImageListSortColumn::Modified, {
+                    let list = self.directory_tree.list.lock();
+                    list.image_list_sort_ascending
+                })
+                && let Some(mut list) = self.directory_tree.list.try_lock()
+            {
+                let _ = self.sync_directory_tree_list_images(&mut list);
+                list.image_list_generation = list.image_list_generation.wrapping_add(1);
+                list.current_index = self.current_index;
+                list.scroll_image_list_to_current = true;
+            }
             if metadata_repaint {
                 ctx.request_repaint();
                 self.request_directory_tree_viewport_repaint(ctx);
@@ -924,6 +1010,7 @@ impl ImageViewerApp {
                     }
                     if changed {
                         self.sync_directory_tree_file_list_state(ctx);
+                        self.ensure_directory_tree_strip_thumbnails(ctx);
                         self.wake_root_for_logic();
                     }
                     ctx.request_repaint();
@@ -934,6 +1021,11 @@ impl ImageViewerApp {
                     self.queue_save();
                     ctx.request_repaint();
                 }
+                DirectoryTreeCommand::ToggleNavVisibility => {
+                    self.toggle_directory_tree_nav_visibility(ctx);
+                    ctx.request_repaint();
+                    self.request_directory_tree_viewport_repaint(ctx);
+                }
             }
         }
         self.publish_directory_tree_view_from_state(false);
@@ -941,6 +1033,31 @@ impl ImageViewerApp {
 
     pub(crate) fn directory_tree_settings_active(&self) -> bool {
         self.settings.directory_tree_nav_active() && !self.auto_hidden_directory_tree_nav
+    }
+
+    fn sync_directory_tree_cross_viewport_hotkey_block(&self) {
+        let blocked = self.active_modal.is_some() || self.show_settings;
+        if self
+            .directory_tree
+            .cross_viewport_hotkeys_blocked
+            .load(Ordering::Relaxed)
+            != blocked
+        {
+            self.directory_tree
+                .cross_viewport_hotkeys_blocked
+                .store(blocked, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn refresh_directory_tree_toggle_nav_hotkey_chords(&self) {
+        use crate::hotkeys::model::HotkeyActionId;
+
+        self.directory_tree.toggle_nav_hotkey_chords.store(Arc::new(
+            crate::hotkeys::chords_for_action(
+                &self.hotkeys_runtime.map,
+                HotkeyActionId::ToggleDirectoryTreeNav,
+            ),
+        ));
     }
 
     /// Temporarily hide directory-tree navigation (Settings toggle off, Ctrl+T, close nav window).
@@ -1148,15 +1265,19 @@ impl ImageViewerApp {
             }
             return cleared;
         }
-        let revision = self.directory_tree_strip_cache.gpu_revision();
-        let previous_revision = self.directory_tree.preview_snapshot.load().revision;
+        let snap_before = self.directory_tree.preview_snapshot.load();
+        let previous_revision = snap_before.revision;
+        let preview_count_before = snap_before.textures.len();
         #[cfg(feature = "preload-debug")]
         let cache_count = self.directory_tree_strip_cache.textures().len();
+        if !self.directory_tree_strip_preview_needs_publish() {
+            return false;
+        }
         let Some(mut list) = self.directory_tree.list.try_lock() else {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][DirTree] sync_preview_textures skipped: list locked cache_rev={} cache_count={}",
-                revision,
+                self.directory_tree_strip_cache.gpu_revision(),
                 cache_count
             );
             self.defer_directory_tree_file_list_sync();
@@ -1164,16 +1285,18 @@ impl ImageViewerApp {
         };
         DirectoryTreeListPreviewLayout::from_settings(&self.settings).apply_to_list(&mut list);
         drop(list);
-        self.publish_directory_tree_view_from_state(false);
-        let updated = revision != previous_revision;
+        self.publish_directory_tree_strip_preview_if_stale(ctx);
+        let snap_after = self.directory_tree.preview_snapshot.load();
+        let updated = snap_after.revision != previous_revision
+            || snap_after.textures.len() != preview_count_before;
         #[cfg(feature = "preload-debug")]
         if updated {
-            let snap = self.directory_tree.preview_snapshot.load();
             crate::preload_debug!(
-                "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {revision} \
+                "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {} \
                  cache_count={cache_count} ui_preview={} snap_has_indices={:?}",
-                snap.textures.len(),
-                snap.textures.keys().copied().collect::<Vec<_>>()
+                snap_after.revision,
+                snap_after.textures.len(),
+                snap_after.textures.keys().copied().collect::<Vec<_>>()
             );
         }
         if updated {
@@ -1638,11 +1761,12 @@ impl ImageViewerApp {
             (repaint, resort_after_scan, resort_column, resort_ascending)
         };
 
-        if request_viewport_repaint.1
+        let resort_changed = request_viewport_repaint.1
             && self.apply_directory_tree_image_list_sort(
                 request_viewport_repaint.2,
                 request_viewport_repaint.3,
-            )
+            );
+        if resort_changed
             && let (Some(_tree), Some(mut list)) = (
                 self.directory_tree.tree.try_lock(),
                 self.directory_tree.list.try_lock(),
@@ -1656,6 +1780,9 @@ impl ImageViewerApp {
             list.current_index = self.current_index;
             list.image_list_col_widths_dirty = true;
             list.scroll_image_list_to_current = true;
+        }
+        if resort_changed {
+            self.ensure_directory_tree_strip_thumbnails(ctx);
         }
 
         for request in metadata_requests {
@@ -1696,7 +1823,11 @@ impl ImageViewerApp {
 
         let viewpaint_app = Arc::clone(&self.directory_tree.viewpaint_app);
         viewpaint_app.store(self as *mut ImageViewerApp, Ordering::Release);
+        self.sync_directory_tree_cross_viewport_hotkey_block();
         let command_tx = self.directory_tree.command_tx.clone();
+        let cross_viewport_hotkeys_blocked =
+            Arc::clone(&self.directory_tree.cross_viewport_hotkeys_blocked);
+        let toggle_nav_hotkey_chords = Arc::clone(&self.directory_tree.toggle_nav_hotkey_chords);
         let inner_size = self.settings.directory_tree_startup_inner_size();
         let outer_position = self.settings.directory_tree_startup_outer_position();
         let startup_maximized = self.settings.directory_tree_window_maximized;
@@ -1733,7 +1864,18 @@ impl ImageViewerApp {
 
             // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
             let app = unsafe { &mut *ptr };
-            app.handle_cross_viewport_hotkeys(ui.ctx());
+            if !cross_viewport_hotkeys_blocked.load(Ordering::Acquire) {
+                let chords = toggle_nav_hotkey_chords.load();
+                if let Some(chord) = ui.ctx().input(|input| {
+                    crate::app::input::detect_cross_viewport_hotkey(input, chords.as_ref())
+                }) {
+                    super::send_directory_tree_command(
+                        &command_tx,
+                        DirectoryTreeCommand::ToggleNavVisibility,
+                    );
+                    crate::app::input::consume_cross_viewport_hotkey(ui.ctx(), chord);
+                }
+            }
 
             if startup_maximized
                 && let Some(mut guard) = app.directory_tree.tree.try_lock()

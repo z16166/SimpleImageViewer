@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::{
-    planar_read_sample, planar_scale_from_depth, planar_semantic_depth_bits,
-    planar_storage_span_bytes,
+    SendReadonlyPtr, parallel_row_chunks_mut, planar_read_sample, planar_scale_from_depth,
+    planar_semantic_depth_bits, planar_storage_span_bytes,
 };
 
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
@@ -40,6 +40,25 @@ pub(crate) enum HeifYcbcrMatrix {
 }
 
 #[cfg(feature = "heif-native")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HeifYcbcrConvertParams {
+    pub matrix: HeifYcbcrMatrix,
+    pub nclx_studio_swing: bool,
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn ycbcr_matrix_from_metadata(
+    metadata: &HdrImageMetadata,
+    width: usize,
+    height: usize,
+) -> HeifYcbcrConvertParams {
+    HeifYcbcrConvertParams {
+        matrix: heif_ycbcr_matrix_from_nclx(metadata, width, height),
+        nclx_studio_swing: nclx_limited_range_from_metadata(metadata),
+    }
+}
+
+#[cfg(feature = "heif-native")]
 pub(crate) fn heif_ycbcr_matrix_from_nclx(
     metadata: &HdrImageMetadata,
     y_width: usize,
@@ -50,16 +69,15 @@ pub(crate) fn heif_ycbcr_matrix_from_nclx(
             matrix_coefficients: mc,
             ..
         } => match *mc {
-            // H.273 matrix 0 = RGB identity (non‑YCbCr); **HEIF stills** sometimes tag 0 / 2 when the
-            // encoder meant “unspecified”. Interpreting that as monochrome destroys colour — use a
-            // simple SD vs HD **luma resolution** split (common broadcast rule of thumb).
+            // H.273 matrix 0 = RGB identity (non-YCbCr); HEIF stills sometimes tag 0 / 2 when the
+            // encoder meant "unspecified". Interpreting that as monochrome destroys colour, so we
+            // default to BT.709 and log a warning (y_width/y_height are kept for diagnostics only).
             0 | 2 => {
-                let hdish = y_width >= 1280 || y_height >= 720;
-                if hdish {
-                    HeifYcbcrMatrix::Bt709
-                } else {
-                    HeifYcbcrMatrix::Bt601
-                }
+                log::warn!(
+                    "[heif] CICP matrix_coefficients={mc} unspecified for still image \
+                     ({y_width}x{y_height}); defaulting to BT.709 YCbCr matrix"
+                );
+                HeifYcbcrMatrix::Bt709
             }
             5 | 6 => HeifYcbcrMatrix::Bt601,
             9 | 10 | 12 => HeifYcbcrMatrix::Bt2020Ncl,
@@ -122,35 +140,67 @@ pub(crate) fn nclx_limited_range_from_metadata(metadata: &HdrImageMetadata) -> b
 
 /// Limited-range studio swing: Ey = (Y - 16·2^(n-8)) / (219·2^(n-8)), Epb/Epr = (C - 128·2^(n-8)) / (224·2^(n-8)).
 #[cfg(feature = "heif-native")]
+#[derive(Clone, Copy, Debug)]
+struct StudioSwingParams {
+    luma_floor: f32,
+    luma_span: f32,
+    chroma_mid: f32,
+    chroma_span: f32,
+}
+
+#[cfg(feature = "heif-native")]
+fn studio_swing_params_from_semantic_bits(semantic_bits: i32) -> Result<StudioSwingParams, String> {
+    let d = semantic_bits.clamp(8, 16);
+    let shift = (d - 8).clamp(0, 8) as u32;
+    let luma_floor = (16_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio Y offset shift".to_string())?) as f32;
+    let luma_span = (219_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio Y span shift".to_string())?) as f32;
+    let chroma_mid = (128_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio chroma midpoint shift".to_string())?) as f32;
+    let chroma_span = (224_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio chroma span shift".to_string())?) as f32;
+    if luma_span <= 0.0 {
+        return Err("invalid studio Y span".to_string());
+    }
+    if chroma_span <= 0.0 {
+        return Err("invalid studio chroma span".to_string());
+    }
+    Ok(StudioSwingParams {
+        luma_floor,
+        luma_span,
+        chroma_mid,
+        chroma_span,
+    })
+}
+
+#[cfg(feature = "heif-native")]
+#[inline]
+fn studio_luma_to_normalized(code: u32, params: StudioSwingParams) -> f32 {
+    (code as f32 - params.luma_floor) / params.luma_span
+}
+
+#[cfg(feature = "heif-native")]
+#[inline]
+fn studio_chroma_to_normalized(code: u32, params: StudioSwingParams) -> f32 {
+    (code as f32 - params.chroma_mid) / params.chroma_span
+}
+
+#[cfg(feature = "heif-native")]
 pub(crate) fn studio_digital_sample_to_normalized(
     code: u32,
     semantic_bits: i32,
     is_luma: bool,
 ) -> Result<f32, String> {
-    let d = semantic_bits.clamp(8, 16);
-    let shift = (d - 8).clamp(0, 8) as u32;
-    let y_floor = (16_i32
-        .checked_shl(shift)
-        .ok_or_else(|| "studio Y offset shift".to_string())?) as f32;
-    let y_span = (219_i32
-        .checked_shl(shift)
-        .ok_or_else(|| "studio Y span shift".to_string())?) as f32;
-    let c_mid = (128_i32
-        .checked_shl(shift)
-        .ok_or_else(|| "studio chroma midpoint shift".to_string())?) as f32;
-    let c_span = (224_i32
-        .checked_shl(shift)
-        .ok_or_else(|| "studio chroma span shift".to_string())?) as f32;
-
+    let params = studio_swing_params_from_semantic_bits(semantic_bits)?;
     if is_luma {
-        if y_span <= 0.0 {
-            return Err("invalid studio Y span".to_string());
-        }
-        Ok((code as f32 - y_floor) / y_span)
-    } else if c_span <= 0.0 {
-        Err("invalid studio chroma span".to_string())
+        Ok(studio_luma_to_normalized(code, params))
     } else {
-        Ok((code as f32 - c_mid) / c_span)
+        Ok(studio_chroma_to_normalized(code, params))
     }
 }
 
@@ -177,12 +227,44 @@ pub(crate) fn chroma_row_index(
 }
 
 #[cfg(feature = "heif-native")]
+#[inline]
+fn fill_row_alpha_u16(
+    row_alpha: Option<*const u8>,
+    alpha_stride: usize,
+    span_alpha: usize,
+    scale_alpha: f32,
+    y_w: usize,
+    row_dst: &mut [f32],
+) -> Result<(), String> {
+    let Some(ar) = row_alpha else {
+        for x_px in 0..y_w {
+            row_dst[x_px * 4 + 3] = 1.0;
+        }
+        return Ok(());
+    };
+    if span_alpha == 2 && alpha_stride >= y_w * 2 {
+        let a_row = unsafe { std::slice::from_raw_parts(ar as *const u16, y_w) };
+        let inv = 1.0 / scale_alpha.max(1.0);
+        for (x_px, &sample) in a_row.iter().enumerate().take(y_w) {
+            row_dst[x_px * 4 + 3] = (sample as f32 * inv).clamp(0.0, 1.0);
+        }
+        return Ok(());
+    }
+    for x_px in 0..y_w {
+        let av =
+            planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32 / scale_alpha.max(1.0);
+        row_dst[x_px * 4 + 3] = av.clamp(0.0, 1.0);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "heif-native")]
 /// Planar YCbCr from libheif. NCLX `full_range: false` uses studio swing; full-pack path uses
 /// `Cb/Cr` normalized to `[0, 1]` minus `0.5`. Matrix from CICP: 0 mono, 5/6 BT.601, 9/10 BT.2020 NCL,
 /// else BT.709; ICC-only defaults to BT.709.
 pub(crate) fn hdr_buffer_from_ycbcr(
     handle: *const libheif_sys::heif_image_handle,
-    metadata: &HdrImageMetadata,
+    metadata: HdrImageMetadata,
     image: *const libheif_sys::heif_image,
     chroma: libheif_sys::heif_chroma,
 ) -> Result<HdrImageBuffer, String> {
@@ -243,17 +325,22 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     let span_cb = planar_storage_span_bytes(image, heif_channel_Cb);
     let span_cr = planar_storage_span_bytes(image, heif_channel_Cr);
 
-    let scale_y =
-        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
-    let scale_cb =
-        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cb)?);
-    let scale_cr =
-        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cr)?);
-
     let sem_y = planar_semantic_depth_bits(image, handle, heif_channel_Y)?;
     let sem_cb = planar_semantic_depth_bits(image, handle, heif_channel_Cb)?;
     let sem_cr = planar_semantic_depth_bits(image, handle, heif_channel_Cr)?;
-    let nclx_studio_swing = nclx_limited_range_from_metadata(metadata);
+    let scale_y = planar_scale_from_depth(sem_y);
+    let scale_cb = planar_scale_from_depth(sem_cb);
+    let scale_cr = planar_scale_from_depth(sem_cr);
+    let nclx_studio_swing = nclx_limited_range_from_metadata(&metadata);
+    let studio_swing = if nclx_studio_swing {
+        Some((
+            studio_swing_params_from_semantic_bits(sem_y)?,
+            studio_swing_params_from_semantic_bits(sem_cb)?,
+            studio_swing_params_from_semantic_bits(sem_cr)?,
+        ))
+    } else {
+        None
+    };
 
     let span_alpha = if alpha_valid {
         planar_storage_span_bytes(image, heif_channel_Alpha)
@@ -270,7 +357,40 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         1.0
     };
 
-    let yuv_matrix = heif_ycbcr_matrix_from_nclx(metadata, y_w, y_h);
+    let yuv_matrix = heif_ycbcr_matrix_from_nclx(&metadata, y_w, y_h);
+    let u16_layout = super::ycbcr_hdr_simd::HdrYcbcrU16RowLayout {
+        span_y,
+        span_cb,
+        span_cr,
+        stride_y,
+        stride_cb,
+        stride_cr,
+        y_w,
+        cb_w,
+        chroma,
+    };
+    let hdr_simd = (!nclx_studio_swing
+        && super::ycbcr_hdr_simd::hdr_ycbcr_u16_simd_eligible(u16_layout, false, yuv_matrix))
+    .then(|| super::ycbcr_hdr_simd::HdrYcbcrSimdConvert {
+        inv_scale_y: 1.0 / scale_y.max(1.0),
+        inv_scale_cb: 1.0 / scale_cb.max(1.0),
+        inv_scale_cr: 1.0 / scale_cr.max(1.0),
+        matrix: yuv_matrix,
+    });
+    let hdr_studio_simd = if nclx_studio_swing
+        && super::ycbcr_hdr_simd::hdr_ycbcr_u16_simd_eligible(u16_layout, true, yuv_matrix)
+    {
+        studio_swing.map(|(swing_y, swing_cb, _)| {
+            super::ycbcr_hdr_simd::HdrYcbcrStudioSwingParams {
+                luma_floor: swing_y.luma_floor,
+                luma_inv_span: 1.0 / swing_y.luma_span,
+                chroma_mid: swing_cb.chroma_mid,
+                chroma_inv_span: 1.0 / swing_cb.chroma_span,
+            }
+        })
+    } else {
+        None
+    };
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -284,16 +404,134 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         return Err("YCbCr: alpha stride too small".to_string());
     }
 
-    let mut rgba_f32 = Vec::with_capacity(y_w * y_h * 4);
+    let ptr_y = SendReadonlyPtr::new(ptr_y);
+    let ptr_cb = SendReadonlyPtr::new(ptr_cb);
+    let ptr_cr = SendReadonlyPtr::new(ptr_cr);
+    let alpha_ptr = if alpha_valid {
+        Some(SendReadonlyPtr::new(alpha_ptr))
+    } else {
+        None
+    };
 
-    for y_px in 0..y_h {
-        let row_y = unsafe { ptr_y.byte_add(y_px * stride_y) };
+    let mut rgba_f32 = vec![0.0_f32; y_w * y_h * 4];
+
+    parallel_row_chunks_mut(y_h, y_w * 4, &mut rgba_f32, |y_px, row_dst| {
+        let row_y = unsafe { ptr_y.get().byte_add(y_px * stride_y) };
 
         let yc = chroma_row_index(y_px, chroma, cb_h);
-        let row_cb = unsafe { ptr_cb.byte_add(yc * stride_cb) };
-        let row_cr = unsafe { ptr_cr.byte_add(yc * stride_cr) };
+        let row_cb = unsafe { ptr_cb.get().byte_add(yc * stride_cb) };
+        let row_cr = unsafe { ptr_cr.get().byte_add(yc * stride_cr) };
 
-        let row_alpha = alpha_valid.then(|| unsafe { alpha_ptr.byte_add(y_px * alpha_stride) });
+        let row_alpha = alpha_ptr.map(|ap| unsafe { ap.get().byte_add(y_px * alpha_stride) });
+
+        if let Some(studio_simd) = hdr_studio_simd {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            if chroma == libheif_sys::heif_chroma_420 {
+                super::ycbcr_hdr_simd::ycbcr_studio_swing_row_420_u16_to_rgba_f32(
+                    yuv_matrix,
+                    studio_simd,
+                    y_u16,
+                    cb_u16,
+                    cr_u16,
+                    row_dst,
+                    y_w,
+                );
+            } else {
+                super::ycbcr_hdr_simd::ycbcr_studio_swing_row_444_u16_to_rgba_f32(
+                    yuv_matrix,
+                    studio_simd,
+                    y_u16,
+                    cb_u16,
+                    cr_u16,
+                    row_dst,
+                    y_w,
+                );
+            }
+            if let Some(ar) = row_alpha {
+                fill_row_alpha_u16(
+                    Some(ar),
+                    alpha_stride,
+                    span_alpha,
+                    scale_alpha,
+                    y_w,
+                    row_dst,
+                )?;
+            }
+            return Ok(());
+        }
+
+        if let Some(simd) = hdr_simd {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            if chroma == libheif_sys::heif_chroma_420 {
+                super::ycbcr_hdr_simd::ycbcr_full_range_row_420_u16_to_rgba_f32(
+                    simd, y_u16, cb_u16, cr_u16, row_dst, y_w,
+                );
+            } else {
+                super::ycbcr_hdr_simd::ycbcr_full_range_row_444_u16_to_rgba_f32(
+                    simd, y_u16, cb_u16, cr_u16, row_dst, y_w,
+                );
+            }
+            if let Some(ar) = row_alpha {
+                fill_row_alpha_u16(
+                    Some(ar),
+                    alpha_stride,
+                    span_alpha,
+                    scale_alpha,
+                    y_w,
+                    row_dst,
+                )?;
+            }
+            return Ok(());
+        }
+
+        if super::ycbcr_hdr_simd::hdr_ycbcr_u16_tight_row_eligible(u16_layout)
+            && yuv_matrix != HeifYcbcrMatrix::Monochrome
+        {
+            let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
+            let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
+            let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
+            let subsamp_h = chroma != libheif_sys::heif_chroma_444;
+            for (x_px, &y_sample) in y_u16.iter().enumerate() {
+                let y_raw = y_sample as u32;
+                let xc = if subsamp_h {
+                    (x_px / 2).min(cb_w.saturating_sub(1))
+                } else {
+                    x_px.min(cb_w.saturating_sub(1))
+                };
+                let cb_raw = cb_u16[xc] as u32;
+                let cr_raw = cr_u16[xc] as u32;
+
+                let [r_, g_, b_] = if let Some((swing_y, swing_cb, swing_cr)) = studio_swing {
+                    let ey = studio_luma_to_normalized(y_raw, swing_y);
+                    let ecb = studio_chroma_to_normalized(cb_raw, swing_cb);
+                    let ecr = studio_chroma_to_normalized(cr_raw, swing_cr);
+                    ycbcr_linear_to_rgb(ey, ecb, ecr, yuv_matrix)
+                } else {
+                    let yv = y_raw as f32 / scale_y.max(1.0);
+                    let cbv = cb_raw as f32 / scale_cb.max(1.0);
+                    let crv = cr_raw as f32 / scale_cr.max(1.0);
+                    ycbcr_linear_to_rgb(yv, cbv - 0.5, crv - 0.5, yuv_matrix)
+                };
+
+                let out_idx = x_px * 4;
+                row_dst[out_idx] = r_.clamp(0.0, 1.0);
+                row_dst[out_idx + 1] = g_.clamp(0.0, 1.0);
+                row_dst[out_idx + 2] = b_.clamp(0.0, 1.0);
+            }
+            fill_row_alpha_u16(
+                row_alpha,
+                alpha_stride,
+                span_alpha,
+                scale_alpha,
+                y_w,
+                row_dst,
+            )?;
+            return Ok(());
+        }
 
         for x_px in 0..y_w {
             let y_raw = planar_read_sample(row_y, x_px, stride_y, span_y)?;
@@ -301,10 +539,10 @@ pub(crate) fn hdr_buffer_from_ycbcr(
             let cb_raw = planar_read_sample(row_cb, xc, stride_cb, span_cb)?;
             let cr_raw = planar_read_sample(row_cr, xc, stride_cr, span_cr)?;
 
-            let [r_, g_, b_] = if nclx_studio_swing {
-                let ey = studio_digital_sample_to_normalized(y_raw, sem_y, true)?;
-                let ecb = studio_digital_sample_to_normalized(cb_raw, sem_cb, false)?;
-                let ecr = studio_digital_sample_to_normalized(cr_raw, sem_cr, false)?;
+            let [r_, g_, b_] = if let Some((swing_y, swing_cb, swing_cr)) = studio_swing {
+                let ey = studio_luma_to_normalized(y_raw, swing_y);
+                let ecb = studio_chroma_to_normalized(cb_raw, swing_cb);
+                let ecr = studio_chroma_to_normalized(cr_raw, swing_cr);
                 ycbcr_linear_to_rgb(ey, ecb, ecr, yuv_matrix)
             } else {
                 let yv = y_raw as f32 / scale_y.max(1.0);
@@ -313,19 +551,21 @@ pub(crate) fn hdr_buffer_from_ycbcr(
                 ycbcr_linear_to_rgb(yv, cbv - 0.5, crv - 0.5, yuv_matrix)
             };
 
-            rgba_f32.push(r_.clamp(0.0, 1.0));
-            rgba_f32.push(g_.clamp(0.0, 1.0));
-            rgba_f32.push(b_.clamp(0.0, 1.0));
+            let out_idx = x_px * 4;
+            row_dst[out_idx] = r_.clamp(0.0, 1.0);
+            row_dst[out_idx + 1] = g_.clamp(0.0, 1.0);
+            row_dst[out_idx + 2] = b_.clamp(0.0, 1.0);
 
             if let Some(ar) = row_alpha {
                 let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
                     / scale_alpha.max(1.0);
-                rgba_f32.push(av.clamp(0.0, 1.0));
+                row_dst[out_idx + 3] = av.clamp(0.0, 1.0);
             } else {
-                rgba_f32.push(1.0);
+                row_dst[out_idx + 3] = 1.0;
             }
         }
-    }
+        Ok(())
+    })?;
 
     let color_space = metadata.color_space_hint();
     Ok(HdrImageBuffer {
@@ -333,7 +573,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         height: y_h as u32,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata: metadata.clone(),
+        metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -341,7 +581,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
 #[cfg(feature = "heif-native")]
 pub(crate) fn ycbcr_matrix_from_heif_handle(
     handle: *const libheif_sys::heif_image_handle,
-) -> HeifYcbcrMatrix {
+) -> HeifYcbcrConvertParams {
     use super::brand::heif_nclx_to_metadata;
 
     let width = unsafe { libheif_sys::heif_image_handle_get_width(handle) }.max(0) as usize;
@@ -358,16 +598,20 @@ pub(crate) fn ycbcr_matrix_from_heif_handle(
             nclx.matrix_coefficients as u16,
             nclx.full_range_flag != 0,
         );
-        return heif_ycbcr_matrix_from_nclx(&metadata, width, height);
+        return ycbcr_matrix_from_metadata(&metadata, width, height);
     }
-    HeifYcbcrMatrix::Bt709
+    // No NCLX: assume full-range JPEG-style pack (common HEIF still default).
+    HeifYcbcrConvertParams {
+        matrix: HeifYcbcrMatrix::Bt709,
+        nclx_studio_swing: false,
+    }
 }
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn ycbcr_image_to_rgba8(
-    handle: *const libheif_sys::heif_image_handle,
     image: *const libheif_sys::heif_image,
     chroma: libheif_sys::heif_chroma,
+    convert: HeifYcbcrConvertParams,
 ) -> Result<crate::loader::DecodedImage, String> {
     let y_w = unsafe { libheif_sys::heif_image_get_width(image, libheif_sys::heif_channel_Y) };
     let y_h = unsafe { libheif_sys::heif_image_get_height(image, libheif_sys::heif_channel_Y) };
@@ -405,7 +649,10 @@ pub(crate) fn ycbcr_image_to_rgba8(
         return Err("libheif YCbCr image missing planes".to_string());
     }
 
-    let matrix = ycbcr_matrix_from_heif_handle(handle);
+    let HeifYcbcrConvertParams {
+        matrix,
+        nclx_studio_swing,
+    } = convert;
     let subsample_h = chroma != libheif_sys::heif_chroma_444;
     let subsample_v = chroma == libheif_sys::heif_chroma_420;
     let chroma_row_len = if subsample_h {
@@ -413,27 +660,69 @@ pub(crate) fn ycbcr_image_to_rgba8(
     } else {
         width as usize
     };
-    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
-    for y in 0..height as usize {
-        let y_row =
-            unsafe { std::slice::from_raw_parts(y_plane.add(y * y_stride), width as usize) };
+    let w = width as usize;
+    let h = height as usize;
+    let mut rgba = vec![0_u8; w * h * 4];
+    let simd_bt709_full_range = matrix == HeifYcbcrMatrix::Bt709 && !nclx_studio_swing;
+    let simd_bt709_limited_range = matrix == HeifYcbcrMatrix::Bt709 && nclx_studio_swing;
+    let y_plane = SendReadonlyPtr::new(y_plane);
+    let cb_plane = SendReadonlyPtr::new(cb_plane);
+    let cr_plane = SendReadonlyPtr::new(cr_plane);
+    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+        let y_row = unsafe { std::slice::from_raw_parts(y_plane.get().add(y * y_stride), w) };
         let cb_y = if subsample_v { y / 2 } else { y };
-        let cb_row =
-            unsafe { std::slice::from_raw_parts(cb_plane.add(cb_y * cb_stride), chroma_row_len) };
-        let cr_row =
-            unsafe { std::slice::from_raw_parts(cr_plane.add(cb_y * cr_stride), chroma_row_len) };
-        for (x, &y_sample) in y_row.iter().enumerate().take(width as usize) {
-            let xc = if subsample_h { x / 2 } else { x };
-            let yy = y_sample as f32 / 255.0;
-            let cb = cb_row[xc] as f32 / 255.0 - 0.5;
-            let cr = cr_row[xc] as f32 / 255.0 - 0.5;
-            let [r, g, b] = ycbcr_linear_to_rgb(yy, cb, cr, matrix);
-            let dst = (y * width as usize + x) * 4;
-            rgba[dst] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 2] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[dst + 3] = 255;
+        let cb_row = unsafe {
+            std::slice::from_raw_parts(cb_plane.get().add(cb_y * cb_stride), chroma_row_len)
+        };
+        let cr_row = unsafe {
+            std::slice::from_raw_parts(cr_plane.get().add(cb_y * cr_stride), chroma_row_len)
+        };
+
+        if simd_bt709_full_range && subsample_v && subsample_h {
+            super::ycbcr_simd::ycbcr_full_range_bt709_row_420_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
         }
-    }
+        if simd_bt709_full_range && !subsample_h {
+            super::ycbcr_simd::ycbcr_full_range_bt709_row_444_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
+        }
+        if simd_bt709_limited_range && subsample_v && subsample_h {
+            super::ycbcr_simd::ycbcr_limited_range_bt709_row_420_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
+        }
+        if simd_bt709_limited_range && !subsample_h {
+            super::ycbcr_simd::ycbcr_limited_range_bt709_row_444_to_rgba8(
+                y_row, cb_row, cr_row, row_dst, w,
+            );
+            return Ok(());
+        }
+
+        for (x, &y_sample) in y_row.iter().enumerate().take(w) {
+            let xc = if subsample_h { x / 2 } else { x };
+            let [r, g, b] = if nclx_studio_swing {
+                let yy = studio_digital_sample_to_normalized(y_sample as u32, 8, true)?;
+                let cb = studio_digital_sample_to_normalized(cb_row[xc] as u32, 8, false)?;
+                let cr = studio_digital_sample_to_normalized(cr_row[xc] as u32, 8, false)?;
+                ycbcr_linear_to_rgb(yy, cb, cr, matrix)
+            } else {
+                let yy = y_sample as f32 / 255.0;
+                let cb = cb_row[xc] as f32 / 255.0 - 0.5;
+                let cr = cr_row[xc] as f32 / 255.0 - 0.5;
+                ycbcr_linear_to_rgb(yy, cb, cr, matrix)
+            };
+            let dst = x * 4;
+            row_dst[dst] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+            row_dst[dst + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+            row_dst[dst + 2] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+            row_dst[dst + 3] = 255;
+        }
+        Ok(())
+    })?;
     Ok(crate::loader::DecodedImage::new(width, height, rgba))
 }

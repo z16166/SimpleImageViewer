@@ -23,14 +23,20 @@ pub(crate) fn is_avif_brand(brand: &[u8]) -> bool {
 
 /// True when the container major brand is `avis` (animated image sequence track).
 #[cfg(feature = "avif-native")]
+pub(crate) fn bytes_is_avif_image_sequence(bytes: &[u8]) -> bool {
+    matches!(
+        super::decode::avif_ftyp_major_brand(bytes),
+        Some(brand) if &brand == b"avis"
+    )
+}
+
+/// True when the container major brand is `avis` (animated image sequence track).
+#[cfg(feature = "avif-native")]
 pub(crate) fn path_is_avif_image_sequence(path: &Path) -> bool {
     let Ok(mmap) = crate::mmap_util::map_file(path) else {
         return false;
     };
-    matches!(
-        super::decode::avif_ftyp_major_brand(mmap.as_ref()),
-        Some(brand) if &brand == b"avis"
-    )
+    bytes_is_avif_image_sequence(mmap.as_ref())
 }
 
 #[cfg(not(feature = "avif-native"))]

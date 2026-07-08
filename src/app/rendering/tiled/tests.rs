@@ -141,7 +141,7 @@ fn test_prev_transition_params_for_tiled_draw() {
     assert_eq!(prev_tp.alpha, 0.5);
     assert_eq!(prev_tp.scale, 2.0);
     assert_eq!(prev_tp.offset, Vec2::new(10.0, 20.0));
-    assert_eq!(prev_tp.is_animating, true);
+    assert!(prev_tp.is_animating);
     assert_eq!(prev_tp.t, 0.3);
 }
 
@@ -365,25 +365,31 @@ fn tile_request_scheduling_is_budgeted() {
 
 #[test]
 fn sdr_tile_request_uses_shared_primary_visible_overcommit_policy() {
+    let input = TileSchedulePolicyTestInput {
+        is_cached: false,
+        pending_count: 96,
+        pending_cap: 96,
+        hard_pending_cap: 192,
+        scheduled_this_frame: 0,
+        frame_schedule_cap: 32,
+        is_primary_visible: true,
+    };
     assert!(tile_kind_uses_shared_schedule_policy(
         TilePixelKind::Sdr,
-        false,
-        96,
-        96,
-        192,
-        0,
-        32,
-        true
+        input
     ));
+    let input = TileSchedulePolicyTestInput {
+        is_cached: false,
+        pending_count: 96,
+        pending_cap: 96,
+        hard_pending_cap: 192,
+        scheduled_this_frame: 0,
+        frame_schedule_cap: 32,
+        is_primary_visible: true,
+    };
     assert!(tile_kind_uses_shared_schedule_policy(
         TilePixelKind::Hdr,
-        false,
-        96,
-        96,
-        192,
-        0,
-        32,
-        true
+        input
     ));
 }
 
@@ -447,10 +453,10 @@ fn tile_request_budget_marks_pending_once_and_records_schedule() {
 
 #[test]
 fn tile_request_priority_is_derived_from_shared_visit_order() {
-    assert_eq!(tile_request_priority(4, 0), 4.0);
-    assert_eq!(tile_request_priority(4, 3), 1.0);
-    assert_eq!(tile_request_priority(0, 0), 0.0);
-    assert_eq!(tile_request_priority(2, 7), 0.0);
+    assert_eq!(tile_request_priority(4, 0), 4);
+    assert_eq!(tile_request_priority(4, 3), 1);
+    assert_eq!(tile_request_priority(0, 0), 0);
+    assert_eq!(tile_request_priority(2, 7), 0);
 }
 
 #[test]
@@ -482,7 +488,7 @@ fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
 }
 
 #[test]
-fn tile_visit_order_is_selected_by_backend() {
+fn tile_visit_order_prioritizes_primary_for_all_backends() {
     let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
     let padded = vec![
         tile_visit(2, 3),
@@ -490,23 +496,23 @@ fn tile_visit_order_is_selected_by_backend() {
         tile_visit(4, 3),
         tile_visit(5, 3),
     ];
+    let expected = vec![
+        TileCoord { col: 3, row: 3 },
+        TileCoord { col: 4, row: 3 },
+        TileCoord { col: 2, row: 3 },
+        TileCoord { col: 5, row: 3 },
+    ];
 
-    let sdr_ordered = tile_visits_for_backend(PlaneBackendKind::Sdr, &primary, &padded);
-    let hdr_ordered = tile_visits_for_backend(PlaneBackendKind::Hdr, &primary, &padded);
-
-    assert_eq!(sdr_ordered, padded);
-    assert_eq!(
-        hdr_ordered
-            .iter()
-            .map(|(coord, _, _)| *coord)
-            .collect::<Vec<_>>(),
-        vec![
-            TileCoord { col: 3, row: 3 },
-            TileCoord { col: 4, row: 3 },
-            TileCoord { col: 2, row: 3 },
-            TileCoord { col: 5, row: 3 },
-        ]
-    );
+    for backend in [PlaneBackendKind::Sdr, PlaneBackendKind::Hdr] {
+        let ordered = tile_visits_for_backend(backend, &primary, &padded);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
 }
 
 #[test]

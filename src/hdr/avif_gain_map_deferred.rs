@@ -145,17 +145,32 @@ mod tests {
     use crate::hdr::gain_map::{append_hdr_pixel_from_sdr_and_gain, sample_gain_map_rgb};
     use crate::hdr::types::{HdrGainMapMetadata, HdrPixelFormat, HdrTransferFunction};
 
-    fn avif_compose_gain_map_cpu_reference(
+    struct AvifComposeGainMapReferenceInput<'a> {
         width: u32,
         height: u32,
-        sdr_rgba: &[u8],
-        gain_rgba: &[u8],
+        sdr_rgba: &'a [u8],
+        gain_rgba: &'a [u8],
         gain_width: u32,
         gain_height: u32,
         gain_metadata: GainMapMetadata,
         container_luminance: HdrLuminanceMetadata,
         target_hdr_capacity: f32,
+    }
+
+    fn avif_compose_gain_map_cpu_reference(
+        input: AvifComposeGainMapReferenceInput<'_>,
     ) -> HdrImageBuffer {
+        let AvifComposeGainMapReferenceInput {
+            width,
+            height,
+            sdr_rgba,
+            gain_rgba,
+            gain_width,
+            gain_height,
+            gain_metadata,
+            container_luminance,
+            target_hdr_capacity,
+        } = input;
         let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
         for y in 0..height {
             for x in 0..width {
@@ -171,16 +186,18 @@ mod tests {
                 );
             }
         }
-        let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
-        metadata.luminance = container_luminance;
-        metadata.gain_map = Some(HdrGainMapMetadata {
-            source: "AVIF",
-            target_hdr_capacity: Some(target_hdr_capacity),
-            diagnostic: gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity),
-            capped_display_referred: false,
-            apple_heic_deferred: None,
-            iso_deferred: None,
-        });
+        let metadata = HdrImageMetadata {
+            luminance: container_luminance,
+            gain_map: Some(HdrGainMapMetadata {
+                source: "AVIF",
+                target_hdr_capacity: Some(target_hdr_capacity),
+                diagnostic: gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity),
+                capped_display_referred: false,
+                apple_heic_deferred: None,
+                iso_deferred: None,
+            }),
+            ..HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb)
+        };
         HdrImageBuffer {
             width,
             height,
@@ -250,17 +267,17 @@ mod tests {
         assert_eq!(iso_deferred.sdr_rgba.as_slice(), sdr_rgba.as_slice());
         assert_eq!(iso_deferred.gain_rgba.as_slice(), gain_rgba.as_slice());
 
-        let cpu = avif_compose_gain_map_cpu_reference(
-            1,
-            2,
-            &sdr_rgba,
-            &gain_rgba,
-            1,
-            2,
+        let cpu = avif_compose_gain_map_cpu_reference(AvifComposeGainMapReferenceInput {
+            width: 1,
+            height: 2,
+            sdr_rgba: &sdr_rgba,
+            gain_rgba: &gain_rgba,
+            gain_width: 1,
+            gain_height: 2,
             gain_metadata,
-            HdrLuminanceMetadata::default(),
-            capacity,
-        );
+            container_luminance: HdrLuminanceMetadata::default(),
+            target_hdr_capacity: capacity,
+        });
         assert_eq!(cpu.rgba_f32.len(), 8);
         assert!(cpu.rgba_f32[0].is_finite());
     }

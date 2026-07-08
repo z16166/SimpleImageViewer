@@ -31,6 +31,7 @@ pub(crate) mod heif_apple_gain_map_compose_simd;
 pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
+pub(crate) mod iso_gain_map_compose_simd;
 pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
 #[cfg(feature = "jpegxl")]
@@ -44,6 +45,7 @@ pub mod monitor;
 pub(crate) mod mpf;
 pub(crate) mod openexr_core;
 pub(crate) mod raw_demosaic_gpu;
+pub(crate) mod simd_fast_pow;
 pub(crate) mod openexr_core_backend {
     pub(crate) use super::openexr_core::*;
 }

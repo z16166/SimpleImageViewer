@@ -55,15 +55,14 @@ fn has_startup_target(
 }
 
 fn preserve_current_tile_manager_for_navigation(
+    app: &mut ImageViewerApp,
     current_index: usize,
     target_index: usize,
-    tile_manager: &mut Option<TileManager>,
-    prefetched_tiles: &mut HashMap<usize, TileManager>,
 ) {
     if current_index != target_index
-        && let Some(tm) = tile_manager.take()
+        && let Some(tm) = app.tile_manager.take()
     {
-        prefetched_tiles.insert(current_index, tm);
+        app.insert_prefetched_tiles_tracked(current_index, tm);
     }
 }
 
@@ -108,7 +107,9 @@ fn tiled_sdr_texture_tag_for_stage(
     stage: crate::loader::PreviewStage,
 ) -> crate::loader::TexturePreviewBufferTag {
     match stage {
-        crate::loader::PreviewStage::Initial => crate::loader::TexturePreviewBufferTag::TiledBootstrap,
+        crate::loader::PreviewStage::Initial => {
+            crate::loader::TexturePreviewBufferTag::TiledBootstrap
+        }
         crate::loader::PreviewStage::Refined => {
             crate::loader::TexturePreviewBufferTag::TiledRefinedLoader
         }
@@ -594,6 +595,7 @@ pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::fro
 ///
 /// **macOS EDR release order** (Apple has no custom tolerance; see `src/hdr/monitor/macos.rs`):
 /// 1. Swap-chain hot-swapped to float EDR (`MacOsEdr`) — not `SdrToneMapped`.
+/// 1b. Live swap-chain format matches [`desired_target_format_for_active_monitor`].
 /// 2. `interim_hdr_decode_capacity > 1.0` from tone-map settings while waiting for NSScreen probe.
 /// 3. [`monitor_hdr_decode_capacity_is_known`] — potential headroom from
 ///    [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue).
@@ -602,6 +604,16 @@ pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::fro
 /// When native HDR swap-chain requests are disabled, `SdrToneMapped` is the intentional
 /// terminal path (not a transient state before `Rgb10a2Unorm` hot-swap). WSI may still
 /// report `hdr_supported = true` on Wayland while the user keeps tone-mapped SDR output.
+pub(crate) fn swap_chain_matches_desired_for_startup(
+    current_target_format: Option<wgpu::TextureFormat>,
+    desired_target_format: Option<wgpu::TextureFormat>,
+) -> bool {
+    match desired_target_format {
+        None => false,
+        Some(desired) => current_target_format == Some(desired),
+    }
+}
+
 pub(crate) fn startup_preload_defer_can_release(
     runtime_probe_completed: bool,
     native_hdr_surface_requests_enabled: bool,
@@ -610,6 +622,8 @@ pub(crate) fn startup_preload_defer_can_release(
     probe_completed_at: Option<std::time::Instant>,
     now: std::time::Instant,
     interim_hdr_decode_capacity: f32,
+    current_target_format: Option<wgpu::TextureFormat>,
+    desired_target_format: Option<wgpu::TextureFormat>,
 ) -> bool {
     if !runtime_probe_completed {
         return false;
@@ -618,10 +632,21 @@ pub(crate) fn startup_preload_defer_can_release(
         return true;
     }
     let monitor_hdr_supported = selection.is_some_and(|s| s.hdr_supported);
+    let past_probe_timeout = probe_completed_at.is_some_and(|completed_at| {
+        now.saturating_duration_since(completed_at) >= STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
+    });
     if !monitor_hdr_supported {
-        return true;
+        return swap_chain_matches_desired_for_startup(
+            current_target_format,
+            desired_target_format,
+        );
     }
     if matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped) {
+        return false;
+    }
+    if !past_probe_timeout
+        && !swap_chain_matches_desired_for_startup(current_target_format, desired_target_format)
+    {
         return false;
     }
     // Step 2 in startup_preload_defer_can_release (macOS): settings-based interim capacity
@@ -633,16 +658,21 @@ pub(crate) fn startup_preload_defer_can_release(
     if monitor_hdr_decode_capacity_is_known(selection) {
         return true;
     }
-    if let Some(completed_at) = probe_completed_at
-        && now.saturating_duration_since(completed_at) >= STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
-    {
-        log::warn!(
-            "[HDR] HDR decode capacity still unknown {:?} after runtime probe; releasing startup preload defer",
-            STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
-        );
+    if past_probe_timeout {
+        if !monitor_hdr_decode_capacity_is_known(selection) {
+            log::warn!(
+                "[HDR] HDR decode capacity still unknown {:?} after runtime probe; releasing startup preload defer",
+                STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
+            );
+        }
         return true;
     }
     false
+}
+
+/// True when an async animation remainder extends a bootstrap install (more frames, same first frame).
+pub(crate) fn animation_remainder_extends_existing(existing: usize, incoming: usize) -> bool {
+    existing >= 1 && incoming > existing
 }
 
 /// True only while GPU RAW demosaic is still in progress and the embedded bootstrap SDR preview
@@ -1115,8 +1145,8 @@ impl ImageViewerApp {
                         }
                         profile_ok
                     }
-                    LoaderOutput::Refined(idx) => gate_ctx
-                        .retention_for(*idx, is_loading(*idx))
+                    LoaderOutput::Refined { index, .. } => gate_ctx
+                        .retention_for(*index, is_loading(*index))
                         .should_retain(),
                     LoaderOutput::Tile(t) => gate_ctx
                         .retention_for(t.index, is_loading(t.index))
@@ -1314,10 +1344,14 @@ mod tiled_hq_preview_apply_tests {
     #[test]
     fn on_demand_sdr_tag_does_not_satisfy_tiled_hq_gate() {
         use crate::loader::{PreviewStage, TexturePreviewBufferTag};
-        assert!(!TexturePreviewBufferTag::TiledOnDemandSdr
-            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
-        assert!(TexturePreviewBufferTag::TiledRefinedLoader
-            .satisfies_tiled_sdr_hq(PreviewStage::Refined));
+        assert!(
+            !TexturePreviewBufferTag::TiledOnDemandSdr
+                .satisfies_tiled_sdr_hq(PreviewStage::Refined)
+        );
+        assert!(
+            TexturePreviewBufferTag::TiledRefinedLoader
+                .satisfies_tiled_sdr_hq(PreviewStage::Refined)
+        );
     }
 
     #[test]
@@ -1350,26 +1384,29 @@ mod tiled_hq_preview_apply_tests {
 #[cfg(test)]
 mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
     use super::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending;
+    use crate::hdr::types::HdrImageMetadata;
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     fn gpu_raw_pending_hdr() -> Arc<crate::hdr::types::HdrImageBuffer> {
-        let mut metadata = crate::hdr::types::HdrImageMetadata::default();
-        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
-            raw_width: 4,
-            raw_height: 4,
-            width: 4,
-            height: 4,
-            raw_pixels: Arc::new(vec![0; 16]),
-            black_level: [0.0; 4],
-            cfa_scale: [1.0; 4],
-            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            maximum: 65535.0,
-            bayer_pattern: [0, 1, 1, 2],
-            scene_color_scale: [1.0, 1.0, 1.0],
-            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
-            bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
-        });
+        let metadata = HdrImageMetadata {
+            raw_gpu_source: Some(crate::hdr::types::RawGpuSource {
+                raw_width: 4,
+                raw_height: 4,
+                width: 4,
+                height: 4,
+                raw_pixels: Arc::new(vec![0; 16]),
+                black_level: [0.0; 4],
+                cfa_scale: [1.0; 4],
+                rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                maximum: 65535.0,
+                bayer_pattern: [0, 1, 1, 2],
+                scene_color_scale: [1.0, 1.0, 1.0],
+                demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+                bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
+            }),
+            ..Default::default()
+        };
         Arc::new(crate::hdr::types::HdrImageBuffer {
             width: 4,
             height: 4,
@@ -1416,6 +1453,23 @@ mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
         assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
             0, &pending, &baked, &cache, true, true,
         ));
+    }
+}
+
+#[cfg(test)]
+mod animation_remainder_extends_existing_tests {
+    use super::animation_remainder_extends_existing;
+
+    #[test]
+    fn accepts_bootstrap_to_full_sequence() {
+        assert!(animation_remainder_extends_existing(1, 24));
+    }
+
+    #[test]
+    fn rejects_equal_or_shrinking_frame_counts() {
+        assert!(!animation_remainder_extends_existing(0, 10));
+        assert!(!animation_remainder_extends_existing(10, 10));
+        assert!(!animation_remainder_extends_existing(12, 8));
     }
 }
 
@@ -1604,4 +1658,4 @@ fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

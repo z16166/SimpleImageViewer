@@ -1,5 +1,8 @@
 use super::should_spawn_load_task;
-use crate::loader::{DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, decode_profile_stub};
+use crate::loader::{
+    DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, MAX_IMG_LOADER_THREADS,
+    decode_profile_stub,
+};
 use std::collections::HashMap;
 
 #[test]
@@ -54,6 +57,34 @@ fn should_spawn_load_task_supersedes_on_profile_downgrade() {
 }
 
 #[test]
+fn should_spawn_load_task_rejects_neighbor_prefetch_at_soft_cap() {
+    let mut loading = HashMap::new();
+    let neighbor = || DecodeProfile {
+        load_intent: LoadIntent::NeighborPrefetch,
+        ..decode_profile_stub()
+    };
+
+    for index in 0..MAX_IMG_LOADER_THREADS {
+        assert!(should_spawn_load_task(&mut loading, index, neighbor()));
+    }
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
+
+    assert!(!should_spawn_load_task(
+        &mut loading,
+        MAX_IMG_LOADER_THREADS,
+        neighbor()
+    ));
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
+
+    let upgraded = DecodeProfile {
+        load_intent: LoadIntent::Current,
+        ..neighbor()
+    };
+    assert!(should_spawn_load_task(&mut loading, 0, upgraded));
+    assert_eq!(loading.len(), MAX_IMG_LOADER_THREADS);
+}
+
+#[test]
 fn try_note_capacity_requeue_rejects_fourth_attempt() {
     let mut loader = ImageLoader::new();
     let index = 4;
@@ -95,4 +126,84 @@ fn cancel_all_clears_capacity_requeue_counts() {
     assert_eq!(loader.test_capacity_requeue_count(index), 2);
     loader.cancel_all();
     assert_eq!(loader.test_capacity_requeue_count(index), 0);
+}
+
+#[test]
+fn request_tile_rejects_invalid_coords() {
+    let loader = ImageLoader::new();
+    let pixels = std::sync::Arc::new(vec![
+        0;
+        crate::tile_cache::get_tile_size() as usize
+            * crate::tile_cache::get_tile_size() as usize
+            * 4
+    ]);
+    let source: std::sync::Arc<dyn crate::loader::TiledImageSource> =
+        std::sync::Arc::new(crate::loader::tiled_sources::MemoryImageSource::new(
+            crate::tile_cache::get_tile_size(),
+            crate::tile_cache::get_tile_size(),
+            pixels,
+        ));
+
+    for (priority, col, row) in [(1, 1, 0), (1, 0, 1), (1, u32::MAX, 0), (1, 0, u32::MAX)] {
+        assert!(!loader.request_tile(
+            1,
+            decode_profile_stub(),
+            priority,
+            crate::loader::TileDecodeSource::Sdr(std::sync::Arc::clone(&source)),
+            col,
+            row,
+        ));
+    }
+
+    let (lock, _) = &*loader.tile_queue;
+    assert!(lock.lock().is_empty());
+}
+
+#[test]
+fn tile_worker_drops_stale_invalid_tile_request_without_reporting_ready() {
+    let loader = ImageLoader::new();
+    let source: std::sync::Arc<dyn crate::loader::TiledImageSource> = std::sync::Arc::new(
+        crate::loader::tiled_sources::MemoryImageSource::new(1, 1, std::sync::Arc::new(vec![0; 4])),
+    );
+    let profile = decode_profile_stub();
+
+    {
+        let (lock, cvar) = &*loader.tile_queue;
+        lock.lock().push(super::types::TileRequest {
+            profile_epoch: profile.profile_epoch,
+            priority: 2,
+            index: 9,
+            col: u32::MAX,
+            row: u32::MAX,
+            source: crate::loader::TileDecodeSource::Sdr(std::sync::Arc::clone(&source)),
+        });
+        cvar.notify_one();
+    }
+
+    assert!(loader.request_tile(
+        9,
+        profile,
+        1,
+        crate::loader::TileDecodeSource::Sdr(source),
+        0,
+        0,
+    ));
+
+    let output = loader
+        .rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("valid tile ready result after stale invalid request");
+    match output {
+        crate::loader::LoaderOutput::Tile(tile) => {
+            assert_eq!(tile.col, 0);
+            assert_eq!(tile.row, 0);
+        }
+        _ => panic!("expected tile-ready output"),
+    }
+    assert!(
+        loader
+            .rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err()
+    );
 }

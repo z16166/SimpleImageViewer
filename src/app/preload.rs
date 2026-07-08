@@ -107,10 +107,8 @@ pub(crate) fn compute_preload_budgets() -> (u64, u64) {
     const MIN_BACKWARD_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
     const MAX_BACKWARD_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let total = sys.total_memory(); // bytes
+    crate::system_memory::refresh_if_stale();
+    let total = crate::system_memory::total_memory_mb() * 1024 * 1024; // bytes
 
     let forward = (total / 32).clamp(MIN_FORWARD_BUDGET_BYTES, MAX_FORWARD_BUDGET_BYTES);
     let backward = (total / 64).clamp(MIN_BACKWARD_BUDGET_BYTES, MAX_BACKWARD_BUDGET_BYTES);

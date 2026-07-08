@@ -17,7 +17,6 @@
 pub use crate::formats::{FormatGroup, ImageFormat, get_registry};
 pub use crate::loader::TiledImageSource;
 pub use std::cell::RefCell;
-pub use std::sync::atomic::Ordering;
 pub use std::thread;
 pub use windows::Win32::Foundation::GENERIC_READ;
 pub use windows::Win32::Graphics::Imaging::*;

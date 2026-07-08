@@ -316,6 +316,12 @@ pub(super) fn publish_directory_tree_domains(
     preview_cache_revision: Option<u64>,
     preview_textures: Option<&std::collections::HashMap<usize, egui::TextureHandle>>,
     preview_logical_sizes: Option<&std::collections::HashMap<usize, (u32, u32)>>,
+    preview_buffer_tags: Option<
+        &std::collections::HashMap<
+            usize,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+        >,
+    >,
 ) -> bool {
     let mut last_list_publish_at = runtime.last_list_publish_at.lock();
     let mut ctx = super::domains::DirectoryTreePublishContext {
@@ -329,6 +335,7 @@ pub(super) fn publish_directory_tree_domains(
         preview_cache_revision,
         preview_textures,
         preview_logical_sizes,
+        preview_buffer_tags,
     };
     let changed = super::domains::publish_domain_snapshots(&mut ctx);
     if changed {

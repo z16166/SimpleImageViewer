@@ -15,10 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use eframe::egui::{self, ColorImage, TextureOptions};
 
+use crate::constants::checked_rgba_buffer_len;
 use crate::loader::{DecodedImage, PreviewStage, preview_aspect_matches_logical};
 
 use crate::app::index_cache_permute::permute_usize_hashmap;
@@ -70,10 +72,33 @@ impl StripPreviewBufferTag {
     }
 }
 
-pub(crate) struct DirectoryTreeStripPreviewJobResult {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryTreeStripJobToken {
+    /// Synchronous pixels copied from an already available preview/cache path.
+    SynchronousUpload,
+    /// Background worker attempt that must match active in-flight bookkeeping.
+    Worker(NonZeroU64),
+}
+
+impl DirectoryTreeStripJobToken {
+    pub(crate) fn worker_token(self) -> Option<NonZeroU64> {
+        match self {
+            Self::SynchronousUpload => None,
+            Self::Worker(token) => Some(token),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirectoryTreeStripJobKey {
     pub index: usize,
     pub path: PathBuf,
     pub image_list_generation: u64,
+    pub job_token: DirectoryTreeStripJobToken,
+}
+
+pub(crate) struct DirectoryTreeStripPreviewSuccess {
+    pub key: DirectoryTreeStripJobKey,
     pub decoded: DecodedImage,
     /// Full static SDR decode produced while generating a cold strip thumbnail.
     /// When present, the app can reuse it as a preloaded main image instead of
@@ -82,15 +107,47 @@ pub(crate) struct DirectoryTreeStripPreviewJobResult {
     pub logical: (u32, u32),
     pub stage: PreviewStage,
     pub buffer_tag: StripPreviewBufferTag,
-    /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
-    pub cold_deferred_to_main_loader: bool,
     /// `strip_max_side()` used when the worker last sized `decoded` for strip upload.
     pub strip_max_side_used: u32,
+}
+
+pub(crate) struct DirectoryTreeStripPreviewFailure {
+    pub key: DirectoryTreeStripJobKey,
+    pub reason: &'static str,
+}
+
+pub(crate) enum DirectoryTreeStripPreviewJobResult {
+    Success(DirectoryTreeStripPreviewSuccess),
+    /// Cold strip found no fast preview and slow primary decode was skipped; retry after preload.
+    DeferredToMainLoader(DirectoryTreeStripPreviewFailure),
+}
+
+pub(crate) enum DirectoryTreeStripInflightReleaseKind {
+    ClearAttempt,
+    PermanentFailure,
+}
+
+pub(crate) struct DirectoryTreeStripInflightRelease {
+    pub key: DirectoryTreeStripJobKey,
+    pub kind: DirectoryTreeStripInflightReleaseKind,
 }
 
 pub(crate) struct StripThumbnailCacheRequest<'a> {
     pub index: usize,
     pub decoded: &'a DecodedImage,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
+    pub stage: PreviewStage,
+    pub logical_size: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    pub strip_max_side_used: Option<u32>,
+    pub ctx: &'a egui::Context,
+    pub bypass_detach_queue: bool,
+}
+
+pub(crate) struct StripThumbnailCacheOwnedRequest<'a> {
+    pub index: usize,
+    pub decoded: DecodedImage,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
     pub stage: PreviewStage,
     pub logical_size: Option<(u32, u32)>,
     pub buffer_tag: StripPreviewBufferTag,
@@ -101,8 +158,10 @@ pub(crate) struct StripThumbnailCacheRequest<'a> {
 
 /// Decoded strip thumbnail waiting for GPU upload during UI paint (not in `logic()`).
 pub(crate) struct DirectoryTreeStripPendingGpuUpload {
-    pub index: usize,
+    pub key: DirectoryTreeStripJobKey,
     pub decoded: DecodedImage,
+    /// Precomputed RGBA8 upload byte size for queue and per-frame budgets.
+    pub upload_bytes: usize,
     pub stage: PreviewStage,
     pub logical: Option<(u32, u32)>,
     pub buffer_tag: StripPreviewBufferTag,
@@ -114,155 +173,32 @@ pub(crate) struct DirectoryTreeStripPendingGpuUpload {
     pub strip_max_side_used: Option<u32>,
 }
 
+pub(crate) struct DirectoryTreeStripGpuUploadRequest {
+    pub index: usize,
+    pub decoded: DecodedImage,
+    pub stage: PreviewStage,
+    pub logical: Option<(u32, u32)>,
+    pub buffer_tag: StripPreviewBufferTag,
+    pub strip_max_side_used: Option<u32>,
+    pub job_key: Option<DirectoryTreeStripJobKey>,
+}
+
 /// Limit GPU texture uploads per paint pass (checklist #3).
 pub(crate) const MAX_STRIP_GPU_UPLOADS_PER_PAINT: usize = 12;
 pub(crate) const MAX_STRIP_PENDING_GPU_UPLOADS: usize = 256;
+const MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE: usize = 256;
+pub(crate) const DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL: usize = 4;
+/// Pixel memory cap for one paint-thread strip GPU upload batch.
+pub(crate) const MAX_STRIP_GPU_UPLOAD_BYTES_PER_PAINT: usize = MAX_STRIP_GPU_UPLOADS_PER_PAINT
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL;
 
-/// O(1) LRU order for strip cache indices (touch, remove, pop-oldest).
-///
-/// Separate from [`crate::lru_order::LruOrder`] because strip cache compaction needs
-/// `retain` / `partial_remap` / `permute` without a full `remap_ordered` rebuild.
-#[derive(Default)]
-struct StripLruOrder {
-    nodes: HashMap<usize, LruLinks>,
-    head: Option<usize>,
-    tail: Option<usize>,
-}
-
-#[derive(Clone, Copy)]
-struct LruLinks {
-    prev: Option<usize>,
-    next: Option<usize>,
-}
-
-impl StripLruOrder {
-    fn clear(&mut self) {
-        self.nodes.clear();
-        self.head = None;
-        self.tail = None;
-    }
-
-    fn touch(&mut self, index: usize) {
-        self.unlink(index);
-        self.link_at_tail(index);
-    }
-
-    fn remove(&mut self, index: usize) {
-        self.unlink(index);
-    }
-
-    fn pop_oldest(&mut self) -> Option<usize> {
-        let oldest = self.head?;
-        self.unlink(oldest);
-        Some(oldest)
-    }
-
-    fn contains(&self, index: usize) -> bool {
-        self.nodes.contains_key(&index)
-    }
-
-    fn rename(&mut self, from: usize, to: usize) {
-        if from == to {
-            return;
-        }
-        self.remove(to);
-        let Some(links) = self.nodes.remove(&from) else {
-            return;
-        };
-        if let Some(prev) = links.prev {
-            self.nodes.get_mut(&prev).expect("LRU prev").next = Some(to);
-        } else {
-            self.head = Some(to);
-        }
-        if let Some(next) = links.next {
-            self.nodes.get_mut(&next).expect("LRU next").prev = Some(to);
-        } else {
-            self.tail = Some(to);
-        }
-        self.nodes.insert(to, links);
-    }
-
-    fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if keep(index) {
-                self.link_at_tail(index);
-            }
-        }
-    }
-
-    fn partial_remap(&mut self, old_to_new: &[usize]) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if index < old_to_new.len() {
-                let new_idx = old_to_new[index];
-                if new_idx != usize::MAX {
-                    self.link_at_tail(new_idx);
-                }
-            }
-        }
-    }
-
-    fn permute(&mut self, old_to_new: &[usize]) {
-        let ordered = self.ordered_indices();
-        self.clear();
-        for index in ordered {
-            if index < old_to_new.len() {
-                self.link_at_tail(old_to_new[index]);
-            }
-        }
-    }
-
-    fn ordered_indices(&self) -> Vec<usize> {
-        let mut out = Vec::with_capacity(self.nodes.len());
-        let mut cur = self.head;
-        while let Some(index) = cur {
-            out.push(index);
-            cur = self.nodes.get(&index).and_then(|links| links.next);
-        }
-        out
-    }
-
-    fn unlink(&mut self, index: usize) {
-        let Some(links) = self.nodes.remove(&index) else {
-            return;
-        };
-        match (links.prev, links.next) {
-            (None, None) => {
-                self.head = None;
-                self.tail = None;
-            }
-            (None, Some(next)) => {
-                self.head = Some(next);
-                self.nodes.get_mut(&next).expect("LRU head next").prev = None;
-            }
-            (Some(prev), None) => {
-                self.tail = Some(prev);
-                self.nodes.get_mut(&prev).expect("LRU tail prev").next = None;
-            }
-            (Some(prev), Some(next)) => {
-                self.nodes.get_mut(&prev).expect("LRU prev").next = Some(next);
-                self.nodes.get_mut(&next).expect("LRU next").prev = Some(prev);
-            }
-        }
-    }
-
-    fn link_at_tail(&mut self, index: usize) {
-        let links = LruLinks {
-            prev: self.tail,
-            next: None,
-        };
-        if let Some(tail) = self.tail {
-            self.nodes.get_mut(&tail).expect("LRU tail").next = Some(index);
-        } else {
-            self.head = Some(index);
-        }
-        self.tail = Some(index);
-        self.nodes.insert(index, links);
-    }
-}
+/// Pixel memory cap for strip uploads waiting for paint-thread GPU upload.
+pub(crate) const MAX_STRIP_PENDING_GPU_UPLOAD_BYTES: usize = MAX_STRIP_PENDING_GPU_UPLOADS
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * MAX_DIRECTORY_TREE_STRIP_PENDING_SIDE
+    * DIRECTORY_TREE_STRIP_RGBA_BYTES_PER_PIXEL;
 
 #[derive(Default)]
 pub(crate) struct DirectoryTreeStripCache {
@@ -270,7 +206,7 @@ pub(crate) struct DirectoryTreeStripCache {
     preview_buffer_tag: HashMap<usize, StripPreviewBufferTag>,
     preview_stage: HashMap<usize, PreviewStage>,
     logical_sizes: HashMap<usize, (u32, u32)>,
-    lru_order: StripLruOrder,
+    lru_order: crate::lru_order::LruOrder<usize>,
     gpu_revision: u64,
 }
 
@@ -306,6 +242,13 @@ impl DirectoryTreeStripCache {
         self.lru_order.touch(index);
     }
 
+    /// Mark a cached strip entry recently used so LRU eviction skips visible rows.
+    pub(crate) fn touch_cached_index(&mut self, index: usize) {
+        if self.textures.contains_key(&index) {
+            self.touch_lru(index);
+        }
+    }
+
     pub(crate) fn remove_index(&mut self, index: usize) {
         self.textures.remove(&index);
         self.preview_buffer_tag.remove(&index);
@@ -320,6 +263,10 @@ impl DirectoryTreeStripCache {
 
     pub(crate) fn logical_sizes(&self) -> &HashMap<usize, (u32, u32)> {
         &self.logical_sizes
+    }
+
+    pub(crate) fn preview_buffer_tags(&self) -> &HashMap<usize, StripPreviewBufferTag> {
+        &self.preview_buffer_tag
     }
 
     pub(crate) fn gpu_revision(&self) -> u64 {
@@ -536,10 +483,13 @@ impl DirectoryTreeStripCache {
             strip_max_side,
             strip_max_side_used,
         } = upsert;
-        debug_assert!(
-            strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used),
-            "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
-        );
+        if !strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used) {
+            debug_assert!(
+                false,
+                "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
+            );
+            return;
+        }
         let cached_tag = self.preview_buffer_tag.get(&index).copied();
         let cached_stage = self.preview_stage.get(&index).copied();
         let cached_dims = self.preview_dimensions(index);
@@ -565,6 +515,8 @@ impl DirectoryTreeStripCache {
             decoded.rgba(),
         );
         let thumb_size = [decoded.width as usize, decoded.height as usize];
+        // Same-size refreshes keep the existing TextureId and use handle.set(); recreating
+        // textures after HDR swap-chain hot-swap can fail to display on some backends.
         if self
             .textures
             .get(&index)
@@ -673,7 +625,8 @@ impl DirectoryTreeStripCache {
                 self.textures.remove(&idx);
                 self.preview_buffer_tag.remove(&idx);
                 self.preview_stage.remove(&idx);
-                self.logical_sizes.remove(&idx);
+                // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
+                self.lru_order.remove(idx);
                 evicted = true;
             }
         }
@@ -697,7 +650,8 @@ fn remap_partial_hashmap<T>(map: &mut HashMap<usize, T>, old_to_new: &[usize]) {
 }
 
 pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
-    decoded.rgba().len() == decoded.width as usize * decoded.height as usize * 4
+    checked_rgba_buffer_len(decoded.width as usize, decoded.height as usize)
+        .is_some_and(|expected_len| decoded.rgba().len() == expected_len)
 }
 
 pub(crate) fn strip_preview_quality_rank(tag: StripPreviewBufferTag, stage: PreviewStage) -> u16 {
@@ -959,6 +913,12 @@ mod tests {
     use super::*;
     use crate::loader::downsample_decoded_for_strip;
     use std::path::Path;
+
+    #[test]
+    fn decoded_rgba_size_valid_rejects_overflowing_dimensions() {
+        let decoded = DecodedImage::new(1_u32 << 31, 1_u32 << 31, Vec::new());
+        assert!(!decoded_rgba_size_valid(&decoded));
+    }
 
     #[test]
     fn strip_decoded_ready_for_gpu_upload_matches_worker_max_side() {
@@ -1352,6 +1312,31 @@ mod tests {
         cache.clear_gpu_textures();
         assert!(!cache.contains(0));
         assert_eq!(cache.logical_sizes().get(&0), Some(&(640, 320)));
+    }
+
+    #[test]
+    fn lru_eviction_keeps_logical_sizes_for_regeneration() {
+        let ctx = egui::Context::default();
+        let mut cache = DirectoryTreeStripCache::default();
+        for index in 0..DIRECTORY_TREE_STRIP_CACHE_MAX + 1 {
+            let decoded = DecodedImage::new(8, 8, vec![128; 8 * 8 * 4]);
+            cache.upsert_from_decoded(
+                index,
+                &decoded,
+                StripDecodedUpsert {
+                    stage: PreviewStage::Initial,
+                    buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+                    logical_size: Some((800, 600)),
+                    path: Path::new("/test/strip.jpg"),
+                    ctx: &ctx,
+                    strip_max_side: 128,
+                    strip_max_side_used: Some(128),
+                },
+            );
+        }
+        assert!(!cache.contains(0));
+        assert_eq!(cache.logical_sizes().get(&0), Some(&(800, 600)));
+        assert!(cache.contains(DIRECTORY_TREE_STRIP_CACHE_MAX));
     }
 
     #[test]

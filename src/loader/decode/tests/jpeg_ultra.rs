@@ -274,10 +274,9 @@ fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
                         || fallback.height != hdr.height
                     {
                         Some(format!("{}: invalid HDR output", path.display()))
-                    } else if let Some(err) = ultra_hdr_gpu_deferred_route_error(&hdr) {
-                        Some(format!("{}: {err}", path.display()))
                     } else {
-                        None
+                        ultra_hdr_gpu_deferred_route_error(&hdr)
+                            .map(|err| format!("{}: {err}", path.display()))
                     }
                 }
                 Ok(_) => Some(format!("{}: loaded as non-HDR image data", path.display())),

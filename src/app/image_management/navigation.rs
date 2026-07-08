@@ -73,7 +73,8 @@ impl ImageViewerApp {
         // master draws the 8-bit fallback texture; routing the outgoing frame through the HDR
         // float plane re-composes and looks noticeably dimmer for one or more frames.
         if hdr.as_ref().is_some_and(|buffer| {
-            self.hdr_prefers_embedded_sdr_master_on_output(buffer) && texture.is_some()
+            self.hdr_prefers_embedded_sdr_master_on_output(buffer)
+                && (texture.is_some() || self.hdr_sdr_fallback_indices.contains(&index))
         }) {
             hdr = None;
         }
@@ -151,7 +152,7 @@ impl ImageViewerApp {
                 self.apply_hdr_gain_map_sdr_display_from_cache(idx);
                 self.texture_cache.remove(idx);
                 self.prefetched_tiles.remove(&idx);
-                crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
             }
             self.schedule_preloads(true);
             self.wake_root_for_logic();
@@ -171,7 +172,7 @@ impl ImageViewerApp {
         for idx in &sensitive {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(*idx);
             self.remove_hdr_image_index(*idx);
             if *idx == current {
                 self.tile_manager = None;
@@ -320,7 +321,7 @@ impl ImageViewerApp {
             self.raw_metadata.remove(idx);
             self.prefetched_tiles.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
         }
 
         self.tile_manager = None;
@@ -474,16 +475,11 @@ impl ImageViewerApp {
             }
         }
 
-        preserve_current_tile_manager_for_navigation(
-            self.current_index,
-            target_index,
-            &mut self.tile_manager,
-            &mut self.prefetched_tiles,
-        );
+        preserve_current_tile_manager_for_navigation(self, self.current_index, target_index);
         if self.current_index != target_index
             && self.prefetched_tiles.contains_key(&self.current_index)
         {
-            self.register_prefetch_resource(self.current_index);
+            self.track_prefetch_resource(self.current_index);
         }
         self.set_current_index(target_index);
         self.refresh_current_file_name();
@@ -549,7 +545,9 @@ impl ImageViewerApp {
             }
         } else if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
             if self.index_requires_tile_manager(self.current_index) {
-                if self.installed_display_mode(self.current_index) != Some(crate::loader::RenderShape::Tiled) {
+                if self.installed_display_mode(self.current_index)
+                    != Some(crate::loader::RenderShape::Tiled)
+                {
                     self.record_installed_display_mode(
                         self.current_index,
                         crate::loader::RenderShape::Tiled,
@@ -630,8 +628,8 @@ impl ImageViewerApp {
                 self.tile_manager.is_some()
             );
             self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
-            let needs_tile_manager_rebuild = self.index_requires_tile_manager(self.current_index)
-                && self.tile_manager.is_none();
+            let needs_tile_manager_rebuild =
+                self.index_requires_tile_manager(self.current_index) && self.tile_manager.is_none();
             if needs_tile_manager_rebuild {
                 if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                     self.set_current_image_resolution(Some((w, h)));
@@ -814,6 +812,60 @@ impl ImageViewerApp {
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();
+    }
+
+    /// Rebind main-canvas presentation to whatever file now occupies `current_index` after a
+    /// cache-preserving directory-tree list reorder.
+    pub(crate) fn refresh_current_image_presentation_after_list_reorder(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let idx = self
+            .current_index
+            .min(self.image_files.len().saturating_sub(1));
+
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prev_texture = None;
+        self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
+        self.tile_manager = None;
+        self.pixel_data_source = None;
+        self.pixel_hover_cache = None;
+        self.animation = None;
+
+        self.refresh_current_file_name();
+        self.current_hdr_image = self
+            .first_cached_hdr_still_for_index(idx)
+            .map(|image| crate::app::CurrentHdrImage::new(idx, image));
+        self.current_hdr_tiled_image = self
+            .hdr_tiled_source_cache
+            .get(&idx)
+            .cloned()
+            .map(|source| crate::app::CurrentHdrTiledImage::new(idx, source));
+        self.current_hdr_tiled_preview = self
+            .hdr_tiled_preview_cache
+            .get(&idx)
+            .cloned()
+            .map(|image| crate::app::CurrentHdrImage::new(idx, image));
+
+        if self.texture_cache.contains(idx) {
+            if let Some((w, h)) = self.texture_cache.get_original_res(idx) {
+                self.set_current_image_resolution(Some((w, h)));
+            } else if let Some(texture) = self.texture_cache.get(idx) {
+                let size = texture.size();
+                self.set_current_image_resolution(Some((size[0] as u32, size[1] as u32)));
+            }
+        } else {
+            self.set_current_image_resolution(None);
+        }
+
+        self.ensure_current_animation_playback();
+        self.refresh_pixel_data_source_for_current_index();
+        self.refresh_hdr_view_status();
+        self.error_message = None;
+        self.is_font_error = false;
+        self.canvas_display_timing.on_navigate();
     }
 
     pub(crate) fn refresh_pixel_data_source_for_current_index(&mut self) {

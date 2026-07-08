@@ -27,6 +27,7 @@ mod wheel;
 mod tests;
 
 pub(crate) use actions::AppAction;
+pub(crate) use keyboard::{consume_cross_viewport_hotkey, detect_cross_viewport_hotkey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoSwitchStep {

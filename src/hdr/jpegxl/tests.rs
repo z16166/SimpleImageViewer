@@ -24,7 +24,24 @@ use crate::hdr::jpegxl::{
 #[cfg(feature = "jpegxl")]
 use crate::hdr::types::HdrColorSpace;
 #[cfg(feature = "jpegxl")]
-use crate::hdr::types::{HdrImageMetadata, HdrReference, HdrTransferFunction};
+use crate::hdr::types::{
+    HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
+};
+
+#[cfg(feature = "jpegxl")]
+fn jxl_sdr_grade_metadata(
+    transfer_function: HdrTransferFunction,
+    mastering_max_nits: f32,
+) -> HdrImageMetadata {
+    HdrImageMetadata {
+        transfer_function,
+        luminance: HdrLuminanceMetadata {
+            mastering_max_nits: Some(mastering_max_nits),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
 
 #[cfg(feature = "jpegxl")]
 #[test]
@@ -115,9 +132,7 @@ fn jxl_sdr_grade_fallback_direct_quantize_for_already_encoded_srgb() {
     // mode files: TF=sRGB ->already-encoded floats. The fast path quantizes
     // them directly via `value * 255` (no second-pass OETF).
     let rgba = vec![1.0_f32, 0.5, 0.0, 1.0];
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Srgb;
-    meta.luminance.mastering_max_nits = Some(255.0);
+    let meta = jxl_sdr_grade_metadata(HdrTransferFunction::Srgb, 255.0);
     let px = super::jxl_sdr_grade_fallback_rgba8(&rgba, HdrColorSpace::LinearSrgb, &meta)
         .expect("sdr-grade content must use direct sRGB encode");
     assert_eq!(px[0], 255, "1.0 ->255, got {}", px[0]);
@@ -138,9 +153,7 @@ fn jxl_sdr_grade_fallback_applies_srgb_oetf_for_truly_linear_floats() {
     // OETF before quantizing or shadows quantize ~22 codes too dark.
     // Linear 0.5 ->encoded ~0.735 ->~187 in 8-bit (not 128).
     let rgba = vec![1.0_f32, 0.5, 0.0, 1.0];
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Linear;
-    meta.luminance.mastering_max_nits = Some(255.0);
+    let meta = jxl_sdr_grade_metadata(HdrTransferFunction::Linear, 255.0);
     let px = super::jxl_sdr_grade_fallback_rgba8(&rgba, HdrColorSpace::LinearSrgb, &meta)
         .expect("sdr-grade content must use the OETF + quantize path");
     assert_eq!(px[0], 255, "1.0 ->255, got {}", px[0]);
@@ -156,9 +169,7 @@ fn jxl_sdr_grade_fallback_applies_srgb_oetf_for_truly_linear_floats() {
 #[cfg(feature = "jpegxl")]
 #[test]
 fn jxl_sdr_grade_srgb_tags_display_referred() {
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Srgb;
-    meta.luminance.mastering_max_nits = Some(255.0);
+    let mut meta = jxl_sdr_grade_metadata(HdrTransferFunction::Srgb, 255.0);
     super::jxl_tag_display_referred_when_sdr_grade(&mut meta);
     assert_eq!(meta.reference, HdrReference::DisplayReferred);
 }
@@ -166,9 +177,7 @@ fn jxl_sdr_grade_srgb_tags_display_referred() {
 #[cfg(feature = "jpegxl")]
 #[test]
 fn jxl_sdr_grade_linear_does_not_tag_display_referred() {
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Linear;
-    meta.luminance.mastering_max_nits = Some(255.0);
+    let mut meta = jxl_sdr_grade_metadata(HdrTransferFunction::Linear, 255.0);
     super::jxl_tag_display_referred_when_sdr_grade(&mut meta);
     assert_ne!(meta.reference, HdrReference::DisplayReferred);
 }
@@ -177,9 +186,7 @@ fn jxl_sdr_grade_linear_does_not_tag_display_referred() {
 #[test]
 fn jxl_sdr_grade_fallback_skipped_for_high_peak_hdr() {
     let rgba = vec![1.0_f32, 1.0, 1.0, 1.0];
-    let mut meta = HdrImageMetadata::default();
-    meta.transfer_function = HdrTransferFunction::Srgb;
-    meta.luminance.mastering_max_nits = Some(1000.0);
+    let meta = jxl_sdr_grade_metadata(HdrTransferFunction::Srgb, 1000.0);
     assert!(
         super::jxl_sdr_grade_fallback_rgba8(&rgba, HdrColorSpace::LinearSrgb, &meta).is_none(),
         "HDR (peak > 255 nits) must keep the tone-mapped path"
@@ -621,7 +628,7 @@ fn conformance_cmyk_layers_basic_info_and_channels_when_sample_present() {
             | libjxl_sys::JXL_DEC_COLOR_ENCODING
             | libjxl_sys::JXL_DEC_FRAME;
         assert_eq!(
-            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32),
+            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed),
             libjxl_sys::JXL_DEC_SUCCESS
         );
         assert_eq!(
@@ -751,7 +758,7 @@ fn conformance_cmyk_layers_cms_srgb_output_matches_ref_png_when_sample_present()
             | libjxl_sys::JXL_DEC_FRAME
             | libjxl_sys::JXL_DEC_FULL_IMAGE;
         assert_eq!(
-            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32),
+            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed),
             libjxl_sys::JXL_DEC_SUCCESS
         );
         assert_eq!(
@@ -980,7 +987,7 @@ fn conformance_cmyk_layers_naive_composition_models_are_all_wrong_when_sample_pr
             | libjxl_sys::JXL_DEC_FRAME
             | libjxl_sys::JXL_DEC_FULL_IMAGE;
         assert_eq!(
-            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32),
+            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed),
             libjxl_sys::JXL_DEC_SUCCESS
         );
         assert_eq!(
@@ -1581,7 +1588,7 @@ fn conformance_blendmodes_sdr_fallback_close_to_ref_png_when_sample_present() {
 
 /// Diagnostic harness for investigating SDR-fallback regressions on JXL
 /// conformance files. For a given (jxl, ref_png) pair: dumps `JxlBasicInfo`
-/// + extra-channel info, runs the live decode pipeline, and reports per-
+/// plus extra-channel info, runs the live decode pipeline, and reports per-
 /// channel bias / max-abs / pixel histogram of differences vs ref.png so
 /// we can localize where rendering goes wrong (gamma, primaries, blend
 /// modes, patches, ...). Skipped silently when the conformance corpus is
@@ -1598,7 +1605,7 @@ fn diagnose_conformance_pair(name: &str, jxl_path: &std::path::Path, ref_path: &
         let decoder = libjxl_sys::JxlDecoderCreate(std::ptr::null());
         assert!(!decoder.is_null());
         let subscribed = libjxl_sys::JXL_DEC_BASIC_INFO | libjxl_sys::JXL_DEC_COLOR_ENCODING;
-        libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32);
+        libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed);
         libjxl_sys::JxlDecoderSetInput(decoder, bytes.as_ptr(), bytes.len());
         libjxl_sys::JxlDecoderCloseInput(decoder);
         let mut info: libjxl_sys::JxlBasicInfo = std::mem::zeroed();
@@ -1775,14 +1782,16 @@ fn diagnose_conformance_blendmodes_and_patches_when_sample_present() {
 
 /// For each conformance file, sample a few specific pixels that are NOT
 /// pure black/white in `ref.png` and report:
-///   - libjxl's raw float values out of `JxlDecoderProcessInput`
-///   - what `srgb_unit_to_u8(v*255)` produces (direct quantize)
-///   - what `linear_to_srgb_u8(v)` produces (apply sRGB OETF first)
-///   - what `ref.png` actually has at that location
+/// - libjxl's raw float values out of `JxlDecoderProcessInput`
+/// - what `srgb_unit_to_u8(v*255)` produces (direct quantize)
+/// - what `linear_to_srgb_u8(v)` produces (apply sRGB OETF first)
+/// - what `ref.png` actually has at that location
+///
 /// The encoding that matches ref.png tells us how libjxl emitted floats
 /// for that bitstream --Modular-mode files with TF=Linear preserve linear
 /// values, while sRGB-tagged Modular-mode files preserve sRGB-encoded
 /// values, etc.
+///
 /// Count `JXL_DEC_FRAME` events fired by libjxl for `blendmodes/input.jxl`
 /// --if it's >1 with `have_animation=0` we know the file ships multiple
 /// blend-mode layers that libjxl coalesces; if our pipeline is somehow
@@ -1804,7 +1813,7 @@ fn diagnose_blendmodes_frame_count_when_sample_present() {
             | libjxl_sys::JXL_DEC_COLOR_ENCODING
             | libjxl_sys::JXL_DEC_FRAME
             | libjxl_sys::JXL_DEC_FULL_IMAGE;
-        libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32);
+        libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed);
         libjxl_sys::JxlDecoderSetInput(decoder, bytes.as_ptr(), bytes.len());
         libjxl_sys::JxlDecoderCloseInput(decoder);
         let pf = libjxl_sys::JxlPixelFormat {
@@ -1830,9 +1839,10 @@ fn diagnose_blendmodes_frame_count_when_sample_present() {
                     buf.as_mut_ptr().cast(),
                     size,
                 );
-            } else if st == libjxl_sys::JXL_DEC_SUCCESS || st == libjxl_sys::JXL_DEC_ERROR {
-                break;
-            } else if st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT {
+            } else if st == libjxl_sys::JXL_DEC_SUCCESS
+                || st == libjxl_sys::JXL_DEC_ERROR
+                || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT
+            {
                 break;
             }
         }
@@ -1844,8 +1854,8 @@ fn diagnose_blendmodes_frame_count_when_sample_present() {
 }
 
 /// Hunt for pixels with the largest channel diff between our SDR fallback
-/// bytes and `ref.png` for `blendmodes/input.jxl` and dump float + alpha
-/// + neighbours so we can identify whether the discrepancy is a clamp,
+/// bytes and `ref.png` for `blendmodes/input.jxl` and dump float plus alpha
+/// and neighbours so we can identify whether the discrepancy is a clamp,
 /// alpha-compositing, or layer blend bug.
 #[cfg(feature = "jpegxl")]
 #[test]
@@ -1887,7 +1897,7 @@ fn diagnose_blendmodes_worst_pixels_when_sample_present() {
             }
         }
     }
-    worst.sort_by(|a, b| b.0.cmp(&a.0));
+    worst.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     worst.truncate(10);
     for &(diff, x, y) in &worst {
         let i = (y * w + x) * 4;
@@ -1937,7 +1947,7 @@ fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
                 | libjxl_sys::JXL_DEC_COLOR_ENCODING
                 | libjxl_sys::JXL_DEC_FRAME
                 | libjxl_sys::JXL_DEC_FULL_IMAGE;
-            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed as i32);
+            libjxl_sys::JxlDecoderSubscribeEvents(decoder, subscribed);
             libjxl_sys::JxlDecoderSetInput(decoder, bytes.as_ptr(), bytes.len());
             libjxl_sys::JxlDecoderCloseInput(decoder);
             let pixel_format = libjxl_sys::JxlPixelFormat {
@@ -1966,9 +1976,8 @@ fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
                         rgba_f32.as_mut_ptr().cast(),
                         size,
                     );
-                } else if st == libjxl_sys::JXL_DEC_FULL_IMAGE {
-                    break;
-                } else if st == libjxl_sys::JXL_DEC_ERROR
+                } else if st == libjxl_sys::JXL_DEC_FULL_IMAGE
+                    || st == libjxl_sys::JXL_DEC_ERROR
                     || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT
                 {
                     break;

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crossbeam_channel::{Sender, TrySendError};
+use crossbeam_channel::{SendTimeoutError, Sender};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
@@ -141,7 +141,10 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
 /// `modified_unix` stores UTC seconds from [`Metadata::modified`].
 fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
     let len = metadata.len();
-    if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
+    if len < crate::constants::MIN_IMAGE_FILE_BYTES
+        || !metadata.is_file()
+        || is_offline_meta(metadata)
+    {
         return None;
     }
     use std::time::UNIX_EPOCH;
@@ -512,25 +515,24 @@ fn send_scan_message(
     let mut pending = msg;
     let deadline = Instant::now() + SCAN_SEND_MAX_WALL_CLOCK;
     loop {
-        if Instant::now() >= deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             log::warn!("[Scanner] Dropping scan message: UI channel full for too long");
             return false;
         }
-        match tx.try_send(pending) {
+        let wait = remaining.min(SCAN_SEND_RETRY_SLEEP);
+        match tx.send_timeout(pending, wait) {
             Ok(()) => {
                 if let Some(wake) = wake_ui {
                     wake();
                 }
                 return true;
             }
-            Err(TrySendError::Full(m)) => {
-                if cancel.load(Ordering::Relaxed) {
-                    return false;
-                }
-                pending = m;
-                std::thread::sleep(SCAN_SEND_RETRY_SLEEP);
-            }
-            Err(TrySendError::Disconnected(_)) => return false,
+            Err(SendTimeoutError::Timeout(m)) => pending = m,
+            Err(SendTimeoutError::Disconnected(_)) => return false,
         }
     }
 }
@@ -740,7 +742,8 @@ mod tests {
         }
 
         fn touch(&self, name: &str) {
-            std::fs::write(self.path.join(name), b"image").expect("write test file");
+            let bytes = vec![0u8; crate::constants::MIN_IMAGE_FILE_BYTES as usize];
+            std::fs::write(self.path.join(name), bytes).expect("write test file");
         }
 
         fn path(&self) -> &Path {
@@ -767,18 +770,13 @@ mod tests {
         );
 
         let mut files = Vec::new();
-        loop {
-            match rx.recv().expect("scan message") {
-                ScanMessage::Batch { files: batch, .. } => {
-                    files.extend(batch.into_iter().map(|(path, _, _)| {
-                        path.file_name()
-                            .expect("file name")
-                            .to_string_lossy()
-                            .into_owned()
-                    }));
-                }
-                ScanMessage::Done { .. } => break,
-            }
+        while let ScanMessage::Batch { files: batch, .. } = rx.recv().expect("scan message") {
+            files.extend(batch.into_iter().map(|(path, _, _)| {
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned()
+            }));
         }
         files.sort();
         files

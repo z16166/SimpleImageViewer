@@ -23,9 +23,9 @@ use super::ui::{
     clamp_directory_tree_left_panel_width, directory_ancestor_chain, directory_display_name,
     directory_tree_left_panel_width_limits, directory_tree_node_icon_fields,
     directory_tree_panel_layout, filesystem_ancestor_chain, image_list_column_layout,
-    image_list_modified_column, image_list_name_column, image_list_size_column,
-    image_list_thumb_column, min_scroll_offset_to_show_row, preview_texture_contain_rect,
-    unc_share_root, wrapped_image_list_index, image_list_home_end_index,
+    image_list_home_end_index, image_list_modified_column, image_list_name_column,
+    image_list_size_column, image_list_thumb_column, min_scroll_offset_to_show_row,
+    preview_texture_contain_rect, unc_share_root, wrapped_image_list_index,
 };
 use super::workers::read_child_directories;
 use super::*;
@@ -137,7 +137,7 @@ fn apply_children_result_ignores_stale_generation() {
     });
 
     let node = state.tree.nodes.get(&root).expect("root node");
-    assert!(node.loading);
+    assert!(!node.loading);
     assert!(!node.children_loaded);
     assert!(node.children.is_empty());
     let child_tree = super::namespace::namespace_child_path(&root, &root, &child);
@@ -214,6 +214,124 @@ fn apply_children_result_records_read_error() {
     assert!(node.children_loaded);
     assert!(node.children.is_empty());
     assert_eq!(node.error.as_deref(), Some("permission denied"));
+}
+
+#[test]
+fn apply_children_result_leaves_children_unloaded_when_node_cap_reached() {
+    let root = PathBuf::from("/tmp/siv-dir-tree-cap-root");
+    let child_a = PathBuf::from("/tmp/siv-dir-tree-cap-a");
+    let child_b = PathBuf::from("/tmp/siv-dir-tree-cap-b");
+
+    let mut state = DirectoryTreeState::default();
+    state.tree.places_loaded = true;
+    state.tree.generation = 1;
+    let _ = state.tree.nodes.insert(
+        root.clone(),
+        DirectoryTreeNode {
+            display_name: "root".to_string(),
+            fs_path: root.clone(),
+            expanded: true,
+            loading: true,
+            children_loaded: false,
+            children: Vec::new(),
+            error: None,
+        },
+        super::MAX_DIRECTORY_TREE_NODES,
+    );
+    for idx in 0..super::MAX_DIRECTORY_TREE_NODES {
+        let filler = PathBuf::from(format!("/tmp/siv-dir-tree-cap-filler-{idx}"));
+        let _ = state.tree.nodes.insert(
+            filler,
+            DirectoryTreeNode {
+                display_name: format!("filler-{idx}"),
+                fs_path: PathBuf::from(format!("/tmp/siv-dir-tree-cap-filler-{idx}")),
+                expanded: false,
+                loading: false,
+                children_loaded: false,
+                children: Vec::new(),
+                error: None,
+            },
+            super::MAX_DIRECTORY_TREE_NODES,
+        );
+    }
+
+    state.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: 1,
+        result: Ok(vec![child_a.clone(), child_b.clone()]),
+    });
+
+    let node = state.tree.nodes.get(&root).expect("root node");
+    assert!(!node.loading);
+    assert!(!node.children_loaded);
+    assert!(node.error.is_some());
+    assert!(node.children.len() < 2);
+}
+
+#[test]
+fn initialize_places_clears_provisional_bootstrap_children() {
+    use crate::directory_tree_places::types::DriveEntry;
+
+    let browse = PathBuf::from(r"F:\iphone15\2026-05-27");
+    let mount_root = super::namespace::drive_mount_namespace_path(Path::new(r"F:\"));
+    let via_mount = super::namespace::namespace_child_path(
+        &super::namespace::namespace_child_path(
+            &mount_root,
+            Path::new(r"F:\"),
+            &PathBuf::from(r"F:\iphone15"),
+        ),
+        &PathBuf::from(r"F:\iphone15"),
+        &browse,
+    );
+    let iphone15 = PathBuf::from(r"F:\iphone15");
+    let iphone15_ns =
+        super::namespace::namespace_child_path(&mount_root, Path::new(r"F:\"), &iphone15);
+
+    let mut state = DirectoryTreeState::default();
+    state
+        .tree
+        .restore_tree_selection(browse.clone(), Some(via_mount.clone()));
+    let _requests = state.tree.reveal_selected_namespace();
+    assert!(
+        state.tree.nodes.get(&mount_root).is_some_and(|node| node
+            .children
+            .iter()
+            .any(|child| child.as_os_str() == iphone15_ns.as_os_str())),
+        "bootstrap reveal should link the selected chain child before Places loads"
+    );
+
+    let places = crate::directory_tree_places::DirectoryTreePlaces {
+        this_pc_label: "This PC".to_string(),
+        known_folders: Vec::new(),
+        drives: vec![DriveEntry {
+            display_name: "Local Disk (F:)".to_string(),
+            fs_path: PathBuf::from(r"F:\"),
+        }],
+        network_locations: Vec::new(),
+        network_label: "Network".to_string(),
+    };
+    state.initialize_places(places);
+
+    let mount_node = state.tree.nodes.get(&mount_root).expect("mount node");
+    assert!(
+        mount_node.children.is_empty(),
+        "Places init should drop provisional bootstrap children until read_dir completes"
+    );
+    assert!(!mount_node.children_loaded);
+
+    let requests = state.children_requests_for_selection(&browse);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.namespace_path == mount_root),
+        "post-Places reveal should reload the mount root on the saved chain"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.namespace_path == via_mount),
+        "post-Places reveal should load the selected folder listing"
+    );
 }
 
 #[test]
@@ -485,14 +603,8 @@ fn wrapped_image_list_index_loops_at_bounds() {
 
 #[test]
 fn image_list_home_end_index_jumps_to_bounds() {
-    assert_eq!(
-        image_list_home_end_index(4, egui::Key::Home, 10),
-        Some(0)
-    );
-    assert_eq!(
-        image_list_home_end_index(4, egui::Key::End, 10),
-        Some(9)
-    );
+    assert_eq!(image_list_home_end_index(4, egui::Key::Home, 10), Some(0));
+    assert_eq!(image_list_home_end_index(4, egui::Key::End, 10), Some(9));
     assert!(image_list_home_end_index(0, egui::Key::Home, 10).is_none());
     assert!(image_list_home_end_index(9, egui::Key::End, 10).is_none());
     assert!(image_list_home_end_index(0, egui::Key::Home, 0).is_none());
@@ -732,18 +844,17 @@ fn image_list_sort_desc_mirrors_asc_index_even_with_tied_keys() {
         &sizes,
         &modified,
     );
-    let mut asc_to_desc = vec![0usize; LEN];
+    let mut asc_to_desc = [0usize; LEN];
     for (new_idx, &old_idx) in desc_order.iter().enumerate() {
         asc_to_desc[old_idx] = new_idx;
     }
 
-    let mut unsorted_to_asc = vec![0usize; LEN];
+    let mut unsorted_to_asc = [0usize; LEN];
     for (new_idx, &old_idx) in asc_order.iter().enumerate() {
         unsorted_to_asc[old_idx] = new_idx;
     }
 
-    for original_index in 0..LEN {
-        let asc_index = unsorted_to_asc[original_index];
+    for (original_index, &asc_index) in unsorted_to_asc.iter().enumerate() {
         let desc_index = asc_to_desc[asc_index];
         assert_eq!(
             asc_index + desc_index,
@@ -1094,12 +1205,12 @@ fn reveal_mount_path_skips_root_slash_ancestor_chain() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run"))
+            .any(|request| request.namespace_path == *"/run")
     );
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run/media"))
+            .any(|request| request.namespace_path == *"/run/media")
     );
     assert!(
         requests
@@ -1510,8 +1621,10 @@ fn pre_places_folder_display_root_returns_mount_when_bootstrap_node_exists() {
 #[test]
 fn fs_path_for_namespace_node_pre_places_none_without_mount_roots() {
     let mount = super::namespace::drive_mount_namespace_path(Path::new(r"Z:\"));
-    let mut tree = DirectoryTreeTreeState::default();
-    tree.selected_fs_path = Some(PathBuf::from("relative/no/volume/file.jpg"));
+    let tree = DirectoryTreeTreeState {
+        selected_fs_path: Some(PathBuf::from("relative/no/volume/file.jpg")),
+        ..Default::default()
+    };
     assert!(
         tree.fs_path_for_namespace_node_pre_places(&mount).is_none(),
         "unresolved relative paths yield no mount roots and no fs mapping"
@@ -1816,7 +1929,7 @@ fn reveal_selected_namespace_follows_namespace_path_not_browse_alias() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.namespace_path == PathBuf::from("/run")),
+            .any(|request| request.namespace_path == *"/run"),
         "reveal must not expand filesystem-derived /run branch when namespace branch is selected"
     );
     assert!(
@@ -1990,9 +2103,11 @@ fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
     use super::view::DirectoryTreeUiChrome;
 
     let tree = DirectoryTreeTreeState::default();
-    let mut list = DirectoryTreeListState::default();
-    list.scroll_image_list_to_current = true;
-    list.snapshot_dirty = false;
+    let mut list = DirectoryTreeListState {
+        scroll_image_list_to_current: true,
+        snapshot_dirty: false,
+        ..Default::default()
+    };
     let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
     chrome.scroll_image_list_to_current = false;
 
@@ -2007,8 +2122,10 @@ fn apply_to_domains_marks_list_snapshot_dirty_when_image_scroll_clears() {
 fn apply_to_domains_marks_tree_snapshot_dirty_when_left_panel_resized() {
     use super::view::DirectoryTreeUiChrome;
 
-    let mut tree = DirectoryTreeTreeState::default();
-    tree.snapshot_dirty = false;
+    let mut tree = DirectoryTreeTreeState {
+        snapshot_dirty: false,
+        ..Default::default()
+    };
     let mut list = DirectoryTreeListState::default();
     let mut chrome = DirectoryTreeUiChrome::from_domains(&tree, &list);
     chrome.left_panel_width = tree.left_panel_width + 24.0;
@@ -2151,10 +2268,10 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
         String::new(),
     );
     assert_eq!(state.list.image_rows.len(), 3);
-    assert_eq!(state.list.image_rows[0].path, path_a);
-    assert_eq!(state.list.image_rows[0].size_bytes, 1);
-    assert_eq!(state.list.image_rows[1].path, path_b);
-    assert_eq!(state.list.image_rows[1].size_bytes, 2);
+    assert_eq!(state.list.image_rows[0].path, path_b);
+    assert_eq!(state.list.image_rows[0].size_bytes, 2);
+    assert_eq!(state.list.image_rows[1].path, path_a);
+    assert_eq!(state.list.image_rows[1].size_bytes, 1);
     assert_eq!(state.list.image_rows[2].path, path_c);
     assert_eq!(state.list.image_rows[2].size_bytes, 3);
     assert!(state.list.image_rows.iter().any(|row| row.path == path_c));
@@ -2167,6 +2284,51 @@ fn sync_images_sort_active_inserts_new_paths_without_duplicates() {
             .count(),
         1
     );
+}
+
+#[test]
+fn sync_images_refreshes_existing_rows_when_appending_during_scan() {
+    let mut state = DirectoryTreeState::default();
+    let path_a = PathBuf::from("/dir/a.jpg");
+    let path_b = PathBuf::from("/dir/b.jpg");
+    state.list.image_rows = vec![DirectoryTreeFileRow::new(
+        path_a.clone(),
+        "a".to_string(),
+        0,
+        None,
+    )];
+    let images = vec![path_a.clone(), path_b.clone()];
+    state.sync_images(
+        &images,
+        &[1024, 2048],
+        &[Some(100), None],
+        0,
+        true,
+        String::from("scanning"),
+    );
+    assert_eq!(state.list.image_rows.len(), 2);
+    assert_eq!(state.list.image_rows[0].size_bytes, 1024);
+    assert_eq!(state.list.image_rows[0].modified_unix, Some(100));
+    assert_eq!(state.list.image_rows[1].size_bytes, 2048);
+}
+
+#[test]
+fn sync_images_sort_active_realigns_rows_after_image_order_changes() {
+    let mut state = DirectoryTreeState::default();
+    state.list.image_list_sort_active = true;
+    let path_small = PathBuf::from("/dir/small.jpg");
+    let path_large = PathBuf::from("/dir/large.jpg");
+    state.list.image_rows = vec![
+        DirectoryTreeFileRow::new(path_small.clone(), "small".to_string(), 100, None),
+        DirectoryTreeFileRow::new(path_large.clone(), "large".to_string(), 200, None),
+    ];
+    let images = vec![path_large.clone(), path_small.clone()];
+    let sizes = vec![4_637_379_310_u64, 7_962_624_u64];
+    state.sync_images(&images, &sizes, &[None, None], 0, false, String::new());
+    assert_eq!(state.list.image_rows[0].path, path_large);
+    assert_eq!(state.list.image_rows[0].size_bytes, 4_637_379_310);
+    assert_eq!(state.list.image_rows[1].path, path_small);
+    assert_eq!(state.list.image_rows[1].size_bytes, 7_962_624);
 }
 
 #[test]

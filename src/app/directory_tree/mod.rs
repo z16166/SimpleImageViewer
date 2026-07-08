@@ -166,6 +166,7 @@ pub(crate) enum DirectoryTreeCommand {
     SelectImageAndHideNav(usize),
     SortImageList(ImageListSortColumn),
     CloseWindow,
+    ToggleNavVisibility,
 }
 
 /// Non-blocking UI -> logic command; drops with a warning if the bounded channel is full.
@@ -289,21 +290,13 @@ pub(crate) use domains::{
 
 /// Combined writer access for tests and legacy call sites (separate runtime mutexes in production).
 #[cfg(test)]
+#[derive(Default)]
 pub(crate) struct DirectoryTreeState {
     pub tree: DirectoryTreeTreeState,
     pub list: DirectoryTreeListState,
 }
 
 #[cfg(test)]
-impl Default for DirectoryTreeState {
-    fn default() -> Self {
-        Self {
-            tree: DirectoryTreeTreeState::default(),
-            list: DirectoryTreeListState::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(dead_code)]
 impl DirectoryTreeState {
@@ -327,7 +320,14 @@ impl DirectoryTreeState {
         &mut self,
         dir: &Path,
     ) -> Vec<DirectoryChildrenRequest> {
-        self.tree.expand_requests_for_selection(dir)
+        self.tree.children_requests_for_selection(dir)
+    }
+
+    pub(crate) fn children_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        self.tree.children_requests_for_selection(dir)
     }
 
     pub(crate) fn reveal_selected_namespace(&mut self) -> Vec<DirectoryChildrenRequest> {
@@ -468,6 +468,10 @@ pub(crate) struct DirectoryTreeRuntime {
     /// - The app outlives all viewport callbacks because it is owned by eframe as `Box<dyn App>`.
     /// - Never dereference from worker threads or from `logic()`; use locked state / snapshots instead.
     pub(crate) viewpaint_app: Arc<std::sync::atomic::AtomicPtr<super::ImageViewerApp>>,
+    /// When true, detached viewport must not dispatch cross-window hotkeys (modal/settings open on ROOT).
+    pub(crate) cross_viewport_hotkeys_blocked: Arc<AtomicBool>,
+    /// Snapshot of chords bound to [`HotkeyActionId::ToggleDirectoryTreeNav`] for detached viewport input.
+    pub(crate) toggle_nav_hotkey_chords: Arc<ArcSwap<Vec<crate::hotkeys::model::KeyChord>>>,
     workers_shutdown: Arc<AtomicBool>,
     children_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
     metadata_worker: parking_lot::Mutex<Option<JoinHandle<()>>>,
@@ -577,6 +581,8 @@ impl DirectoryTreeRuntime {
             result_rx,
             metadata_result_rx,
             viewpaint_app: Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())),
+            cross_viewport_hotkeys_blocked: Arc::new(AtomicBool::new(false)),
+            toggle_nav_hotkey_chords: Arc::new(ArcSwap::from_pointee(Vec::new())),
             workers_shutdown,
             children_worker: parking_lot::Mutex::new(children_worker),
             metadata_worker: parking_lot::Mutex::new(metadata_worker),
@@ -707,6 +713,7 @@ impl DirectoryTreeTreeState {
     pub(crate) fn initialize_places(&mut self, places: DirectoryTreePlaces) {
         self.generation = self.generation.wrapping_add(1);
         self.mark_snapshot_dirty();
+        let mut valid_keys = std::collections::HashSet::new();
         self.places_loaded = true;
         self.known_folders = places.known_folders;
         self.network_label = places.network_label;
@@ -739,8 +746,10 @@ impl DirectoryTreeTreeState {
                 error: None,
             },
         );
+        valid_keys.insert(this_pc_namespace_path());
 
         for entry in self.known_folders.clone() {
+            valid_keys.insert(entry.namespace_path.clone());
             self.insert_tree_node(
                 entry.namespace_path.clone(),
                 DirectoryTreeNode {
@@ -757,6 +766,12 @@ impl DirectoryTreeTreeState {
 
         for drive in places.drives {
             let namespace_path = namespace::drive_mount_namespace_path(&drive.fs_path);
+            valid_keys.insert(namespace_path.clone());
+            if let Some(existing) = self.nodes.get(&namespace_path) {
+                for child in &existing.children {
+                    valid_keys.insert(child.clone());
+                }
+            }
             self.or_insert_tree_node(namespace_path, || {
                 directory_tree_node(drive.display_name, drive.fs_path)
             });
@@ -769,6 +784,7 @@ impl DirectoryTreeTreeState {
                 .map(|entry| namespace::network_share_namespace_path(&entry.fs_path))
                 .collect();
             self.network_visible = true;
+            valid_keys.insert(network_namespace_path());
             self.insert_tree_node(
                 network_namespace_path(),
                 DirectoryTreeNode {
@@ -783,11 +799,37 @@ impl DirectoryTreeTreeState {
             );
             for entry in places.network_locations {
                 let namespace_path = namespace::network_share_namespace_path(&entry.fs_path);
+                valid_keys.insert(namespace_path.clone());
                 self.or_insert_tree_node(namespace_path, || {
                     directory_tree_node(entry.display_name, entry.fs_path)
                 });
             }
         }
+
+        self.nodes.retain(|key| valid_keys.contains(key));
+        self.reset_interrupted_children_loads();
+    }
+
+    /// After a generation bump, invalidate cached directory listings so reveal reloads from disk.
+    fn reset_interrupted_children_loads(&mut self) {
+        let paths: Vec<PathBuf> = self.nodes.iter().map(|(path, _)| path.clone()).collect();
+        for path in paths {
+            if is_places_sentinel_namespace_path(&path) || is_this_pc_namespace_path(&path) {
+                continue;
+            }
+            // Network children are curated from Places, not read_dir.
+            if is_network_namespace_path(&path) {
+                continue;
+            }
+            let Some(node) = self.nodes.get_mut(&path) else {
+                continue;
+            };
+            node.loading = false;
+            node.children_loaded = false;
+            node.children.clear();
+            node.error = None;
+        }
+        self.mark_snapshot_dirty();
     }
 
     pub(crate) fn ensure_network_visible(&mut self) {
@@ -946,6 +988,14 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn expand_requests_for_selection(
+        &mut self,
+        dir: &Path,
+    ) -> Vec<DirectoryChildrenRequest> {
+        self.children_requests_for_selection(dir)
+    }
+
+    /// Queue reveal-chain ancestor loads plus a listing for the selected folder itself.
+    pub(crate) fn children_requests_for_selection(
         &mut self,
         dir: &Path,
     ) -> Vec<DirectoryChildrenRequest> {
@@ -1379,6 +1429,40 @@ fn image_rows_match_image_order(rows: &[DirectoryTreeFileRow], images: &[PathBuf
     rows.len() <= images.len() && rows.iter().zip(images).all(|(row, path)| row.path == *path)
 }
 
+/// When list sort is active, `image_files` is permuted in place; rows must follow the same order
+/// for the UI to match the sort key (size / modified / name).
+fn realign_image_rows_to_image_order(
+    rows: &mut Vec<DirectoryTreeFileRow>,
+    images: &[PathBuf],
+    sizes: &[u64],
+    modified: &[Option<i64>],
+) {
+    if rows.len() != images.len() || image_rows_match_image_order(rows, images) {
+        return;
+    }
+    let mut rows_by_path: std::collections::HashMap<PathBuf, DirectoryTreeFileRow> =
+        rows.drain(..).map(|row| (row.path.clone(), row)).collect();
+    rows.reserve(images.len());
+    for (index, path) in images.iter().enumerate() {
+        let mut row = rows_by_path.remove(path).unwrap_or_else(|| {
+            DirectoryTreeFileRow::new(
+                path.clone(),
+                directory_display_name(path),
+                sizes.get(index).copied().unwrap_or(0),
+                modified.get(index).copied().flatten(),
+            )
+        });
+        if let Some(size) = sizes.get(index) {
+            row.size_bytes = *size;
+        }
+        if let Some(mtime) = modified.get(index) {
+            row.modified_unix = *mtime;
+        }
+        row.refresh_display_cache();
+        rows.push(row);
+    }
+}
+
 impl DirectoryTreeListState {
     pub(crate) fn sync_images(
         &mut self,
@@ -1431,6 +1515,7 @@ impl DirectoryTreeListState {
                 ));
             }
             self.image_rows.extend(new_rows);
+            realign_image_rows_to_image_order(&mut self.image_rows, images, sizes, modified);
         } else {
             let order_matches = image_rows_match_image_order(&self.image_rows, images);
             if !order_matches {
@@ -1452,6 +1537,15 @@ impl DirectoryTreeListState {
                     .collect();
                 self.image_list_scroll_offset_y = 0.0;
             } else if images.len() > self.image_rows.len() {
+                for (index, row) in self.image_rows.iter_mut().enumerate() {
+                    if let Some(size) = sizes.get(index) {
+                        row.size_bytes = *size;
+                    }
+                    if let Some(Some(mtime)) = modified.get(index) {
+                        row.modified_unix = Some(*mtime);
+                    }
+                    row.refresh_display_cache();
+                }
                 let start = self.image_rows.len();
                 for (index, path) in images.iter().enumerate().skip(start) {
                     let mtime = modified.get(index).copied().flatten();
@@ -1583,7 +1677,14 @@ impl DirectoryTreeTreeState {
     }
 
     pub(crate) fn apply_children_result(&mut self, result: DirectoryChildrenResult) {
+        let namespace_path = result.namespace_path.clone();
         if result.generation != self.generation {
+            if let Some(node) = self.nodes.get_mut(&namespace_path)
+                && node.loading
+            {
+                node.loading = false;
+                self.mark_snapshot_dirty();
+            }
             return;
         }
 
@@ -1634,8 +1735,8 @@ impl DirectoryTreeTreeState {
                     return;
                 };
                 node.loading = false;
-                // Cap is a global arena limit; retry on re-expand would only re-hit the cap.
-                node.children_loaded = true;
+                // Cap is a global arena limit; leave children_loaded false so re-expand can retry.
+                node.children_loaded = !cap_reached;
                 node.children = loaded_children;
                 Self::dedupe_tree_children(&mut node.children);
                 node.error = if cap_reached {
@@ -1663,6 +1764,7 @@ mod namespace;
 mod node_store;
 mod sort;
 mod strip_previews;
+pub(crate) use strip_previews::DirectoryTreeStripPendingMainHandoff;
 mod ui;
 mod view;
 mod visibility;

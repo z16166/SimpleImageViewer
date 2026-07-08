@@ -342,8 +342,8 @@ mod tests {
         let probe = crate::raw_processor::probe_libraw_can_open(path);
         eprintln!("sniff={sniff} libraw_probe={probe}");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let sdr = crate::libtiff_loader::load_via_libtiff(path, 1.0, tone.clone())
-            .expect("libtiff sdr load");
+        let sdr =
+            crate::libtiff_loader::load_via_libtiff(path, 1.0, tone).expect("libtiff sdr load");
         let hdr =
             crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
         if let crate::loader::ImageData::Static(d) = &sdr {
@@ -365,6 +365,48 @@ mod tests {
             matches!(hdr, crate::loader::ImageData::Hdr { .. }),
             "Nikon D800 camera TIFF should load as HDR when headroom > 1"
         );
+    }
+
+    /// Requires `F:\win7\top100\heic0506a.tif`.
+    #[test]
+    #[ignore]
+    fn probe_heic0506a_tiff_routing() {
+        let path = Path::new(r"F:\win7\top100\heic0506a.tif");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+        let img =
+            crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
+        if let Ok(tags) = crate::libtiff_loader::peek_tiff_tags(path) {
+            eprintln!("{tags}");
+        }
+        match &img {
+            crate::loader::ImageData::Static(d) => {
+                eprintln!("Static {}x{}", d.width, d.height);
+            }
+            crate::loader::ImageData::Tiled(s) => {
+                eprintln!(
+                    "Tiled {}x{} hdr_sdr_fallback={}",
+                    s.width(),
+                    s.height(),
+                    s.is_hdr_sdr_fallback()
+                );
+            }
+            crate::loader::ImageData::Hdr { hdr, .. } => {
+                eprintln!("Hdr static {}x{}", hdr.width, hdr.height);
+            }
+            crate::loader::ImageData::HdrTiled { hdr, .. } => {
+                eprintln!(
+                    "HdrTiled {}x{} kind={}",
+                    hdr.width(),
+                    hdr.height(),
+                    hdr.source_kind().as_str()
+                );
+            }
+            _ => eprintln!("other ImageData variant"),
+        }
     }
 
     /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF`.

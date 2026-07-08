@@ -34,56 +34,6 @@ impl ImageViewerApp {
         }
     }
 
-    /// App-global hotkeys that must work from deferred child viewports (e.g. detached nav).
-    /// ROOT [`Self::handle_keyboard`] does not receive keys while a child OS window is focused.
-    pub(crate) fn handle_cross_viewport_hotkeys(&mut self, ctx: &Context) {
-        if self.active_modal.is_some() || self.show_settings {
-            return;
-        }
-        let action = ctx.input(|i| self.map_key_to_action(i));
-        let Some(act) = action else {
-            return;
-        };
-        if !Self::is_cross_viewport_hotkey(act) {
-            return;
-        }
-        self.consume_hotkey_events_for_action(ctx, act);
-        self.dispatch_action(act, ctx);
-    }
-
-    fn is_cross_viewport_hotkey(action: AppAction) -> bool {
-        matches!(action, AppAction::ToggleDirectoryTreeNav)
-    }
-
-    fn consume_hotkey_events_for_action(&self, ctx: &Context, action: AppAction) {
-        ctx.input_mut(|input| {
-            let mut keys_to_consume = Vec::new();
-            for ev in &input.events {
-                let egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } = ev
-                else {
-                    continue;
-                };
-                let chord = KeyChord::from_input_event(*key, *modifiers);
-                if self
-                    .hotkeys_runtime
-                    .map
-                    .get(&chord)
-                    .is_some_and(|action_id| app_action_from_hotkey_action_id(*action_id) == action)
-                {
-                    keys_to_consume.push((*modifiers, *key));
-                }
-            }
-            for (modifiers, key) in keys_to_consume {
-                input.consume_key(modifiers, key);
-            }
-        });
-    }
-
     /// Layer 3: Input handling when a modal dialog is active.
     fn handle_modal_input(&mut self, ctx: &Context) {
         ctx.input(|i| {
@@ -154,38 +104,86 @@ impl ImageViewerApp {
     }
 
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
-        for ev in &i.events {
-            if let egui::Event::Key {
+        for chord in input_hotkey_chords(i) {
+            if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                return Some(app_action_from_hotkey_action_id(action_id));
+            }
+        }
+        None
+    }
+}
+
+fn input_hotkey_chords(i: &egui::InputState) -> impl Iterator<Item = KeyChord> + '_ {
+    let key_chords = i.events.iter().filter_map(|ev| {
+        let egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = ev
+        else {
+            return None;
+        };
+        Some(KeyChord::from_input_event(*key, *modifiers))
+    });
+
+    let current_mods = get_modifiers_mask(i.modifiers);
+    let text_chords = i.events.iter().filter_map(move |ev| {
+        let egui::Event::Text(text) = ev else {
+            return None;
+        };
+        let logical = text_event_to_hotkey_logical_key(text)?;
+        Some(KeyChord {
+            modifiers: current_mods,
+            key: logical,
+        })
+    });
+
+    key_chords.chain(text_chords)
+}
+
+pub(crate) fn detect_cross_viewport_hotkey(
+    i: &egui::InputState,
+    chords: &[KeyChord],
+) -> Option<KeyChord> {
+    input_hotkey_chords(i).find(|chord| chords.contains(chord))
+}
+
+pub(crate) fn consume_cross_viewport_hotkey(ctx: &Context, chord: KeyChord) {
+    ctx.input_mut(|input| {
+        let current_mods = get_modifiers_mask(input.modifiers);
+
+        let mut keys_to_consume = Vec::new();
+        for ev in &input.events {
+            let egui::Event::Key {
                 key,
                 pressed: true,
                 modifiers,
                 ..
             } = ev
-            {
-                let chord = KeyChord::from_input_event(*key, *modifiers);
-                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
-                    return Some(app_action_from_hotkey_action_id(action_id));
-                }
+            else {
+                continue;
+            };
+            let ev_chord = KeyChord::from_input_event(*key, *modifiers);
+            if ev_chord == chord {
+                keys_to_consume.push((*modifiers, *key));
             }
         }
-
-        // Some keyboard layouts report zoom keys as text input rather than plain key presses.
-        let current_mods = get_modifiers_mask(i.modifiers);
-        for ev in &i.events {
-            if let egui::Event::Text(text) = ev {
-                let logical = text_event_to_hotkey_logical_key(text);
-                if let Some(logical) = logical {
-                    let chord = KeyChord {
-                        modifiers: current_mods,
-                        key: logical,
-                    };
-                    if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
-                        return Some(app_action_from_hotkey_action_id(action_id));
-                    }
-                }
-            }
+        for (modifiers, key) in keys_to_consume {
+            input.consume_key(modifiers, key);
         }
 
-        None
-    }
+        input.events.retain(|ev| {
+            let egui::Event::Text(text) = ev else {
+                return true;
+            };
+            let Some(logical) = text_event_to_hotkey_logical_key(text) else {
+                return true;
+            };
+            KeyChord {
+                modifiers: current_mods,
+                key: logical,
+            } != chord
+        });
+    });
 }

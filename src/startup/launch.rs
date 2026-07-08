@@ -165,11 +165,12 @@ pub fn run() -> eframe::Result {
     #[cfg(not(feature = "startup-timing"))]
     startup_log_phase(&mut prev, startup_t0, "init_logging");
 
-    let mimalloc_startup_label = match crate::allocator_tuning::mimalloc_version() {
+    let allocator_startup_label = match crate::allocator_tuning::mimalloc_version() {
         30302 => "mimalloc version 30302 + image policy",
+        0 => "system allocator (mimalloc disabled)",
         _ => "mimalloc version unexpected + image policy",
     };
-    startup_log_phase(&mut prev, startup_t0, mimalloc_startup_label);
+    startup_log_phase(&mut prev, startup_t0, allocator_startup_label);
 
     let env_info = log_env_info();
     startup_log_phase(&mut prev, startup_t0, "log_env_info");

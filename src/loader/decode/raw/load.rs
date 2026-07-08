@@ -39,7 +39,7 @@ use crate::loader::raw_osd::RawOsdContext;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource, RawImageSourceParams};
 use crate::loader::{
     DecodeProfile, DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult,
-    RawLoadOutput, RefinementRequest, source_key_for_path,
+    RawDevelopedImageRank, RawLoadOutput, RefinementRequest, source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -181,6 +181,7 @@ fn load_raw_with_embedded_bootstrap(
             raw_width: width,
             raw_height: height,
             refine_tx,
+            initial_image_rank: RawDevelopedImageRank::EmbeddedPreview,
             orientation_override: final_lr_flip,
             needs_refinement: true,
             hdr_target_capacity,
@@ -327,14 +328,14 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         path.file_name().unwrap_or_default()
     );
 
-    let (width, height) = {
-        if high_quality {
-            processor.unpack()?;
-        }
-        processor.developed_output_dimensions()
-    };
+    // Resolve develop grid from identify-time sizes without unpacking the full CFA.
+    // Demosaic paths call `RawProcessor::unpack` lazily; embedded-preview bootstrap
+    // (CPU tiled refine) never needs sensor data on the loader thread.
+    let (width, height) = processor.developed_output_dimensions();
     let area = width as u64 * height as u64;
-    let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let threshold = crate::tile_cache::get_tiled_threshold();
+    let hq_refine_requires_tiling =
+        area >= threshold || width.max(height) > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
     let osd_ctx = RawOsdContext::new(
         (processor.raw_width(), processor.raw_height()),
         preview_opt.as_ref(),
@@ -486,9 +487,8 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         }
     }
 
-    // High-quality mode: try a fast synchronous full develop when the embedded thumb is already
-    // large enough, but never treat the embedded JPEG as the final image — demosaic (CPU or GPU)
-    // must still run via bootstrap/refine when develop fails or the user chose a demosaic backend.
+    // High-quality mode: render shape is size-driven. Small RAWs can finish as static HDR;
+    // large RAWs must keep the HDR tiled bootstrap/refine path even on SDR displays.
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
             if RAW_HQ_BOOTSTRAP_PREVIEW {
@@ -502,38 +502,80 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                     "CPU",
                 );
             }
-            if let Some(result) = load_raw_hq_static_hdr(
-                &mut processor,
-                path,
-                hdr_target_capacity,
-                &hdr_tone_map,
-                &osd_ctx,
-            ) {
-                return result;
+            if !hq_refine_requires_tiling {
+                if let Some(result) = load_raw_hq_static_hdr(
+                    &mut processor,
+                    path,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                    &osd_ctx,
+                ) {
+                    return result;
+                }
+                log::debug!(
+                    "[Loader] HQ mode: embedded preview {}x{} meets size cap but static full develop failed for {:?}; queued demosaic refine",
+                    p.width,
+                    p.height,
+                    path.file_name().unwrap_or_default()
+                );
+            } else {
+                log::debug!(
+                    "[Loader] HQ mode: output {}x{} requires tiling; queued HDR tiled demosaic refine for {:?}",
+                    width,
+                    height,
+                    path.file_name().unwrap_or_default()
+                );
             }
-            log::debug!(
-                "[Loader] HQ mode: embedded preview {}x{} meets size cap but full develop failed for {:?} — queued demosaic refine",
-                p.width,
-                p.height,
-                path.file_name().unwrap_or_default()
-            );
         } else {
+            let refine_shape = if hq_refine_requires_tiling {
+                "TiledBootstrap+Refine"
+            } else {
+                "StaticHdrToneMap"
+            };
             crate::preload_debug!(
-                "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=false → TiledBootstrap+Refine",
+                "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=false -> {}",
                 path.file_name().unwrap_or_default(),
                 p.width,
                 p.height,
                 width,
                 height,
-                hq_preview_max_side()
+                hq_preview_max_side(),
+                refine_shape
             );
             log::debug!(
-                "[Loader] HQ mode: embedded preview {}x{} insufficient for output {}x{} — HQ demosaic queued",
+                "[Loader] HQ mode: embedded preview {}x{} insufficient for output {}x{}; target_shape={}",
                 p.width,
                 p.height,
                 width,
-                height
+                height,
+                refine_shape
             );
+            if !hq_refine_requires_tiling {
+                if RAW_HQ_BOOTSTRAP_PREVIEW {
+                    emit_raw_hq_bootstrap_preview(
+                        &load_tx,
+                        index,
+                        path,
+                        p,
+                        decode_profile.clone(),
+                        Some(osd_ctx.hq_bootstrap_dims(p.width, p.height)),
+                        "CPU",
+                    );
+                }
+                if let Some(result) = load_raw_hq_static_hdr(
+                    &mut processor,
+                    path,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                    &osd_ctx,
+                ) {
+                    return result;
+                }
+                log::debug!(
+                    "[Loader] HQ mode: static full develop failed for {:?}; queued demosaic refine",
+                    path.file_name().unwrap_or_default()
+                );
+            }
         }
     }
 

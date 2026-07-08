@@ -445,7 +445,7 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
             "{} frame {idx} should carry HDR float pixels or GPU-deferred gain-map planes",
             path.display()
         );
-        assert_eq!(hdr.width > 0 && hdr.height > 0, true);
+        assert!(hdr.width > 0 && hdr.height > 0);
     }
     eprintln!(
         "{} -> {} HdrAnimated frames, tf={:?}",

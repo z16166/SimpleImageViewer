@@ -329,7 +329,10 @@ impl ImageViewerApp {
                         center,
                         current_radius,
                     );
-                    ui.ctx().request_repaint();
+                    crate::app::rendering::transitions::request_navigation_transition_repaint(
+                        ui.ctx(),
+                        tp.is_animating,
+                    );
                     return;
                 } else {
                     self.draw_rectangular_hdr_transition(
@@ -347,7 +350,10 @@ impl ImageViewerApp {
                             alpha: tp.alpha,
                         },
                     );
-                    ui.ctx().request_repaint();
+                    crate::app::rendering::transitions::request_navigation_transition_repaint(
+                        ui.ctx(),
+                        tp.is_animating,
+                    );
                     return;
                 }
             }
@@ -355,7 +361,10 @@ impl ImageViewerApp {
                 // HDR plane expected but not drawable this frame — hold the outgoing frame instead
                 // of falling through to the SDR page-flip path (full-frame brightness flash).
                 self.draw_pending_navigation_hold_frame(ui, screen_rect);
-                ui.ctx().request_repaint();
+                crate::app::rendering::transitions::request_navigation_transition_repaint(
+                    ui.ctx(),
+                    true,
+                );
                 return;
             }
         }
@@ -397,7 +406,10 @@ impl ImageViewerApp {
                             override_dest: None,
                         },
                     );
-                    ui.ctx().request_repaint();
+                    crate::app::rendering::transitions::request_navigation_transition_repaint(
+                        ui.ctx(),
+                        tp.is_animating,
+                    );
                     self.draw_hdr_image_plane_clipped(
                         ui,
                         crate::app::rendering::standard::HdrImagePlaneClippedDraw {
@@ -518,7 +530,10 @@ impl ImageViewerApp {
                 ),
                 _ => unreachable!(),
             }
-            ui.ctx().request_repaint();
+            crate::app::rendering::transitions::request_navigation_transition_repaint(
+                ui.ctx(),
+                tp.is_animating,
+            );
         } else {
             // Standard Fade / ZoomFade / Slide / Push (and no-transition static draw):
 
@@ -535,7 +550,10 @@ impl ImageViewerApp {
                         override_dest: None,
                     },
                 );
-                ui.ctx().request_repaint();
+                crate::app::rendering::transitions::request_navigation_transition_repaint(
+                    ui.ctx(),
+                    tp.is_animating,
+                );
             }
 
             // 2. Draw NEW image (on top, with alpha/motion)

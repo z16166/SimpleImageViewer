@@ -23,47 +23,56 @@ use eframe::egui;
 
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
-    DirectoryTreeStripPreviewJobResult, decoded_rgba_size_valid,
+    DirectoryTreeStripGpuUploadRequest, DirectoryTreeStripInflightRelease,
+    DirectoryTreeStripInflightReleaseKind, DirectoryTreeStripJobKey, DirectoryTreeStripJobToken,
+    DirectoryTreeStripPreviewFailure, DirectoryTreeStripPreviewJobResult,
+    DirectoryTreeStripPreviewSuccess, decoded_rgba_size_valid,
 };
 use crate::loader::preview_aspect_matches_logical;
-
-fn strip_full_decode_reuse_allowed(
-    index: usize,
-    current_index: usize,
-    image_count: usize,
-    max_preload_distance: usize,
-    preload_enabled: bool,
-) -> bool {
-    if image_count == 0 || index >= image_count || current_index >= image_count {
-        return false;
-    }
-    if index == current_index {
-        return true;
-    }
-    if !preload_enabled {
-        return false;
-    }
-    let forward = (index + image_count - current_index) % image_count;
-    let backward = (current_index + image_count - index) % image_count;
-    forward.min(backward) <= max_preload_distance
-}
 
 impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
+        self.directory_tree_strip_inflight_tokens.remove(&index);
+        self.directory_tree_strip_static_full_decode_inflight
+            .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_cold_awaiting_main_loader
             .remove(&index);
     }
 
-    /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
-    fn finish_strip_preview_job(&mut self, index: usize) {
-        self.directory_tree_strip_generate_inflight.remove(&index);
-        self.directory_tree_strip_tiled_attempted.remove(&index);
+    pub(super) fn clear_strip_preview_attempt_state_for_key(
+        &mut self,
+        key: &DirectoryTreeStripJobKey,
+    ) -> bool {
+        let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
+            return false;
+        };
+        self.clear_strip_preview_attempt_state(active_index);
+        true
     }
 
-    fn strip_preview_failure_is_permanent(result: &DirectoryTreeStripPreviewJobResult) -> bool {
+    /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
+    fn finish_strip_preview_job_for_key(&mut self, key: &DirectoryTreeStripJobKey) -> bool {
+        let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
+            return false;
+        };
+        self.directory_tree_strip_generate_inflight
+            .remove(&active_index);
+        self.directory_tree_strip_inflight_tokens
+            .remove(&active_index);
+        self.directory_tree_strip_static_full_decode_inflight
+            .remove(&active_index);
+        self.directory_tree_strip_tiled_attempted
+            .remove(&active_index);
+        self.flush_strip_pending_main_handoff_for_index(active_index);
+        true
+    }
+
+    fn strip_preview_success_is_permanent_failure(
+        result: &DirectoryTreeStripPreviewSuccess,
+    ) -> bool {
         result.decoded.width == 0
             || result.decoded.height == 0
             || !decoded_rgba_size_valid(&result.decoded)
@@ -76,37 +85,25 @@ impl ImageViewerApp {
             )
     }
 
-    fn abandon_strip_preview_attempt_after_failure(&mut self, index: usize) {
-        self.finish_strip_preview_job(index);
+    fn abandon_strip_preview_attempt_after_failure_for_key(
+        &mut self,
+        key: &DirectoryTreeStripJobKey,
+    ) {
+        self.finish_strip_preview_job_for_key(key);
         // Keep `cold_attempted` so undecodable files (e.g. motion-video JPG) do not monopolize
         // the limited cold-generate budget and block thumbnails for neighboring rows.
     }
 
-    fn strip_preview_result_matches_index(
-        &self,
-        result: &DirectoryTreeStripPreviewJobResult,
-    ) -> bool {
-        self.image_files.get(result.index) == Some(&result.path)
+    fn strip_preview_result_matches_index(&self, key: &DirectoryTreeStripJobKey) -> bool {
+        self.image_files.get(key.index) == Some(&key.path)
     }
 
     fn image_strip_path_index(&mut self) -> &HashMap<PathBuf, usize> {
-        // Use the existing image_list_generation counter (bumped at every
-        // mutation site) as the cache key instead of (ptr, len). This is
-        // immune to in-place mutations like sort/retain that preserve the
-        // allocation pointer — no such mutations exist today, but a
-        // generation key costs nothing and is strictly more robust.
-        let current_gen = self
-            .directory_tree
-            .list
-            .try_lock()
-            .map(|list| list.image_list_generation);
-        // If the lock is contended, conservatively rebuild; it's a cheap
-        // fallback that guarantees correctness.
-        let stale = current_gen.is_none_or(|generation| {
-            self.cached_image_strip_path_index
-                .as_ref()
-                .is_none_or(|(g, _)| *g != generation)
-        });
+        let generation = self.directory_tree.list.lock().image_list_generation;
+        let stale = self
+            .cached_image_strip_path_index
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation);
         if stale {
             let map: HashMap<PathBuf, usize> = self
                 .image_files
@@ -114,10 +111,7 @@ impl ImageViewerApp {
                 .enumerate()
                 .map(|(i, p)| (p.clone(), i))
                 .collect();
-            // If we couldn't read the generation (lock contended), store 0 —
-            // the next successful try_lock with a non-zero gen will detect
-            // the mismatch and rebuild.
-            self.cached_image_strip_path_index = Some((current_gen.unwrap_or(0), map));
+            self.cached_image_strip_path_index = Some((generation, map));
         }
         &self
             .cached_image_strip_path_index
@@ -128,19 +122,15 @@ impl ImageViewerApp {
 
     fn try_apply_relocated_strip_preview_result(
         &mut self,
-        mut result: DirectoryTreeStripPreviewJobResult,
+        mut result: DirectoryTreeStripPreviewSuccess,
         ctx: &egui::Context,
     ) -> bool {
-        self.clear_strip_preview_attempt_state(result.index);
-        let Some(&new_index) = self.image_strip_path_index().get(&result.path) else {
+        self.finish_strip_preview_job_for_key(&result.key);
+        let Some(&new_index) = self.image_strip_path_index().get(&result.key.path) else {
             return false;
         };
-        if new_index != result.index {
-            self.clear_strip_preview_attempt_state(new_index);
-        }
 
-        if Self::strip_preview_failure_is_permanent(&result) {
-            self.abandon_strip_preview_attempt_after_failure(new_index);
+        if Self::strip_preview_success_is_permanent_failure(&result) {
             return false;
         }
 
@@ -149,14 +139,16 @@ impl ImageViewerApp {
             result.logical,
             result.reusable_full_decoded.take(),
         );
-        self.queue_directory_tree_strip_gpu_upload(
-            new_index,
-            result.decoded,
-            result.stage,
-            Some(result.logical),
-            result.buffer_tag,
-            Some(result.strip_max_side_used),
-        );
+        result.key.index = new_index;
+        self.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: new_index,
+            decoded: result.decoded,
+            stage: result.stage,
+            logical: Some(result.logical),
+            buffer_tag: result.buffer_tag,
+            strip_max_side_used: Some(result.strip_max_side_used),
+            job_key: Some(result.key),
+        });
         if !self
             .directory_tree_strip_cache
             .is_valid_for_logical(new_index, result.logical)
@@ -181,7 +173,7 @@ impl ImageViewerApp {
         if full.is_sdr_deferred_placeholder() || (full.width, full.height) != logical {
             return;
         }
-        if !strip_full_decode_reuse_allowed(
+        if !super::strip_full_decode_reuse_allowed(
             index,
             self.current_index,
             self.image_files.len(),
@@ -205,145 +197,191 @@ impl ImageViewerApp {
         self.insert_deferred_sdr_upload(index, full);
     }
 
+    fn handle_strip_inflight_release(&mut self, release: DirectoryTreeStripInflightRelease) {
+        match release.kind {
+            DirectoryTreeStripInflightReleaseKind::ClearAttempt => {
+                self.clear_strip_preview_attempt_state_for_key(&release.key);
+            }
+            DirectoryTreeStripInflightReleaseKind::PermanentFailure => {
+                self.abandon_strip_preview_attempt_after_failure_for_key(&release.key);
+            }
+        }
+    }
+
+    fn strip_result_generation_is_stale(&self, key: &DirectoryTreeStripJobKey) -> (bool, u64) {
+        match self.directory_tree.list.try_lock() {
+            Some(list) => (
+                key.image_list_generation != list.image_list_generation,
+                list.image_list_generation,
+            ),
+            None => (true, 0),
+        }
+    }
+
+    fn poll_deferred_strip_result(&mut self, failure: DirectoryTreeStripPreviewFailure) {
+        let _failure_reason = failure.reason;
+        let active_index = self
+            .directory_tree_strip_active_index_for_job_token(&failure.key)
+            .unwrap_or(failure.key.index);
+        if self.finish_strip_preview_job_for_key(&failure.key) {
+            self.mark_strip_cold_awaiting_main_loader(active_index);
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripPoll] idx={} cold deferred reason={} (await main loader fast path or install)",
+                active_index,
+                _failure_reason
+            );
+        }
+    }
+
+    fn poll_successful_strip_result(
+        &mut self,
+        result: DirectoryTreeStripPreviewSuccess,
+        ctx: &egui::Context,
+    ) {
+        if !self.strip_preview_result_matches_index(&result.key) {
+            let index = result.key.index;
+            if !self.try_apply_relocated_strip_preview_result(result, ctx) {
+                log::debug!(
+                    "[DirectoryTree] Strip preview relocation failed for index {}",
+                    index
+                );
+            }
+            return;
+        }
+        if Self::strip_preview_success_is_permanent_failure(&result) {
+            if result.decoded.width == 0 || result.decoded.height == 0 {
+                log::debug!(
+                    "[DirectoryTree] Strip preview unavailable for index {} ({})",
+                    result.key.index,
+                    result.key.path.display()
+                );
+            } else if !decoded_rgba_size_valid(&result.decoded) {
+                log::warn!(
+                    "[DirectoryTree] Strip preview job size mismatch for index {}: {}x{}",
+                    result.key.index,
+                    result.decoded.width,
+                    result.decoded.height
+                );
+            } else {
+                log::warn!(
+                    "[DirectoryTree] Strip preview job aspect mismatch for index {}: {}x{} vs {}x{}",
+                    result.key.index,
+                    result.decoded.width,
+                    result.decoded.height,
+                    result.logical.0,
+                    result.logical.1
+                );
+            }
+            self.abandon_strip_preview_attempt_after_failure_for_key(&result.key);
+            return;
+        }
+        let index = result.key.index;
+        #[cfg(feature = "preload-debug")]
+        let path = result.key.path.clone();
+        let logical = result.logical;
+        let stage = result.stage;
+        let buffer_tag = result.buffer_tag;
+        let strip_max_side_used = result.strip_max_side_used;
+        let job_key = result.key.clone();
+        let reusable_full = result.reusable_full_decoded;
+        #[cfg(feature = "preload-debug")]
+        let decoded_w = result.decoded.width;
+        #[cfg(feature = "preload-debug")]
+        let decoded_h = result.decoded.height;
+        self.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index,
+            decoded: result.decoded,
+            stage,
+            logical: Some(logical),
+            buffer_tag,
+            strip_max_side_used: Some(strip_max_side_used),
+            job_key: Some(job_key.clone()),
+        });
+        self.cache_reusable_strip_full_decode(index, logical, reusable_full);
+        let cache_valid = self
+            .directory_tree_strip_cache
+            .is_valid_for_logical(index, logical);
+        #[cfg(feature = "preload-debug")]
+        {
+            crate::preload_debug_throttled!(
+                &format!("strip:poll:{index}:{stage:?}:{cache_valid}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                "[PreloadDebug][StripPoll] idx={} path={} stage={:?} decoded={}x{} logical={}x{} \
+                 cache_valid_before_flush={cache_valid} cold_attempted={} pending_len={}",
+                index,
+                path.display(),
+                stage,
+                decoded_w,
+                decoded_h,
+                logical.0,
+                logical.1,
+                self.directory_tree_strip_cold_attempted.contains(&index),
+                self.directory_tree_strip_pending_gpu_initial.len()
+                    + self.directory_tree_strip_pending_gpu_refined.len()
+            );
+        }
+        self.finish_strip_preview_job_for_key(&job_key);
+        if cache_valid {
+            ctx.request_repaint();
+            ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripPoll] idx={} repaint requested (cache already valid)",
+                index
+            );
+        } else {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug_throttled!(
+                &format!("strip:poll_no_repaint:{index}"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                "[PreloadDebug][StripPoll] idx={} no repaint (cache not valid until GPU flush)",
+                index
+            );
+        }
+    }
+
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
-        while let Ok(index) = self.directory_tree_strip_inflight_release_rx.try_recv() {
-            self.clear_strip_preview_attempt_state(index);
+        while let Ok(release) = self.directory_tree_strip_inflight_release_rx.try_recv() {
+            self.handle_strip_inflight_release(release);
         }
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
-            self.directory_tree_strip_generate_inflight
-                .remove(&result.index);
-            // Lock available: exact generation match rejects any reorder since the job started.
-            // Lock contended: snapshot may lag the live list; accept result.gen >= snapshot.gen
-            // so we do not discard valid work, and rely on path/index relocate for edge cases.
-            #[allow(unused_variables)]
-            let (stale, active_list_generation) = match self.directory_tree.list.try_lock() {
-                Some(list) => (
-                    result.image_list_generation != list.image_list_generation,
-                    list.image_list_generation,
-                ),
-                None => {
-                    let snapshot_gen = self
-                        .directory_tree
-                        .list_snapshot
-                        .load()
-                        .image_list_generation;
-                    (result.image_list_generation < snapshot_gen, snapshot_gen)
-                }
+            let key = match &result {
+                DirectoryTreeStripPreviewJobResult::Success(result) => &result.key,
+                DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => &failure.key,
             };
+            if let DirectoryTreeStripJobToken::Worker(_token) = key.job_token
+                && self
+                    .directory_tree_strip_active_index_for_job_token(key)
+                    .is_none()
+            {
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][DirTree] strip result stale token idx={} token={}",
+                    key.index,
+                    _token
+                );
+                continue;
+            }
+            let (stale, _active_list_generation) = self.strip_result_generation_is_stale(key);
             if stale {
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
                     "[PreloadDebug][DirTree] strip result stale gen idx={} job_gen={} active_gen={}",
-                    result.index,
-                    result.image_list_generation,
-                    active_list_generation
+                    key.index,
+                    key.image_list_generation,
+                    _active_list_generation
                 );
-                if Self::strip_preview_failure_is_permanent(&result) {
-                    self.abandon_strip_preview_attempt_after_failure(result.index);
-                } else {
-                    self.clear_strip_preview_attempt_state(result.index);
-                }
+                self.clear_strip_preview_attempt_state_for_key(key);
                 continue;
             }
-            if !self.strip_preview_result_matches_index(&result) {
-                let index = result.index;
-                if !self.try_apply_relocated_strip_preview_result(result, ctx) {
-                    log::debug!(
-                        "[DirectoryTree] Strip preview relocation failed for index {}",
-                        index
-                    );
+            match result {
+                DirectoryTreeStripPreviewJobResult::Success(result) => {
+                    self.poll_successful_strip_result(result, ctx);
                 }
-                continue;
-            }
-            if Self::strip_preview_failure_is_permanent(&result) {
-                if result.cold_deferred_to_main_loader {
-                    self.finish_strip_preview_job(result.index);
-                    self.mark_strip_cold_awaiting_main_loader(result.index);
-                    #[cfg(feature = "preload-debug")]
-                    crate::preload_debug!(
-                        "[PreloadDebug][StripPoll] idx={} cold deferred (await main loader fast path or install)",
-                        result.index
-                    );
-                    continue;
+                DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => {
+                    self.poll_deferred_strip_result(failure);
                 }
-                if result.decoded.width == 0 || result.decoded.height == 0 {
-                    log::debug!(
-                        "[DirectoryTree] Strip preview unavailable for index {} ({})",
-                        result.index,
-                        result.path.display()
-                    );
-                } else if !decoded_rgba_size_valid(&result.decoded) {
-                    log::warn!(
-                        "[DirectoryTree] Strip preview job size mismatch for index {}: {}x{}",
-                        result.index,
-                        result.decoded.width,
-                        result.decoded.height
-                    );
-                } else {
-                    log::warn!(
-                        "[DirectoryTree] Strip preview job aspect mismatch for index {}: {}x{} vs {}x{}",
-                        result.index,
-                        result.decoded.width,
-                        result.decoded.height,
-                        result.logical.0,
-                        result.logical.1
-                    );
-                }
-                self.abandon_strip_preview_attempt_after_failure(result.index);
-                continue;
-            }
-            let reusable_full = result.reusable_full_decoded;
-            #[cfg(feature = "preload-debug")]
-            let decoded_w = result.decoded.width;
-            #[cfg(feature = "preload-debug")]
-            let decoded_h = result.decoded.height;
-            self.queue_directory_tree_strip_gpu_upload(
-                result.index,
-                result.decoded,
-                result.stage,
-                Some(result.logical),
-                result.buffer_tag,
-                Some(result.strip_max_side_used),
-            );
-            self.cache_reusable_strip_full_decode(result.index, result.logical, reusable_full);
-            let cache_valid = self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(result.index, result.logical);
-            #[cfg(feature = "preload-debug")]
-            {
-                crate::preload_debug!(
-                    "[PreloadDebug][StripPoll] idx={} path={} stage={:?} decoded={}x{} logical={}x{} \
-                     cache_valid_before_flush={cache_valid} cold_attempted={} pending_len={}",
-                    result.index,
-                    result.path.display(),
-                    result.stage,
-                    decoded_w,
-                    decoded_h,
-                    result.logical.0,
-                    result.logical.1,
-                    self.directory_tree_strip_cold_attempted
-                        .contains(&result.index),
-                    self.directory_tree_strip_pending_gpu_initial.len()
-                        + self.directory_tree_strip_pending_gpu_refined.len()
-                );
-            }
-            if !cache_valid {
-                self.directory_tree_strip_tiled_attempted
-                    .remove(&result.index);
-                #[cfg(feature = "preload-debug")]
-                crate::preload_debug!(
-                    "[PreloadDebug][StripPoll] idx={} no repaint (cache not valid until GPU flush)",
-                    result.index
-                );
-            } else {
-                self.finish_strip_preview_job(result.index);
-                ctx.request_repaint();
-                ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
-                #[cfg(feature = "preload-debug")]
-                crate::preload_debug!(
-                    "[PreloadDebug][StripPoll] idx={} repaint requested (cache already valid)",
-                    result.index
-                );
             }
         }
     }
@@ -351,7 +389,7 @@ impl ImageViewerApp {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_full_decode_reuse_allowed;
+    use super::super::strip_full_decode_reuse_allowed;
 
     #[test]
     fn strip_full_decode_reuse_keeps_current_even_when_preload_disabled() {

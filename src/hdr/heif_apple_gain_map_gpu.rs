@@ -101,7 +101,7 @@ pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
 
 /// Build deferred GPU planes from a pre-compose primary buffer and decoded gain-map RGBA8.
 pub(crate) fn attach_apple_heic_gpu_deferred(
-    hdr: HdrImageBuffer,
+    hdr: &HdrImageBuffer,
     gain_w: u32,
     gain_h: u32,
     gain_rgba: Vec<u8>,
@@ -109,7 +109,7 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
     stops: f32,
     hdr_target_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    validate_apple_deferred_planes(&hdr, gain_w, gain_h, &gain_rgba)?;
+    validate_apple_deferred_planes(hdr, gain_w, gain_h, &gain_rgba)?;
 
     let gain_rgba = Arc::new(gain_rgba);
     let weight = apple_gain_map_display_weight(hdr_target_capacity, stops);
@@ -133,7 +133,10 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
         iso_deferred: None,
     });
 
-    Ok(HdrImageBuffer { metadata, ..hdr })
+    Ok(HdrImageBuffer {
+        metadata,
+        ..hdr.clone()
+    })
 }
 
 pub(crate) fn apple_heic_deferred_from_metadata(
@@ -151,6 +154,14 @@ mod tests {
     use crate::hdr::types::{
         DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrPixelFormat, HdrTransferFunction,
     };
+
+    static COMPOSE_PARITY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn compose_parity_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        COMPOSE_PARITY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn attach_deferred_populates_gain_map_metadata() {
@@ -171,7 +182,7 @@ mod tests {
             ]),
         };
         let gain = vec![128u8; 2 * 2 * 4];
-        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
+        let out = attach_apple_heic_gpu_deferred(&hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
     }
@@ -198,6 +209,7 @@ mod tests {
 
     #[test]
     fn compose_deferred_matches_apply_path_pixel_exact() {
+        let _lock = compose_parity_test_lock();
         let primary = vec![
             0.5, 0.25, 0.125, 1.0, //
             0.0, 0.0, 0.0, 1.0, //
@@ -248,7 +260,7 @@ mod tests {
 
         // New deferred path
         let deferred =
-            attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity)
+            attach_apple_heic_gpu_deferred(&hdr, 2, 2, gain, headroom_span, stops, target_capacity)
                 .expect("attach");
         let new_composed = compose_apple_heic_deferred_to_scene_linear(&deferred, target_capacity)
             .expect("composed");
@@ -417,18 +429,32 @@ mod tests {
     /// Simulate the WGSL compute shader `cs_compose_apple_gain` output for the
     /// entire image.  Returns a flat `Vec<f32>` in RGBA order, same layout as
     /// the CPU SIMD `composed_pixels`.
-    fn wgsl_compose_apple_gain(
-        primary_pixels: &[f32],
+    struct WgslComposeAppleGainInput<'a> {
+        primary_pixels: &'a [f32],
         primary_w: u32,
         primary_h: u32,
-        gain_rgba: &[u8],
+        gain_rgba: &'a [u8],
         gain_w: u32,
         gain_h: u32,
         input_color_space: u32,
         input_transfer_function: u32,
         headroom_span: f32,
         weight: f32,
-    ) -> Vec<f32> {
+    }
+
+    fn wgsl_compose_apple_gain(input: WgslComposeAppleGainInput<'_>) -> Vec<f32> {
+        let WgslComposeAppleGainInput {
+            primary_pixels,
+            primary_w,
+            primary_h,
+            gain_rgba,
+            gain_w,
+            gain_h,
+            input_color_space,
+            input_transfer_function,
+            headroom_span,
+            weight,
+        } = input;
         let pixel_count = primary_w as usize * primary_h as usize * 4;
         let mut out = vec![0.0_f32; pixel_count];
         for py in 0..primary_h {
@@ -460,6 +486,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_non_trivial_gain_map() {
+        let _lock = compose_parity_test_lock();
         // 8×6 primary with 4×3 gain map — exercises bilinear with different dims.
         const PW: u32 = 8;
         const PH: u32 = 6;
@@ -474,7 +501,7 @@ mod tests {
             }
         }
         let gain: Vec<u8> = (0..GW * GH * 4)
-            .map(|i| ((i as u32 * 37 + 17) % 251) as u8)
+            .map(|i| ((i * 37 + 17) % 251) as u8)
             .collect();
 
         let color_space = HdrColorSpace::DisplayP3Linear;
@@ -505,18 +532,18 @@ mod tests {
         );
 
         // GPU shader simulation
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            color_space as u32,
-            transfer as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: PW,
+            primary_h: PH,
+            gain_rgba: &gain,
+            gain_w: GW,
+            gain_h: GH,
+            input_color_space: color_space as u32,
+            input_transfer_function: transfer as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         let mut max_diff = 0.0_f32;
@@ -541,6 +568,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_linear_srgb_identity() {
+        let _lock = compose_parity_test_lock();
         // LinearSrgb + Linear transfer — both color-space and transfer are identity.
         const PW: u32 = 10;
         const PH: u32 = 4;
@@ -552,7 +580,7 @@ mod tests {
             primary.extend_from_slice(&[v, v * 0.8, v * 0.6, 1.0]);
         }
         let gain: Vec<u8> = (0..GW * GH * 4)
-            .map(|i| ((i as u32 * 53 + 31) % 241) as u8)
+            .map(|i| ((i * 53 + 31) % 241) as u8)
             .collect();
 
         let metadata = HdrImageMetadata::default();
@@ -578,18 +606,18 @@ mod tests {
             },
         );
 
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            PW,
-            PH,
-            &gain,
-            GW,
-            GH,
-            HdrColorSpace::LinearSrgb as u32,
-            HdrTransferFunction::Linear as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: PW,
+            primary_h: PH,
+            gain_rgba: &gain,
+            gain_w: GW,
+            gain_h: GH,
+            input_color_space: HdrColorSpace::LinearSrgb as u32,
+            input_transfer_function: HdrTransferFunction::Linear as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {
@@ -599,6 +627,7 @@ mod tests {
 
     #[test]
     fn gpu_shader_matches_cpu_simd_same_size_gain_map() {
+        let _lock = compose_parity_test_lock();
         // Same-size gain map — edge case where bilinear coordinates are integer.
         const N: u32 = 6;
         let mut primary = Vec::with_capacity(N as usize * N as usize * 4);
@@ -640,18 +669,18 @@ mod tests {
             },
         );
 
-        let gpu_out = wgsl_compose_apple_gain(
-            &primary,
-            N,
-            N,
-            &gain,
-            N,
-            N,
-            HdrColorSpace::DisplayP3Linear as u32,
-            HdrTransferFunction::Srgb as u32,
+        let gpu_out = wgsl_compose_apple_gain(WgslComposeAppleGainInput {
+            primary_pixels: &primary,
+            primary_w: N,
+            primary_h: N,
+            gain_rgba: &gain,
+            gain_w: N,
+            gain_h: N,
+            input_color_space: HdrColorSpace::DisplayP3Linear as u32,
+            input_transfer_function: HdrTransferFunction::Srgb as u32,
             headroom_span,
             weight,
-        );
+        });
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {

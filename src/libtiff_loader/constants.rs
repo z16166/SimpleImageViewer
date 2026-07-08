@@ -33,8 +33,28 @@ pub(crate) const COMPRESSION_THUNDERSCAN: u16 = 32809;
 /// Upper bound on TIFF tile width/height from tags; rejects absurd values before allocation.
 pub(crate) const MAX_TIFF_TILE_DIMENSION: u32 = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
 
-/// Budget (bytes) for strip cache sizing in large strip-based TIFFs.
+/// Budget (bytes) for strip/tile cache sizing in large TIFFs.
 pub(crate) const STRIP_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const TILE_CACHE_BUDGET_BYTES: usize = STRIP_CACHE_BUDGET_BYTES;
 
 /// Maximum pixel count for static full-image HDR decode paths (256 megapixels).
 pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
+
+/// Upper bound on concurrent libtiff handles per tiled/scanline source (2x img-loader threads).
+pub(crate) const MAX_TIFF_HANDLE_POOL_SIZE: usize = crate::loader::MAX_IMG_LOADER_THREADS * 2;
+
+/// RGBA byte length for `width` x `height` pixels; rejects dimension overflow.
+pub(crate) fn checked_rgba_byte_len(width: u32, height: u32) -> Option<usize> {
+    (width as u64)
+        .checked_mul(height as u64)?
+        .checked_mul(4)?
+        .try_into()
+        .ok()
+}
+
+/// Byte offset of RGBA pixel at row `y`, column `x` in a row-major buffer with `row_stride` pixels per row.
+pub(crate) fn checked_rgba_byte_index(y: u32, x: u32, row_stride: u32) -> Option<usize> {
+    let row = (y as u64).checked_mul(row_stride as u64)?;
+    let pixel = row.checked_add(x as u64)?;
+    pixel.checked_mul(4)?.try_into().ok()
+}
