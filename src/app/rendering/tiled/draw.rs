@@ -92,11 +92,14 @@ impl ImageViewerApp {
             hdr_source_for_frame.is_some(),
             has_sdr_fallback,
         );
+        // Align supplemental HDR OSD with [`ImageViewerApp::compute_hdr_render_path`]:
+        // ordinary SDR tiled images also carry a preview texture, but that is not HDR content.
         let has_hdr_content = hdr_source_for_frame.is_some()
             || self
                 .hdr_tiled_source_cache
                 .contains_key(&self.current_index)
-            || has_sdr_fallback;
+            || self.hdr_image_cache.contains_key(&self.current_index)
+            || self.hdr_sdr_fallback_indices.contains(&self.current_index);
         self.record_frame_render_plan(render_plan, RenderShape::Tiled, false, has_hdr_content);
         let plane_backend = render_plan.backend;
 
