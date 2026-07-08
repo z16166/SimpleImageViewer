@@ -403,3 +403,64 @@ pub fn quote_arg(value: &str) -> String {
         format!("\"{}\"", trimmed.replace('"', "\\\""))
     }
 }
+
+/// Split a command line built by [`quote_arg`] / [`CommandTemplate`] into argv tokens.
+pub fn split_command_line(line: &str) -> Option<Vec<String>> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let mut args = Vec::new();
+    let mut chars = line.chars().peekable();
+
+    while chars.peek().is_some() {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+
+        let mut arg = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '\\' && chars.peek() == Some(&'"') {
+                    arg.push('"');
+                    chars.next();
+                } else if c == '"' {
+                    break;
+                } else {
+                    arg.push(c);
+                }
+            }
+        } else {
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                arg.push(c);
+                chars.next();
+            }
+        }
+
+        if arg.is_empty() {
+            return None;
+        }
+        args.push(arg);
+    }
+
+    (!args.is_empty()).then_some(args)
+}
+
+/// Spawn a parsed command line directly, without a shell (`cmd /C` or `sh -c`).
+pub fn spawn_command_line(line: &str) -> std::io::Result<()> {
+    let args = split_command_line(line).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command line")
+    })?;
+    std::process::Command::new(&args[0])
+        .args(&args[1..])
+        .spawn()
+        .map(|_| ())
+}

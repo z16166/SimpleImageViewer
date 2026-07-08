@@ -462,22 +462,7 @@ impl ImageViewerApp {
                 let Some(line) = command.command_line_for_image(path) else {
                     return;
                 };
-                #[cfg(target_os = "windows")]
-                {
-                    std::process::Command::new("cmd")
-                        .arg("/C")
-                        .arg(line)
-                        .spawn()
-                        .map(|_| ())
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    std::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(line)
-                        .spawn()
-                        .map(|_| ())
-                }
+                crate::context_menu::model::spawn_command_line(&line)
             }
         };
         if let Err(e) = result {

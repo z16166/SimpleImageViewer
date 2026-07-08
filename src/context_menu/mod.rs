@@ -40,6 +40,7 @@ mod tests {
         BuiltinActionSource, CommandTemplate, ContextMenuCommand, ContextMenuConfigFile,
         ContextMenuEntry, ContextMenuItemKind, builtin_descriptors,
         default_context_menu_config_file, hotkey_actions_allowed_in_context_menu,
+        split_command_line,
     };
     use crate::context_menu::validate::validate_context_menu_config;
     use crate::hotkeys::model::HotkeyActionId;
@@ -297,6 +298,45 @@ mod tests {
         assert_eq!(
             cmd,
             "\"C:/Program Files/App/Bad \\\"Quote\\\" Path.exe\" \"D:/Work Images/photo.jpg\""
+        );
+    }
+
+    #[test]
+    fn split_command_line_parses_quoted_executable_and_image_path() {
+        let line = "\"C:/Program Files/App/App.exe\" \"D:/Work Images/photo 1.jpg\"";
+        let args = split_command_line(line).expect("split command line");
+        assert_eq!(
+            args,
+            vec![
+                "C:/Program Files/App/App.exe".to_string(),
+                "D:/Work Images/photo 1.jpg".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_command_line_unescapes_quotes_inside_executable_path() {
+        let line = "\"C:/Program Files/App/Bad \\\"Quote\\\" Path.exe\" \"D:/Work Images/photo.jpg\"";
+        let args = split_command_line(line).expect("split command line");
+        assert_eq!(
+            args,
+            vec![
+                "C:/Program Files/App/Bad \"Quote\" Path.exe".to_string(),
+                "D:/Work Images/photo.jpg".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_command_line_parses_unquoted_executable_with_quoted_image_path() {
+        let line = "C:/Tools/Edit.exe \"D:/Work Images/photo.jpg\"";
+        let args = split_command_line(line).expect("split command line");
+        assert_eq!(
+            args,
+            vec![
+                "C:/Tools/Edit.exe".to_string(),
+                "D:/Work Images/photo.jpg".to_string(),
+            ]
         );
     }
 }
