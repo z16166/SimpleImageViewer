@@ -33,13 +33,14 @@ pub use tone_map::hdr_to_sdr_rgba8;
 pub(crate) use tone_map::{
     bt709_nonlinear_channel_to_linear, decode_transfer_to_display_linear,
     hlg_nonlinear_to_scene_linear, linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8,
-    pq_nonlinear_to_absolute_nits, srgb_nonlinear_channel_to_linear, validate_hdr_fallback_budget,
+    pq_nonlinear_to_absolute_nits, validate_hdr_fallback_budget,
 };
 pub use tone_map_simd::hdr_to_sdr_rgba8_with_tone_settings;
 
 #[cfg(test)]
 pub(crate) use tone_map::{
     encode_linear_display_referred_srgb8, encode_sdr_rgb8, pq_nonlinear_to_display_linear,
+    srgb_nonlinear_channel_to_linear,
 };
 
 pub(crate) use constants::MAX_HDR_FALLBACK_DECODE_BYTES;
