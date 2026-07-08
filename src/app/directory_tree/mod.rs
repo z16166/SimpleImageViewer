@@ -1764,6 +1764,7 @@ mod namespace;
 mod node_store;
 mod sort;
 mod strip_previews;
+pub(crate) use strip_previews::DirectoryTreeStripPendingMainHandoff;
 mod ui;
 mod view;
 mod visibility;

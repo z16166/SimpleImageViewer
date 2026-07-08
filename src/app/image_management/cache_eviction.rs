@@ -570,6 +570,10 @@ impl ImageViewerApp {
         );
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         permute_usize_hashmap(&mut self.directory_tree_strip_inflight_tokens, old_to_new);
+        permute_usize_hashmap(
+            &mut self.directory_tree_strip_pending_main_handoff,
+            old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             old_to_new,

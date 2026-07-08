@@ -311,7 +311,7 @@ impl ImageViewerApp {
                 );
                 return;
             }
-            let _scheduled = self.schedule_strip_pending_gpu_resample(
+            self.schedule_or_queue_strip_pending_gpu_resample(
                 index,
                 decoded,
                 stage,
@@ -319,16 +319,6 @@ impl ImageViewerApp {
                 buffer_tag,
                 Some(key),
             );
-            #[cfg(feature = "preload-debug")]
-            if !_scheduled {
-                crate::preload_debug_throttled!(
-                    &format!("strip_gpu:resample_not_scheduled:{index}:{buffer_tag:?}:{stage:?}"),
-                    crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
-                    "[PreloadDebug][StripGpu] skip queue idx={} tag={buffer_tag:?} stage={:?} reason=resample_not_scheduled",
-                    index,
-                    stage
-                );
-            }
             return;
         }
         let coalesce = self.coalesce_pending_gpu_upload_for_index(index, stage, buffer_tag);
@@ -583,7 +573,7 @@ impl ImageViewerApp {
         );
         // Flush runs during paint, after logic() may have published a stale preview rev.
         if cache_revision_changed {
-            self.publish_directory_tree_view_from_state(false);
+            self.publish_directory_tree_strip_preview_if_stale(ctx);
         }
     }
 
@@ -711,6 +701,7 @@ impl ImageViewerApp {
                 strip_max_side_used,
             },
         );
+        self.publish_directory_tree_strip_preview_if_stale(ctx);
     }
 
     pub(crate) fn cache_directory_tree_strip_thumbnail(
@@ -742,7 +733,7 @@ impl ImageViewerApp {
         }) {
             StripThumbnailCacheDecision::Drop => {}
             StripThumbnailCacheDecision::Resample => {
-                self.schedule_strip_pending_gpu_resample(
+                self.schedule_or_queue_strip_pending_gpu_resample(
                     index,
                     decoded.clone(),
                     stage,
@@ -752,7 +743,10 @@ impl ImageViewerApp {
                 );
             }
             StripThumbnailCacheDecision::Proceed { strip_max_side } => {
-                if self.directory_tree_nav_is_detached() && !bypass_detach_queue {
+                // Always queue uploads for a paint-time flush. Embedded nav used to
+                // upsert directly from logic(); after HDR swap-chain hot-swap those
+                // textures did not display even though preview snapshots looked valid.
+                if !bypass_detach_queue {
                     self.queue_directory_tree_strip_gpu_upload(
                         DirectoryTreeStripGpuUploadRequest {
                             index,
@@ -777,6 +771,9 @@ impl ImageViewerApp {
                     });
                 }
             }
+        }
+        if bypass_detach_queue {
+            self.publish_directory_tree_strip_preview_if_stale(ctx);
         }
     }
 
@@ -809,7 +806,7 @@ impl ImageViewerApp {
         }) {
             StripThumbnailCacheDecision::Drop => {}
             StripThumbnailCacheDecision::Resample => {
-                self.schedule_strip_pending_gpu_resample(
+                self.schedule_or_queue_strip_pending_gpu_resample(
                     index,
                     decoded,
                     stage,
@@ -819,7 +816,7 @@ impl ImageViewerApp {
                 );
             }
             StripThumbnailCacheDecision::Proceed { strip_max_side } => {
-                if self.directory_tree_nav_is_detached() && !bypass_detach_queue {
+                if !bypass_detach_queue {
                     self.queue_directory_tree_strip_gpu_upload(
                         DirectoryTreeStripGpuUploadRequest {
                             index,

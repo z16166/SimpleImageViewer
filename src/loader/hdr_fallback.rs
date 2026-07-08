@@ -215,7 +215,10 @@ pub(crate) fn hdr_directory_tree_strip_sdr_at_max_side(
     }
     let preview = crate::hdr::tiled::downsample_hdr_image_nearest(buffer, max_side, max_side)?;
     let pixels = hdr_to_directory_tree_strip_sdr_rgba8(&preview)?;
-    Ok((preview.width, preview.height, pixels))
+    // Tone-map copies float alpha verbatim; scene-linear planes are often alpha=0 while RGB
+    // is valid. Main-window SDR previews call `finalize_sdr_preview_pixels`; strip must too
+    // or egui composites fully transparent thumbnails (gray widget_bg shows through).
+    crate::hdr::tiled::finalize_sdr_preview_pixels(preview.width, preview.height, pixels)
 }
 
 /// CPU strip thumbnail from an installed HDR buffer, or downsampled SDR fallback when empty.

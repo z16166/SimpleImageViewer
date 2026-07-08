@@ -934,7 +934,7 @@ unsafe fn float4_to_u16x4_neon(v: float32x4_t) -> uint16x4_t {
     let one = vdupq_n_f32(1.0);
     let clamped = vminq_f32(vmaxq_f32(v, zero), one);
     let scaled = vmulq_f32(clamped, vdupq_n_f32(255.0));
-    let rounded = vrndiq_f32(scaled);
+    let rounded = vaddq_f32(scaled, vdupq_n_f32(0.5));
     vmovn_u32(vcvtq_u32_f32(rounded))
 }
 
@@ -953,18 +953,16 @@ unsafe fn pack_rgba_u8_pixel4_neon(
         let bi = float4_to_u16x4_neon(b);
         let ai = float4_to_u16x4_neon(a);
 
-        let rg01 = vzip1_u16(ri, gi);
-        let ba01 = vzip1_u16(bi, ai);
-        let rgba01 = vzip1_u32(vreinterpret_u32_u16(rg01), vreinterpret_u32_u16(ba01));
-        vst1_u8(dst, vreinterpret_u8_u32(rgba01));
-
-        let rg23 = vzip2_u16(ri, gi);
-        let ba23 = vzip2_u16(bi, ai);
-        let rgba23 = vzip1_u32(
-            vreinterpret_u32_u16(rg23),
-            vreinterpret_u32_u16(ba23),
+        let rgba = uint8x8x4_t(
+            vmovn_u16(vcombine_u16(ri, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(gi, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(bi, vdup_n_u16(0))),
+            vmovn_u16(vcombine_u16(ai, vdup_n_u16(0))),
         );
-        vst1_u8(dst.add(8), vreinterpret_u8_u32(rgba23));
+        vst4_lane_u8(dst, rgba, 0);
+        vst4_lane_u8(dst.add(4), rgba, 1);
+        vst4_lane_u8(dst.add(8), rgba, 2);
+        vst4_lane_u8(dst.add(12), rgba, 3);
     }
 }
 

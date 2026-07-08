@@ -66,6 +66,7 @@ impl ImageViewerApp {
             .remove(&active_index);
         self.directory_tree_strip_tiled_attempted
             .remove(&active_index);
+        self.flush_strip_pending_main_handoff_for_index(active_index);
         true
     }
 

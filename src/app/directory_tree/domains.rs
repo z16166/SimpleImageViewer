@@ -216,6 +216,7 @@ pub(crate) struct DirectoryTreePreviewSnapshot {
     pub(super) list_publish_generation: u64,
     pub(super) textures: HashMap<usize, egui::TextureHandle>,
     pub(super) logical_sizes: HashMap<usize, (u32, u32)>,
+    pub(super) buffer_tags: HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>,
 }
 
 impl Default for DirectoryTreeTreeSnapshot {
@@ -369,13 +370,12 @@ pub(super) fn publish_preview_snapshot(
     cache_revision: u64,
     textures: &HashMap<usize, egui::TextureHandle>,
     logical_sizes: &HashMap<usize, (u32, u32)>,
+    buffer_tags: &HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>,
 ) -> bool {
     let prev = swap.load();
-    if cache_revision == prev.revision && list_publish_generation == prev.list_publish_generation {
-        return false;
-    }
     let mut preview_textures = HashMap::new();
     let mut preview_logical_sizes = HashMap::new();
+    let mut preview_buffer_tags = HashMap::new();
     for (&index, handle) in textures {
         if index < row_count {
             preview_textures.insert(index, handle.clone());
@@ -386,11 +386,38 @@ pub(super) fn publish_preview_snapshot(
             preview_logical_sizes.insert(index, size);
         }
     }
+    for (&index, &tag) in buffer_tags {
+        if index < row_count {
+            preview_buffer_tags.insert(index, tag);
+        }
+    }
+    let revision_matches = cache_revision == prev.revision;
+    let list_gen_matches = list_publish_generation == prev.list_publish_generation;
+    let textures_match = preview_textures.len() == prev.textures.len()
+        && preview_textures
+            .iter()
+            .all(|(index, handle)| {
+                prev.textures
+                    .get(index)
+                    .is_some_and(|prev_handle| prev_handle.id() == handle.id())
+            });
+    let logical_match = preview_logical_sizes.len() == prev.logical_sizes.len()
+        && preview_logical_sizes
+            .iter()
+            .all(|(index, size)| prev.logical_sizes.get(index) == Some(size));
+    let tags_match = preview_buffer_tags.len() == prev.buffer_tags.len()
+        && preview_buffer_tags
+            .iter()
+            .all(|(index, tag)| prev.buffer_tags.get(index) == Some(tag));
+    if revision_matches && list_gen_matches && textures_match && logical_match && tags_match {
+        return false;
+    }
     swap.store(Arc::new(DirectoryTreePreviewSnapshot {
         revision: cache_revision,
         list_publish_generation,
         textures: preview_textures,
         logical_sizes: preview_logical_sizes,
+        buffer_tags: preview_buffer_tags,
     }));
     true
 }
@@ -410,6 +437,7 @@ pub(super) struct DirectoryTreePublishContext<'a> {
     pub preview_cache_revision: Option<u64>,
     pub preview_textures: Option<&'a HashMap<usize, egui::TextureHandle>>,
     pub preview_logical_sizes: Option<&'a HashMap<usize, (u32, u32)>>,
+    pub preview_buffer_tags: Option<&'a HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>>,
 }
 
 pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>) -> bool {
@@ -427,10 +455,11 @@ pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>
         changed = true;
     }
 
-    if let (Some(revision), Some(textures), Some(logical_sizes)) = (
+    if let (Some(revision), Some(textures), Some(logical_sizes), Some(buffer_tags)) = (
         ctx.preview_cache_revision,
         ctx.preview_textures,
         ctx.preview_logical_sizes,
+        ctx.preview_buffer_tags,
     ) && publish_preview_snapshot(
         ctx.preview_snapshot,
         ctx.list.publish_generation,
@@ -438,6 +467,7 @@ pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>
         revision,
         textures,
         logical_sizes,
+        buffer_tags,
     ) {
         changed = true;
     }

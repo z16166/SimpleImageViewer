@@ -265,6 +265,10 @@ impl DirectoryTreeStripCache {
         &self.logical_sizes
     }
 
+    pub(crate) fn preview_buffer_tags(&self) -> &HashMap<usize, StripPreviewBufferTag> {
+        &self.preview_buffer_tag
+    }
+
     pub(crate) fn gpu_revision(&self) -> u64 {
         self.gpu_revision
     }
@@ -511,6 +515,8 @@ impl DirectoryTreeStripCache {
             decoded.rgba(),
         );
         let thumb_size = [decoded.width as usize, decoded.height as usize];
+        // Same-size refreshes keep the existing TextureId and use handle.set(); recreating
+        // textures after HDR swap-chain hot-swap can fail to display on some backends.
         if self
             .textures
             .get(&index)

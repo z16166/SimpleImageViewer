@@ -600,6 +600,8 @@ fn startup_preload_defer_can_release_now(
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
     interim_hdr_decode_capacity: f32,
+    current_target_format: Option<wgpu::TextureFormat>,
+    desired_target_format: Option<wgpu::TextureFormat>,
 ) -> bool {
     super::startup_preload_defer_can_release(
         runtime_probe_completed,
@@ -609,7 +611,50 @@ fn startup_preload_defer_can_release_now(
         probe_completed_at,
         std::time::Instant::now(),
         interim_hdr_decode_capacity,
+        current_target_format,
+        desired_target_format,
     )
+}
+
+const HDR_SWAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const SDR_SWAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
+#[test]
+fn startup_preload_defer_waits_for_swap_chain_before_release() {
+    use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::types::HdrOutputMode;
+
+    let selection_hdr = HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: Some(2.89),
+        hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        native_surface_encoding: None,
+        ..HdrMonitorSelection::new("", false)
+    };
+
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        true,
+        Some(&selection_hdr),
+        HdrOutputMode::MacOsEdr,
+        None,
+        16.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
+    ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        true,
+        Some(&selection_hdr),
+        HdrOutputMode::MacOsEdr,
+        None,
+        16.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
+    ));
 }
 
 #[test]
@@ -665,6 +710,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -673,6 +720,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(SDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -681,6 +730,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -689,6 +740,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!super::monitor_hdr_decode_capacity_is_known(
         selection_hdr_source_only
@@ -700,6 +753,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -708,6 +763,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -716,6 +773,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::MacOsEdr,
         None,
         1.0,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
@@ -724,6 +783,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::MacOsEdr,
         None,
         4.926,
+        Some(HDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -750,6 +811,8 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
@@ -758,6 +821,8 @@ fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
         HdrOutputMode::SdrToneMapped,
         None,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -787,6 +852,8 @@ fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
         Some(probe_at),
         now,
         1.0,
+        Some(SDR_SWAP_FORMAT),
+        Some(HDR_SWAP_FORMAT),
     ));
 }
 
@@ -2270,6 +2337,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_attempted: std::collections::HashSet::new(),
         directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet::new(),
+        directory_tree_strip_pending_main_handoff: std::collections::HashMap::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
         directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
         directory_tree_strip_next_job_token: 0,

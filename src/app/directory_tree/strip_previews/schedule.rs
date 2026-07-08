@@ -18,6 +18,8 @@
 
 use std::sync::Arc;
 
+use eframe::egui;
+
 use crate::app::ImageViewerApp;
 use crate::app::directory_tree_strip_cache::{
     DirectoryTreeStripInflightReleaseKind, DirectoryTreeStripJobKey,
@@ -159,11 +161,6 @@ impl ImageViewerApp {
             false,
         );
         if target_tag == StripPreviewBufferTag::SdrDeferredPlaceholder {
-            #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
-                "[PreloadDebug][Strip] skip hdr_cache_sync idx={} reason=deferred_placeholder_tag",
-                index
-            );
             return false;
         }
         let stage = PreviewStage::Refined;
@@ -301,7 +298,11 @@ impl ImageViewerApp {
         );
     }
 
-    pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize) {
+    pub(crate) fn try_sync_strip_from_texture_cache(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) {
         // GPU texture clone only; no CPU decode — do not defer while the current main loads.
         // Main-window texture_cache handles are ROOT-context textures; the detached
         // directory-tree viewport must upload strip thumbs via its own egui context.
@@ -333,6 +334,15 @@ impl ImageViewerApp {
         let size = texture.size();
         let preview_w = size[0] as u32;
         let preview_h = size[1] as u32;
+        let strip_max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        if preview_w.max(preview_h) > strip_max_side {
+            // Full-resolution main-window textures are replaced during HDR swap and
+            // resample; wait for strip-sized GPU upload instead of cloning them here.
+            return;
+        }
         if !preview_aspect_matches_logical(preview_w, preview_h, logical.0, logical.1) {
             return;
         }
@@ -367,6 +377,7 @@ impl ImageViewerApp {
                 preview_h,
                 self.directory_tree_strip_cache.gpu_revision()
             );
+            self.publish_directory_tree_strip_preview_if_stale(ctx);
         }
     }
 
@@ -883,5 +894,86 @@ impl ImageViewerApp {
             }
         });
         true
+    }
+
+    pub(super) fn schedule_or_queue_strip_pending_gpu_resample(
+        &mut self,
+        index: usize,
+        decoded: DecodedImage,
+        stage: PreviewStage,
+        logical: Option<(u32, u32)>,
+        buffer_tag: StripPreviewBufferTag,
+        source_job_key: Option<DirectoryTreeStripJobKey>,
+    ) {
+        if self.schedule_strip_pending_gpu_resample(
+            index,
+            decoded.clone(),
+            stage,
+            logical,
+            buffer_tag,
+            source_job_key,
+        ) {
+            self.directory_tree_strip_pending_main_handoff.remove(&index);
+            return;
+        }
+        if self.directory_tree_strip_cache.contains(index) {
+            return;
+        }
+        self.directory_tree_strip_pending_main_handoff.insert(
+            index,
+            super::DirectoryTreeStripPendingMainHandoff {
+                decoded,
+                stage,
+                logical_size: logical,
+                buffer_tag,
+            },
+        );
+    }
+
+    pub(super) fn flush_strip_pending_main_handoffs(&mut self) {
+        if self.directory_tree_strip_pending_main_handoff.is_empty() {
+            return;
+        }
+        let indices: Vec<usize> = self
+            .directory_tree_strip_pending_main_handoff
+            .keys()
+            .copied()
+            .collect();
+        for index in indices {
+            if self.directory_tree_strip_cache.contains(index) {
+                self.directory_tree_strip_pending_main_handoff.remove(&index);
+                continue;
+            }
+            let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&index)
+            else {
+                continue;
+            };
+            self.schedule_or_queue_strip_pending_gpu_resample(
+                index,
+                handoff.decoded,
+                handoff.stage,
+                handoff.logical_size,
+                handoff.buffer_tag,
+                None,
+            );
+        }
+    }
+
+    pub(super) fn flush_strip_pending_main_handoff_for_index(&mut self, index: usize) {
+        if self.directory_tree_strip_cache.contains(index) {
+            self.directory_tree_strip_pending_main_handoff.remove(&index);
+            return;
+        }
+        let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&index) else {
+            return;
+        };
+        self.schedule_or_queue_strip_pending_gpu_resample(
+            index,
+            handoff.decoded,
+            handoff.stage,
+            handoff.logical_size,
+            handoff.buffer_tag,
+            None,
+        );
     }
 }

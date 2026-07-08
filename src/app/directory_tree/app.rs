@@ -244,15 +244,16 @@ impl ImageViewerApp {
             domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
             had_preview
         };
-        let (preview_cache_revision, preview_textures, preview_logical_sizes) =
+        let (preview_cache_revision, preview_textures, preview_logical_sizes, preview_buffer_tags) =
             if self.directory_tree_list_previews_active() {
                 (
                     Some(self.directory_tree_strip_cache.gpu_revision()),
                     Some(self.directory_tree_strip_cache.textures()),
                     Some(self.directory_tree_strip_cache.logical_sizes()),
+                    Some(self.directory_tree_strip_cache.preview_buffer_tags()),
                 )
             } else {
-                (None, None, None)
+                (None, None, None, None)
             };
         let changed = view::publish_directory_tree_domains(
             &self.directory_tree,
@@ -262,6 +263,7 @@ impl ImageViewerApp {
             preview_cache_revision,
             preview_textures,
             preview_logical_sizes,
+            preview_buffer_tags,
         );
         if preview_cleared && !changed {
             view::assemble_directory_tree_view(
@@ -271,6 +273,57 @@ impl ImageViewerApp {
                 &self.directory_tree.preview_snapshot,
             );
         }
+    }
+
+    /// True when the immutable preview snapshot does not reflect the strip GPU cache.
+    pub(crate) fn directory_tree_strip_preview_needs_publish(&self) -> bool {
+        if !self.directory_tree_list_previews_active() {
+            return false;
+        }
+        let cache_rev = self.directory_tree_strip_cache.gpu_revision();
+        let snap = self.directory_tree.preview_snapshot.load();
+        if cache_rev != snap.revision {
+            return true;
+        }
+        let cache_textures = self.directory_tree_strip_cache.textures();
+        if cache_textures.len() != snap.textures.len() {
+            return true;
+        }
+        for (&index, handle) in cache_textures {
+            match snap.textures.get(&index) {
+                None => return true,
+                Some(prev) if prev.id() != handle.id() => return true,
+                Some(_) => {}
+            }
+        }
+        for (&index, &logical) in self.directory_tree_strip_cache.logical_sizes() {
+            if snap.logical_sizes.get(&index) != Some(&logical) {
+                return true;
+            }
+        }
+        for (&index, &tag) in self.directory_tree_strip_cache.preview_buffer_tags() {
+            if snap.buffer_tags.get(&index) != Some(&tag) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Publish directory-tree preview textures when the strip cache has moved ahead of the UI snapshot.
+    pub(crate) fn publish_directory_tree_strip_preview_if_stale(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> bool {
+        if !self.directory_tree_strip_preview_needs_publish() {
+            return false;
+        }
+        self.publish_directory_tree_view_from_state(false);
+        self.mark_directory_tree_repaint_pending();
+        self.request_directory_tree_viewport_repaint(ctx);
+        if self.directory_tree_nav_is_embedded() {
+            ctx.request_repaint();
+        }
+        true
     }
 
     /// Paint from RCU view + frame chrome; no clone and no structural state lock during draw.
@@ -1212,15 +1265,19 @@ impl ImageViewerApp {
             }
             return cleared;
         }
-        let revision = self.directory_tree_strip_cache.gpu_revision();
-        let previous_revision = self.directory_tree.preview_snapshot.load().revision;
+        let snap_before = self.directory_tree.preview_snapshot.load();
+        let previous_revision = snap_before.revision;
+        let preview_count_before = snap_before.textures.len();
         #[cfg(feature = "preload-debug")]
         let cache_count = self.directory_tree_strip_cache.textures().len();
+        if !self.directory_tree_strip_preview_needs_publish() {
+            return false;
+        }
         let Some(mut list) = self.directory_tree.list.try_lock() else {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][DirTree] sync_preview_textures skipped: list locked cache_rev={} cache_count={}",
-                revision,
+                self.directory_tree_strip_cache.gpu_revision(),
                 cache_count
             );
             self.defer_directory_tree_file_list_sync();
@@ -1228,16 +1285,18 @@ impl ImageViewerApp {
         };
         DirectoryTreeListPreviewLayout::from_settings(&self.settings).apply_to_list(&mut list);
         drop(list);
-        self.publish_directory_tree_view_from_state(false);
-        let updated = revision != previous_revision;
+        self.publish_directory_tree_strip_preview_if_stale(ctx);
+        let snap_after = self.directory_tree.preview_snapshot.load();
+        let updated = snap_after.revision != previous_revision
+            || snap_after.textures.len() != preview_count_before;
         #[cfg(feature = "preload-debug")]
         if updated {
-            let snap = self.directory_tree.preview_snapshot.load();
             crate::preload_debug!(
-                "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {revision} \
+                "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {} \
                  cache_count={cache_count} ui_preview={} snap_has_indices={:?}",
-                snap.textures.len(),
-                snap.textures.keys().copied().collect::<Vec<_>>()
+                snap_after.revision,
+                snap_after.textures.len(),
+                snap_after.textures.keys().copied().collect::<Vec<_>>()
             );
         }
         if updated {

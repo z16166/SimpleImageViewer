@@ -622,6 +622,7 @@ impl ImageViewerApp {
         if hdr_output_state_changed(previous_hdr_output_state, next_hdr_output_state) {
             if previous_hdr_output_state.target_format() != next_hdr_output_state.target_format() {
                 self.invalidate_directory_tree_strip_gpu_textures();
+                self.mark_directory_tree_repaint_pending();
             }
             self.refresh_hdr_view_status();
         }

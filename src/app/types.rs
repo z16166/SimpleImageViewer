@@ -537,6 +537,12 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
     /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
     pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
+    /// Full-size strip pixels from main-loader install, queued when a concurrent strip job
+    /// blocked `pending_gpu_resample` (StaticFullDecode handoff race recovery).
+    pub(crate) directory_tree_strip_pending_main_handoff: std::collections::HashMap<
+        usize,
+        crate::app::directory_tree::DirectoryTreeStripPendingMainHandoff,
+    >,
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_inflight_tokens:
         std::collections::HashMap<usize, std::num::NonZeroU64>,
