@@ -378,7 +378,7 @@ impl HdrCallbackResources {
         target_capacity_bits: u32,
         width: u32,
         height: u32,
-        pixels: &[f32],
+        pixels: Arc<Vec<f32>>,
     ) -> Result<(), String> {
         let Some(binding) = self.image_bindings.get_mut(&key) else {
             return Err("HDR image binding missing for CPU compose".to_string());
@@ -405,7 +405,7 @@ impl HdrCallbackResources {
         target_capacity_bits: u32,
         width: u32,
         height: u32,
-        pixels: &[f32],
+        pixels: Arc<Vec<f32>>,
     ) -> Result<(), String> {
         let Some(binding) = self.image_bindings.get_mut(&key) else {
             return Err("HDR image binding missing for CPU compose".to_string());
@@ -431,7 +431,7 @@ impl HdrCallbackResources {
         target_capacity_bits: u32,
         width: u32,
         height: u32,
-        pixels: &[f32],
+        pixels: Arc<Vec<f32>>,
     ) -> Result<(), String> {
         let Some(binding) = self.tile_bindings.binding_mut(tile_key) else {
             return Err("HDR tile binding missing for CPU compose".to_string());

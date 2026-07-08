@@ -131,19 +131,16 @@ pub(crate) fn write_rgba32f_to_texture(
     texture: Arc<wgpu::Texture>,
     width: u32,
     height: u32,
-    rgba_f32: &[f32],
+    rgba_f32: Arc<Vec<f32>>,
 ) -> Result<(), String> {
-    let (upload_bytes, bytes_per_row) = rows_for_texture_write(
-        rgba32f_as_bytes(rgba_f32),
-        width,
-        height,
-        std::mem::size_of::<f32>() as u32 * 4,
-    )
-    .map_err(|err| format!("HDR rgba32f texture write: {err}"))?;
+    let bytes_per_row = texture_write_bytes_per_row(width, std::mem::size_of::<f32>() as u32 * 4)
+        .map_err(|err| format!("HDR rgba32f texture write: {err}"))?;
+    let upload_bytes = pack_rgba32f_for_texture_upload(&rgba_f32, width, height, bytes_per_row)
+        .map_err(|err| format!("HDR rgba32f texture write: {err}"))?;
     submit_texture_write(
         sink,
         texture,
-        TextureUploadBytes::Borrowed(upload_bytes),
+        upload_bytes,
         bytes_per_row,
         height,
         wgpu::Extent3d {
