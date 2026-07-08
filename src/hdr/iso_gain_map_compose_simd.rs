@@ -49,6 +49,16 @@ const SRGB_OFFSET: f32 = 0.055;
 const SRGB_SCALE: f32 = 1.055;
 const SRGB_GAMMA: f32 = 2.4;
 
+/// SSE4.1 `_MM_SHUFFLE(z,y,x,w)` => out[0]=a[w], out[1]=a[x], out[2]=b[y], out[3]=b[z]
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE0: i32 = 0x00;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE1: i32 = 0x55;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE2: i32 = 0xAA;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE3: i32 = 0xFF;
+
 thread_local! {
     static GAIN_ROW_SCRATCH: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
@@ -311,20 +321,12 @@ unsafe fn load_sdr_rgb_encoded4_sse41(ptr: *const u8) -> (__m128, __m128, __m128
 #[target_feature(enable = "neon")]
 unsafe fn load_sdr_rgb_encoded4_neon(ptr: *const u8) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, 16);
-        let mut rf = [0.0_f32; 4];
-        let mut gf = [0.0_f32; 4];
-        let mut bf = [0.0_f32; 4];
-        for lane in 0..4 {
-            rf[lane] = f32::from(bytes[lane * 4]) / 255.0;
-            gf[lane] = f32::from(bytes[lane * 4 + 1]) / 255.0;
-            bf[lane] = f32::from(bytes[lane * 4 + 2]) / 255.0;
-        }
-        (
-            vld1q_f32(rf.as_ptr()),
-            vld1q_f32(gf.as_ptr()),
-            vld1q_f32(bf.as_ptr()),
-        )
+        let scale = vdupq_n_f32(1.0 / 255.0);
+        let rgbe = vld4_u8(ptr);
+        let r = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.0)), scale);
+        let g = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.1)), scale);
+        let b = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.2)), scale);
+        (r, g, b)
     }
 }
 
@@ -332,20 +334,35 @@ unsafe fn load_sdr_rgb_encoded4_neon(ptr: *const u8) -> (float32x4_t, float32x4_
 #[target_feature(enable = "sse4.1")]
 unsafe fn load_gain_rgb4_sse41(gain_row: *const f32, base: usize) -> (__m128, __m128, __m128) {
     unsafe {
-        let mut rf = [0.0_f32; 4];
-        let mut gf = [0.0_f32; 4];
-        let mut bf = [0.0_f32; 4];
-        for lane in 0..4 {
-            let idx = base + lane * 3;
-            rf[lane] = *gain_row.add(idx);
-            gf[lane] = *gain_row.add(idx + 1);
-            bf[lane] = *gain_row.add(idx + 2);
-        }
-        (
-            _mm_loadu_ps(rf.as_ptr()),
-            _mm_loadu_ps(gf.as_ptr()),
-            _mm_loadu_ps(bf.as_ptr()),
-        )
+        let src = gain_row.add(base);
+        let v0 = _mm_loadu_ps(src);
+        let v1 = _mm_loadu_ps(src.add(4));
+        let v2 = _mm_loadu_ps(src.add(8));
+
+        // v0=[r0,g0,b0,r1] v1=[g1,b1,r2,g2] v2=[b2,r3,g3,b3]
+        let r = _mm_blend_ps(
+            _mm_shuffle_ps(v0, v1, 0x2C),
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE1),
+            0b1000,
+        );
+        let g_partial = _mm_shuffle_ps(v0, v1, 0xC1);
+        let g = _mm_blend_ps(
+            _mm_shuffle_ps(g_partial, g_partial, 0xB8),
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE2),
+            0b1000,
+        );
+        let b_partial = _mm_shuffle_ps(v0, v1, 0x56);
+        let b_reordered = _mm_shuffle_ps(b_partial, b_partial, 0xB8);
+        let b = _mm_blend_ps(
+            _mm_blend_ps(
+                b_reordered,
+                _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE0),
+                0b0100,
+            ),
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE3),
+            0b1000,
+        );
+        (r, g, b)
     }
 }
 
@@ -356,20 +373,8 @@ unsafe fn load_gain_rgb4_neon(
     base: usize,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
-        let mut rf = [0.0_f32; 4];
-        let mut gf = [0.0_f32; 4];
-        let mut bf = [0.0_f32; 4];
-        for lane in 0..4 {
-            let idx = base + lane * 3;
-            rf[lane] = *gain_row.add(idx);
-            gf[lane] = *gain_row.add(idx + 1);
-            bf[lane] = *gain_row.add(idx + 2);
-        }
-        (
-            vld1q_f32(rf.as_ptr()),
-            vld1q_f32(gf.as_ptr()),
-            vld1q_f32(bf.as_ptr()),
-        )
+        let res = vld3q_f32(gain_row.add(base));
+        (res.0, res.1, res.2)
     }
 }
 
@@ -519,19 +524,25 @@ unsafe fn recover_channel4_neon(
 #[target_feature(enable = "sse4.1")]
 unsafe fn store_rgba4_sse41(dst: *mut f32, sdr: *const u8, r: __m128, g: __m128, b: __m128) {
     unsafe {
-        let mut rf = [0.0_f32; 4];
-        let mut gf = [0.0_f32; 4];
-        let mut bf = [0.0_f32; 4];
-        _mm_storeu_ps(rf.as_mut_ptr(), r);
-        _mm_storeu_ps(gf.as_mut_ptr(), g);
-        _mm_storeu_ps(bf.as_mut_ptr(), b);
-        for lane in 0..4 {
-            dst.add(lane * 4).write(rf[lane]);
-            dst.add(lane * 4 + 1).write(gf[lane]);
-            dst.add(lane * 4 + 2).write(bf[lane]);
-            dst.add(lane * 4 + 3)
-                .write(f32::from(*sdr.add(lane * 4 + 3)) / 255.0);
-        }
+        let scale = _mm_set1_ps(1.0 / 255.0);
+        let bytes = std::slice::from_raw_parts(sdr, 16);
+        let mut a = _mm_mul_ps(
+            _mm_set_ps(
+                f32::from(bytes[15]),
+                f32::from(bytes[11]),
+                f32::from(bytes[7]),
+                f32::from(bytes[3]),
+            ),
+            scale,
+        );
+        let mut r = r;
+        let mut g = g;
+        let mut b = b;
+        _MM_TRANSPOSE4_PS(&mut r, &mut g, &mut b, &mut a);
+        _mm_storeu_ps(dst, r);
+        _mm_storeu_ps(dst.add(4), g);
+        _mm_storeu_ps(dst.add(8), b);
+        _mm_storeu_ps(dst.add(12), a);
     }
 }
 
@@ -545,19 +556,10 @@ unsafe fn store_rgba4_neon(
     b: float32x4_t,
 ) {
     unsafe {
-        let mut rf = [0.0_f32; 4];
-        let mut gf = [0.0_f32; 4];
-        let mut bf = [0.0_f32; 4];
-        vst1q_f32(rf.as_mut_ptr(), r);
-        vst1q_f32(gf.as_mut_ptr(), g);
-        vst1q_f32(bf.as_mut_ptr(), b);
-        for lane in 0..4 {
-            dst.add(lane * 4).write(rf[lane]);
-            dst.add(lane * 4 + 1).write(gf[lane]);
-            dst.add(lane * 4 + 2).write(bf[lane]);
-            dst.add(lane * 4 + 3)
-                .write(f32::from(*sdr.add(lane * 4 + 3)) / 255.0);
-        }
+        let scale = vdupq_n_f32(1.0 / 255.0);
+        let rgbe = vld4_u8(sdr);
+        let a = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.3)), scale);
+        vst4q_f32(dst, float32x4x4_t(r, g, b, a));
     }
 }
 
