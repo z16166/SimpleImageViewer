@@ -26,13 +26,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui;
 
 static IPC_WAKE_CTX: OnceLock<Mutex<Option<egui::Context>>> = OnceLock::new();
-
-const IPC_SERVER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct IpcServerHandle {
     shutdown: Arc<AtomicBool>,
@@ -245,28 +243,38 @@ fn spawn_ipc_server(listener: Listener, tx: crossbeam_channel::Sender<IpcMessage
     }
 }
 
+/// Unblock a blocking `listener.accept()` so the IPC server thread can observe shutdown.
+fn wake_ipc_listener_for_shutdown() {
+    let sock_name = match IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>() {
+        Ok(name) => name,
+        Err(e) => {
+            log::warn!(
+                "[IPC] Failed to resolve socket name for shutdown wake: {}",
+                e
+            );
+            return;
+        }
+    };
+    std::thread::spawn(move || {
+        let options = ConnectOptions::new()
+            .name(sock_name)
+            .wait_mode(ConnectWaitMode::Timeout(Duration::from_millis(200)));
+        let _ = options.connect_sync();
+    });
+}
+
 /// Stop the single-instance IPC accept loop before process exit.
 pub fn shutdown_ipc_server() {
     let Some(server) = IPC_SERVER.get().and_then(|slot| slot.lock().take()) else {
         return;
     };
     server.shutdown.store(true, Ordering::Release);
+    wake_ipc_listener_for_shutdown();
     let Some(join) = server.join.lock().take() else {
         return;
     };
-    let deadline = Instant::now() + IPC_SERVER_JOIN_TIMEOUT;
-    while !join.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if join.is_finished() {
-        if let Err(e) = join.join() {
-            log::warn!("[IPC] Server thread panicked on join: {:?}", e);
-        }
-    } else {
-        log::warn!(
-            "[IPC] Server thread did not exit within {:?}; continuing shutdown",
-            IPC_SERVER_JOIN_TIMEOUT
-        );
+    if let Err(e) = join.join() {
+        log::warn!("[IPC] Server thread panicked on join: {:?}", e);
     }
 }
 
@@ -279,7 +287,12 @@ fn ipc_server_loop(
 ) {
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
-            Ok(conn) => handle_ipc_connection(conn, &tx),
+            Ok(conn) => {
+                if shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                handle_ipc_connection(conn, &tx);
+            }
             Err(e) if shutdown.load(Ordering::Acquire) => {
                 let _ = e;
                 break;
