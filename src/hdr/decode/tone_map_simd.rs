@@ -958,17 +958,11 @@ unsafe fn pack_rgba_u8_pixel4_neon(
         let rgba01 = vzip1_u32(vreinterpret_u32_u16(rg01), vreinterpret_u32_u16(ba01));
         vst1_u8(dst, vreinterpret_u8_u32(rgba01));
 
-        let rg23 = vzip2_u16(
-            vcombine_u16(ri, vdup_n_u16(0)),
-            vcombine_u16(gi, vdup_n_u16(0)),
-        );
-        let ba23 = vzip2_u16(
-            vcombine_u16(bi, vdup_n_u16(0)),
-            vcombine_u16(ai, vdup_n_u16(0)),
-        );
+        let rg23 = vzip2_u16(ri, gi);
+        let ba23 = vzip2_u16(bi, ai);
         let rgba23 = vzip1_u32(
-            vreinterpret_u32_u16(vget_low_u16(rg23)),
-            vreinterpret_u32_u16(vget_low_u16(ba23)),
+            vreinterpret_u32_u16(rg23),
+            vreinterpret_u32_u16(ba23),
         );
         vst1_u8(dst.add(8), vreinterpret_u8_u32(rgba23));
     }

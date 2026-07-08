@@ -27,8 +27,11 @@ use core::arch::aarch64::*;
 
 use crate::constants::{checked_pixel_row_len, checked_rgba_buffer_len, checked_rgba_row_len};
 
+#[cfg(target_arch = "x86_64")]
 const LANES_PER_AVX2_STEP: usize = 16;
+#[cfg(target_arch = "x86_64")]
 const LANES_PER_SSE41_STEP: usize = 8;
+#[cfg(target_arch = "x86_64")]
 const F32S_PER_SSE41_STEP: usize = 4;
 
 #[cfg(target_arch = "aarch64")]

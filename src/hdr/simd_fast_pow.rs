@@ -202,21 +202,24 @@ mod arm {
             bits,
             vreinterpretq_s32_u32(vdupq_n_u32(INV_MANT_MASK)),
         ));
-        x = vorrq_f32(x, half);
+        x = vreinterpretq_f32_s32(vorrq_s32(
+            vreinterpretq_s32_f32(x),
+            vreinterpretq_s32_f32(half),
+        ));
         imm0 = vsubq_s32(imm0, vdupq_n_s32(EXP_BIAS));
         let mut e = vaddq_f32(vcvtq_f32_s32(imm0), one);
 
         let mask = vcltq_f32(x, vdupq_n_f32(SQRTHF));
         let tmp = vreinterpretq_f32_u32(vandq_u32(
             vreinterpretq_u32_f32(x),
-            vreinterpretq_u32_f32(mask),
+            mask,
         ));
         x = vsubq_f32(x, one);
         e = vsubq_f32(
             e,
             vreinterpretq_f32_u32(vandq_u32(
                 vreinterpretq_u32_f32(one),
-                vreinterpretq_u32_f32(mask),
+                mask,
             )),
         );
         x = vaddq_f32(x, tmp);
@@ -256,7 +259,7 @@ mod arm {
             tmp,
             vreinterpretq_f32_u32(vandq_u32(
                 vreinterpretq_u32_f32(one),
-                vreinterpretq_u32_f32(mask),
+                mask,
             )),
         );
 
@@ -282,32 +285,34 @@ mod arm {
     #[target_feature(enable = "neon")]
     #[inline]
     unsafe fn pow_ps(base: float32x4_t, exponent: f32) -> float32x4_t {
-        let zero = vdupq_n_f32(0.0);
-        let positive = vcgtq_f32(base, zero);
-        let exp_vec = vdupq_n_f32(exponent);
-        let pow = exp_ps(vmulq_f32(exp_vec, log_ps(base)));
-        vreinterpretq_f32_u32(vandq_u32(
-            vreinterpretq_u32_f32(pow),
-            vreinterpretq_u32_f32(positive),
-        ))
+        unsafe {
+            let zero = vdupq_n_f32(0.0);
+            let positive = vcgtq_f32(base, zero);
+            let exp_vec = vdupq_n_f32(exponent);
+            let pow = exp_ps(vmulq_f32(exp_vec, log_ps(base)));
+            vreinterpretq_f32_u32(vandq_u32(
+                vreinterpretq_u32_f32(pow),
+                positive,
+            ))
+        }
     }
 
     #[target_feature(enable = "neon")]
     #[inline]
     pub(super) unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
-        pow_ps(base, exponent)
+        unsafe { pow_ps(base, exponent) }
     }
 
     #[target_feature(enable = "neon")]
     #[inline]
     pub(super) unsafe fn exp2_4_neon(exponents: float32x4_t) -> float32x4_t {
-        exp_ps(vmulq_f32(exponents, vdupq_n_f32(std::f32::consts::LN_2)))
+        unsafe { exp_ps(vmulq_f32(exponents, vdupq_n_f32(std::f32::consts::LN_2))) }
     }
 
     #[target_feature(enable = "neon")]
     #[inline]
     pub(super) unsafe fn exp4_neon(x: float32x4_t) -> float32x4_t {
-        exp_ps(x)
+        unsafe { exp_ps(x) }
     }
 }
 

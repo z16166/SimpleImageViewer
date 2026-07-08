@@ -22,7 +22,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 

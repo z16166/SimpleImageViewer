@@ -185,6 +185,8 @@ mod tests {
             linux_wp_primaries: Some(primaries),
             linux_explicit_hdr_state: None,
             linux_explicit_hdr_state_source: None,
+            #[cfg(target_os = "macos")]
+            current_edr_headroom: None,
         }
     }
 

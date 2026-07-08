@@ -34,12 +34,15 @@ const BT709_PR_TO_G: f32 = -0.468_124;
 const BT709_PB_TO_B: f32 = 1.8556;
 const RGBA_ALPHA: u8 = 255;
 
+#[cfg(target_arch = "x86_64")]
 const PIXELS_PER_SSE41_STEP: usize = 4;
 #[cfg(target_arch = "aarch64")]
 const PIXELS_PER_NEON_STEP: usize = 4;
+#[cfg(target_arch = "x86_64")]
 const PIXELS_PER_AVX2_STEP: usize = 8;
 
 /// 4:2:0 SSE41/NEON scalar chroma indexing uses `cb_row[xc]` and `cb_row[xc + 1]`.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 2 <= chroma_len
@@ -64,6 +67,24 @@ unsafe fn load_u8x4_for_cvtepu8(ptr: *const u8) -> __m128i {
 unsafe fn load_u8x4_neon(ptr: *const u8) -> uint8x8_t {
     unsafe {
         let packed = u32::from_ne_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]);
+        vreinterpret_u8_u32(vdup_n_u32(packed))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn u8x8_to_f32x4(v: uint8x8_t) -> float32x4_t {
+    unsafe { vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(v)))) }
+}
+
+/// 4:2:0 chroma upsample: `[c0, c0, c1, c1]` in the low four lanes.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn load_u8x4_420_chroma_neon(ptr: *const u8) -> uint8x8_t {
+    unsafe {
+        let c0 = *ptr;
+        let c1 = *ptr.add(1);
+        let packed = u32::from_ne_bytes([c0, c0, c1, c1]);
         vreinterpret_u8_u32(vdup_n_u32(packed))
     }
 }
@@ -637,15 +658,9 @@ unsafe fn ycbcr_full_range_bt709_row_444_neon(
             let cb = load_u8x4_neon(cb_row.as_ptr().add(*x));
             let cr = load_u8x4_neon(cr_row.as_ptr().add(*x));
 
-            let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
-            let pb = vsubq_f32(
-                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale),
-                center,
-            );
-            let pr = vsubq_f32(
-                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale),
-                center,
-            );
+            let yy = vmulq_f32(u8x8_to_f32x4(y), scale);
+            let pb = vsubq_f32(vmulq_f32(u8x8_to_f32x4(cb), scale), center);
+            let pr = vsubq_f32(vmulq_f32(u8x8_to_f32x4(cr), scale), center);
 
             let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
             let gf = vminq_f32(
@@ -692,20 +707,12 @@ unsafe fn ycbcr_full_range_bt709_row_420_neon(
         while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let y = load_u8x4_neon(y_row.as_ptr().add(*x));
-            let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
-            let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
-            let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
-            let cr = vcombine_u8(vdup_lane_u8(cr_pair, 0), vdup_lane_u8(cr_pair, 1));
+            let cb = load_u8x4_420_chroma_neon(cb_row.as_ptr().add(xc));
+            let cr = load_u8x4_420_chroma_neon(cr_row.as_ptr().add(xc));
 
-            let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(y))), scale);
-            let pb = vsubq_f32(
-                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb))), scale),
-                center,
-            );
-            let pr = vsubq_f32(
-                vmulq_f32(vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr))), scale),
-                center,
-            );
+            let yy = vmulq_f32(u8x8_to_f32x4(y), scale);
+            let pb = vsubq_f32(vmulq_f32(u8x8_to_f32x4(cb), scale), center);
+            let pr = vsubq_f32(vmulq_f32(u8x8_to_f32x4(cr), scale), center);
 
             let rf = vminq_f32(vmaxq_f32(vaddq_f32(yy, vmulq_f32(k_pr_r, pr)), zero), one);
             let gf = vminq_f32(
@@ -979,9 +986,9 @@ unsafe fn ycbcr_limited_range_bt709_row_444_neon(
             let cb = load_u8x4_neon(cb_row.as_ptr().add(*x));
             let cr = load_u8x4_neon(cr_row.as_ptr().add(*x));
 
-            let y_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(y)));
-            let cb_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb)));
-            let cr_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr)));
+            let y_f = u8x8_to_f32x4(y);
+            let cb_f = u8x8_to_f32x4(cb);
+            let cr_f = u8x8_to_f32x4(cr);
             let yy = vmulq_f32(vsubq_f32(y_f, luma_floor), luma_inv);
             let pb = vmulq_f32(vsubq_f32(cb_f, chroma_mid), chroma_inv);
             let pr = vmulq_f32(vsubq_f32(cr_f, chroma_mid), chroma_inv);
@@ -1010,14 +1017,12 @@ unsafe fn ycbcr_limited_range_bt709_row_420_neon(
         while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let y = load_u8x4_neon(y_row.as_ptr().add(*x));
-            let cb_pair = vld1_u8(cb_row.as_ptr().add(xc));
-            let cr_pair = vld1_u8(cr_row.as_ptr().add(xc));
-            let cb = vcombine_u8(vdup_lane_u8(cb_pair, 0), vdup_lane_u8(cb_pair, 1));
-            let cr = vcombine_u8(vdup_lane_u8(cr_pair, 0), vdup_lane_u8(cr_pair, 1));
+            let cb = load_u8x4_420_chroma_neon(cb_row.as_ptr().add(xc));
+            let cr = load_u8x4_420_chroma_neon(cr_row.as_ptr().add(xc));
 
-            let y_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(y)));
-            let cb_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(cb)));
-            let cr_f = vcvtq_f32_u32(vmovl_u16(vmovl_u8(cr)));
+            let y_f = u8x8_to_f32x4(y);
+            let cb_f = u8x8_to_f32x4(cb);
+            let cr_f = u8x8_to_f32x4(cr);
             let yy = vmulq_f32(vsubq_f32(y_f, luma_floor), luma_inv);
             let pb = vmulq_f32(vsubq_f32(cb_f, chroma_mid), chroma_inv);
             let pr = vmulq_f32(vsubq_f32(cr_f, chroma_mid), chroma_inv);

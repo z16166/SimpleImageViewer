@@ -137,13 +137,31 @@ fn compose_iso_row(
     constants: IsoComposeConstants,
 ) {
     let width = sdr_row.len() / 4;
-    let mut x = 0_usize;
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse4.1") {
+    let mut x = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("sse4.1") {
+                let mut simd_x = 0_u32;
+                unsafe {
+                    compose_iso_row_sse41(
+                        sdr_row,
+                        row_out,
+                        gain_row,
+                        width as u32,
+                        constants,
+                        &mut simd_x,
+                    );
+                }
+                simd_x as usize
+            } else {
+                0_usize
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
             let mut simd_x = 0_u32;
             unsafe {
-                compose_iso_row_sse41(
+                compose_iso_row_neon(
                     sdr_row,
                     row_out,
                     gain_row,
@@ -152,24 +170,13 @@ fn compose_iso_row(
                     &mut simd_x,
                 );
             }
-            x = simd_x as usize;
+            simd_x as usize
         }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mut simd_x = 0_u32;
-        unsafe {
-            compose_iso_row_neon(
-                sdr_row,
-                row_out,
-                gain_row,
-                width as u32,
-                constants,
-                &mut simd_x,
-            );
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            0_usize
         }
-        x = simd_x as usize;
-    }
+    };
     while x < width {
         compose_iso_pixel_scalar(sdr_row, row_out, gain_row, x as u32, constants);
         x += 1;
