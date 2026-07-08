@@ -60,7 +60,7 @@ pub(crate) fn open_raw_processor_with_preview(
     let opened_from_bytes = if let Some(bytes) = file_bytes {
         processor.open_buffer(bytes).is_ok()
     } else if let Ok(mmap) = crate::mmap_util::map_file(path) {
-        processor.open_buffer(mmap.as_ref()).is_ok()
+        processor.open_buffer_mmap(mmap).is_ok()
     } else {
         false
     };

@@ -221,6 +221,21 @@ pub(crate) fn hdr_directory_tree_strip_sdr_at_max_side(
     crate::hdr::tiled::finalize_sdr_preview_pixels(preview.width, preview.height, pixels)
 }
 
+/// True when [`directory_tree_strip_from_hdr_or_fallback`] can produce real strip pixels from
+/// the installed HDR cache entry (CPU float plane, ISO baseline, or GPU-RAW bootstrap).
+pub(crate) fn hdr_directory_tree_strip_cache_sync_viable(hdr: &HdrImageBuffer) -> bool {
+    if !hdr.rgba_f32.is_empty() {
+        return true;
+    }
+    if hdr_has_iso_deferred_gain_map(hdr) {
+        return true;
+    }
+    if raw_gpu_source_has_bootstrap_preview(hdr) {
+        return true;
+    }
+    hdr_has_embedded_sdr_master_display(hdr)
+}
+
 /// CPU strip thumbnail from an installed HDR buffer, or downsampled SDR fallback when empty.
 pub(crate) fn directory_tree_strip_from_hdr_or_fallback(
     hdr: &HdrImageBuffer,
@@ -1095,6 +1110,43 @@ mod tests {
         let logical =
             super::directory_tree_strip_logical_for_preview(4040, 3029, 4000, 2248, 128, 96, true);
         assert_eq!(logical, (4040, 3029));
+    }
+
+    #[test]
+    fn hdr_directory_tree_strip_cache_sync_viable_requires_usable_strip_source() {
+        let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+            raw_width: 2568,
+            raw_height: 1928,
+            width: 2568,
+            height: 1928,
+            raw_pixels: Arc::new(vec![0; 16]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 65535.0,
+            bayer_pattern: [0, 1, 1, 2],
+            scene_color_scale: [1.0, 1.0, 1.0],
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+            bootstrap_preview: None,
+        });
+        let gpu_raw_no_bootstrap = HdrImageBuffer {
+            width: 2568,
+            height: 1928,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        assert!(!super::hdr_directory_tree_strip_cache_sync_viable(
+            &gpu_raw_no_bootstrap
+        ));
+
+        let with_float = HdrImageBuffer {
+            rgba_f32: Arc::new(vec![0.5; 2568 * 1928 * 4]),
+            ..gpu_raw_no_bootstrap
+        };
+        assert!(super::hdr_directory_tree_strip_cache_sync_viable(&with_float));
     }
 
     #[test]

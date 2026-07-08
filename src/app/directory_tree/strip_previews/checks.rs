@@ -256,6 +256,9 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
+        if !crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr) {
+            return false;
+        }
         if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
             return false;
         }
@@ -440,8 +443,7 @@ impl ImageViewerApp {
             return true;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            !hdr.rgba_f32.is_empty()
-                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+            crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr.as_ref())
         }) {
             return true;
         }
@@ -514,9 +516,7 @@ impl ImageViewerApp {
             return false;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            !hdr.rgba_f32.is_empty()
-                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
-                || self.iso_deferred_baseline_pixels_for_strip(index).is_some()
+            crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr.as_ref())
         }) {
             return false;
         }

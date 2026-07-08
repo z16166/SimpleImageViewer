@@ -90,9 +90,24 @@ type RawColorDiag = (
     [f32; 4],
 );
 
+/// Keeps mmap-backed bytes alive for `libraw_open_buffer` (LibRaw does not copy).
+enum RawOpenBacking {
+    Mmap(memmap2::Mmap),
+}
+
+impl RawOpenBacking {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Mmap(mmap) => mmap.as_ref(),
+        }
+    }
+}
+
 pub struct RawProcessor {
     data: *mut ffi::libraw_data_t,
     is_unpacked: bool,
+    /// Owned file bytes when opened via [`Self::open_buffer`] / [`Self::open_buffer_mmap`].
+    open_backing: Option<RawOpenBacking>,
 }
 
 /// RAII wrapper for memory allocated by LibRaw (e.g., via `libraw_dcraw_make_mem_image`).
@@ -247,6 +262,7 @@ impl RawProcessor {
                 Some(Self {
                     data,
                     is_unpacked: false,
+                    open_backing: None,
                 })
             }
         }
@@ -269,7 +285,34 @@ impl RawProcessor {
         Ok(())
     }
 
+    /// Open from an owned mmap. LibRaw keeps a pointer into the buffer; the mmap must outlive
+    /// this processor (stored in [`Self::open_backing`]).
+    pub fn open_buffer_mmap(&mut self, mmap: memmap2::Mmap) -> Result<(), String> {
+        if mmap.is_empty() {
+            return Err("empty buffer".to_string());
+        }
+        self.open_backing = Some(RawOpenBacking::Mmap(mmap));
+        let buffer = self
+            .open_backing
+            .as_ref()
+            .expect("open_backing set above")
+            .as_slice();
+        unsafe {
+            let ret = ffi::libraw_open_buffer(
+                self.data,
+                buffer.as_ptr() as *const std::os::raw::c_void,
+                buffer.len(),
+            );
+            if ret != 0 {
+                self.open_backing = None;
+                return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+            }
+        }
+        Ok(())
+    }
+
     pub fn open<P: AsRef<Path>>(&mut self, path: P) -> Result<(), String> {
+        self.open_backing = None;
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::ffi::OsStrExt;
@@ -1371,6 +1414,26 @@ mod tests {
         let mode = RawDisplayMode::SdrDeveloped;
 
         assert_eq!(mode, RawDisplayMode::SdrDeveloped);
+    }
+
+    #[test]
+    fn open_buffer_mmap_keeps_backing_alive_for_unpack_thumb() {
+        let path = Path::new(r"F:\win7\raws\canon\40d\RAW_CANON_40D_RAW_V103.CR2");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+
+        let mmap = crate::mmap_util::map_file(path).expect("mmap");
+        let mut processor = RawProcessor::new().expect("libraw init");
+        processor
+            .open_buffer_mmap(mmap)
+            .expect("open_buffer_mmap should succeed");
+        // Before the fix, dropping the local mmap here made unpack_thumb read freed memory.
+        let thumb = processor
+            .unpack_thumb()
+            .expect("unpack_thumb after mmap-backed open");
+        assert!(thumb.width > 0 && thumb.height > 0);
     }
 
     #[test]
