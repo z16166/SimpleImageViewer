@@ -394,6 +394,7 @@ fn load_avif_with_target_capacity_outcome_impl(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_jxl_with_target_capacity(
     path: &Path,
     hdr_target_capacity: f32,
@@ -412,14 +413,14 @@ pub(crate) fn load_jxl_with_target_capacity(
 
 pub(crate) fn load_jxl_with_target_capacity_from_mmap(
     path: &Path,
-    mmap: &memmap2::Mmap,
+    mmap: &Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     load_jxl_with_target_capacity_outcome_from_mmap(
         path,
-        mmap,
+        Arc::clone(mmap),
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -429,6 +430,7 @@ pub(crate) fn load_jxl_with_target_capacity_from_mmap(
 }
 
 pub(crate) struct JxlAnimationRemainderJob {
+    pub mmap: Arc<memmap2::Mmap>,
     pub path: PathBuf,
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
@@ -440,6 +442,7 @@ pub(crate) struct JxlLoadOutcome {
     pub remainder_job: Option<JxlAnimationRemainderJob>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_jxl_with_target_capacity_outcome(
     path: &Path,
     hdr_target_capacity: f32,
@@ -447,11 +450,12 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
 ) -> Result<JxlLoadOutcome, String> {
-    let mmap =
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
+    let mmap = Arc::new(
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?,
+    );
     load_jxl_with_target_capacity_outcome_from_mmap(
         path,
-        &mmap,
+        mmap,
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
@@ -461,7 +465,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
 
 pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
     path: &Path,
-    mmap: &memmap2::Mmap,
+    mmap: Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
@@ -485,6 +489,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
         )?;
         let remainder_job = if output.animation_remainder {
             Some(JxlAnimationRemainderJob {
+                mmap: Arc::clone(&mmap),
                 path: path.to_path_buf(),
                 hdr_target_capacity,
                 hdr_tone_map,
@@ -523,8 +528,9 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
     use crate::loader::{LoaderOutput, PreviewBundle};
 
     REFINEMENT_POOL.spawn(move || {
-        let Ok(image) = load_jxl_with_target_capacity(
+        let Ok(image) = load_jxl_with_target_capacity_from_mmap(
             &job.path,
+            &job.mmap,
             job.hdr_target_capacity,
             job.hdr_tone_map,
             job.prefer_embedded_sdr_master,

@@ -302,7 +302,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     primary_with_retainable_mmap(path, |mmap| {
                         load_jxl_with_target_capacity_outcome_from_mmap(
                             path,
-                            mmap.as_ref(),
+                            mmap,
                             hdr_target_capacity,
                             hdr_tone_map,
                             prefer_embedded_sdr_master,

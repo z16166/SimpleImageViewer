@@ -354,7 +354,7 @@ pub(crate) fn load_via_content_detection(
     if crate::hdr::jpegxl::is_jxl_header(header) {
         return load_jxl_with_target_capacity_from_mmap(
             path,
-            mmap.as_ref(),
+            &mmap,
             hdr_target_capacity,
             hdr_tone_map,
             false,

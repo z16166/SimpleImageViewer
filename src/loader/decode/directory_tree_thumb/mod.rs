@@ -680,7 +680,7 @@ fn open_image_data_for_directory_tree_thumb(
                 primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
                     super::modern::load_jxl_with_target_capacity_from_mmap(
                         path,
-                        mmap.as_ref(),
+                        &mmap,
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
