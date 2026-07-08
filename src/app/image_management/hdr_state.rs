@@ -19,10 +19,7 @@ use super::*;
 impl ImageViewerApp {
     pub(crate) fn startup_preload_swap_chain_formats(
         &self,
-    ) -> (
-        Option<wgpu::TextureFormat>,
-        Option<wgpu::TextureFormat>,
-    ) {
+    ) -> (Option<wgpu::TextureFormat>, Option<wgpu::TextureFormat>) {
         let selection = self.effective_hdr_monitor_selection();
         let desired = crate::hdr::surface::desired_target_format_for_active_monitor(
             self.native_hdr_swapchain_requests_enabled(),

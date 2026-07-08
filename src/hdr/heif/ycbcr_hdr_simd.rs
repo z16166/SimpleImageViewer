@@ -501,8 +501,7 @@ unsafe fn ycbcr_studio_swing_row_420_u16_neon(
             if *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len)
             {
                 let xc = *x / 2;
-                let y =
-                    vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
+                let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
                 let cb = vcvtq_f32_u32(vmovl_u16(load_u16x4_420_chroma_neon(
                     row.cb.as_ptr().add(xc),
                 )));

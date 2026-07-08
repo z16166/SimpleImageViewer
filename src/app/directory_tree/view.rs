@@ -317,7 +317,10 @@ pub(super) fn publish_directory_tree_domains(
     preview_textures: Option<&std::collections::HashMap<usize, egui::TextureHandle>>,
     preview_logical_sizes: Option<&std::collections::HashMap<usize, (u32, u32)>>,
     preview_buffer_tags: Option<
-        &std::collections::HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>,
+        &std::collections::HashMap<
+            usize,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+        >,
     >,
 ) -> bool {
     let mut last_list_publish_at = runtime.last_list_publish_at.lock();

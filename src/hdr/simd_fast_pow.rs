@@ -210,17 +210,11 @@ mod arm {
         let mut e = vaddq_f32(vcvtq_f32_s32(imm0), one);
 
         let mask = vcltq_f32(x, vdupq_n_f32(SQRTHF));
-        let tmp = vreinterpretq_f32_u32(vandq_u32(
-            vreinterpretq_u32_f32(x),
-            mask,
-        ));
+        let tmp = vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(x), mask));
         x = vsubq_f32(x, one);
         e = vsubq_f32(
             e,
-            vreinterpretq_f32_u32(vandq_u32(
-                vreinterpretq_u32_f32(one),
-                mask,
-            )),
+            vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(one), mask)),
         );
         x = vaddq_f32(x, tmp);
 
@@ -257,10 +251,7 @@ mod arm {
         let mask = vcgtq_f32(tmp, fx);
         fx = vsubq_f32(
             tmp,
-            vreinterpretq_f32_u32(vandq_u32(
-                vreinterpretq_u32_f32(one),
-                mask,
-            )),
+            vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(one), mask)),
         );
 
         let tmp = vmulq_f32(fx, vdupq_n_f32(EXP_C1));
@@ -290,10 +281,7 @@ mod arm {
             let positive = vcgtq_f32(base, zero);
             let exp_vec = vdupq_n_f32(exponent);
             let pow = exp_ps(vmulq_f32(exp_vec, log_ps(base)));
-            vreinterpretq_f32_u32(vandq_u32(
-                vreinterpretq_u32_f32(pow),
-                positive,
-            ))
+            vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(pow), positive))
         }
     }
 

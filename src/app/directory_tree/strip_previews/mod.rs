@@ -199,7 +199,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_attempted.remove(&index);
         self.directory_tree_strip_cold_awaiting_main_loader
             .remove(&index);
-        self.directory_tree_strip_pending_main_handoff.remove(&index);
+        self.directory_tree_strip_pending_main_handoff
+            .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_inflight_tokens.remove(&index);
         self.directory_tree_strip_static_full_decode_inflight

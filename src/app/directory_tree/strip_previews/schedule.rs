@@ -298,11 +298,7 @@ impl ImageViewerApp {
         );
     }
 
-    pub(crate) fn try_sync_strip_from_texture_cache(
-        &mut self,
-        index: usize,
-        ctx: &egui::Context,
-    ) {
+    pub(crate) fn try_sync_strip_from_texture_cache(&mut self, index: usize, ctx: &egui::Context) {
         // GPU texture clone only; no CPU decode — do not defer while the current main loads.
         // Main-window texture_cache handles are ROOT-context textures; the detached
         // directory-tree viewport must upload strip thumbs via its own egui context.
@@ -913,7 +909,8 @@ impl ImageViewerApp {
             buffer_tag,
             source_job_key,
         ) {
-            self.directory_tree_strip_pending_main_handoff.remove(&index);
+            self.directory_tree_strip_pending_main_handoff
+                .remove(&index);
             return;
         }
         if self.directory_tree_strip_cache.contains(index) {
@@ -941,10 +938,13 @@ impl ImageViewerApp {
             .collect();
         for index in indices {
             if self.directory_tree_strip_cache.contains(index) {
-                self.directory_tree_strip_pending_main_handoff.remove(&index);
+                self.directory_tree_strip_pending_main_handoff
+                    .remove(&index);
                 continue;
             }
-            let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&index)
+            let Some(handoff) = self
+                .directory_tree_strip_pending_main_handoff
+                .remove(&index)
             else {
                 continue;
             };
@@ -961,10 +961,14 @@ impl ImageViewerApp {
 
     pub(super) fn flush_strip_pending_main_handoff_for_index(&mut self, index: usize) {
         if self.directory_tree_strip_cache.contains(index) {
-            self.directory_tree_strip_pending_main_handoff.remove(&index);
+            self.directory_tree_strip_pending_main_handoff
+                .remove(&index);
             return;
         }
-        let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&index) else {
+        let Some(handoff) = self
+            .directory_tree_strip_pending_main_handoff
+            .remove(&index)
+        else {
             return;
         };
         self.schedule_or_queue_strip_pending_gpu_resample(
