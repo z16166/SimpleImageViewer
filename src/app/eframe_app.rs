@@ -146,11 +146,7 @@ impl eframe::App for ImageViewerApp {
         #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
         crate::startup::take_and_join_dx12_cache_validate_thread();
 
-        // Explicitly drop tray icon state so it gets cleaned up from the taskbar before process termination.
-        self.tray_state = None;
-        crate::app::tray_handlers::clear_menu_ids();
-        self.hidden_to_tray = false;
-        self.pending_hide_to_tray = false;
+        self.teardown_tray_ui();
 
         self.loader.prepare_for_process_exit();
 
@@ -445,7 +441,20 @@ impl ImageViewerApp {
         Self::focus_and_unminimize_window(ctx);
     }
 
+    /// Remove the tray icon and menu state immediately so the user sees instant feedback
+    /// while `on_exit` runs longer cleanup (thread joins, saves, etc.).
+    pub(crate) fn teardown_tray_ui(&mut self) {
+        if let Some(state) = &self.tray_state {
+            let _ = state._tray_icon.set_visible(false);
+        }
+        self.tray_state = None;
+        crate::app::tray_handlers::clear_menu_ids();
+        self.hidden_to_tray = false;
+        self.pending_hide_to_tray = false;
+    }
+
     pub(crate) fn quit_process_now(&mut self) -> ! {
+        self.teardown_tray_ui();
         <Self as eframe::App>::on_exit(self);
         crate::startup::force_process_exit(0);
     }
