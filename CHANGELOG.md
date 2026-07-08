@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-07-08
+
+### Improved
+- **Faster decoding on modern CPUs**: Pixel conversion and downscaling use accelerated SIMD paths on supported processors for quicker opening and smoother browsing.
+- **Faster TIFF navigation strip previews**: Large TIFF files build file-list thumbnails with less redundant work per strip row.
+- **Smoother HDR browsing**: HDR uploads skip unnecessary CPU copying, texture cache lookups stay fast during pan and zoom, and idle GPU memory is reclaimed more predictably.
+- **Faster animated JPEG XL startup**: Later animation frames reuse mapped file data instead of reopening the file for each decode pass.
+- **Faster HDR gain-map thumbnails**: ISO gain-map compositing for navigation-strip previews uses wider vector processing.
+
+### Fixed
+- **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
+- **Slideshow interval setting**: Changing the slideshow interval with the slider saves once when you release the control, not on every drag step.
+- **Faster quit**: The tray icon disappears immediately on exit, and background shutdown finishes sooner.
+- **Custom context menu actions on Windows**: External programs such as Paint launch correctly from both executable and full command-line custom actions, including Windows Store app aliases.
+
 ## [2.9.0] - 2026-07-08
 
 ### Improved

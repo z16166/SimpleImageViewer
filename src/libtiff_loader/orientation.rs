@@ -117,7 +117,12 @@ fn apply_orientation_rotate_180(pixels: &[u8], w: u32, h: u32) -> (u32, u32, Vec
     (w, h, out)
 }
 
-fn apply_orientation_rgba8_transpose(pixels: &[u8], w: u32, h: u32, orientation: u16) -> (u32, u32, Vec<u8>) {
+fn apply_orientation_rgba8_transpose(
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    orientation: u16,
+) -> (u32, u32, Vec<u8>) {
     let (out_w, out_h) = (h, w);
     let Some(out_len) = checked_rgba_byte_len(out_w, out_h) else {
         log::warn!(

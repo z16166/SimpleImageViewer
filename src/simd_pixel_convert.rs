@@ -1244,12 +1244,7 @@ unsafe fn finite_f32x2_from_rgb_channel(
     unsafe {
         let read = |px: usize| -> f32 {
             let p = s.add(px * 12 + channel * 4);
-            finite_f32(f32::from_ne_bytes([
-                *p,
-                *p.add(1),
-                *p.add(2),
-                *p.add(3),
-            ]))
+            finite_f32(f32::from_ne_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]))
         };
         let lo = read(px0);
         let hi = read(px1);
@@ -1455,10 +1450,7 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_neon(
                 ),
                 3,
             );
-            let linear = vminq_f32(
-                vmaxq_f32(vmulq_f32(vsubq_f32(v, smin_v), inv_v), zero),
-                one,
-            );
+            let linear = vminq_f32(vmaxq_f32(vmulq_f32(vsubq_f32(v, smin_v), inv_v), zero), one);
             let mut lanes = [0.0_f32; 4];
             vst1q_f32(lanes.as_mut_ptr(), linear);
             for (p, &linear) in lanes.iter().enumerate() {
@@ -1768,13 +1760,16 @@ mod tests {
     #[test]
     fn finalize_gray_linear_scratch_row_matches_scalar() {
         for width in [1, 3, 4, 7, 8] {
-            let scratch: Vec<f32> = (0..width * 4)
-                .map(|i| (i as f32 * 0.05) % 1.5)
-                .collect();
+            let scratch: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.05) % 1.5).collect();
             let mut simd_dst = vec![0_u8; width * 4];
             let mut scalar_dst = vec![0_u8; width * 4];
             finalize_gray_linear_scratch_row_to_rgba8(
-                &scratch, &mut simd_dst, width, 0.1, 1.2, false,
+                &scratch,
+                &mut simd_dst,
+                width,
+                0.1,
+                1.2,
+                false,
             );
             finalize_gray_scalar(&scratch, &mut scalar_dst, width, 0.1, 1.2, false);
             assert_eq!(simd_dst, scalar_dst, "width={width}");

@@ -362,7 +362,7 @@ fn probe_epson_and_fuji_on_local_samples() {
                 hdr_target_capacity: 4.0,
                 hdr_tone_map: HdrToneMapSettings::default(),
                 raw_open_prefetch: None,
-        file_bytes: None,
+                file_bytes: None,
             })
             .expect("load_raw");
             match result.image {

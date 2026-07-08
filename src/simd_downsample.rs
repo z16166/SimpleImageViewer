@@ -890,10 +890,7 @@ unsafe fn downsample_rgba8_nearest_row_avx2(
                 (src_x[*dx] as i32) << 2,
             );
             let gathered = _mm256_i32gather_epi32(src_base as *const i32, indices, 1);
-            _mm256_storeu_si256(
-                dst_row.as_mut_ptr().add(*dx * 4) as *mut __m256i,
-                gathered,
-            );
+            _mm256_storeu_si256(dst_row.as_mut_ptr().add(*dx * 4) as *mut __m256i, gathered);
             *dx += NEAREST_AVX2_STEP;
         }
     }
@@ -949,12 +946,7 @@ unsafe fn downsample_rgba8_nearest_row_neon(
 ) {
     unsafe {
         while *dx + NEAREST_NEON_STEP <= src_x.len() {
-            let indices = [
-                src_x[*dx],
-                src_x[*dx + 1],
-                src_x[*dx + 2],
-                src_x[*dx + 3],
-            ];
+            let indices = [src_x[*dx], src_x[*dx + 1], src_x[*dx + 2], src_x[*dx + 3]];
             let byte_off = [
                 indices[0] << 2,
                 indices[1] << 2,

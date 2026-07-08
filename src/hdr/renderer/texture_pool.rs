@@ -62,10 +62,8 @@ const GPU_TEXTURE_POOL_MEMORY_DIVISOR: usize = 32;
 /// image planes can still be recycled across navigation; additional idle entries are LRU-evicted
 /// once the budget is exceeded.
 pub(crate) fn gpu_texture_pool_budget_for_memory(total_memory_bytes: usize) -> usize {
-    (total_memory_bytes / GPU_TEXTURE_POOL_MEMORY_DIVISOR).clamp(
-        MIN_GPU_TEXTURE_POOL_BYTES,
-        MAX_GPU_TEXTURE_POOL_BYTES,
-    )
+    (total_memory_bytes / GPU_TEXTURE_POOL_MEMORY_DIVISOR)
+        .clamp(MIN_GPU_TEXTURE_POOL_BYTES, MAX_GPU_TEXTURE_POOL_BYTES)
 }
 
 fn configured_gpu_texture_pool_max_bytes() -> usize {
@@ -176,7 +174,9 @@ impl GpuTexturePool {
             let bytes = texture_pool_key_bytes(&key);
             self.idle_bytes = self.idle_bytes.saturating_sub(bytes);
             if let Some(stack) = self.idle.get_mut(&key)
-                && let Some(pos) = stack.iter().position(|texture| Arc::as_ptr(texture) as usize == ptr)
+                && let Some(pos) = stack
+                    .iter()
+                    .position(|texture| Arc::as_ptr(texture) as usize == ptr)
             {
                 stack.remove(pos);
             }

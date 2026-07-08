@@ -451,35 +451,7 @@ impl ImageViewerApp {
         command: &crate::context_menu::model::ContextMenuCommand,
         path: &std::path::Path,
     ) {
-        let result = match command {
-            crate::context_menu::model::ContextMenuCommand::Executable { path: exe } => {
-                std::process::Command::new(exe)
-                    .arg(path)
-                    .spawn()
-                    .map(|_| ())
-            }
-            crate::context_menu::model::ContextMenuCommand::CommandLine { .. } => {
-                let Some(line) = command.command_line_for_image(path) else {
-                    return;
-                };
-                #[cfg(target_os = "windows")]
-                {
-                    std::process::Command::new("cmd")
-                        .arg("/C")
-                        .arg(line)
-                        .spawn()
-                        .map(|_| ())
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    std::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(line)
-                        .spawn()
-                        .map(|_| ())
-                }
-            }
-        };
+        let result = command.spawn_for_image(path);
         if let Err(e) = result {
             log::warn!("Custom context-menu command failed: {}", e);
             self.active_modal = Some(ActiveModal::Confirm(

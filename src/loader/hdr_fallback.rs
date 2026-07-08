@@ -1146,7 +1146,9 @@ mod tests {
             rgba_f32: Arc::new(vec![0.5; 2568 * 1928 * 4]),
             ..gpu_raw_no_bootstrap
         };
-        assert!(super::hdr_directory_tree_strip_cache_sync_viable(&with_float));
+        assert!(super::hdr_directory_tree_strip_cache_sync_viable(
+            &with_float
+        ));
     }
 
     #[test]
