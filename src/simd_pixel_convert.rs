@@ -911,10 +911,10 @@ unsafe fn ieee_f32_gray_scanline_to_rgba32f_neon(
 ) {
     unsafe {
         let zero = vdupq_n_f32(0.0);
-        let pivot_v = invert_pivot.map(vdupq_n_f32);
+        let pivot_v = invert_pivot.map(|p| vdupq_n_f32(p));
         while *x + 4 <= width {
             let v = vld1q_f32(src.as_ptr().add(*x * 4) as *const f32);
-            let finite = vbslq_f32(vreinterpretq_u32_f32(vceqq_f32(v, v)), v, zero);
+            let finite = vbslq_f32(vceqq_f32(v, v), v, zero);
             let g = if let Some(pivot) = pivot_v {
                 vmaxq_f32(vsubq_f32(pivot, finite), zero)
             } else {
