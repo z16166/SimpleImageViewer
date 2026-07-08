@@ -98,17 +98,23 @@ impl LibTiffScanlineSource {
                 return false;
             }
 
-            for row in 0..actual_rows {
-                let src_row = (rps - 1 - row) as usize;
-                let src_offset = src_row * self.width as usize;
-                let dst_offset = row as usize * self.width as usize * 4;
-                for col in 0..self.width as usize {
-                    let src_idx = src_offset + col;
-                    if src_idx < strip_buf.len() {
-                        let pixel = strip_buf[src_idx].to_ne_bytes();
-                        let dst_idx = dst_offset + col * 4;
-                        rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
-                    }
+            let width = self.width as usize;
+            let row_bytes = width * crate::constants::RGBA_CHANNELS;
+            for row in 0..actual_rows as usize {
+                let src_row = (rps - 1 - row as u32) as usize;
+                let src_offset = src_row * width;
+                let dst_offset = row * row_bytes;
+                if src_offset + width > strip_buf.len() || dst_offset + row_bytes > rgba.len() {
+                    continue;
+                }
+                // SAFETY: strip rows are contiguous native-endian u32 RGBA from libtiff; one row
+                // is `row_bytes` bytes, equivalent to per-pixel `to_ne_bytes()` + 4-byte copy.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        strip_buf.as_ptr().add(src_offset) as *const u8,
+                        rgba.as_mut_ptr().add(dst_offset),
+                        row_bytes,
+                    );
                 }
             }
             true
