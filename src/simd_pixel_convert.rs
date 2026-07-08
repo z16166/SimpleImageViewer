@@ -684,6 +684,83 @@ unsafe fn srgb8_rgba_to_scene_linear_f32_neon(
     }
 }
 
+/// Ward Radiance RGBE8 (4 bytes/pixel) -> RGBA32F. Alpha is always 1.0.
+pub fn rgbe8_to_rgba32f(src: &[u8], dst: &mut [f32], scale_lut: &[f32; 256]) {
+    if !src.len().is_multiple_of(4) || dst.len() < src.len() {
+        return;
+    }
+    let pixel_count = src.len() / 4;
+    let mut px = 0;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            rgbe8_to_rgba32f_neon(src, dst, scale_lut, &mut px, pixel_count);
+        }
+    }
+
+    while px + 4 <= pixel_count {
+        for lane in 0..4 {
+            rgbe8_pixel_to_rgba32f_scalar(src, dst, scale_lut, px + lane);
+        }
+        px += 4;
+    }
+    while px < pixel_count {
+        rgbe8_pixel_to_rgba32f_scalar(src, dst, scale_lut, px);
+        px += 1;
+    }
+}
+
+#[inline]
+fn rgbe8_pixel_to_rgba32f_scalar(src: &[u8], dst: &mut [f32], scale_lut: &[f32; 256], px: usize) {
+    let s = px * 4;
+    let d = px * 4;
+    let exponent = src[s + 3];
+    if exponent == 0 {
+        dst[d] = 0.0;
+        dst[d + 1] = 0.0;
+        dst[d + 2] = 0.0;
+    } else {
+        let scale = scale_lut[exponent as usize];
+        dst[d] = src[s] as f32 * scale;
+        dst[d + 1] = src[s + 1] as f32 * scale;
+        dst[d + 2] = src[s + 2] as f32 * scale;
+    }
+    dst[d + 3] = 1.0;
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn rgbe8_to_rgba32f_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    scale_lut: &[f32; 256],
+    px: &mut usize,
+    pixel_count: usize,
+) {
+    unsafe {
+        while *px + 8 <= pixel_count {
+            let rgbe = vld4_u8(src.as_ptr().add(*px * 4));
+            for lane in 0..8i32 {
+                let exponent = vget_lane_u8(rgbe.3, lane);
+                let dst_px = *px + lane as usize;
+                let d = dst_px * 4;
+                if exponent == 0 {
+                    *dst.get_unchecked_mut(d) = 0.0;
+                    *dst.get_unchecked_mut(d + 1) = 0.0;
+                    *dst.get_unchecked_mut(d + 2) = 0.0;
+                } else {
+                    let scale = *scale_lut.get_unchecked(exponent as usize);
+                    *dst.get_unchecked_mut(d) = vget_lane_u8(rgbe.0, lane) as f32 * scale;
+                    *dst.get_unchecked_mut(d + 1) = vget_lane_u8(rgbe.1, lane) as f32 * scale;
+                    *dst.get_unchecked_mut(d + 2) = vget_lane_u8(rgbe.2, lane) as f32 * scale;
+                }
+                *dst.get_unchecked_mut(d + 3) = 1.0;
+            }
+            *px += 8;
+        }
+    }
+}
+
 #[inline]
 fn finite_f32(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
@@ -1344,6 +1421,27 @@ mod tests {
             let scalar_dst = srgb8_to_linear_scalar(&src);
             assert_eq!(simd_dst, scalar_dst, "len={len}");
         }
+    }
+
+    #[test]
+    fn rgbe8_to_rgba32f_matches_scalar_pixels() {
+        let pixels: Vec<u8> = (0..32)
+            .map(|i| match i % 4 {
+                3 => ((i / 4) * 17 + 100) as u8,
+                _ => ((i * 13 + 7) % 250) as u8,
+            })
+            .collect();
+        let mut lut = [0.0_f32; 256];
+        for exponent in 1..=255u8 {
+            lut[exponent as usize] = 2.0_f32.powi(i32::from(exponent) - 128 - 8);
+        }
+        let mut simd_dst = vec![0.0_f32; pixels.len()];
+        rgbe8_to_rgba32f(&pixels, &mut simd_dst, &lut);
+        let mut scalar_dst = vec![0.0_f32; pixels.len()];
+        for px in 0..pixels.len() / 4 {
+            rgbe8_pixel_to_rgba32f_scalar(&pixels, &mut scalar_dst, &lut, px);
+        }
+        assert_eq!(simd_dst, scalar_dst);
     }
 
     #[test]

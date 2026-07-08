@@ -19,7 +19,7 @@ use super::layout::RadianceRasterLayout;
 use super::layout::{
     Rgbe8Pixel, inner_range_covering_coord_inclusive, outer_range_covering_coord_inclusive,
 };
-use super::rle::read_scanline;
+use super::rle::{read_scanline, rgbe_pixels_to_rgba32f};
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -472,11 +472,7 @@ fn decode_row_major_tile_row(
     let start = tile_x as usize;
     let end = start + tile_w as usize;
     let mut row_rgba = vec![0.0f32; tile_w as usize * 4];
-    for (dx, pixel) in scanline[start..end].iter().enumerate() {
-        let rgb = pixel.to_rgb_f32();
-        let base = dx * 4;
-        row_rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
-    }
+    rgbe_pixels_to_rgba32f(&scanline[start..end], &mut row_rgba);
     Ok(row_rgba)
 }
 

@@ -79,7 +79,7 @@ impl RawOpenPrefetch {
 
         let state = Arc::clone(&self.state);
         pool.spawn(move || {
-            let result = open_raw_processor_with_preview(&path);
+            let result = open_raw_processor_with_preview(&path, None);
             let (lock, cvar) = &*state;
             let mut inner = lock.lock();
             match result {

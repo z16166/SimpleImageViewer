@@ -486,6 +486,75 @@ unsafe fn interleave_rgb_packed_to_rgba_neon(
     }
 }
 
+/// Reverses RGBA8 pixels (4 bytes each) within one row.
+pub fn flip_rgba8_row_horizontal(src: &[u8], dst: &mut [u8]) {
+    if src.len() != dst.len() || !src.len().is_multiple_of(RGBA_CHANNELS) {
+        return;
+    }
+    let pixel_count = src.len() / RGBA_CHANNELS;
+    let mut left = 0usize;
+    let mut right = pixel_count;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            flip_rgba8_row_horizontal_neon(src, dst, &mut left, &mut right);
+        }
+    }
+
+    while left < right {
+        right -= 1;
+        let src_left = left * RGBA_CHANNELS;
+        let src_right = right * RGBA_CHANNELS;
+        dst[src_left..src_left + RGBA_CHANNELS]
+            .copy_from_slice(&src[src_right..src_right + RGBA_CHANNELS]);
+        dst[src_right..src_right + RGBA_CHANNELS]
+            .copy_from_slice(&src[src_left..src_left + RGBA_CHANNELS]);
+        left += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn flip_rgba8_row_horizontal_neon(
+    src: &[u8],
+    dst: &mut [u8],
+    left: &mut usize,
+    right: &mut usize,
+) {
+    unsafe {
+        while *left + 4 <= *right {
+            let l = *left * RGBA_CHANNELS;
+            let r = (*right - 4) * RGBA_CHANNELS;
+            let left_pixels = vld1q_u8(src.as_ptr().add(l));
+            let right_pixels = vld1q_u8(src.as_ptr().add(r));
+            vst1q_u8(
+                dst.as_mut_ptr().add(l),
+                reverse_rgba8_pixel_order_neon(right_pixels),
+            );
+            vst1q_u8(
+                dst.as_mut_ptr().add(r),
+                reverse_rgba8_pixel_order_neon(left_pixels),
+            );
+            *left += 4;
+            *right -= 4;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn reverse_rgba8_pixel_order_neon(pixels: uint8x16_t) -> uint8x16_t {
+    unsafe {
+        let words = vreinterpretq_u32_u8(pixels);
+        let reversed = vcombine_u32(
+            vrev64_u32(vget_high_u32(words)),
+            vrev64_u32(vget_low_u32(words)),
+        );
+        vreinterpretq_u8_u32(reversed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +633,26 @@ mod tests {
             let mut scalar_dst = vec![0_u8; len * RGBA_CHANNELS];
             interleave_rgb_with_alpha(&r, &g, &b, alpha, &mut simd_dst);
             interleave_rgb_with_alpha_scalar(&r, &g, &b, alpha, &mut scalar_dst);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn simd_swizzle_flip_rgba8_row_horizontal_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let src: Vec<u8> = (0..len * RGBA_CHANNELS)
+                .map(|i| ((i * 17 + 3) % 256) as u8)
+                .collect();
+            let mut simd_dst = vec![0_u8; len * RGBA_CHANNELS];
+            let mut scalar_dst = vec![0_u8; len * RGBA_CHANNELS];
+            flip_rgba8_row_horizontal(&src, &mut simd_dst);
+            let pixel_count = *len;
+            for x in 0..pixel_count {
+                let from = (pixel_count - 1 - x) * RGBA_CHANNELS;
+                let to = x * RGBA_CHANNELS;
+                scalar_dst[to..to + RGBA_CHANNELS]
+                    .copy_from_slice(&src[from..from + RGBA_CHANNELS]);
+            }
             assert_eq!(simd_dst, scalar_dst, "len={len}");
         }
     }

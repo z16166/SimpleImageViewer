@@ -751,7 +751,7 @@ fn open_raw_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
-    match open_raw_processor_with_preview(path) {
+    match open_raw_processor_with_preview(path, None) {
         Ok((processor, preview_opt, _, _)) => {
             if let Some(preview) = preview_opt {
                 return Ok(make_image_data(preview));
