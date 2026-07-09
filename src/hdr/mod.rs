@@ -32,6 +32,7 @@ pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
 pub(crate) mod iso_gain_map_compose_simd;
+pub(crate) mod iso_gain_map_frame_reuse;
 pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
 #[cfg(feature = "jpegxl")]
