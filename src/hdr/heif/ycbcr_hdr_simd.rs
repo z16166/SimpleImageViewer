@@ -208,7 +208,7 @@ pub(crate) fn ycbcr_studio_swing_row_444_u16_to_rgba_f32(
     }
 }
 
-/// Studio swing limited-range u16 row -> RGBA f32 (420).
+/// Studio swing limited-range u16 row -> RGBA f32 (4:2:0 / 4:2:2 horizontal upsample).
 pub(crate) fn ycbcr_studio_swing_row_420_u16_to_rgba_f32(
     matrix: HeifYcbcrMatrix,
     swing: HdrYcbcrStudioSwingParams,
@@ -731,7 +731,7 @@ pub(crate) fn ycbcr_full_range_row_444_u16_to_rgba_f32(
     }
 }
 
-/// Full-range u16 YCbCr 4:2:0 row -> RGBA f32.
+/// Full-range u16 YCbCr 4:2:0 / 4:2:2 row -> RGBA f32 (horizontal chroma upsample).
 pub(crate) fn ycbcr_full_range_row_420_u16_to_rgba_f32(
     convert: HdrYcbcrSimdConvert,
     y_row: &[u16],
@@ -991,38 +991,39 @@ unsafe fn ycbcr_full_range_row_420_u16_sse41(
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn store_rgba_f32x8_avx2(dst: &mut [f32], x: usize, rf: __m256, gf: __m256, bf: __m256) {
+    let af = _mm256_set1_ps(1.0);
+    let r_lo = _mm256_castps256_ps128(rf);
+    let r_hi = _mm256_extractf128_ps(rf, 1);
+    let g_lo = _mm256_castps256_ps128(gf);
+    let g_hi = _mm256_extractf128_ps(gf, 1);
+    let b_lo = _mm256_castps256_ps128(bf);
+    let b_hi = _mm256_extractf128_ps(bf, 1);
+    let a_lo = _mm256_castps256_ps128(af);
+    let a_hi = _mm256_extractf128_ps(af, 1);
+
+    // Pixels 0..3
+    let rg_lo = _mm_unpacklo_ps(r_lo, g_lo);
+    let rg_hi = _mm_unpackhi_ps(r_lo, g_lo);
+    let ba_lo = _mm_unpacklo_ps(b_lo, a_lo);
+    let ba_hi = _mm_unpackhi_ps(b_lo, a_lo);
+    let p0 = _mm_movelh_ps(rg_lo, ba_lo);
+    let p1 = _mm_movehl_ps(ba_lo, rg_lo);
+    let p2 = _mm_movelh_ps(rg_hi, ba_hi);
+    let p3 = _mm_movehl_ps(ba_hi, rg_hi);
+
+    // Pixels 4..7
+    let rg2_lo = _mm_unpacklo_ps(r_hi, g_hi);
+    let rg2_hi = _mm_unpackhi_ps(r_hi, g_hi);
+    let ba2_lo = _mm_unpacklo_ps(b_hi, a_hi);
+    let ba2_hi = _mm_unpackhi_ps(b_hi, a_hi);
+    let p4 = _mm_movelh_ps(rg2_lo, ba2_lo);
+    let p5 = _mm_movehl_ps(ba2_lo, rg2_lo);
+    let p6 = _mm_movelh_ps(rg2_hi, ba2_hi);
+    let p7 = _mm_movehl_ps(ba2_hi, rg2_hi);
+
+    // Caller guarantees dst has room for 8 RGBA pixels starting at x.
+    let out = unsafe { dst.as_mut_ptr().add(x * 4) };
     unsafe {
-        let af = _mm256_set1_ps(1.0);
-        let r_lo = _mm256_castps256_ps128(rf);
-        let r_hi = _mm256_extractf128_ps(rf, 1);
-        let g_lo = _mm256_castps256_ps128(gf);
-        let g_hi = _mm256_extractf128_ps(gf, 1);
-        let b_lo = _mm256_castps256_ps128(bf);
-        let b_hi = _mm256_extractf128_ps(bf, 1);
-        let a_lo = _mm256_castps256_ps128(af);
-        let a_hi = _mm256_extractf128_ps(af, 1);
-
-        // Pixels 0..3
-        let rg_lo = _mm_unpacklo_ps(r_lo, g_lo);
-        let rg_hi = _mm_unpackhi_ps(r_lo, g_lo);
-        let ba_lo = _mm_unpacklo_ps(b_lo, a_lo);
-        let ba_hi = _mm_unpackhi_ps(b_lo, a_lo);
-        let p0 = _mm_movelh_ps(rg_lo, ba_lo);
-        let p1 = _mm_movehl_ps(ba_lo, rg_lo);
-        let p2 = _mm_movelh_ps(rg_hi, ba_hi);
-        let p3 = _mm_movehl_ps(ba_hi, rg_hi);
-
-        // Pixels 4..7
-        let rg2_lo = _mm_unpacklo_ps(r_hi, g_hi);
-        let rg2_hi = _mm_unpackhi_ps(r_hi, g_hi);
-        let ba2_lo = _mm_unpacklo_ps(b_hi, a_hi);
-        let ba2_hi = _mm_unpackhi_ps(b_hi, a_hi);
-        let p4 = _mm_movelh_ps(rg2_lo, ba2_lo);
-        let p5 = _mm_movehl_ps(ba2_lo, rg2_lo);
-        let p6 = _mm_movelh_ps(rg2_hi, ba2_hi);
-        let p7 = _mm_movehl_ps(ba2_hi, rg2_hi);
-
-        let out = dst.as_mut_ptr().add(x * 4);
         _mm_storeu_ps(out, p0);
         _mm_storeu_ps(out.add(4), p1);
         _mm_storeu_ps(out.add(8), p2);
@@ -1341,6 +1342,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ycbcr_full_range_u16_422_matches_scalar() {
+        // 4:2:2 row conversion reuses the 4:2:0 horizontal upsample path.
+        let convert = convert_10bit_bt709();
+        for width in [0_usize, 1, 2, 3, 4, 7, 8, 9, 16] {
+            let chroma_len = width.div_ceil(2);
+            let y: Vec<u16> = (0..width).map(|i| ((i * 41 + 13) % 1024) as u16).collect();
+            let cb: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 73 + 17) % 1024) as u16)
+                .collect();
+            let cr: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 89 + 19) % 1024) as u16)
+                .collect();
+            let expected = scalar_row_420_u16(convert, &y, &cb, &cr, width);
+            let mut simd = vec![0.0_f32; width * 4];
+            ycbcr_full_range_row_420_u16_to_rgba_f32(convert, &y, &cb, &cr, &mut simd, width);
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+
     fn studio_swing_10bit() -> HdrYcbcrStudioSwingParams {
         // Rec.2100 / PQ-style studio swing for 10-bit: Y 64..940, C 64..960.
         HdrYcbcrStudioSwingParams {
@@ -1443,6 +1464,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ycbcr_studio_swing_u16_422_matches_scalar() {
+        let swing = studio_swing_10bit();
+        let matrix = HeifYcbcrMatrix::Bt709;
+        for width in [0_usize, 1, 2, 3, 4, 7, 8, 9, 16] {
+            let chroma_len = width.div_ceil(2);
+            let y: Vec<u16> = (0..width).map(|i| ((i * 53 + 64) % 1024) as u16).collect();
+            let cb: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 67 + 64) % 1024) as u16)
+                .collect();
+            let cr: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 79 + 64) % 1024) as u16)
+                .collect();
+            let expected = scalar_studio_row_420_u16(matrix, swing, &y, &cb, &cr, width);
+            let mut simd = vec![0.0_f32; width * 4];
+            ycbcr_studio_swing_row_420_u16_to_rgba_f32(
+                matrix, swing, &y, &cb, &cr, &mut simd, width,
+            );
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+
     fn hdr_u16_layout(chroma: libheif_sys::heif_chroma) -> HdrYcbcrU16RowLayout {
         HdrYcbcrU16RowLayout {
             span_y: 2,
@@ -1461,6 +1504,11 @@ mod tests {
     fn hdr_ycbcr_u16_simd_eligible_requires_tight_u16_rows() {
         assert!(hdr_ycbcr_u16_simd_eligible(
             hdr_u16_layout(libheif_sys::heif_chroma_420),
+            false,
+            HeifYcbcrMatrix::Bt709,
+        ));
+        assert!(hdr_ycbcr_u16_simd_eligible(
+            hdr_u16_layout(libheif_sys::heif_chroma_422),
             false,
             HeifYcbcrMatrix::Bt709,
         ));
