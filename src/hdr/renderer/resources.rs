@@ -350,69 +350,58 @@ impl HdrCallbackResources {
         if self.raw_demosaic_baked_for(image_key, method) {
             return Ok(true);
         }
-        if !self.image_bindings.contains_key(&image_key) {
-            return Ok(false);
-        }
 
-        let pipelines_ready = self.raw_demosaic_green_bind_group_layout.is_some()
-            && self.raw_demosaic_rgb_bind_group_layout.is_some()
-            && self.raw_demosaic_green_pipeline.is_some()
-            && self.raw_demosaic_rgb_pipeline.is_some()
-            && self.raw_demosaic_uniform_buffer.is_some();
-        if !pipelines_ready {
+        let (
+            Some(green_layout),
+            Some(rgb_layout),
+            Some(green_pipeline),
+            Some(rgb_pipeline),
+            Some(uniform_buf),
+        ) = (
+            self.raw_demosaic_green_bind_group_layout.as_ref(),
+            self.raw_demosaic_rgb_bind_group_layout.as_ref(),
+            self.raw_demosaic_green_pipeline.as_ref(),
+            self.raw_demosaic_rgb_pipeline.as_ref(),
+            self.raw_demosaic_uniform_buffer.as_ref(),
+        )
+        else {
             return Err("GPU RAW demosaic pipelines unavailable");
-        }
-
-        let cloned_views = {
-            let binding = self
-                .image_bindings
-                .get(&image_key)
-                .expect("binding present after contains_key");
-            match (
-                binding.uploaded_raw_pixels_view.clone(),
-                binding.uploaded_raw_green_plane_write_view.clone(),
-                binding.uploaded_raw_green_plane_read_view.clone(),
-                binding.uploaded_display_storage_view.clone(),
-            ) {
-                (Some(a), Some(b), Some(c), Some(d)) => Some((a, b, c, d)),
-                _ => None,
-            }
         };
-        let Some((raw_pixels_view, green_plane_write_view, green_plane_read_view, output_view)) =
-            cloned_views
+
+        let Some(binding) = self.image_bindings.get(&image_key) else {
+            return Ok(false);
+        };
+        let (
+            Some(raw_pixels_view),
+            Some(green_plane_write_view),
+            Some(green_plane_read_view),
+            Some(output_view),
+        ) = (
+            binding.uploaded_raw_pixels_view.clone(),
+            binding.uploaded_raw_green_plane_write_view.clone(),
+            binding.uploaded_raw_green_plane_read_view.clone(),
+            binding.uploaded_display_storage_view.clone(),
+        )
         else {
             return Err("GPU RAW demosaic views missing");
         };
 
-        let command = {
-            let green_layout = self
-                .raw_demosaic_green_bind_group_layout
-                .as_ref()
-                .expect("checked");
-            let rgb_layout = self
-                .raw_demosaic_rgb_bind_group_layout
-                .as_ref()
-                .expect("checked");
-            let green_pipeline = self.raw_demosaic_green_pipeline.as_ref().expect("checked");
-            let rgb_pipeline = self.raw_demosaic_rgb_pipeline.as_ref().expect("checked");
-            let uniform_buf = self.raw_demosaic_uniform_buffer.as_ref().expect("checked");
-            crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
-                crate::hdr::raw_demosaic_gpu::RawDemosaicComputePass {
-                    device,
-                    queue,
-                    green_bind_group_layout: green_layout,
-                    rgb_bind_group_layout: rgb_layout,
-                    green_pipeline,
-                    rgb_pipeline,
-                    source,
-                    raw_pixels_view: &raw_pixels_view,
-                    green_plane_write_view: &green_plane_write_view,
-                    green_plane_read_view: &green_plane_read_view,
-                    output_view: &output_view,
-                    uniform_buffer: uniform_buf,
-                },
-            )
-        };
+        let command = crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
+            crate::hdr::raw_demosaic_gpu::RawDemosaicComputePass {
+                device,
+                queue,
+                green_bind_group_layout: green_layout,
+                rgb_bind_group_layout: rgb_layout,
+                green_pipeline,
+                rgb_pipeline,
+                source,
+                raw_pixels_view: &raw_pixels_view,
+                green_plane_write_view: &green_plane_write_view,
+                green_plane_read_view: &green_plane_read_view,
+                output_view: &output_view,
+                uniform_buffer: uniform_buf,
+            },
+        );
         queue.submit(std::iter::once(command));
 
         if let Some(binding) = self.image_bindings.get_mut(&image_key) {

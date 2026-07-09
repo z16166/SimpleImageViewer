@@ -49,6 +49,7 @@ pub(crate) use tiff_raw_sniff::{
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -122,7 +123,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         // mmap also enforce MIN_IMAGE_FILE_BYTES inside `map_file` (single metadata() call).
         let is_system_native = {
             let reg = crate::formats::get_registry().read();
-            reg.extensions.contains(&ext)
+            reg.extensions.contains(ext.as_ref())
         };
 
         if ext == "exr" {
@@ -357,7 +358,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             }
         }
 
-        if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
+        if matches!(&*ext, "gif" | "png" | "apng" | "webp") {
             return load_primary_with_detection_fallback(
                 path,
                 file_name,
@@ -366,7 +367,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 high_quality,
                 || {
                     primary_with_retainable_mmap(path, |mmap| {
-                        let outcome = match ext.as_str() {
+                        let outcome = match &*ext {
                             "gif" => load_gif_with_bootstrap_from_mmap(
                                 path,
                                 Arc::clone(&mmap),
@@ -670,11 +671,14 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 }
 
 /// Lowercased path extension (empty when missing). Computed once on the load hot path.
-pub(crate) fn path_ext_lower(path: &Path) -> String {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default()
+///
+/// Already-lowercase extensions borrow the path OsStr UTF-8 view (no heap alloc).
+pub(crate) fn path_ext_lower(path: &Path) -> Cow<'_, str> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.bytes().any(|b| b.is_ascii_uppercase()) => Cow::Borrowed(ext),
+        Some(ext) => Cow::Owned(ext.to_ascii_lowercase()),
+        None => Cow::Borrowed(""),
+    }
 }
 
 fn is_hdr_capacity_sensitive_load(

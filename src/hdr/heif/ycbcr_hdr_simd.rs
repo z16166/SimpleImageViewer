@@ -430,10 +430,43 @@ unsafe fn ycbcr_studio_swing_row_420_u16_sse41(
 }
 
 #[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct StudioSwingConstsAvx2 {
+    luma_floor: __m256,
+    luma_inv: __m256,
+    chroma_mid: __m256,
+    chroma_inv: __m256,
+    k_pr_r: __m256,
+    k_pb_g: __m256,
+    k_pr_g: __m256,
+    k_pb_b: __m256,
+    zero: __m256,
+    one: __m256,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn studio_swing_consts_avx2(ctx: &HdrYcbcrStudioRowSimdCtx) -> StudioSwingConstsAvx2 {
+    StudioSwingConstsAvx2 {
+        luma_floor: _mm256_set1_ps(ctx.swing.luma_floor),
+        luma_inv: _mm256_set1_ps(ctx.swing.luma_inv_span),
+        chroma_mid: _mm256_set1_ps(ctx.swing.chroma_mid),
+        chroma_inv: _mm256_set1_ps(ctx.swing.chroma_inv_span),
+        k_pr_r: _mm256_set1_ps(ctx.coeffs.pr_to_r),
+        k_pb_g: _mm256_set1_ps(ctx.coeffs.pb_to_g),
+        k_pr_g: _mm256_set1_ps(ctx.coeffs.pr_to_g),
+        k_pb_b: _mm256_set1_ps(ctx.coeffs.pb_to_b),
+        zero: _mm256_setzero_ps(),
+        one: _mm256_set1_ps(1.0),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn convert_studio_swing_u16x8_avx2(
-    ctx: &HdrYcbcrStudioRowSimdCtx,
+    c: &StudioSwingConstsAvx2,
     y: __m256i,
     cb: __m256i,
     cr: __m256i,
@@ -441,44 +474,36 @@ unsafe fn convert_studio_swing_u16x8_avx2(
     x: usize,
 ) {
     unsafe {
-        let luma_floor = _mm256_set1_ps(ctx.swing.luma_floor);
-        let luma_inv = _mm256_set1_ps(ctx.swing.luma_inv_span);
-        let chroma_mid = _mm256_set1_ps(ctx.swing.chroma_mid);
-        let chroma_inv = _mm256_set1_ps(ctx.swing.chroma_inv_span);
-        let k_pr_r = _mm256_set1_ps(ctx.coeffs.pr_to_r);
-        let k_pb_g = _mm256_set1_ps(ctx.coeffs.pb_to_g);
-        let k_pr_g = _mm256_set1_ps(ctx.coeffs.pr_to_g);
-        let k_pb_b = _mm256_set1_ps(ctx.coeffs.pb_to_b);
-        let zero = _mm256_setzero_ps();
-        let one = _mm256_set1_ps(1.0);
-
-        let yy = _mm256_mul_ps(_mm256_sub_ps(_mm256_cvtepi32_ps(y), luma_floor), luma_inv);
+        let yy = _mm256_mul_ps(
+            _mm256_sub_ps(_mm256_cvtepi32_ps(y), c.luma_floor),
+            c.luma_inv,
+        );
         let pb = _mm256_mul_ps(
-            _mm256_sub_ps(_mm256_cvtepi32_ps(cb), chroma_mid),
-            chroma_inv,
+            _mm256_sub_ps(_mm256_cvtepi32_ps(cb), c.chroma_mid),
+            c.chroma_inv,
         );
         let pr = _mm256_mul_ps(
-            _mm256_sub_ps(_mm256_cvtepi32_ps(cr), chroma_mid),
-            chroma_inv,
+            _mm256_sub_ps(_mm256_cvtepi32_ps(cr), c.chroma_mid),
+            c.chroma_inv,
         );
 
         let rf = _mm256_min_ps(
-            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pr_r, pr)), zero),
-            one,
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(c.k_pr_r, pr)), c.zero),
+            c.one,
         );
         let gf = _mm256_min_ps(
             _mm256_max_ps(
                 _mm256_add_ps(
-                    _mm256_add_ps(yy, _mm256_mul_ps(k_pb_g, pb)),
-                    _mm256_mul_ps(k_pr_g, pr),
+                    _mm256_add_ps(yy, _mm256_mul_ps(c.k_pb_g, pb)),
+                    _mm256_mul_ps(c.k_pr_g, pr),
                 ),
-                zero,
+                c.zero,
             ),
-            one,
+            c.one,
         );
         let bf = _mm256_min_ps(
-            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pb_b, pb)), zero),
-            one,
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(c.k_pb_b, pb)), c.zero),
+            c.one,
         );
         store_rgba_f32x8_avx2(dst, x, rf, gf, bf);
     }
@@ -492,6 +517,7 @@ unsafe fn ycbcr_studio_swing_row_444_u16_avx2(
     x: &mut usize,
 ) {
     unsafe {
+        let consts = studio_swing_consts_avx2(ctx);
         while *x + PIXELS_PER_AVX2_STEP <= row.width {
             let y =
                 _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
@@ -499,7 +525,7 @@ unsafe fn ycbcr_studio_swing_row_444_u16_avx2(
                 _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cb.as_ptr().add(*x) as *const __m128i));
             let cr =
                 _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cr.as_ptr().add(*x) as *const __m128i));
-            convert_studio_swing_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
+            convert_studio_swing_u16x8_avx2(&consts, y, cb, cr, row.dst, *x);
             *x += PIXELS_PER_AVX2_STEP;
         }
     }
@@ -516,6 +542,7 @@ unsafe fn ycbcr_studio_swing_row_420_u16_avx2(
         // 8 luma needs 4 chroma; floor-align width so load4 always fits.
         let simd_end = (row.width / PIXELS_PER_AVX2_STEP) * PIXELS_PER_AVX2_STEP;
         let chroma_dup = _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7, 6, 7);
+        let consts = studio_swing_consts_avx2(ctx);
         while *x + PIXELS_PER_AVX2_STEP <= simd_end {
             let xc = *x / 2;
             let cb4 = _mm_loadl_epi64(row.cb.as_ptr().add(xc) as *const __m128i);
@@ -526,7 +553,7 @@ unsafe fn ycbcr_studio_swing_row_420_u16_avx2(
                 _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
             let cb = _mm256_cvtepu16_epi32(cb_dup);
             let cr = _mm256_cvtepu16_epi32(cr_dup);
-            convert_studio_swing_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
+            convert_studio_swing_u16x8_avx2(&consts, y, cb, cr, row.dst, *x);
             *x += PIXELS_PER_AVX2_STEP;
         }
     }

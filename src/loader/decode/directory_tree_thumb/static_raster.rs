@@ -68,7 +68,7 @@ pub(super) fn try_static_raster_strip_fast_path(
 ) -> Option<Result<DirectoryTreeThumbDecode, String>> {
     let ext = path_extension_ascii_lower(path)?;
     if !matches!(
-        ext.as_str(),
+        &*ext,
         "png" | "apng" | "webp" | "gif" | "bmp" | "tga" | "ico" | "pnm" | "qoi"
     ) {
         return None;
@@ -77,7 +77,7 @@ pub(super) fn try_static_raster_strip_fast_path(
     Some(decode_static_raster_strip_from_bytes(
         data.as_ref(),
         max_side,
-        Some(ext.as_str()),
+        Some(&*ext),
     ))
 }
 

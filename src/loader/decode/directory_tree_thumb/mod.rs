@@ -20,6 +20,7 @@
 //! registered extensions and RAW fallbacks. Linux uses the same LibRaw embedded preview path,
 //! then half-size LibRaw develop when no embedded thumbnail exists.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -543,7 +544,7 @@ fn path_has_extension(path: &Path, ext: &str) -> bool {
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(ext))
 }
 
-pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
+pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<Cow<'_, str>> {
     let ext = super::path_ext_lower(path);
     if ext.is_empty() { None } else { Some(ext) }
 }
@@ -720,7 +721,7 @@ fn open_image_data_for_directory_tree_thumb(
     }
 
     let reg = crate::formats::get_registry().read();
-    if reg.extensions.contains(&ext) && !is_maybe_animated(&ext) {
+    if reg.extensions.contains(ext.as_ref()) && !is_maybe_animated(ext.as_ref()) {
         #[cfg(target_os = "windows")]
         if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
@@ -738,7 +739,7 @@ fn open_image_data_for_directory_tree_thumb(
         hdr_tone_map,
         high_quality,
         || {
-            PrimaryDecodeAttempt::from_result(match ext.as_str() {
+            PrimaryDecodeAttempt::from_result(match &*ext {
                 "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
                 "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
                 "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),

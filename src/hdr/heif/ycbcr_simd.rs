@@ -399,6 +399,7 @@ unsafe fn ycbcr_full_range_bt709_row_444_sse41(
 }
 
 #[cfg(target_arch = "x86_64")]
+#[repr(C)]
 struct Bt709StoreConstsSse41 {
     k_pr_r: __m128,
     k_pb_g: __m128,
@@ -443,13 +444,14 @@ unsafe fn ycbcr_full_range_bt709_row_420_sse41(
         while *x + PIXELS_PER_SSE41_STEP <= simd_end {
             let xc = *x / 2;
             let y = load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x));
-            let cb2 = _mm_cvtsi32_si128(i32::from_ne_bytes([
+            // Low two bytes = chroma samples; pad high bytes. LE packing matches x86_64 lane order.
+            let cb2 = _mm_cvtsi32_si128(i32::from_le_bytes([
                 *cb_row.as_ptr().add(xc),
                 *cb_row.as_ptr().add(xc + 1),
                 0,
                 0,
             ]));
-            let cr2 = _mm_cvtsi32_si128(i32::from_ne_bytes([
+            let cr2 = _mm_cvtsi32_si128(i32::from_le_bytes([
                 *cr_row.as_ptr().add(xc),
                 *cr_row.as_ptr().add(xc + 1),
                 0,
@@ -801,13 +803,14 @@ unsafe fn ycbcr_limited_range_bt709_row_420_sse41(
         while *x + PIXELS_PER_SSE41_STEP <= simd_end {
             let xc = *x / 2;
             let y = load_u8x4_for_cvtepu8(y_row.as_ptr().add(*x));
-            let cb2 = _mm_cvtsi32_si128(i32::from_ne_bytes([
+            // Low two bytes = chroma samples; pad high bytes. LE packing matches x86_64 lane order.
+            let cb2 = _mm_cvtsi32_si128(i32::from_le_bytes([
                 *cb_row.as_ptr().add(xc),
                 *cb_row.as_ptr().add(xc + 1),
                 0,
                 0,
             ]));
-            let cr2 = _mm_cvtsi32_si128(i32::from_ne_bytes([
+            let cr2 = _mm_cvtsi32_si128(i32::from_le_bytes([
                 *cr_row.as_ptr().add(xc),
                 *cr_row.as_ptr().add(xc + 1),
                 0,
