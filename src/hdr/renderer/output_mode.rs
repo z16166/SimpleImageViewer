@@ -16,9 +16,22 @@
 
 use eframe::egui_wgpu;
 
+/// Framebuffer / shader output mode for the HDR image-plane pipeline.
+///
+/// Maps to the three pipeline roles called out by review-checklist item 26:
+///
+/// | Role | Variant(s) | Viewer path | Preview / tile policy |
+/// |------|------------|-------------|------------------------|
+/// | **Tone-map-to-SDR** | [`Self::SdrToneMapped`] | HDR float plane + WGSL `encode_sdr` (live exposure) | May keep SDR bootstrap / strip thumbs; skip native HDR surface work |
+/// | **Native HDR** | [`Self::NativeHdr`], [`Self::NativeHdrPq`], [`Self::NativeHdrGamma22`] | HDR float plane + native encode | Prefer HDR float previews/tiles; SDR bytes only as compose inputs or TileManager bootstrap |
+///
+/// There is no separate "SDR-only" shader mode here: plain 8-bit albums never enter this
+/// callback (`PlaneBackendKind::Sdr`). `SdrToneMapped` still uploads HDR float planes when
+/// present so exposure / nits stay live (see `select_render_backend`).
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrRenderOutputMode {
+    /// SDR framebuffer: tone-map HDR float → display in WGSL (`encode_sdr`).
     SdrToneMapped = 0,
     /// Linear scRGB / EDR (`Rgba16Float`, `Rgba32Float`).
     NativeHdr = 1,

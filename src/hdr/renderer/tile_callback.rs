@@ -220,7 +220,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         return vec![compose_command];
                     }
 
-                    if let Some(_binding) = resources.tile_bindings.binding_mut(tile_key) {
+                    if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                        // Drop GPU compose bind-group scratch before CPU fallback (RAII).
+                        binding.jpeg_compose_bind_group = None;
                         let Some(pending_work) = self.pending_work.as_ref() else {
                             resources.tile_bindings.remove(tile_key);
                             return Vec::new();

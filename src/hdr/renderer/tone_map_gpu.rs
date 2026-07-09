@@ -212,8 +212,22 @@ struct PreviewHdrTextureCache {
     device_epoch: u64,
     width: u32,
     height: u32,
-    pixels_key: usize,
+    /// Content fingerprint of the last uploaded `rgba_f32` plane (not a raw pointer).
+    pixels_sample_hash: u64,
+    /// Monotonic generation bumped on every texture alloc or pixel rewrite.
+    /// Paired with `pixels_sample_hash` so bind-group reuse cannot false-hit after free/realloc.
+    texture_generation: u64,
     upload: CallbackUpload,
+}
+
+/// Stable identity for the HDR input texture backing a cached preview bind group.
+/// Prefer generation + content hash over `Arc::as_ptr` (address reuse after free/realloc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreviewBindGroupHdrKey {
+    texture_generation: u64,
+    pixels_sample_hash: u64,
+    width: u32,
+    height: u32,
 }
 
 struct PreviewOutputResources {
@@ -226,9 +240,9 @@ struct PreviewOutputResources {
     readback_buffer: wgpu::Buffer,
     tone_map_buffer: wgpu::Buffer,
     bind_group: Option<wgpu::BindGroup>,
-    /// Identity of the HDR input texture used to build `bind_group` (Arc ptr + size).
-    /// Avoids TextureView address reuse false positives after free/realloc.
-    bind_group_hdr_texture_key: (usize, u32, u32),
+    bind_group_hdr_key: Option<PreviewBindGroupHdrKey>,
+    /// Skip `write_buffer` when tone-map params are unchanged across preview calls.
+    last_tone_map_uniform: Option<ToneMapUniform>,
 }
 
 struct PreviewGpuScopeGuard {
@@ -326,7 +340,8 @@ fn with_preview_output_resources<R>(
                 readback_buffer,
                 tone_map_buffer,
                 bind_group: None,
-                bind_group_hdr_texture_key: (0, 0, 0),
+                bind_group_hdr_key: None,
+                last_tone_map_uniform: None,
             });
         }
         let pool = guard.as_mut().expect("preview output pool");
@@ -374,9 +389,10 @@ fn with_preview_hdr_texture<R>(
     queue: &wgpu::Queue,
     device_epoch: u64,
     buffer: &HdrImageBuffer,
-    f: impl FnOnce(&CallbackUpload) -> Result<R, String>,
+    f: impl FnOnce(&CallbackUpload, PreviewBindGroupHdrKey) -> Result<R, String>,
 ) -> Result<R, String> {
-    let pixels_key = Arc::as_ptr(&buffer.rgba_f32) as usize;
+    let pixels_sample_hash =
+        super::image_key::sample_hash_f32_for_preview(buffer.rgba_f32.as_slice());
     PREVIEW_HDR_TEXTURE_CACHE.with(|slot| {
         let mut guard = slot.borrow_mut();
         let reuse_texture = guard.as_ref().is_some_and(|cached| {
@@ -387,7 +403,7 @@ fn with_preview_hdr_texture<R>(
         let cache_hit = reuse_texture
             && guard
                 .as_ref()
-                .is_some_and(|cached| cached.pixels_key == pixels_key);
+                .is_some_and(|cached| cached.pixels_sample_hash == pixels_sample_hash);
 
         if !cache_hit {
             if reuse_texture {
@@ -399,13 +415,19 @@ fn with_preview_hdr_texture<R>(
                     buffer.height,
                     Arc::clone(&buffer.rgba_f32),
                 )?;
-                cached.pixels_key = pixels_key;
+                cached.pixels_sample_hash = pixels_sample_hash;
+                cached.texture_generation = cached.texture_generation.wrapping_add(1);
             } else {
+                let next_generation = guard
+                    .as_ref()
+                    .map(|cached| cached.texture_generation.wrapping_add(1))
+                    .unwrap_or(1);
                 *guard = Some(PreviewHdrTextureCache {
                     device_epoch,
                     width: buffer.width,
                     height: buffer.height,
-                    pixels_key,
+                    pixels_sample_hash,
+                    texture_generation: next_generation,
                     upload: upload_callback_image(
                         device,
                         super::pending_gpu_writes::GpuUploadSink::Immediate(queue),
@@ -416,7 +438,14 @@ fn with_preview_hdr_texture<R>(
             }
         }
 
-        f(&guard.as_ref().expect("preview HDR texture cache").upload)
+        let cached = guard.as_ref().expect("preview HDR texture cache");
+        let hdr_key = PreviewBindGroupHdrKey {
+            texture_generation: cached.texture_generation,
+            pixels_sample_hash: cached.pixels_sample_hash,
+            width: cached.width,
+            height: cached.height,
+        };
+        f(&cached.upload, hdr_key)
     })
 }
 
@@ -565,7 +594,7 @@ fn hdr_to_sdr_rgba8_gpu(
         .get(&device_epoch)
         .ok_or_else(|| "HDR preview GPU cache missing entry".to_string())?;
 
-    with_preview_hdr_texture(device, queue, device_epoch, buffer, |uploaded| {
+    with_preview_hdr_texture(device, queue, device_epoch, buffer, |uploaded, hdr_key| {
         let mut tone = *tone;
         tone.exposure_ev = exposure_ev;
         // CPU scalar only applies PQ/HLG peak scaling; pin display nits for other transfers so
@@ -608,13 +637,11 @@ fn hdr_to_sdr_rgba8_gpu(
             padded_bytes_per_row,
             readback_size,
             |pool| {
-                queue.write_buffer(&pool.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
-                let hdr_texture_key = (
-                    Arc::as_ptr(&uploaded.texture) as usize,
-                    uploaded.texture.width(),
-                    uploaded.texture.height(),
-                );
-                if pool.bind_group.is_none() || pool.bind_group_hdr_texture_key != hdr_texture_key {
+                if pool.last_tone_map_uniform != Some(uniform) {
+                    queue.write_buffer(&pool.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+                    pool.last_tone_map_uniform = Some(uniform);
+                }
+                if pool.bind_group.is_none() || pool.bind_group_hdr_key != Some(hdr_key) {
                     pool.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group"),
                         layout: bind_group_layout,
@@ -633,7 +660,7 @@ fn hdr_to_sdr_rgba8_gpu(
                             },
                         ],
                     }));
-                    pool.bind_group_hdr_texture_key = hdr_texture_key;
+                    pool.bind_group_hdr_key = Some(hdr_key);
                 }
                 let bind_group = pool
                     .bind_group

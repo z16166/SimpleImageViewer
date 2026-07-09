@@ -73,6 +73,11 @@ fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
 }
 
 /// Stage for HDR GPU texture writes. Higher stages are flushed first.
+///
+/// This queue is output-mode agnostic: it stages bytes for the HDR plane pipeline.
+/// [`Self::AuxRgba8`] holds ISO/Apple compose inputs (baseline SDR + gain), not a parallel
+/// SDR display path -- those sidecars are required on both `SdrToneMapped` and native HDR
+/// when GPU/CPU gain-map compose runs (see `HdrRenderOutputMode` docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HdrGpuUploadStage {
     /// Full image plane RGBA32F / R16 uploads (display-critical).
@@ -81,7 +86,7 @@ pub(crate) enum HdrGpuUploadStage {
     TileCreate,
     /// CPU compose results written into existing display textures.
     ComposeWrite,
-    /// Auxiliary RGBA8 sidecars (SDR/gain sources).
+    /// Auxiliary RGBA8 sidecars (SDR/gain compose inputs).
     AuxRgba8,
 }
 

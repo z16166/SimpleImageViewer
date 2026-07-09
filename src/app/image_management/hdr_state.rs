@@ -14,6 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! HDR capacity / output-mode state machine for the main viewer.
+//!
+//! Current display role is derived from [`crate::hdr::types::HdrOutputMode`] /
+//! [`crate::hdr::renderer::HdrRenderOutputMode`] (not stored as a separate enum here):
+//!
+//! - **Tone-map-to-SDR** (`SdrToneMapped`): HDR float plane + WGSL `encode_sdr`; may keep SDR
+//!   bootstrap / strip thumbs. Crossing into native HDR invalidates decode/preload state.
+//! - **Native HDR** (`WindowsScRgb` / `MacOsEdr` / `WaylandHdr`): HDR float plane + native
+//!   encode; prefer HDR tiled previews. SDR bytes remain only as gain-map compose inputs or
+//!   TileManager bootstrap while HDR tiles arrive.
+//! - **SDR-only albums**: never enter the HDR plane callback (`PlaneBackendKind::Sdr`).
+//!
+//! See review-checklist item 26 and `HdrRenderOutputMode` module docs.
+
 use super::*;
 
 impl ImageViewerApp {

@@ -174,6 +174,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
         #[cfg(not(feature = "heif-native"))]
         let needs_apple_compose = false;
 
+        // Output-mode note (review-checklist #26): this callback is only scheduled when the
+        // render plan selected the HDR plane backend. `output_mode` chooses WGSL encode
+        // (`SdrToneMapped` vs native HDR); it does not allocate a parallel SDR texture here.
+        // ISO/Apple SDR+gain sidecars are compose inputs, not an SDR display pipeline.
         let mut compose_command_buffers = Vec::new();
         if needs_raw_demosaic && let Some(source) = raw_source {
             let gpu_demosaic_ready = resources.raw_demosaic_green_bind_group_layout.is_some()
@@ -360,6 +364,13 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     );
                 }
             }
+        }
+
+        // Prepare-only bake (alpha=0): demosaic/compose may still enqueue above; skip tone-map
+        // uniform + bind-group work that only matters for a visible draw.
+        if self.alpha <= 0.0 {
+            resources.evict_old_bindings();
+            return compose_command_buffers;
         }
 
         let apple_gpu_composed = apple_deferred.is_some()
