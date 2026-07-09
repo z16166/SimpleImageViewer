@@ -1017,6 +1017,22 @@ impl ImageViewerApp {
                     pixels: first.arc_pixels(),
                 });
             }
+            // Same as install_static_sdr_image: main texture may exceed strip max_side
+            // (e.g. 320x320 anim vs 256 strip) so texture_cache sync cannot fill the strip.
+            // Without this handoff, cold strip deferred to main loader stays on the placeholder.
+            self.cache_directory_tree_strip_thumbnail(
+                crate::app::directory_tree_strip_cache::StripThumbnailCacheRequest {
+                    index: idx,
+                    job_key: None,
+                    decoded: &decoded,
+                    stage: crate::loader::PreviewStage::Refined,
+                    logical_size: Some((decoded.width, decoded.height)),
+                    buffer_tag: crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+                    strip_max_side_used: None,
+                    ctx,
+                    bypass_detach_queue: false,
+                },
+            );
         }
 
         self.pending_anim_frames.insert(

@@ -4072,6 +4072,56 @@ fn strip_animated_png_inflight_does_not_block_main_preload() {
 }
 
 #[test]
+fn install_sdr_animated_image_queues_strip_preview_when_main_texture_oversized() {
+    use crate::settings::BrowseMode;
+
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_show_list_previews = true;
+    // Match the animation_spline JXL case: 320x320 main texture vs 256 strip max.
+    app.settings.directory_tree_list_preview_size =
+        crate::settings::DirectoryTreeListPreviewSize::Large;
+    set_test_image_files(&mut app, &["input.jxl", "ref.apng"]);
+    app.current_index = 0;
+    app.directory_tree_strip_cold_awaiting_main_loader.insert(0);
+    app.directory_tree_strip_cold_attempted.insert(0);
+
+    let w = 320u32;
+    let h = 320u32;
+    let frame = crate::loader::AnimationFrame::new(
+        w,
+        h,
+        vec![40; (w * h * 4) as usize],
+        std::time::Duration::from_millis(40),
+    );
+    app.install_animated_image(0, &[frame], &ctx);
+
+    assert!(
+        app.texture_cache.contains(0),
+        "main-window SDR texture should be installed for current animated frame"
+    );
+    let strip_work_queued = app.directory_tree_strip_cache.contains(0)
+        || app.directory_tree_strip_generate_inflight.contains(&0)
+        || app
+            .directory_tree_strip_pending_main_handoff
+            .contains_key(&0)
+        || app
+            .directory_tree_strip_pending_gpu_initial
+            .iter()
+            .any(|u| u.key.index == 0)
+        || app
+            .directory_tree_strip_pending_gpu_refined
+            .iter()
+            .any(|u| u.key.index == 0);
+    assert!(
+        strip_work_queued,
+        "SDR animated install must hand first-frame pixels to strip (cache, resample, or GPU queue)"
+    );
+}
+
+#[test]
 fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
     let mut app = make_test_app();
     app.image_files = vec![PathBuf::from("current.png"), PathBuf::from("neighbor.jpg")];
