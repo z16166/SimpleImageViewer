@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - **Faster animated JPEG XL startup**: Later animation frames reuse mapped file data instead of reopening the file for each decode pass.
 - **Faster HDR gain-map thumbnails**: ISO gain-map compositing for navigation-strip previews uses wider vector processing.
 - **Faster HDR AVIF and JPEG XL animations**: Animations with gain maps load quicker when consecutive frames are nearly unchanged.
+- **Animation strip thumbnails**: File-list previews for animated images no longer stay blank when the main view already shows a larger frame than the strip size.
 
 ### Fixed
 - **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
