@@ -24,8 +24,8 @@ use crate::hdr::gain_map::{
     iso_gain_map_skips_forward_compose, parse_iso_gain_map_metadata, sample_gain_map_rgb,
 };
 use crate::hdr::iso_gain_map_frame_reuse::{
-    IsoGainMapFrameReuse, IsoGainMapGainDecodePolicy, iso_gain_map_may_skip_gain_decode,
-    select_iso_gain_map_planes,
+    IsoGainMapFrameReuse, IsoGainMapGainDecodePolicy, SelectedIsoPlanes,
+    iso_gain_map_may_skip_gain_decode, select_iso_gain_map_planes,
 };
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
 use crate::hdr::jpeg_gain_map_gpu::{
@@ -116,34 +116,15 @@ pub(crate) fn jxl_rgba_f32_to_iso_sdr_baseline(
     sdr_rgba
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_jxl_jhgm_gain_map_gpu_deferred(
+/// Shared ISO plane selection for JPEG XL `jhgm` GPU-deferred and CPU compose paths.
+fn select_jxl_planes_with_reuse(
+    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
     parsed: &JxlJhgmParsed<'_>,
-    target_hdr_capacity: f32,
-    base_rgba_f32: &[f32],
     width: u32,
     height: u32,
-    color_space: HdrColorSpace,
-    metadata: &HdrImageMetadata,
-    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
-) -> Result<HdrImageBuffer, String> {
-    if parsed.skips_forward_compose {
-        log::debug!(
-            "[HDR] JPEG XL jhgm: primary codestream is precomposed HDR base; skipping forward gain-map compose"
-        );
-        return Err("jhgm primary is precomposed HDR base".to_string());
-    }
-
-    let expected_len = width as usize * height as usize * 4;
-    if base_rgba_f32.len() != expected_len {
-        return Err(format!(
-            "JPEG XL jhgm base buffer length mismatch: got {}, expected {}",
-            base_rgba_f32.len(),
-            expected_len
-        ));
-    }
-
-    let sdr_rgba = jxl_rgba_f32_to_iso_sdr_baseline(base_rgba_f32, color_space, metadata);
+    sdr_rgba: Vec<u8>,
+    target_hdr_capacity: f32,
+) -> Result<SelectedIsoPlanes, String> {
     let policy = IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode;
     let mut local_reuse = None;
     let reuse_slot = match reuse {
@@ -181,6 +162,39 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
     if selected.needs_gain_decode {
         return Err("JPEG XL jhgm gain plane required but decode was skipped".to_string());
     }
+    Ok(selected)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_jxl_jhgm_gain_map_gpu_deferred(
+    parsed: &JxlJhgmParsed<'_>,
+    target_hdr_capacity: f32,
+    base_rgba_f32: &[f32],
+    width: u32,
+    height: u32,
+    color_space: HdrColorSpace,
+    metadata: &HdrImageMetadata,
+    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
+) -> Result<HdrImageBuffer, String> {
+    if parsed.skips_forward_compose {
+        log::debug!(
+            "[HDR] JPEG XL jhgm: primary codestream is precomposed HDR base; skipping forward gain-map compose"
+        );
+        return Err("jhgm primary is precomposed HDR base".to_string());
+    }
+
+    let expected_len = width as usize * height as usize * 4;
+    if base_rgba_f32.len() != expected_len {
+        return Err(format!(
+            "JPEG XL jhgm base buffer length mismatch: got {}, expected {}",
+            base_rgba_f32.len(),
+            expected_len
+        ));
+    }
+
+    let sdr_rgba = jxl_rgba_f32_to_iso_sdr_baseline(base_rgba_f32, color_space, metadata);
+    let selected =
+        select_jxl_planes_with_reuse(reuse, parsed, width, height, sdr_rgba, target_hdr_capacity)?;
 
     attach_iso_gain_map_gpu_deferred_arcs(IsoGainMapDeferredArcInput {
         source: "JPEG XL",
@@ -224,42 +238,14 @@ fn apply_jxl_jhgm_cpu_compose(
     let expected_len = width as usize * height as usize * 4;
     let color_space = metadata.color_space_hint();
     let sdr_baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba_f32, color_space, metadata);
-    let policy = IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode;
-    let mut local_reuse = None;
-    let reuse_slot = match reuse {
-        Some(slot) => slot,
-        None => &mut local_reuse,
-    };
-
-    let new_gain = if iso_gain_map_may_skip_gain_decode(
-        reuse_slot,
-        policy,
-        width,
-        height,
-        &sdr_baseline,
-        parsed.metadata,
-        target_hdr_capacity,
-    ) {
-        None
-    } else {
-        let (_gain_metadata, gain_width, gain_height, gain_rgba) =
-            decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
-        Some((gain_width, gain_height, gain_rgba))
-    };
-
-    let selected = select_iso_gain_map_planes(
-        reuse_slot,
-        policy,
+    let selected = select_jxl_planes_with_reuse(
+        reuse,
+        parsed,
         width,
         height,
         sdr_baseline,
-        new_gain,
-        parsed.metadata,
         target_hdr_capacity,
-    );
-    if selected.needs_gain_decode {
-        return Err("JPEG XL jhgm gain plane required but decode was skipped".to_string());
-    }
+    )?;
 
     let gain_metadata = selected.metadata;
     let gain_width = selected.gain_width;

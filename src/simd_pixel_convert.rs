@@ -762,10 +762,14 @@ unsafe fn rgbe8_to_rgba32f_neon(
     unsafe {
         while *px + 8 <= pixel_count {
             let rgbe = vld4_u8(src.as_ptr().add(*px * 4));
-            let r: [u8; 8] = core::mem::transmute(rgbe.0);
-            let g: [u8; 8] = core::mem::transmute(rgbe.1);
-            let b: [u8; 8] = core::mem::transmute(rgbe.2);
-            let e: [u8; 8] = core::mem::transmute(rgbe.3);
+            let mut r = [0_u8; 8];
+            let mut g = [0_u8; 8];
+            let mut b = [0_u8; 8];
+            let mut e = [0_u8; 8];
+            vst1_u8(r.as_mut_ptr(), rgbe.0);
+            vst1_u8(g.as_mut_ptr(), rgbe.1);
+            vst1_u8(b.as_mut_ptr(), rgbe.2);
+            vst1_u8(e.as_mut_ptr(), rgbe.3);
             for lane in 0..8 {
                 let exponent = e[lane];
                 let dst_px = *px + lane;

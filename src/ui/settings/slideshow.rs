@@ -23,6 +23,12 @@ const HDR_SLIDER_VALUE_WIDTH: f32 = 90.0;
 const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 72.0;
 
 /// Persist slider/drag edits after the gesture ends (matches music volume + font size).
+///
+/// Relies on egui 0.34 `Response` semantics (via eframe 0.34):
+/// - `drag_stopped()`: true on the frame a drag gesture ends
+/// - `changed() && !dragged()`: keyboard / click edits that never enter a drag
+/// If a future egui upgrade changes these flags, revisit save timing here and in
+/// `appearance.rs` / `music.rs` which use the same pattern.
 fn slider_or_drag_committed(resp: &egui::Response) -> bool {
     resp.drag_stopped() || (resp.changed() && !resp.dragged())
 }

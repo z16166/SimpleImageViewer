@@ -58,9 +58,16 @@ pub fn set_tile_size_for_image(width: u32, height: u32) {
 /// Update the GPU tile cache base limit while preserving the current tile size.
 pub fn set_max_tiles_base(max_tiles: usize) {
     let max_tiles = u32::try_from(max_tiles).unwrap_or(u32::MAX);
-    let packed = TILE_CONFIG.load(Ordering::Acquire);
-    let (tile_size, _) = unpack_tile_config(packed);
-    TILE_CONFIG.store(pack_tile_config(tile_size, max_tiles), Ordering::Release);
+    let mut current = TILE_CONFIG.load(Ordering::Acquire);
+    loop {
+        let (tile_size, _) = unpack_tile_config(current);
+        let next = pack_tile_config(tile_size, max_tiles);
+        match TILE_CONFIG.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Pixel count threshold above which tiled mode is activated.

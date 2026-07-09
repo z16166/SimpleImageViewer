@@ -291,17 +291,17 @@ impl RawProcessor {
         if mmap.is_empty() {
             return Err("empty buffer".to_string());
         }
-        self.open_backing = Some(RawOpenBacking::Mmap(mmap));
-        let buffer = self
-            .open_backing
-            .as_ref()
-            .expect("open_backing set above")
-            .as_slice();
+        // Capture ptr/len before storing; mapped pages stay valid while owned by `open_backing`.
+        let backing = RawOpenBacking::Mmap(mmap);
+        let buffer = backing.as_slice();
+        let buffer_ptr = buffer.as_ptr();
+        let buffer_len = buffer.len();
+        self.open_backing = Some(backing);
         unsafe {
             let ret = ffi::libraw_open_buffer(
                 self.data,
-                buffer.as_ptr() as *const std::os::raw::c_void,
-                buffer.len(),
+                buffer_ptr as *const std::os::raw::c_void,
+                buffer_len,
             );
             if ret != 0 {
                 self.open_backing = None;
