@@ -4122,6 +4122,97 @@ fn install_sdr_animated_image_queues_strip_preview_when_main_texture_oversized()
 }
 
 #[test]
+fn strip_cold_does_not_defer_static_full_decode_after_lru_when_main_texture_present() {
+    use crate::settings::BrowseMode;
+
+    // Repro: large directory, strip LRU-evicts a preloaded PNG while main texture_cache
+    // still holds the full-res SDR. Cold must self-decode instead of awaiting a handoff
+    // that will never be re-installed.
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    app.settings.browse_mode = BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.directory_tree_show_list_previews = true;
+    app.settings.preload = true;
+    app.settings.directory_tree_list_preview_size =
+        crate::settings::DirectoryTreeListPreviewSize::Large;
+    let keep = write_strip_test_png("keep_lru");
+    let target = write_strip_test_png("target_lru");
+    app.image_files = vec![keep.clone(), target.clone()];
+    app.file_byte_len_by_index = vec![1024, 1024];
+    app.current_index = 0;
+    app.prefetch_window_max_distance = 2;
+
+    // Oversized vs strip_max_side (256) but within egui test max texture side (2048).
+    let w = 720u32;
+    let h = 1280u32;
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        &vec![80u8; (w * h * 4) as usize],
+    );
+    let handle = ctx.load_texture("main_oversized", color_image, egui::TextureOptions::LINEAR);
+    app.texture_cache.insert(
+        1,
+        handle,
+        crate::loader::TextureCacheInsert {
+            orig_w: w,
+            orig_h: h,
+            needs_tile_manager: false,
+            buffer_tag: crate::loader::TexturePreviewBufferTag::MainWindowSdr,
+            stage: crate::loader::PreviewStage::Refined,
+            current_index: 0,
+            total_count: 2,
+        },
+    );
+    // Successful strip then GPU clear keeps logical_sizes (same as LRU eviction).
+    let strip_px = DecodedImage::new(144, 256, vec![90; 144 * 256 * 4]);
+    app.directory_tree_strip_cache.upsert_from_decoded(
+        1,
+        &strip_px,
+        crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+            stage: crate::loader::PreviewStage::Refined,
+            buffer_tag:
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+            logical_size: Some((w, h)),
+            path: &app.image_files[1],
+            ctx: &ctx,
+            strip_max_side: 256,
+            strip_max_side_used: Some(256),
+        },
+    );
+    app.directory_tree_strip_cache.clear_gpu_textures();
+    assert!(!app.directory_tree_strip_cache.contains(1));
+    assert_eq!(
+        app.directory_tree_strip_cache.logical_sizes().get(&1),
+        Some(&(w, h))
+    );
+    app.directory_tree_strip_cold_attempted.insert(1);
+    app.directory_tree_strip_cold_awaiting_main_loader.insert(1);
+
+    assert!(
+        app.strip_cold_static_full_decode_can_share_with_main(1, &app.image_files[1]),
+        "PNG shares static full decode with main loader"
+    );
+    assert!(
+        !app.strip_cold_skip_slow_static_full_decode_primary(1, true),
+        "after strip LRU eviction, cold must not skip static full decode while awaiting a dead handoff"
+    );
+
+    app.release_strip_cold_awaiting_main_loader_if_resolved(1);
+    assert!(
+        !app.directory_tree_strip_cold_awaiting_main_loader
+            .contains(&1),
+        "awaiting_main_loader must clear when main SDR is ready but strip handoff is gone"
+    );
+    assert!(
+        app.strip_index_needs_cold_thumbnail(1),
+        "visible strip must be eligible for cold regeneration after release"
+    );
+    let _ = std::fs::remove_file(keep);
+    let _ = std::fs::remove_file(target);
+}
+
+#[test]
 fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
     let mut app = make_test_app();
     app.image_files = vec![PathBuf::from("current.png"), PathBuf::from("neighbor.jpg")];
