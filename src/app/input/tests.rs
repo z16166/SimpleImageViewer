@@ -94,3 +94,27 @@ fn text_event_mapping_reuses_hotkey_key_parser() {
         Some(HotkeyLogicalKey::Egui(Key::M))
     );
 }
+
+#[test]
+fn keyboard_nav_blocked_while_transition_active() {
+    use crate::app::image_management::tests::make_test_app;
+    use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
+    use std::time::Instant;
+
+    let mut app = make_test_app();
+    assert!(app.keyboard_nav_allowed(1.0));
+
+    app.last_keyboard_nav = Some(1.0);
+    assert!(!app.keyboard_nav_allowed(1.0 + KEYBOARD_NAV_MIN_INTERVAL_SECS * 0.5));
+    assert!(app.keyboard_nav_allowed(1.0 + KEYBOARD_NAV_MIN_INTERVAL_SECS + 1e-9));
+
+    app.transition_start = Some(Instant::now());
+    assert!(!app.keyboard_nav_allowed(1.0 + KEYBOARD_NAV_MIN_INTERVAL_SECS * 10.0));
+
+    app.transition_start = None;
+    app.pending_transition_target = Some(2);
+    assert!(!app.keyboard_nav_allowed(1.0 + KEYBOARD_NAV_MIN_INTERVAL_SECS * 10.0));
+
+    app.pending_transition_target = None;
+    assert!(app.keyboard_nav_allowed(1.0 + KEYBOARD_NAV_MIN_INTERVAL_SECS + 1e-9));
+}

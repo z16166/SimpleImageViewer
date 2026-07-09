@@ -71,6 +71,20 @@ impl ImageViewerApp {
         ctx.input(|i| !i.viewport().minimized.unwrap_or(false))
     }
 
+    /// True when Next/Prev arrow hotkeys may start another navigation.
+    ///
+    /// Blocks while a transition is animating or waiting to start so a 0.2s key
+    /// interval cannot discard the in-flight transition and re-trigger decode (#40).
+    pub(crate) fn keyboard_nav_allowed(&self, now: f64) -> bool {
+        if self.transition_start.is_some() || self.pending_transition_target.is_some() {
+            return false;
+        }
+        match self.last_keyboard_nav {
+            None => true,
+            Some(t) => now - t >= KEYBOARD_NAV_MIN_INTERVAL_SECS,
+        }
+    }
+
     pub(crate) fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         // During a refresh scan the file list is being rebuilt: block all actions
         // that dereference image_files by index to avoid out-of-bounds panics or
@@ -94,22 +108,14 @@ impl ImageViewerApp {
         match action {
             AppAction::Next => {
                 let now = ctx.input(|i| i.time);
-                let allow = match self.last_keyboard_nav {
-                    None => true,
-                    Some(t) => now - t >= KEYBOARD_NAV_MIN_INTERVAL_SECS,
-                };
-                if allow {
+                if self.keyboard_nav_allowed(now) {
                     self.last_keyboard_nav = Some(now);
                     self.navigate_next(ctx);
                 }
             }
             AppAction::Prev => {
                 let now = ctx.input(|i| i.time);
-                let allow = match self.last_keyboard_nav {
-                    None => true,
-                    Some(t) => now - t >= KEYBOARD_NAV_MIN_INTERVAL_SECS,
-                };
-                if allow {
+                if self.keyboard_nav_allowed(now) {
                     self.last_keyboard_nav = Some(now);
                     self.navigate_prev(ctx);
                 }

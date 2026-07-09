@@ -86,9 +86,11 @@ pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -100.0;
 /// Number of idle seconds before the Music HUD auto-hides.
 pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
 
-/// Minimum seconds between Next/Prev from arrow hotkeys. Key auto-repeat otherwise
-/// enqueues unbounded decode work and large `LoaderOutput` payloads in the channel.
-/// ~5 navigations per second is already extreme for manual input; matches wheel debounce.
+/// Minimum seconds between Next/Prev from arrow hotkeys when no transition is active.
+/// Key auto-repeat otherwise enqueues unbounded decode work and large `LoaderOutput`
+/// payloads in the channel. ~5 navigations per second is already extreme for manual
+/// input; matches wheel debounce. While a navigation transition (or pending start) is
+/// in flight, Next/Prev are blocked until it settles -- see `keyboard_nav_allowed`.
 pub const KEYBOARD_NAV_MIN_INTERVAL_SECS: f64 = 0.2;
 
 /// Minimum interval between background YAML writes from the async saver threads.
