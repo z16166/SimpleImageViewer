@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
@@ -263,6 +263,11 @@ fn wake_ipc_listener_for_shutdown() {
     });
 }
 
+/// Max time to wait for the IPC accept thread after signaling shutdown.
+/// Wake may fail (socket name / connect); never block process exit forever.
+const IPC_SERVER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
+const IPC_SERVER_JOIN_POLL: Duration = Duration::from_millis(10);
+
 /// Stop the single-instance IPC accept loop before process exit.
 pub fn shutdown_ipc_server() {
     let Some(server) = IPC_SERVER.get().and_then(|slot| slot.lock().take()) else {
@@ -273,8 +278,22 @@ pub fn shutdown_ipc_server() {
     let Some(join) = server.join.lock().take() else {
         return;
     };
-    if let Err(e) = join.join() {
-        log::warn!("[IPC] Server thread panicked on join: {:?}", e);
+
+    let deadline = Instant::now() + IPC_SERVER_JOIN_TIMEOUT;
+    while !join.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(IPC_SERVER_JOIN_POLL);
+    }
+
+    if join.is_finished() {
+        if let Err(e) = join.join() {
+            log::warn!("[IPC] Server thread panicked on join: {:?}", e);
+        }
+    } else {
+        // Dropping JoinHandle detaches the thread; process exit will reclaim it.
+        log::warn!(
+            "[IPC] Server thread did not exit within {:?}; continuing shutdown",
+            IPC_SERVER_JOIN_TIMEOUT
+        );
     }
 }
 

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [2.9.1] - 2026-07-08
 
 ### Improved
-- **Faster decoding on modern CPUs**: Pixel conversion and downscaling use accelerated SIMD paths on supported processors for quicker opening and smoother browsing.
+- **Faster decoding on modern CPUs**: Pixel conversion, downscaling, and HEIF color conversion use accelerated SIMD paths on supported processors for quicker opening and smoother browsing.
 - **Faster TIFF navigation strip previews**: Large TIFF files build file-list thumbnails with less redundant work per strip row.
 - **Smoother HDR browsing**: HDR uploads skip unnecessary CPU copying, texture cache lookups stay fast during pan and zoom, and idle GPU memory is reclaimed more predictably.
 - **Faster animated JPEG XL startup**: Later animation frames reuse mapped file data instead of reopening the file for each decode pass.

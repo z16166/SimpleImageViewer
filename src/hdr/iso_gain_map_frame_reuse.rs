@@ -23,6 +23,9 @@ use crate::hdr::gain_map::GainMapMetadata;
 /// Max per-channel abs diff (u8) for [`rgba8_planes_within_threshold`].
 pub(crate) const ISO_GAIN_MAP_FRAME_DIFF_MAX_ABS: u8 = 1;
 
+// Non-cryptographic FNV-1a: used only as a stable fingerprint for frame-reuse
+// cache keys. Not collision-resistant against adversarial input; do not reuse for
+// security decisions.
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -84,7 +87,8 @@ pub(crate) struct SelectedIsoPlanes {
     pub(crate) needs_gain_decode: bool,
 }
 
-/// Stable fingerprint over shaping fields (not headroom -- those are in the key bits).
+/// Stable non-cryptographic fingerprint over shaping fields (not headroom -- those
+/// are in the key bits). FNV-1a is intentional here; see module constants above.
 pub(crate) fn fingerprint_gain_map_metadata(metadata: GainMapMetadata) -> u64 {
     let mut hash = FNV_OFFSET;
     for v in metadata
@@ -192,9 +196,21 @@ pub(crate) fn select_iso_gain_map_planes(
         IsoGainMapGainDecodePolicy::KeyAndSdrMatchSkipsGainDecode => sdr_matches_prev,
     };
 
-    if new_gain.is_none() {
+    let Some((gain_width, gain_height, gain_vec)) = new_gain else {
         if may_skip {
-            let prev = reuse.as_ref().expect("may_skip implies reuse present");
+            let Some(prev) = reuse.as_ref() else {
+                // may_skip is derived from reuse; None here is a logic bug -- ask caller to decode.
+                debug_assert!(false, "may_skip implies reuse present");
+                return SelectedIsoPlanes {
+                    sdr_rgba: Arc::new(new_sdr),
+                    gain_rgba: Arc::new(Vec::new()),
+                    gain_width: 0,
+                    gain_height: 0,
+                    metadata,
+                    skipped_gain_decode: false,
+                    needs_gain_decode: true,
+                };
+            };
             let sdr_rgba = if sdr_matches_prev {
                 Arc::clone(&prev.sdr_rgba)
             } else {
@@ -230,9 +246,7 @@ pub(crate) fn select_iso_gain_map_planes(
             skipped_gain_decode: false,
             needs_gain_decode: true,
         };
-    }
-
-    let (gain_width, gain_height, gain_vec) = new_gain.expect("checked is_some");
+    };
     let prev = reuse.as_ref();
     // `sdr_matches_prev` already ran the SDR plane compare; reuse it here.
     let reuse_gain = prev.is_some_and(|p| {
@@ -249,12 +263,24 @@ pub(crate) fn select_iso_gain_map_planes(
     });
 
     let sdr_rgba = if sdr_matches_prev {
-        Arc::clone(&prev.expect("sdr_matches_prev").sdr_rgba)
+        match prev {
+            Some(p) => Arc::clone(&p.sdr_rgba),
+            None => {
+                debug_assert!(false, "sdr_matches_prev implies reuse present");
+                Arc::new(new_sdr)
+            }
+        }
     } else {
         Arc::new(new_sdr)
     };
     let gain_rgba = if reuse_gain {
-        Arc::clone(&prev.expect("reuse_gain").gain_rgba)
+        match prev {
+            Some(p) => Arc::clone(&p.gain_rgba),
+            None => {
+                debug_assert!(false, "reuse_gain implies reuse present");
+                Arc::new(gain_vec)
+            }
+        }
     } else {
         Arc::new(gain_vec)
     };

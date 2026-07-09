@@ -100,6 +100,19 @@ unsafe fn box_accumulate_lane(
     lane_x0: u32,
     lane_x1: u32,
 ) -> (u64, u64, u64, u64, u64) {
+    // Callers must keep [lane_x0, lane_x1) x [y0, y1) inside the RGBA8 buffer.
+    // Hot path keeps get_unchecked; debug builds catch span regressions.
+    if y0 < y1 && lane_x0 < lane_x1 {
+        let max_i = (y1 as usize - 1)
+            .saturating_mul(row_stride)
+            .saturating_add((lane_x1 as usize - 1).saturating_mul(4))
+            .saturating_add(3);
+        debug_assert!(
+            max_i < src.len(),
+            "box_accumulate_lane span out of bounds: max_i={max_i} len={}",
+            src.len()
+        );
+    }
     let mut sum_r = 0_u64;
     let mut sum_g = 0_u64;
     let mut sum_b = 0_u64;
