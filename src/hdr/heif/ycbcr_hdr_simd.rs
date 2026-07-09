@@ -186,7 +186,11 @@ pub(crate) fn ycbcr_studio_swing_row_444_u16_to_rgba_f32(
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                ycbcr_studio_swing_row_444_u16_avx2(&ctx, &mut row, &mut x);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 ycbcr_studio_swing_row_444_u16_sse41(&ctx, &mut row, &mut x);
             }
@@ -242,7 +246,11 @@ pub(crate) fn ycbcr_studio_swing_row_420_u16_to_rgba_f32(
     let mut x = 0;
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                ycbcr_studio_swing_row_420_u16_avx2(&ctx, &mut row, &mut x);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 ycbcr_studio_swing_row_420_u16_sse41(&ctx, &mut row, &mut x);
             }
@@ -371,59 +379,155 @@ unsafe fn ycbcr_studio_swing_row_420_u16_sse41(
         let k_pb_b = _mm_set1_ps(ctx.coeffs.pb_to_b);
         let zero = _mm_setzero_ps();
         let one = _mm_set1_ps(1.0);
-        let chroma_len = row.width.div_ceil(2);
-        while *x < row.width {
-            if *x + PIXELS_PER_SSE41_STEP <= row.width && ycbcr420_chroma_load2_fits(*x, chroma_len)
-            {
-                let xc = *x / 2;
-                let cb0 = row.cb[xc];
-                let cb1 = row.cb[xc + 1];
-                let cr0 = row.cr[xc];
-                let cr1 = row.cr[xc + 1];
-                let y = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
-                    row.y.as_ptr().add(*x) as *const __m128i,
-                )));
-                let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_setr_epi16(
-                    cb0 as i16, cb0 as i16, cb1 as i16, cb1 as i16, 0, 0, 0, 0,
-                )));
-                let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_setr_epi16(
-                    cr0 as i16, cr0 as i16, cr1 as i16, cr1 as i16, 0, 0, 0, 0,
-                )));
+        // Even width: x+4<=width <=> chroma load2 fits. Odd: floor-align is still safe.
+        let simd_end = (row.width / PIXELS_PER_SSE41_STEP) * PIXELS_PER_SSE41_STEP;
+        // Duplicate 2xu16 chroma to 4 luma sites: [c0,c0,c1,c1].
+        let chroma_dup = _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1);
+        while *x + PIXELS_PER_SSE41_STEP <= simd_end {
+            let xc = *x / 2;
+            let y = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_loadl_epi64(
+                row.y.as_ptr().add(*x) as *const __m128i
+            )));
+            // Load exactly 2xu16 (4 bytes); loadl would over-read on odd widths.
+            let cb2 = _mm_cvtsi32_si128(*(row.cb.as_ptr().add(xc) as *const i32));
+            let cr2 = _mm_cvtsi32_si128(*(row.cr.as_ptr().add(xc) as *const i32));
+            let cb = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_shuffle_epi8(cb2, chroma_dup)));
+            let cr = _mm_cvtepi32_ps(_mm_cvtepu16_epi32(_mm_shuffle_epi8(cr2, chroma_dup)));
 
-                let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
-                let pb = _mm_mul_ps(_mm_sub_ps(cb, chroma_mid), chroma_inv);
-                let pr = _mm_mul_ps(_mm_sub_ps(cr, chroma_mid), chroma_inv);
+            let yy = _mm_mul_ps(_mm_sub_ps(y, luma_floor), luma_inv);
+            let pb = _mm_mul_ps(_mm_sub_ps(cb, chroma_mid), chroma_inv);
+            let pr = _mm_mul_ps(_mm_sub_ps(cr, chroma_mid), chroma_inv);
 
-                let rf = _mm_min_ps(
-                    _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero),
-                    one,
-                );
-                let gf = _mm_min_ps(
-                    _mm_max_ps(
-                        _mm_add_ps(
-                            _mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)),
-                            _mm_mul_ps(k_pr_g, pr),
-                        ),
-                        zero,
+            let rf = _mm_min_ps(
+                _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero),
+                one,
+            );
+            let gf = _mm_min_ps(
+                _mm_max_ps(
+                    _mm_add_ps(
+                        _mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)),
+                        _mm_mul_ps(k_pr_g, pr),
                     ),
-                    one,
-                );
-                let bf = _mm_min_ps(
-                    _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero),
-                    one,
-                );
+                    zero,
+                ),
+                one,
+            );
+            let bf = _mm_min_ps(
+                _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero),
+                one,
+            );
 
-                let mut r = [0.0_f32; 4];
-                let mut g = [0.0_f32; 4];
-                let mut b = [0.0_f32; 4];
-                _mm_storeu_ps(r.as_mut_ptr(), rf);
-                _mm_storeu_ps(g.as_mut_ptr(), gf);
-                _mm_storeu_ps(b.as_mut_ptr(), bf);
-                store_rgba_f32x4(row.dst, *x, r, g, b);
-                *x += PIXELS_PER_SSE41_STEP;
-            } else {
-                break;
-            }
+            let mut r = [0.0_f32; 4];
+            let mut g = [0.0_f32; 4];
+            let mut b = [0.0_f32; 4];
+            _mm_storeu_ps(r.as_mut_ptr(), rf);
+            _mm_storeu_ps(g.as_mut_ptr(), gf);
+            _mm_storeu_ps(b.as_mut_ptr(), bf);
+            store_rgba_f32x4(row.dst, *x, r, g, b);
+            *x += PIXELS_PER_SSE41_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn convert_studio_swing_u16x8_avx2(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    y: __m256i,
+    cb: __m256i,
+    cr: __m256i,
+    dst: &mut [f32],
+    x: usize,
+) {
+    unsafe {
+        let luma_floor = _mm256_set1_ps(ctx.swing.luma_floor);
+        let luma_inv = _mm256_set1_ps(ctx.swing.luma_inv_span);
+        let chroma_mid = _mm256_set1_ps(ctx.swing.chroma_mid);
+        let chroma_inv = _mm256_set1_ps(ctx.swing.chroma_inv_span);
+        let k_pr_r = _mm256_set1_ps(ctx.coeffs.pr_to_r);
+        let k_pb_g = _mm256_set1_ps(ctx.coeffs.pb_to_g);
+        let k_pr_g = _mm256_set1_ps(ctx.coeffs.pr_to_g);
+        let k_pb_b = _mm256_set1_ps(ctx.coeffs.pb_to_b);
+        let zero = _mm256_setzero_ps();
+        let one = _mm256_set1_ps(1.0);
+
+        let yy = _mm256_mul_ps(_mm256_sub_ps(_mm256_cvtepi32_ps(y), luma_floor), luma_inv);
+        let pb = _mm256_mul_ps(
+            _mm256_sub_ps(_mm256_cvtepi32_ps(cb), chroma_mid),
+            chroma_inv,
+        );
+        let pr = _mm256_mul_ps(
+            _mm256_sub_ps(_mm256_cvtepi32_ps(cr), chroma_mid),
+            chroma_inv,
+        );
+
+        let rf = _mm256_min_ps(
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pr_r, pr)), zero),
+            one,
+        );
+        let gf = _mm256_min_ps(
+            _mm256_max_ps(
+                _mm256_add_ps(
+                    _mm256_add_ps(yy, _mm256_mul_ps(k_pb_g, pb)),
+                    _mm256_mul_ps(k_pr_g, pr),
+                ),
+                zero,
+            ),
+            one,
+        );
+        let bf = _mm256_min_ps(
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pb_b, pb)), zero),
+            one,
+        );
+        store_rgba_f32x8_avx2(dst, x, rf, gf, bf);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn ycbcr_studio_swing_row_444_u16_avx2(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    unsafe {
+        while *x + PIXELS_PER_AVX2_STEP <= row.width {
+            let y =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
+            let cb =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cb.as_ptr().add(*x) as *const __m128i));
+            let cr =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cr.as_ptr().add(*x) as *const __m128i));
+            convert_studio_swing_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
+            *x += PIXELS_PER_AVX2_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn ycbcr_studio_swing_row_420_u16_avx2(
+    ctx: &HdrYcbcrStudioRowSimdCtx,
+    row: &mut HdrYcbcrU16Row<'_>,
+    x: &mut usize,
+) {
+    unsafe {
+        // 8 luma needs 4 chroma; floor-align width so load4 always fits.
+        let simd_end = (row.width / PIXELS_PER_AVX2_STEP) * PIXELS_PER_AVX2_STEP;
+        let chroma_dup = _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7, 6, 7);
+        while *x + PIXELS_PER_AVX2_STEP <= simd_end {
+            let xc = *x / 2;
+            let cb4 = _mm_loadl_epi64(row.cb.as_ptr().add(xc) as *const __m128i);
+            let cr4 = _mm_loadl_epi64(row.cr.as_ptr().add(xc) as *const __m128i);
+            let cb_dup = _mm_shuffle_epi8(cb4, chroma_dup);
+            let cr_dup = _mm_shuffle_epi8(cr4, chroma_dup);
+            let y =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
+            let cb = _mm256_cvtepu16_epi32(cb_dup);
+            let cr = _mm256_cvtepu16_epi32(cr_dup);
+            convert_studio_swing_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
+            *x += PIXELS_PER_AVX2_STEP;
         }
     }
 }
@@ -698,12 +802,6 @@ fn store_rgba_f32x4(dst: &mut [f32], x: usize, r: [f32; 4], g: [f32; 4], b: [f32
     }
 }
 
-#[inline]
-#[cfg(target_arch = "x86_64")]
-fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
-    x / 2 + 2 <= chroma_len
-}
-
 /// 4:2:0 AVX2/NEON loads four chroma samples from `cb_row[xc..]` for an 8-luma step.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline]
@@ -809,18 +907,16 @@ unsafe fn ycbcr_full_range_row_420_u16_sse41(
         let k_pb_b = _mm_set1_ps(coeffs.pb_to_b);
         let zero = _mm_setzero_ps();
         let one = _mm_set1_ps(1.0);
+        let simd_end = (row.width / PIXELS_PER_SSE41_STEP) * PIXELS_PER_SSE41_STEP;
+        let chroma_dup = _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1);
 
-        while *x + PIXELS_PER_SSE41_STEP <= row.width
-            && ycbcr420_chroma_load2_fits(*x, row.cb.len())
-        {
+        while *x + PIXELS_PER_SSE41_STEP <= simd_end {
             let xc = *x / 2;
-            let cb0 = row.cb[xc];
-            let cb1 = row.cb[xc + 1];
-            let cr0 = row.cr[xc];
-            let cr1 = row.cr[xc + 1];
             let y = _mm_loadl_epi64(row.y.as_ptr().add(*x) as *const __m128i);
-            let cb = _mm_setr_epi16(cb0 as i16, cb0 as i16, cb1 as i16, cb1 as i16, 0, 0, 0, 0);
-            let cr = _mm_setr_epi16(cr0 as i16, cr0 as i16, cr1 as i16, cr1 as i16, 0, 0, 0, 0);
+            let cb2 = _mm_cvtsi32_si128(*(row.cb.as_ptr().add(xc) as *const i32));
+            let cr2 = _mm_cvtsi32_si128(*(row.cr.as_ptr().add(xc) as *const i32));
+            let cb = _mm_shuffle_epi8(cb2, chroma_dup);
+            let cr = _mm_shuffle_epi8(cr2, chroma_dup);
 
             let yy = _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(y)), inv_y);
             let pb = _mm_sub_ps(
@@ -1214,6 +1310,108 @@ mod tests {
             let expected = scalar_row_420_u16(convert, &y, &cb, &cr, width);
             let mut simd = vec![0.0_f32; width * 4];
             ycbcr_full_range_row_420_u16_to_rgba_f32(convert, &y, &cb, &cr, &mut simd, width);
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+
+    fn studio_swing_10bit() -> HdrYcbcrStudioSwingParams {
+        // Rec.2100 / PQ-style studio swing for 10-bit: Y 64..940, C 64..960.
+        HdrYcbcrStudioSwingParams {
+            luma_floor: 64.0,
+            luma_inv_span: 1.0 / 876.0,
+            chroma_mid: 512.0,
+            chroma_inv_span: 1.0 / 896.0,
+        }
+    }
+
+    fn scalar_studio_row_444_u16(
+        matrix: HeifYcbcrMatrix,
+        swing: HdrYcbcrStudioSwingParams,
+        y_row: &[u16],
+        cb_row: &[u16],
+        cr_row: &[u16],
+        width: usize,
+    ) -> Vec<f32> {
+        let mut dst = vec![0.0_f32; width * 4];
+        let ctx = HdrYcbcrStudioRowSimdCtx {
+            coeffs: HdrYcbcrSimdConvert {
+                inv_scale_y: 1.0,
+                inv_scale_cb: 1.0,
+                inv_scale_cr: 1.0,
+                matrix,
+            }
+            .matrix_coeffs()
+            .unwrap(),
+            swing,
+        };
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
+            write_studio_swing_u16_pixel(ctx, &mut dst, x, y_value, cb_row[x], cr_row[x], matrix);
+        }
+        dst
+    }
+
+    fn scalar_studio_row_420_u16(
+        matrix: HeifYcbcrMatrix,
+        swing: HdrYcbcrStudioSwingParams,
+        y_row: &[u16],
+        cb_row: &[u16],
+        cr_row: &[u16],
+        width: usize,
+    ) -> Vec<f32> {
+        let mut dst = vec![0.0_f32; width * 4];
+        let ctx = HdrYcbcrStudioRowSimdCtx {
+            coeffs: HdrYcbcrSimdConvert {
+                inv_scale_y: 1.0,
+                inv_scale_cb: 1.0,
+                inv_scale_cr: 1.0,
+                matrix,
+            }
+            .matrix_coeffs()
+            .unwrap(),
+            swing,
+        };
+        for (x, &y_value) in y_row.iter().take(width).enumerate() {
+            let xc = x / 2;
+            write_studio_swing_u16_pixel(ctx, &mut dst, x, y_value, cb_row[xc], cr_row[xc], matrix);
+        }
+        dst
+    }
+
+    #[test]
+    fn ycbcr_studio_swing_u16_444_matches_scalar() {
+        let swing = studio_swing_10bit();
+        let matrix = HeifYcbcrMatrix::Bt709;
+        for width in [0_usize, 1, 3, 4, 7, 8, 9, 16] {
+            let y: Vec<u16> = (0..width).map(|i| ((i * 137 + 64) % 1024) as u16).collect();
+            let cb: Vec<u16> = (0..width).map(|i| ((i * 211 + 64) % 1024) as u16).collect();
+            let cr: Vec<u16> = (0..width).map(|i| ((i * 317 + 64) % 1024) as u16).collect();
+            let expected = scalar_studio_row_444_u16(matrix, swing, &y, &cb, &cr, width);
+            let mut simd = vec![0.0_f32; width * 4];
+            ycbcr_studio_swing_row_444_u16_to_rgba_f32(
+                matrix, swing, &y, &cb, &cr, &mut simd, width,
+            );
+            assert_eq!(simd, expected, "width={width}");
+        }
+    }
+
+    #[test]
+    fn ycbcr_studio_swing_u16_420_matches_scalar() {
+        let swing = studio_swing_10bit();
+        let matrix = HeifYcbcrMatrix::Bt2020Ncl;
+        for width in [0_usize, 1, 2, 3, 4, 7, 8, 9, 16] {
+            let chroma_len = width.div_ceil(2);
+            let y: Vec<u16> = (0..width).map(|i| ((i * 97 + 64) % 1024) as u16).collect();
+            let cb: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 151 + 64) % 1024) as u16)
+                .collect();
+            let cr: Vec<u16> = (0..chroma_len)
+                .map(|i| ((i * 223 + 64) % 1024) as u16)
+                .collect();
+            let expected = scalar_studio_row_420_u16(matrix, swing, &y, &cb, &cr, width);
+            let mut simd = vec![0.0_f32; width * 4];
+            ycbcr_studio_swing_row_420_u16_to_rgba_f32(
+                matrix, swing, &y, &cb, &cr, &mut simd, width,
+            );
             assert_eq!(simd, expected, "width={width}");
         }
     }
