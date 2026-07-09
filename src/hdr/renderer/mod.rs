@@ -68,9 +68,10 @@ pub(crate) use self::pending_work::{
     HdrCompletedPlaneUpload, HdrCompletedTileUpload, HdrPendingAppleImageComposeRequest,
     HdrPendingIsoImageComposeRequest, HdrPendingIsoTileComposeRequest,
     HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
-    HdrPendingTileUploadRequest, HdrPendingWorkQueues, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
-    MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
-    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+    HdrPendingRawDemosaicRequest, HdrPendingTileUploadRequest, HdrPendingWorkQueues,
+    MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC, MAX_HDR_GPU_WRITES_PER_LOGIC,
+    MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+    MAX_HDR_RAW_DEMOSAIC_ENCODES_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
 };
 
 mod pending_gpu_writes;

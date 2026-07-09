@@ -26,7 +26,7 @@ fn create_poolable_texture(
     desc: &wgpu::TextureDescriptor<'_>,
 ) -> Arc<wgpu::Texture> {
     if let Some(pool) = pool {
-        pool.lock().acquire(device, desc)
+        super::texture_pool::acquire_from_shared_pool(pool, device, desc)
     } else {
         Arc::new(device.create_texture(desc))
     }

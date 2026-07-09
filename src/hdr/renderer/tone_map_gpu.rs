@@ -226,7 +226,9 @@ struct PreviewOutputResources {
     readback_buffer: wgpu::Buffer,
     tone_map_buffer: wgpu::Buffer,
     bind_group: Option<wgpu::BindGroup>,
-    bind_group_hdr_view_key: usize,
+    /// Identity of the HDR input texture used to build `bind_group` (Arc ptr + size).
+    /// Avoids TextureView address reuse false positives after free/realloc.
+    bind_group_hdr_texture_key: (usize, u32, u32),
 }
 
 struct PreviewGpuScopeGuard {
@@ -324,7 +326,7 @@ fn with_preview_output_resources<R>(
                 readback_buffer,
                 tone_map_buffer,
                 bind_group: None,
-                bind_group_hdr_view_key: 0,
+                bind_group_hdr_texture_key: (0, 0, 0),
             });
         }
         let pool = guard.as_mut().expect("preview output pool");
@@ -607,8 +609,12 @@ fn hdr_to_sdr_rgba8_gpu(
             readback_size,
             |pool| {
                 queue.write_buffer(&pool.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
-                let hdr_view_key = std::ptr::from_ref(&uploaded.view) as usize;
-                if pool.bind_group.is_none() || pool.bind_group_hdr_view_key != hdr_view_key {
+                let hdr_texture_key = (
+                    Arc::as_ptr(&uploaded.texture) as usize,
+                    uploaded.texture.width(),
+                    uploaded.texture.height(),
+                );
+                if pool.bind_group.is_none() || pool.bind_group_hdr_texture_key != hdr_texture_key {
                     pool.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("simple-image-viewer-hdr-preview-tone-map-bind-group"),
                         layout: bind_group_layout,
@@ -627,7 +633,7 @@ fn hdr_to_sdr_rgba8_gpu(
                             },
                         ],
                     }));
-                    pool.bind_group_hdr_view_key = hdr_view_key;
+                    pool.bind_group_hdr_texture_key = hdr_texture_key;
                 }
                 let bind_group = pool
                     .bind_group

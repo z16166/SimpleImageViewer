@@ -17,7 +17,7 @@
 use super::*;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct ToneMapUniform {
     pub(super) exposure_ev: f32,
     pub(super) sdr_white_nits: f32,

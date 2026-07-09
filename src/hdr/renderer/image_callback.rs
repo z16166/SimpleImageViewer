@@ -148,11 +148,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
         }
 
         let binding_missing = !resources.image_bindings.contains_key(&image_key);
-        let gpu_demosaic_started = if raw_source.is_some() && binding_missing {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
 
         if binding_missing
             && !self.ensure_image_binding_on_cache_miss(device, queue, resources, image_key)
@@ -181,86 +176,27 @@ impl CallbackTrait for HdrImagePlaneCallback {
 
         let mut compose_command_buffers = Vec::new();
         if needs_raw_demosaic && let Some(source) = raw_source {
-            if let (
-                Some(green_layout),
-                Some(rgb_layout),
-                Some(green_pipeline),
-                Some(rgb_pipeline),
-                Some(uniform_buf),
-            ) = (
-                resources.raw_demosaic_green_bind_group_layout.as_ref(),
-                resources.raw_demosaic_rgb_bind_group_layout.as_ref(),
-                resources.raw_demosaic_green_pipeline.as_ref(),
-                resources.raw_demosaic_rgb_pipeline.as_ref(),
-                resources.raw_demosaic_uniform_buffer.as_ref(),
-            ) {
-                let demosaic_started = gpu_demosaic_started.unwrap_or_else(std::time::Instant::now);
-                log::debug!(
-                    "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
-                    self.image.width,
-                    self.image.height,
-                    source.demosaic_method
-                );
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] demosaic bake {}x{} first={}",
-                    self.image.width,
-                    self.image.height,
-                    binding.baked_raw_demosaic_key != Some(image_key)
-                );
-                let raw_pixels_view = binding
-                    .uploaded_raw_pixels_view
-                    .as_ref()
-                    .expect("raw pixels view");
-                let green_plane_write_view = binding
-                    .uploaded_raw_green_plane_write_view
-                    .as_ref()
-                    .expect("raw green plane write view");
-                let green_plane_read_view = binding
-                    .uploaded_raw_green_plane_read_view
-                    .as_ref()
-                    .expect("raw green plane read view");
-                let output_view = binding
-                    .uploaded_display_storage_view
-                    .as_ref()
-                    .expect("display storage view");
-                compose_command_buffers.push(
-                    crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
-                        crate::hdr::raw_demosaic_gpu::RawDemosaicComputePass {
-                            device,
-                            queue,
-                            green_bind_group_layout: green_layout,
-                            rgb_bind_group_layout: rgb_layout,
-                            green_pipeline,
-                            rgb_pipeline,
-                            source,
-                            raw_pixels_view,
-                            green_plane_write_view,
-                            green_plane_read_view,
-                            output_view,
-                            uniform_buffer: uniform_buf,
-                        },
-                    ),
-                );
-                binding.baked_raw_demosaic_key = Some(image_key);
-                binding.baked_raw_demosaic_method = Some(source.demosaic_method);
-                let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
-                if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
-                    notify.lock().push(RawGpuDemosaicBakedNotice {
-                        key: image_key,
-                        demosaic_ms,
-                    });
-                }
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] demosaic notice queued key={image_key:?} ms={demosaic_ms}"
-                );
-                #[cfg(feature = "preload-debug")]
-                {
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] demosaic upload+encode {}x{} {}ms",
+            let gpu_demosaic_ready = resources.raw_demosaic_green_bind_group_layout.is_some()
+                && resources.raw_demosaic_rgb_bind_group_layout.is_some()
+                && resources.raw_demosaic_green_pipeline.is_some()
+                && resources.raw_demosaic_rgb_pipeline.is_some()
+                && resources.raw_demosaic_uniform_buffer.is_some();
+            if gpu_demosaic_ready {
+                if let Some(pending_work) = self.pending_work.as_ref() {
+                    log::debug!(
+                        "[HDR] GPU RAW demosaicing path=GPU deferred size={}x{} method={:?}",
                         self.image.width,
                         self.image.height,
-                        demosaic_ms
+                        source.demosaic_method
                     );
+                    let _ = pending_work.try_queue_raw_demosaic(HdrPendingRawDemosaicRequest {
+                        key: image_key,
+                        target_format: self.target_format,
+                        image: Arc::clone(&self.image),
+                        method: source.demosaic_method,
+                    });
+                } else {
+                    log::debug!("[HDR] GPU RAW demosaic deferred: pending work queues unavailable");
                 }
             } else {
                 log::warn!(
@@ -402,6 +338,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
             }
 
             if apple_compose_used_cpu {
+                // Drop any partial GPU compose scratch allocated before falling back to CPU.
+                binding.encoded_primary_buffer = None;
+                binding.encoded_primary_buffer_bytes = 0;
+                binding.encoded_primary_source_ptr = None;
+                binding.apple_compose_bind_groups.clear();
                 if let Some(pending_work) = self.pending_work.as_ref() {
                     log::debug!("[HDR] Apple gain-map compose path=CPU queued async");
                     let _ = pending_work.try_queue_apple_image_compose(
@@ -455,7 +396,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 }),
             },
         );
-        queue.write_buffer(&binding.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+        if binding.last_tone_map_uniform != Some(uniform) {
+            queue.write_buffer(&binding.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+            binding.last_tone_map_uniform = Some(uniform);
+        }
 
         if binding.bind_group.is_none() {
             let gain_view = if deferred_gpu_composed {
