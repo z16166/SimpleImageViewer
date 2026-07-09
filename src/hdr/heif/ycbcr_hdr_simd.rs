@@ -28,7 +28,7 @@ const CHROMA_CENTER: f32 = 0.5;
 #[cfg(target_arch = "x86_64")]
 const PIXELS_PER_SSE41_STEP: usize = 4;
 #[cfg(target_arch = "x86_64")]
-const PIXELS_PER_AVX2_STEP: usize = 4;
+const PIXELS_PER_AVX2_STEP: usize = 8;
 #[cfg(target_arch = "aarch64")]
 const PIXELS_PER_NEON_STEP: usize = 4;
 
@@ -704,8 +704,8 @@ fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 2 <= chroma_len
 }
 
-/// 4:2:0 NEON `vld1_u16` loads four chroma samples from `cb_row[xc..]`.
-#[cfg(target_arch = "aarch64")]
+/// 4:2:0 AVX2/NEON loads four chroma samples from `cb_row[xc..]` for an 8-luma step.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline]
 fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len
@@ -863,66 +863,102 @@ unsafe fn ycbcr_full_range_row_420_u16_sse41(
     }
 }
 
+/// Interleave 8 RGB f32 lanes into RGBA f32 and store 128 bytes (8 pixels).
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn convert_u16x4_sse41(
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn store_rgba_f32x8_avx2(dst: &mut [f32], x: usize, rf: __m256, gf: __m256, bf: __m256) {
+    unsafe {
+        let af = _mm256_set1_ps(1.0);
+        let r_lo = _mm256_castps256_ps128(rf);
+        let r_hi = _mm256_extractf128_ps(rf, 1);
+        let g_lo = _mm256_castps256_ps128(gf);
+        let g_hi = _mm256_extractf128_ps(gf, 1);
+        let b_lo = _mm256_castps256_ps128(bf);
+        let b_hi = _mm256_extractf128_ps(bf, 1);
+        let a_lo = _mm256_castps256_ps128(af);
+        let a_hi = _mm256_extractf128_ps(af, 1);
+
+        // Pixels 0..3
+        let rg_lo = _mm_unpacklo_ps(r_lo, g_lo);
+        let rg_hi = _mm_unpackhi_ps(r_lo, g_lo);
+        let ba_lo = _mm_unpacklo_ps(b_lo, a_lo);
+        let ba_hi = _mm_unpackhi_ps(b_lo, a_lo);
+        let p0 = _mm_movelh_ps(rg_lo, ba_lo);
+        let p1 = _mm_movehl_ps(ba_lo, rg_lo);
+        let p2 = _mm_movelh_ps(rg_hi, ba_hi);
+        let p3 = _mm_movehl_ps(ba_hi, rg_hi);
+
+        // Pixels 4..7
+        let rg2_lo = _mm_unpacklo_ps(r_hi, g_hi);
+        let rg2_hi = _mm_unpackhi_ps(r_hi, g_hi);
+        let ba2_lo = _mm_unpacklo_ps(b_hi, a_hi);
+        let ba2_hi = _mm_unpackhi_ps(b_hi, a_hi);
+        let p4 = _mm_movelh_ps(rg2_lo, ba2_lo);
+        let p5 = _mm_movehl_ps(ba2_lo, rg2_lo);
+        let p6 = _mm_movelh_ps(rg2_hi, ba2_hi);
+        let p7 = _mm_movehl_ps(ba2_hi, rg2_hi);
+
+        let out = dst.as_mut_ptr().add(x * 4);
+        _mm_storeu_ps(out, p0);
+        _mm_storeu_ps(out.add(4), p1);
+        _mm_storeu_ps(out.add(8), p2);
+        _mm_storeu_ps(out.add(12), p3);
+        _mm_storeu_ps(out.add(16), p4);
+        _mm_storeu_ps(out.add(20), p5);
+        _mm_storeu_ps(out.add(24), p6);
+        _mm_storeu_ps(out.add(28), p7);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn convert_u16x8_avx2(
     ctx: &HdrYcbcrRowSimdCtx,
-    y: __m128i,
-    cb: __m128i,
-    cr: __m128i,
+    y: __m256i,
+    cb: __m256i,
+    cr: __m256i,
     dst: &mut [f32],
     x: usize,
 ) {
     unsafe {
         let convert = ctx.convert;
         let coeffs = ctx.coeffs;
-        let inv_y = _mm_set1_ps(convert.inv_scale_y);
-        let inv_cb = _mm_set1_ps(convert.inv_scale_cb);
-        let inv_cr = _mm_set1_ps(convert.inv_scale_cr);
-        let center = _mm_set1_ps(CHROMA_CENTER);
-        let k_pr_r = _mm_set1_ps(coeffs.pr_to_r);
-        let k_pb_g = _mm_set1_ps(coeffs.pb_to_g);
-        let k_pr_g = _mm_set1_ps(coeffs.pr_to_g);
-        let k_pb_b = _mm_set1_ps(coeffs.pb_to_b);
-        let zero = _mm_setzero_ps();
-        let one = _mm_set1_ps(1.0);
+        let inv_y = _mm256_set1_ps(convert.inv_scale_y);
+        let inv_cb = _mm256_set1_ps(convert.inv_scale_cb);
+        let inv_cr = _mm256_set1_ps(convert.inv_scale_cr);
+        let center = _mm256_set1_ps(CHROMA_CENTER);
+        let k_pr_r = _mm256_set1_ps(coeffs.pr_to_r);
+        let k_pb_g = _mm256_set1_ps(coeffs.pb_to_g);
+        let k_pr_g = _mm256_set1_ps(coeffs.pr_to_g);
+        let k_pb_b = _mm256_set1_ps(coeffs.pb_to_b);
+        let zero = _mm256_setzero_ps();
+        let one = _mm256_set1_ps(1.0);
 
-        let yy = _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(y)), inv_y);
-        let pb = _mm_sub_ps(
-            _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(cb)), inv_cb),
-            center,
-        );
-        let pr = _mm_sub_ps(
-            _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu16_epi32(cr)), inv_cr),
-            center,
-        );
+        let yy = _mm256_mul_ps(_mm256_cvtepi32_ps(y), inv_y);
+        let pb = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cb), inv_cb), center);
+        let pr = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(cr), inv_cr), center);
 
-        let rf = _mm_min_ps(
-            _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pr_r, pr)), zero),
+        let rf = _mm256_min_ps(
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pr_r, pr)), zero),
             one,
         );
-        let gf = _mm_min_ps(
-            _mm_max_ps(
-                _mm_add_ps(
-                    _mm_add_ps(yy, _mm_mul_ps(k_pb_g, pb)),
-                    _mm_mul_ps(k_pr_g, pr),
+        let gf = _mm256_min_ps(
+            _mm256_max_ps(
+                _mm256_add_ps(
+                    _mm256_add_ps(yy, _mm256_mul_ps(k_pb_g, pb)),
+                    _mm256_mul_ps(k_pr_g, pr),
                 ),
                 zero,
             ),
             one,
         );
-        let bf = _mm_min_ps(
-            _mm_max_ps(_mm_add_ps(yy, _mm_mul_ps(k_pb_b, pb)), zero),
+        let bf = _mm256_min_ps(
+            _mm256_max_ps(_mm256_add_ps(yy, _mm256_mul_ps(k_pb_b, pb)), zero),
             one,
         );
-
-        let mut r = [0.0_f32; 4];
-        let mut g = [0.0_f32; 4];
-        let mut b = [0.0_f32; 4];
-        _mm_storeu_ps(r.as_mut_ptr(), rf);
-        _mm_storeu_ps(g.as_mut_ptr(), gf);
-        _mm_storeu_ps(b.as_mut_ptr(), bf);
-        store_rgba_f32x4(dst, x, r, g, b);
+        store_rgba_f32x8_avx2(dst, x, rf, gf, bf);
     }
 }
 
@@ -935,10 +971,14 @@ unsafe fn ycbcr_full_range_row_444_u16_avx2(
 ) {
     unsafe {
         while *x + PIXELS_PER_AVX2_STEP <= row.width {
-            let y = _mm_loadl_epi64(row.y.as_ptr().add(*x) as *const __m128i);
-            let cb = _mm_loadl_epi64(row.cb.as_ptr().add(*x) as *const __m128i);
-            let cr = _mm_loadl_epi64(row.cr.as_ptr().add(*x) as *const __m128i);
-            convert_u16x4_sse41(ctx, y, cb, cr, row.dst, *x);
+            // 8xu16 = 16 bytes per plane; widen to 8xi32 for AVX2 float math.
+            let y =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
+            let cb =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cb.as_ptr().add(*x) as *const __m128i));
+            let cr =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.cr.as_ptr().add(*x) as *const __m128i));
+            convert_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
             *x += PIXELS_PER_AVX2_STEP;
         }
     }
@@ -952,7 +992,27 @@ unsafe fn ycbcr_full_range_row_420_u16_avx2(
     x: &mut usize,
 ) {
     unsafe {
-        ycbcr_full_range_row_420_u16_sse41(ctx, row, x);
+        while *x + PIXELS_PER_AVX2_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, row.cb.len())
+        {
+            let xc = *x / 2;
+            // Load 4 chroma samples and upsample to 8 luma sites.
+            let cb4 = _mm_loadl_epi64(row.cb.as_ptr().add(xc) as *const __m128i);
+            let cr4 = _mm_loadl_epi64(row.cr.as_ptr().add(xc) as *const __m128i);
+            let cb_dup = _mm_shuffle_epi8(
+                cb4,
+                _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7, 6, 7),
+            );
+            let cr_dup = _mm_shuffle_epi8(
+                cr4,
+                _mm_setr_epi8(0, 1, 0, 1, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7, 6, 7),
+            );
+            let y =
+                _mm256_cvtepu16_epi32(_mm_loadu_si128(row.y.as_ptr().add(*x) as *const __m128i));
+            let cb = _mm256_cvtepu16_epi32(cb_dup);
+            let cr = _mm256_cvtepu16_epi32(cr_dup);
+            convert_u16x8_avx2(ctx, y, cb, cr, row.dst, *x);
+            *x += PIXELS_PER_AVX2_STEP;
+        }
     }
 }
 
