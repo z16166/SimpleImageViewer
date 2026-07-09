@@ -751,6 +751,7 @@ fn rgbe8_pixel_to_rgba32f_scalar(src: &[u8], dst: &mut [f32], scale_lut: &[f32; 
 }
 
 #[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
 unsafe fn rgbe8_to_rgba32f_neon(
     src: &[u8],
     dst: &mut [f32],
@@ -761,9 +762,13 @@ unsafe fn rgbe8_to_rgba32f_neon(
     unsafe {
         while *px + 8 <= pixel_count {
             let rgbe = vld4_u8(src.as_ptr().add(*px * 4));
-            for lane in 0..8i32 {
-                let exponent = vget_lane_u8(rgbe.3, lane);
-                let dst_px = *px + lane as usize;
+            let r: [u8; 8] = core::mem::transmute(rgbe.0);
+            let g: [u8; 8] = core::mem::transmute(rgbe.1);
+            let b: [u8; 8] = core::mem::transmute(rgbe.2);
+            let e: [u8; 8] = core::mem::transmute(rgbe.3);
+            for lane in 0..8 {
+                let exponent = e[lane];
+                let dst_px = *px + lane;
                 let d = dst_px * 4;
                 if exponent == 0 {
                     *dst.get_unchecked_mut(d) = 0.0;
@@ -771,9 +776,9 @@ unsafe fn rgbe8_to_rgba32f_neon(
                     *dst.get_unchecked_mut(d + 2) = 0.0;
                 } else {
                     let scale = *scale_lut.get_unchecked(exponent as usize);
-                    *dst.get_unchecked_mut(d) = vget_lane_u8(rgbe.0, lane) as f32 * scale;
-                    *dst.get_unchecked_mut(d + 1) = vget_lane_u8(rgbe.1, lane) as f32 * scale;
-                    *dst.get_unchecked_mut(d + 2) = vget_lane_u8(rgbe.2, lane) as f32 * scale;
+                    *dst.get_unchecked_mut(d) = r[lane] as f32 * scale;
+                    *dst.get_unchecked_mut(d + 1) = g[lane] as f32 * scale;
+                    *dst.get_unchecked_mut(d + 2) = b[lane] as f32 * scale;
                 }
                 *dst.get_unchecked_mut(d + 3) = 1.0;
             }

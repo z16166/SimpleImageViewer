@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::context_menu::model::{ContextMenuCommand, quote_arg};
+use crate::context_menu::model::ContextMenuCommand;
+#[cfg(target_os = "windows")]
+use crate::context_menu::model::quote_arg;
 use std::path::Path;
 
 impl ContextMenuCommand {
@@ -87,10 +89,12 @@ impl ContextMenuCommand {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+#[cfg(target_os = "windows")]
 fn format_shell_execute_parameters(args: &[String]) -> String {
     args.iter()
         .map(|arg| quote_arg(arg))
@@ -203,6 +207,7 @@ mod tests {
     use super::*;
     use crate::context_menu::model::CommandTemplate;
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn format_shell_execute_parameters_quotes_each_argument() {
         let params = format_shell_execute_parameters(&[

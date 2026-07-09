@@ -323,9 +323,9 @@ unsafe fn load_sdr_rgb_encoded4_neon(ptr: *const u8) -> (float32x4_t, float32x4_
     unsafe {
         let scale = vdupq_n_f32(1.0 / 255.0);
         let rgbe = vld4_u8(ptr);
-        let r = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.0)), scale);
-        let g = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.1)), scale);
-        let b = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.2)), scale);
+        let r = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.0)))), scale);
+        let g = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.1)))), scale);
+        let b = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.2)))), scale);
         (r, g, b)
     }
 }
@@ -558,7 +558,7 @@ unsafe fn store_rgba4_neon(
     unsafe {
         let scale = vdupq_n_f32(1.0 / 255.0);
         let rgbe = vld4_u8(sdr);
-        let a = vmulq_f32(vcvtq_f32_u32(vmovl_u8(rgbe.3)), scale);
+        let a = vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.3)))), scale);
         vst4q_f32(dst, float32x4x4_t(r, g, b, a));
     }
 }
