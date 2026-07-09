@@ -124,7 +124,8 @@ impl ImageViewerApp {
         Some(anim.repaint_after())
     }
 
-    /// Animated HDR planes use synchronous GPU upload on cache miss (main-branch behavior).
+    /// Animated HDR planes prefer synchronous GPU upload on cache miss (main-branch behavior).
+    /// Oversized frames still fall back to async pending upload inside the HDR prepare callback.
     pub(crate) fn hdr_plane_sync_upload_on_cache_miss(&self) -> bool {
         self.animation_needs_repaint_wake()
     }
