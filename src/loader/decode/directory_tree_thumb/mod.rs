@@ -552,6 +552,7 @@ fn open_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<Arc<memmap2::Mmap>>,
 ) -> Result<ImageData, String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.as_deref().map(|m| m.as_ref());
     let file_name = path
         .file_name()
@@ -804,6 +805,7 @@ fn platform_still_image_fallback(
     opened_processor: Option<crate::raw_processor::RawProcessor>,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.map(|m| m.as_ref());
     #[cfg(target_os = "windows")]
     {
