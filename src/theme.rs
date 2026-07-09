@@ -49,7 +49,7 @@ pub enum AppTheme {
 ///
 /// Every colour used by the UI should come from here.
 /// `setup_visuals` and all draw helpers accept a `&ThemePalette`.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ThemePalette {
     // ── Background layers ────────────────────────────────────────────────────
     /// Main canvas background (behind the image).

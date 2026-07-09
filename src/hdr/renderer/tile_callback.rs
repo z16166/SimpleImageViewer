@@ -38,6 +38,21 @@ fn queue_iso_tile_cpu_compose(
     });
 }
 
+fn write_tile_tone_map_uniform_if_changed(
+    queue: &wgpu::Queue,
+    binding: &mut HdrTileBinding,
+    uniform: ToneMapUniform,
+) {
+    if binding.last_tone_map_uniform == Some(uniform) {
+        return;
+    }
+    let Some(buffer) = binding.tone_map_buffer.as_ref() else {
+        return;
+    };
+    queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+    binding.last_tone_map_uniform = Some(uniform);
+}
+
 pub(crate) struct HdrTilePlaneCallback {
     pub(super) tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     pub(super) tone_map: HdrToneMapSettings,
@@ -200,14 +215,14 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         );
                         if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
                             binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                            if let Some(buffer) = binding.tone_map_buffer.as_ref() {
-                                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-                            }
+                            write_tile_tone_map_uniform_if_changed(queue, binding, uniform);
                         }
                         return vec![compose_command];
                     }
 
-                    if let Some(_binding) = resources.tile_bindings.binding_mut(tile_key) {
+                    if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                        // Drop GPU compose bind-group scratch before CPU fallback (RAII).
+                        binding.jpeg_compose_bind_group = None;
                         let Some(pending_work) = self.pending_work.as_ref() else {
                             resources.tile_bindings.remove(tile_key);
                             return Vec::new();
@@ -264,6 +279,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                                 jpeg_compose_bind_group: None,
                                 estimated_bytes: 0,
                                 baked_jpeg_weight_bits: None,
+                                last_tone_map_uniform: None,
                             };
                             let compose_bind_group =
                                 jpeg_compose_gpu::ensure_jpeg_tile_compose_bind_group(
@@ -338,6 +354,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
                                 },
                                 Some(&mut *pool),
                             );
+                            if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                                binding.last_tone_map_uniform = Some(uniform);
+                            }
                             return vec![compose_command];
                         }
 
@@ -387,6 +406,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
                                 },
                                 Some(&mut *pool),
                             );
+                            if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                                binding.last_tone_map_uniform = Some(uniform);
+                            }
                             queue_iso_tile_cpu_compose(
                                 pending_work,
                                 tile_key,
@@ -428,9 +450,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             });
             return Vec::new();
         }
-        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key)
-            && let Some(buffer) = binding.tone_map_buffer.as_ref()
-        {
+        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
             let binding_baked = binding.baked_jpeg_weight_bits;
             let jpeg_gpu_composed =
                 iso_deferred_tile && binding_baked == Some(target_capacity_bits);
@@ -447,7 +467,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 tile: &self.tile,
                 jpeg_gpu_composed,
             });
-            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+            write_tile_tone_map_uniform_if_changed(queue, binding, uniform);
         }
 
         Vec::new()

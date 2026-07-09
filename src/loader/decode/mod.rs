@@ -49,6 +49,7 @@ pub(crate) use tiff_raw_sniff::{
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -114,18 +115,15 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         .unwrap_or("unknown");
 
     let mut raw_osd_info: Option<crate::loader::RawOsdInfo> = None;
+    // Once per load: reused for dispatch and capacity-sensitive classification.
+    let ext = path_ext_lower(path);
 
     let result = (|| -> Result<ImageData, String> {
-        crate::mmap_util::reject_if_image_file_too_small(path)?;
-
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .unwrap_or_default();
+        // Size check: orchestrator already rejects tiny files before spawn; decode paths that
+        // mmap also enforce MIN_IMAGE_FILE_BYTES inside `map_file` (single metadata() call).
         let is_system_native = {
             let reg = crate::formats::get_registry().read();
-            reg.extensions.contains(&ext)
+            reg.extensions.contains(ext.as_ref())
         };
 
         if ext == "exr" {
@@ -211,7 +209,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
         }
         if ext == "tif" || ext == "tiff" {
-            let file_mmap = Arc::new(crate::mmap_util::map_file(path)?);
+            let file_mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
             if tiff_may_be_camera_raw_bytes(file_mmap.as_ref())
                 && crate::raw_processor::probe_libraw_can_open_bytes(file_mmap.as_ref())
             {
@@ -360,7 +358,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             }
         }
 
-        if matches!(ext.as_str(), "gif" | "png" | "apng" | "webp") {
+        if matches!(&*ext, "gif" | "png" | "apng" | "webp") {
             return load_primary_with_detection_fallback(
                 path,
                 file_name,
@@ -369,7 +367,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 high_quality,
                 || {
                     primary_with_retainable_mmap(path, |mmap| {
-                        let outcome = match ext.as_str() {
+                        let outcome = match &*ext {
                             "gif" => load_gif_with_bootstrap_from_mmap(
                                 path,
                                 Arc::clone(&mmap),
@@ -660,7 +658,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         index,
         decode_profile,
         source_key: source_key_for_path(path),
-        ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(path, &final_result),
+        ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(&ext, path, &final_result),
         result: final_result,
         preview_bundle,
         sdr_fallback_is_placeholder,
@@ -671,17 +669,28 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         staged_gpu_plane_upload: false,
     }
 }
-fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
+
+/// Lowercased path extension (empty when missing). Computed once on the load hot path.
+///
+/// Already-lowercase extensions borrow the path OsStr UTF-8 view (no heap alloc).
+pub(crate) fn path_ext_lower(path: &Path) -> Cow<'_, str> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.bytes().any(|b| b.is_ascii_uppercase()) => Cow::Borrowed(ext),
+        Some(ext) => Cow::Owned(ext.to_ascii_lowercase()),
+        None => Cow::Borrowed(""),
+    }
+}
+
+fn is_hdr_capacity_sensitive_load(
+    ext: &str,
+    path: &Path,
+    result: &Result<ImageData, String>,
+) -> bool {
     let is_jpeg = ext == "jpg" || ext == "jpeg";
-    let is_raw = crate::raw_processor::is_raw_extension(&ext);
+    let is_raw = crate::raw_processor::is_raw_extension(ext);
     (is_jpeg
         || modern::is_hdr_capable_modern_format_path(path)
-        || crate::hdr::decode::is_hdr_candidate_ext(&ext)
+        || crate::hdr::decode::is_hdr_candidate_ext(ext)
         || is_raw)
         && matches!(
             result,

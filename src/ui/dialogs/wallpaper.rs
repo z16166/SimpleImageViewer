@@ -49,6 +49,10 @@ pub struct State {
     pub supports_per_monitor: bool,
     pub monitor_options: Vec<MonitorOption>,
     pub selected_target: WallpaperTarget,
+    /// Cached display path for the image being set as wallpaper (avoids per-frame alloc).
+    cached_image_path: String,
+    /// `current_index` that [`Self::cached_image_path`] was built from.
+    cached_image_index: Option<usize>,
 }
 
 impl State {
@@ -61,7 +65,20 @@ impl State {
             supports_per_monitor: false,
             monitor_options: Vec::new(),
             selected_target: WallpaperTarget::AllMonitors,
+            cached_image_path: String::new(),
+            cached_image_index: None,
         }
+    }
+
+    /// Refresh the cached image path only when the gallery index changes.
+    pub fn ensure_image_path(&mut self, current_index: usize, path: Option<&std::path::Path>) {
+        if self.cached_image_index == Some(current_index) {
+            return;
+        }
+        self.cached_image_index = Some(current_index);
+        self.cached_image_path = path
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
     }
 
     pub fn apply_wallpaper_probe(
@@ -89,9 +106,11 @@ impl State {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 /// Render the wallpaper mode selector modal for one frame.
+///
+/// Call [`State::ensure_image_path`] before this so the cached display path is
+/// up to date; the path is read from state to avoid a per-frame allocation.
 pub fn show(
     state: &mut State,
-    current_image_path: &str,
     current_image_res: Option<(u32, u32)>,
     ctx: &Context,
     palette: &ThemePalette,
@@ -175,7 +194,7 @@ pub fn show(
                     ui.vertical(|ui| {
                         ui.add_space(2.0);
                         ui.add(
-                            egui::Label::new(current_image_path)
+                            egui::Label::new(state.cached_image_path.as_str())
                                 .selectable(true)
                                 .wrap_mode(egui::TextWrapMode::Extend),
                         );

@@ -40,7 +40,7 @@ fn png_path_provides_reusable_full_decode(path: &Path) -> bool {
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     PngDecoder::new(Cursor::new(mmap.as_ref()))
@@ -53,7 +53,7 @@ fn webp_path_provides_reusable_full_decode(path: &Path) -> bool {
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     WebPDecoder::new(Cursor::new(mmap.as_ref()))
@@ -68,7 +68,7 @@ pub(super) fn try_static_raster_strip_fast_path(
 ) -> Option<Result<DirectoryTreeThumbDecode, String>> {
     let ext = path_extension_ascii_lower(path)?;
     if !matches!(
-        ext.as_str(),
+        &*ext,
         "png" | "apng" | "webp" | "gif" | "bmp" | "tga" | "ico" | "pnm" | "qoi"
     ) {
         return None;
@@ -77,7 +77,7 @@ pub(super) fn try_static_raster_strip_fast_path(
     Some(decode_static_raster_strip_from_bytes(
         data.as_ref(),
         max_side,
-        Some(ext.as_str()),
+        Some(&*ext),
     ))
 }
 

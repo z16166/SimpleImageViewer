@@ -267,101 +267,99 @@ impl ImageViewerApp {
     /// Compute per-frame transition animation parameters.
     /// Returns `TransitionParams` with alpha/scale/offset for both current and previous images.
     pub(crate) fn compute_transition_params(&mut self) -> TransitionParams {
+        // Fast path: idle frames skip Option unwrap + elapsed/ease work (#39).
+        let Some(start) = self.transition_start else {
+            return TransitionParams::default();
+        };
+
         let mut p = TransitionParams::default();
+        let elapsed = start.elapsed().as_secs_f32();
+        let duration = self.settings.transition_ms as f32 / 1000.0;
+        if elapsed < duration {
+            p.is_animating = true;
+            let t = (elapsed / duration).clamp(0.0, 1.0);
+            p.t = t;
+            // Easing: Cubic Out
+            let ease_out = 1.0 - (1.0 - t).powi(3);
 
-        if let Some(start) = self.transition_start {
-            let elapsed = start.elapsed().as_secs_f32();
-            let duration = self.settings.transition_ms as f32 / 1000.0;
-            if elapsed < duration {
-                p.is_animating = true;
-                let t = (elapsed / duration).clamp(0.0, 1.0);
-                p.t = t;
-                // Easing: Cubic Out
-                let ease_out = 1.0 - (1.0 - t).powi(3);
-
-                match self.active_transition {
-                    TransitionStyle::Fade => {
-                        p.alpha = ease_out;
-                        p.prev_alpha = 1.0 - t;
-                    }
-                    TransitionStyle::ZoomFade => {
-                        p.alpha = ease_out;
-                        p.scale = 0.95 + 0.05 * ease_out;
-                        p.prev_alpha = 1.0 - t;
-                        p.prev_scale = 1.0 + 0.05 * t;
-                    }
-                    TransitionStyle::Slide => {
-                        let dir = if self.is_next { 1.0 } else { -1.0 };
-                        // screen_rect not available here; caller must pass it via offset calculation
-                        // We store a normalised offset in [0,1] and the caller multiplies by width.
-                        // NOTE: offset.x is stored as (-1..1) normalised; multiply by screen width in caller.
-                        p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
-                        // Slide-over semantics: keep the old image stable underneath
-                        // while the new image moves in above it.
-                        p.prev_alpha = 1.0;
-                    }
-                    TransitionStyle::Push => {
-                        let dir = if self.is_next { 1.0 } else { -1.0 };
-                        p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
-                        p.prev_offset = Vec2::new(-dir * ease_out, 0.0); // normalised
-                        p.prev_alpha = 1.0;
-                    }
-                    TransitionStyle::PageFlip
-                    | TransitionStyle::Ripple
-                    | TransitionStyle::Curtain => {
-                        // Custom rendering; keep is_animating true, no standard params needed.
-                    }
-                    _ => {
-                        p.is_animating = false;
-                    }
+            match self.active_transition {
+                TransitionStyle::Fade => {
+                    p.alpha = ease_out;
+                    p.prev_alpha = 1.0 - t;
                 }
-            } else if self.transition_end_hold {
-                // The t=1.0 hold frame has been drawn. Only now do we mark the transition as
-                // settled and release the outgoing frame. Starting the post-transition timers here
-                // intentionally shifts them by one frame (~8-16ms) so background uploads cannot
-                // begin on the same frame that bridges animated and static rendering.
-                self.transition_end_hold = false;
-                self.transition_start = None;
-                self.transition_settled_at = Some(std::time::Instant::now());
-                self.prev_texture = None;
-                self.prev_hdr_image = None;
-                self.prev_transition_rect = None;
-            } else {
-                // Hold one frame at t=1.0 on the geometric path so the last animated
-                // frame matches the first static HDR draw (avoids end-of-flip flash). Alpha
-                // transitions end with the new image fully opaque; Slide/Push end with both
-                // offsets reset; PageFlip/Ripple/Curtain already render their final geometry via
-                // custom paths, so they only need `is_animating` and `t=1.0` preserved.
-                self.transition_end_hold = true;
-                p.is_animating = true;
-                p.t = 1.0;
-                match self.active_transition {
-                    TransitionStyle::Fade => {
-                        p.alpha = 1.0;
-                        p.prev_alpha = 0.0;
-                    }
-                    TransitionStyle::ZoomFade => {
-                        p.alpha = 1.0;
-                        p.scale = 1.0;
-                        p.prev_alpha = 0.0;
-                        p.prev_scale = 1.0;
-                    }
-                    TransitionStyle::Slide => {
-                        p.offset = Vec2::ZERO;
-                        p.prev_offset = Vec2::ZERO;
-                        p.prev_alpha = 1.0;
-                    }
-                    TransitionStyle::Push => {
-                        p.offset = Vec2::ZERO;
-                        p.prev_offset = push_terminal_prev_offset(self.is_next);
-                        p.prev_alpha = 1.0;
-                    }
-                    TransitionStyle::PageFlip
-                    | TransitionStyle::Ripple
-                    | TransitionStyle::Curtain => {}
-                    _ => {
-                        p.is_animating = false;
-                    }
+                TransitionStyle::ZoomFade => {
+                    p.alpha = ease_out;
+                    p.scale = 0.95 + 0.05 * ease_out;
+                    p.prev_alpha = 1.0 - t;
+                    p.prev_scale = 1.0 + 0.05 * t;
+                }
+                TransitionStyle::Slide => {
+                    let dir = if self.is_next { 1.0 } else { -1.0 };
+                    // screen_rect not available here; caller must pass it via offset calculation
+                    // We store a normalised offset in [0,1] and the caller multiplies by width.
+                    // NOTE: offset.x is stored as (-1..1) normalised; multiply by screen width in caller.
+                    p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
+                    // Slide-over semantics: keep the old image stable underneath
+                    // while the new image moves in above it.
+                    p.prev_alpha = 1.0;
+                }
+                TransitionStyle::Push => {
+                    let dir = if self.is_next { 1.0 } else { -1.0 };
+                    p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
+                    p.prev_offset = Vec2::new(-dir * ease_out, 0.0); // normalised
+                    p.prev_alpha = 1.0;
+                }
+                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain => {
+                    // Custom rendering; keep is_animating true, no standard params needed.
+                }
+                _ => {
+                    p.is_animating = false;
+                }
+            }
+        } else if self.transition_end_hold {
+            // The t=1.0 hold frame has been drawn. Only now do we mark the transition as
+            // settled and release the outgoing frame. Starting the post-transition timers here
+            // intentionally shifts them by one frame (~8-16ms) so background uploads cannot
+            // begin on the same frame that bridges animated and static rendering.
+            self.transition_end_hold = false;
+            self.transition_start = None;
+            self.transition_settled_at = Some(std::time::Instant::now());
+            self.prev_texture = None;
+            self.prev_hdr_image = None;
+            self.prev_transition_rect = None;
+        } else {
+            // Hold one frame at t=1.0 on the geometric path so the last animated
+            // frame matches the first static HDR draw (avoids end-of-flip flash). Alpha
+            // transitions end with the new image fully opaque; Slide/Push end with both
+            // offsets reset; PageFlip/Ripple/Curtain already render their final geometry via
+            // custom paths, so they only need `is_animating` and `t=1.0` preserved.
+            self.transition_end_hold = true;
+            p.is_animating = true;
+            p.t = 1.0;
+            match self.active_transition {
+                TransitionStyle::Fade => {
+                    p.alpha = 1.0;
+                    p.prev_alpha = 0.0;
+                }
+                TransitionStyle::ZoomFade => {
+                    p.alpha = 1.0;
+                    p.scale = 1.0;
+                    p.prev_alpha = 0.0;
+                    p.prev_scale = 1.0;
+                }
+                TransitionStyle::Slide => {
+                    p.offset = Vec2::ZERO;
+                    p.prev_offset = Vec2::ZERO;
+                    p.prev_alpha = 1.0;
+                }
+                TransitionStyle::Push => {
+                    p.offset = Vec2::ZERO;
+                    p.prev_offset = push_terminal_prev_offset(self.is_next);
+                    p.prev_alpha = 1.0;
+                }
+                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain => {}
+                _ => {
+                    p.is_animating = false;
                 }
             }
         }
@@ -427,6 +425,17 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_transition_params_idle_returns_default() {
+        let mut app = crate::app::image_management::tests::make_test_app();
+        assert!(app.transition_start.is_none());
+        let p = app.compute_transition_params();
+        assert!(!p.is_animating);
+        assert_eq!(p.alpha, 1.0);
+        assert_eq!(p.t, 0.0);
+        assert!(app.transition_start.is_none());
+    }
 
     #[test]
     fn push_terminal_prev_offset_keeps_outgoing_frame_off_canvas() {

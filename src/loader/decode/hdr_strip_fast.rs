@@ -107,11 +107,8 @@ pub(crate) fn try_fast_hdr_float_strip_from_path(
     mmap: Option<&Arc<memmap2::Mmap>>,
     max_side: u32,
 ) -> OptionalStripResult {
-    let ext = path
-        .extension()
-        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
+    let ext = super::path_ext_lower(path);
+    match &*ext {
         "exr" => try_hdr_float_strip_with_source(path, mmap, max_side, "EXR", open_exr_source),
         "hdr" | "pic" => try_hdr_float_strip_with_source(
             path,

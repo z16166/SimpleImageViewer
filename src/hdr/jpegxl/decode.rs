@@ -38,7 +38,7 @@ use std::time::Duration;
 #[cfg(feature = "jpegxl")]
 #[allow(dead_code)]
 pub(crate) fn load_jxl_hdr(path: &std::path::Path) -> Result<ImageData, String> {
-    let bytes =
+    let (bytes, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_bytes_to_image_data(
         bytes.as_ref(),
@@ -51,7 +51,7 @@ pub(crate) fn load_jxl_hdr(path: &std::path::Path) -> Result<ImageData, String> 
 #[cfg(feature = "jpegxl")]
 #[allow(dead_code)]
 pub(crate) fn decode_jxl_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let bytes =
+    let (bytes, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_hdr_bytes(bytes.as_ref())
 }
@@ -103,7 +103,7 @@ pub(crate) fn decode_jxl_hdr_with_target_capacity(
     path: &std::path::Path,
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    let bytes =
+    let (bytes, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to mmap JPEG XL: {err}"))?;
     decode_jxl_hdr_bytes_with_target_capacity(bytes.as_ref(), target_hdr_capacity)
 }

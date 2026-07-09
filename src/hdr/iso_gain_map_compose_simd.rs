@@ -49,16 +49,6 @@ const SRGB_OFFSET: f32 = 0.055;
 const SRGB_SCALE: f32 = 1.055;
 const SRGB_GAMMA: f32 = 2.4;
 
-/// SSE4.1 `_MM_SHUFFLE(z,y,x,w)` => out[0]=a[w], out[1]=a[x], out[2]=b[y], out[3]=b[z]
-#[cfg(target_arch = "x86_64")]
-const SHUF_SSE_ALL_LANE0: i32 = 0x00;
-#[cfg(target_arch = "x86_64")]
-const SHUF_SSE_ALL_LANE1: i32 = 0x55;
-#[cfg(target_arch = "x86_64")]
-const SHUF_SSE_ALL_LANE2: i32 = 0xAA;
-#[cfg(target_arch = "x86_64")]
-const SHUF_SSE_ALL_LANE3: i32 = 0xFF;
-
 thread_local! {
     static GAIN_ROW_SCRATCH: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
@@ -118,7 +108,15 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
         .for_each(|(y, row_out)| {
             GAIN_ROW_SCRATCH.with(|scratch| {
                 let mut gain_row = scratch.borrow_mut();
-                gain_row.resize(width as usize * 3, 0.0);
+                let needed = width as usize * 3;
+                if gain_row.capacity() < needed {
+                    let extra = needed - gain_row.len();
+                    gain_row.reserve(extra);
+                }
+                // SAFETY: capacity >= needed; contents are fully overwritten below.
+                unsafe {
+                    gain_row.set_len(needed);
+                }
                 precompute_gain_map_row_encoded(
                     gain,
                     deferred.gain_width,
@@ -201,7 +199,8 @@ fn compose_iso_pixel_scalar(
     constants: IsoComposeConstants,
 ) {
     let sdr_index = x as usize * 4;
-    let gain_index = x as usize * 3;
+    let width = sdr_row.len() / 4;
+    let xi = x as usize;
     let pixel = compose_gain_map_pixel(
         [
             sdr_row[sdr_index],
@@ -209,11 +208,7 @@ fn compose_iso_pixel_scalar(
             sdr_row[sdr_index + 2],
             sdr_row[sdr_index + 3],
         ],
-        [
-            gain_row[gain_index],
-            gain_row[gain_index + 1],
-            gain_row[gain_index + 2],
-        ],
+        [gain_row[xi], gain_row[width + xi], gain_row[2 * width + xi]],
         constants.metadata,
         constants.target_hdr_capacity,
     );
@@ -233,9 +228,10 @@ unsafe fn compose_iso_row_sse41(
     unsafe {
         while *x + SIMD_PIXELS_PER_STEP <= width {
             let base = *x as usize * 4;
-            let gain_base = *x as usize * 3;
+            let xi = *x as usize;
             let (enc_r, enc_g, enc_b) = load_sdr_rgb_encoded4_sse41(sdr_row.as_ptr().add(base));
-            let (gain_r, gain_g, gain_b) = load_gain_rgb4_sse41(gain_row.as_ptr(), gain_base);
+            let (gain_r, gain_g, gain_b) =
+                load_gain_rgb4_sse41(gain_row.as_ptr(), xi, width as usize);
             let (out_r, out_g, out_b) =
                 recover_hdr_rgb4_sse41(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
             store_rgba4_sse41(
@@ -263,9 +259,10 @@ unsafe fn compose_iso_row_neon(
     unsafe {
         while *x + SIMD_PIXELS_PER_STEP <= width {
             let base = *x as usize * 4;
-            let gain_base = *x as usize * 3;
+            let xi = *x as usize;
             let (enc_r, enc_g, enc_b) = load_sdr_rgb_encoded4_neon(sdr_row.as_ptr().add(base));
-            let (gain_r, gain_g, gain_b) = load_gain_rgb4_neon(gain_row.as_ptr(), gain_base);
+            let (gain_r, gain_g, gain_b) =
+                load_gain_rgb4_neon(gain_row.as_ptr(), xi, width as usize);
             let (out_r, out_g, out_b) =
                 recover_hdr_rgb4_neon(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
             store_rgba4_neon(
@@ -282,38 +279,35 @@ unsafe fn compose_iso_row_neon(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
+#[inline]
+unsafe fn u8x4_lanes_to_f32_sse41(packed: __m128i) -> __m128 {
+    _mm_cvtepi32_ps(_mm_cvtepu8_epi32(packed))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
 unsafe fn load_sdr_rgb_encoded4_sse41(ptr: *const u8) -> (__m128, __m128, __m128) {
     unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, 16);
+        // Interleaved RGBA8 x4 -> planar R/G/B f32 via pshufb + cvtepu8.
+        let rgba = _mm_loadu_si128(ptr as *const __m128i);
         let scale = _mm_set1_ps(1.0 / 255.0);
-        let r = _mm_mul_ps(
-            _mm_set_ps(
-                f32::from(bytes[12]),
-                f32::from(bytes[8]),
-                f32::from(bytes[4]),
-                f32::from(bytes[0]),
-            ),
-            scale,
+        let r_bytes = _mm_shuffle_epi8(
+            rgba,
+            _mm_setr_epi8(0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1),
         );
-        let g = _mm_mul_ps(
-            _mm_set_ps(
-                f32::from(bytes[13]),
-                f32::from(bytes[9]),
-                f32::from(bytes[5]),
-                f32::from(bytes[1]),
-            ),
-            scale,
+        let g_bytes = _mm_shuffle_epi8(
+            rgba,
+            _mm_setr_epi8(1, 5, 9, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1),
         );
-        let b = _mm_mul_ps(
-            _mm_set_ps(
-                f32::from(bytes[14]),
-                f32::from(bytes[10]),
-                f32::from(bytes[6]),
-                f32::from(bytes[2]),
-            ),
-            scale,
+        let b_bytes = _mm_shuffle_epi8(
+            rgba,
+            _mm_setr_epi8(2, 6, 10, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1),
         );
-        (r, g, b)
+        (
+            _mm_mul_ps(u8x4_lanes_to_f32_sse41(r_bytes), scale),
+            _mm_mul_ps(u8x4_lanes_to_f32_sse41(g_bytes), scale),
+            _mm_mul_ps(u8x4_lanes_to_f32_sse41(b_bytes), scale),
+        )
     }
 }
 
@@ -341,37 +335,18 @@ unsafe fn load_sdr_rgb_encoded4_neon(ptr: *const u8) -> (float32x4_t, float32x4_
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn load_gain_rgb4_sse41(gain_row: *const f32, base: usize) -> (__m128, __m128, __m128) {
+unsafe fn load_gain_rgb4_sse41(
+    gain_row: *const f32,
+    x: usize,
+    width: usize,
+) -> (__m128, __m128, __m128) {
     unsafe {
-        let src = gain_row.add(base);
-        let v0 = _mm_loadu_ps(src);
-        let v1 = _mm_loadu_ps(src.add(4));
-        let v2 = _mm_loadu_ps(src.add(8));
-
-        // v0=[r0,g0,b0,r1] v1=[g1,b1,r2,g2] v2=[b2,r3,g3,b3]
-        let r = _mm_blend_ps(
-            _mm_shuffle_ps(v0, v1, 0x2C),
-            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE1),
-            0b1000,
-        );
-        let g_partial = _mm_shuffle_ps(v0, v1, 0xC1);
-        let g = _mm_blend_ps(
-            _mm_shuffle_ps(g_partial, g_partial, 0xB8),
-            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE2),
-            0b1000,
-        );
-        let b_partial = _mm_shuffle_ps(v0, v1, 0x56);
-        let b_reordered = _mm_shuffle_ps(b_partial, b_partial, 0xB8);
-        let b = _mm_blend_ps(
-            _mm_blend_ps(
-                b_reordered,
-                _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE0),
-                0b0100,
-            ),
-            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE3),
-            0b1000,
-        );
-        (r, g, b)
+        // Planar: [R0..Rn | G0..Gn | B0..Bn]
+        (
+            _mm_loadu_ps(gain_row.add(x)),
+            _mm_loadu_ps(gain_row.add(width + x)),
+            _mm_loadu_ps(gain_row.add(2 * width + x)),
+        )
     }
 }
 
@@ -379,11 +354,15 @@ unsafe fn load_gain_rgb4_sse41(gain_row: *const f32, base: usize) -> (__m128, __
 #[target_feature(enable = "neon")]
 unsafe fn load_gain_rgb4_neon(
     gain_row: *const f32,
-    base: usize,
+    x: usize,
+    width: usize,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
-        let res = vld3q_f32(gain_row.add(base));
-        (res.0, res.1, res.2)
+        (
+            vld1q_f32(gain_row.add(x)),
+            vld1q_f32(gain_row.add(width + x)),
+            vld1q_f32(gain_row.add(2 * width + x)),
+        )
     }
 }
 
@@ -432,12 +411,67 @@ unsafe fn recover_hdr_rgb4_sse41(
 ) -> (__m128, __m128, __m128) {
     unsafe {
         let weight = _mm_set1_ps(constants.gain_weight);
+        let zero = _mm_setzero_ps();
         let lr = srgb_encoded_to_linear4_sse41(enc_r);
         let lg = srgb_encoded_to_linear4_sse41(enc_g);
         let lb = srgb_encoded_to_linear4_sse41(enc_b);
-        let out_r = recover_channel4_sse41(lr, gain_r, 0, constants, weight);
-        let out_g = recover_channel4_sse41(lg, gain_g, 1, constants, weight);
-        let out_b = recover_channel4_sse41(lb, gain_b, 2, constants, weight);
+
+        // Per-channel constants built once (not re-indexed via channel usize).
+        let inv_gamma_r = constants.inv_gamma[0];
+        let inv_gamma_g = constants.inv_gamma[1];
+        let inv_gamma_b = constants.inv_gamma[2];
+        let gain_min_r = _mm_set1_ps(constants.metadata.gain_map_min[0]);
+        let gain_min_g = _mm_set1_ps(constants.metadata.gain_map_min[1]);
+        let gain_min_b = _mm_set1_ps(constants.metadata.gain_map_min[2]);
+        let gain_span_r = _mm_set1_ps(constants.gain_span[0]);
+        let gain_span_g = _mm_set1_ps(constants.gain_span[1]);
+        let gain_span_b = _mm_set1_ps(constants.gain_span[2]);
+        let offset_sdr_r = _mm_set1_ps(constants.metadata.offset_sdr[0]);
+        let offset_sdr_g = _mm_set1_ps(constants.metadata.offset_sdr[1]);
+        let offset_sdr_b = _mm_set1_ps(constants.metadata.offset_sdr[2]);
+        let offset_hdr_r = _mm_set1_ps(constants.metadata.offset_hdr[0]);
+        let offset_hdr_g = _mm_set1_ps(constants.metadata.offset_hdr[1]);
+        let offset_hdr_b = _mm_set1_ps(constants.metadata.offset_hdr[2]);
+
+        let shaped_r = pow4_sse41(gain_r, inv_gamma_r);
+        let boost_r = exp2_4_sse41(_mm_add_ps(
+            gain_min_r,
+            _mm_mul_ps(_mm_mul_ps(gain_span_r, shaped_r), weight),
+        ));
+        let out_r = _mm_max_ps(
+            _mm_sub_ps(
+                _mm_mul_ps(_mm_add_ps(lr, offset_sdr_r), boost_r),
+                offset_hdr_r,
+            ),
+            zero,
+        );
+
+        let shaped_g = pow4_sse41(gain_g, inv_gamma_g);
+        let boost_g = exp2_4_sse41(_mm_add_ps(
+            gain_min_g,
+            _mm_mul_ps(_mm_mul_ps(gain_span_g, shaped_g), weight),
+        ));
+        let out_g = _mm_max_ps(
+            _mm_sub_ps(
+                _mm_mul_ps(_mm_add_ps(lg, offset_sdr_g), boost_g),
+                offset_hdr_g,
+            ),
+            zero,
+        );
+
+        let shaped_b = pow4_sse41(gain_b, inv_gamma_b);
+        let boost_b = exp2_4_sse41(_mm_add_ps(
+            gain_min_b,
+            _mm_mul_ps(_mm_mul_ps(gain_span_b, shaped_b), weight),
+        ));
+        let out_b = _mm_max_ps(
+            _mm_sub_ps(
+                _mm_mul_ps(_mm_add_ps(lb, offset_sdr_b), boost_b),
+                offset_hdr_b,
+            ),
+            zero,
+        );
+
         (out_r, out_g, out_b)
     }
 }
@@ -455,77 +489,67 @@ unsafe fn recover_hdr_rgb4_neon(
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
         let weight = vdupq_n_f32(constants.gain_weight);
+        let zero = vdupq_n_f32(0.0);
         let lr = srgb_encoded_to_linear4_neon(enc_r);
         let lg = srgb_encoded_to_linear4_neon(enc_g);
         let lb = srgb_encoded_to_linear4_neon(enc_b);
-        let out_r = recover_channel4_neon(lr, gain_r, 0, constants, weight);
-        let out_g = recover_channel4_neon(lg, gain_g, 1, constants, weight);
-        let out_b = recover_channel4_neon(lb, gain_b, 2, constants, weight);
-        (out_r, out_g, out_b)
-    }
-}
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn recover_channel4_sse41(
-    linear_sdr: __m128,
-    gain: __m128,
-    channel: usize,
-    constants: IsoComposeConstants,
-    weight: __m128,
-) -> __m128 {
-    unsafe {
-        let shaped = pow4_sse41(gain, constants.inv_gamma[channel]);
-        let log_boost = _mm_add_ps(
-            _mm_set1_ps(constants.metadata.gain_map_min[channel]),
-            _mm_mul_ps(
-                _mm_mul_ps(_mm_set1_ps(constants.gain_span[channel]), shaped),
-                weight,
-            ),
-        );
-        let boost = exp2_4_sse41(log_boost);
-        let offset_sdr = _mm_set1_ps(constants.metadata.offset_sdr[channel]);
-        let offset_hdr = _mm_set1_ps(constants.metadata.offset_hdr[channel]);
-        let zero = _mm_setzero_ps();
-        _mm_max_ps(
-            _mm_sub_ps(
-                _mm_mul_ps(_mm_add_ps(linear_sdr, offset_sdr), boost),
-                offset_hdr,
-            ),
-            zero,
-        )
-    }
-}
+        let inv_gamma_r = constants.inv_gamma[0];
+        let inv_gamma_g = constants.inv_gamma[1];
+        let inv_gamma_b = constants.inv_gamma[2];
+        let gain_min_r = vdupq_n_f32(constants.metadata.gain_map_min[0]);
+        let gain_min_g = vdupq_n_f32(constants.metadata.gain_map_min[1]);
+        let gain_min_b = vdupq_n_f32(constants.metadata.gain_map_min[2]);
+        let gain_span_r = vdupq_n_f32(constants.gain_span[0]);
+        let gain_span_g = vdupq_n_f32(constants.gain_span[1]);
+        let gain_span_b = vdupq_n_f32(constants.gain_span[2]);
+        let offset_sdr_r = vdupq_n_f32(constants.metadata.offset_sdr[0]);
+        let offset_sdr_g = vdupq_n_f32(constants.metadata.offset_sdr[1]);
+        let offset_sdr_b = vdupq_n_f32(constants.metadata.offset_sdr[2]);
+        let offset_hdr_r = vdupq_n_f32(constants.metadata.offset_hdr[0]);
+        let offset_hdr_g = vdupq_n_f32(constants.metadata.offset_hdr[1]);
+        let offset_hdr_b = vdupq_n_f32(constants.metadata.offset_hdr[2]);
 
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn recover_channel4_neon(
-    linear_sdr: float32x4_t,
-    gain: float32x4_t,
-    channel: usize,
-    constants: IsoComposeConstants,
-    weight: float32x4_t,
-) -> float32x4_t {
-    unsafe {
-        let shaped = pow4_neon(gain, constants.inv_gamma[channel]);
-        let log_boost = vaddq_f32(
-            vdupq_n_f32(constants.metadata.gain_map_min[channel]),
-            vmulq_f32(
-                vmulq_f32(vdupq_n_f32(constants.gain_span[channel]), shaped),
-                weight,
-            ),
-        );
-        let boost = exp2_4_neon(log_boost);
-        let offset_sdr = vdupq_n_f32(constants.metadata.offset_sdr[channel]);
-        let offset_hdr = vdupq_n_f32(constants.metadata.offset_hdr[channel]);
-        let zero = vdupq_n_f32(0.0);
-        vmaxq_f32(
+        let shaped_r = pow4_neon(gain_r, inv_gamma_r);
+        let boost_r = exp2_4_neon(vaddq_f32(
+            gain_min_r,
+            vmulq_f32(vmulq_f32(gain_span_r, shaped_r), weight),
+        ));
+        let out_r = vmaxq_f32(
             vsubq_f32(
-                vmulq_f32(vaddq_f32(linear_sdr, offset_sdr), boost),
-                offset_hdr,
+                vmulq_f32(vaddq_f32(lr, offset_sdr_r), boost_r),
+                offset_hdr_r,
             ),
             zero,
-        )
+        );
+
+        let shaped_g = pow4_neon(gain_g, inv_gamma_g);
+        let boost_g = exp2_4_neon(vaddq_f32(
+            gain_min_g,
+            vmulq_f32(vmulq_f32(gain_span_g, shaped_g), weight),
+        ));
+        let out_g = vmaxq_f32(
+            vsubq_f32(
+                vmulq_f32(vaddq_f32(lg, offset_sdr_g), boost_g),
+                offset_hdr_g,
+            ),
+            zero,
+        );
+
+        let shaped_b = pow4_neon(gain_b, inv_gamma_b);
+        let boost_b = exp2_4_neon(vaddq_f32(
+            gain_min_b,
+            vmulq_f32(vmulq_f32(gain_span_b, shaped_b), weight),
+        ));
+        let out_b = vmaxq_f32(
+            vsubq_f32(
+                vmulq_f32(vaddq_f32(lb, offset_sdr_b), boost_b),
+                offset_hdr_b,
+            ),
+            zero,
+        );
+
+        (out_r, out_g, out_b)
     }
 }
 
@@ -533,17 +557,14 @@ unsafe fn recover_channel4_neon(
 #[target_feature(enable = "sse4.1")]
 unsafe fn store_rgba4_sse41(dst: *mut f32, sdr: *const u8, r: __m128, g: __m128, b: __m128) {
     unsafe {
+        // Planar R/G/B/A lanes -> interleaved RGBA f32 via transpose (required).
         let scale = _mm_set1_ps(1.0 / 255.0);
-        let bytes = std::slice::from_raw_parts(sdr, 16);
-        let mut a = _mm_mul_ps(
-            _mm_set_ps(
-                f32::from(bytes[15]),
-                f32::from(bytes[11]),
-                f32::from(bytes[7]),
-                f32::from(bytes[3]),
-            ),
-            scale,
+        let rgba = _mm_loadu_si128(sdr as *const __m128i);
+        let a_bytes = _mm_shuffle_epi8(
+            rgba,
+            _mm_setr_epi8(3, 7, 11, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1),
         );
+        let mut a = _mm_mul_ps(u8x4_lanes_to_f32_sse41(a_bytes), scale);
         let mut r = r;
         let mut g = g;
         let mut b = b;

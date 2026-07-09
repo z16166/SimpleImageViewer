@@ -215,6 +215,11 @@ fn gain_map_metadata_hash(metadata: GainMapMetadata) -> u64 {
     h ^ u64::from(metadata.backward_direction)
 }
 
+/// Content fingerprint for HDR float planes (preview bind-group / texture cache keys).
+pub(crate) fn sample_hash_f32_for_preview(values: &[f32]) -> u64 {
+    sample_hash_f32(values)
+}
+
 fn sample_hash_f32(values: &[f32]) -> u64 {
     if values.is_empty() {
         return 0;

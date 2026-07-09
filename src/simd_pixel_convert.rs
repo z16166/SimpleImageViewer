@@ -1331,7 +1331,19 @@ pub fn finalize_gray_linear_scratch_row_to_rgba8(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                finalize_gray_linear_scratch_row_to_rgba8_avx2(
+                    scratch_row,
+                    rgba_row,
+                    width,
+                    smin,
+                    inv_range,
+                    miniswhite,
+                    &mut x,
+                );
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 finalize_gray_linear_scratch_row_to_rgba8_sse41(
                     scratch_row,
@@ -1380,6 +1392,74 @@ pub fn finalize_gray_linear_scratch_row_to_rgba8(
     }
 }
 
+/// Expand 8 gray u8 samples to interleaved RGBA8 (gray, gray, gray, 255).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn store_gray_u8x8_as_rgba8_avx2(dst: *mut u8, g8: __m128i) {
+    unsafe {
+        let a8 = _mm_set1_epi8(-1);
+        let rg = _mm_unpacklo_epi8(g8, g8);
+        let ba = _mm_unpacklo_epi8(g8, a8);
+        let out = _mm256_set_m128i(_mm_unpackhi_epi16(rg, ba), _mm_unpacklo_epi16(rg, ba));
+        _mm256_storeu_si256(dst as *mut __m256i, out);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn finalize_gray_linear_scratch_row_to_rgba8_avx2(
+    scratch_row: &[f32],
+    rgba_row: &mut [u8],
+    width: usize,
+    smin: f64,
+    inv_range: f64,
+    miniswhite: bool,
+    x: &mut usize,
+) {
+    unsafe {
+        let smin_v = _mm256_set1_ps(smin as f32);
+        let inv_v = _mm256_set1_ps(inv_range as f32);
+        let zero = _mm256_setzero_ps();
+        let one = _mm256_set1_ps(1.0);
+        let scale = _mm256_set1_ps(255.0);
+        let half = _mm256_set1_ps(0.5);
+        let lut = LINEAR_TO_SRGB8_LUT.as_ptr();
+        while *x + F32S_PER_AVX2_STEP <= width {
+            let base = *x * 4;
+            // Stride-4 gray floats: indices 0,4,...,28 relative to base.
+            let v = _mm256_setr_ps(
+                scratch_row[base],
+                scratch_row[base + 4],
+                scratch_row[base + 8],
+                scratch_row[base + 12],
+                scratch_row[base + 16],
+                scratch_row[base + 20],
+                scratch_row[base + 24],
+                scratch_row[base + 28],
+            );
+            let linear = _mm256_min_ps(
+                _mm256_max_ps(_mm256_mul_ps(_mm256_sub_ps(v, smin_v), inv_v), zero),
+                one,
+            );
+            // Match scalar `(linear * 255.0).round()` for non-negative linear.
+            let idx = _mm256_cvttps_epi32(_mm256_add_ps(_mm256_mul_ps(linear, scale), half));
+            let mut indices = [0_i32; F32S_PER_AVX2_STEP];
+            _mm256_storeu_si256(indices.as_mut_ptr() as *mut __m256i, idx);
+            let mut gray = [0_u8; F32S_PER_AVX2_STEP];
+            for (i, &ix) in indices.iter().enumerate() {
+                gray[i] = *lut.add(ix.clamp(0, 255) as usize);
+            }
+            let mut g8 = _mm_loadl_epi64(gray.as_ptr() as *const __m128i);
+            if miniswhite {
+                g8 = _mm_xor_si128(g8, _mm_set1_epi8(-1));
+            }
+            store_gray_u8x8_as_rgba8_avx2(rgba_row.as_mut_ptr().add(base), g8);
+            *x += F32S_PER_AVX2_STEP;
+        }
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
@@ -1396,7 +1476,8 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
         let inv_v = _mm_set1_ps(inv_range as f32);
         let zero = _mm_setzero_ps();
         let one = _mm_set1_ps(1.0);
-        while *x + 4 <= width {
+        let a8 = _mm_set1_epi8(-1);
+        while *x + F32S_PER_SSE41_STEP <= width {
             let base = *x * 4;
             let v = _mm_set_ps(
                 scratch_row[base + 12],
@@ -1408,22 +1489,25 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
                 _mm_max_ps(_mm_mul_ps(_mm_sub_ps(v, smin_v), inv_v), zero),
                 one,
             );
-            let mut lanes = [0.0_f32; 4];
+            let mut lanes = [0.0_f32; F32S_PER_SSE41_STEP];
             _mm_storeu_ps(lanes.as_mut_ptr(), linear);
-            for (p, &linear) in lanes.iter().enumerate() {
-                let sample = linear_to_srgb8_index(linear);
-                let byte = if miniswhite {
+            let mut gray = [0_u8; F32S_PER_SSE41_STEP];
+            for (p, &lin) in lanes.iter().enumerate() {
+                let sample = linear_to_srgb8_index(lin);
+                gray[p] = if miniswhite {
                     255_u8.saturating_sub(sample)
                 } else {
                     sample
                 };
-                let o = (base + p * 4) as isize;
-                *rgba_row.as_mut_ptr().offset(o) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 1) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 2) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 3) = 255;
             }
-            *x += 4;
+            let g4 = _mm_cvtsi32_si128(i32::from_le_bytes(gray));
+            let rg = _mm_unpacklo_epi8(g4, g4);
+            let ba = _mm_unpacklo_epi8(g4, a8);
+            _mm_storeu_si128(
+                rgba_row.as_mut_ptr().add(base) as *mut __m128i,
+                _mm_unpacklo_epi16(rg, ba),
+            );
+            *x += F32S_PER_SSE41_STEP;
         }
     }
 }
@@ -1444,7 +1528,7 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_neon(
         let inv_v = vdupq_n_f32(inv_range as f32);
         let zero = vdupq_n_f32(0.0);
         let one = vdupq_n_f32(1.0);
-        while *x + 4 <= width {
+        while *x + F32S_PER_NEON_STEP <= width {
             let base = *x * 4;
             let v = vsetq_lane_f32(
                 scratch_row[base + 12],
@@ -1460,22 +1544,26 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_neon(
                 3,
             );
             let linear = vminq_f32(vmaxq_f32(vmulq_f32(vsubq_f32(v, smin_v), inv_v), zero), one);
-            let mut lanes = [0.0_f32; 4];
+            let mut lanes = [0.0_f32; F32S_PER_NEON_STEP];
             vst1q_f32(lanes.as_mut_ptr(), linear);
-            for (p, &linear) in lanes.iter().enumerate() {
-                let sample = linear_to_srgb8_index(linear);
-                let byte = if miniswhite {
+            let mut gray = [0_u8; 8];
+            for (p, &lin) in lanes.iter().enumerate() {
+                let sample = linear_to_srgb8_index(lin);
+                gray[p] = if miniswhite {
                     255_u8.saturating_sub(sample)
                 } else {
                     sample
                 };
-                let o = (base + p * 4) as isize;
-                *rgba_row.as_mut_ptr().offset(o) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 1) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 2) = byte;
-                *rgba_row.as_mut_ptr().offset(o + 3) = 255;
             }
-            *x += 4;
+            let g = vld1_u8(gray.as_ptr());
+            let gg = vzip_u8(g, g);
+            let ga = vzip_u8(g, vdup_n_u8(255));
+            let rgba = vzip_u16(vreinterpret_u16_u8(gg.0), vreinterpret_u16_u8(ga.0));
+            vst1q_u8(
+                rgba_row.as_mut_ptr().add(base),
+                vcombine_u8(vreinterpret_u8_u16(rgba.0), vreinterpret_u8_u16(rgba.1)),
+            );
+            *x += F32S_PER_NEON_STEP;
         }
     }
 }
@@ -1768,20 +1856,25 @@ mod tests {
 
     #[test]
     fn finalize_gray_linear_scratch_row_matches_scalar() {
-        for width in [1, 3, 4, 7, 8] {
-            let scratch: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.05) % 1.5).collect();
-            let mut simd_dst = vec![0_u8; width * 4];
-            let mut scalar_dst = vec![0_u8; width * 4];
-            finalize_gray_linear_scratch_row_to_rgba8(
-                &scratch,
-                &mut simd_dst,
-                width,
-                0.1,
-                1.2,
-                false,
-            );
-            finalize_gray_scalar(&scratch, &mut scalar_dst, width, 0.1, 1.2, false);
-            assert_eq!(simd_dst, scalar_dst, "width={width}");
+        for width in [1, 3, 4, 7, 8, 9, 16] {
+            for miniswhite in [false, true] {
+                let scratch: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.05) % 1.5).collect();
+                let mut simd_dst = vec![0_u8; width * 4];
+                let mut scalar_dst = vec![0_u8; width * 4];
+                finalize_gray_linear_scratch_row_to_rgba8(
+                    &scratch,
+                    &mut simd_dst,
+                    width,
+                    0.1,
+                    1.2,
+                    miniswhite,
+                );
+                finalize_gray_scalar(&scratch, &mut scalar_dst, width, 0.1, 1.2, miniswhite);
+                assert_eq!(
+                    simd_dst, scalar_dst,
+                    "width={width} miniswhite={miniswhite}"
+                );
+            }
         }
     }
 }

@@ -70,20 +70,42 @@ const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [-0.0196376, -0.0786507, 1.0982884],
 ];
 
+/// Must match `aces2065_1_linear_to_linear_srgb` / WGSL `aces2065_1_to_linear_srgb`.
+const ACES2065_1_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+    [2.5216, -1.1369, -0.3849],
+    [-0.2762, 1.3697, -0.0935],
+    [-0.0159, -0.1478, 1.1638],
+];
+
+/// Must match `xyz_to_linear_srgb` / WGSL `xyz_to_linear_srgb`.
+const XYZ_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+    [3.2404, -1.5371, -0.4985],
+    [-0.9692, 1.8760, 0.0415],
+    [0.0556, -0.2040, 1.0572],
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StripSimdPath {
     ReinhardPqRec2020,
     ReinhardPqDisplayP3,
     ReinhardPqLinearSrgb,
+    ReinhardPqAces,
+    ReinhardPqXyz,
     ReinhardHlgRec2020,
     ReinhardHlgDisplayP3,
     ReinhardHlgLinearSrgb,
+    ReinhardHlgAces,
+    ReinhardHlgXyz,
     ReinhardBt709Rec2020,
     ReinhardBt709DisplayP3,
     ReinhardBt709LinearSrgb,
+    ReinhardBt709Aces,
+    ReinhardBt709Xyz,
     ReinhardLinearRec2020,
     ReinhardLinearDisplayP3,
     ReinhardLinearLinearSrgb,
+    ReinhardLinearAces,
+    ReinhardLinearXyz,
     Iec61966SrgbLinearSrgb,
     Scalar,
 }
@@ -190,6 +212,8 @@ fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) ->
         (HdrTransferFunction::Pq, HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb) => {
             StripSimdPath::ReinhardPqLinearSrgb
         }
+        (HdrTransferFunction::Pq, HdrColorSpace::Aces2065_1) => StripSimdPath::ReinhardPqAces,
+        (HdrTransferFunction::Pq, HdrColorSpace::Xyz) => StripSimdPath::ReinhardPqXyz,
         (HdrTransferFunction::Hlg, HdrColorSpace::Rec2020Linear) => {
             StripSimdPath::ReinhardHlgRec2020
         }
@@ -199,6 +223,8 @@ fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) ->
         (HdrTransferFunction::Hlg, HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb) => {
             StripSimdPath::ReinhardHlgLinearSrgb
         }
+        (HdrTransferFunction::Hlg, HdrColorSpace::Aces2065_1) => StripSimdPath::ReinhardHlgAces,
+        (HdrTransferFunction::Hlg, HdrColorSpace::Xyz) => StripSimdPath::ReinhardHlgXyz,
         (HdrTransferFunction::Bt709, HdrColorSpace::Rec2020Linear) => {
             StripSimdPath::ReinhardBt709Rec2020
         }
@@ -208,6 +234,8 @@ fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) ->
         (HdrTransferFunction::Bt709, HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb) => {
             StripSimdPath::ReinhardBt709LinearSrgb
         }
+        (HdrTransferFunction::Bt709, HdrColorSpace::Aces2065_1) => StripSimdPath::ReinhardBt709Aces,
+        (HdrTransferFunction::Bt709, HdrColorSpace::Xyz) => StripSimdPath::ReinhardBt709Xyz,
         (HdrTransferFunction::Linear, HdrColorSpace::Rec2020Linear) => {
             StripSimdPath::ReinhardLinearRec2020
         }
@@ -217,6 +245,10 @@ fn classify_strip_simd_path(buffer: &HdrImageBuffer, tf: HdrTransferFunction) ->
         (HdrTransferFunction::Linear, HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb) => {
             StripSimdPath::ReinhardLinearLinearSrgb
         }
+        (HdrTransferFunction::Linear, HdrColorSpace::Aces2065_1) => {
+            StripSimdPath::ReinhardLinearAces
+        }
+        (HdrTransferFunction::Linear, HdrColorSpace::Xyz) => StripSimdPath::ReinhardLinearXyz,
         (HdrTransferFunction::Srgb, HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb) => {
             StripSimdPath::Scalar
         }
@@ -264,8 +296,9 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
             unsafe {
                 tone_map_strip_simd_sse41(src, dst, pixel_count, ctx, &mut offset);
             }
-            tone_map_strip_scalar_tail(src, dst, pixel_count, ctx, offset);
         }
+        // No SSE4.1 (or remaining 0-3 pixels): scalar tail from `offset`.
+        tone_map_strip_scalar_tail(src, dst, pixel_count, ctx, offset);
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -273,7 +306,6 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
             tone_map_strip_simd_neon(src, dst, pixel_count, ctx, &mut offset);
         }
         tone_map_strip_scalar_tail(src, dst, pixel_count, ctx, offset);
-        return;
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
@@ -317,16 +349,24 @@ fn transfer_for_path(path: StripSimdPath) -> HdrTransferFunction {
     match path {
         StripSimdPath::ReinhardPqRec2020
         | StripSimdPath::ReinhardPqDisplayP3
-        | StripSimdPath::ReinhardPqLinearSrgb => HdrTransferFunction::Pq,
+        | StripSimdPath::ReinhardPqLinearSrgb
+        | StripSimdPath::ReinhardPqAces
+        | StripSimdPath::ReinhardPqXyz => HdrTransferFunction::Pq,
         StripSimdPath::ReinhardHlgRec2020
         | StripSimdPath::ReinhardHlgDisplayP3
-        | StripSimdPath::ReinhardHlgLinearSrgb => HdrTransferFunction::Hlg,
+        | StripSimdPath::ReinhardHlgLinearSrgb
+        | StripSimdPath::ReinhardHlgAces
+        | StripSimdPath::ReinhardHlgXyz => HdrTransferFunction::Hlg,
         StripSimdPath::ReinhardBt709Rec2020
         | StripSimdPath::ReinhardBt709DisplayP3
-        | StripSimdPath::ReinhardBt709LinearSrgb => HdrTransferFunction::Bt709,
+        | StripSimdPath::ReinhardBt709LinearSrgb
+        | StripSimdPath::ReinhardBt709Aces
+        | StripSimdPath::ReinhardBt709Xyz => HdrTransferFunction::Bt709,
         StripSimdPath::ReinhardLinearRec2020
         | StripSimdPath::ReinhardLinearDisplayP3
         | StripSimdPath::ReinhardLinearLinearSrgb
+        | StripSimdPath::ReinhardLinearAces
+        | StripSimdPath::ReinhardLinearXyz
         | StripSimdPath::Iec61966SrgbLinearSrgb => HdrTransferFunction::Linear,
         StripSimdPath::Scalar => HdrTransferFunction::Unknown,
     }
@@ -342,6 +382,14 @@ fn apply_color_matrix_scalar(rgb: [f32; 3], path: StripSimdPath) -> [f32; 3] {
         | StripSimdPath::ReinhardHlgDisplayP3
         | StripSimdPath::ReinhardBt709DisplayP3
         | StripSimdPath::ReinhardLinearDisplayP3 => &DISPLAY_P3_TO_LINEAR_SRGB,
+        StripSimdPath::ReinhardPqAces
+        | StripSimdPath::ReinhardHlgAces
+        | StripSimdPath::ReinhardBt709Aces
+        | StripSimdPath::ReinhardLinearAces => &ACES2065_1_TO_LINEAR_SRGB,
+        StripSimdPath::ReinhardPqXyz
+        | StripSimdPath::ReinhardHlgXyz
+        | StripSimdPath::ReinhardBt709Xyz
+        | StripSimdPath::ReinhardLinearXyz => &XYZ_TO_LINEAR_SRGB,
         _ => return rgb,
     };
     [
@@ -437,21 +485,27 @@ unsafe fn decode_transfer4_sse41(
         match ctx.path {
             StripSimdPath::ReinhardPqRec2020
             | StripSimdPath::ReinhardPqDisplayP3
-            | StripSimdPath::ReinhardPqLinearSrgb => (
+            | StripSimdPath::ReinhardPqLinearSrgb
+            | StripSimdPath::ReinhardPqAces
+            | StripSimdPath::ReinhardPqXyz => (
                 pq_to_display_linear4_sse41(r, ctx.sdr_white_nits),
                 pq_to_display_linear4_sse41(g, ctx.sdr_white_nits),
                 pq_to_display_linear4_sse41(b, ctx.sdr_white_nits),
             ),
             StripSimdPath::ReinhardHlgRec2020
             | StripSimdPath::ReinhardHlgDisplayP3
-            | StripSimdPath::ReinhardHlgLinearSrgb => (
+            | StripSimdPath::ReinhardHlgLinearSrgb
+            | StripSimdPath::ReinhardHlgAces
+            | StripSimdPath::ReinhardHlgXyz => (
                 hlg_to_scene_linear4_sse41(r),
                 hlg_to_scene_linear4_sse41(g),
                 hlg_to_scene_linear4_sse41(b),
             ),
             StripSimdPath::ReinhardBt709Rec2020
             | StripSimdPath::ReinhardBt709DisplayP3
-            | StripSimdPath::ReinhardBt709LinearSrgb => (
+            | StripSimdPath::ReinhardBt709LinearSrgb
+            | StripSimdPath::ReinhardBt709Aces
+            | StripSimdPath::ReinhardBt709Xyz => (
                 bt709_to_linear4_sse41(r),
                 bt709_to_linear4_sse41(g),
                 bt709_to_linear4_sse41(b),
@@ -459,6 +513,8 @@ unsafe fn decode_transfer4_sse41(
             StripSimdPath::ReinhardLinearRec2020
             | StripSimdPath::ReinhardLinearDisplayP3
             | StripSimdPath::ReinhardLinearLinearSrgb
+            | StripSimdPath::ReinhardLinearAces
+            | StripSimdPath::ReinhardLinearXyz
             | StripSimdPath::Iec61966SrgbLinearSrgb => (r, g, b),
             StripSimdPath::Scalar => (r, g, b),
         }
@@ -477,21 +533,27 @@ unsafe fn decode_transfer4_neon(
         match ctx.path {
             StripSimdPath::ReinhardPqRec2020
             | StripSimdPath::ReinhardPqDisplayP3
-            | StripSimdPath::ReinhardPqLinearSrgb => (
+            | StripSimdPath::ReinhardPqLinearSrgb
+            | StripSimdPath::ReinhardPqAces
+            | StripSimdPath::ReinhardPqXyz => (
                 pq_to_display_linear4_neon(r, ctx.sdr_white_nits),
                 pq_to_display_linear4_neon(g, ctx.sdr_white_nits),
                 pq_to_display_linear4_neon(b, ctx.sdr_white_nits),
             ),
             StripSimdPath::ReinhardHlgRec2020
             | StripSimdPath::ReinhardHlgDisplayP3
-            | StripSimdPath::ReinhardHlgLinearSrgb => (
+            | StripSimdPath::ReinhardHlgLinearSrgb
+            | StripSimdPath::ReinhardHlgAces
+            | StripSimdPath::ReinhardHlgXyz => (
                 hlg_to_scene_linear4_neon(r),
                 hlg_to_scene_linear4_neon(g),
                 hlg_to_scene_linear4_neon(b),
             ),
             StripSimdPath::ReinhardBt709Rec2020
             | StripSimdPath::ReinhardBt709DisplayP3
-            | StripSimdPath::ReinhardBt709LinearSrgb => (
+            | StripSimdPath::ReinhardBt709LinearSrgb
+            | StripSimdPath::ReinhardBt709Aces
+            | StripSimdPath::ReinhardBt709Xyz => (
                 bt709_to_linear4_neon(r),
                 bt709_to_linear4_neon(g),
                 bt709_to_linear4_neon(b),
@@ -499,6 +561,8 @@ unsafe fn decode_transfer4_neon(
             StripSimdPath::ReinhardLinearRec2020
             | StripSimdPath::ReinhardLinearDisplayP3
             | StripSimdPath::ReinhardLinearLinearSrgb
+            | StripSimdPath::ReinhardLinearAces
+            | StripSimdPath::ReinhardLinearXyz
             | StripSimdPath::Iec61966SrgbLinearSrgb => (r, g, b),
             StripSimdPath::Scalar => (r, g, b),
         }
@@ -527,6 +591,16 @@ unsafe fn apply_color_matrix4_sse41(
             | StripSimdPath::ReinhardLinearDisplayP3 => {
                 apply_matrix4_sse41(r, g, b, &DISPLAY_P3_TO_LINEAR_SRGB)
             }
+            StripSimdPath::ReinhardPqAces
+            | StripSimdPath::ReinhardHlgAces
+            | StripSimdPath::ReinhardBt709Aces
+            | StripSimdPath::ReinhardLinearAces => {
+                apply_matrix4_sse41(r, g, b, &ACES2065_1_TO_LINEAR_SRGB)
+            }
+            StripSimdPath::ReinhardPqXyz
+            | StripSimdPath::ReinhardHlgXyz
+            | StripSimdPath::ReinhardBt709Xyz
+            | StripSimdPath::ReinhardLinearXyz => apply_matrix4_sse41(r, g, b, &XYZ_TO_LINEAR_SRGB),
             _ => (r, g, b),
         }
     }
@@ -554,6 +628,16 @@ unsafe fn apply_color_matrix4_neon(
             | StripSimdPath::ReinhardLinearDisplayP3 => {
                 apply_matrix4_neon(r, g, b, &DISPLAY_P3_TO_LINEAR_SRGB)
             }
+            StripSimdPath::ReinhardPqAces
+            | StripSimdPath::ReinhardHlgAces
+            | StripSimdPath::ReinhardBt709Aces
+            | StripSimdPath::ReinhardLinearAces => {
+                apply_matrix4_neon(r, g, b, &ACES2065_1_TO_LINEAR_SRGB)
+            }
+            StripSimdPath::ReinhardPqXyz
+            | StripSimdPath::ReinhardHlgXyz
+            | StripSimdPath::ReinhardBt709Xyz
+            | StripSimdPath::ReinhardLinearXyz => apply_matrix4_neon(r, g, b, &XYZ_TO_LINEAR_SRGB),
             _ => (r, g, b),
         }
     }
@@ -1069,6 +1153,44 @@ mod tests {
             HdrColorSpace::Rec2020Linear,
             pixels,
         );
+        let tone = HdrToneMapSettings {
+            max_display_nits: DEFAULT_SDR_WHITE_NITS,
+            ..HdrToneMapSettings::default()
+        };
+        assert_strip_simd_matches_scalar(&buffer, &tone);
+    }
+
+    #[test]
+    fn strip_simd_linear_aces_matches_scalar() {
+        let pixels: Vec<f32> = (0..48 * 32)
+            .flat_map(|i| {
+                let v = ((i % 97) as f32) / 96.0;
+                [v * 0.8, v * 0.6, v * 0.4, 1.0]
+            })
+            .collect();
+        let buffer = make_buffer(
+            48,
+            32,
+            HdrTransferFunction::Linear,
+            HdrColorSpace::Aces2065_1,
+            pixels,
+        );
+        let tone = HdrToneMapSettings {
+            max_display_nits: DEFAULT_SDR_WHITE_NITS,
+            ..HdrToneMapSettings::default()
+        };
+        assert_strip_simd_matches_scalar(&buffer, &tone);
+    }
+
+    #[test]
+    fn strip_simd_pq_xyz_matches_scalar() {
+        let pixels: Vec<f32> = (0..40 * 24)
+            .flat_map(|i| {
+                let t = (i as f32) / 960.0;
+                [0.3 + t * 0.2, 0.25 + t * 0.1, 0.2, 1.0]
+            })
+            .collect();
+        let buffer = make_buffer(40, 24, HdrTransferFunction::Pq, HdrColorSpace::Xyz, pixels);
         let tone = HdrToneMapSettings {
             max_display_nits: DEFAULT_SDR_WHITE_NITS,
             ..HdrToneMapSettings::default()

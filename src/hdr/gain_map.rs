@@ -576,6 +576,7 @@ fn bilinear_rgb_taps_encoded(
 
 /// Bilinear upsample one gain-map row to primary width (encoded 0-1, not BT.709-linear yet).
 ///
+/// Output is planar `[R0..Rn, G0..Gn, B0..Bn]` for SIMD channel loads.
 /// **Keep in sync** with
 /// [`sample_gain_map_row_nonlinear`](crate::hdr::heif_apple_gain_map_compose_simd::sample_gain_map_row_nonlinear).
 pub(crate) fn precompute_gain_map_row_encoded(
@@ -622,8 +623,12 @@ pub(crate) fn precompute_gain_map_row_encoded(
         }
 
         let sampled = bilinear_rgb_taps_encoded(c00, c10, c01, c11, tx, ty);
-        let base = x as usize * 3;
-        out[base..base + 3].copy_from_slice(&sampled);
+        // Planar layout: [R0..Rn, G0..Gn, B0..Bn] for SIMD channel loads.
+        let xi = x as usize;
+        let w = width as usize;
+        out[xi] = sampled[0];
+        out[w + xi] = sampled[1];
+        out[2 * w + xi] = sampled[2];
     }
 }
 

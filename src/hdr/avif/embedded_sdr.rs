@@ -80,7 +80,7 @@ pub(crate) fn load_avif_embedded_sdr_master(path: &Path) -> Result<ImageData, St
     #[cfg(feature = "preload-debug")]
     let total_start = std::time::Instant::now();
 
-    let mmap =
+    let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
     let image = read_avif_decoder_image(&mmap[..])?;
     let image_data = try_avif_embedded_sdr_from_decoded_image(&image, &mmap[..], path)?;

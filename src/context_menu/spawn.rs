@@ -23,11 +23,11 @@ impl ContextMenuCommand {
     pub fn spawn_for_image(&self, image_path: &Path) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
-            return self.spawn_for_image_windows(image_path);
+            self.spawn_for_image_windows(image_path)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            return self.spawn_for_image_unix(image_path);
+            self.spawn_for_image_unix(image_path)
         }
     }
 
@@ -114,7 +114,7 @@ fn shell_execute(file: &str, parameters: Option<&str>) -> Result<(), String> {
 
     let file_w = to_wide(file);
     let verb_w = to_wide("open");
-    let params_w = parameters.map(|value| to_wide(value));
+    let params_w = parameters.map(to_wide);
 
     let result = unsafe {
         ShellExecuteW(

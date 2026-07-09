@@ -43,6 +43,10 @@ pub(crate) const MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC: usize = 1;
 /// here instead of blocking `prepare()`; the cap keeps UI logic responsive on degraded backends.
 pub(crate) const MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC: usize = 2;
 
+/// GPU RAW demosaic compute encodes submitted per logic tick (main-thread encode+submit).
+/// Cap keeps `prepare()` free of 50-300ms demosaic bake while still making forward progress.
+pub(crate) const MAX_HDR_RAW_DEMOSAIC_ENCODES_PER_LOGIC: usize = 1;
+
 #[derive(Default)]
 struct HdrPendingWorkInflight {
     plane_uploads: HashSet<HdrImageKey>,
@@ -51,6 +55,7 @@ struct HdrPendingWorkInflight {
     iso_image_compose: HashSet<(HdrImageKey, u32)>,
     apple_image_compose: HashSet<(HdrImageKey, u32)>,
     iso_tile_compose: HashSet<(HdrTileKey, u32)>,
+    raw_demosaic: HashSet<HdrImageKey>,
 }
 
 pub(crate) struct HdrPendingPlaneUploadRequest {
@@ -142,6 +147,13 @@ pub(crate) struct HdrPendingIsoTileComposeRequest {
     pub target_hdr_capacity: f32,
 }
 
+pub(crate) struct HdrPendingRawDemosaicRequest {
+    pub key: HdrImageKey,
+    pub target_format: wgpu::TextureFormat,
+    pub image: Arc<HdrImageBuffer>,
+    pub method: crate::settings::RawDemosaicMethod,
+}
+
 pub(crate) enum HdrCompletedComposeWrite {
     IsoImage {
         key: HdrImageKey,
@@ -201,6 +213,7 @@ pub(crate) struct HdrPendingWorkQueues {
     pub(crate) iso_image_compose_requests: Mutex<Vec<HdrPendingIsoImageComposeRequest>>,
     pub(crate) apple_image_compose_requests: Mutex<Vec<HdrPendingAppleImageComposeRequest>>,
     pub(crate) iso_tile_compose_requests: Mutex<Vec<HdrPendingIsoTileComposeRequest>>,
+    pub(crate) raw_demosaic_requests: Mutex<Vec<HdrPendingRawDemosaicRequest>>,
     pub(crate) completed_compose_writes: Mutex<Vec<HdrCompletedComposeWrite>>,
     pub(crate) completed_compose_failures: Mutex<Vec<HdrCompletedComposeFailure>>,
 }
@@ -221,6 +234,7 @@ impl HdrPendingWorkQueues {
             iso_image_compose_requests: Mutex::new(Vec::new()),
             apple_image_compose_requests: Mutex::new(Vec::new()),
             iso_tile_compose_requests: Mutex::new(Vec::new()),
+            raw_demosaic_requests: Mutex::new(Vec::new()),
             completed_compose_writes: Mutex::new(Vec::new()),
             completed_compose_failures: Mutex::new(Vec::new()),
         })
@@ -376,6 +390,17 @@ impl HdrPendingWorkQueues {
         true
     }
 
+    pub(crate) fn try_queue_raw_demosaic(&self, request: HdrPendingRawDemosaicRequest) -> bool {
+        let mut inflight = self.inflight.lock();
+        if inflight.raw_demosaic.contains(&request.key) {
+            return false;
+        }
+        inflight.raw_demosaic.insert(request.key);
+        self.raw_demosaic_requests.lock().push(request);
+        self.bump_active_work(1);
+        true
+    }
+
     pub(crate) fn clear_plane_upload_inflight(&self, key: HdrImageKey) {
         if self.inflight.lock().plane_uploads.remove(&key) {
             self.note_work_finished(1);
@@ -444,6 +469,12 @@ impl HdrPendingWorkQueues {
             .iso_tile_compose
             .remove(&(tile_key, target_capacity_bits))
         {
+            self.note_work_finished(1);
+        }
+    }
+
+    pub(crate) fn clear_raw_demosaic_inflight(&self, key: HdrImageKey) {
+        if self.inflight.lock().raw_demosaic.remove(&key) {
             self.note_work_finished(1);
         }
     }

@@ -163,9 +163,11 @@ impl eframe::App for ImageViewerApp {
         if pass.is_root() {
             self.refresh_preload_memory_plan();
         }
-        if pass.is_root() && self.tick_raw_gpu_demosaic_completion(ctx, Some(frame)) {
-            ctx.request_repaint();
-            self.wake_root_for_logic();
+        // Drain/apply already request+wake when needed. Do not stack another
+        // immediate RepaintNow here -- logic_shared / logic_root_only keep the
+        // loop alive while raw_async_work_needs_repaint_wake() is set (#38/#41).
+        if pass.is_root() {
+            let _ = self.tick_raw_gpu_demosaic_completion(ctx, Some(frame));
         }
         if pass.is_root() && self.process_hdr_pending_work(ctx, frame) {
             ctx.request_repaint();

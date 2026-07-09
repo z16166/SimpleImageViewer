@@ -86,9 +86,22 @@ pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -100.0;
 /// Number of idle seconds before the Music HUD auto-hides.
 pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
 
-/// Minimum seconds between Next/Prev from arrow hotkeys. Key auto-repeat otherwise
-/// enqueues unbounded decode work and large `LoaderOutput` payloads in the channel.
-/// ~5 navigations per second is already extreme for manual input; matches wheel debounce.
+/// Soft cap on tracked short-lived background threads (`BackgroundThreadJoiner`).
+/// Beyond this, new work is run on the rayon pool instead of spawning more OS threads.
+pub const BACKGROUND_THREAD_SOFT_LIMIT: usize = 64;
+
+/// Low-frequency wake interval while music is playing (track name / HUD idle hide).
+pub const MUSIC_PLAYING_REPAINT_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
+/// Background wake interval while the window is minimized / hidden to tray.
+pub const MINIMIZED_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Minimum seconds between Next/Prev from arrow hotkeys when no transition is active.
+/// Key auto-repeat otherwise enqueues unbounded decode work and large `LoaderOutput`
+/// payloads in the channel. ~5 navigations per second is already extreme for manual
+/// input; matches wheel debounce. While a navigation transition (or pending start) is
+/// in flight, Next/Prev are blocked until it settles -- see `keyboard_nav_allowed`.
 pub const KEYBOARD_NAV_MIN_INTERVAL_SECS: f64 = 0.2;
 
 /// Minimum interval between background YAML writes from the async saver threads.

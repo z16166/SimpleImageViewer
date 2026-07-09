@@ -62,7 +62,7 @@ const CAMERA_MODEL_RAW_KEYWORDS: &[&str] = &["dcs", "phase one", "hasselblad"];
 
 /// Returns true when IFD0 looks like camera RAW so we should try LibRaw before libtiff.
 pub(crate) fn tiff_may_be_camera_raw(path: &Path) -> bool {
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     tiff_may_be_camera_raw_bytes(mmap.as_ref())

@@ -169,7 +169,7 @@ impl ImageViewerApp {
             self.pending_open_directory = false;
 
             self.last_minimized = true;
-            ctx.request_repaint_after(Duration::from_millis(500));
+            ctx.request_repaint_after(crate::constants::MINIMIZED_REPAINT_INTERVAL);
             return;
         }
 
@@ -300,11 +300,21 @@ impl ImageViewerApp {
                     .unwrap_or(Duration::from_millis(DEFAULT_ANIMATION_DELAY_MS as u64)),
             );
         } else if is_music_playing {
-            // Music only needs low-frequency polling for track-name updates (~2 fps)
-            ctx.request_repaint_after(Duration::from_millis(500));
-        } else {
-            ctx.request_repaint_after(Duration::from_millis(100));
+            // Music HUD idle-hide / track-name updates: low-frequency wake only.
+            // Do not poll at 100ms when idle -- event-driven input/IPC wakes the loop.
+            let hud_idle = Duration::from_secs(crate::constants::MUSIC_HUD_IDLE_SECONDS);
+            let since_activity = self.music_hud_last_activity.elapsed();
+            if since_activity < hud_idle {
+                // Wake once when the HUD should hide, or sooner for track-name polling.
+                let until_hide = hud_idle.saturating_sub(since_activity);
+                ctx.request_repaint_after(
+                    until_hide.min(crate::constants::MUSIC_PLAYING_REPAINT_INTERVAL),
+                );
+            } else {
+                ctx.request_repaint_after(crate::constants::MUSIC_PLAYING_REPAINT_INTERVAL);
+            }
         }
+        // Idle: no periodic request_repaint_after -- rely on input / channel wakes.
     }
 
     pub(super) fn logic_root_only(

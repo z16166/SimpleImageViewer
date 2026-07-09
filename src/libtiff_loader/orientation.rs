@@ -165,7 +165,7 @@ fn apply_orientation_rgba8_inner(
         2 => apply_orientation_flip_horizontal(pixels, w, h),
         3 => apply_orientation_rotate_180(pixels, w, h),
         4 => apply_orientation_flip_vertical(pixels, w, h),
-        5 | 6 | 7 | 8 => apply_orientation_rgba8_transpose(pixels, w, h, orientation),
+        5..=8 => apply_orientation_rgba8_transpose(pixels, w, h, orientation),
         _ => (w, h, pixels.to_vec()),
     }
 }

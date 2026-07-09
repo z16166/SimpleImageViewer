@@ -90,7 +90,7 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
 }
 
 fn view(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg> {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     let msgs = view_card(app, ui, &palette);
     view_font_error_label(app, ui);
     msgs

@@ -33,7 +33,8 @@ pub(super) fn draw_library_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, open
 }
 
 fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: &mut bool) {
-    let palette = app.cached_palette.clone();
+    // ThemePalette is Copy; take by value once so closures can borrow app mutably.
+    let palette = app.cached_palette;
     settings_card(ui, &palette, t!("section.directory"), |ui| {
         let dir_full = app
             .current_browse_directory()
@@ -72,21 +73,19 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             });
         });
 
-        let scan_status = if app.scanning {
-            app.status_message.clone()
-        } else if app.current_browse_directory().is_some() {
-            t!("library.scan_idle").to_string()
-        } else {
-            t!("library.scan_no_directory").to_string()
-        };
         ui.horizontal(|ui| {
             ui.label(RichText::new(t!("library.scan_status")).color(palette.text_muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.horizontal(|ui| {
                     if app.scanning {
                         ui.spinner();
+                        // Borrow status text; avoid cloning the String every frame.
+                        ui.label(app.status_message.as_str());
+                    } else if app.current_browse_directory().is_some() {
+                        ui.label(t!("library.scan_idle").as_ref());
+                    } else {
+                        ui.label(t!("library.scan_no_directory").as_ref());
                     }
-                    ui.label(scan_status);
                 });
             });
         });

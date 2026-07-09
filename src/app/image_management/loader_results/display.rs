@@ -269,11 +269,9 @@ impl ImageViewerApp {
         ctx: &egui::Context,
         frame: Option<&eframe::Frame>,
     ) {
-        if let Some(frame) = frame
-            && self.tick_raw_gpu_demosaic_completion(ctx, Some(frame))
-        {
-            ctx.request_repaint();
-            self.wake_root_for_logic();
+        // Drain/apply own their repaint wakes; avoid a second immediate request (#38/#41).
+        if let Some(frame) = frame {
+            let _ = self.tick_raw_gpu_demosaic_completion(ctx, Some(frame));
         }
         self.flush_deferred_sdr_upload_for_current(ctx);
         self.process_pending_animation_uploads(ctx);
@@ -316,6 +314,8 @@ impl ImageViewerApp {
         );
         let mut cleared_any = false;
         let mut applied_current = false;
+        // Current-index success already requests inside `apply_raw_gpu_demosaic_success`.
+        let mut current_success_requested = false;
         for notice in baked {
             let is_failure = notice.demosaic_ms == u32::MAX;
             let matching = self.indices_for_raw_demosaic_notice(&notice, is_failure);
@@ -348,11 +348,15 @@ impl ImageViewerApp {
                     }
                 } else {
                     self.apply_raw_gpu_demosaic_success(idx, Some(notice.demosaic_ms), ctx);
+                    if idx == self.current_index {
+                        current_success_requested = true;
+                    }
                 }
             }
         }
-        // Success path repaints via `apply_raw_gpu_demosaic_success`; failure cleanup must too.
-        if cleared_any && !applied_current {
+        // One wake for failure / non-current work. Callers must not stack another
+        // immediate request_repaint on top of current-index success (see #38/#41).
+        if cleared_any && !current_success_requested {
             ctx.request_repaint();
             self.wake_root_for_logic();
         }

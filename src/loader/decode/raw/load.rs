@@ -59,7 +59,7 @@ pub(crate) fn open_raw_processor_with_preview(
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
     let opened_from_bytes = if let Some(bytes) = file_bytes {
         processor.open_buffer(bytes).is_ok()
-    } else if let Ok(mmap) = crate::mmap_util::map_file(path) {
+    } else if let Ok((mmap, _)) = crate::mmap_util::map_file(path) {
         processor.open_buffer_mmap(mmap).is_ok()
     } else {
         false
@@ -79,11 +79,21 @@ pub(crate) fn open_raw_processor_with_preview(
         5 => 8,
         6 => 6,
         7 => 7,
-        _ => crate::mmap_util::map_file(path)
-            .map(|mmap| {
-                crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path))
-            })
-            .unwrap_or(1),
+        // Prefer already-mapped / caller-supplied bytes so unknown flip does not mmap again.
+        _ => {
+            if let Some(bytes) = processor.open_backing_bytes().or(file_bytes) {
+                crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path))
+            } else {
+                crate::mmap_util::map_file(path)
+                    .map(|(mmap, _)| {
+                        crate::metadata_utils::get_exif_orientation_from_bytes(
+                            &mmap[..],
+                            Some(path),
+                        )
+                    })
+                    .unwrap_or(1)
+            }
+        }
     };
 
     let final_lr_flip = match final_orientation {

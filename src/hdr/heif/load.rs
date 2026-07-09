@@ -270,7 +270,7 @@ pub(crate) fn load_heif_embedded_sdr_primary(
     path: &Path,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    let mmap =
+    let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
     load_heif_embedded_sdr_primary_from_bytes(&mmap[..], diag)
 }
@@ -305,7 +305,7 @@ pub(crate) fn load_heif_hdr(
     tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    let mmap =
+    let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
     load_heif_hdr_from_bytes(&mmap[..], path, hdr_target_capacity, tone_map, diag)
 }
@@ -317,7 +317,7 @@ pub(crate) fn decode_heif_hdr(
     hdr_target_capacity: f32,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<HdrImageBuffer, String> {
-    let mmap =
+    let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
     let label = path
         .file_stem()

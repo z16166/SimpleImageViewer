@@ -27,7 +27,7 @@ use super::channels::validate_tile_bounds;
 use super::types::OpenExrCorePartInfo;
 
 fn imf_mmap_for_path(path: &Path) -> Result<Mmap, String> {
-    crate::mmap_util::map_file(path)
+    crate::mmap_util::map_file(path).map(|(mmap, _)| mmap)
 }
 
 fn imf_debug_name_cstr(path: &Path) -> Option<CString> {

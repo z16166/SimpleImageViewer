@@ -27,6 +27,7 @@ const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 72.0;
 /// Relies on egui 0.34 `Response` semantics (via eframe 0.34):
 /// - `drag_stopped()`: true on the frame a drag gesture ends
 /// - `changed() && !dragged()`: keyboard / click edits that never enter a drag
+///
 /// If a future egui upgrade changes these flags, revisit save timing here and in
 /// `appearance.rs` / `music.rs` which use the same pattern.
 fn slider_or_drag_committed(resp: &egui::Response) -> bool {
@@ -34,7 +35,7 @@ fn slider_or_drag_committed(resp: &egui::Response) -> bool {
 }
 
 fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card(ui, &palette, t!("section.slideshow"), |ui| {
         let old_auto_switch = app.settings.auto_switch;
         if themed_labeled_toggle(
@@ -84,7 +85,7 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 }
 
 fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card(ui, &palette, t!("section.hdr"), |ui| {
         if themed_labeled_toggle(
             ui,
@@ -203,7 +204,7 @@ pub(super) fn draw_slideshow_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 }
 
 fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card(ui, &palette, t!("section.transitions"), |ui| {
         let bp = ui.spacing().button_padding;
         let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
@@ -291,9 +292,7 @@ fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     ui.end_row();
                 }
             });
-        if old_style != app.settings.transition_style {
-            app.queue_save();
-        } else if transition_ms_committed {
+        if old_style != app.settings.transition_style || transition_ms_committed {
             app.queue_save();
         }
     });

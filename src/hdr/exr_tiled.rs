@@ -516,7 +516,7 @@ pub(crate) fn exr_dimensions_unvalidated_from_mmap(
 
 #[cfg(test)]
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     decode_deep_exr_image_from_mmap(path, mmap)
 }
 

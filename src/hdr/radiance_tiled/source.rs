@@ -50,7 +50,7 @@ pub struct RadianceHdrTiledImageSource {
 
 impl RadianceHdrTiledImageSource {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        Self::open_from_mmap(path, Arc::new(crate::mmap_util::map_file(path)?))
+        Self::open_from_mmap(path, Arc::new(crate::mmap_util::map_file(path)?.0))
     }
 
     /// Open from caller-provided mmap (avoids a second file map per checklist #29).

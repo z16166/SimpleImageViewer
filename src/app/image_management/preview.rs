@@ -162,6 +162,9 @@ impl ImageViewerApp {
             if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined {
                 self.hq_tiled_preview_pending_indices.remove(&update.index);
             }
+            // Native HDR still tone-maps a SDR bootstrap for TileManager / texture_cache while
+            // HDR tiles arrive (`TiledHdrWithSdrPreviewFallback`). This is not a parallel SDR
+            // display pipeline -- see `HdrRenderOutputMode` docs / review-checklist #26.
             if crate::loader::output_mode_is_hdr(display.output_mode) {
                 match self.try_upload_tiled_sdr_from_hdr_cache(
                     update.index,

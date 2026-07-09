@@ -77,7 +77,7 @@ fn load_via_wic_inner(
             let mmap_source = existing_mmap.or_else(|| {
                 crate::mmap_util::map_file(path)
                     .ok()
-                    .map(std::sync::Arc::new)
+                    .map(|(m, _)| std::sync::Arc::new(m))
             });
             if let Some(m_arc) = mmap_source {
                 match factory.CreateStream() {
@@ -140,7 +140,7 @@ fn load_via_wic_inner(
                     && let Ok(stream) = factory.CreateStream()
                 {
                     // --- Mmap Path ---
-                    if let Ok(mmap) = crate::mmap_util::map_file(path) {
+                    if let Ok((mmap, _)) = crate::mmap_util::map_file(path) {
                         let m_arc = std::sync::Arc::new(mmap);
                         if stream.InitializeFromMemory(&m_arc[..]).is_ok()
                             && sd

@@ -61,6 +61,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) apple_compose_bind_groups: HashMap<u64, wgpu::BindGroup>,
 
     pub(super) bind_group: Option<wgpu::BindGroup>,
+    /// Last bytes written to `tone_map_buffer`; skip `write_buffer` when unchanged.
+    pub(super) last_tone_map_uniform: Option<ToneMapUniform>,
     pub(super) last_use: std::time::Instant,
     pub(super) keep_resident: bool,
     /// [`ImageViewerApp::current_device_id`] epoch when GPU resources were created.
@@ -286,6 +288,7 @@ impl HdrImageBinding {
             #[cfg(feature = "heif-native")]
             apple_compose_bind_groups: HashMap::new(),
             bind_group: None,
+            last_tone_map_uniform: None,
             last_use: std::time::Instant::now(),
             keep_resident: false,
             device_id,
@@ -326,6 +329,88 @@ impl HdrCallbackResources {
             binding.baked_raw_demosaic_key == Some(image_key)
                 && binding.baked_raw_demosaic_method == Some(method)
         })
+    }
+
+    pub(crate) fn mark_raw_demosaic_failed(&mut self, image_key: HdrImageKey) {
+        self.failed_raw_demosaic.insert(image_key);
+    }
+
+    /// Encode GPU RAW demosaic into an existing image binding and mark it baked.
+    ///
+    /// Returns `Ok(true)` when encoded, `Ok(false)` when the binding is not ready yet
+    /// (caller should retry), or `Err` when GPU demosaic cannot proceed.
+    pub(crate) fn encode_raw_demosaic_for_binding(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image_key: HdrImageKey,
+        method: crate::settings::RawDemosaicMethod,
+        source: &crate::hdr::types::RawGpuSource,
+    ) -> Result<bool, &'static str> {
+        if self.raw_demosaic_baked_for(image_key, method) {
+            return Ok(true);
+        }
+
+        let (
+            Some(green_layout),
+            Some(rgb_layout),
+            Some(green_pipeline),
+            Some(rgb_pipeline),
+            Some(uniform_buf),
+        ) = (
+            self.raw_demosaic_green_bind_group_layout.as_ref(),
+            self.raw_demosaic_rgb_bind_group_layout.as_ref(),
+            self.raw_demosaic_green_pipeline.as_ref(),
+            self.raw_demosaic_rgb_pipeline.as_ref(),
+            self.raw_demosaic_uniform_buffer.as_ref(),
+        )
+        else {
+            return Err("GPU RAW demosaic pipelines unavailable");
+        };
+
+        let Some(binding) = self.image_bindings.get(&image_key) else {
+            return Ok(false);
+        };
+        let (
+            Some(raw_pixels_view),
+            Some(green_plane_write_view),
+            Some(green_plane_read_view),
+            Some(output_view),
+        ) = (
+            binding.uploaded_raw_pixels_view.clone(),
+            binding.uploaded_raw_green_plane_write_view.clone(),
+            binding.uploaded_raw_green_plane_read_view.clone(),
+            binding.uploaded_display_storage_view.clone(),
+        )
+        else {
+            return Err("GPU RAW demosaic views missing");
+        };
+
+        let command = crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
+            crate::hdr::raw_demosaic_gpu::RawDemosaicComputePass {
+                device,
+                queue,
+                green_bind_group_layout: green_layout,
+                rgb_bind_group_layout: rgb_layout,
+                green_pipeline,
+                rgb_pipeline,
+                source,
+                raw_pixels_view: &raw_pixels_view,
+                green_plane_write_view: &green_plane_write_view,
+                green_plane_read_view: &green_plane_read_view,
+                output_view: &output_view,
+                uniform_buffer: uniform_buf,
+            },
+        );
+        queue.submit(std::iter::once(command));
+
+        if let Some(binding) = self.image_bindings.get_mut(&image_key) {
+            binding.baked_raw_demosaic_key = Some(image_key);
+            binding.baked_raw_demosaic_method = Some(method);
+            // Force bind-group rebuild so paint uses dummy gain after GPU compose.
+            binding.bind_group = None;
+        }
+        Ok(true)
     }
 
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
@@ -508,6 +593,9 @@ impl HdrCallbackResources {
             },
             Some(&mut *pool),
         );
+        if let Some(binding) = self.tile_bindings.binding_mut(item.tile_key) {
+            binding.last_tone_map_uniform = Some(uniform);
+        }
         true
     }
 

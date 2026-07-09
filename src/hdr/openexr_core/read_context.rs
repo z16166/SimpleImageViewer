@@ -66,7 +66,7 @@ unsafe impl Sync for OpenExrCoreReadContext {}
 impl OpenExrCoreReadContext {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         match crate::mmap_util::map_file(path) {
-            Ok(m) => Self::open_from_mmap(path, Arc::new(m)),
+            Ok((m, _)) => Self::open_from_mmap(path, Arc::new(m)),
             Err(map_err) => {
                 log::debug!(
                     "EXR mmap unavailable ({}); using file-handle reader for {}",

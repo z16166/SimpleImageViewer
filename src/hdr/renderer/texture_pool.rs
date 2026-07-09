@@ -97,19 +97,20 @@ pub(crate) struct GpuTexturePool {
 }
 
 impl GpuTexturePool {
-    pub(crate) fn acquire(
+    /// Try to reuse an idle texture under the caller's lock; returns `None` when a new
+    /// texture must be created outside the lock via [`acquire_from_shared_pool`].
+    pub(crate) fn try_take_idle(
         &mut self,
-        device: &wgpu::Device,
         desc: &wgpu::TextureDescriptor<'_>,
-    ) -> Arc<wgpu::Texture> {
+    ) -> Option<Arc<wgpu::Texture>> {
         let key = TexturePoolKey::from_descriptor(desc);
-        let texture = if let Some(texture) = self.take_idle_texture(&key) {
-            texture
-        } else {
-            Arc::new(device.create_texture(desc))
-        };
+        let texture = self.take_idle_texture(&key)?;
         self.issued.insert(Arc::as_ptr(&texture) as usize);
-        texture
+        Some(texture)
+    }
+
+    pub(crate) fn note_issued(&mut self, texture: &Arc<wgpu::Texture>) {
+        self.issued.insert(Arc::as_ptr(texture) as usize);
     }
 
     pub(crate) fn release(&mut self, texture: Arc<wgpu::Texture>) {
@@ -188,6 +189,20 @@ impl GpuTexturePool {
 }
 
 pub(crate) type SharedGpuTexturePool = Mutex<GpuTexturePool>;
+
+/// Acquire a pooled texture without holding the mutex across `device.create_texture`.
+pub(crate) fn acquire_from_shared_pool(
+    pool: &SharedGpuTexturePool,
+    device: &wgpu::Device,
+    desc: &wgpu::TextureDescriptor<'_>,
+) -> Arc<wgpu::Texture> {
+    if let Some(texture) = pool.lock().try_take_idle(desc) {
+        return texture;
+    }
+    let texture = Arc::new(device.create_texture(desc));
+    pool.lock().note_issued(&texture);
+    texture
+}
 
 #[cfg(test)]
 mod tests {

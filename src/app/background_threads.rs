@@ -22,7 +22,12 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
+use crate::constants::BACKGROUND_THREAD_SOFT_LIMIT;
+
 pub(crate) const BACKGROUND_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval while waiting for unfinished background threads during shutdown.
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) struct BackgroundThreadJoiner {
     handles: Mutex<VecDeque<JoinHandle<()>>>,
@@ -39,7 +44,21 @@ impl BackgroundThreadJoiner {
     where
         F: FnOnce() + Send + 'static,
     {
-        match std::thread::Builder::new().name(name.into()).spawn(f) {
+        let name = name.into();
+        let over_limit = {
+            let handles = self.handles.lock();
+            handles.len() >= BACKGROUND_THREAD_SOFT_LIMIT
+        };
+        if over_limit {
+            // Soft cap: avoid unbounded OS threads; fold into the shared rayon pool.
+            log::warn!(
+                "[BackgroundThreads] Soft limit ({BACKGROUND_THREAD_SOFT_LIMIT}) reached; \
+                 running `{name}` on rayon instead of a new OS thread"
+            );
+            rayon::spawn(f);
+            return true;
+        }
+        match std::thread::Builder::new().name(name).spawn(f) {
             Ok(handle) => {
                 self.handles.lock().push_back(handle);
                 true
@@ -66,7 +85,8 @@ impl BackgroundThreadJoiner {
         let deadline = Instant::now() + timeout;
         let mut joined = 0usize;
         while !handles.is_empty() {
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 let remaining = handles.len();
                 log::warn!(
                     "[BackgroundThreads] Join timed out after {:?}; detaching {remaining} of {total} thread(s)",
@@ -84,13 +104,25 @@ impl BackgroundThreadJoiner {
                 }
                 return;
             }
-            let handle = handles
-                .pop_front()
-                .expect("handles non-empty while join loop runs");
-            if handle.join().is_err() {
-                log::warn!("[BackgroundThreads] Background thread panicked on join");
+
+            // Only join finished threads so one stuck worker cannot block the rest
+            // of the shutdown budget (join itself has no timeout).
+            if let Some(idx) = handles.iter().position(|h| h.is_finished()) {
+                let handle = handles
+                    .remove(idx)
+                    .expect("index from position must be valid");
+                if handle.join().is_err() {
+                    log::warn!("[BackgroundThreads] Background thread panicked on join");
+                }
+                joined += 1;
+                continue;
             }
-            joined += 1;
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                continue;
+            }
+            std::thread::sleep(remaining.min(JOIN_POLL_INTERVAL));
         }
         log::debug!("[BackgroundThreads] join_all: joined {joined} background thread(s)");
     }

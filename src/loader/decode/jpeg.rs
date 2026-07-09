@@ -59,7 +59,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_jpeg_from_mapped(
         path,
         &mmap,
@@ -77,7 +77,7 @@ pub(crate) fn load_jpeg_primary_attempt(
 ) -> super::detect::PrimaryDecodeAttempt {
     use super::detect::PrimaryDecodeAttempt;
     match crate::mmap_util::map_file(path) {
-        Ok(mmap) => {
+        Ok((mmap, _)) => {
             let arc = Arc::new(mmap);
             let result = load_jpeg_from_mapped(
                 path,

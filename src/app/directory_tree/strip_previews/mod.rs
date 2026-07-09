@@ -214,7 +214,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_cold_attempted.insert(index);
     }
 
-    pub(super) fn release_strip_cold_awaiting_main_loader_if_resolved(&mut self, index: usize) {
+    pub(crate) fn release_strip_cold_awaiting_main_loader_if_resolved(&mut self, index: usize) {
         if !self
             .directory_tree_strip_cold_awaiting_main_loader
             .contains(&index)
@@ -236,14 +236,25 @@ impl ImageViewerApp {
                 .directory_tree_strip_pending_gpu_refined
                 .iter()
                 .any(|u| u.key.index == index);
-        let resolved = strip_handoff_inflight || self.hdr_image_cache.contains_key(&index);
+        let main_sdr_ready_without_strip_handoff = !strip_handoff_inflight
+            && !self.strip_main_loader_sdr_unreliable_for_strip(index)
+            && (self.deferred_sdr_uploads.contains_key(&index)
+                || self.texture_cache.contains(index));
+        let resolved = strip_handoff_inflight
+            || self.hdr_image_cache.contains_key(&index)
+            // Main already installed SDR but strip was LRU-evicted / never handed off:
+            // stop awaiting a re-install that will not happen so cold can self-decode.
+            || main_sdr_ready_without_strip_handoff;
         if resolved {
             self.directory_tree_strip_cold_awaiting_main_loader
                 .remove(&index);
             // Keep cold_attempted while handoff is still in flight so ensure_strip does not
             // respawn a duplicate cold job; clear once the strip cache actually has pixels.
+            // Also clear when releasing a dead await so LRU-evicted rows can cold-retry
+            // even without retained logical_sizes.
             if self.directory_tree_strip_cache.contains(index)
                 || self.hdr_image_cache.contains_key(&index)
+                || main_sdr_ready_without_strip_handoff
             {
                 self.directory_tree_strip_cold_attempted.remove(&index);
             }

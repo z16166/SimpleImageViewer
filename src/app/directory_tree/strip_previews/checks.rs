@@ -68,7 +68,7 @@ impl ImageViewerApp {
         let root_wake = self.root_redraw_wake_handle();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             let probe = (|| -> Option<Option<crate::hdr::avif::AvifGainMapStripProbe>> {
-                let mmap = crate::mmap_util::map_file(&path_buf).ok()?;
+                let (mmap, _) = crate::mmap_util::map_file(&path_buf).ok()?;
                 if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
                     return Some(None);
                 }
@@ -462,8 +462,42 @@ impl ImageViewerApp {
         if !can_share_with_main {
             return false;
         }
-        if self.strip_main_sdr_decode_available_or_in_flight(index) {
+        if self.strip_main_loader_decode_in_flight(index) {
             return true;
+        }
+        if self.strip_main_sdr_decode_available_or_in_flight(index) {
+            // Main already owns SDR pixels. Skip only while a strip handoff/sync path can
+            // still fill the cache. After strip LRU eviction the oversized main texture
+            // cannot sync directly and install will not re-run -- allow cold self-decode.
+            if self
+                .deferred_sdr_uploads
+                .get(&index)
+                .is_some_and(|decoded| !decoded.is_sdr_deferred_placeholder())
+            {
+                return true;
+            }
+            if self.strip_texture_cache_usable_for_direct_sync(index)
+                && !self.strip_needs_detached_decode_from_main_texture_cache(index)
+            {
+                return true;
+            }
+            if self.directory_tree_strip_cache.contains(index)
+                || self
+                    .directory_tree_strip_pending_main_handoff
+                    .contains_key(&index)
+                || self.directory_tree_strip_generate_inflight.contains(&index)
+                || self
+                    .directory_tree_strip_pending_gpu_initial
+                    .iter()
+                    .any(|u| u.key.index == index)
+                || self
+                    .directory_tree_strip_pending_gpu_refined
+                    .iter()
+                    .any(|u| u.key.index == index)
+            {
+                return true;
+            }
+            return false;
         }
         self.strip_prefetch_window_defers_to_main_loader(index)
     }
@@ -532,7 +566,7 @@ impl ImageViewerApp {
         true
     }
 
-    pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
+    pub(crate) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
         }

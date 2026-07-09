@@ -351,6 +351,13 @@ impl RawProcessor {
         unsafe { ffi::siv_libraw_get_flip(self.data) }
     }
 
+    /// Bytes kept alive for [`Self::open_buffer_mmap`] (LibRaw holds a pointer into them).
+    ///
+    /// [`Self::open_buffer`] and [`Self::open`] do not retain a backing slice here.
+    pub fn open_backing_bytes(&self) -> Option<&[u8]> {
+        self.open_backing.as_ref().map(RawOpenBacking::as_slice)
+    }
+
     pub fn set_user_flip(&mut self, flip: i32) {
         unsafe { ffi::siv_libraw_set_user_flip(self.data, flip) }
     }
@@ -1366,7 +1373,7 @@ pub fn probe_libraw_can_open_bytes(bytes: &[u8]) -> bool {
 }
 
 pub fn probe_libraw_can_open(path: &Path) -> bool {
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     probe_libraw_can_open_bytes(mmap.as_ref())
@@ -1424,7 +1431,7 @@ mod tests {
             return;
         }
 
-        let mmap = crate::mmap_util::map_file(path).expect("mmap");
+        let (mmap, _) = crate::mmap_util::map_file(path).expect("mmap");
         let mut processor = RawProcessor::new().expect("libraw init");
         processor
             .open_buffer_mmap(mmap)

@@ -28,11 +28,13 @@ use crate::hdr::renderer::{
     HdrCompletedTileUpload, HdrGpuUploadStage, HdrImageBinding, HdrPendingAppleImageComposeRequest,
     HdrPendingIsoImageComposeRequest, HdrPendingIsoTileComposeRequest,
     HdrPendingJpegTiledSourceUploadRequest, HdrPendingPlaneUploadRequest,
-    HdrPendingTileUploadRequest, MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC,
-    MAX_HDR_GPU_WRITES_PER_LOGIC, MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC,
-    MAX_HDR_PLANE_UPLOADS_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC, ensure_hdr_callback_resources,
-    hdr_callback_resources_readiness, pending_gpu_write_queue_full_err, upload_callback_tile,
-    upload_image_plane_with_sink, upload_jpeg_tiled_source_textures,
+    HdrPendingRawDemosaicRequest, HdrPendingTileUploadRequest,
+    MAX_HDR_CPU_COMPOSE_STARTS_PER_LOGIC, MAX_HDR_GPU_WRITES_PER_LOGIC,
+    MAX_HDR_JPEG_TILED_SOURCE_UPLOADS_PER_LOGIC, MAX_HDR_PLANE_UPLOADS_PER_LOGIC,
+    MAX_HDR_RAW_DEMOSAIC_ENCODES_PER_LOGIC, MAX_HDR_TILE_UPLOADS_PER_LOGIC,
+    RawGpuDemosaicBakedNotice, ensure_hdr_callback_resources, hdr_callback_resources_readiness,
+    pending_gpu_write_queue_full_err, upload_callback_tile, upload_image_plane_with_sink,
+    upload_jpeg_tiled_source_textures,
 };
 use crate::loader::REFINEMENT_POOL;
 use eframe::egui;
@@ -50,6 +52,7 @@ impl ImageViewerApp {
         self.start_pending_hdr_plane_upload_jobs(frame);
         self.start_pending_hdr_tile_upload_jobs(frame);
         self.start_pending_hdr_jpeg_tiled_source_upload_jobs(frame);
+        self.encode_pending_hdr_raw_demosaic(frame);
         let applied = self.apply_completed_hdr_pending_work(frame);
         if self.hdr_pending_work.has_pending_gpu_writes() {
             self.flush_hdr_pending_gpu_writes(frame);
@@ -481,6 +484,130 @@ impl ImageViewerApp {
                 .extend(requeue);
         }
         started - ran_before
+    }
+
+    /// Encode deferred GPU RAW demosaic on the main thread (wgpu encoder is not off-thread safe).
+    /// `prepare()` only queues work so the UI paint path stays responsive.
+    fn encode_pending_hdr_raw_demosaic(&mut self, frame: &mut eframe::Frame) {
+        let requests: Vec<HdrPendingRawDemosaicRequest> =
+            std::mem::take(&mut *self.hdr_pending_work.raw_demosaic_requests.lock());
+        if requests.is_empty() {
+            return;
+        }
+
+        let Some(wgpu_state) = frame.wgpu_render_state() else {
+            self.hdr_pending_work
+                .raw_demosaic_requests
+                .lock()
+                .extend(requests);
+            return;
+        };
+
+        let mut requeue = Vec::new();
+        let mut encoded = 0usize;
+        for request in requests {
+            if encoded >= MAX_HDR_RAW_DEMOSAIC_ENCODES_PER_LOGIC {
+                requeue.push(request);
+                continue;
+            }
+            if !Self::ensure_hdr_resources(wgpu_state, request.target_format) {
+                requeue.push(request);
+                continue;
+            }
+
+            let demosaic_started = std::time::Instant::now();
+            let mut renderer = wgpu_state.renderer.write();
+            let Some(resources) = renderer
+                .callback_resources
+                .get_mut::<crate::hdr::renderer::HdrCallbackResourcesSet>()
+                .and_then(|set| set.get_for_mut(request.target_format))
+            else {
+                drop(renderer);
+                requeue.push(request);
+                continue;
+            };
+
+            let Some(source) = request.image.metadata.raw_gpu_source.as_ref() else {
+                resources.mark_raw_demosaic_failed(request.key);
+                self.raw_demosaic_baked_notify
+                    .lock()
+                    .push(RawGpuDemosaicBakedNotice {
+                        key: request.key,
+                        demosaic_ms: u32::MAX,
+                    });
+                self.hdr_pending_work
+                    .clear_raw_demosaic_inflight(request.key);
+                continue;
+            };
+
+            if source.demosaic_method != request.method {
+                // Method changed while queued; drop and let prepare re-queue if still needed.
+                self.hdr_pending_work
+                    .clear_raw_demosaic_inflight(request.key);
+                continue;
+            }
+
+            match resources.encode_raw_demosaic_for_binding(
+                &wgpu_state.device,
+                &wgpu_state.queue,
+                request.key,
+                request.method,
+                source,
+            ) {
+                Ok(true) => {
+                    let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
+                    log::debug!(
+                        "[HDR] GPU RAW demosaicing path=GPU encoded size={}x{} method={:?} {}ms",
+                        request.image.width,
+                        request.image.height,
+                        request.method,
+                        demosaic_ms
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] demosaic encode {}x{} {}ms key={:?}",
+                        request.image.width,
+                        request.image.height,
+                        demosaic_ms,
+                        request.key
+                    );
+                    self.raw_demosaic_baked_notify
+                        .lock()
+                        .push(RawGpuDemosaicBakedNotice {
+                            key: request.key,
+                            demosaic_ms,
+                        });
+                    self.hdr_pending_work
+                        .clear_raw_demosaic_inflight(request.key);
+                    encoded += 1;
+                }
+                Ok(false) => {
+                    // Plane upload may still be in flight; retry next logic tick.
+                    drop(renderer);
+                    requeue.push(request);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[HDR] GPU RAW demosaicing unavailable ({err}); falling back to CPU tiled develop"
+                    );
+                    resources.mark_raw_demosaic_failed(request.key);
+                    self.raw_demosaic_baked_notify
+                        .lock()
+                        .push(RawGpuDemosaicBakedNotice {
+                            key: request.key,
+                            demosaic_ms: u32::MAX,
+                        });
+                    self.hdr_pending_work
+                        .clear_raw_demosaic_inflight(request.key);
+                }
+            }
+        }
+
+        if !requeue.is_empty() {
+            self.hdr_pending_work
+                .raw_demosaic_requests
+                .lock()
+                .extend(requeue);
+        }
     }
 
     fn apply_completed_hdr_pending_work(&mut self, frame: &mut eframe::Frame) -> bool {

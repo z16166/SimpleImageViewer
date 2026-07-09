@@ -22,7 +22,7 @@ use crate::hdr::tiled::HdrTiledSource;
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     decode_exr_display_image_from_mmap(path, mmap)
 }
 

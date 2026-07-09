@@ -14,6 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! HDR image-plane WGSL source as a single compile-time `&'static str`.
+//!
+//! There is no runtime `HashMap` of shader snippets: `concat!` + `include`-style macros
+//! produce one constant. `create_shader_module` runs once per `HdrCallbackResources` init
+//! (see `resources.rs`); bind-group creation reuses the compiled module.
+
 #[allow(dead_code)]
 pub const HDR_IMAGE_PLANE_SHADER: &str = concat!(
     r#"

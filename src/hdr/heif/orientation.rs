@@ -103,7 +103,7 @@ pub(crate) fn libheif_exif_orientation_tag_from_bytes(bytes: &[u8]) -> Option<u1
 #[cfg(feature = "heif-native")]
 #[allow(dead_code)] // Path-based wrapper; production uses `libheif_exif_orientation_tag_from_bytes`.
 pub(crate) fn libheif_exif_orientation_tag(path: &Path) -> Option<u16> {
-    let mmap = crate::mmap_util::map_file(path).ok()?;
+    let (mmap, _) = crate::mmap_util::map_file(path).ok()?;
     libheif_exif_orientation_tag_from_bytes(&mmap[..])
 }
 
@@ -285,7 +285,7 @@ pub(crate) fn libheif_manual_geometry_exif_orientation_from_bytes(bytes: &[u8]) 
 #[cfg(feature = "heif-native")]
 #[allow(dead_code)] // Path-based wrapper; production uses `libheif_manual_geometry_exif_orientation_from_bytes`.
 pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) -> Option<u16> {
-    let mmap = crate::mmap_util::map_file(path).ok()?;
+    let (mmap, _) = crate::mmap_util::map_file(path).ok()?;
     libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
 }
 
@@ -382,7 +382,7 @@ pub(crate) fn decoded_pixels_match_swapped_ispe(
     match file_bytes {
         Some(bytes) => decoded_pixels_match_swapped_ispe_bytes(bytes, decoded_w, decoded_h),
         None => {
-            let Ok(mmap) = crate::mmap_util::map_file(path) else {
+            let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
                 return false;
             };
             decoded_pixels_match_swapped_ispe_bytes(&mmap[..], decoded_w, decoded_h)

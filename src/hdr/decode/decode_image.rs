@@ -35,7 +35,7 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         return super::radiance::decode_radiance_hdr_image(path);
     }
 
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     let reader = ImageReader::new(std::io::Cursor::new(mmap.as_ref()))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
