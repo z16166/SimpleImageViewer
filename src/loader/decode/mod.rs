@@ -185,6 +185,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch,
+                file_bytes: None,
             })?;
             if out.osd.sensor_size.0 > 0 {
                 raw_osd_info = Some(out.osd);
@@ -229,6 +230,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     hdr_target_capacity,
                     hdr_tone_map,
                     raw_open_prefetch,
+                    file_bytes: Some(file_mmap.as_ref()),
                 })
                 .map(|out| {
                     if out.osd.sensor_size.0 > 0 {
@@ -300,7 +302,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     primary_with_retainable_mmap(path, |mmap| {
                         load_jxl_with_target_capacity_outcome_from_mmap(
                             path,
-                            mmap.as_ref(),
+                            mmap,
                             hdr_target_capacity,
                             hdr_tone_map,
                             prefer_embedded_sdr_master,
@@ -876,14 +878,8 @@ fn sdr_preview_to_hdr_preview(
         ));
     }
 
-    let mut rgba_f32 = Vec::with_capacity(expected_len);
-    for chunk in rgba_u8.chunks_exact(4) {
-        let r = crate::hdr::decode::srgb_nonlinear_channel_to_linear(chunk[0] as f32 / 255.0);
-        let g = crate::hdr::decode::srgb_nonlinear_channel_to_linear(chunk[1] as f32 / 255.0);
-        let b = crate::hdr::decode::srgb_nonlinear_channel_to_linear(chunk[2] as f32 / 255.0);
-        let a = chunk[3] as f32 / 255.0;
-        rgba_f32.extend_from_slice(&[r, g, b, a]);
-    }
+    let mut rgba_f32 = vec![0.0_f32; expected_len];
+    simple_image_viewer::simd_pixel_convert::srgb8_rgba_to_scene_linear_f32(rgba_u8, &mut rgba_f32);
     let color_space = crate::hdr::types::HdrColorSpace::LinearSrgb;
     Ok(crate::hdr::types::HdrImageBuffer {
         width: w,

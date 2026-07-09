@@ -307,7 +307,9 @@ impl ImageViewerApp {
         }
         if self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index) {
             #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!("strip:skip_texture_cache:{index}:deferred_black_sdr"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][Strip] skip texture_cache sync idx={} reason=deferred_black_sdr",
                 index
             );
@@ -315,7 +317,9 @@ impl ImageViewerApp {
         }
         if self.strip_main_loader_sdr_unreliable_for_strip(index) {
             #[cfg(feature = "preload-debug")]
-            crate::preload_debug!(
+            crate::preload_debug_throttled!(
+                &format!("strip:skip_texture_cache:{index}:unreliable_main_sdr"),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
                 "[PreloadDebug][Strip] skip texture_cache sync idx={} reason=unreliable_main_sdr",
                 index
             );

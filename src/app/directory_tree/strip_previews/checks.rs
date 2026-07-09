@@ -256,6 +256,9 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
+        if !crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr) {
+            return false;
+        }
         if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
             return false;
         }
@@ -440,8 +443,7 @@ impl ImageViewerApp {
             return true;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            !hdr.rgba_f32.is_empty()
-                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
+            crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr.as_ref())
         }) {
             return true;
         }
@@ -506,6 +508,30 @@ impl ImageViewerApp {
         !self.directory_tree_strip_cache.contains(index)
     }
 
+    /// True when `texture_cache` can be cloned into the strip cache without paint-thread
+    /// downsample (`try_sync_strip_from_texture_cache` size gate).
+    fn strip_texture_cache_usable_for_direct_sync(&self, index: usize) -> bool {
+        let Some(texture) = self.texture_cache.get(index) else {
+            return false;
+        };
+        let size = texture.size();
+        let preview_w = size[0] as u32;
+        let preview_h = size[1] as u32;
+        let strip_max_side = self
+            .settings
+            .directory_tree_list_preview_size
+            .strip_max_side();
+        if preview_w.max(preview_h) > strip_max_side {
+            return false;
+        }
+        if let Some(logical) = self.directory_tree_strip_logical_size(index) {
+            return crate::loader::preview_aspect_matches_logical(
+                preview_w, preview_h, logical.0, logical.1,
+            );
+        }
+        true
+    }
+
     pub(super) fn strip_index_needs_cold_thumbnail(&self, index: usize) -> bool {
         if index >= self.image_files.len() {
             return false;
@@ -514,9 +540,7 @@ impl ImageViewerApp {
             return false;
         }
         if self.hdr_image_cache.get(&index).is_some_and(|hdr| {
-            !hdr.rgba_f32.is_empty()
-                || crate::loader::hdr_has_embedded_sdr_master_display(hdr.as_ref())
-                || self.iso_deferred_baseline_pixels_for_strip(index).is_some()
+            crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr.as_ref())
         }) {
             return false;
         }
@@ -528,8 +552,10 @@ impl ImageViewerApp {
         {
             return false;
         }
+        // Oversized main-window textures (e.g. 320x320 animation on a 256 strip) cannot
+        // sync via texture_cache clone; still need a cold strip decode/downsample.
         if !self.strip_main_loader_sdr_unreliable_for_strip(index)
-            && self.texture_cache.contains(index)
+            && self.strip_texture_cache_usable_for_direct_sync(index)
             && !self.strip_needs_detached_decode_from_main_texture_cache(index)
         {
             return false;

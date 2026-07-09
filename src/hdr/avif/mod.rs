@@ -72,10 +72,16 @@ use std::sync::Arc;
 
 #[cfg(feature = "avif-native")]
 use crate::hdr::avif_gain_map_deferred::{
-    attach_avif_gain_map_gpu_deferred, avif_build_iso_sdr_baseline_rgba8,
+    AvifGainMapDeferredArcInput, attach_avif_gain_map_gpu_deferred_arcs,
+    avif_build_iso_sdr_baseline_rgba8,
 };
 #[cfg(feature = "avif-native")]
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
+#[cfg(feature = "avif-native")]
+use crate::hdr::iso_gain_map_frame_reuse::{
+    IsoGainMapFrameReuse, IsoGainMapGainDecodePolicy, iso_gain_map_may_skip_gain_decode,
+    select_iso_gain_map_planes,
+};
 #[cfg(feature = "avif-native")]
 use crate::hdr::types::{
     HdrColorProfile, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
@@ -93,7 +99,7 @@ use decode::{
 };
 
 #[cfg(feature = "avif-native")]
-use gain_map::decode_avif_gain_map;
+use gain_map::{decode_avif_gain_map, peek_avif_gain_map_metadata};
 
 #[cfg(feature = "avif-native")]
 /// Convert a decoded [`libavif_sys::avifImage`] (static read or sequence frame) into an
@@ -102,6 +108,16 @@ use gain_map::decode_avif_gain_map;
 pub(crate) fn avif_image_to_hdr_buffer(
     image: *mut libavif_sys::avifImage,
     target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
+    avif_image_to_hdr_buffer_with_reuse(image, target_hdr_capacity, None)
+}
+
+#[cfg(feature = "avif-native")]
+/// Like [`avif_image_to_hdr_buffer`], with optional ISO plane reuse across animation frames.
+pub(crate) fn avif_image_to_hdr_buffer_with_reuse(
+    image: *mut libavif_sys::avifImage,
+    target_hdr_capacity: f32,
+    mut reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
 ) -> Result<HdrImageBuffer, String> {
     let image_ref = unsafe { &*image };
     if image_ref.width == 0 || image_ref.height == 0 {
@@ -150,38 +166,131 @@ pub(crate) fn avif_image_to_hdr_buffer(
 
     // ISO gain map: defer compose to GPU (SDR baseline + gain planes + `jpeg_compose_gpu`).
     // Base RGB from `avifImageYUVToRGB` uses the image CICP transfer before ISO gain-map recovery.
-    if let Some((gain_metadata, gain_width, gain_height, gain_rgba)) =
-        decode_avif_gain_map(image_ref, &libavif_result_to_string)
-    {
+    if let Some((gain_metadata, _gain_ptr, _gw, _gh)) = peek_avif_gain_map_metadata(image_ref) {
         if iso_gain_map_skips_forward_compose(gain_metadata) {
             log::debug!(
                 "[HDR] AVIF gain map: primary is HDR base (backward or inverted HDRCapacity); skipping forward compose"
             );
-        } else {
-            let sdr_rgba = avif_build_iso_sdr_baseline_rgba8(
-                &rgba_u16,
-                rgb_out_depth,
-                image_ref.width,
-                image_ref.height,
-                &metadata,
-                color_space,
-            );
-            return attach_avif_gain_map_gpu_deferred(
-                crate::hdr::avif_gain_map_deferred::AvifGainMapDeferredInput {
-                    width: image_ref.width,
-                    height: image_ref.height,
-                    sdr_rgba,
-                    gain_width,
-                    gain_height,
-                    gain_rgba,
-                    gain_metadata,
-                    container_luminance: metadata.luminance,
-                    target_hdr_capacity,
-                },
-            );
+            if let Some(slot) = reuse.as_mut() {
+                **slot = None;
+            }
+        } else if let Some(buffer) = try_avif_iso_forward_deferred_with_reuse(
+            image_ref,
+            &rgba_u16,
+            rgb_out_depth,
+            &metadata,
+            color_space,
+            gain_metadata,
+            target_hdr_capacity,
+            reuse.as_deref_mut(),
+        )? {
+            return Ok(buffer);
+        } else if let Some(slot) = reuse.as_mut() {
+            **slot = None;
         }
+    } else if let Some(slot) = reuse {
+        *slot = None;
     }
 
+    avif_image_to_hdr_buffer_non_gain(image_ref, rgba_u16, rgb_out_depth, metadata)
+}
+
+#[cfg(feature = "avif-native")]
+#[allow(clippy::too_many_arguments)]
+fn try_avif_iso_forward_deferred_with_reuse(
+    image_ref: &libavif_sys::avifImage,
+    rgba_u16: &[u16],
+    rgb_out_depth: u32,
+    metadata: &HdrImageMetadata,
+    color_space: crate::hdr::types::HdrColorSpace,
+    gain_metadata: crate::hdr::gain_map::GainMapMetadata,
+    target_hdr_capacity: f32,
+    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
+) -> Result<Option<HdrImageBuffer>, String> {
+    let sdr_rgba = avif_build_iso_sdr_baseline_rgba8(
+        rgba_u16,
+        rgb_out_depth,
+        image_ref.width,
+        image_ref.height,
+        metadata,
+        color_space,
+    );
+    let policy = IsoGainMapGainDecodePolicy::KeyAndSdrMatchSkipsGainDecode;
+    let mut local_reuse = None;
+    let reuse_slot = match reuse {
+        Some(slot) => slot,
+        None => &mut local_reuse,
+    };
+
+    let new_gain = if iso_gain_map_may_skip_gain_decode(
+        reuse_slot,
+        policy,
+        image_ref.width,
+        image_ref.height,
+        &sdr_rgba,
+        gain_metadata,
+        target_hdr_capacity,
+    ) {
+        None
+    } else {
+        let Some((_decoded_meta, gain_width, gain_height, gain_rgba)) =
+            decode_avif_gain_map(image_ref, &libavif_result_to_string)
+        else {
+            return Ok(None);
+        };
+        Some((gain_width, gain_height, gain_rgba))
+    };
+
+    let mut selected = select_iso_gain_map_planes(
+        reuse_slot,
+        policy,
+        image_ref.width,
+        image_ref.height,
+        sdr_rgba,
+        new_gain,
+        gain_metadata,
+        target_hdr_capacity,
+    );
+    if selected.needs_gain_decode {
+        let Some((_m, gw, gh, gain_rgba)) =
+            decode_avif_gain_map(image_ref, &libavif_result_to_string)
+        else {
+            return Ok(None);
+        };
+        let sdr = Arc::try_unwrap(selected.sdr_rgba).unwrap_or_else(|arc| (*arc).clone());
+        selected = select_iso_gain_map_planes(
+            reuse_slot,
+            policy,
+            image_ref.width,
+            image_ref.height,
+            sdr,
+            Some((gw, gh, gain_rgba)),
+            gain_metadata,
+            target_hdr_capacity,
+        );
+    }
+
+    let buffer = attach_avif_gain_map_gpu_deferred_arcs(AvifGainMapDeferredArcInput {
+        width: image_ref.width,
+        height: image_ref.height,
+        sdr_rgba: selected.sdr_rgba,
+        gain_width: selected.gain_width,
+        gain_height: selected.gain_height,
+        gain_rgba: selected.gain_rgba,
+        gain_metadata: selected.metadata,
+        container_luminance: metadata.luminance,
+        target_hdr_capacity,
+    })?;
+    Ok(Some(buffer))
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_image_to_hdr_buffer_non_gain(
+    image_ref: &libavif_sys::avifImage,
+    rgba_u16: Vec<u16>,
+    rgb_out_depth: u32,
+    metadata: HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
     // Normalize using the **output** `avifRGBImage.depth` libavif used (8/10/12/16), not the
     // source YUV bit depth: 8-bit RGB output must use 255, while 16-bit full-range uses 65535.
     let scale = rgb_channel_max_f(rgb_out_depth);

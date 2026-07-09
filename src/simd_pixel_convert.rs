@@ -32,6 +32,8 @@ const LANES_PER_AVX2_STEP: usize = 16;
 #[cfg(target_arch = "x86_64")]
 const LANES_PER_SSE41_STEP: usize = 8;
 #[cfg(target_arch = "x86_64")]
+const F32S_PER_AVX2_STEP: usize = 8;
+#[cfg(target_arch = "x86_64")]
 const F32S_PER_SSE41_STEP: usize = 4;
 
 #[cfg(target_arch = "aarch64")]
@@ -127,7 +129,11 @@ pub fn u16_lanes_to_f32(dst: &mut [f32], src: &[u16], inv_scale: f32) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                u16_lanes_to_f32_avx2(dst, src, inv_scale, &mut i);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 u16_lanes_to_f32_sse41(dst, src, inv_scale, &mut i);
             }
@@ -327,6 +333,21 @@ unsafe fn copy_le_u16_lanes_neon(dst: &mut [u16], src: &[u8], i: &mut usize) {
             let chunk = vld1q_u16(src.as_ptr().add(*i * 2) as *const u16);
             vst1q_u16(dst.as_mut_ptr().add(*i), chunk);
             *i += LANES_PER_NEON_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn u16_lanes_to_f32_avx2(dst: &mut [f32], src: &[u16], inv_scale: f32, i: &mut usize) {
+    unsafe {
+        let scale = _mm256_set1_ps(inv_scale);
+        while *i + F32S_PER_AVX2_STEP <= src.len() {
+            let lanes = _mm_loadu_si128(src.as_ptr().add(*i) as *const __m128i);
+            let widened = _mm256_cvtepu16_epi32(lanes);
+            let floats = _mm256_mul_ps(_mm256_cvtepi32_ps(widened), scale);
+            _mm256_storeu_ps(dst.as_mut_ptr().add(*i), floats);
+            *i += F32S_PER_AVX2_STEP;
         }
     }
 }
@@ -684,6 +705,88 @@ unsafe fn srgb8_rgba_to_scene_linear_f32_neon(
     }
 }
 
+/// Ward Radiance RGBE8 (4 bytes/pixel) -> RGBA32F. Alpha is always 1.0.
+pub fn rgbe8_to_rgba32f(src: &[u8], dst: &mut [f32], scale_lut: &[f32; 256]) {
+    if !src.len().is_multiple_of(4) || dst.len() < src.len() {
+        return;
+    }
+    let pixel_count = src.len() / 4;
+    let mut px = 0;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            rgbe8_to_rgba32f_neon(src, dst, scale_lut, &mut px, pixel_count);
+        }
+    }
+
+    while px + 4 <= pixel_count {
+        for lane in 0..4 {
+            rgbe8_pixel_to_rgba32f_scalar(src, dst, scale_lut, px + lane);
+        }
+        px += 4;
+    }
+    while px < pixel_count {
+        rgbe8_pixel_to_rgba32f_scalar(src, dst, scale_lut, px);
+        px += 1;
+    }
+}
+
+#[inline]
+fn rgbe8_pixel_to_rgba32f_scalar(src: &[u8], dst: &mut [f32], scale_lut: &[f32; 256], px: usize) {
+    let s = px * 4;
+    let d = px * 4;
+    let exponent = src[s + 3];
+    if exponent == 0 {
+        dst[d] = 0.0;
+        dst[d + 1] = 0.0;
+        dst[d + 2] = 0.0;
+    } else {
+        let scale = scale_lut[exponent as usize];
+        dst[d] = src[s] as f32 * scale;
+        dst[d + 1] = src[s + 1] as f32 * scale;
+        dst[d + 2] = src[s + 2] as f32 * scale;
+    }
+    dst[d + 3] = 1.0;
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn rgbe8_to_rgba32f_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    scale_lut: &[f32; 256],
+    px: &mut usize,
+    pixel_count: usize,
+) {
+    unsafe {
+        while *px + 8 <= pixel_count {
+            let rgbe = vld4_u8(src.as_ptr().add(*px * 4));
+            let r: [u8; 8] = core::mem::transmute(rgbe.0);
+            let g: [u8; 8] = core::mem::transmute(rgbe.1);
+            let b: [u8; 8] = core::mem::transmute(rgbe.2);
+            let e: [u8; 8] = core::mem::transmute(rgbe.3);
+            for lane in 0..8 {
+                let exponent = e[lane];
+                let dst_px = *px + lane;
+                let d = dst_px * 4;
+                if exponent == 0 {
+                    *dst.get_unchecked_mut(d) = 0.0;
+                    *dst.get_unchecked_mut(d + 1) = 0.0;
+                    *dst.get_unchecked_mut(d + 2) = 0.0;
+                } else {
+                    let scale = *scale_lut.get_unchecked(exponent as usize);
+                    *dst.get_unchecked_mut(d) = r[lane] as f32 * scale;
+                    *dst.get_unchecked_mut(d + 1) = g[lane] as f32 * scale;
+                    *dst.get_unchecked_mut(d + 2) = b[lane] as f32 * scale;
+                }
+                *dst.get_unchecked_mut(d + 3) = 1.0;
+            }
+            *px += 8;
+        }
+    }
+}
+
 #[inline]
 fn finite_f32(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
@@ -957,6 +1060,19 @@ pub fn ieee_f32_rgb_scanline_to_rgba32f(src: &[u8], dst: &mut [f32], width: usiz
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        if spp == 3 {
+            unsafe {
+                ieee_f32_rgb3_scanline_to_rgba32f_neon(src, dst, width, &mut x);
+            }
+        } else if spp == 4 {
+            unsafe {
+                ieee_f32_rgb4_scanline_to_rgba32f_neon(src, dst, width, &mut x);
+            }
+        }
+    }
+
     while x < width {
         let src_base = x * bytes_per_pixel;
         let dst_base = x * 4;
@@ -1080,6 +1196,116 @@ unsafe fn ieee_f32_rgb3_scanline_to_rgba32f_sse41(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn store_neon_rgb_pixels(
+    dst: &mut [f32],
+    x: usize,
+    r: float32x4_t,
+    g: float32x4_t,
+    b: float32x4_t,
+    count: usize,
+) {
+    debug_assert!(count <= 4);
+    unsafe {
+        let one = vdupq_n_f32(1.0);
+        let rg = vzipq_f32(r, g);
+        let ba = vzipq_f32(b, one);
+        if count > 0 {
+            vst1q_f32(
+                dst.as_mut_ptr().add(x * 4),
+                vcombine_f32(vget_low_f32(rg.0), vget_low_f32(ba.0)),
+            );
+        }
+        if count > 1 {
+            vst1q_f32(
+                dst.as_mut_ptr().add((x + 1) * 4),
+                vcombine_f32(vget_high_f32(rg.0), vget_high_f32(ba.0)),
+            );
+        }
+        if count > 2 {
+            vst1q_f32(
+                dst.as_mut_ptr().add((x + 2) * 4),
+                vcombine_f32(vget_low_f32(rg.1), vget_low_f32(ba.1)),
+            );
+        }
+        if count > 3 {
+            vst1q_f32(
+                dst.as_mut_ptr().add((x + 3) * 4),
+                vcombine_f32(vget_high_f32(rg.1), vget_high_f32(ba.1)),
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn finite_f32x2_from_rgb_channel(
+    s: *const u8,
+    px0: usize,
+    px1: usize,
+    channel: usize,
+) -> float32x4_t {
+    unsafe {
+        let read = |px: usize| -> f32 {
+            let p = s.add(px * 12 + channel * 4);
+            finite_f32(f32::from_ne_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]))
+        };
+        let lo = read(px0);
+        let hi = read(px1);
+        vreinterpretq_f32_u64(vcombine_u64(
+            vcreate_u64(u64::from(lo.to_bits())),
+            vcreate_u64(u64::from(hi.to_bits())),
+        ))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ieee_f32_rgb3_scanline_to_rgba32f_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+        let zero = vdupq_n_f32(0.0);
+        while *x + 2 <= width {
+            let base = *x * 12;
+            let s = src.as_ptr().add(base);
+            let r = finite_f32x2_from_rgb_channel(s, 0, 1, 0);
+            let g = finite_f32x2_from_rgb_channel(s, 0, 1, 1);
+            let b = finite_f32x2_from_rgb_channel(s, 0, 1, 2);
+            let finite = |v: float32x4_t| vbslq_f32(vceqq_f32(v, v), v, zero);
+            store_neon_rgb_pixels(dst, *x, finite(r), finite(g), finite(b), 2);
+            *x += 2;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ieee_f32_rgb4_scanline_to_rgba32f_neon(
+    src: &[u8],
+    dst: &mut [f32],
+    width: usize,
+    x: &mut usize,
+) {
+    unsafe {
+        let zero = vdupq_n_f32(0.0);
+        while *x + 4 <= width {
+            let base = *x * 16;
+            let s = src.as_ptr().add(base);
+            for p in 0..4 {
+                let v = vld1q_f32(s.add(p * 16) as *const f32);
+                let finite = vbslq_f32(vceqq_f32(v, v), v, zero);
+                vst1q_f32(dst.as_mut_ptr().add((*x + p) * 4), finite);
+            }
+            *x += 4;
+        }
+    }
+}
+
 /// Normalize one grayscale scratch row to 8-bit RGBA (MINISBLACK / MINISWHITE).
 pub fn finalize_gray_linear_scratch_row_to_rgba8(
     scratch_row: &[f32],
@@ -1113,6 +1339,21 @@ pub fn finalize_gray_linear_scratch_row_to_rgba8(
                     &mut x,
                 );
             }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            finalize_gray_linear_scratch_row_to_rgba8_neon(
+                scratch_row,
+                rgba_row,
+                width,
+                smin,
+                inv_range,
+                miniswhite,
+                &mut x,
+            );
         }
     }
 
@@ -1165,6 +1406,58 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_sse41(
             );
             let mut lanes = [0.0_f32; 4];
             _mm_storeu_ps(lanes.as_mut_ptr(), linear);
+            for (p, &linear) in lanes.iter().enumerate() {
+                let sample = linear_to_srgb8_index(linear);
+                let byte = if miniswhite {
+                    255_u8.saturating_sub(sample)
+                } else {
+                    sample
+                };
+                let o = (base + p * 4) as isize;
+                *rgba_row.as_mut_ptr().offset(o) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 1) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 2) = byte;
+                *rgba_row.as_mut_ptr().offset(o + 3) = 255;
+            }
+            *x += 4;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn finalize_gray_linear_scratch_row_to_rgba8_neon(
+    scratch_row: &[f32],
+    rgba_row: &mut [u8],
+    width: usize,
+    smin: f64,
+    inv_range: f64,
+    miniswhite: bool,
+    x: &mut usize,
+) {
+    unsafe {
+        let smin_v = vdupq_n_f32(smin as f32);
+        let inv_v = vdupq_n_f32(inv_range as f32);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
+        while *x + 4 <= width {
+            let base = *x * 4;
+            let v = vsetq_lane_f32(
+                scratch_row[base + 12],
+                vsetq_lane_f32(
+                    scratch_row[base + 8],
+                    vsetq_lane_f32(
+                        scratch_row[base + 4],
+                        vsetq_lane_f32(scratch_row[base], zero, 0),
+                        1,
+                    ),
+                    2,
+                ),
+                3,
+            );
+            let linear = vminq_f32(vmaxq_f32(vmulq_f32(vsubq_f32(v, smin_v), inv_v), zero), one);
+            let mut lanes = [0.0_f32; 4];
+            vst1q_f32(lanes.as_mut_ptr(), linear);
             for (p, &linear) in lanes.iter().enumerate() {
                 let sample = linear_to_srgb8_index(linear);
                 let byte = if miniswhite {
@@ -1347,6 +1640,27 @@ mod tests {
     }
 
     #[test]
+    fn rgbe8_to_rgba32f_matches_scalar_pixels() {
+        let pixels: Vec<u8> = (0..32)
+            .map(|i| match i % 4 {
+                3 => ((i / 4) * 17 + 100) as u8,
+                _ => ((i * 13 + 7) % 250) as u8,
+            })
+            .collect();
+        let mut lut = [0.0_f32; 256];
+        for exponent in 1..=255u8 {
+            lut[exponent as usize] = 2.0_f32.powi(i32::from(exponent) - 128 - 8);
+        }
+        let mut simd_dst = vec![0.0_f32; pixels.len()];
+        rgbe8_to_rgba32f(&pixels, &mut simd_dst, &lut);
+        let mut scalar_dst = vec![0.0_f32; pixels.len()];
+        for px in 0..pixels.len() / 4 {
+            rgbe8_pixel_to_rgba32f_scalar(&pixels, &mut scalar_dst, &lut, px);
+        }
+        assert_eq!(simd_dst, scalar_dst);
+    }
+
+    #[test]
     fn invert_miniswhite_rgba32f_matches_scalar() {
         for width in [1, 3, 4, 7, 8, 15] {
             let mut simd_buf: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.03) % 2.0).collect();
@@ -1385,6 +1699,84 @@ mod tests {
                 let o = x * 4;
                 scalar_dst[o..o + 4].copy_from_slice(&[g, g, g, 1.0]);
             }
+            assert_eq!(simd_dst, scalar_dst, "width={width}");
+        }
+    }
+
+    fn ieee_f32_rgb3_scalar(src: &[u8], dst: &mut [f32], width: usize) {
+        for x in 0..width {
+            let src_base = x * 12;
+            let dst_base = x * 4;
+            for c in 0..3 {
+                let raw = f32::from_ne_bytes([
+                    src[src_base + c * 4],
+                    src[src_base + c * 4 + 1],
+                    src[src_base + c * 4 + 2],
+                    src[src_base + c * 4 + 3],
+                ]);
+                dst[dst_base + c] = finite_f32(raw);
+            }
+            dst[dst_base + 3] = 1.0;
+        }
+    }
+
+    #[test]
+    fn ieee_f32_rgb_scanline_matches_scalar() {
+        for width in [1, 2, 3, 4, 7, 8] {
+            let src: Vec<u8> = (0..width * 12)
+                .flat_map(|i| ((i as f32 * 0.07) % 2.0).to_ne_bytes())
+                .collect();
+            let mut simd_dst = vec![0.0_f32; width * 4];
+            let mut scalar_dst = vec![0.0_f32; width * 4];
+            ieee_f32_rgb_scanline_to_rgba32f(&src, &mut simd_dst, width, 3);
+            ieee_f32_rgb3_scalar(&src, &mut scalar_dst, width);
+            assert_eq!(simd_dst, scalar_dst, "width={width}");
+        }
+    }
+
+    fn finalize_gray_scalar(
+        scratch_row: &[f32],
+        rgba_row: &mut [u8],
+        width: usize,
+        smin: f64,
+        smax: f64,
+        miniswhite: bool,
+    ) {
+        let range = (smax - smin).max(f64::EPSILON);
+        let inv_range = 1.0 / range;
+        for x in 0..width {
+            let scratch_idx = x * 4;
+            let dst_idx = x * 4;
+            let f_val = scratch_row[scratch_idx] as f64;
+            let linear = ((f_val - smin) * inv_range).clamp(0.0, 1.0) as f32;
+            let sample = linear_to_srgb8_index(linear);
+            let v = if miniswhite {
+                255_u8.saturating_sub(sample)
+            } else {
+                sample
+            };
+            rgba_row[dst_idx] = v;
+            rgba_row[dst_idx + 1] = v;
+            rgba_row[dst_idx + 2] = v;
+            rgba_row[dst_idx + 3] = 255;
+        }
+    }
+
+    #[test]
+    fn finalize_gray_linear_scratch_row_matches_scalar() {
+        for width in [1, 3, 4, 7, 8] {
+            let scratch: Vec<f32> = (0..width * 4).map(|i| (i as f32 * 0.05) % 1.5).collect();
+            let mut simd_dst = vec![0_u8; width * 4];
+            let mut scalar_dst = vec![0_u8; width * 4];
+            finalize_gray_linear_scratch_row_to_rgba8(
+                &scratch,
+                &mut simd_dst,
+                width,
+                0.1,
+                1.2,
+                false,
+            );
+            finalize_gray_scalar(&scratch, &mut scalar_dst, width, 0.1, 1.2, false);
             assert_eq!(simd_dst, scalar_dst, "width={width}");
         }
     }

@@ -149,7 +149,7 @@ pub(crate) enum HdrCompletedComposeWrite {
         target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-        pixels: Vec<f32>,
+        pixels: Arc<Vec<f32>>,
     },
     AppleImage {
         key: HdrImageKey,
@@ -157,7 +157,7 @@ pub(crate) enum HdrCompletedComposeWrite {
         target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-        pixels: Vec<f32>,
+        pixels: Arc<Vec<f32>>,
     },
     IsoTile {
         tile_key: HdrTileKey,
@@ -165,7 +165,7 @@ pub(crate) enum HdrCompletedComposeWrite {
         target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-        pixels: Vec<f32>,
+        pixels: Arc<Vec<f32>>,
     },
 }
 

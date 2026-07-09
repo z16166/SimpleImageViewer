@@ -552,6 +552,7 @@ fn open_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<Arc<memmap2::Mmap>>,
 ) -> Result<ImageData, String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.as_deref().map(|m| m.as_ref());
     let file_name = path
         .file_name()
@@ -680,7 +681,7 @@ fn open_image_data_for_directory_tree_thumb(
                 primary_with_optional_mmap(file_mmap.clone(), path, |mmap| {
                     super::modern::load_jxl_with_target_capacity_from_mmap(
                         path,
-                        mmap.as_ref(),
+                        &mmap,
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
@@ -751,7 +752,7 @@ fn open_raw_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
-    match open_raw_processor_with_preview(path) {
+    match open_raw_processor_with_preview(path, None) {
         Ok((processor, preview_opt, _, _)) => {
             if let Some(preview) = preview_opt {
                 return Ok(make_image_data(preview));
@@ -804,6 +805,7 @@ fn platform_still_image_fallback(
     opened_processor: Option<crate::raw_processor::RawProcessor>,
     file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.map(|m| m.as_ref());
     #[cfg(target_os = "windows")]
     {

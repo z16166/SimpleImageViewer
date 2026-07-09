@@ -382,6 +382,7 @@ fn jxl_finish_static_frame(input: JxlStaticFrameFinish<'_>) -> Result<ImageData,
         metadata: &metadata,
         strip_baseline_only,
         embedded_sdr_master_load,
+        reuse: None,
     }) {
         JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
             return Ok(ImageData::Static(DecodedImage::new(
@@ -464,6 +465,7 @@ fn jxl_finish_static_frame_with_embedded_fallback(
             metadata: &metadata,
             strip_baseline_only: true,
             embedded_sdr_master_load: true,
+            reuse: None,
         }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(baseline) => {
                 return Ok(ImageData::Static(DecodedImage::new(
@@ -561,6 +563,7 @@ fn jxl_build_hdr_animated_image_data(
 
     let require_jhgm_processing = jhgm_box.is_some();
     let mut frames = Vec::with_capacity(captured_frames.len());
+    let mut iso_reuse = None;
     for (rgba, ticks) in captured_frames {
         let frame_metadata = meta_base.clone();
         let hdr = match finish_jxl_jhgm_frame(JxlJhgmFrameInput {
@@ -572,6 +575,7 @@ fn jxl_build_hdr_animated_image_data(
             metadata: &frame_metadata,
             strip_baseline_only: false,
             embedded_sdr_master_load: false,
+            reuse: Some(&mut iso_reuse),
         }) {
             JxlJhgmFrameOutcome::IsoGainMapBaseline(_)
             | JxlJhgmFrameOutcome::EmbeddedSdrMasterHdr(_) => {

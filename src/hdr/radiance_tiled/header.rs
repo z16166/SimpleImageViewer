@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::layout::{RadianceRasterLayout, RadianceScanAxis, RadianceScanSign, Rgbe8Pixel};
-use super::rle::{read_scanline, skip_scanline};
+use super::rle::{read_scanline, rgbe_pixels_to_rgba32f, skip_scanline};
 
 use std::io::{BufRead, Cursor};
 use std::sync::Arc;
@@ -168,11 +168,11 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
             file_reader.set_position(scanline_offsets[ly as usize] as u64);
             read_scanline(&mut file_reader, &mut scanline)?;
             let row_off = ly as usize * width as usize * 4;
-            for (lx, pixel) in scanline.iter().enumerate().take(width as usize) {
-                let rgb = pixel.to_rgb_f32();
-                let o = row_off + lx * 4;
-                rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
-            }
+            let row_pixels = width as usize * 4;
+            rgbe_pixels_to_rgba32f(
+                &scanline[..width as usize],
+                &mut rgba_f32[row_off..row_off + row_pixels],
+            );
         }
     } else {
         let plan = raster.stride_plan();

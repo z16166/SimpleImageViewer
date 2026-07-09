@@ -69,6 +69,79 @@ struct DownsampleSimdParams<'a> {
     x1: &'a [u32],
 }
 
+#[inline]
+fn box_max_lane_span(x0: &[u32], x1: &[u32], base_x: usize, simd_w: usize) -> u32 {
+    (0..simd_w).fold(0_u32, |max_span, i| {
+        max_span.max(x1[base_x + i].saturating_sub(x0[base_x + i]))
+    })
+}
+
+#[inline]
+fn box_merged_span(x0: &[u32], x1: &[u32], base_x: usize, simd_w: usize) -> u32 {
+    let merged_x0 = (0..simd_w).fold(u32::MAX, |m, i| m.min(x0[base_x + i]));
+    let merged_x1 = (0..simd_w).fold(0_u32, |m, i| m.max(x1[base_x + i]));
+    merged_x1.saturating_sub(merged_x0)
+}
+
+/// When adjacent output lanes cover disjoint source spans, iterating the merged
+/// union visits every source column with lane masks. Per-lane accumulation avoids
+/// that O(src_w) overhead for large downscale ratios.
+#[inline]
+fn box_use_per_lane_iteration(x0: &[u32], x1: &[u32], base_x: usize, simd_w: usize) -> bool {
+    box_merged_span(x0, x1, base_x, simd_w) > box_max_lane_span(x0, x1, base_x, simd_w)
+}
+
+#[inline]
+unsafe fn box_accumulate_lane(
+    src: &[u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    lane_x0: u32,
+    lane_x1: u32,
+) -> (u64, u64, u64, u64, u64) {
+    let mut sum_r = 0_u64;
+    let mut sum_g = 0_u64;
+    let mut sum_b = 0_u64;
+    let mut sum_a = 0_u64;
+    let mut count = 0_u64;
+    for sy in y0..y1 {
+        let row_off = sy as usize * row_stride;
+        for sx in lane_x0..lane_x1 {
+            let i = row_off + sx as usize * 4;
+            unsafe {
+                sum_r += *src.get_unchecked(i) as u64;
+                sum_g += *src.get_unchecked(i + 1) as u64;
+                sum_b += *src.get_unchecked(i + 2) as u64;
+                sum_a += *src.get_unchecked(i + 3) as u64;
+            }
+            count += 1;
+        }
+    }
+    (sum_r, sum_g, sum_b, sum_a, count)
+}
+
+#[inline]
+unsafe fn box_store_lane_average(
+    dst: &mut [u8],
+    di: usize,
+    sum_r: u64,
+    sum_g: u64,
+    sum_b: u64,
+    sum_a: u64,
+    count: u64,
+) {
+    if let Some(count) = NonZeroU64::new(count) {
+        let count = count.get();
+        unsafe {
+            *dst.get_unchecked_mut(di) = (sum_r / count) as u8;
+            *dst.get_unchecked_mut(di + 1) = (sum_g / count) as u8;
+            *dst.get_unchecked_mut(di + 2) = (sum_b / count) as u8;
+            *dst.get_unchecked_mut(di + 3) = (sum_a / count) as u8;
+        }
+    }
+}
+
 /// Box-filter (area-averaging) RGBA8 downsample.
 ///
 /// Each output pixel is the average of all source pixels whose centres fall within
@@ -295,6 +368,22 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     core::cmp::max(x1[base_x + 2], x1[base_x + 3]),
                 );
 
+                if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
+                    for i in 0..simd_w {
+                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
+                            src,
+                            row_stride,
+                            y0,
+                            y1,
+                            x0[base_x + i],
+                            x1[base_x + i],
+                        );
+                        let di = (dy * dst_w_u + base_x + i) * 4;
+                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
+                    }
+                    continue;
+                }
+
                 // Flip the sign bit to use signed comparison intrinsics for unsigned u32.
                 let sign_bit128 = _mm_set1_epi32(i32::MIN);
                 let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
@@ -434,6 +523,22 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
 
                 let merged_x0 = (0..8).fold(u32::MAX, |m, i| core::cmp::min(m, x0[base_x + i]));
                 let merged_x1 = (0..8).fold(0_u32, |m, i| core::cmp::max(m, x1[base_x + i]));
+
+                if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
+                    for i in 0..simd_w {
+                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
+                            src,
+                            row_stride,
+                            y0,
+                            y1,
+                            x0[base_x + i],
+                            x1[base_x + i],
+                        );
+                        let di = (dy * dst_w_u + base_x + i) * 4;
+                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
+                    }
+                    continue;
+                }
 
                 let sign_bit256 = _mm256_set1_epi32(i32::MIN);
                 let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
@@ -586,6 +691,22 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
                     core::cmp::max(x1[base_x + 2], x1[base_x + 3]),
                 );
 
+                if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
+                    for i in 0..simd_w {
+                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
+                            src,
+                            row_stride,
+                            y0,
+                            y1,
+                            x0[base_x + i],
+                            x1[base_x + i],
+                        );
+                        let di = (dy * dst_w_u + base_x + i) * 4;
+                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
+                    }
+                    continue;
+                }
+
                 for sy in y0..y1 {
                     let row_off = sy as usize * row_stride;
                     for sx in merged_x0..merged_x1 {
@@ -736,27 +857,153 @@ fn nearest_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: 
         as u32
 }
 
-/// Scatter-gather nearest row copy. Scalar with loop unrolling — source indices are
-/// arbitrary per pixel, so SIMD gather would only help on wide rows with profiling.
+#[cfg(target_arch = "x86_64")]
+const NEAREST_AVX2_STEP: usize = 8;
+
+#[cfg(target_arch = "aarch64")]
+const NEAREST_NEON_STEP: usize = 4;
+
+/// Maximum relative byte span for four RGBA pixels to fit in a 32-byte NEON table.
+#[cfg(target_arch = "aarch64")]
+const NEAREST_NEON_TABLE_SPAN_MAX: u32 = 28;
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn downsample_rgba8_nearest_row_avx2(
+    src: &[u8],
+    src_row_base: usize,
+    src_x: &[u32],
+    dst_row: &mut [u8],
+    dx: &mut usize,
+) {
+    unsafe {
+        let src_base = src.as_ptr().add(src_row_base);
+        while *dx + NEAREST_AVX2_STEP <= src_x.len() {
+            let indices = _mm256_set_epi32(
+                (src_x[*dx + 7] as i32) << 2,
+                (src_x[*dx + 6] as i32) << 2,
+                (src_x[*dx + 5] as i32) << 2,
+                (src_x[*dx + 4] as i32) << 2,
+                (src_x[*dx + 3] as i32) << 2,
+                (src_x[*dx + 2] as i32) << 2,
+                (src_x[*dx + 1] as i32) << 2,
+                (src_x[*dx] as i32) << 2,
+            );
+            let gathered = _mm256_i32gather_epi32(src_base as *const i32, indices, 1);
+            _mm256_storeu_si256(dst_row.as_mut_ptr().add(*dx * 4) as *mut __m256i, gathered);
+            *dx += NEAREST_AVX2_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn gather_rgba4_bytes_neon(
+    src: &[u8],
+    src_row_base: usize,
+    indices: &[u32; 4],
+) -> uint8x16_t {
+    unsafe {
+        let mut pixels = [0_u32; 4];
+        for (slot, &sx) in pixels.iter_mut().zip(indices.iter()) {
+            *slot = load_rgba_u32_le(src, src_row_base + sx as usize * 4);
+        }
+        vreinterpretq_u8_u32(vld1q_u32(pixels.as_ptr()))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn gather_rgba4_vqtbl2_neon(
+    src: &[u8],
+    src_row_base: usize,
+    min_b: u32,
+    rel: &[u32; 4],
+) -> uint8x16_t {
+    unsafe {
+        let table = vld1q_u8_x2(src.as_ptr().add(src_row_base + min_b as usize));
+        let mut idx_bytes = [0_u8; 16];
+        for (p, &r) in rel.iter().enumerate() {
+            let base = p * 4;
+            idx_bytes[base] = r as u8;
+            idx_bytes[base + 1] = (r + 1) as u8;
+            idx_bytes[base + 2] = (r + 2) as u8;
+            idx_bytes[base + 3] = (r + 3) as u8;
+        }
+        let idx = vld1q_u8(idx_bytes.as_ptr());
+        vqtbl2q_u8(table, idx)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn downsample_rgba8_nearest_row_neon(
+    src: &[u8],
+    src_row_base: usize,
+    src_x: &[u32],
+    dst_row: &mut [u8],
+    dx: &mut usize,
+) {
+    unsafe {
+        while *dx + NEAREST_NEON_STEP <= src_x.len() {
+            let indices = [src_x[*dx], src_x[*dx + 1], src_x[*dx + 2], src_x[*dx + 3]];
+            let byte_off = [
+                indices[0] << 2,
+                indices[1] << 2,
+                indices[2] << 2,
+                indices[3] << 2,
+            ];
+            let min_b = byte_off[0]
+                .min(byte_off[1])
+                .min(byte_off[2])
+                .min(byte_off[3]);
+            let max_b = byte_off[0]
+                .max(byte_off[1])
+                .max(byte_off[2])
+                .max(byte_off[3]);
+            let rel = [
+                byte_off[0] - min_b,
+                byte_off[1] - min_b,
+                byte_off[2] - min_b,
+                byte_off[3] - min_b,
+            ];
+            let pixels = if max_b - min_b <= NEAREST_NEON_TABLE_SPAN_MAX {
+                gather_rgba4_vqtbl2_neon(src, src_row_base, min_b, &rel)
+            } else {
+                gather_rgba4_bytes_neon(src, src_row_base, &indices)
+            };
+            vst1q_u8(dst_row.as_mut_ptr().add(*dx * 4), pixels);
+            *dx += NEAREST_NEON_STEP;
+        }
+    }
+}
+
+/// Scatter-gather nearest row copy with AVX2 gather (x86) or NEON table/load (aarch64).
 fn downsample_rgba8_nearest_row(
     src: &[u8],
     src_row_base: usize,
     src_x: &[u32],
     dst_row: &mut [u8],
 ) {
-    const UNROLL: usize = 8;
-    let len = src_x.len();
     let mut dx = 0usize;
-    while dx + UNROLL <= len {
-        for offset in 0..UNROLL {
-            let sx = src_x[dx + offset] as usize;
-            let si = src_row_base + sx * 4;
-            let di = (dx + offset) * 4;
-            dst_row[di..di + 4].copy_from_slice(&src[si..si + 4]);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                downsample_rgba8_nearest_row_avx2(src, src_row_base, src_x, dst_row, &mut dx);
+            }
         }
-        dx += UNROLL;
     }
-    while dx < len {
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            downsample_rgba8_nearest_row_neon(src, src_row_base, src_x, dst_row, &mut dx);
+        }
+    }
+
+    while dx < src_x.len() {
         let sx = src_x[dx] as usize;
         let si = src_row_base + sx * 4;
         let di = dx * 4;
@@ -988,10 +1235,12 @@ mod tests {
 
     #[test]
     fn nearest_downsample_matches_reference() {
-        let src = make_patterned_rgba(32, 32);
-        let simd = downsample_rgba8_nearest(&src, 32, 32, 16, 16);
-        let reference = downsample_rgba8_nearest_reference(&src, 32, 32, 16, 16);
-        assert_eq!(simd, reference);
+        for &(sw, sh, dw, dh) in TEST_SIZES {
+            let src = make_patterned_rgba(sw, sh);
+            let simd = downsample_rgba8_nearest(&src, sw, sh, dw, dh);
+            let reference = downsample_rgba8_nearest_reference(&src, sw, sh, dw, dh);
+            assert_eq!(simd, reference, "nearest mismatch: {sw}x{sh} -> {dw}x{dh}");
+        }
     }
 
     #[test]

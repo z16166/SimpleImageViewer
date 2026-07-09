@@ -52,11 +52,21 @@ use crate::loader::orchestrator::{RawOpenPhaseTimings, RawOpenPrefetch};
 
 pub(crate) fn open_raw_processor_with_preview(
     path: &Path,
+    file_bytes: Option<&[u8]>,
 ) -> Result<(RawProcessor, Option<DecodedImage>, RawOpenPhaseTimings, i32), String> {
     let open_started = std::time::Instant::now();
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    processor.open(path)?;
+    let opened_from_bytes = if let Some(bytes) = file_bytes {
+        processor.open_buffer(bytes).is_ok()
+    } else if let Ok(mmap) = crate::mmap_util::map_file(path) {
+        processor.open_buffer_mmap(mmap).is_ok()
+    } else {
+        false
+    };
+    if !opened_from_bytes {
+        processor.open(path)?;
+    }
     let open_ms = crate::loader::elapsed_ms_u32(open_started);
 
     let lr_flip = processor.flip();
@@ -221,6 +231,8 @@ pub(crate) struct RawLoadRequest<'a> {
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Option<&'a RawOpenPrefetch>,
+    /// When set, LibRaw opens from memory instead of re-reading the file path.
+    pub(crate) file_bytes: Option<&'a [u8]>,
 }
 
 fn emit_raw_hq_bootstrap_preview(
@@ -264,6 +276,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         hdr_target_capacity,
         hdr_tone_map,
         raw_open_prefetch,
+        file_bytes,
     } = request;
     let (mut processor, preview_opt, open_timings, final_lr_flip, prefetched) = if let Some(
         session,
@@ -279,7 +292,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
             true,
         )
     } else {
-        match open_raw_processor_with_preview(path) {
+        match open_raw_processor_with_preview(path, file_bytes) {
             Ok((processor, preview, timings, final_lr_flip)) => {
                 (processor, preview, timings, final_lr_flip, false)
             }

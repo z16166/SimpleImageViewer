@@ -22,6 +22,11 @@ use rust_i18n::t;
 const HDR_SLIDER_VALUE_WIDTH: f32 = 90.0;
 const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 72.0;
 
+/// Persist slider/drag edits after the gesture ends (matches music volume + font size).
+fn slider_or_drag_committed(resp: &egui::Response) -> bool {
+    resp.drag_stopped() || (resp.changed() && !resp.dragged())
+}
+
 fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     let palette = app.cached_palette.clone();
     settings_card(ui, &palette, t!("section.slideshow"), |ui| {
@@ -37,16 +42,22 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             app.slideshow_paused = false;
         }
         if app.settings.auto_switch {
-            ui.horizontal(|ui| {
-                ui.label(t!("label.interval_sec"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut app.settings.auto_switch_interval)
-                            .range(0.5..=3600.0)
-                            .speed(0.5),
-                    );
-                });
-            });
+            let interval_resp = ui
+                .horizontal(|ui| {
+                    ui.label(t!("label.interval_sec"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut app.settings.auto_switch_interval)
+                                .range(0.5..=3600.0)
+                                .speed(0.5),
+                        )
+                    })
+                    .inner
+                })
+                .inner;
+            if slider_or_drag_committed(&interval_resp) {
+                app.queue_save();
+            }
             if themed_labeled_toggle(
                 ui,
                 &mut app.settings.random_slideshow_order,
@@ -109,12 +120,13 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         } else {
             t!("hdr.exposure_hint_when_native_hdr_output")
         };
+        let mut hdr_slider_committed = false;
         egui::Grid::new("hdr_settings_grid")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
                 ui.label(t!("hdr.exposure_ev"));
-                super::add_slider(
+                let exposure_resp = super::add_slider(
                     ui,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(exposure_slot, -8.0..=8.0)
@@ -123,10 +135,11 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(hint);
+                hdr_slider_committed |= slider_or_drag_committed(&exposure_resp);
                 ui.end_row();
 
                 ui.label(t!("hdr.sdr_white_nits"));
-                super::add_slider(
+                let sdr_white_resp = super::add_slider(
                     ui,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
@@ -135,10 +148,11 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(t!("hdr.sdr_white_hint"));
+                hdr_slider_committed |= slider_or_drag_committed(&sdr_white_resp);
                 ui.end_row();
 
                 ui.label(t!("hdr.max_display_nits"));
-                super::add_slider(
+                let max_display_resp = super::add_slider(
                     ui,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
@@ -147,6 +161,7 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(t!("hdr.max_display_hint"));
+                hdr_slider_committed |= slider_or_drag_committed(&max_display_resp);
                 ui.end_row();
             });
 
@@ -168,8 +183,10 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             if capacity_inputs_changed {
                 app.refresh_ultra_hdr_decode_capacity(ui.ctx());
             }
-            app.queue_save();
             ui.ctx().request_repaint();
+        }
+        if hdr_slider_committed {
+            app.queue_save();
         }
     });
 }
@@ -188,7 +205,7 @@ fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 
         // Grid: col-0 = labels (left-aligned, uniform width), col-1 = controls (fill to right edge).
         let old_style = app.settings.transition_style;
-        let old_ms = app.settings.transition_ms;
+        let mut transition_ms_committed = false;
         egui::Grid::new("transitions_grid")
             .num_columns(2)
             .spacing([8.0, 4.0])
@@ -258,16 +275,19 @@ fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 
                 if app.settings.transition_style != TransitionStyle::None {
                     ui.label(t!("label.duration"));
-                    super::add_slider(
+                    let duration_resp = super::add_slider(
                         ui,
                         TRANSITIONS_SLIDER_VALUE_WIDTH,
                         egui::Slider::new(&mut app.settings.transition_ms, 50..=2000).suffix("ms"),
                         super::SliderTrackMode::Elastic,
                     );
+                    transition_ms_committed = slider_or_drag_committed(&duration_resp);
                     ui.end_row();
                 }
             });
-        if old_style != app.settings.transition_style || old_ms != app.settings.transition_ms {
+        if old_style != app.settings.transition_style {
+            app.queue_save();
+        } else if transition_ms_committed {
             app.queue_save();
         }
     });

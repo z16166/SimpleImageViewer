@@ -39,6 +39,19 @@ pub(crate) struct IsoGainMapDeferredInput {
     pub(crate) hdr_target_capacity: f32,
 }
 
+/// Same as [`IsoGainMapDeferredInput`] but accepts shared plane buffers (animation reuse).
+pub(crate) struct IsoGainMapDeferredArcInput {
+    pub(crate) source: &'static str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: Arc<Vec<u8>>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) gain_rgba: Arc<Vec<u8>>,
+    pub(crate) metadata: GainMapMetadata,
+    pub(crate) hdr_target_capacity: f32,
+}
+
 pub(crate) fn attach_iso_gain_map_gpu_deferred(
     input: IsoGainMapDeferredInput,
 ) -> Result<HdrImageBuffer, String> {
@@ -53,13 +66,40 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
         metadata,
         hdr_target_capacity,
     } = input;
+    attach_iso_gain_map_gpu_deferred_arcs(IsoGainMapDeferredArcInput {
+        source,
+        width,
+        height,
+        sdr_rgba: Arc::new(sdr_rgba),
+        gain_width,
+        gain_height,
+        gain_rgba: Arc::new(gain_rgba),
+        metadata,
+        hdr_target_capacity,
+    })
+}
+
+pub(crate) fn attach_iso_gain_map_gpu_deferred_arcs(
+    input: IsoGainMapDeferredArcInput,
+) -> Result<HdrImageBuffer, String> {
+    let IsoGainMapDeferredArcInput {
+        source,
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        metadata,
+        hdr_target_capacity,
+    } = input;
     validate_iso_deferred_planes(
         width,
         height,
-        &sdr_rgba,
+        sdr_rgba.as_slice(),
         gain_width,
         gain_height,
-        &gain_rgba,
+        gain_rgba.as_slice(),
     )?;
     if metadata.backward_direction {
         return Err(format!(
@@ -67,8 +107,6 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
         ));
     }
 
-    let sdr_rgba = Arc::new(sdr_rgba);
-    let gain_rgba = Arc::new(gain_rgba);
     let weight = gain_map_weight(metadata, hdr_target_capacity);
     let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
     image_metadata.transfer_function = HdrTransferFunction::Srgb;

@@ -16,6 +16,7 @@
 
 pub mod io;
 pub mod model;
+pub mod spawn;
 pub mod validate;
 
 #[derive(Debug, Clone)]

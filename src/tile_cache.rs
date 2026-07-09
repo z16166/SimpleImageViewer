@@ -19,28 +19,48 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-/// Tile size in pixels (each tile is tile_size x tile_size).
-/// Dynamically adjusted: 1024 for gigapixel images (>500MP), 512 otherwise.
-pub static TILE_SIZE: AtomicU32 = AtomicU32::new(512);
+/// Packed tile size (high 32 bits) and GPU tile cache limit (low 32 bits).
+/// Updated atomically so readers never observe mismatched pairs.
+static TILE_CONFIG: AtomicU64 = AtomicU64::new(pack_tile_config(512, 512));
+
+const fn pack_tile_config(tile_size: u32, max_tiles_base: u32) -> u64 {
+    ((tile_size as u64) << 32) | (max_tiles_base as u64)
+}
+
+fn unpack_tile_config(packed: u64) -> (u32, u32) {
+    ((packed >> 32) as u32, packed as u32)
+}
 
 /// Get the current tile size.
 pub fn get_tile_size() -> u32 {
-    TILE_SIZE.load(Ordering::Acquire)
+    unpack_tile_config(TILE_CONFIG.load(Ordering::Acquire)).0
+}
+
+/// Get the current GPU tile cache base limit.
+pub fn get_max_tiles_base() -> usize {
+    unpack_tile_config(TILE_CONFIG.load(Ordering::Acquire)).1 as usize
 }
 
 /// Set tile size based on image dimensions.
-/// Also adjusts MAX_TILES_BASE to maintain constant VRAM budget.
+/// Also adjusts the GPU tile cache limit to maintain constant VRAM budget.
 pub fn set_tile_size_for_image(width: u32, height: u32) {
     let megapixels = (width as u64 * height as u64) / 1_000_000;
     let size = if megapixels > 500 { 1024 } else { 512 };
-    TILE_SIZE.store(size, Ordering::Release);
     // Keep VRAM budget constant: 512 tiles * 512*512*4 = 512MB
     // For 1024 tiles: 128 * 1024*1024*4 = 512MB
     let max_tiles = if size == 1024 { 128 } else { 512 };
-    MAX_TILES_BASE.store(max_tiles, Ordering::Release);
+    TILE_CONFIG.store(pack_tile_config(size, max_tiles), Ordering::Release);
+}
+
+/// Update the GPU tile cache base limit while preserving the current tile size.
+pub fn set_max_tiles_base(max_tiles: usize) {
+    let max_tiles = u32::try_from(max_tiles).unwrap_or(u32::MAX);
+    let packed = TILE_CONFIG.load(Ordering::Acquire);
+    let (tile_size, _) = unpack_tile_config(packed);
+    TILE_CONFIG.store(pack_tile_config(tile_size, max_tiles), Ordering::Release);
 }
 
 /// Pixel count threshold above which tiled mode is activated.
@@ -61,11 +81,6 @@ pub static MAX_TEXTURE_SIDE: AtomicU32 =
 pub fn get_max_texture_side() -> u32 {
     MAX_TEXTURE_SIDE.load(Ordering::Acquire)
 }
-
-/// Base maximum number of tile textures kept in GPU memory.
-/// 1024 tiles * 512x512 * 4 bytes = 1GB VRAM.
-/// This acts as a floor; the cache can expand to fit all currently visible tiles.
-pub static MAX_TILES_BASE: AtomicUsize = AtomicUsize::new(512);
 
 /// Coordinate of a tile within the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -601,7 +616,7 @@ impl TileManager {
             if allow_upload {
                 // Strict eviction: Never exceed the base limit determined by HardwareTier.
                 // We no longer expand the limit based on visible_count to prevent crashes.
-                let current_limit = MAX_TILES_BASE.load(Ordering::Acquire);
+                let current_limit = get_max_tiles_base();
 
                 // Evict if over limit, but NEVER evict tiles currently in the visible set.
                 // This prevents the "circular hole" artifact on high-DPI screens.
@@ -865,6 +880,21 @@ mod tests {
         fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
             None
         }
+    }
+
+    #[test]
+    fn set_tile_size_for_image_updates_size_and_limit_atomically() {
+        set_tile_size_for_image(8000, 6000);
+        assert_eq!(get_tile_size(), 512);
+        assert_eq!(get_max_tiles_base(), 512);
+
+        set_tile_size_for_image(30_000, 20_000);
+        assert_eq!(get_tile_size(), 1024);
+        assert_eq!(get_max_tiles_base(), 128);
+
+        set_max_tiles_base(448);
+        assert_eq!(get_tile_size(), 1024);
+        assert_eq!(get_max_tiles_base(), 448);
     }
 
     #[test]

@@ -263,6 +263,20 @@ impl Rgbe8Pixel {
     }
 }
 
+/// Batch RGBE8 scanline -> RGBA32F. Alpha is always 1.0.
+pub(crate) fn rgbe_pixels_to_rgba32f(pixels: &[Rgbe8Pixel], dst: &mut [f32]) {
+    let byte_len = pixels.len().saturating_mul(4);
+    if byte_len != dst.len() {
+        return;
+    }
+    if pixels.is_empty() {
+        return;
+    }
+    // SAFETY: `Rgbe8Pixel` is four packed bytes (RGB + exponent) with no padding.
+    let src = unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, byte_len) };
+    simple_image_viewer::simd_pixel_convert::rgbe8_to_rgba32f(src, dst, &RGBE_EXPONENT_SCALE);
+}
+
 #[cfg(test)]
 mod rgbe_scale_tests {
     use super::*;
@@ -291,5 +305,30 @@ mod rgbe_scale_tests {
         assert!((rgb[0] - 128.0 * scale).abs() < f32::EPSILON);
         assert!((rgb[1] - 128.0 * scale).abs() < f32::EPSILON);
         assert!((rgb[2] - 128.0 * scale).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rgbe_pixels_to_rgba32f_matches_scalar_pixels() {
+        let pixels = [
+            Rgbe8Pixel {
+                rgb: [128, 64, 32],
+                exponent: 129,
+            },
+            Rgbe8Pixel::default(),
+            Rgbe8Pixel {
+                rgb: [255, 0, 127],
+                exponent: 200,
+            },
+        ];
+        let mut batch = vec![0.0_f32; pixels.len() * 4];
+        super::rgbe_pixels_to_rgba32f(&pixels, &mut batch);
+        for (index, pixel) in pixels.iter().enumerate() {
+            let rgb = pixel.to_rgb_f32();
+            let offset = index * 4;
+            assert_eq!(batch[offset], rgb[0], "pixel={index}");
+            assert_eq!(batch[offset + 1], rgb[1], "pixel={index}");
+            assert_eq!(batch[offset + 2], rgb[2], "pixel={index}");
+            assert_eq!(batch[offset + 3], 1.0, "pixel={index}");
+        }
     }
 }

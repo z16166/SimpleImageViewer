@@ -444,23 +444,20 @@ pub(crate) fn load_via_libtiff_from_mmap(
 
         // Try RGBA interface first ONLY if not forced static
         if !force_static {
-            let mut raster: Vec<lib::uint32> = vec![0; total_pixels];
+            pixels = vec![0u8; rgba_byte_len];
+            // SAFETY: libtiff RGBA raster is native-endian u32 pixels; layout matches `Vec<u8>`.
             if lib::TIFFReadRGBAImageOriented(
                 handle.as_ptr(),
                 width,
                 height,
-                raster.as_mut_ptr(),
+                pixels.as_mut_ptr() as *mut lib::uint32,
                 1,
                 0,
             ) != 0
             {
-                pixels = vec![0u8; rgba_byte_len];
-                std::ptr::copy_nonoverlapping(
-                    raster.as_ptr() as *const u8,
-                    pixels.as_mut_ptr(),
-                    pixels.len(),
-                );
                 success = true;
+            } else {
+                pixels.clear();
             }
         }
 

@@ -327,7 +327,7 @@ impl ImageViewerApp {
                                     target_format: format,
                                     width,
                                     height,
-                                    pixels,
+                                    pixels: Arc::new(pixels),
                                 },
                             );
                         }
@@ -389,7 +389,7 @@ impl ImageViewerApp {
                                     target_format: format,
                                     width,
                                     height,
-                                    pixels,
+                                    pixels: Arc::new(pixels),
                                 },
                             );
                         }
@@ -456,7 +456,7 @@ impl ImageViewerApp {
                                     target_format: format,
                                     width,
                                     height,
-                                    pixels,
+                                    pixels: Arc::new(pixels),
                                 },
                             );
                         }
@@ -766,7 +766,7 @@ impl ImageViewerApp {
                         target_capacity_bits,
                         width,
                         height,
-                        &pixels,
+                        Arc::clone(&pixels),
                     ) {
                         Ok(()) => {
                             changed = true;
@@ -807,7 +807,7 @@ impl ImageViewerApp {
                         target_capacity_bits,
                         width,
                         height,
-                        &pixels,
+                        Arc::clone(&pixels),
                     ) {
                         Ok(()) => {
                             changed = true;
@@ -847,7 +847,7 @@ impl ImageViewerApp {
                         target_capacity_bits,
                         width,
                         height,
-                        &pixels,
+                        Arc::clone(&pixels),
                     ) {
                         Ok(()) => {
                             changed = true;

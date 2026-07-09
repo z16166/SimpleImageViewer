@@ -352,8 +352,7 @@ impl ImageViewerApp {
         let tile_quota = tier.max_tile_quota();
 
         // Apply hardware budgets to global caches
-        crate::tile_cache::MAX_TILES_BASE
-            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Release);
+        crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
         crate::tile_cache::TILED_THRESHOLD.store(
             tier.tiled_threshold_pixels(),
             std::sync::atomic::Ordering::Release,

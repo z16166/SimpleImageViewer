@@ -54,6 +54,8 @@ pub struct TextureCache {
     entries: HashMap<usize, CachedTexture>,
     /// Cached keys for bounded eviction scans (len <= max_size + 1).
     cached_indices: Vec<usize>,
+    /// `cached_indices` position per key for O(1) relocate/remove.
+    cached_index_slot: HashMap<usize, usize>,
     /// `(current_index, total_count)` for which `evict_furthest_idx` was computed.
     evict_anchor: (usize, usize),
     /// Index with greatest circular distance from `evict_anchor`.
@@ -77,6 +79,7 @@ impl TextureCache {
         Self {
             entries: HashMap::new(),
             cached_indices: Vec::new(),
+            cached_index_slot: HashMap::new(),
             evict_anchor: (0, 0),
             evict_furthest_idx: None,
             evict_furthest_dist: 0,
@@ -102,7 +105,9 @@ impl TextureCache {
             },
         );
         if is_new_key {
+            let pos = self.cached_indices.len();
             self.cached_indices.push(index);
+            self.cached_index_slot.insert(index, pos);
         }
         self.refresh_evict_candidate(params.current_index, params.total_count, index);
         self.evict(params.current_index, params.total_count)
@@ -137,8 +142,9 @@ impl TextureCache {
         if let Some(entry) = self.entries.remove(&from) {
             self.entries.insert(to, entry);
         }
-        if let Some(slot) = self.cached_indices.iter_mut().find(|i| **i == from) {
-            *slot = to;
+        if let Some(pos) = self.cached_index_slot.remove(&from) {
+            self.cached_indices[pos] = to;
+            self.cached_index_slot.insert(to, pos);
         }
         self.evict_furthest_idx = None;
     }
@@ -149,6 +155,10 @@ impl TextureCache {
             if *idx < old_to_new.len() {
                 *idx = old_to_new[*idx];
             }
+        }
+        self.cached_index_slot.clear();
+        for (pos, &idx) in self.cached_indices.iter().enumerate() {
+            self.cached_index_slot.insert(idx, pos);
         }
         self.evict_furthest_idx = None;
     }
@@ -193,12 +203,23 @@ impl TextureCache {
     pub fn clear_all(&mut self) {
         self.entries.clear();
         self.cached_indices.clear();
+        self.cached_index_slot.clear();
         self.evict_furthest_idx = None;
         self.evict_furthest_dist = 0;
     }
 
     fn drop_cached_index(&mut self, index: usize) {
-        self.cached_indices.retain(|&i| i != index);
+        let Some(&pos) = self.cached_index_slot.get(&index) else {
+            return;
+        };
+        let last_pos = self.cached_indices.len() - 1;
+        if pos != last_pos {
+            let swapped = self.cached_indices[last_pos];
+            self.cached_indices[pos] = swapped;
+            self.cached_index_slot.insert(swapped, pos);
+        }
+        self.cached_indices.pop();
+        self.cached_index_slot.remove(&index);
     }
 
     fn consider_evict_candidate(&mut self, current_index: usize, total_count: usize, idx: usize) {

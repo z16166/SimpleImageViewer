@@ -395,7 +395,7 @@ fn with_preview_hdr_texture<R>(
                     Arc::clone(&cached.upload.texture),
                     buffer.width,
                     buffer.height,
-                    buffer.rgba_f32.as_slice(),
+                    Arc::clone(&buffer.rgba_f32),
                 )?;
                 cached.pixels_key = pixels_key;
             } else {

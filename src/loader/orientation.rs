@@ -136,19 +136,35 @@ pub(crate) fn apply_exif_orientation_to_image_data(
             ImageData::Animated(out)
         }
         ImageData::HdrAnimated(frames) => {
+            // Resolve Orientation once for the whole sequence -- do not re-scan
+            // ISOBMFF/EXIF per frame via apply_exif_orientation_to_hdr_pair.
+            #[cfg(feature = "heif-native")]
+            let mut o = resolve_exif_orientation(path, file_bytes);
+            #[cfg(not(feature = "heif-native"))]
             let o = resolve_exif_orientation(path, file_bytes);
             if o <= 1 || frames.is_empty() {
+                return ImageData::HdrAnimated(frames);
+            }
+            #[cfg(feature = "heif-native")]
+            if let Some(first) = frames.first()
+                && crate::hdr::heif::decoded_pixels_match_swapped_ispe(
+                    path,
+                    first.hdr.width,
+                    first.hdr.height,
+                    file_bytes,
+                )
+            {
+                o = 1;
+            }
+            #[cfg(feature = "heif-native")]
+            if o <= 1 {
                 return ImageData::HdrAnimated(frames);
             }
             let out = frames
                 .into_iter()
                 .map(|frame| {
-                    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(
-                        path,
-                        frame.hdr,
-                        frame.fallback,
-                        file_bytes,
-                    );
+                    let (hdr, fallback) =
+                        apply_orientation_to_hdr_pair_known(o, frame.hdr, frame.fallback);
                     HdrAnimationFrame::new(hdr, fallback, frame.delay)
                 })
                 .collect();
@@ -156,6 +172,35 @@ pub(crate) fn apply_exif_orientation_to_image_data(
         }
         other => other,
     }
+}
+
+/// Apply a **known** JEITA/TIFF Orientation (1-8) to an HDR + SDR fallback pair.
+/// Callers that already resolved Orientation (e.g. animated sequences) must use this
+/// instead of [`apply_exif_orientation_to_hdr_pair`] to avoid repeated EXIF/ISOBMFF scans.
+fn apply_orientation_to_hdr_pair_known(
+    orientation: u16,
+    hdr: crate::hdr::types::HdrImageBuffer,
+    fallback: DecodedImage,
+) -> (crate::hdr::types::HdrImageBuffer, DecodedImage) {
+    if orientation <= 1 {
+        return (hdr, fallback);
+    }
+    let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
+    let w = fallback.width;
+    let h = fallback.height;
+    let mut fallback = fallback;
+    let pixels_arc = fallback.take_pixels_arc();
+    let (ow, oh, opx) = match Arc::try_unwrap(pixels_arc) {
+        Ok(px) => crate::libtiff_loader::apply_orientation_buffer(px, w, h, orientation),
+        Err(arc) => crate::libtiff_loader::apply_orientation_buffer_from_slice(
+            arc.as_ref(),
+            w,
+            h,
+            orientation,
+        ),
+    };
+    fallback.set_rgba_buffer_preserving_placeholder(ow, oh, opx, true);
+    (hdr, fallback)
 }
 
 pub(crate) fn apply_exif_orientation_to_hdr_pair(
@@ -173,20 +218,5 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     {
         o = 1;
     }
-    if o <= 1 {
-        return (hdr, fallback);
-    }
-    let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, o);
-    let w = fallback.width;
-    let h = fallback.height;
-    let mut fallback = fallback;
-    let pixels_arc = fallback.take_pixels_arc();
-    let (ow, oh, opx) = match Arc::try_unwrap(pixels_arc) {
-        Ok(px) => crate::libtiff_loader::apply_orientation_buffer(px, w, h, o),
-        Err(arc) => {
-            crate::libtiff_loader::apply_orientation_buffer_from_slice(arc.as_ref(), w, h, o)
-        }
-    };
-    fallback.set_rgba_buffer_preserving_placeholder(ow, oh, opx, true);
-    (hdr, fallback)
+    apply_orientation_to_hdr_pair_known(o, hdr, fallback)
 }
