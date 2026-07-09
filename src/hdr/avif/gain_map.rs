@@ -24,6 +24,23 @@ pub(crate) fn decode_avif_gain_map<F: Fn(libavif_sys::avifResult) -> String>(
     image_ref: &libavif_sys::avifImage,
     result_to_string: &F,
 ) -> Option<(GainMapMetadata, u32, u32, Vec<u8>)> {
+    let (metadata, gain_image_ptr, gain_width, gain_height) =
+        peek_avif_gain_map_metadata(image_ref)?;
+    let gain_image = unsafe { &*gain_image_ptr };
+    let gain_rgba = match decode_avif_image_rgba_u8(gain_image_ptr, gain_image, result_to_string) {
+        Ok(pixels) => pixels,
+        Err(err) => {
+            log::warn!("[HDR] AVIF gain map pixel decode failed: {err}");
+            return None;
+        }
+    };
+    Some((metadata, gain_width, gain_height, gain_rgba))
+}
+
+/// Metadata + gain image size without decoding gain-map pixels (for sequence reuse probes).
+pub(crate) fn peek_avif_gain_map_metadata(
+    image_ref: &libavif_sys::avifImage,
+) -> Option<(GainMapMetadata, *mut libavif_sys::avifImage, u32, u32)> {
     if image_ref.gainMap.is_null() {
         return None;
     }
@@ -40,14 +57,12 @@ pub(crate) fn decode_avif_gain_map<F: Fn(libavif_sys::avifResult) -> String>(
         }
     };
     let gain_image = unsafe { &*gain_map.image };
-    let gain_rgba = match decode_avif_image_rgba_u8(gain_map.image, gain_image, result_to_string) {
-        Ok(pixels) => pixels,
-        Err(err) => {
-            log::warn!("[HDR] AVIF gain map pixel decode failed: {err}");
-            return None;
-        }
-    };
-    Some((metadata, gain_image.width, gain_image.height, gain_rgba))
+    Some((
+        metadata,
+        gain_map.image,
+        gain_image.width,
+        gain_image.height,
+    ))
 }
 
 #[cfg(feature = "avif-native")]

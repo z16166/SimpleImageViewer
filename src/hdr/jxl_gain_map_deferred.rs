@@ -23,8 +23,14 @@ use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
     iso_gain_map_skips_forward_compose, parse_iso_gain_map_metadata, sample_gain_map_rgb,
 };
+use crate::hdr::iso_gain_map_frame_reuse::{
+    IsoGainMapFrameReuse, IsoGainMapGainDecodePolicy, iso_gain_map_may_skip_gain_decode,
+    select_iso_gain_map_planes,
+};
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
-use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
+use crate::hdr::jpeg_gain_map_gpu::{
+    IsoGainMapDeferredArcInput, attach_iso_gain_map_gpu_deferred_arcs,
+};
 use crate::hdr::jpegxl::{
     JxlGainMapBundleRef, decode_jxl_gain_map_from_bundle, read_jxl_gain_map_bundle, srgb_unit_to_u8,
 };
@@ -110,6 +116,7 @@ pub(crate) fn jxl_rgba_f32_to_iso_sdr_baseline(
     sdr_rgba
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_jxl_jhgm_gain_map_gpu_deferred(
     parsed: &JxlJhgmParsed<'_>,
     target_hdr_capacity: f32,
@@ -118,6 +125,7 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
     height: u32,
     color_space: HdrColorSpace,
     metadata: &HdrImageMetadata,
+    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
 ) -> Result<HdrImageBuffer, String> {
     if parsed.skips_forward_compose {
         log::debug!(
@@ -135,18 +143,54 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
         ));
     }
 
-    let (gain_metadata, gain_width, gain_height, gain_rgba) =
-        decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
     let sdr_rgba = jxl_rgba_f32_to_iso_sdr_baseline(base_rgba_f32, color_space, metadata);
-    attach_iso_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::IsoGainMapDeferredInput {
-        source: "JPEG XL",
+    let policy = IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode;
+    let mut local_reuse = None;
+    let reuse_slot = match reuse {
+        Some(slot) => slot,
+        None => &mut local_reuse,
+    };
+
+    let new_gain = if iso_gain_map_may_skip_gain_decode(
+        reuse_slot,
+        policy,
+        width,
+        height,
+        &sdr_rgba,
+        parsed.metadata,
+        target_hdr_capacity,
+    ) {
+        None
+    } else {
+        let (gain_metadata, gain_width, gain_height, gain_rgba) =
+            decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
+        debug_assert_eq!(gain_metadata, parsed.metadata);
+        Some((gain_width, gain_height, gain_rgba))
+    };
+
+    let selected = select_iso_gain_map_planes(
+        reuse_slot,
+        policy,
         width,
         height,
         sdr_rgba,
-        gain_width,
-        gain_height,
-        gain_rgba,
-        metadata: gain_metadata,
+        new_gain,
+        parsed.metadata,
+        target_hdr_capacity,
+    );
+    if selected.needs_gain_decode {
+        return Err("JPEG XL jhgm gain plane required but decode was skipped".to_string());
+    }
+
+    attach_iso_gain_map_gpu_deferred_arcs(IsoGainMapDeferredArcInput {
+        source: "JPEG XL",
+        width,
+        height,
+        sdr_rgba: selected.sdr_rgba,
+        gain_width: selected.gain_width,
+        gain_height: selected.gain_height,
+        gain_rgba: selected.gain_rgba,
+        metadata: selected.metadata,
         hdr_target_capacity: target_hdr_capacity,
     })
 }
@@ -167,6 +211,7 @@ fn jxl_hdr_buffer_from_rgba(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_jxl_jhgm_cpu_compose(
     parsed: &JxlJhgmParsed<'_>,
     target_hdr_capacity: f32,
@@ -174,25 +219,65 @@ fn apply_jxl_jhgm_cpu_compose(
     width: u32,
     height: u32,
     metadata: &HdrImageMetadata,
+    reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
 ) -> Result<HdrImageBuffer, String> {
     let expected_len = width as usize * height as usize * 4;
     let color_space = metadata.color_space_hint();
-    let (gain_metadata, gain_width, gain_height, gain_rgba) =
-        decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
-    let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
     let sdr_baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba_f32, color_space, metadata);
+    let policy = IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode;
+    let mut local_reuse = None;
+    let reuse_slot = match reuse {
+        Some(slot) => slot,
+        None => &mut local_reuse,
+    };
+
+    let new_gain = if iso_gain_map_may_skip_gain_decode(
+        reuse_slot,
+        policy,
+        width,
+        height,
+        &sdr_baseline,
+        parsed.metadata,
+        target_hdr_capacity,
+    ) {
+        None
+    } else {
+        let (_gain_metadata, gain_width, gain_height, gain_rgba) =
+            decode_jxl_gain_map_from_bundle(&parsed.bundle, parsed.metadata, target_hdr_capacity)?;
+        Some((gain_width, gain_height, gain_rgba))
+    };
+
+    let selected = select_iso_gain_map_planes(
+        reuse_slot,
+        policy,
+        width,
+        height,
+        sdr_baseline,
+        new_gain,
+        parsed.metadata,
+        target_hdr_capacity,
+    );
+    if selected.needs_gain_decode {
+        return Err("JPEG XL jhgm gain plane required but decode was skipped".to_string());
+    }
+
+    let gain_metadata = selected.metadata;
+    let gain_width = selected.gain_width;
+    let gain_height = selected.gain_height;
+    let gain_rgba = selected.gain_rgba.as_slice();
+    let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
     let mut composed = Vec::with_capacity(expected_len);
     for y in 0..height {
         for x in 0..width {
             let index = (y as usize * width as usize + x as usize) * 4;
             let sdr_rgba = [
-                sdr_baseline[index],
-                sdr_baseline[index + 1],
-                sdr_baseline[index + 2],
-                sdr_baseline[index + 3],
+                selected.sdr_rgba[index],
+                selected.sdr_rgba[index + 1],
+                selected.sdr_rgba[index + 2],
+                selected.sdr_rgba[index + 3],
             ];
             let gain_value =
-                sample_gain_map_rgb(&gain_rgba, gain_width, gain_height, x, y, width, height);
+                sample_gain_map_rgb(gain_rgba, gain_width, gain_height, x, y, width, height);
             append_hdr_pixel_from_sdr_and_gain(
                 &mut composed,
                 &sdr_rgba,
@@ -229,6 +314,8 @@ pub(crate) struct JxlJhgmFrameInput<'a> {
     pub metadata: &'a HdrImageMetadata,
     pub strip_baseline_only: bool,
     pub embedded_sdr_master_load: bool,
+    /// Animation decode may pass a slot to reuse ISO planes across frames.
+    pub reuse: Option<&'a mut Option<IsoGainMapFrameReuse>>,
 }
 
 pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFrameOutcome {
@@ -241,8 +328,12 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
         metadata,
         strip_baseline_only,
         embedded_sdr_master_load,
+        mut reuse,
     } = input;
     let Some(jhgm_box) = jhgm_box else {
+        if let Some(slot) = reuse.as_mut() {
+            **slot = None;
+        }
         return JxlJhgmFrameOutcome::Unprocessed;
     };
 
@@ -250,6 +341,9 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
         Ok(parsed) => parsed,
         Err(err) => {
             log::warn!("[HDR] JPEG XL jhgm metadata: {err}");
+            if let Some(slot) = reuse.as_mut() {
+                **slot = None;
+            }
             return JxlJhgmFrameOutcome::Unprocessed;
         }
     };
@@ -258,6 +352,9 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
         log::debug!(
             "[HDR] JPEG XL jhgm: primary codestream is precomposed HDR base; skipping forward gain-map compose"
         );
+        if let Some(slot) = reuse.as_mut() {
+            **slot = None;
+        }
         return JxlJhgmFrameOutcome::PrecomposedHdr(jxl_hdr_buffer_from_rgba(
             rgba.to_vec(),
             width,
@@ -268,6 +365,9 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
 
     let color_space = metadata.color_space_hint();
     if strip_baseline_only {
+        if let Some(slot) = reuse.as_mut() {
+            **slot = None;
+        }
         let baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba, color_space, metadata);
         if embedded_sdr_master_load {
             match attach_iso_embedded_sdr_master_only(
@@ -294,6 +394,7 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
         height,
         color_space,
         metadata,
+        reuse.as_deref_mut(),
     ) {
         Ok(deferred) => return JxlJhgmFrameOutcome::GpuDeferred(deferred),
         Err(err) => {
@@ -301,10 +402,21 @@ pub(crate) fn finish_jxl_jhgm_frame(input: JxlJhgmFrameInput<'_>) -> JxlJhgmFram
         }
     }
 
-    match apply_jxl_jhgm_cpu_compose(&parsed, target_hdr_capacity, rgba, width, height, metadata) {
+    match apply_jxl_jhgm_cpu_compose(
+        &parsed,
+        target_hdr_capacity,
+        rgba,
+        width,
+        height,
+        metadata,
+        reuse.as_deref_mut(),
+    ) {
         Ok(hdr) => JxlJhgmFrameOutcome::CpuComposed(hdr),
         Err(err) => {
             log::warn!("[HDR] JPEG XL jhgm gain-map fallback: {err}");
+            if let Some(slot) = reuse.as_mut() {
+                **slot = None;
+            }
             JxlJhgmFrameOutcome::Unprocessed
         }
     }
@@ -355,6 +467,7 @@ mod tests {
             metadata: &meta,
             strip_baseline_only: false,
             embedded_sdr_master_load: false,
+            reuse: None,
         });
         assert!(matches!(out, JxlJhgmFrameOutcome::Unprocessed));
     }

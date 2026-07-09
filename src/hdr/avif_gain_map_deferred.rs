@@ -20,10 +20,13 @@ use crate::hdr::decode::{
     decode_transfer_to_display_linear, linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8,
 };
 use crate::hdr::gain_map::{GainMapMetadata, gain_map_metadata_diagnostic};
-use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
+use crate::hdr::jpeg_gain_map_gpu::{
+    IsoGainMapDeferredArcInput, attach_iso_gain_map_gpu_deferred_arcs,
+};
 use crate::hdr::types::{
     DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata,
 };
+use std::sync::Arc;
 
 /// Build ISO forward gain-map baseline sRGB u8 samples from libavif RGBA16 output.
 pub(crate) fn avif_build_iso_sdr_baseline_rgba8(
@@ -57,6 +60,7 @@ pub(crate) fn avif_build_iso_sdr_baseline_rgba8(
     sdr_rgba
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AvifGainMapDeferredInput {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -69,10 +73,50 @@ pub(crate) struct AvifGainMapDeferredInput {
     pub(crate) target_hdr_capacity: f32,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn attach_avif_gain_map_gpu_deferred(
     input: AvifGainMapDeferredInput,
 ) -> Result<HdrImageBuffer, String> {
     let AvifGainMapDeferredInput {
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        gain_metadata,
+        container_luminance,
+        target_hdr_capacity,
+    } = input;
+    attach_avif_gain_map_gpu_deferred_arcs(AvifGainMapDeferredArcInput {
+        width,
+        height,
+        sdr_rgba: Arc::new(sdr_rgba),
+        gain_width,
+        gain_height,
+        gain_rgba: Arc::new(gain_rgba),
+        gain_metadata,
+        container_luminance,
+        target_hdr_capacity,
+    })
+}
+
+pub(crate) struct AvifGainMapDeferredArcInput {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) sdr_rgba: Arc<Vec<u8>>,
+    pub(crate) gain_width: u32,
+    pub(crate) gain_height: u32,
+    pub(crate) gain_rgba: Arc<Vec<u8>>,
+    pub(crate) gain_metadata: GainMapMetadata,
+    pub(crate) container_luminance: HdrLuminanceMetadata,
+    pub(crate) target_hdr_capacity: f32,
+}
+
+pub(crate) fn attach_avif_gain_map_gpu_deferred_arcs(
+    input: AvifGainMapDeferredArcInput,
+) -> Result<HdrImageBuffer, String> {
+    let AvifGainMapDeferredArcInput {
         width,
         height,
         sdr_rgba,
@@ -93,18 +137,17 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred(
         "[HDR][AVIF] ISO gain map deferred metadata: {}",
         gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity)
     );
-    let mut buffer =
-        attach_iso_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::IsoGainMapDeferredInput {
-            source: "AVIF",
-            width,
-            height,
-            sdr_rgba,
-            gain_width,
-            gain_height,
-            gain_rgba,
-            metadata: gain_metadata,
-            hdr_target_capacity: target_hdr_capacity,
-        })?;
+    let mut buffer = attach_iso_gain_map_gpu_deferred_arcs(IsoGainMapDeferredArcInput {
+        source: "AVIF",
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        metadata: gain_metadata,
+        hdr_target_capacity: target_hdr_capacity,
+    })?;
     merge_avif_container_luminance(&mut buffer, container_luminance);
     Ok(buffer)
 }

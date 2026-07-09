@@ -65,6 +65,7 @@ pub(crate) struct IsoGainMapFrameReuse {
     pub(crate) gain_rgba: Arc<Vec<u8>>,
     pub(crate) gain_width: u32,
     pub(crate) gain_height: u32,
+    #[allow(dead_code)] // retained for diagnostics / future key extensions
     pub(crate) metadata: GainMapMetadata,
 }
 
@@ -77,6 +78,7 @@ pub(crate) struct SelectedIsoPlanes {
     pub(crate) gain_height: u32,
     pub(crate) metadata: GainMapMetadata,
     /// True when the caller must not decode a new gain plane (reuse already applied).
+    #[allow(dead_code)] // inspected by unit tests and future callers
     pub(crate) skipped_gain_decode: bool,
     /// True when gain was requested but not provided and policy forbids skip -- caller must decode.
     pub(crate) needs_gain_decode: bool,
@@ -146,13 +148,11 @@ pub(crate) fn iso_gain_map_may_skip_gain_decode(
     }
     match policy {
         IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode => true,
-        IsoGainMapGainDecodePolicy::KeyAndSdrMatchSkipsGainDecode => {
-            rgba8_planes_within_threshold(
-                new_sdr,
-                prev.sdr_rgba.as_slice(),
-                ISO_GAIN_MAP_FRAME_DIFF_MAX_ABS,
-            )
-        }
+        IsoGainMapGainDecodePolicy::KeyAndSdrMatchSkipsGainDecode => rgba8_planes_within_threshold(
+            new_sdr,
+            prev.sdr_rgba.as_slice(),
+            ISO_GAIN_MAP_FRAME_DIFF_MAX_ABS,
+        ),
     }
 }
 
@@ -161,6 +161,7 @@ pub(crate) fn iso_gain_map_may_skip_gain_decode(
 /// When `new_gain` is `None` and policy allows skip, returns previous gain with
 /// `skipped_gain_decode = true`. When `new_gain` is `None` and skip is not allowed,
 /// returns `needs_gain_decode = true` without updating reuse (caller must decode and retry).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn select_iso_gain_map_planes(
     reuse: &mut Option<IsoGainMapFrameReuse>,
     policy: IsoGainMapGainDecodePolicy,
@@ -182,9 +183,9 @@ pub(crate) fn select_iso_gain_map_planes(
                 ISO_GAIN_MAP_FRAME_DIFF_MAX_ABS,
             )
     });
-    let key_matches_prev = reuse.as_ref().is_some_and(|prev| {
-        prev.width == width && prev.height == height && prev.key == key
-    });
+    let key_matches_prev = reuse
+        .as_ref()
+        .is_some_and(|prev| prev.width == width && prev.height == height && prev.key == key);
 
     let may_skip = match policy {
         IsoGainMapGainDecodePolicy::KeyMatchSkipsGainDecode => key_matches_prev,

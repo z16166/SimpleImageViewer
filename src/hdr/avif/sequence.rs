@@ -95,6 +95,7 @@ fn decode_avif_sequence_frames_from_decoder(
         usize::try_from(total).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
     let limit = max_frames.unwrap_or(total).min(total);
     let mut frames = Vec::with_capacity(limit);
+    let mut iso_reuse = None;
     for _ in 0..limit {
         let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
         if r != libavif_sys::AVIF_RESULT_OK {
@@ -114,7 +115,11 @@ fn decode_avif_sequence_frames_from_decoder(
         if img_ptr.is_null() {
             return Err("libavif decoder image is null".to_string());
         }
-        let hdr = super::avif_image_to_hdr_buffer(img_ptr, target_hdr_capacity)?;
+        let hdr = super::avif_image_to_hdr_buffer_with_reuse(
+            img_ptr,
+            target_hdr_capacity,
+            Some(&mut iso_reuse),
+        )?;
 
         let delay_ms = (timing.duration * 1000.0)
             .round()

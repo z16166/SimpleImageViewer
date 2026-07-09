@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **Smoother HDR browsing**: HDR uploads skip unnecessary CPU copying, texture cache lookups stay fast during pan and zoom, and idle GPU memory is reclaimed more predictably.
 - **Faster animated JPEG XL startup**: Later animation frames reuse mapped file data instead of reopening the file for each decode pass.
 - **Faster HDR gain-map thumbnails**: ISO gain-map compositing for navigation-strip previews uses wider vector processing.
+- **Faster HDR AVIF and JPEG XL animations**: Animations with gain maps load quicker when consecutive frames are nearly unchanged.
 
 ### Fixed
 - **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
