@@ -16,6 +16,8 @@
 
 mod compose;
 mod core;
+#[cfg(target_arch = "x86_64")]
+mod core_avx2;
 
 #[cfg(test)]
 mod tests;

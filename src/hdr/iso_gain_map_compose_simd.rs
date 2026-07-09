@@ -17,9 +17,10 @@
 //! SIMD/NEON ISO gain-map CPU compose fallback (Ultra HDR / AVIF JPEG-R deferred planes).
 //!
 //! Rows compose in parallel via rayon; each row upsamples the gain map once with
-//! [`precompute_gain_map_row_encoded`]. Per-pixel ISO recovery uses [`pow4_sse41`] /
-//! [`pow4_neon`] for gain shaping and [`exp2_4_sse41`] / [`exp2_4_neon`] for per-lane
-//! `2^log_boost`, matching the scalar reference within the same tolerance band as
+//! [`precompute_gain_map_row_encoded`]. Per-pixel ISO recovery uses AVX2 (`pow8_avx2` /
+//! `exp2_8_avx2`, 8 pixels/step), SSE4.1 (`pow4_sse41` / `exp2_4_sse41`), or NEON
+//! (`pow4_neon` / `exp2_4_neon`) for gain shaping and per-lane `2^log_boost`, matching
+//! the scalar reference within the same tolerance band as
 //! [`crate::hdr::heif_apple_gain_map_compose_simd`].
 
 use std::cell::RefCell;
@@ -40,6 +41,10 @@ use crate::hdr::types::IsoGainMapGpuSource;
 use core::arch::aarch64::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
+
+#[cfg(target_arch = "x86_64")]
+#[path = "iso_gain_map_compose_simd_avx2.rs"]
+mod avx2;
 
 const SIMD_PIXELS_PER_STEP: u32 = 4;
 
@@ -148,7 +153,20 @@ fn compose_iso_row(
     let mut x = {
         #[cfg(target_arch = "x86_64")]
         {
-            if std::arch::is_x86_feature_detected!("sse4.1") {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                let mut simd_x = 0_u32;
+                unsafe {
+                    avx2::compose_iso_row_avx2(
+                        sdr_row,
+                        row_out,
+                        gain_row,
+                        width as u32,
+                        constants,
+                        &mut simd_x,
+                    );
+                }
+                simd_x as usize
+            } else if std::arch::is_x86_feature_detected!("sse4.1") {
                 let mut simd_x = 0_u32;
                 unsafe {
                     compose_iso_row_sse41(

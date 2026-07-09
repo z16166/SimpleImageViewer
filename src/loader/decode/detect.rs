@@ -303,16 +303,6 @@ pub(crate) struct PrimaryLoadOutcome {
     pub retained_mmap: Option<Arc<memmap2::Mmap>>,
 }
 
-impl PrimaryLoadOutcome {
-    #[inline]
-    pub(crate) fn from_result(result: Result<ImageData, String>) -> Self {
-        Self {
-            result,
-            retained_mmap: None,
-        }
-    }
-}
-
 /// Run the extension-matched loader first; only mislabeled or mismatched files pay sniffing cost.
 ///
 /// On success, [`PrimaryLoadOutcome::retained_mmap`] keeps the primary mmap so callers can

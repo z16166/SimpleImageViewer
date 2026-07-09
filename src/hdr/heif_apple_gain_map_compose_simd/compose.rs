@@ -24,6 +24,8 @@ use super::core::{
     ComposeFastPath, ComposeRowTransform, GainRowLinear, SIMD_PIXELS_PER_STEP, classify_fast_path,
     compose_row_scalar, precompute_gain_row_linear,
 };
+#[cfg(target_arch = "x86_64")]
+use super::core_avx2::compose_row_avx2;
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -50,7 +52,12 @@ fn compose_row(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("sse4.1") {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            unsafe {
+                compose_row_avx2(row_in, row_out, width, gain_rgb, transform);
+            }
+            return;
+        } else if std::arch::is_x86_feature_detected!("sse4.1") {
             unsafe {
                 compose_row_sse41(row_in, row_out, width, gain_rgb, transform);
             }
