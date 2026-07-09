@@ -572,7 +572,8 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_tone_map,
             high_quality,
             || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
-        );
+        )
+        .result;
     }
 
     if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
@@ -623,7 +624,8 @@ fn open_image_data_for_directory_tree_thumb(
                     )
                 }
             },
-        );
+        )
+        .result;
     }
 
     if path_has_extension(path, "tif") || path_has_extension(path, "tiff") {
@@ -655,7 +657,8 @@ fn open_image_data_for_directory_tree_thumb(
                     )
                 })
             },
-        );
+        )
+        .result;
     }
 
     if path_has_extension(path, "avif") || path_has_extension(path, "avifs") {
@@ -676,7 +679,8 @@ fn open_image_data_for_directory_tree_thumb(
                     )
                 })
             },
-        );
+        )
+        .result;
     }
 
     if path_has_extension(path, "jxl") {
@@ -697,7 +701,8 @@ fn open_image_data_for_directory_tree_thumb(
                     )
                 })
             },
-        );
+        )
+        .result;
     }
 
     if path_has_extension(path, "heif")
@@ -725,7 +730,8 @@ fn open_image_data_for_directory_tree_thumb(
                     )
                 })
             },
-        );
+        )
+        .result;
     }
 
     let reg = crate::formats::get_registry().read();
@@ -755,6 +761,7 @@ fn open_image_data_for_directory_tree_thumb(
             })
         },
     )
+    .result
 }
 
 fn open_raw_image_data_for_directory_tree_thumb(

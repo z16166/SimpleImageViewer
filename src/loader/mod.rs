@@ -78,7 +78,7 @@ pub(crate) use hdr_fallback::{
     static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
-    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes, extract_exif_thumbnail_from_mmap,
     extract_exif_thumbnail_from_mmap_probed, extract_exif_thumbnail_probed,
 };
 pub(crate) use orientation::{

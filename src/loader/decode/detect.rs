@@ -294,7 +294,29 @@ pub(crate) fn recover_via_platform_and_content_detection(
     }
 }
 
+/// Successful primary decode plus an optional retained mmap for post-decode reuse
+/// (e.g. EXIF thumbnail without a second `map_file`).
+pub(crate) struct PrimaryLoadOutcome {
+    pub result: Result<ImageData, String>,
+    /// Present when the primary path mapped the file and decode succeeded.
+    /// Cleared after recovery consumes the mmap (checklist #29).
+    pub retained_mmap: Option<Arc<memmap2::Mmap>>,
+}
+
+impl PrimaryLoadOutcome {
+    #[inline]
+    pub(crate) fn from_result(result: Result<ImageData, String>) -> Self {
+        Self {
+            result,
+            retained_mmap: None,
+        }
+    }
+}
+
 /// Run the extension-matched loader first; only mislabeled or mismatched files pay sniffing cost.
+///
+/// On success, [`PrimaryLoadOutcome::retained_mmap`] keeps the primary mmap so callers can
+/// extract EXIF thumbnails without mapping the file again.
 pub(crate) fn load_primary_with_detection_fallback(
     path: &Path,
     file_name: &str,
@@ -302,27 +324,33 @@ pub(crate) fn load_primary_with_detection_fallback(
     hdr_tone_map: HdrToneMapSettings,
     high_quality: bool,
     primary: impl FnOnce() -> PrimaryDecodeAttempt,
-) -> Result<ImageData, String> {
+) -> PrimaryLoadOutcome {
     let PrimaryDecodeAttempt {
         result,
         detection_mmap,
     } = primary();
     match result {
-        Ok(image) => Ok(image),
+        Ok(image) => PrimaryLoadOutcome {
+            result: Ok(image),
+            retained_mmap: detection_mmap,
+        },
         Err(primary_err) => {
             log::debug!(
                 "[{}] Extension-first decode failed ({primary_err}); trying recovery loaders",
                 file_name
             );
-            recover_via_platform_and_content_detection(
-                path,
-                file_name,
-                hdr_target_capacity,
-                hdr_tone_map,
-                high_quality,
-                detection_mmap,
-                primary_err,
-            )
+            PrimaryLoadOutcome {
+                result: recover_via_platform_and_content_detection(
+                    path,
+                    file_name,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    high_quality,
+                    detection_mmap,
+                    primary_err,
+                ),
+                retained_mmap: None,
+            }
         }
     }
 }

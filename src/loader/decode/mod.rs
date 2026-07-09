@@ -58,7 +58,7 @@ use super::{
     source_key_for_path,
 };
 use super::{
-    extract_exif_thumbnail, hdr_display_requests_sdr_preview,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_mmap, hdr_display_requests_sdr_preview,
     hdr_sdr_fallback_is_placeholder_for_load, should_use_embedded_sdr_master_load,
 };
 
@@ -118,6 +118,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
     // Once per load: reused for dispatch and capacity-sensitive classification.
     let ext = path_ext_lower(path);
 
+    // Retained when primary decode mapped the file so tiled EXIF thumbs skip a second map_file.
+    let mut retained_mmap: Option<std::sync::Arc<memmap2::Mmap>> = None;
     let result = (|| -> Result<ImageData, String> {
         // Size check: orchestrator already rejects tiny files before spawn; decode paths that
         // mmap also enforce MIN_IMAGE_FILE_BYTES inside `map_file` (single metadata() call).
@@ -127,7 +129,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         };
 
         if ext == "exr" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -141,6 +143,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     ))
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
@@ -219,7 +223,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         }
 
         if ext == "jpg" || ext == "jpeg" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -234,6 +238,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     )
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
         if ext == "tif" || ext == "tiff" {
             let file_mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
@@ -264,7 +270,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     out.image
                 });
             }
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -281,10 +287,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
         if ext == "avif" || ext == "avifs" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -314,10 +322,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
         if ext == "jxl" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -347,10 +357,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
         if ext == "heif" || ext == "heic" || ext == "hif" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -372,6 +384,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
@@ -386,7 +400,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         }
 
         if matches!(&*ext, "gif" | "png" | "apng" | "webp") {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -430,9 +444,11 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result;
         }
 
-        load_primary_with_detection_fallback(
+        let outcome = load_primary_with_detection_fallback(
             path,
             file_name,
             hdr_target_capacity,
@@ -443,7 +459,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     load_static_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
                 })
             },
-        )
+        );
+        retained_mmap = outcome.retained_mmap;
+        outcome.result
     })();
 
     let mut preview: Option<DecodedImage> = None;
@@ -460,8 +478,13 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
 
             let t0 = std::time::Instant::now();
+            // Prefer the primary decode mmap when available (checklist #29); fall back to
+            // map_file only for paths that did not retain one (RAW / PSD / platform native).
             let exif_thumb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                extract_exif_thumbnail(path)
+                match retained_mmap.as_deref() {
+                    Some(mmap) => extract_exif_thumbnail_from_mmap(mmap, path),
+                    None => extract_exif_thumbnail(path),
+                }
             }));
             let logical_w = source.width();
             let logical_h = source.height();
