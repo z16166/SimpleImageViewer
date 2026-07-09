@@ -31,8 +31,9 @@ pub(super) struct ToneMapUniform {
     pub(super) input_reference: u32,
     /// See WGSL [`ToneMapSettings::sdr_manual_srgb_encode`].
     pub(super) sdr_manual_srgb_encode: u32,
-    /// Matches WGSL uniform layout: `uv_min` starts at byte 48 (8-byte aligned).
-    pub(super) _wgsl_pad_before_uv: u32,
+    /// `1` when [`HdrImageMetadata::is_sdr_grade_for_display`]: clamp RGB to `[0,1]` before EOTF.
+    /// Occupies the WGSL pad slot so `uv_min` stays 8-byte aligned at byte 48.
+    pub(super) sdr_grade_clamp: u32,
     pub(super) uv_min: [f32; 2],
     pub(super) uv_max: [f32; 2],
     pub(super) apple_compose: u32,
@@ -73,6 +74,8 @@ pub(super) struct ToneMapInputMetadata {
     pub(super) color_space: HdrColorSpace,
     pub(super) transfer_function: HdrTransferFunction,
     pub(super) reference: HdrReference,
+    /// See [`HdrImageMetadata::is_sdr_grade_for_display`].
+    pub(super) sdr_grade_clamp: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -164,7 +167,7 @@ impl ToneMapUniform {
             input_transfer_function: input.transfer_function as u32,
             input_reference: input.reference as u32,
             sdr_manual_srgb_encode: manual_srgb as u32,
-            _wgsl_pad_before_uv: 0,
+            sdr_grade_clamp: u32::from(input.sdr_grade_clamp),
             uv_min: [uv_rect.min.x, uv_rect.min.y],
             uv_max: [uv_rect.max.x, uv_rect.max.y],
             apple_compose,
@@ -227,6 +230,7 @@ pub(super) fn hdr_tile_tone_map_uniform(params: HdrTileToneMapUniformParams<'_>)
                 color_space: HdrColorSpace::LinearSrgb,
                 transfer_function: HdrTransferFunction::Linear,
                 reference: HdrReference::Unknown,
+                sdr_grade_clamp: false,
             },
         );
     }
@@ -237,6 +241,7 @@ pub(super) fn hdr_tile_tone_map_uniform(params: HdrTileToneMapUniformParams<'_>)
             color_space: tile.metadata.color_space_hint(),
             transfer_function: tile.metadata.transfer_function,
             reference: tile.metadata.reference,
+            sdr_grade_clamp: tile.metadata.is_sdr_grade_for_display(),
         },
     )
 }
@@ -275,6 +280,7 @@ pub(super) fn image_tone_map_uniform(
                 color_space: HdrColorSpace::LinearSrgb,
                 transfer_function: HdrTransferFunction::Linear,
                 reference: HdrReference::Unknown,
+                sdr_grade_clamp: false,
             },
             apple: None,
             ripple,
@@ -287,6 +293,7 @@ pub(super) fn image_tone_map_uniform(
             color_space: image.metadata.color_space_hint(),
             transfer_function: image.metadata.transfer_function,
             reference: image.metadata.reference,
+            sdr_grade_clamp: image.metadata.is_sdr_grade_for_display(),
         },
         apple: None,
         ripple,

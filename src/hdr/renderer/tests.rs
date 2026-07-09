@@ -250,6 +250,7 @@ fn tile_tone_map_uniform_carries_rotation() {
             color_space: HdrColorSpace::LinearSrgb,
             transfer_function: HdrTransferFunction::Linear,
             reference: HdrReference::Unknown,
+            sdr_grade_clamp: false,
         },
     );
 
@@ -277,6 +278,7 @@ fn tile_tone_map_uniform_carries_uv_subrect() {
             color_space: HdrColorSpace::LinearSrgb,
             transfer_function: HdrTransferFunction::Linear,
             reference: HdrReference::Unknown,
+            sdr_grade_clamp: false,
         },
     );
 
@@ -335,6 +337,7 @@ fn image_and_tile_uniforms_share_transform_output_and_color_space_logic() {
             color_space: HdrColorSpace::Rec2020Linear,
             transfer_function: HdrTransferFunction::Linear,
             reference: HdrReference::Unknown,
+            sdr_grade_clamp: false,
         },
     );
 
@@ -351,6 +354,68 @@ fn image_and_tile_uniforms_share_transform_output_and_color_space_logic() {
     );
     assert_eq!(image_uniform.sdr_manual_srgb_encode, 0);
     assert_eq!(tile_uniform.sdr_manual_srgb_encode, 0);
+}
+
+#[test]
+fn image_tone_map_uniform_sets_sdr_grade_clamp_from_mastering_peak() {
+    let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    metadata.transfer_function = HdrTransferFunction::Srgb;
+    metadata.reference = HdrReference::DisplayReferred;
+    metadata.luminance.mastering_max_nits = Some(255.0);
+    let image = HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(vec![1.99, 0.5, 0.5, 1.0]),
+    };
+    let uniform = image_tone_map_uniform(
+        &image,
+        ImageToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: HdrToneMapSettings::default(),
+                rotation_steps: 0,
+                alpha: 1.0,
+                output_mode: HdrRenderOutputMode::NativeHdr,
+                framebuffer_format: wgpu::TextureFormat::Rgba16Float,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                native_display_scale: 1.0,
+            },
+            gpu_composed_scene_linear: false,
+            ripple: None,
+        },
+    );
+    assert_eq!(uniform.sdr_grade_clamp, 1);
+
+    let mut pq_meta = HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear);
+    pq_meta.transfer_function = HdrTransferFunction::Pq;
+    pq_meta.luminance.mastering_max_nits = Some(1000.0);
+    let pq_image = HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::Rec2020Linear,
+        metadata: pq_meta,
+        rgba_f32: Arc::new(vec![0.5, 0.5, 0.5, 1.0]),
+    };
+    let pq_uniform = image_tone_map_uniform(
+        &pq_image,
+        ImageToneMapUniformParams {
+            common: ToneMapCommonParams {
+                settings: HdrToneMapSettings::default(),
+                rotation_steps: 0,
+                alpha: 1.0,
+                output_mode: HdrRenderOutputMode::NativeHdr,
+                framebuffer_format: wgpu::TextureFormat::Rgba16Float,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                native_display_scale: 1.0,
+            },
+            gpu_composed_scene_linear: false,
+            ripple: None,
+        },
+    );
+    assert_eq!(pq_uniform.sdr_grade_clamp, 0);
 }
 
 #[test]
@@ -612,6 +677,7 @@ fn tone_map_uniform_carries_rotation_and_alpha() {
             color_space: HdrColorSpace::LinearSrgb,
             transfer_function: HdrTransferFunction::Linear,
             reference: HdrReference::Unknown,
+            sdr_grade_clamp: false,
         },
         apple: None,
         ripple: None,
@@ -673,6 +739,7 @@ fn tone_map_uniform_carries_output_mode() {
             color_space: HdrColorSpace::Rec2020Linear,
             transfer_function: HdrTransferFunction::Pq,
             reference: HdrReference::DisplayReferred,
+            sdr_grade_clamp: false,
         },
         apple: None,
         ripple: None,
@@ -727,6 +794,13 @@ fn shader_decodes_hdr_transfer_functions_before_color_conversion() {
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn decode_input_transfer"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("sdr_manual_srgb_encode"));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("manual_oetf"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("sdr_grade_clamp"));
+    assert!(
+        HDR_IMAGE_PLANE_SHADER.contains("src_rgb = clamp(src_rgb, vec3<f32>(0.0), vec3<f32>(1.0))")
+    );
+    // Encoded-space coverage before EOTF (then / a) so ALPHA_BLENDING matches PNG/egui.
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("src_rgb = src_rgb * src_a"));
+    assert!(HDR_IMAGE_PLANE_SHADER.contains("source_rgb = source_rgb / src_a"));
 }
 
 #[test]
