@@ -105,6 +105,7 @@ impl HdrTileBindings {
                 jpeg_compose_bind_group,
                 estimated_bytes: 0,
                 baked_jpeg_weight_bits,
+                last_tone_map_uniform: None,
             },
             texture_pool,
         );
@@ -194,6 +195,7 @@ impl HdrTileBindings {
                 jpeg_compose_bind_group: None,
                 estimated_bytes: 0,
                 baked_jpeg_weight_bits: None,
+                last_tone_map_uniform: None,
             },
             None,
         );
@@ -239,6 +241,8 @@ pub(crate) struct HdrTileBinding {
     pub(super) jpeg_compose_bind_group: Option<wgpu::BindGroup>,
     pub(super) estimated_bytes: usize,
     pub(super) baked_jpeg_weight_bits: Option<u32>,
+    /// Last bytes written to `tone_map_buffer`; skip `write_buffer` when unchanged.
+    pub(super) last_tone_map_uniform: Option<ToneMapUniform>,
 }
 
 pub(crate) fn iso_deferred_tile_compose_views_reusable(

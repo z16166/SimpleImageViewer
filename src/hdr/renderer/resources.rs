@@ -604,6 +604,9 @@ impl HdrCallbackResources {
             },
             Some(&mut *pool),
         );
+        if let Some(binding) = self.tile_bindings.binding_mut(item.tile_key) {
+            binding.last_tone_map_uniform = Some(uniform);
+        }
         true
     }
 
