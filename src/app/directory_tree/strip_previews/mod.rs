@@ -221,12 +221,32 @@ impl ImageViewerApp {
         {
             return;
         }
-        let resolved = self.directory_tree_strip_cache.contains(index)
-            || self.hdr_image_cache.contains_key(&index);
+        // Strip GPU/resample handoff from main install counts as resolved even before
+        // the cache slot is filled (oversized SDR anim textures take this path).
+        let strip_handoff_inflight = self.directory_tree_strip_cache.contains(index)
+            || self.directory_tree_strip_generate_inflight.contains(&index)
+            || self
+                .directory_tree_strip_pending_main_handoff
+                .contains_key(&index)
+            || self
+                .directory_tree_strip_pending_gpu_initial
+                .iter()
+                .any(|u| u.key.index == index)
+            || self
+                .directory_tree_strip_pending_gpu_refined
+                .iter()
+                .any(|u| u.key.index == index);
+        let resolved = strip_handoff_inflight || self.hdr_image_cache.contains_key(&index);
         if resolved {
             self.directory_tree_strip_cold_awaiting_main_loader
                 .remove(&index);
-            self.directory_tree_strip_cold_attempted.remove(&index);
+            // Keep cold_attempted while handoff is still in flight so ensure_strip does not
+            // respawn a duplicate cold job; clear once the strip cache actually has pixels.
+            if self.directory_tree_strip_cache.contains(index)
+                || self.hdr_image_cache.contains_key(&index)
+            {
+                self.directory_tree_strip_cold_attempted.remove(&index);
+            }
         }
     }
 
