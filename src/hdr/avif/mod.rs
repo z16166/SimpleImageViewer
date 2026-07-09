@@ -241,7 +241,9 @@ fn try_avif_iso_forward_deferred_with_reuse(
         Some((gain_width, gain_height, gain_rgba))
     };
 
-    let mut selected = select_iso_gain_map_planes(
+    // Probe via `iso_gain_map_may_skip_gain_decode` already decoded when skip is
+    // disallowed, so a single select call is enough (no probe-with-None retry).
+    let selected = select_iso_gain_map_planes(
         reuse_slot,
         policy,
         image_ref.width,
@@ -252,22 +254,7 @@ fn try_avif_iso_forward_deferred_with_reuse(
         target_hdr_capacity,
     );
     if selected.needs_gain_decode {
-        let Some((_m, gw, gh, gain_rgba)) =
-            decode_avif_gain_map(image_ref, &libavif_result_to_string)
-        else {
-            return Ok(None);
-        };
-        let sdr = Arc::try_unwrap(selected.sdr_rgba).unwrap_or_else(|arc| (*arc).clone());
-        selected = select_iso_gain_map_planes(
-            reuse_slot,
-            policy,
-            image_ref.width,
-            image_ref.height,
-            sdr,
-            Some((gw, gh, gain_rgba)),
-            gain_metadata,
-            target_hdr_capacity,
-        );
+        return Err("AVIF ISO gain plane required but decode was skipped after probe".to_string());
     }
 
     let buffer = attach_avif_gain_map_gpu_deferred_arcs(AvifGainMapDeferredArcInput {

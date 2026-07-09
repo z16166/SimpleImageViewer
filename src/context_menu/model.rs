@@ -390,7 +390,7 @@ fn default_true() -> bool {
     true
 }
 
-fn path_to_string(path: &Path) -> String {
+pub(crate) fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 

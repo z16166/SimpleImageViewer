@@ -121,6 +121,48 @@ unsafe fn box_accumulate_lane(
     (sum_r, sum_g, sum_b, sum_a, count)
 }
 
+/// Inputs for the scalar per-lane fallback shared by SSE4.1 / AVX2 / NEON.
+struct BoxFallbackPerLaneParams<'a> {
+    src: &'a [u8],
+    dst: &'a mut [u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    x0: &'a [u32],
+    x1: &'a [u32],
+    base_x: usize,
+    simd_w: usize,
+    dy: usize,
+    dst_w_u: usize,
+}
+
+/// Scalar per-lane fallback when the merged X span is wider than the max
+/// individual lane span.
+#[inline]
+unsafe fn box_fallback_per_lane_block(params: BoxFallbackPerLaneParams<'_>) {
+    let BoxFallbackPerLaneParams {
+        src,
+        dst,
+        row_stride,
+        y0,
+        y1,
+        x0,
+        x1,
+        base_x,
+        simd_w,
+        dy,
+        dst_w_u,
+    } = params;
+    for i in 0..simd_w {
+        let (sum_r, sum_g, sum_b, sum_a, count) =
+            unsafe { box_accumulate_lane(src, row_stride, y0, y1, x0[base_x + i], x1[base_x + i]) };
+        let di = (dy * dst_w_u + base_x + i) * 4;
+        unsafe {
+            box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
+        }
+    }
+}
+
 #[inline]
 unsafe fn box_store_lane_average(
     dst: &mut [u8],
@@ -369,18 +411,19 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                 );
 
                 if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
-                    for i in 0..simd_w {
-                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
-                            src,
-                            row_stride,
-                            y0,
-                            y1,
-                            x0[base_x + i],
-                            x1[base_x + i],
-                        );
-                        let di = (dy * dst_w_u + base_x + i) * 4;
-                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
-                    }
+                    box_fallback_per_lane_block(BoxFallbackPerLaneParams {
+                        src,
+                        dst,
+                        row_stride,
+                        y0,
+                        y1,
+                        x0,
+                        x1,
+                        base_x,
+                        simd_w,
+                        dy,
+                        dst_w_u,
+                    });
                     continue;
                 }
 
@@ -525,18 +568,19 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                 let merged_x1 = (0..8).fold(0_u32, |m, i| core::cmp::max(m, x1[base_x + i]));
 
                 if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
-                    for i in 0..simd_w {
-                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
-                            src,
-                            row_stride,
-                            y0,
-                            y1,
-                            x0[base_x + i],
-                            x1[base_x + i],
-                        );
-                        let di = (dy * dst_w_u + base_x + i) * 4;
-                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
-                    }
+                    box_fallback_per_lane_block(BoxFallbackPerLaneParams {
+                        src,
+                        dst,
+                        row_stride,
+                        y0,
+                        y1,
+                        x0,
+                        x1,
+                        base_x,
+                        simd_w,
+                        dy,
+                        dst_w_u,
+                    });
                     continue;
                 }
 
@@ -692,18 +736,19 @@ unsafe fn downsample_rgba8_box_neon(params: DownsampleSimdParams<'_>) {
                 );
 
                 if box_use_per_lane_iteration(x0, x1, base_x, simd_w) {
-                    for i in 0..simd_w {
-                        let (sum_r, sum_g, sum_b, sum_a, count) = box_accumulate_lane(
-                            src,
-                            row_stride,
-                            y0,
-                            y1,
-                            x0[base_x + i],
-                            x1[base_x + i],
-                        );
-                        let di = (dy * dst_w_u + base_x + i) * 4;
-                        box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);
-                    }
+                    box_fallback_per_lane_block(BoxFallbackPerLaneParams {
+                        src,
+                        dst,
+                        row_stride,
+                        y0,
+                        y1,
+                        x0,
+                        x1,
+                        base_x,
+                        simd_w,
+                        dy,
+                        dst_w_u,
+                    });
                     continue;
                 }
 

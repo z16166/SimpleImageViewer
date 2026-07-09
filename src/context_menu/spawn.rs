@@ -16,7 +16,7 @@
 
 use crate::context_menu::model::ContextMenuCommand;
 #[cfg(target_os = "windows")]
-use crate::context_menu::model::quote_arg;
+use crate::context_menu::model::{path_to_string, quote_arg};
 use std::path::Path;
 
 impl ContextMenuCommand {
@@ -87,11 +87,6 @@ impl ContextMenuCommand {
             }
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
 }
 
 #[cfg(target_os = "windows")]
