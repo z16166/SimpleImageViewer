@@ -42,7 +42,7 @@ use super::assemble::make_image_data;
 use super::detect::{
     PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
 };
-use super::hdr_formats::load_hdr;
+use super::hdr_formats::{load_hdr, load_hdr_from_mmap};
 use super::is_maybe_animated;
 use super::open_raw_processor_with_preview;
 use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
@@ -575,10 +575,18 @@ fn open_image_data_for_directory_tree_thumb(
         );
     }
 
-    if crate::hdr::decode::is_hdr_candidate_ext(&ext)
-        && let Ok(img) = load_hdr(path, hdr_target_capacity, hdr_tone_map)
-    {
-        return Ok(img);
+    if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
+        // Sniff Radiance magic before a full HDR decode; reuse mmap when it matches.
+        match crate::mmap_util::map_file(path) {
+            Ok((mmap, _)) if crate::hdr::decode::looks_like_radiance_hdr_bytes(mmap.as_ref()) => {
+                if let Ok(img) =
+                    load_hdr_from_mmap(path, Arc::new(mmap), hdr_target_capacity, hdr_tone_map)
+                {
+                    return Ok(img);
+                }
+            }
+            _ => {}
+        }
     }
 
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {

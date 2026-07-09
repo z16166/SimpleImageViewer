@@ -181,6 +181,16 @@ fn hdr_candidate_extensions_are_case_insensitive() {
 }
 
 #[test]
+fn radiance_magic_sniff_rejects_non_radiance_bytes() {
+    assert!(super::looks_like_radiance_hdr_bytes(
+        b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n"
+    ));
+    assert!(!super::looks_like_radiance_hdr_bytes(b"\x89PNG\r\n\x1a\n"));
+    assert!(!super::looks_like_radiance_hdr_bytes(b""));
+    assert!(!super::looks_like_radiance_hdr_bytes(b"#?RGBE"));
+}
+
+#[test]
 fn tone_map_preserves_alpha_and_maps_rgb_with_exposure() {
     let buffer = HdrImageBuffer {
         width: 2,

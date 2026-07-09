@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::raster::{
-    load_gif_from_mmap, load_png_from_mmap, load_webp_from_mmap, process_animation_frames,
+    image_frame_to_static_image_data, load_gif_from_mmap, load_png_from_mmap, load_webp_from_mmap,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,13 +118,8 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
-                let image = process_animation_frames(
-                    vec![first],
-                    path,
-                    Some(mmap.as_ref()),
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                )?;
+                // Single-frame GIF: reuse the already-decoded first frame.
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -181,13 +176,8 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
-                let image = process_animation_frames(
-                    vec![first],
-                    path,
-                    Some(mmap.as_ref()),
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                )?;
+                // Single-frame APNG: reuse the already-decoded first frame.
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -236,13 +226,8 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
-                let image = process_animation_frames(
-                    vec![first],
-                    path,
-                    Some(mmap.as_ref()),
-                    hdr_target_capacity,
-                    hdr_tone_map,
-                )?;
+                // Single-frame WebP: reuse the already-decoded first frame.
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,

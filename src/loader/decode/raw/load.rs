@@ -57,10 +57,19 @@ pub(crate) fn open_raw_processor_with_preview(
     let open_started = std::time::Instant::now();
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+    // Map once up front so LibRaw open and EXIF orientation fallback share the same bytes
+    // (avoids a second mmap when LibRaw flip() is out of range after path-based open).
+    let mut retained_mmap_for_exif: Option<memmap2::Mmap> = None;
     let opened_from_bytes = if let Some(bytes) = file_bytes {
         processor.open_buffer(bytes).is_ok()
     } else if let Ok((mmap, _)) = crate::mmap_util::map_file(path) {
-        processor.open_buffer_mmap(mmap).is_ok()
+        match processor.open_buffer_mmap(mmap) {
+            Ok(()) => true,
+            Err((_err, mmap)) => {
+                retained_mmap_for_exif = Some(mmap);
+                false
+            }
+        }
     } else {
         false
     };
@@ -83,7 +92,10 @@ pub(crate) fn open_raw_processor_with_preview(
         _ => {
             if let Some(bytes) = processor.open_backing_bytes().or(file_bytes) {
                 crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path))
+            } else if let Some(ref mmap) = retained_mmap_for_exif {
+                crate::metadata_utils::get_exif_orientation_from_bytes(mmap.as_ref(), Some(path))
             } else {
+                // Last resort: initial map_file failed entirely.
                 crate::mmap_util::map_file(path)
                     .map(|(mmap, _)| {
                         crate::metadata_utils::get_exif_orientation_from_bytes(

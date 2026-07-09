@@ -287,9 +287,12 @@ impl RawProcessor {
 
     /// Open from an owned mmap. LibRaw keeps a pointer into the buffer; the mmap must outlive
     /// this processor (stored in [`Self::open_backing`]).
-    pub fn open_buffer_mmap(&mut self, mmap: memmap2::Mmap) -> Result<(), String> {
+    ///
+    /// On failure the mmap is returned to the caller so EXIF / fallback paths can reuse it
+    /// without mapping the file a second time.
+    pub fn open_buffer_mmap(&mut self, mmap: memmap2::Mmap) -> Result<(), (String, memmap2::Mmap)> {
         if mmap.is_empty() {
-            return Err("empty buffer".to_string());
+            return Err(("empty buffer".to_string(), mmap));
         }
         // Capture ptr/len before storing; mapped pages stay valid while owned by `open_backing`.
         let backing = RawOpenBacking::Mmap(mmap);
@@ -304,8 +307,14 @@ impl RawProcessor {
                 buffer_len,
             );
             if ret != 0 {
-                self.open_backing = None;
-                return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+                let failed = match self.open_backing.take() {
+                    Some(RawOpenBacking::Mmap(m)) => m,
+                    None => unreachable!("open_backing set immediately above"),
+                };
+                return Err((
+                    rust_i18n::t!("error.libraw_open", code = ret).to_string(),
+                    failed,
+                ));
             }
         }
         Ok(())
@@ -1435,6 +1444,7 @@ mod tests {
         let mut processor = RawProcessor::new().expect("libraw init");
         processor
             .open_buffer_mmap(mmap)
+            .map_err(|(err, _)| err)
             .expect("open_buffer_mmap should succeed");
         // Before the fix, dropping the local mmap here made unpack_thumb read freed memory.
         let thumb = processor

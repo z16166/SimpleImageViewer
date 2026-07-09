@@ -71,7 +71,7 @@ use detect::{
     PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
     primary_with_retainable_mmap,
 };
-use hdr_formats::load_hdr;
+use hdr_formats::{load_hdr, load_hdr_from_mmap};
 use jpeg::load_jpeg_primary_attempt;
 use modern::{
     load_avif_with_target_capacity_outcome_from_mmap, load_heif_hdr_aware_from_mmap,
@@ -144,13 +144,40 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-            match load_hdr(path, hdr_target_capacity, hdr_tone_map) {
-                Ok(img) => return Ok(img),
+            // `.hdr`/`.pic` are often misnamed SDR files; sniff Radiance magic before a
+            // full float decode so we skip straight to the SDR fallback chain. Reuse the
+            // same mmap for decode when the magic matches (checklist #29).
+            match crate::mmap_util::map_file(path) {
+                Ok((mmap, _))
+                    if crate::hdr::decode::looks_like_radiance_hdr_bytes(mmap.as_ref()) =>
+                {
+                    match load_hdr_from_mmap(
+                        path,
+                        Arc::new(mmap),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                    ) {
+                        Ok(img) => return Ok(img),
+                        Err(e) => {
+                            log::debug!(
+                                "[{}] HDR float decode failed, continuing with standard fallback chain: {}",
+                                file_name,
+                                e
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {
+                    log::debug!(
+                        "[{}] .{} lacks Radiance magic; skipping HDR probe",
+                        file_name,
+                        ext
+                    );
+                }
                 Err(e) => {
                     log::debug!(
-                        "[{}] HDR float decode failed, continuing with standard fallback chain: {}",
-                        file_name,
-                        e
+                        "[{}] HDR candidate mmap failed ({e}); continuing with standard fallback chain",
+                        file_name
                     );
                 }
             }

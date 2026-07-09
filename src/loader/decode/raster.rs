@@ -35,27 +35,55 @@ pub(crate) fn load_static_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    use image::ImageReader;
+    use image::{ColorType, DynamicImage, ImageDecoder, ImageReader};
     use std::io::Cursor;
 
     if is_exr_path(path) {
         return load_hdr(path, hdr_target_capacity, hdr_tone_map);
     }
 
-    let reader = ImageReader::new(Cursor::new(mmap))
+    let mut reader = ImageReader::new(Cursor::new(mmap))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
-    let mut decoder = reader;
     // Remove the default memory limit (512MB) to allow gigapixel images
-    decoder.no_limits();
+    reader.no_limits();
 
-    let img = match decoder.decode() {
-        Ok(img) => img,
-        Err(e) => return Err(e.to_string()),
+    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    // Decode straight into the final RGBA8 buffer when the codec already emits
+    // Rgba8/Rgb8, avoiding DynamicImage + into_rgba8 intermediate allocations.
+    let pixels = match decoder.color_type() {
+        ColorType::Rgba8 => {
+            let len = usize::try_from(decoder.total_bytes()).map_err(|_| {
+                format!("image dimensions {width}x{height} exceed addressable memory")
+            })?;
+            let mut buf = vec![0u8; len];
+            decoder.read_image(&mut buf).map_err(|e| e.to_string())?;
+            buf
+        }
+        ColorType::Rgb8 => {
+            let rgb_len = usize::try_from(decoder.total_bytes()).map_err(|_| {
+                format!("image dimensions {width}x{height} exceed addressable memory")
+            })?;
+            let mut rgb = vec![0u8; rgb_len];
+            decoder.read_image(&mut rgb).map_err(|e| e.to_string())?;
+            let rgba_len = rgb_len
+                .checked_div(3)
+                .and_then(|px| px.checked_mul(4))
+                .ok_or_else(|| {
+                    format!("image dimensions {width}x{height} exceed addressable memory")
+                })?;
+            let mut rgba = vec![0u8; rgba_len];
+            simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
+                &rgb, &mut rgba,
+            );
+            rgba
+        }
+        _ => {
+            let img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+            img.into_rgba8().into_raw()
+        }
     };
-    let rgba = img.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    let pixels = rgba.into_raw();
 
     Ok(apply_exif_orientation_to_image_data(
         path,
@@ -75,6 +103,22 @@ pub(crate) fn load_static(
     let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
+/// Convert an already-decoded `image::Frame` into static [`ImageData`] without
+/// re-running the format decoder (used for single-frame GIF/APNG/WebP).
+pub(crate) fn image_frame_to_static_image_data(
+    frame: image::Frame,
+    path: &Path,
+    mmap: Option<&[u8]>,
+) -> ImageData {
+    let buffer = frame.into_buffer();
+    let (width, height) = buffer.dimensions();
+    apply_exif_orientation_to_image_data(
+        path,
+        make_image_data(DecodedImage::new(width, height, buffer.into_raw())),
+        mmap,
+    )
+}
+
 pub(crate) fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
     path: &Path,
@@ -82,7 +126,12 @@ pub(crate) fn process_animation_frames(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
+    // One frame (or empty): reuse the decoded buffer when present; only fall back
+    // to a full static decode when the decoder produced no frames at all.
     if raw_frames.len() <= 1 {
+        if let Some(frame) = raw_frames.into_iter().next() {
+            return Ok(image_frame_to_static_image_data(frame, path, mmap));
+        }
         if let Some(bytes) = mmap {
             return load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map);
         }
