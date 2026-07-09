@@ -72,7 +72,7 @@ pub(crate) fn load_static(
     if is_exr_path(path) {
         return load_hdr(path, hdr_target_capacity, hdr_tone_map);
     }
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 pub(crate) fn process_animation_frames(
@@ -151,7 +151,7 @@ pub(crate) fn load_gif(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_gif_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
@@ -193,7 +193,7 @@ pub(crate) fn load_png(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_png_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
@@ -232,7 +232,7 @@ pub(crate) fn load_webp(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_webp_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 
@@ -245,7 +245,8 @@ pub(crate) fn load_psd(
     notify: Option<crate::loader::tiled_sources::PsdV1LoadNotify>,
 ) -> Result<ImageData, String> {
     // Step 1: Map the file once standardly
-    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
+    let (mmap, _) =
+        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
 
     // Step 2: Estimate memory requirement from header bytes
     let (width, height, _channels, estimated_bytes) =

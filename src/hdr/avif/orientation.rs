@@ -156,7 +156,7 @@ pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<
 #[cfg(feature = "avif-native")]
 #[allow(dead_code)] // Path-based wrapper; production uses `libavif_probe_exif_orientation_from_bytes`.
 pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -> Option<u16> {
-    let mmap = crate::mmap_util::map_file(path).ok()?;
+    let (mmap, _) = crate::mmap_util::map_file(path).ok()?;
     libavif_probe_exif_orientation_from_bytes(&mmap[..])
 }
 

@@ -105,7 +105,7 @@ pub fn get_exif_orientation_from_bytes(data: &[u8], path: Option<&Path>) -> u16 
 /// **JPEG XR `.jxr`/`.wdp`** do not carry HEIF **`irot`**; orientation for those relies on EXIF /
 /// WIC / ImageIO where applicable (`kamadak-exif`, …).
 pub fn get_exif_orientation(path: &Path) -> u16 {
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return 1;
     };
     get_exif_orientation_from_bytes(&mmap[..], Some(path))

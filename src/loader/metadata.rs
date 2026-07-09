@@ -96,7 +96,7 @@ pub(crate) fn extract_exif_thumbnail_from_mmap_probed(
 pub(crate) fn extract_exif_thumbnail_probed(
     path: &Path,
 ) -> (Option<DecodedImage>, ExifThumbProbe, ExifThumbProbeDetail) {
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return (
             None,
             ExifThumbProbe::ContainerUnreadable,
@@ -174,17 +174,22 @@ fn extract_exif_thumbnail_from_reader<R: BufRead + Read + Seek>(
         );
     }
 
-    let mut blob = vec![0_u8; len_usize];
-    if reader.read_exact(&mut blob).is_err() {
-        return (
-            None,
-            ExifThumbProbe::ReadFailed,
-            ExifThumbProbeDetail {
-                offset: Some(off),
-                len: Some(len),
-                ..ExifThumbProbeDetail::default()
-            },
-        );
+    // Allocate only after confirming a thumbnail exists; grow via read (no zero-fill).
+    let mut blob = Vec::with_capacity(len_usize);
+    let mut limited = reader.take(len_usize as u64);
+    match limited.read_to_end(&mut blob) {
+        Ok(n) if n == len_usize => {}
+        _ => {
+            return (
+                None,
+                ExifThumbProbe::ReadFailed,
+                ExifThumbProbeDetail {
+                    offset: Some(off),
+                    len: Some(len),
+                    ..ExifThumbProbeDetail::default()
+                },
+            );
+        }
     }
 
     match libjpeg_turbo::decode_to_rgba(&blob) {

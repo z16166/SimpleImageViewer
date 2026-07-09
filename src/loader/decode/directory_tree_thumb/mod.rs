@@ -178,7 +178,10 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
-    let mmap = crate::mmap_util::map_file(path).ok().map(Arc::new);
+    // map_file re-checks size via one metadata(); keep cheap reject above for early exit without mmap.
+    let mmap = crate::mmap_util::map_file(path)
+        .ok()
+        .map(|(m, _)| Arc::new(m));
     let (exif, exif_probe, exif_probe_detail) = match mmap.as_deref() {
         Some(data) => extract_exif_thumbnail_from_mmap_probed(data, path),
         None => extract_exif_thumbnail_probed(path),
@@ -238,7 +241,7 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
             Some(data) => try_heif_directory_tree_strip(data.as_ref(), max_side, allow_primary_sdr),
             None => crate::mmap_util::map_file(path)
                 .ok()
-                .map(Arc::new)
+                .map(|(m, _)| Arc::new(m))
                 .map(|owned| {
                     try_heif_directory_tree_strip(owned.as_ref(), max_side, allow_primary_sdr)
                 })
@@ -508,10 +511,7 @@ fn normalize_logical_size(logical: (u32, u32), fallback: (u32, u32)) -> (u32, u3
 }
 
 fn probe_still_image_logical_size_from_bytes(bytes: &[u8], path: &Path) -> Option<(u32, u32)> {
-    let ext = path
-        .extension()
-        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+    let ext = super::path_ext_lower(path);
     #[cfg(feature = "avif-native")]
     if (ext == "avif" || ext == "avifs")
         && let Some(logical) = crate::hdr::avif::libavif_probe_logical_size_from_bytes(bytes)
@@ -544,8 +544,8 @@ fn path_has_extension(path: &Path, ext: &str) -> bool {
 }
 
 pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<String> {
-    path.extension()
-        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+    let ext = super::path_ext_lower(path);
+    if ext.is_empty() { None } else { Some(ext) }
 }
 
 fn open_image_data_for_directory_tree_thumb(

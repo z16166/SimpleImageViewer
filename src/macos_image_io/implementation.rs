@@ -815,7 +815,7 @@ impl HugeTiffStrideDecoder {
         max_size: u32,
         orientation: u32,
     ) -> Result<(u32, u32, Vec<u8>), String> {
-        let mmap = crate::mmap_util::map_file(path)?;
+        let (mmap, _) = crate::mmap_util::map_file(path)?;
 
         let cursor = Cursor::new(&mmap[..]);
         let mut decoder = Decoder::new(cursor).map_err(|e| e.to_string())?;
@@ -1119,7 +1119,7 @@ pub fn load_via_image_io(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> Result<ImageData, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
 }
 

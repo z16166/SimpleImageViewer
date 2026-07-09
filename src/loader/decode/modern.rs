@@ -79,7 +79,9 @@ pub(crate) fn load_avif_with_target_capacity(
     prefer_embedded_sdr_master: bool,
 ) -> Result<ImageData, String> {
     let mmap = Arc::new(
-        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?,
+        crate::mmap_util::map_file(path)
+            .map_err(|e| format!("Failed to read AVIF: {e}"))?
+            .0,
     );
     load_avif_with_target_capacity_from_mmap(
         path,
@@ -117,7 +119,9 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
     bootstrap_animation: bool,
 ) -> Result<AvifLoadOutcome, String> {
     let mmap = Arc::new(
-        crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?,
+        crate::mmap_util::map_file(path)
+            .map_err(|e| format!("Failed to read AVIF: {e}"))?
+            .0,
     );
     load_avif_with_target_capacity_outcome_from_mmap(
         path,
@@ -451,7 +455,9 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     bootstrap_animation: bool,
 ) -> Result<JxlLoadOutcome, String> {
     let mmap = Arc::new(
-        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?,
+        crate::mmap_util::map_file(path)
+            .map_err(|err| format!("Failed to read JPEG XL: {err}"))?
+            .0,
     );
     load_jxl_with_target_capacity_outcome_from_mmap(
         path,
@@ -569,7 +575,7 @@ pub(crate) fn load_heif_hdr_aware(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
-        let mmap = crate::mmap_util::map_file(path)
+        let (mmap, _) = crate::mmap_util::map_file(path)
             .map_err(|err| format!("Failed to read HEIF: {err}"))?;
         load_heif_hdr_aware_from_mmap(
             path,

@@ -40,7 +40,7 @@ fn png_path_provides_reusable_full_decode(path: &Path) -> bool {
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     PngDecoder::new(Cursor::new(mmap.as_ref()))
@@ -53,7 +53,7 @@ fn webp_path_provides_reusable_full_decode(path: &Path) -> bool {
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     WebPDecoder::new(Cursor::new(mmap.as_ref()))

@@ -107,7 +107,7 @@ fn load_bmff_ftyp_container(
 }
 
 pub(crate) fn mmap_for_content_detection(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
-    Ok(Arc::new(crate::mmap_util::map_file(path)?))
+    Ok(Arc::new(crate::mmap_util::map_file(path)?.0))
 }
 
 fn load_by_image_format_from_mmap(
@@ -202,7 +202,7 @@ pub(crate) fn primary_with_retainable_mmap(
     decode: impl FnOnce(Arc<memmap2::Mmap>) -> Result<ImageData, String>,
 ) -> PrimaryDecodeAttempt {
     match crate::mmap_util::map_file(path) {
-        Ok(mmap) => {
+        Ok((mmap, _)) => {
             let arc = Arc::new(mmap);
             PrimaryDecodeAttempt::with_mmap(decode(Arc::clone(&arc)), Some(arc))
         }

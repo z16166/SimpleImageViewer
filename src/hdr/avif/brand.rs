@@ -33,7 +33,7 @@ pub(crate) fn bytes_is_avif_image_sequence(bytes: &[u8]) -> bool {
 /// True when the container major brand is `avis` (animated image sequence track).
 #[cfg(feature = "avif-native")]
 pub(crate) fn path_is_avif_image_sequence(path: &Path) -> bool {
-    let Ok(mmap) = crate::mmap_util::map_file(path) else {
+    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
         return false;
     };
     bytes_is_avif_image_sequence(mmap.as_ref())

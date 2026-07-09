@@ -46,15 +46,19 @@ pub(crate) fn reject_if_image_file_too_small(path: &Path) -> Result<(), String> 
 }
 
 /// Memory-map an existing file for read-only decoding paths (checklist: avoid `read_to_end` duplication).
-pub(crate) fn map_file(path: &Path) -> Result<memmap2::Mmap, String> {
+///
+/// Returns `(mmap, len)` from a single `metadata()` call so callers need not re-stat for size checks.
+pub(crate) fn map_file(path: &Path) -> Result<(memmap2::Mmap, u64), String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
-    reject_len_below_image_minimum(file.metadata().map_err(|e| e.to_string())?.len())?;
-    unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string()) }
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    reject_len_below_image_minimum(len)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    Ok((mmap, len))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{image_file_too_small_error, reject_if_image_file_too_small};
+    use super::{image_file_too_small_error, map_file, reject_if_image_file_too_small};
     use crate::constants::MIN_IMAGE_FILE_BYTES;
     use std::fs;
     use std::path::PathBuf;
@@ -84,6 +88,23 @@ mod tests {
 
         fs::write(&path, vec![0u8; MIN_IMAGE_FILE_BYTES as usize]).unwrap();
         assert!(reject_if_image_file_too_small(&path).is_ok());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn map_file_returns_len_and_rejects_tiny_files() {
+        let path = temp_image_path("map");
+        let _ = fs::remove_file(&path);
+
+        fs::write(&path, [0u8; 4]).unwrap();
+        assert!(map_file(&path).is_err());
+
+        let bytes = vec![0u8; MIN_IMAGE_FILE_BYTES as usize];
+        fs::write(&path, &bytes).unwrap();
+        let (mmap, len) = map_file(&path).expect("map");
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(mmap.len(), bytes.len());
 
         let _ = fs::remove_file(&path);
     }

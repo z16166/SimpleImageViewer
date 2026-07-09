@@ -182,7 +182,7 @@ fn heic_hubble_rgba_strip_read_smoke() {
         if !path.exists() {
             continue;
         }
-        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap"));
+        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap").0);
         let handle = super::handle::create_tiff_handle(mmap, &path).expect("open");
         let Some(strip_len) = (unsafe {
             super::rgba_buffer::tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), width, height)
@@ -221,7 +221,7 @@ fn heic0601a_then_heic0604a_preview_smoke() {
         if !path.exists() {
             return;
         }
-        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap"));
+        let mmap = Arc::new(crate::mmap_util::map_file(&path).expect("mmap").0);
         let image = load_via_libtiff_from_mmap(
             &path,
             mmap,
@@ -267,7 +267,7 @@ fn top100_strip_preview_parallel_smoke() {
 
     use rayon::prelude::*;
     paths.par_iter().for_each(|path| {
-        let mmap = Arc::new(crate::mmap_util::map_file(path).expect("mmap"));
+        let mmap = Arc::new(crate::mmap_util::map_file(path).expect("mmap").0);
         let image = load_via_libtiff_from_mmap(
             path,
             mmap,

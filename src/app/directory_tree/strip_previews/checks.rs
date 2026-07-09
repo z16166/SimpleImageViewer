@@ -68,7 +68,7 @@ impl ImageViewerApp {
         let root_wake = self.root_redraw_wake_handle();
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
             let probe = (|| -> Option<Option<crate::hdr::avif::AvifGainMapStripProbe>> {
-                let mmap = crate::mmap_util::map_file(&path_buf).ok()?;
+                let (mmap, _) = crate::mmap_util::map_file(&path_buf).ok()?;
                 if crate::hdr::avif::bytes_is_avif_image_sequence(mmap.as_ref()) {
                     return Some(None);
                 }

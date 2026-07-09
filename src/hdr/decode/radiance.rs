@@ -22,7 +22,7 @@ use std::io::{BufRead, Cursor};
 use crate::hdr::types::HdrImageBuffer;
 
 pub(crate) fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let mmap = crate::mmap_util::map_file(path)?;
+    let (mmap, _) = crate::mmap_util::map_file(path)?;
     decode_radiance_hdr_image_from_mmap(&mmap, Some(path))
 }
 

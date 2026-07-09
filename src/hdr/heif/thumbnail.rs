@@ -102,7 +102,7 @@ pub(crate) fn probe_heif_strip_thumbnail_from_path(
     max_side: u32,
 ) -> HeifStripThumbProbeResult {
     let mmap = match crate::mmap_util::map_file(path) {
-        Ok(data) => data,
+        Ok((data, _)) => data,
         Err(_) => {
             return (
                 None,

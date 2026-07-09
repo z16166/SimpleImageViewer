@@ -36,7 +36,7 @@ pub(crate) fn load_hdr(
     if is_exr_path(path) {
         return load_detected_exr(path);
     }
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     load_hdr_from_mmap(path, mmap, hdr_target_capacity, hdr_tone_map)
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn is_exr_path(path: &Path) -> bool {
 
 #[cfg(test)]
 pub(crate) fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     try_load_disk_backed_exr_hdr_from_mmap(path, mmap)
 }
 
@@ -242,7 +242,7 @@ fn make_deep_exr_placeholder_from_mmap(
 }
 
 pub(crate) fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
-    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
     load_detected_exr_from_mmap(path, mmap)
 }
 
