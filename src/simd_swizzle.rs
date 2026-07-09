@@ -43,9 +43,17 @@ pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
             unsafe {
                 interleave_rgba_avx2(r, g, b, a, dst, &mut i, len);
             }
+            // AVX2 main loop is 32-wide; drain a 16-wide SSE remainder when present.
+            if is_x86_feature_detected!("sse4.1") {
+                unsafe {
+                    interleave_rgba_sse41(r, g, b, a, dst, &mut i, len);
+                    interleave_rgba_sse41_partial_tail(r, g, b, a, dst, &mut i, len);
+                }
+            }
         } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 interleave_rgba_sse41(r, g, b, a, dst, &mut i, len);
+                interleave_rgba_sse41_partial_tail(r, g, b, a, dst, &mut i, len);
             }
         }
     }
@@ -86,9 +94,17 @@ pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &
             unsafe {
                 interleave_rgb_avx2(r, g, b, alpha, dst, &mut i, len);
             }
+            // AVX2 main loop is 32-wide; drain a 16-wide SSE remainder when present.
+            if is_x86_feature_detected!("sse4.1") {
+                unsafe {
+                    interleave_rgb_sse41(r, g, b, alpha, dst, &mut i, len);
+                    interleave_rgb_sse41_partial_tail(r, g, b, alpha, dst, &mut i, len);
+                }
+            }
         } else if is_x86_feature_detected!("sse4.1") {
             unsafe {
                 interleave_rgb_sse41(r, g, b, alpha, dst, &mut i, len);
+                interleave_rgb_sse41_partial_tail(r, g, b, alpha, dst, &mut i, len);
             }
         }
     }
@@ -316,6 +332,80 @@ unsafe fn interleave_rgba_sse41(
     }
 }
 
+/// Interleave a 1..15 pixel remainder via a full 16-pixel SIMD block into a
+/// stack temp, then copy only the valid output bytes (avoids OOB stores).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn interleave_rgba_sse41_partial_tail(
+    r: &[u8],
+    g: &[u8],
+    b: &[u8],
+    a: &[u8],
+    dst: &mut [u8],
+    i: &mut usize,
+    len: usize,
+) {
+    let rem = len - *i;
+    if rem == 0 || rem >= 16 {
+        return;
+    }
+    unsafe {
+        let mut tmp_r = [0_u8; 16];
+        let mut tmp_g = [0_u8; 16];
+        let mut tmp_b = [0_u8; 16];
+        let mut tmp_a = [0_u8; 16];
+        let mut tmp_dst = [0_u8; 16 * RGBA_CHANNELS];
+        tmp_r[..rem].copy_from_slice(&r[*i..*i + rem]);
+        tmp_g[..rem].copy_from_slice(&g[*i..*i + rem]);
+        tmp_b[..rem].copy_from_slice(&b[*i..*i + rem]);
+        tmp_a[..rem].copy_from_slice(&a[*i..*i + rem]);
+
+        let mut tmp_i = 0usize;
+        interleave_rgba_sse41(&tmp_r, &tmp_g, &tmp_b, &tmp_a, &mut tmp_dst, &mut tmp_i, 16);
+
+        let out_bytes = rem * RGBA_CHANNELS;
+        let dst_base = *i * RGBA_CHANNELS;
+        dst[dst_base..dst_base + out_bytes].copy_from_slice(&tmp_dst[..out_bytes]);
+        *i += rem;
+    }
+}
+
+/// Interleave a 1..15 pixel RGB+alpha remainder via a full 16-pixel SIMD block
+/// into a stack temp, then copy only the valid output bytes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn interleave_rgb_sse41_partial_tail(
+    r: &[u8],
+    g: &[u8],
+    b: &[u8],
+    alpha: u8,
+    dst: &mut [u8],
+    i: &mut usize,
+    len: usize,
+) {
+    let rem = len - *i;
+    if rem == 0 || rem >= 16 {
+        return;
+    }
+    unsafe {
+        let mut tmp_r = [0_u8; 16];
+        let mut tmp_g = [0_u8; 16];
+        let mut tmp_b = [0_u8; 16];
+        let mut tmp_dst = [0_u8; 16 * RGBA_CHANNELS];
+        tmp_r[..rem].copy_from_slice(&r[*i..*i + rem]);
+        tmp_g[..rem].copy_from_slice(&g[*i..*i + rem]);
+        tmp_b[..rem].copy_from_slice(&b[*i..*i + rem]);
+
+        let mut tmp_i = 0usize;
+        interleave_rgb_sse41(&tmp_r, &tmp_g, &tmp_b, alpha, &mut tmp_dst, &mut tmp_i, 16);
+
+        let out_bytes = rem * RGBA_CHANNELS;
+        let dst_base = *i * RGBA_CHANNELS;
+        dst[dst_base..dst_base + out_bytes].copy_from_slice(&tmp_dst[..out_bytes]);
+        *i += rem;
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn interleave_rgba_neon(
@@ -431,6 +521,22 @@ unsafe fn interleave_rgb_packed_to_rgba_ssse3(
         }
         *i += 16;
     }
+    // 1..15 pixel remainder: full 16-pixel SIMD into temp, copy valid prefix.
+    let rem = count - *i;
+    if rem > 0 {
+        unsafe {
+            let mut tmp_src = [0_u8; 16 * RGB_CHANNELS];
+            let mut tmp_dst = [0_u8; 16 * RGBA_CHANNELS];
+            let src_bytes = rem * RGB_CHANNELS;
+            tmp_src[..src_bytes]
+                .copy_from_slice(&src[*i * RGB_CHANNELS..*i * RGB_CHANNELS + src_bytes]);
+            interleave_rgb_packed_16_to_rgba_ssse3(tmp_src.as_ptr(), tmp_dst.as_mut_ptr());
+            let out_bytes = rem * RGBA_CHANNELS;
+            let dst_base = *i * RGBA_CHANNELS;
+            dst[dst_base..dst_base + out_bytes].copy_from_slice(&tmp_dst[..out_bytes]);
+            *i += rem;
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -495,6 +601,20 @@ pub fn flip_rgba8_row_horizontal(src: &[u8], dst: &mut [u8]) {
     let mut left = 0usize;
     let mut right = pixel_count;
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                flip_rgba8_row_horizontal_avx2(src, dst, &mut left, &mut right);
+            }
+        }
+        if is_x86_feature_detected!("ssse3") {
+            unsafe {
+                flip_rgba8_row_horizontal_ssse3(src, dst, &mut left, &mut right);
+            }
+        }
+    }
+
     #[cfg(target_arch = "aarch64")]
     {
         unsafe {
@@ -512,6 +632,85 @@ pub fn flip_rgba8_row_horizontal(src: &[u8], dst: &mut [u8]) {
             .copy_from_slice(&src[src_left..src_left + RGBA_CHANNELS]);
         left += 1;
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn flip_rgba8_row_horizontal_avx2(
+    src: &[u8],
+    dst: &mut [u8],
+    left: &mut usize,
+    right: &mut usize,
+) {
+    unsafe {
+        // Shuffle mask: reverse 8 RGBA pixels (32 bytes) as 32-bit lanes.
+        // Byte indices within each 128-bit half: 12,13,14,15, 8,9,10,11, 4,5,6,7, 0,1,2,3
+        // then swap the two 128-bit halves via permute.
+        let rev4 = _mm_setr_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
+        let rev8_lo = _mm256_broadcastsi128_si256(rev4);
+        while *left + 8 <= *right {
+            let l = *left * RGBA_CHANNELS;
+            let r = (*right - 8) * RGBA_CHANNELS;
+            let left_pixels = _mm256_loadu_si256(src.as_ptr().add(l) as *const __m256i);
+            let right_pixels = _mm256_loadu_si256(src.as_ptr().add(r) as *const __m256i);
+            // Reverse pixel order within each 128-bit half, then swap halves.
+            let left_rev = reverse_rgba8_pixel_order_avx2(left_pixels, rev8_lo);
+            let right_rev = reverse_rgba8_pixel_order_avx2(right_pixels, rev8_lo);
+            _mm256_storeu_si256(dst.as_mut_ptr().add(l) as *mut __m256i, right_rev);
+            _mm256_storeu_si256(dst.as_mut_ptr().add(r) as *mut __m256i, left_rev);
+            *left += 8;
+            *right -= 8;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn reverse_rgba8_pixel_order_avx2(pixels: __m256i, rev4_bcast: __m256i) -> __m256i {
+    let shuffled = _mm256_shuffle_epi8(pixels, rev4_bcast);
+    // Swap 128-bit halves: [A B] -> [B A] where each half already has
+    // its 4 pixels reversed, yielding full 8-pixel reverse.
+    _mm256_permute2x128_si256(shuffled, shuffled, 0x01)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn flip_rgba8_row_horizontal_ssse3(
+    src: &[u8],
+    dst: &mut [u8],
+    left: &mut usize,
+    right: &mut usize,
+) {
+    unsafe {
+        while *left + 4 <= *right {
+            let l = *left * RGBA_CHANNELS;
+            let r = (*right - 4) * RGBA_CHANNELS;
+            let left_pixels = _mm_loadu_si128(src.as_ptr().add(l) as *const __m128i);
+            let right_pixels = _mm_loadu_si128(src.as_ptr().add(r) as *const __m128i);
+            _mm_storeu_si128(
+                dst.as_mut_ptr().add(l) as *mut __m128i,
+                reverse_rgba8_pixel_order_ssse3(right_pixels),
+            );
+            _mm_storeu_si128(
+                dst.as_mut_ptr().add(r) as *mut __m128i,
+                reverse_rgba8_pixel_order_ssse3(left_pixels),
+            );
+            *left += 4;
+            *right -= 4;
+        }
+    }
+}
+
+/// Reverse order of 4 RGBA8 pixels in a 16-byte register (SSSE3 counterpart of
+/// `reverse_rgba8_pixel_order_neon`).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "ssse3")]
+unsafe fn reverse_rgba8_pixel_order_ssse3(pixels: __m128i) -> __m128i {
+    // Pixel order [0,1,2,3] -> [3,2,1,0]; bytes within each pixel stay put.
+    let mask = _mm_setr_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
+    _mm_shuffle_epi8(pixels, mask)
 }
 
 #[cfg(target_arch = "aarch64")]

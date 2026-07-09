@@ -918,6 +918,9 @@ fn nearest_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: 
 #[cfg(target_arch = "x86_64")]
 const NEAREST_AVX2_STEP: usize = 8;
 
+#[cfg(target_arch = "x86_64")]
+const NEAREST_SSE41_STEP: usize = 4;
+
 #[cfg(target_arch = "aarch64")]
 const NEAREST_NEON_STEP: usize = 4;
 
@@ -950,6 +953,40 @@ unsafe fn downsample_rgba8_nearest_row_avx2(
             let gathered = _mm256_i32gather_epi32(src_base as *const i32, indices, 1);
             _mm256_storeu_si256(dst_row.as_mut_ptr().add(*dx * 4) as *mut __m256i, gathered);
             *dx += NEAREST_AVX2_STEP;
+        }
+    }
+}
+
+/// SSE4.1 nearest gather: no hardware gather, so set byte-offsets then scalar-load + pack.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn downsample_rgba8_nearest_row_sse41(
+    src: &[u8],
+    src_row_base: usize,
+    src_x: &[u32],
+    dst_row: &mut [u8],
+    dx: &mut usize,
+) {
+    unsafe {
+        while *dx + NEAREST_SSE41_STEP <= src_x.len() {
+            // Byte offsets (sx << 2), same layout as AVX2 gather indices.
+            let offsets = _mm_set_epi32(
+                (src_x[*dx + 3] as i32) << 2,
+                (src_x[*dx + 2] as i32) << 2,
+                (src_x[*dx + 1] as i32) << 2,
+                (src_x[*dx] as i32) << 2,
+            );
+            let mut offs = [0_i32; 4];
+            _mm_storeu_si128(offs.as_mut_ptr() as *mut __m128i, offsets);
+            // SSE4.1 has no gather: scalar-load each RGBA u32, then pack.
+            let pixels = _mm_set_epi32(
+                load_rgba_u32_le(src, src_row_base + offs[3] as usize) as i32,
+                load_rgba_u32_le(src, src_row_base + offs[2] as usize) as i32,
+                load_rgba_u32_le(src, src_row_base + offs[1] as usize) as i32,
+                load_rgba_u32_le(src, src_row_base + offs[0] as usize) as i32,
+            );
+            _mm_storeu_si128(dst_row.as_mut_ptr().add(*dx * 4) as *mut __m128i, pixels);
+            *dx += NEAREST_SSE41_STEP;
         }
     }
 }
@@ -1036,7 +1073,7 @@ unsafe fn downsample_rgba8_nearest_row_neon(
     }
 }
 
-/// Scatter-gather nearest row copy with AVX2 gather (x86) or NEON table/load (aarch64).
+/// Scatter-gather nearest row copy: AVX2 gather / SSE4.1 load-pack (x86) or NEON (aarch64).
 fn downsample_rgba8_nearest_row(
     src: &[u8],
     src_row_base: usize,
@@ -1050,6 +1087,10 @@ fn downsample_rgba8_nearest_row(
         if is_x86_feature_detected!("avx2") {
             unsafe {
                 downsample_rgba8_nearest_row_avx2(src, src_row_base, src_x, dst_row, &mut dx);
+            }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                downsample_rgba8_nearest_row_sse41(src, src_row_base, src_x, dst_row, &mut dx);
             }
         }
     }
@@ -1299,6 +1340,55 @@ mod tests {
             let reference = downsample_rgba8_nearest_reference(&src, sw, sh, dw, dh);
             assert_eq!(simd, reference, "nearest mismatch: {sw}x{sh} -> {dw}x{dh}");
         }
+    }
+
+    /// Narrow dst_w exercises SSE4.1 (4-wide) + scalar tail (e.g. 10 = 2*4 + 2).
+    #[test]
+    fn nearest_downsample_narrow_width_matches_reference() {
+        for &(sw, sh, dw, dh) in &[(32, 16, 10, 8), (64, 32, 10, 10), (20, 20, 6, 6)] {
+            let src = make_patterned_rgba(sw, sh);
+            let simd = downsample_rgba8_nearest(&src, sw, sh, dw, dh);
+            let reference = downsample_rgba8_nearest_reference(&src, sw, sh, dw, dh);
+            assert_eq!(
+                simd, reference,
+                "nearest narrow mismatch: {sw}x{sh} -> {dw}x{dh}"
+            );
+        }
+    }
+
+    /// Force the SSE4.1 row kernel (even when AVX2 is also present).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn nearest_row_sse41_matches_scalar() {
+        if !is_x86_feature_detected!("sse4.1") {
+            return;
+        }
+        let src_w = 32u32;
+        let dst_w = 10u32;
+        let src = make_patterned_rgba(src_w, 1);
+        let mut src_x = vec![0_u32; dst_w as usize];
+        for (dx, slot) in src_x.iter_mut().enumerate() {
+            *slot = nearest_sample_coord(dx as u32, dst_w, src_w);
+        }
+        let mut dst_sse = vec![0_u8; dst_w as usize * 4];
+        let mut dx = 0usize;
+        unsafe {
+            downsample_rgba8_nearest_row_sse41(&src, 0, &src_x, &mut dst_sse, &mut dx);
+        }
+        while dx < src_x.len() {
+            let sx = src_x[dx] as usize;
+            let si = sx * 4;
+            let di = dx * 4;
+            dst_sse[di..di + 4].copy_from_slice(&src[si..si + 4]);
+            dx += 1;
+        }
+        let mut dst_ref = vec![0_u8; dst_w as usize * 4];
+        for (dx, &sx) in src_x.iter().enumerate() {
+            let si = sx as usize * 4;
+            let di = dx * 4;
+            dst_ref[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+        assert_eq!(dst_sse, dst_ref);
     }
 
     #[test]
