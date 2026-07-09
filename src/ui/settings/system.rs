@@ -52,7 +52,7 @@ pub(super) fn draw_system_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 }
 
 fn draw_general_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card_styled(
         ui,
         &palette,
@@ -88,7 +88,7 @@ fn draw_general_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 
 #[cfg(target_os = "windows")]
 fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card_styled(
         ui,
         &palette,

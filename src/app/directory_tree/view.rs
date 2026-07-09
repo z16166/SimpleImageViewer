@@ -308,6 +308,7 @@ pub(super) fn assemble_directory_tree_view(
     )));
 }
 
+#[allow(clippy::too_many_arguments)] // Domain publish needs tree/list/preview snapshots in one call.
 pub(super) fn publish_directory_tree_domains(
     runtime: &super::DirectoryTreeRuntime,
     tree: &mut DirectoryTreeTreeState,

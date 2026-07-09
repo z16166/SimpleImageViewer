@@ -25,7 +25,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Minimum interval between sysinfo RAM refreshes (shared by preload planning and decode guards).
-pub const MEMORY_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Kept deliberately long so logic-root passes never block the UI thread on sysconf /
+/// GlobalMemoryStatusEx more than once every half-minute.
+pub const MEMORY_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(30);
 const BYTES_PER_MB: u64 = 1024 * 1024;
 
 /// Cached available RAM in megabytes; updated by [`refresh_if_stale`].
@@ -92,7 +94,12 @@ pub fn total_memory_mb() -> u64 {
 }
 
 /// Seed the cache from a startup probe (before the logic thread runs).
+///
+/// Also marks the snapshot as freshly refreshed so the first logic-root
+/// [`refresh_if_stale`] call reuses these values instead of re-querying the OS.
 pub fn publish_startup_memory(available_mb: u64, total_mb: u64) {
     AVAILABLE_MEMORY_MB.store(available_mb, Ordering::Relaxed);
     TOTAL_MEMORY_MB.store(total_mb, Ordering::Relaxed);
+    let mut snapshot = SNAPSHOT.lock();
+    snapshot.refreshed_at = Some(Instant::now());
 }

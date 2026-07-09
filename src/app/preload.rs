@@ -107,6 +107,8 @@ pub(crate) fn compute_preload_budgets() -> (u64, u64) {
     const MIN_BACKWARD_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
     const MAX_BACKWARD_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
+    // Prefer the startup-seeded / previously cached total; only refresh when stale
+    // (see MEMORY_REFRESH_MIN_INTERVAL). Avoids a blocking OS query on the UI thread.
     crate::system_memory::refresh_if_stale();
     let total = crate::system_memory::total_memory_mb() * 1024 * 1024; // bytes
 

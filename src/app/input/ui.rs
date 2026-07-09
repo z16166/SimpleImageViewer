@@ -48,16 +48,14 @@ impl ImageViewerApp {
                 crate::ui::dialogs::goto::show(state, ctx, &self.cached_palette)
             }
             Some(ActiveModal::Wallpaper(state)) => {
-                let path = if !self.image_files.is_empty() {
-                    self.image_files[self.current_index]
-                        .to_string_lossy()
-                        .into_owned()
+                let path_ref = if !self.image_files.is_empty() {
+                    Some(self.image_files[self.current_index].as_path())
                 } else {
-                    String::new()
+                    None
                 };
+                state.ensure_image_path(self.current_index, path_ref);
                 crate::ui::dialogs::wallpaper::show(
                     state,
-                    &path,
                     self.current_image_res,
                     ctx,
                     &self.cached_palette,
@@ -182,6 +180,10 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn draw_music_hud_foreground(&mut self, ctx: &egui::Context) {
+        // Early-out before entering the HUD draw path when music OSD is off.
+        if !self.settings.play_music || !self.settings.show_music_osd {
+            return;
+        }
         ui_hud::draw(self, ctx);
     }
 
@@ -231,8 +233,10 @@ impl ImageViewerApp {
                         ui.button(label).clicked()
                     };
                     if clicked {
-                        let path = self.image_files[self.current_index].clone();
-                        self.run_builtin_context_menu_action(desc.id, &path, ui);
+                        // Clone only on click (not every frame / every item).
+                        if let Some(path) = self.image_files.get(self.current_index).cloned() {
+                            self.run_builtin_context_menu_action(desc.id, &path, ui);
+                        }
                         return;
                     }
                     drew_action = true;
@@ -246,8 +250,9 @@ impl ImageViewerApp {
                         pending_separator = false;
                     }
                     if ui.button(item.label.as_str()).clicked() {
-                        if let Some(command) = item.command.clone() {
-                            let path = self.image_files[self.current_index].clone();
+                        if let Some(command) = item.command.clone()
+                            && let Some(path) = self.image_files.get(self.current_index).cloned()
+                        {
                             self.run_custom_context_menu_action(&command, &path);
                         }
                         self.clear_image_context_menu();
@@ -322,17 +327,20 @@ impl ImageViewerApp {
     }
 
     fn builtin_context_menu_label(&self, id: &str, label_key: &str) -> String {
-        if id == "toggle_fullscreen" {
+        // Cache is rebuilt only on open / language / fullscreen change; prefer
+        // Cow borrow from rust_i18n when the translation is a static slice.
+        let cow = if id == "toggle_fullscreen" {
             if self.settings.fullscreen {
-                t!("ctx.fullscreen_exit").to_string()
+                t!("ctx.fullscreen_exit")
             } else {
-                t!("ctx.fullscreen_enter").to_string()
+                t!("ctx.fullscreen_enter")
             }
         } else if id == "print_current" && cfg!(not(target_os = "windows")) {
-            t!("ctx.print_pdf_full").to_string()
+            t!("ctx.print_pdf_full")
         } else {
-            t!(label_key).to_string()
-        }
+            t!(label_key)
+        };
+        cow.into_owned()
     }
 
     /// Paint the custom image context menu when it belongs to this viewport.

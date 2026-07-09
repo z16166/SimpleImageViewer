@@ -33,7 +33,7 @@ pub(super) fn draw_music_tab(
     music_enabled_changed: &mut bool,
 ) {
     ui.vertical(|ui| {
-        let palette = app.cached_palette.clone();
+        let palette = app.cached_palette;
         settings_card(ui, &palette, t!("section.music"), |ui| {
             let old_play_music = app.settings.play_music;
             let old_show_music_osd = app.settings.show_music_osd;

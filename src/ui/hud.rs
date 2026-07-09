@@ -24,6 +24,28 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     }
 
     let screen_rect = ctx.input(|i| i.content_rect());
+    let hud_width = crate::constants::MUSIC_HUD_WIDTH;
+    let hud_pos =
+        screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
+    let hud_rect = Rect::from_center_size(
+        hud_pos,
+        Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT),
+    );
+
+    // Wake-up: mouse proximity to bottom center hotzone (cheap; run before audio locks).
+    if let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()) {
+        let in_hotzone = ptr.y > screen_rect.bottom() - 140.0
+            && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
+        if hud_rect.contains(ptr) || in_hotzone {
+            app.music_hud_last_activity = Instant::now();
+        }
+    }
+
+    let is_active =
+        app.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
+    if !is_active {
+        return;
+    }
 
     let mut cur_ms = app.audio.get_pos_ms();
     // Smart seek locking logic for HUD (match target or 30s timeout)
@@ -40,30 +62,8 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         }
     }
 
-    let is_active =
-        app.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
-
-    // Wake-up: mouse proximity to bottom center hotzone
-    {
-        let hud_width = crate::constants::MUSIC_HUD_WIDTH;
-        let hud_pos =
-            screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
-        let hud_rect = Rect::from_center_size(
-            hud_pos,
-            Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT),
-        );
-
-        if let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()) {
-            let in_hotzone = ptr.y > screen_rect.bottom() - 140.0
-                && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
-            if hud_rect.contains(ptr) || in_hotzone {
-                app.music_hud_last_activity = Instant::now();
-            }
-        }
-    }
-
-    // Only render when active and audio is loaded
-    if !is_active || app.audio.get_duration_ms() == 0 {
+    // Only render when audio is loaded
+    if app.audio.get_duration_ms() == 0 {
         return;
     }
 

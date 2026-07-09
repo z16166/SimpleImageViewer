@@ -25,7 +25,7 @@ pub(super) fn draw_viewing_tab(
     ui: &mut egui::Ui,
     fullscreen_changed: &mut bool,
 ) {
-    let palette = app.cached_palette.clone();
+    let palette = app.cached_palette;
     settings_card(ui, &palette, t!("section.display"), |ui| {
         let old_fullscreen = app.settings.fullscreen;
         themed_labeled_toggle(

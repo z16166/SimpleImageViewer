@@ -594,12 +594,12 @@ pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::fro
 /// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
 ///
 /// **macOS EDR release order** (Apple has no custom tolerance; see `src/hdr/monitor/macos.rs`):
-/// 1. Swap-chain hot-swapped to float EDR (`MacOsEdr`) — not `SdrToneMapped`.
-/// 1b. Live swap-chain format matches [`desired_target_format_for_active_monitor`].
-/// 2. `interim_hdr_decode_capacity > 1.0` from tone-map settings while waiting for NSScreen probe.
-/// 3. [`monitor_hdr_decode_capacity_is_known`] — potential headroom from
+/// 1. Swap-chain hot-swapped to float EDR (`MacOsEdr`) -- not `SdrToneMapped`.
+/// 2. Live swap-chain format matches [`desired_target_format_for_active_monitor`].
+/// 3. `interim_hdr_decode_capacity > 1.0` from tone-map settings while waiting for NSScreen probe.
+/// 4. [`monitor_hdr_decode_capacity_is_known`] -- potential headroom from
 ///    [`maximumPotentialExtendedDynamicRangeColorComponentValue`](https://developer.apple.com/documentation/appkit/nsscreen/maximumpotentialextendeddynamicrangecolorcomponentvalue).
-/// 4. Fallback timeout [`STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE`] if probe never reports potential.
+/// 5. Fallback timeout [`STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE`] if probe never reports potential.
 ///
 /// When native HDR swap-chain requests are disabled, `SdrToneMapped` is the intentional
 /// terminal path (not a transient state before `Rgb10a2Unorm` hot-swap). WSI may still
@@ -614,6 +614,7 @@ pub(crate) fn swap_chain_matches_desired_for_startup(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Startup gate reads probe/output/format state as one decision.
 pub(crate) fn startup_preload_defer_can_release(
     runtime_probe_completed: bool,
     native_hdr_surface_requests_enabled: bool,
@@ -970,9 +971,18 @@ impl<'a> ImageInstallPlan<'a> {
 }
 impl ImageViewerApp {
     pub(crate) fn refresh_preload_memory_plan(&mut self) {
+        // Throttle: sysinfo refresh is already interval-gated, but skip the rest of
+        // the plan update when cached MB values are unchanged so root passes stay cheap.
+        let prev_available = self.cached_available_memory_mb;
+        let prev_total = self.cached_total_memory_mb;
         self.preload_memory.refresh_if_stale();
-        self.cached_available_memory_mb = self.preload_memory.available_memory_mb();
-        self.cached_total_memory_mb = self.preload_memory.total_memory_mb();
+        let available = self.preload_memory.available_memory_mb();
+        let total = self.preload_memory.total_memory_mb();
+        if available == prev_available && total == prev_total && prev_total > 0 {
+            return;
+        }
+        self.cached_available_memory_mb = available;
+        self.cached_total_memory_mb = total;
         self.prefetch_window_max_distance = prefetch_retention::effective_prefetch_window_distance(
             self.cached_available_memory_mb,
             self.cached_total_memory_mb,

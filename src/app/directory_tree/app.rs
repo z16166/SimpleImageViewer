@@ -342,7 +342,7 @@ impl ImageViewerApp {
             embedded,
             allow_image_context_menu,
         } = refs;
-        let palette = theme.lock().clone();
+        let palette = *theme.lock();
         if let Some(mut list_guard) = list.try_lock() {
             let cols_before = (
                 list_guard.image_list_col_size_w,
@@ -1619,7 +1619,7 @@ impl ImageViewerApp {
 
     pub(crate) fn sync_directory_tree_theme_snapshot(&mut self) {
         let mut theme = self.directory_tree_theme.lock();
-        *theme = self.cached_palette.clone();
+        *theme = self.cached_palette;
     }
 
     pub(crate) fn mark_directory_tree_repaint_pending(&mut self) {
