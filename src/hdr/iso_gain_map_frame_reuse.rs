@@ -234,16 +234,7 @@ pub(crate) fn select_iso_gain_map_planes(
 
     let (gain_width, gain_height, gain_vec) = new_gain.expect("checked is_some");
     let prev = reuse.as_ref();
-    let reuse_sdr = prev.is_some_and(|p| {
-        p.width == width
-            && p.height == height
-            && p.key == key
-            && rgba8_planes_within_threshold(
-                &new_sdr,
-                p.sdr_rgba.as_slice(),
-                ISO_GAIN_MAP_FRAME_DIFF_MAX_ABS,
-            )
-    });
+    // `sdr_matches_prev` already ran the SDR plane compare; reuse it here.
     let reuse_gain = prev.is_some_and(|p| {
         p.width == width
             && p.height == height
@@ -257,8 +248,8 @@ pub(crate) fn select_iso_gain_map_planes(
             )
     });
 
-    let sdr_rgba = if reuse_sdr {
-        Arc::clone(&prev.expect("reuse_sdr").sdr_rgba)
+    let sdr_rgba = if sdr_matches_prev {
+        Arc::clone(&prev.expect("sdr_matches_prev").sdr_rgba)
     } else {
         Arc::new(new_sdr)
     };
