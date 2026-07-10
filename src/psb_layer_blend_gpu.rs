@@ -52,7 +52,7 @@ pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
     matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
 }
 
-pub(crate) const PSD_NORMAL_BLEND_SHADER: &str = r#"
+pub(crate) const PSD_SEPARABLE_BLEND_SHADER: &str = r#"
 struct BlendParams {
     canvas_w: u32,
     canvas_h: u32,
@@ -60,8 +60,8 @@ struct BlendParams {
     layer_h: u32,
     layer_left: i32,
     layer_top: i32,
+    mode: u32,
     _pad0: u32,
-    _pad1: u32,
 };
 
 @group(0) @binding(0) var canvas: texture_storage_2d<rgba8unorm, read_write>;
@@ -72,8 +72,29 @@ struct BlendParams {
 // would cut GPU command overhead for 100+ layer docs, but must preserve
 // bottom-to-top order (each layer reads the previous composite).
 
+fn blend_b(mode: u32, cb: f32, cs: f32) -> f32 {
+    if (mode == 1u) {
+        return cb + cs - cb * cs;
+    }
+    if (mode == 2u) {
+        return min(cb + cs, 1.0);
+    }
+    if (mode == 3u) {
+        return cb * cs;
+    }
+    return cs;
+}
+
+fn blend_rgb(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        blend_b(mode, cb.r, cs.r),
+        blend_b(mode, cb.g, cs.g),
+        blend_b(mode, cb.b, cs.b),
+    );
+}
+
 @compute @workgroup_size(16, 16, 1)
-fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sx = i32(gid.x);
     let sy = i32(gid.y);
     if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
@@ -92,18 +113,18 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let dst_coord = vec2<i32>(dx, dy);
-    // rgba8unorm loads are in [0,1]; sa >= 1.0 means fully opaque, so write
-    // alpha = 1.0 explicitly (same as src.a after unorm decode).
-    if (sa >= 1.0) {
+    // rgba8unorm loads are in [0,1]; only Normal can skip destination reads.
+    if (params.mode == 0u && sa >= 1.0) {
         textureStore(canvas, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;
     }
 
     let dst = textureLoad(canvas, dst_coord);
     let da = dst.a;
-    // Invariant: sa > 0.0 here, so out_a = sa + da*(1-sa) > 0.0 always.
     let out_a = sa + da * (1.0 - sa);
-    let out_rgb = (src.rgb * sa + dst.rgb * da * (1.0 - sa)) / out_a;
+    let blended = blend_rgb(params.mode, dst.rgb, src.rgb);
+    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
+    let out_rgb = co / out_a;
     textureStore(canvas, dst_coord, vec4<f32>(out_rgb, out_a));
 }
 "#;
@@ -117,8 +138,8 @@ struct BlendParamsUniform {
     layer_h: u32,
     layer_left: i32,
     layer_top: i32,
+    mode: u32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<BlendParamsUniform>() == 32);
@@ -145,6 +166,8 @@ pub(crate) struct DecodedLayerRef<'a> {
     pub top: i32,
     pub width: u32,
     pub height: u32,
+    pub blend: [u8; 4],
+    pub clipping: u8,
     pub rgba: &'a [u8],
 }
 
@@ -175,7 +198,10 @@ pub(crate) fn gpu_blend_worthwhile(width: u32, height: u32) -> bool {
     short >= GPU_BLEND_MIN_SHORT_SIDE && pixels >= GPU_BLEND_MIN_PIXELS
 }
 
-pub(crate) fn psd_normal_blend_compute_supported(device: &wgpu::Device, is_opengl: bool) -> bool {
+pub(crate) fn psd_separable_blend_compute_supported(
+    device: &wgpu::Device,
+    is_opengl: bool,
+) -> bool {
     if is_opengl {
         return false;
     }
@@ -187,6 +213,11 @@ pub(crate) fn psd_normal_blend_compute_supported(device: &wgpu::Device, is_openg
     features
         .flags
         .contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE)
+}
+
+#[allow(dead_code)]
+pub(crate) fn psd_normal_blend_compute_supported(device: &wgpu::Device, is_opengl: bool) -> bool {
+    psd_separable_blend_compute_supported(device, is_opengl)
 }
 
 fn get_or_create_pipeline(
@@ -206,19 +237,29 @@ fn get_or_create_pipeline(
     Ok(created)
 }
 
-/// Prewarm the PSD Normal blend compute pipeline (also populates on-disk pipeline cache).
+/// Prewarm the PSD separable blend compute pipeline (also populates on-disk pipeline cache).
+pub fn prewarm_psd_separable_blend_pipeline(
+    device: &wgpu::Device,
+    device_id: u64,
+    is_opengl: bool,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
+) {
+    if !psd_separable_blend_compute_supported(device, is_opengl) {
+        return;
+    }
+    if let Err(e) = get_or_create_pipeline(device, device_id, pipeline_cache) {
+        log::warn!("[PSD] GPU separable blend pipeline prewarm failed: {e}");
+    }
+}
+
+/// Backward-compatible alias for callers still prewarming only Normal PSD blend.
 pub fn prewarm_psd_normal_blend_pipeline(
     device: &wgpu::Device,
     device_id: u64,
     is_opengl: bool,
     pipeline_cache: Option<&wgpu::PipelineCache>,
 ) {
-    if !psd_normal_blend_compute_supported(device, is_opengl) {
-        return;
-    }
-    if let Err(e) = get_or_create_pipeline(device, device_id, pipeline_cache) {
-        log::warn!("[PSD] GPU Normal blend pipeline prewarm failed: {e}");
-    }
+    prewarm_psd_separable_blend_pipeline(device, device_id, is_opengl, pipeline_cache);
 }
 
 fn create_pipeline(
@@ -227,11 +268,11 @@ fn create_pipeline(
     pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> Result<PsdBlendPipeline, String> {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("simple-image-viewer-psd-normal-blend-shader"),
-        source: wgpu::ShaderSource::Wgsl(PSD_NORMAL_BLEND_SHADER.into()),
+        label: Some("simple-image-viewer-psd-separable-blend-shader"),
+        source: wgpu::ShaderSource::Wgsl(PSD_SEPARABLE_BLEND_SHADER.into()),
     });
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("simple-image-viewer-psd-normal-blend-bgl"),
+        label: Some("simple-image-viewer-psd-separable-blend-bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -266,15 +307,15 @@ fn create_pipeline(
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("simple-image-viewer-psd-normal-blend-pll"),
+        label: Some("simple-image-viewer-psd-separable-blend-pll"),
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("simple-image-viewer-psd-normal-blend-pipeline"),
+        label: Some("simple-image-viewer-psd-separable-blend-pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
-        entry_point: Some("cs_blend_normal"),
+        entry_point: Some("cs_blend_separable"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: pipeline_cache,
     });
@@ -285,7 +326,7 @@ fn create_pipeline(
     })
 }
 
-/// Try GPU Normal blend. Returns `None` to signal CPU fallback (unsupported, error, cancel).
+/// Try GPU separable blend. Returns `None` to signal CPU fallback (unsupported, error, cancel).
 pub(crate) fn try_blend_layers_gpu(
     ctx: &PsdGpuContext,
     canvas_w: u32,
@@ -295,7 +336,7 @@ pub(crate) fn try_blend_layers_gpu(
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Option<Vec<u8>> {
     if !ctx.is_device_current()
-        || !psd_normal_blend_compute_supported(&ctx.device, ctx.is_opengl)
+        || !psd_separable_blend_compute_supported(&ctx.device, ctx.is_opengl)
         || !gpu_blend_worthwhile(canvas_w, canvas_h)
     {
         return None;
@@ -330,7 +371,7 @@ pub(crate) fn try_blend_layers_gpu(
     ) {
         Ok(pixels) => Some(pixels),
         Err(e) => {
-            log::debug!("[PSD] GPU Normal blend fell back to CPU: {e}");
+            log::debug!("[PSD] GPU separable blend fell back to CPU: {e}");
             None
         }
     }
@@ -349,7 +390,7 @@ fn blend_layers_gpu_inner(
     let queue = &ctx.queue;
 
     let canvas_texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("psd-normal-blend-canvas"),
+        label: Some("psd-separable-blend-canvas"),
         size: wgpu::Extent3d {
             width: canvas_w,
             height: canvas_h,
@@ -386,7 +427,7 @@ fn blend_layers_gpu_inner(
     let canvas_view = canvas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("psd-normal-blend-encoder"),
+        label: Some("psd-separable-blend-encoder"),
     });
 
     // Keep GPU resources alive until submit.
@@ -399,6 +440,9 @@ fn blend_layers_gpu_inner(
         if layer.width == 0 || layer.height == 0 {
             continue;
         }
+        if layer.clipping != 0 || !is_gpu_separable_blend(&layer.blend) {
+            return Err("layer is not eligible for GPU separable blend".into());
+        }
         let need = (layer.width as usize)
             .checked_mul(layer.height as usize)
             .and_then(|n| n.checked_mul(4))
@@ -408,7 +452,7 @@ fn blend_layers_gpu_inner(
         }
 
         let layer_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("psd-normal-blend-layer"),
+            label: Some("psd-separable-blend-layer"),
             size: wgpu::Extent3d {
                 width: layer.width,
                 height: layer.height,
@@ -449,17 +493,17 @@ fn blend_layers_gpu_inner(
             layer_h: layer.height,
             layer_left: layer.left,
             layer_top: layer.top,
+            mode: separable_blend_mode_u32(&layer.blend),
             _pad0: 0,
-            _pad1: 0,
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("psd-normal-blend-params"),
+            label: Some("psd-separable-blend-params"),
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("psd-normal-blend-bg"),
+            label: Some("psd-separable-blend-bg"),
             layout: &pipe.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -479,7 +523,7 @@ fn blend_layers_gpu_inner(
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("psd-normal-blend-pass"),
+                label: Some("psd-separable-blend-pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&pipe.pipeline);
@@ -502,7 +546,7 @@ fn blend_layers_gpu_inner(
         .checked_mul(u64::from(canvas_h))
         .ok_or_else(|| "readback size overflow".to_string())?;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("psd-normal-blend-readback"),
+        label: Some("psd-separable-blend-readback"),
         size: readback_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
@@ -596,5 +640,29 @@ mod tests {
         assert!(!gpu_blend_worthwhile(2000, 200));
         assert!(gpu_blend_worthwhile(512, 512));
         assert!(gpu_blend_worthwhile(2048, 1024));
+    }
+
+    #[test]
+    fn separable_shader_uses_mode_uniform_entry() {
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("mode: u32"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_separable"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn blend_b"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("sa * (1.0 - da)"));
+    }
+
+    #[test]
+    fn blend_params_uniform_keeps_32_byte_layout() {
+        let params = BlendParamsUniform {
+            canvas_w: 1,
+            canvas_h: 2,
+            layer_w: 3,
+            layer_h: 4,
+            layer_left: 5,
+            layer_top: 6,
+            mode: BLEND_MODE_SCREEN,
+            _pad0: 0,
+        };
+        assert_eq!(std::mem::size_of_val(&params), 32);
+        assert_eq!(params.mode, BLEND_MODE_SCREEN);
     }
 }

@@ -802,6 +802,8 @@ pub(crate) fn run_composite_pass_gpu_batch(
                 top: l.top,
                 width: l.width,
                 height: l.height,
+                blend: l.blend,
+                clipping: l.clipping,
                 rgba: &l.rgba,
             })
             .collect();
