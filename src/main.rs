@@ -59,6 +59,7 @@ pub mod psb_layer_composite;
 mod psb_layer_decode_pool;
 mod psb_packbits_simd;
 mod psb_reader;
+mod psb_sdr_main;
 mod psb_section_index;
 mod psb_zip;
 mod raw_processor;

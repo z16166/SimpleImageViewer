@@ -23,13 +23,6 @@ use crate::psb_reader::{
     validate_psd_dimensions,
 };
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task 1 adds the index API before later PSD routing tasks consume it"
-    )
-)]
 #[derive(Debug, Clone)]
 pub struct PsdSectionIndex {
     pub is_psb: bool,
@@ -46,13 +39,6 @@ pub struct PsdSectionIndex {
     pub image_data_pos: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task 1 adds the index API before later PSD routing tasks consume it"
-    )
-)]
 impl PsdSectionIndex {
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 4 {

@@ -365,13 +365,13 @@ pub(crate) fn load_psd(
     }
 
     let composite = if skip_flattened_for_disk_tiled_degrade {
-        crate::psb_layer_composite::decode_psd_sdr_main_skip_flattened_with_cancel(
+        crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
         )?
     } else {
-        crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
+        crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),

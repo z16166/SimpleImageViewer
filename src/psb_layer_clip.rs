@@ -408,10 +408,9 @@ mod tests {
         assert_eq!(outside, [0, 0, 0, 0], "clip must not paint outside base");
 
         // P1 blank Image Data must degrade to P2 and still apply clipping.
-        let main = crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
-            &bytes, None, None,
-        )
-        .expect("decode_psd_sdr_main clipping_on.psd");
+        let main =
+            crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+                .expect("decode_psd_sdr_main clipping_on.psd");
         let o = ((100u32 * 256 + 200) * 4) as usize;
         assert_eq!(
             &main.pixels[o..o + 4],

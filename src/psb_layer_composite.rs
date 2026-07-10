@@ -14,18 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Layer-aware PSD/PSB compositor and SDR main-image fallback.
+//! Layer-aware PSD/PSB compositor.
 //!
 //! Used when the flattened Image Data section cannot be decoded structurally
-//! (see `decode_psd_sdr_main_from_bytes_with_cancel`). Decodes each layer's
-//! channels (depth 8) and composites them bottom to top with Normal / Screen /
-//! Linear Dodge / Multiply blend + opacity + user mask + clipping groups,
-//! respecting strict Photoshop layer/group visibility only (no viewer
-//! heuristics that open hidden layers).
+//! (see `psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel`). Decodes
+//! each layer's channels (depth 8) and composites them bottom to top with
+//! Normal / Screen / Linear Dodge / Multiply blend + opacity + user mask +
+//! clipping groups, respecting strict Photoshop layer/group visibility only
+//! (no viewer heuristics that open hidden layers).
 
 use std::io::Read;
 
-const PSD_SIGNATURE: &[u8; 4] = b"8BPS";
 const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
 const SECTION_DIVIDER_KEY: &[u8; 4] = b"lsct";
@@ -50,8 +49,6 @@ const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
 /// parallel and retained until blending finishes. 8 GiB bounds that without
 /// rejecting typical multi-layer comps on a desktop viewer.
 const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const PSD_VERSION: u16 = 1;
-const PSB_VERSION: u16 = 2;
 const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
     *b"LMsk", *b"Lr16", *b"Lr32", *b"Layr", *b"Mt16", *b"Mt32", *b"Mtrn", *b"Alph", *b"FMsk",
     *b"lnk2", *b"FEid", *b"FXid", *b"PxSD",
@@ -213,52 +210,34 @@ pub struct LayerInfo<'a> {
 }
 
 pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
-    let file_len = bytes.len() as u64;
-    let mut r = std::io::Cursor::new(bytes);
+    let index = crate::psb_section_index::PsdSectionIndex::parse(bytes)?;
+    parse_layer_records_from_index(&index, bytes)
+}
 
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != PSD_SIGNATURE {
-        return Err("Not a PSD/PSB file (invalid signature)".into());
-    }
+/// Same as [`parse_layer_records`], but reuses an already-parsed
+/// [`crate::psb_section_index::PsdSectionIndex`] instead of re-walking the
+/// header, color mode data, and image resources sections.
+pub fn parse_layer_records_from_index<'a>(
+    index: &crate::psb_section_index::PsdSectionIndex,
+    bytes: &'a [u8],
+) -> Result<LayerInfo<'a>, String> {
+    let width = index.width;
+    let height = index.height;
+    let depth = index.depth;
+    let color_mode = index.color_mode;
+    let is_psb = index.is_psb;
 
-    let version = crate::psb_reader::read_u16(&mut r)?;
-    if version != PSD_VERSION && version != PSB_VERSION {
-        return Err(format!("Unknown PSD/PSB version: {version}"));
-    }
-    let is_psb = version == PSB_VERSION;
-
-    crate::psb_reader::seek_forward(&mut r, 6)?;
-    let _channels = crate::psb_reader::read_u16(&mut r)?;
-    let height = crate::psb_reader::read_u32(&mut r)?;
-    let width = crate::psb_reader::read_u32(&mut r)?;
-    let depth = crate::psb_reader::read_u16(&mut r)?;
-    let color_mode = crate::psb_reader::read_u16(&mut r)?;
-
-    let cm_len = crate::psb_reader::read_u32(&mut r)? as u64;
-    skip_section(&mut r, cm_len, file_len, "color mode data")?;
-
-    let ir_len = crate::psb_reader::read_u32(&mut r)? as u64;
-    let ir_start = r.position();
-    let ir_end = checked_end(ir_start, ir_len, file_len, "image resources")?;
-    let embedded_icc = crate::psb_reader::extract_icc_profile_from_ir(bytes, ir_start, ir_end);
-    skip_section(&mut r, ir_len, file_len, "image resources")?;
-
+    let embedded_icc =
+        crate::psb_reader::extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     let cmyk_icc = if color_mode == 4 {
         crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec()
     } else {
         Vec::new()
     };
 
-    let lm_len = if is_psb {
-        crate::psb_reader::read_u64(&mut r)?
-    } else {
-        crate::psb_reader::read_u32(&mut r)? as u64
-    };
-    let lm_start = r.position();
-    let lm_end = checked_end(lm_start, lm_len, file_len, "layer and mask info")?;
-    if lm_len == 0 {
+    let lm_start = index.lm_start;
+    let lm_end = index.lm_end;
+    if lm_end == lm_start {
         let empty = cursor_slice(bytes, lm_start, lm_start)?;
         return Ok(LayerInfo {
             records: Vec::new(),
@@ -271,6 +250,9 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
             cmyk_icc,
         });
     }
+
+    let mut r = std::io::Cursor::new(bytes);
+    r.set_position(lm_start);
 
     let layer_info_len = if is_psb {
         crate::psb_reader::read_u64(&mut r)?
@@ -720,16 +702,6 @@ fn skip_extra_bytes(
     label: &str,
 ) -> Result<(), String> {
     read_at(r, len, extra_end, label)?;
-    crate::psb_reader::seek_forward(r, len)
-}
-
-fn skip_section(
-    r: &mut std::io::Cursor<&[u8]>,
-    len: u64,
-    file_len: u64,
-    label: &str,
-) -> Result<(), String> {
-    read_at(r, len, file_len, label)?;
     crate::psb_reader::seek_forward(r, len)
 }
 
@@ -1463,6 +1435,33 @@ pub fn composite_layers_from_bytes_with_cancel(
     let parse_t0 = std::time::Instant::now();
     let info = parse_layer_records(bytes)?;
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+}
+
+/// Same as [`composite_layers_from_bytes_with_cancel`], but reuses an
+/// already-parsed [`crate::psb_section_index::PsdSectionIndex`] instead of
+/// re-walking the header/color-mode/image-resources/layer-mask sections.
+pub fn composite_layers_from_index(
+    index: &crate::psb_section_index::PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    let total_t0 = std::time::Instant::now();
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let parse_t0 = std::time::Instant::now();
+    let info = parse_layer_records_from_index(index, bytes)?;
+    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+}
+
+fn composite_layers_from_info(
+    info: LayerInfo<'_>,
+    parse_ms: f64,
+    total_t0: std::time::Instant,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     if info.depth != 8 {
         return Err(format!(
             "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
@@ -1531,216 +1530,6 @@ pub fn composite_layers_from_bytes_with_cancel(
         height: canvas_h,
         pixels: canvas,
     })
-}
-
-/// SDR main-image state machine: flattened composite -> strict layer composite
-/// -> IR thumbnail -> explicit failure. Hidden layers are never opened.
-///
-/// P1 accepts a structurally valid flattened buffer only when it is not an
-/// absolute blank (all-alpha-0 or all-RGB-0). P2 accepts a strict-visibility
-/// composite only when it is not zero-information (all-alpha-0 or solid RGB
-/// with variance 0). P3 accepts an IR thumbnail under the same zero-information
-/// barrier as P2. All barriers are full-buffer SIMD scans.
-pub fn decode_psd_sdr_main_from_bytes_with_cancel(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, false)
-}
-
-/// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but skips P1 flattened
-/// Image Data. Used when an oversized PSB disk-tiled probe already rejected a
-/// blank (or unreadable) flat and must not re-decode the full canvas.
-pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, true)
-}
-
-fn decode_psd_sdr_main_inner(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-    skip_flattened: bool,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    // P1: structurally valid flattened Image Data, then absolute blank barrier.
-    let mut skip_p2_after_structural_header = false;
-    if skip_flattened {
-        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_skipped -> degrade_P2");
-        log::debug!(
-            "PSD SDR main: skipping P1 flattened (caller already rejected blank/unreadable flat)"
-        );
-    } else {
-        match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
-            Ok(composite) => {
-                let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
-                    &composite.pixels,
-                    cancel,
-                )?;
-                if absolutely_blank {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_absolute_blank {}x{} \
-                     pixels={} -> degrade_P2",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P1 flattened {}x{} is absolute blank \
-                     (all-transparent or all-RGB-0); degrading to P2",
-                        composite.width,
-                        composite.height
-                    );
-                } else {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_flattened {}x{} pixels={}",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P1 flattened composite {}x{}",
-                        composite.width,
-                        composite.height
-                    );
-                    return Ok(composite);
-                }
-            }
-            Err(e) if e.is_cancelled() => return Err(e),
-            Err(e) => {
-                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
-                log::debug!("PSD SDR main P1 flattened decode failed: {e}");
-                // Header/structural failures cannot be recovered by P2; go straight to P3.
-                if is_psd_header_structural_error(e.as_str()) {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
-                    );
-                    log::debug!("PSD SDR main: skipping P2 after structural header failure");
-                    skip_p2_after_structural_header = true;
-                }
-            }
-        }
-    }
-
-    // P1 -> P2: poll cancel after absolute-blank degrade (or P1 fail) before P2 work.
-    crate::psb_reader::check_decode_cancel(cancel)?;
-
-    // P2: strict visibility layer composite, then zero-information barrier.
-    let mut p2_no_drawable_visible = false;
-    if !skip_p2_after_structural_header {
-        match composite_layers_from_bytes_with_cancel(bytes, cancel, gpu) {
-            Ok(composite) => {
-                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                    &composite.pixels,
-                    cancel,
-                )?;
-                if zero_info {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
-                         pixels={} -> degrade_P3",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P2 strict composite {}x{} is zero-information \
-                         (all-transparent or solid RGB); degrading to P3",
-                        composite.width,
-                        composite.height
-                    );
-                } else {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P2 strict layer composite {}x{}",
-                        composite.width,
-                        composite.height
-                    );
-                    return Ok(composite);
-                }
-            }
-            Err(e) if e.is_cancelled() => return Err(e),
-            Err(e) => {
-                p2_no_drawable_visible = e.is_no_drawable_visible_layers();
-                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
-                log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
-            }
-        }
-    }
-
-    // P3: embedded Photoshop IR thumbnail, then zero-information barrier.
-    crate::psb_reader::check_decode_cancel(cancel)?;
-    match crate::psb_reader::try_extract_photoshop_thumbnail(bytes) {
-        Some(thumb) => {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-            let zero_info =
-                crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
-                     pixels={} -> fail",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
-                     (all-transparent or solid RGB); no displayable image",
-                    thumb.width,
-                    thumb.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{}",
-                    thumb.width,
-                    thumb.height
-                );
-                return Ok(thumb);
-            }
-        }
-        None => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P3_fail no_ir_thumbnail");
-            log::debug!("PSD SDR main P3: no embedded IR thumbnail");
-        }
-    }
-
-    crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=fail no_p1_p2_p3");
-    if p2_no_drawable_visible {
-        return Err(rust_i18n::t!("error.psd_all_layers_hidden")
-            .to_string()
-            .into());
-    }
-    Err(rust_i18n::t!("error.psd_no_displayable_image")
-        .to_string()
-        .into())
-}
-
-/// True when P1 failed for a reason that P2 cannot recover (same header parse).
-///
-/// Covers at least: invalid signature, unknown version, bad dimensions,
-/// channel-count variants, unsupported bit depth, and truncated header.
-/// Does **not** treat Image Data-only failures (e.g. invalid compression) as
-/// structural -- P2 layer composite may still succeed.
-fn is_psd_header_structural_error(err: &str) -> bool {
-    err.contains("invalid signature")
-        || err.starts_with("Unknown PSD/PSB version:")
-        || err.starts_with("PSD/PSB dimensions")
-        || err.contains("channel count")
-        || err.starts_with("Unsupported PSD/PSB bit depth")
-        || err.starts_with("PSD/PSB header is too short")
 }
 
 struct CompositeTiming {
@@ -1975,9 +1764,8 @@ mod tests {
         STRICT_LAYER_COMPOSITE_BLANK, blend_layer_onto, blend_normal_onto, blend_separable_onto,
         build_layer_sized_mask, checked_layer_pixel_count, composite_layers_from_bytes_with_cancel,
         compute_effective_visibility, decode_channel_image, decode_one_layer,
-        decode_psd_sdr_main_from_bytes_with_cancel, dimensions_within_limit,
-        is_psd_header_structural_error, layer_to_rgba8, parse_layer_records,
-        scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
+        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
+        strict_visibility_has_drawable_output,
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use std::path::Path;
@@ -2416,21 +2204,6 @@ mod tests {
     }
 
     #[test]
-    fn decode_01_02_psd_sdr_main_returns_structurally_valid_image() {
-        // Flattened Image Data may be a solid-ish placeholder; under the SDR
-        // state machine that is still a valid P1 result (no pixel heuristics).
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd");
-        if !path.is_file() {
-            eprintln!("skipping decode_01_02_psd_sdr_main...; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).unwrap();
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
-        assert_eq!((main.width, main.height), (5031, 3437));
-        assert_eq!(main.pixels.len(), 5031 * 3437 * 4);
-    }
-
-    #[test]
     fn composite_layers_all_hidden_returns_blank_error() {
         // Two top-level groups, both eye-off: strict composite must not invent
         // visibility and must report blank without pixel work.
@@ -2444,47 +2217,6 @@ mod tests {
             .expect_err("expected blank under strict visibility");
         assert!(err.is_no_drawable_visible_layers());
         assert_eq!(err.as_str(), STRICT_LAYER_COMPOSITE_BLANK);
-    }
-
-    #[test]
-    fn decode_psd_sdr_main_all_hidden_reports_photoshop_hint() {
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\18\18\1-2.psd");
-        if !path.is_file() {
-            eprintln!("skipping decode_psd_sdr_main_all_hidden...; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read");
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
-            .expect_err("expected fail when all layers hidden and P3 is blank");
-        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
-        assert_eq!(err.as_str(), expected);
-        assert!(
-            err.as_str().contains("designer")
-                || err.as_str().contains("设计师")
-                || err.as_str().contains("設計師"),
-            "error should attribute hidden layers to the designer: {err}"
-        );
-        assert!(
-            err.as_str().contains("Photoshop"),
-            "error should point users to Photoshop: {err}"
-        );
-    }
-
-    #[test]
-    fn decode_psd_sdr_main_prefers_structurally_valid_flattened() {
-        // 10.psd has a usable flattened composite -- P1 must win even if layers exist.
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\10\10.psd");
-        if !path.is_file() {
-            eprintln!(
-                "skipping decode_psd_sdr_main_prefers_structurally_valid_flattened; sample missing"
-            );
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read");
-        let flat = crate::psb_reader::read_composite_from_bytes(&bytes).expect("flat");
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
-        assert_eq!((main.width, main.height), (flat.width, flat.height));
-        assert_eq!(main.pixels, flat.pixels);
     }
 
     #[test]
@@ -2518,42 +2250,6 @@ mod tests {
 
         assert!(!is_section_divider);
         assert_eq!(section_type, None);
-    }
-
-    #[test]
-    fn is_psd_header_structural_error_matches_known_messages() {
-        assert!(is_psd_header_structural_error(
-            "Not a PSD/PSB file (invalid signature)"
-        ));
-        assert!(is_psd_header_structural_error(
-            "Unknown PSD/PSB version: 99"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB dimensions 0x0 must be non-zero"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB dimensions must be non-zero"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB channel count 0 is out of range (1..=56)"
-        ));
-        // Layer-record wording also contains "channel count".
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB layer channel count 999 exceeds 56"
-        ));
-        assert!(is_psd_header_structural_error(
-            "Unsupported PSD/PSB bit depth 12 (supported: 8, 16, 32)"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB header is too short"
-        ));
-        // Image Data compression is not a shared header failure -- P2 may work.
-        assert!(!is_psd_header_structural_error(
-            "Invalid PSD/PSB Image Data compression: 9"
-        ));
-        assert!(!is_psd_header_structural_error(
-            "Unsupported layer channel compression: 9"
-        ));
     }
 
     #[test]

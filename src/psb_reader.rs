@@ -223,36 +223,30 @@ pub fn read_composite_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&AtomicBool>,
 ) -> Result<PsbComposite, crate::loader::DecodeError> {
-    let file_size = bytes.len() as u64;
-    let mut r = std::io::Cursor::new(bytes);
-
     check_decode_cancel(cancel)?;
+    let index = crate::psb_section_index::PsdSectionIndex::parse(bytes)?;
+    read_composite_from_index(&index, bytes, cancel)
+}
 
-    // -- Section 1: File Header --
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != b"8BPS" {
-        return Err("Not a PSD/PSB file (invalid signature)".into());
-    }
+/// Decode the flattened Image Data section starting at `index.image_data_pos`.
+///
+/// Does not re-parse the header, color mode data, image resources, or layer
+/// and mask info sections -- `index` already located and validated them.
+pub fn read_composite_from_index(
+    index: &crate::psb_section_index::PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<PsbComposite, crate::loader::DecodeError> {
+    let file_size = bytes.len() as u64;
 
-    let version = read_u16(&mut r)?;
-    if version != 1 && version != 2 {
-        return Err(format!("Unknown PSD/PSB version: {version}").into());
-    }
-    let is_psb = version == 2;
-
-    r.seek(SeekFrom::Current(6))
-        .map_err(|e| format!("Seek error: {e}"))?;
-
-    let channels = read_u16(&mut r)? as u32;
-    let height = read_u32(&mut r)?;
-    let width = read_u32(&mut r)?;
-    let depth = read_u16(&mut r)?;
-    let color_mode = read_u16(&mut r)?;
-
-    validate_psd_dimensions(width, height, channels)?;
+    let width = index.width;
+    let height = index.height;
+    let channels = index.channels;
+    let depth = index.depth;
+    let color_mode = index.color_mode;
+    let is_psb = index.is_psb;
     let bps = bytes_per_sample(depth)?;
+    let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
 
     log::debug!(
         "PSD/PSB header: {}x{}, {} channels, {}-bit, color_mode={}, version={}",
@@ -261,38 +255,21 @@ pub fn read_composite_from_bytes_with_cancel(
         channels,
         depth,
         color_mode,
-        version
+        if is_psb { 2 } else { 1 }
     );
-
-    // -- Section 2: Color Mode Data --
-    let cm_len = read_u32(&mut r)?;
-    seek_forward_within(&mut r, cm_len as u64, file_size, "color mode data")?;
-
-    // -- Section 3: Image Resources --
-    let ir_len = read_u32(&mut r)? as u64;
-    let ir_start = r
-        .stream_position()
-        .map_err(|e| format!("Stream position error: {e}"))?;
-    let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")?;
-    let embedded_icc = extract_icc_profile_from_ir(bytes, ir_start, ir_end);
-    seek_forward_within(&mut r, ir_len, file_size, "image resources")?;
-
-    // -- Section 4: Layer and Mask Information --
-    let lm_len = if is_psb {
-        read_u64(&mut r)?
-    } else {
-        read_u32(&mut r)? as u64
-    };
-    seek_forward_within(&mut r, lm_len, file_size, "layer and mask info")?;
 
     check_decode_cancel(cancel)?;
 
     // -- Section 5: Image Data (flattened composite) --
-    let compression = read_u16(&mut r)?;
+    let compression = index.image_data_compression(bytes)?;
     // Spec: 0=Raw, 1=RLE, 2=ZIP, 3=ZIP+prediction. Anything else is invalid.
     if compression > 3 {
         return Err(format!("Invalid PSD/PSB Image Data compression: {compression}").into());
     }
+
+    let mut r = std::io::Cursor::new(bytes);
+    r.seek(SeekFrom::Start(index.image_data_pos + 2))
+        .map_err(|e| format!("Seek error: {e}"))?;
 
     let pixel_count = checked_pixel_count(width, height)?;
     let samples_per_channel = pixel_count;
@@ -971,7 +948,7 @@ pub fn try_extract_photoshop_thumbnail(bytes: &[u8]) -> Option<PsbComposite> {
 }
 
 /// Parse Photoshop Image Resource 1033/1036 JPEG thumbnail into RGBA8.
-fn extract_photoshop_thumbnail_from_ir(
+pub(crate) fn extract_photoshop_thumbnail_from_ir(
     bytes: &[u8],
     ir_start: u64,
     ir_end: u64,
