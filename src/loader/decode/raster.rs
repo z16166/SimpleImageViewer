@@ -336,14 +336,41 @@ pub(crate) fn load_psd(
             width,
             height
         );
-        match crate::psb_reader::open_tiled_source(path) {
-            Ok(source) => {
-                let blank = psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
-                if !blank {
-                    return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
-                }
+        let disk_tiled_compression = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..])
+            .and_then(|index| index.image_data_compression(&mmap[..]));
+        match disk_tiled_compression {
+            Ok(2 | 3) => {
                 log::debug!(
-                    "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                    "PSB disk tiled open skipped for ZIP Image Data; routing through P1/P2/P3"
+                );
+            }
+            Ok(0 | 1) => match crate::psb_reader_tiled::open_tiled_source(path) {
+                Ok(source) => {
+                    let blank =
+                        psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
+                    if !blank {
+                        return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
+                    }
+                    log::debug!(
+                        "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                        width,
+                        height
+                    );
+                    skip_flattened_for_disk_tiled_degrade = true;
+                }
+                Err(e) => {
+                    log::debug!(
+                        "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                        width,
+                        height
+                    );
+                    skip_flattened_for_disk_tiled_degrade = true;
+                }
+            },
+            Ok(other) => {
+                log::debug!(
+                    "PSB disk tiled compression {} is unsupported for header {}x{}; degrading to P2/P3",
+                    other,
                     width,
                     height
                 );
@@ -351,7 +378,7 @@ pub(crate) fn load_psd(
             }
             Err(e) => {
                 log::debug!(
-                    "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                    "PSB disk tiled compression probe failed for header {}x{} ({e}); degrading to P2/P3",
                     width,
                     height
                 );
@@ -365,13 +392,13 @@ pub(crate) fn load_psd(
     }
 
     let composite = if skip_flattened_for_disk_tiled_degrade {
-        crate::psb_layer_composite::decode_psd_sdr_main_skip_flattened_with_cancel(
+        crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
         )?
     } else {
-        crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
+        crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
@@ -399,13 +426,13 @@ pub(crate) fn load_psd(
     }
 }
 
-/// Probe flattened Image Data behind a [`crate::psb_reader::PsbTiledSource`] for the same
+/// Probe flattened Image Data behind a [`crate::psb_reader_tiled::PsbTiledSource`] for the same
 /// absolute-blank barrier as P1, without allocating a full-canvas RGBA buffer.
 ///
 /// Accumulates nonzero-RGB / nonzero-alpha across row strips (independent strip checks are
 /// incorrect when one strip is all-RGB-0 and another is all-alpha-0).
 fn psb_tiled_flat_is_absolutely_blank(
-    source: &crate::psb_reader::PsbTiledSource,
+    source: &crate::psb_reader_tiled::PsbTiledSource,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<bool, crate::loader::DecodeError> {
     use crate::loader::TiledImageSource;

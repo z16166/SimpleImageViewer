@@ -14,18 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Layer-aware PSD/PSB compositor and SDR main-image fallback.
+//! Layer-aware PSD/PSB compositor.
 //!
 //! Used when the flattened Image Data section cannot be decoded structurally
-//! (see `decode_psd_sdr_main_from_bytes_with_cancel`). Decodes each layer's
-//! channels (depth 8) and composites them bottom to top with Normal / Screen /
-//! Linear Dodge / Multiply blend + opacity + user mask + clipping groups,
-//! respecting strict Photoshop layer/group visibility only (no viewer
-//! heuristics that open hidden layers).
+//! (see `psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel`). Decodes
+//! each layer's channels (depth 8) and composites them bottom to top with
+//! Normal / Screen / Linear Dodge / Multiply blend + opacity + user mask +
+//! clipping groups, respecting strict Photoshop layer/group visibility only
+//! (no viewer heuristics that open hidden layers).
 
 use std::io::Read;
 
-const PSD_SIGNATURE: &[u8; 4] = b"8BPS";
+use crate::psb_layer_decode::{
+    StreamingPeakTracker, gpu_batch_eligible_decoded_bytes, run_composite_pass_cpu_streaming,
+    run_composite_pass_gpu_batch,
+};
+
 const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
 const SECTION_DIVIDER_KEY: &[u8; 4] = b"lsct";
@@ -43,15 +47,20 @@ const MAX_LAYER_RECORDS: usize = 8192;
 /// 8-bit channel). This pixel budget keeps malicious/malformed layer bounds
 /// from OOM-killing the process while still allowing large legitimate layers
 /// (e.g. 32k x 32k, or a long strip up to `PSD_MAX_DIMENSION` on one side).
-const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
 /// Cap on the sum of decoded layer RGBA8 buffers held for one composite pass.
 ///
 /// Per-layer pixel caps alone still allow many large layers to be decoded in
 /// parallel and retained until blending finishes. 8 GiB bounds that without
 /// rejecting typical multi-layer comps on a desktop viewer.
 const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const PSD_VERSION: u16 = 1;
-const PSB_VERSION: u16 = 2;
+/// Max [`DecodedLayer`]s resident at once on the CPU streaming composite
+/// path: the layer currently being blended, plus the next one prefetched in
+/// parallel on [`crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL`].
+const LAYER_PREFETCH_WINDOW: usize = 2;
+// `run_composite_pass_cpu_streaming` overlaps exactly one prefetch with the
+// current layer's blend; the design does not support a wider window.
+const _: () = assert!(LAYER_PREFETCH_WINDOW == 2);
 const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
     *b"LMsk", *b"Lr16", *b"Lr32", *b"Layr", *b"Mt16", *b"Mt32", *b"Mtrn", *b"Alph", *b"FMsk",
     *b"lnk2", *b"FEid", *b"FXid", *b"PxSD",
@@ -161,7 +170,7 @@ impl LayerRecord {
 /// would make `decode_channel_image`'s allocation try to reserve tens of GB
 /// and abort the process. Layer and mask rects are checked before any such
 /// allocation.
-fn dimensions_within_limit(width: u32, height: u32) -> bool {
+pub(crate) fn dimensions_within_limit(width: u32, height: u32) -> bool {
     if width > crate::psb_reader::PSD_MAX_DIMENSION || height > crate::psb_reader::PSD_MAX_DIMENSION
     {
         return false;
@@ -173,21 +182,27 @@ fn dimensions_within_limit(width: u32, height: u32) -> bool {
 }
 
 /// `width * height` for a layer/mask buffer, rejecting overflow.
-fn checked_layer_pixel_count(width: u32, height: u32) -> Option<usize> {
+pub(crate) fn checked_layer_pixel_count(width: u32, height: u32) -> Option<usize> {
     (width as u64)
         .checked_mul(height as u64)
         .filter(|&n| n <= MAX_LAYER_PIXELS)
         .and_then(|n| usize::try_from(n).ok())
 }
 
+/// Byte footprint of a layer's decoded straight-alpha RGBA8 buffer.
+fn layer_rgba_byte_len(width: u32, height: u32) -> Option<u64> {
+    checked_layer_pixel_count(width, height).map(|pixels| pixels as u64 * 4)
+}
+
 /// Add one layer's RGBA8 footprint to `acc`, enforcing
 /// [`MAX_COMPOSITE_DECODED_BYTES`].
-fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u64, String> {
-    let pixels = checked_layer_pixel_count(width, height)
+pub(crate) fn accumulate_decoded_layer_bytes(
+    acc: u64,
+    width: u32,
+    height: u32,
+) -> Result<u64, String> {
+    let rgba = layer_rgba_byte_len(width, height)
         .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
-    let rgba = (pixels as u64)
-        .checked_mul(4)
-        .ok_or_else(|| "PSD/PSB decoded layer RGBA size overflow".to_string())?;
     let next = acc
         .checked_add(rgba)
         .ok_or_else(|| "PSD/PSB decoded layer byte total overflow".to_string())?;
@@ -197,6 +212,31 @@ fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u
         ));
     }
     Ok(next)
+}
+
+/// CPU streaming budget check: the layer currently held plus the next one
+/// about to be prefetched (the only [`LAYER_PREFETCH_WINDOW`] `DecodedLayer`s
+/// ever resident at once) must fit [`MAX_COMPOSITE_DECODED_BYTES`]. Unlike the
+/// GPU batch path, this never sums the whole layer stack up front.
+pub(crate) fn check_streaming_pair_budget(
+    current: &crate::psb_layer_decode::DecodedLayer,
+    next_width: u32,
+    next_height: u32,
+) -> Result<(), crate::loader::DecodeError> {
+    let current_bytes = layer_rgba_byte_len(current.width, current.height).unwrap_or(0);
+    let Some(next_bytes) = layer_rgba_byte_len(next_width, next_height) else {
+        return Ok(());
+    };
+    let total = current_bytes
+        .checked_add(next_bytes)
+        .ok_or_else(|| "PSD/PSB decoded layer byte total overflow".to_string())?;
+    if total > MAX_COMPOSITE_DECODED_BYTES {
+        return Err(format!(
+            "PSD/PSB decoded layer byte budget exceeded ({total} > {MAX_COMPOSITE_DECODED_BYTES})"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -213,52 +253,34 @@ pub struct LayerInfo<'a> {
 }
 
 pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
-    let file_len = bytes.len() as u64;
-    let mut r = std::io::Cursor::new(bytes);
+    let index = crate::psb_section_index::PsdSectionIndex::parse(bytes)?;
+    parse_layer_records_from_index(&index, bytes)
+}
 
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != PSD_SIGNATURE {
-        return Err("Not a PSD/PSB file (invalid signature)".into());
-    }
+/// Same as [`parse_layer_records`], but reuses an already-parsed
+/// [`crate::psb_section_index::PsdSectionIndex`] instead of re-walking the
+/// header, color mode data, and image resources sections.
+pub fn parse_layer_records_from_index<'a>(
+    index: &crate::psb_section_index::PsdSectionIndex,
+    bytes: &'a [u8],
+) -> Result<LayerInfo<'a>, String> {
+    let width = index.width;
+    let height = index.height;
+    let depth = index.depth;
+    let color_mode = index.color_mode;
+    let is_psb = index.is_psb;
 
-    let version = crate::psb_reader::read_u16(&mut r)?;
-    if version != PSD_VERSION && version != PSB_VERSION {
-        return Err(format!("Unknown PSD/PSB version: {version}"));
-    }
-    let is_psb = version == PSB_VERSION;
-
-    crate::psb_reader::seek_forward(&mut r, 6)?;
-    let _channels = crate::psb_reader::read_u16(&mut r)?;
-    let height = crate::psb_reader::read_u32(&mut r)?;
-    let width = crate::psb_reader::read_u32(&mut r)?;
-    let depth = crate::psb_reader::read_u16(&mut r)?;
-    let color_mode = crate::psb_reader::read_u16(&mut r)?;
-
-    let cm_len = crate::psb_reader::read_u32(&mut r)? as u64;
-    skip_section(&mut r, cm_len, file_len, "color mode data")?;
-
-    let ir_len = crate::psb_reader::read_u32(&mut r)? as u64;
-    let ir_start = r.position();
-    let ir_end = checked_end(ir_start, ir_len, file_len, "image resources")?;
-    let embedded_icc = crate::psb_reader::extract_icc_profile_from_ir(bytes, ir_start, ir_end);
-    skip_section(&mut r, ir_len, file_len, "image resources")?;
-
+    let embedded_icc =
+        crate::psb_reader::extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     let cmyk_icc = if color_mode == 4 {
         crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec()
     } else {
         Vec::new()
     };
 
-    let lm_len = if is_psb {
-        crate::psb_reader::read_u64(&mut r)?
-    } else {
-        crate::psb_reader::read_u32(&mut r)? as u64
-    };
-    let lm_start = r.position();
-    let lm_end = checked_end(lm_start, lm_len, file_len, "layer and mask info")?;
-    if lm_len == 0 {
+    let lm_start = index.lm_start;
+    let lm_end = index.lm_end;
+    if lm_end == lm_start {
         let empty = cursor_slice(bytes, lm_start, lm_start)?;
         return Ok(LayerInfo {
             records: Vec::new(),
@@ -271,6 +293,9 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
             cmyk_icc,
         });
     }
+
+    let mut r = std::io::Cursor::new(bytes);
+    r.set_position(lm_start);
 
     let layer_info_len = if is_psb {
         crate::psb_reader::read_u64(&mut r)?
@@ -626,16 +651,32 @@ fn scan_extra_tagged_blocks(
 ) -> Result<(bool, Option<u32>), String> {
     let mut is_section_divider = false;
     let mut section_type = None;
+    let mut resyncs = 0u32;
+    let extra_end_usize = usize::try_from(extra_end)
+        .unwrap_or(usize::MAX)
+        .min(r.get_ref().len());
 
     while r.position().saturating_add(TAGGED_BLOCK_MIN_HEADER_LEN) <= extra_end {
-        let block_start = r.position();
+        let search_start = match usize::try_from(r.position()) {
+            Ok(pos) => pos,
+            Err(_) => break,
+        };
+        let Some(block_start_usize) =
+            find_next_tagged_block_signature(r.get_ref(), search_start, extra_end_usize)
+        else {
+            r.set_position(extra_end);
+            break;
+        };
+        let block_start = block_start_usize as u64;
+        if block_start.saturating_add(TAGGED_BLOCK_MIN_HEADER_LEN) > extra_end {
+            r.set_position(extra_end);
+            break;
+        }
+
+        r.set_position(block_start);
         let mut signature = [0u8; 4];
         r.read_exact(&mut signature)
             .map_err(|e| format!("Read layer tagged block signature: {e}"))?;
-        if &signature != PSD_BLEND_SIGNATURE && &signature != PSB_BLOCK_SIGNATURE {
-            r.set_position(block_start.saturating_add(1));
-            continue;
-        }
 
         let mut key = [0u8; 4];
         r.read_exact(&mut key)
@@ -644,7 +685,9 @@ fn scan_extra_tagged_blocks(
         if uses_u64_len
             && checked_end(r.position(), 8, extra_end, "layer tagged block length").is_err()
         {
-            r.set_position(block_start.saturating_add(1));
+            if abandon_tagged_block_candidate(r, block_start, extra_end, &mut resyncs) {
+                break;
+            }
             continue;
         }
         let data_len = if uses_u64_len {
@@ -656,7 +699,9 @@ fn scan_extra_tagged_blocks(
         let data_end = match checked_end(data_start, data_len, extra_end, "layer tagged block") {
             Ok(end) => end,
             Err(_) => {
-                r.set_position(block_start.saturating_add(1));
+                if abandon_tagged_block_candidate(r, block_start, extra_end, &mut resyncs) {
+                    break;
+                }
                 continue;
             }
         };
@@ -684,6 +729,40 @@ fn scan_extra_tagged_blocks(
     }
 
     Ok((is_section_divider, section_type))
+}
+
+fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
+    let mut cursor = start.min(limit);
+    while cursor.saturating_add(4) <= limit {
+        let offset = bytes[cursor..limit]
+            .iter()
+            .position(|&byte| byte == PSD_BLEND_SIGNATURE[0])?;
+        let candidate = cursor + offset;
+        if candidate.saturating_add(4) > limit {
+            return None;
+        }
+        let signature = &bytes[candidate..candidate + 4];
+        if signature == PSD_BLEND_SIGNATURE || signature == PSB_BLOCK_SIGNATURE {
+            return Some(candidate);
+        }
+        cursor = candidate.saturating_add(1);
+    }
+    None
+}
+
+fn abandon_tagged_block_candidate(
+    r: &mut std::io::Cursor<&[u8]>,
+    block_start: u64,
+    extra_end: u64,
+    resyncs: &mut u32,
+) -> bool {
+    *resyncs = resyncs.saturating_add(1);
+    if *resyncs > MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+        r.set_position(extra_end);
+        return true;
+    }
+    r.set_position(block_start.saturating_add(1));
+    false
 }
 
 fn skip_pascal_name(r: &mut std::io::Cursor<&[u8]>, extra_end: u64) -> Result<(), String> {
@@ -723,16 +802,6 @@ fn skip_extra_bytes(
     crate::psb_reader::seek_forward(r, len)
 }
 
-fn skip_section(
-    r: &mut std::io::Cursor<&[u8]>,
-    len: u64,
-    file_len: u64,
-    label: &str,
-) -> Result<(), String> {
-    read_at(r, len, file_len, label)?;
-    crate::psb_reader::seek_forward(r, len)
-}
-
 /// Ensure `len` bytes remain before `limit` at the current cursor position.
 #[inline]
 fn read_at(
@@ -766,6 +835,7 @@ fn cursor_slice(bytes: &[u8], start: u64, end: u64) -> Result<&[u8], String> {
 }
 
 const TAGGED_BLOCK_MIN_HEADER_LEN: u64 = 12;
+const MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER: u32 = 64;
 
 fn tagged_block_uses_u64_len(signature: &[u8; 4], key: &[u8; 4], is_psb: bool) -> bool {
     signature == PSB_BLOCK_SIGNATURE
@@ -781,425 +851,6 @@ fn read_i16(r: &mut impl Read) -> Result<i16, String> {
 
 fn read_i32(r: &mut impl Read) -> Result<i32, String> {
     Ok(crate::psb_reader::read_u32(r)? as i32)
-}
-
-// -- Layer channel decode ---------------------------------------------
-
-/// How often (in rows) to poll `cancel` inside a single channel's RLE decode.
-const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
-
-/// Decode one channel's image data (compression header + rows) into 8-bit samples.
-/// `data` must be exactly the channel's declared byte range (depth 8 only, v1).
-fn decode_channel_image(
-    data: &[u8],
-    width: u32,
-    height: u32,
-    is_psb: bool,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, crate::loader::DecodeError> {
-    let mut r = std::io::Cursor::new(data);
-    let compression = crate::psb_reader::read_u16(&mut r)?;
-    let pixel_count = checked_layer_pixel_count(width, height)
-        .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
-
-    match compression {
-        0 => {
-            // Avoid zero-filling the copied prefix: grow from the raw slice.
-            let avail = data.len().saturating_sub(2);
-            let copy = avail.min(pixel_count);
-            let mut out = data[2..2 + copy].to_vec();
-            out.resize(pixel_count, 0);
-            Ok(out)
-        }
-        1 => {
-            let mut row_counts = Vec::with_capacity(height as usize);
-            for row in 0..height as usize {
-                if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
-                    crate::psb_reader::check_decode_cancel(cancel)?;
-                }
-                let count = if is_psb {
-                    crate::psb_reader::read_u32(&mut r)? as usize
-                } else {
-                    crate::psb_reader::read_u16(&mut r)? as usize
-                };
-                row_counts.push(count);
-            }
-
-            let mut out = vec![0u8; pixel_count];
-            let mut row_buf = Vec::with_capacity(width as usize);
-            let width_usize = width as usize;
-            for (row, &count) in row_counts.iter().enumerate() {
-                if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
-                    crate::psb_reader::check_decode_cancel(cancel)?;
-                }
-                let start = r.position() as usize;
-                let end = start
-                    .checked_add(count)
-                    .ok_or_else(|| "PSD/PSB layer channel RLE row length overflow".to_string())?;
-                let compressed = data
-                    .get(start..end)
-                    .ok_or_else(|| "PSD/PSB layer channel RLE row out of bounds".to_string())?;
-                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, width_usize);
-                let dst_start = row
-                    .checked_mul(width_usize)
-                    .ok_or_else(|| "PSD/PSB layer channel row offset overflow".to_string())?;
-                let dst_end = dst_start
-                    .checked_add(width_usize)
-                    .ok_or_else(|| "PSD/PSB layer channel row end overflow".to_string())?;
-                out.get_mut(dst_start..dst_end)
-                    .ok_or_else(|| "PSD/PSB layer channel row out of bounds".to_string())?
-                    .copy_from_slice(&row_buf[..width_usize]);
-                r.set_position(end as u64);
-            }
-            Ok(out)
-        }
-        2 | 3 => {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-            let compressed = data
-                .get(2..)
-                .ok_or_else(|| "PSD/PSB layer channel ZIP payload missing".to_string())?;
-            crate::psb_zip::decode_zip_channel_bytes(
-                compressed,
-                width as usize,
-                height as usize,
-                8,
-                compression == 3,
-            )
-            .map_err(Into::into)
-        }
-        _ => Err(format!("Unsupported layer channel compression: {compression}").into()),
-    }
-}
-
-// -- Layer RGBA assembly -------------------------------------------------
-
-/// Build a layer's straight-alpha RGBA8 rect from its decoded channels.
-/// `color[0..3]` map to C/M/Y/K (mode 4) or R/G/B (mode 3, and fallback).
-/// `color[0]` alone is used as gray for mode 1. Opacity and the optional
-/// user mask are folded into alpha.
-struct LayerRgbaArgs<'a> {
-    color_mode: u16,
-    width: u32,
-    height: u32,
-    color: &'a [Option<Vec<u8>>; 4],
-    alpha: Option<&'a [u8]>,
-    mask: Option<&'a [u8]>,
-    opacity: u8,
-    cmyk_icc: &'a [u8],
-}
-
-fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
-    let Some(pixel_count) = checked_layer_pixel_count(args.width, args.height) else {
-        return Vec::new();
-    };
-    let Some(rgba_len) = pixel_count.checked_mul(4) else {
-        return Vec::new();
-    };
-    let opacity = args.opacity as u32;
-
-    if args.color_mode == 4
-        && let (Some(c), Some(m), Some(y), Some(k)) = (
-            args.color[0].as_deref(),
-            args.color[1].as_deref(),
-            args.color[2].as_deref(),
-            args.color[3].as_deref(),
-        )
-    {
-        let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(if args.cmyk_icc.is_empty() {
-            None
-        } else {
-            Some(args.cmyk_icc)
-        });
-        let span = crate::psb_cmyk_cms::AdobeCmykSpan {
-            c,
-            m,
-            y,
-            k,
-            alpha: args.alpha,
-        };
-        if let Some(mut rgba) = crate::psb_cmyk_cms::planar_cmyk_adobe_to_rgba8(&span, icc) {
-            fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
-            return rgba;
-        }
-    }
-
-    // Gray fast path: broadcast G->RGB via SIMD, then fold opacity/mask into alpha.
-    if args.color_mode == 1
-        && let Some(gray) = args.color[0].as_deref()
-        && gray.len() >= pixel_count
-    {
-        let mut rgba = vec![0u8; rgba_len];
-        let g = &gray[..pixel_count];
-        if let Some(a) = args.alpha.filter(|a| a.len() >= pixel_count) {
-            simple_image_viewer::simd_swizzle::interleave_rgba(
-                g,
-                g,
-                g,
-                &a[..pixel_count],
-                &mut rgba,
-            );
-        } else {
-            simple_image_viewer::simd_swizzle::interleave_rgb_with_alpha(g, g, g, 255, &mut rgba);
-        }
-        fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
-        return rgba;
-    }
-
-    let mut rgba = vec![0u8; rgba_len];
-    let sample =
-        |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
-
-    for i in 0..pixel_count {
-        let (r, g, b) = match args.color_mode {
-            4 => crate::psb_reader::cmyk_to_rgb(
-                sample(&args.color[0], i),
-                sample(&args.color[1], i),
-                sample(&args.color[2], i),
-                sample(&args.color[3], i),
-            ),
-            1 => {
-                let v = sample(&args.color[0], i);
-                (v, v, v)
-            }
-            _ => (
-                sample(&args.color[0], i),
-                sample(&args.color[1], i),
-                sample(&args.color[2], i),
-            ),
-        };
-
-        let base_alpha = args.alpha.and_then(|a| a.get(i)).copied().unwrap_or(255) as u32;
-        let mut a = base_alpha * opacity / 255;
-        if let Some(m) = args.mask {
-            let mv = m.get(i).copied().unwrap_or(255) as u32;
-            a = a * mv / 255;
-        }
-
-        let off = i * 4;
-        rgba[off] = r;
-        rgba[off + 1] = g;
-        rgba[off + 2] = b;
-        rgba[off + 3] = a as u8;
-    }
-
-    rgba
-}
-
-fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u32, mask: Option<&[u8]>) {
-    let pixel_count = rgba.len() / 4;
-    for i in 0..pixel_count {
-        let off = i * 4 + 3;
-        let mut a = rgba[off] as u32 * opacity / 255;
-        if let Some(m) = mask {
-            let mv = m.get(i).copied().unwrap_or(255) as u32;
-            a = a * mv / 255;
-        }
-        rgba[off] = a as u8;
-    }
-}
-
-/// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
-/// when the mask is disabled, empty, or oversized (caller keeps no-mask).
-#[allow(clippy::too_many_arguments)]
-fn decode_mask_channel_to_layer(
-    slice: &[u8],
-    mask_info: &LayerMaskInfo,
-    layer_left: i32,
-    layer_top: i32,
-    layer_w: u32,
-    layer_h: u32,
-    is_psb: bool,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Option<Vec<u8>>, crate::loader::DecodeError> {
-    let mask_w = mask_info.width();
-    let mask_h = mask_info.height();
-    let mask_has_bounds = !mask_info.disabled && mask_w > 0 && mask_h > 0;
-    if !mask_has_bounds {
-        return Ok(None);
-    }
-    // Same oversized-rect guard as the layer rect: skip just this mask
-    // (fall back to no mask) rather than erroring out the whole composite.
-    if !dimensions_within_limit(mask_w, mask_h) {
-        log::debug!(
-            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds dimension/pixel \
-             limit (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping mask",
-            crate::psb_reader::PSD_MAX_DIMENSION
-        );
-        return Ok(None);
-    }
-    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, is_psb, cancel)?;
-    Ok(Some(build_layer_sized_mask(
-        mask_info,
-        &mask_pixels,
-        layer_left,
-        layer_top,
-        layer_w,
-        layer_h,
-    )))
-}
-
-/// Blit a decoded mask (its own `mask_info` rect, which may differ from the
-/// layer's rect in size and/or offset) into a layer-sized alpha-multiplier
-/// buffer. Layer pixels outside the mask's rect use `mask_info.default_color`
-/// (the standard PSD convention for "area not covered by the mask").
-fn build_layer_sized_mask(
-    mask_info: &LayerMaskInfo,
-    mask_pixels: &[u8],
-    layer_left: i32,
-    layer_top: i32,
-    layer_w: u32,
-    layer_h: u32,
-) -> Vec<u8> {
-    let Some(pixel_count) = checked_layer_pixel_count(layer_w, layer_h) else {
-        return Vec::new();
-    };
-    let mut out = vec![mask_info.default_color; pixel_count];
-    let mask_w = mask_info.width() as i64;
-    let mask_h = mask_info.height() as i64;
-    if mask_w == 0 || mask_h == 0 {
-        return out;
-    }
-
-    let off_x = mask_info.left as i64 - layer_left as i64;
-    let off_y = mask_info.top as i64 - layer_top as i64;
-    let dst_x0 = off_x.max(0);
-    let dst_y0 = off_y.max(0);
-    let dst_x1 = (off_x + mask_w).min(layer_w as i64);
-    let dst_y1 = (off_y + mask_h).min(layer_h as i64);
-    if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
-        return out;
-    }
-
-    for dy in dst_y0..dst_y1 {
-        let sy = (dy - off_y) as usize;
-        let dst_row_start = dy as usize * layer_w as usize;
-        let src_row_start = sy * mask_w as usize;
-        for dx in dst_x0..dst_x1 {
-            let sx = (dx - off_x) as usize;
-            out[dst_row_start + dx as usize] = mask_pixels[src_row_start + sx];
-        }
-    }
-
-    out
-}
-
-// -- Blend modes -----------------------------------------------------------
-
-fn separable_blend_kind(
-    blend: &[u8; 4],
-) -> Option<crate::psb_layer_blend_simd::SeparableBlendKind> {
-    use crate::psb_layer_blend_simd::SeparableBlendKind;
-    match blend {
-        b"norm" => Some(SeparableBlendKind::Normal),
-        b"scrn" => Some(SeparableBlendKind::Screen),
-        b"lddg" => Some(SeparableBlendKind::LinearDodge),
-        b"mul " => Some(SeparableBlendKind::Multiply),
-        _ => None,
-    }
-}
-
-fn blend_mode_supported(blend: &[u8; 4]) -> bool {
-    separable_blend_kind(blend).is_some()
-}
-
-/// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn blend_separable_onto(
-    canvas: &mut [u8],
-    canvas_w: u32,
-    canvas_h: u32,
-    layer_rgba: &[u8],
-    left: i32,
-    top: i32,
-    lw: u32,
-    lh: u32,
-    kind: crate::psb_layer_blend_simd::SeparableBlendKind,
-) {
-    if lw == 0 || lh == 0 || canvas_w == 0 || canvas_h == 0 {
-        return;
-    }
-
-    let canvas_w_i = canvas_w as i64;
-    let canvas_h_i = canvas_h as i64;
-    let left = left as i64;
-    let top = top as i64;
-    let lw_i = lw as i64;
-    let lh_i = lh as i64;
-
-    let src_x0 = (-left).max(0);
-    let src_y0 = (-top).max(0);
-    let src_x1 = (canvas_w_i - left).min(lw_i);
-    let src_y1 = (canvas_h_i - top).min(lh_i);
-    if src_x0 >= src_x1 || src_y0 >= src_y1 {
-        return;
-    }
-
-    let span_w = (src_x1 - src_x0) as usize;
-    let span_bytes = span_w * 4;
-    for sy in src_y0..src_y1 {
-        let dy = (top + sy) as usize;
-        let dx0 = (left + src_x0) as usize;
-        let d_off = dy * canvas_w as usize * 4 + dx0 * 4;
-        let s_off = sy as usize * lw as usize * 4 + src_x0 as usize * 4;
-        crate::psb_layer_blend_simd::blend_separable_span(
-            &mut canvas[d_off..d_off + span_bytes],
-            &layer_rgba[s_off..s_off + span_bytes],
-            kind,
-        );
-    }
-}
-
-/// Straight-alpha src-over convenience used by unit tests (Normal = B(Cb,Cs)=Cs).
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn blend_normal_onto(
-    canvas: &mut [u8],
-    canvas_w: u32,
-    canvas_h: u32,
-    layer_rgba: &[u8],
-    left: i32,
-    top: i32,
-    lw: u32,
-    lh: u32,
-) {
-    blend_separable_onto(
-        canvas,
-        canvas_w,
-        canvas_h,
-        layer_rgba,
-        left,
-        top,
-        lw,
-        lh,
-        crate::psb_layer_blend_simd::SeparableBlendKind::Normal,
-    );
-}
-
-/// Dispatch by PSD blend-mode key; unknown modes fall back to Normal (logged once).
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn blend_layer_onto(
-    canvas: &mut [u8],
-    canvas_w: u32,
-    canvas_h: u32,
-    layer_rgba: &[u8],
-    left: i32,
-    top: i32,
-    lw: u32,
-    lh: u32,
-    blend: &[u8; 4],
-) {
-    let kind = match separable_blend_kind(blend) {
-        Some(k) => k,
-        None => {
-            log_unsupported_blend_once(blend);
-            crate::psb_layer_blend_simd::SeparableBlendKind::Normal
-        }
-    };
-    blend_separable_onto(
-        canvas, canvas_w, canvas_h, layer_rgba, left, top, lw, lh, kind,
-    );
 }
 
 // -- Group visibility ------------------------------------------------------
@@ -1282,163 +933,7 @@ fn strict_visibility_has_drawable_output(
     false
 }
 
-/// Log an unsupported blend-mode key once (unsupported modes fall back to Normal).
-fn log_unsupported_blend_once(blend: &[u8; 4]) {
-    static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<[u8; 4]>>> =
-        std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
-    let mut seen = seen.lock();
-    if seen.insert(*blend) {
-        let key = String::from_utf8_lossy(blend).into_owned();
-        log::debug!("PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal");
-    }
-}
-
 // -- Full composite ---------------------------------------------------------
-
-struct DecodedLayer {
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-    blend: [u8; 4],
-    /// 0 = base / unclipped; non-zero = clipped to nearest base below.
-    clipping: u8,
-    rgba: Vec<u8>,
-}
-
-struct LayerDecodeParams<'a> {
-    color_mode: u16,
-    is_psb: bool,
-    should_decode: bool,
-    cancel: Option<&'a std::sync::atomic::AtomicBool>,
-    cmyk_icc: &'a [u8],
-}
-
-/// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
-/// past every channel regardless of `should_decode` so later layers stay aligned.
-fn decode_one_layer(
-    channel_data: &[u8],
-    cursor: &mut usize,
-    record: &LayerRecord,
-    params: &LayerDecodeParams<'_>,
-) -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
-    let width = record.width();
-    let height = record.height();
-    let has_bounds = params.should_decode && width > 0 && height > 0;
-    // Treat an oversized layer rect as corrupt *for that layer only*: skip
-    // decoding it (still advancing `cursor` past its channel bytes below so
-    // later layers stay aligned) rather than erroring out the whole
-    // composite, since every other layer in the file may well be fine.
-    if has_bounds && !dimensions_within_limit(width, height) {
-        log::debug!(
-            "PSD/PSB layer rect {width}x{height} exceeds dimension/pixel limit \
-             (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping layer",
-            crate::psb_reader::PSD_MAX_DIMENSION
-        );
-    }
-    let can_decode = has_bounds && dimensions_within_limit(width, height);
-
-    let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
-    let mut alpha: Option<Vec<u8>> = None;
-    let mut mask: Option<Vec<u8>> = None;
-
-    for ch in &record.channels {
-        let data_len = ch.data_len as usize;
-        let start = *cursor;
-        let end = start
-            .checked_add(data_len)
-            .ok_or_else(|| "PSD/PSB layer channel data length overflow".to_string())?;
-        let slice = channel_data
-            .get(start..end)
-            .ok_or_else(|| "PSD/PSB layer channel data out of bounds".to_string())?;
-        *cursor = end;
-
-        if !can_decode {
-            continue;
-        }
-
-        match ch.id {
-            -1 => match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
-                Ok(data) => alpha = Some(data),
-                Err(e) if e.is_cancelled() => return Err(e),
-                Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
-            },
-            -2 | -3 => {
-                // Channel -2 = user mask; -3 = real user mask (combined
-                // vector+user). Prefer -3 when both are present: it is the
-                // authoritative rendered mask. Geometry comes from
-                // `real_mask` for -3 when parsed, otherwise the user-mask
-                // rect. Missing/disabled/oversized rects skip that channel.
-                let mask_info = if ch.id == -3 {
-                    record.real_mask.as_ref().or(record.mask.as_ref())
-                } else if record.real_mask.is_some() && record.channels.iter().any(|c| c.id == -3) {
-                    // User mask is superseded by a real user mask channel.
-                    None
-                } else {
-                    record.mask.as_ref()
-                };
-                if let Some(mask_info) = mask_info {
-                    match decode_mask_channel_to_layer(
-                        slice,
-                        mask_info,
-                        record.left,
-                        record.top,
-                        width,
-                        height,
-                        params.is_psb,
-                        params.cancel,
-                    ) {
-                        Ok(Some(layer_mask)) => mask = Some(layer_mask),
-                        Ok(None) => {}
-                        Err(e) if e.is_cancelled() => return Err(e),
-                        Err(e) => {
-                            log::debug!("PSD/PSB layer mask channel {} decode failed: {e}", ch.id);
-                        }
-                    }
-                }
-            }
-            0..=3 => {
-                let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
-                    Ok(data) => color[idx] = Some(data),
-                    Err(e) if e.is_cancelled() => return Err(e),
-                    Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !can_decode {
-        return Ok(None);
-    }
-
-    if !blend_mode_supported(&record.blend) {
-        log_unsupported_blend_once(&record.blend);
-    }
-
-    let rgba = layer_to_rgba8(LayerRgbaArgs {
-        color_mode: params.color_mode,
-        width,
-        height,
-        color: &color,
-        alpha: alpha.as_deref(),
-        mask: mask.as_deref(),
-        opacity: record.opacity,
-        cmyk_icc: params.cmyk_icc,
-    });
-
-    Ok(Some(DecodedLayer {
-        left: record.left,
-        top: record.top,
-        width,
-        height,
-        blend: record.blend,
-        clipping: record.clipping,
-        rgba,
-    }))
-}
 
 /// Display text for [`crate::loader::DecodeError::NoDrawableVisibleLayers`].
 pub use crate::loader::STRICT_LAYER_COMPOSITE_BLANK;
@@ -1463,6 +958,33 @@ pub fn composite_layers_from_bytes_with_cancel(
     let parse_t0 = std::time::Instant::now();
     let info = parse_layer_records(bytes)?;
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+}
+
+/// Same as [`composite_layers_from_bytes_with_cancel`], but reuses an
+/// already-parsed [`crate::psb_section_index::PsdSectionIndex`] instead of
+/// re-walking the header/color-mode/image-resources/layer-mask sections.
+pub fn composite_layers_from_index(
+    index: &crate::psb_section_index::PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    let total_t0 = std::time::Instant::now();
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let parse_t0 = std::time::Instant::now();
+    let info = parse_layer_records_from_index(index, bytes)?;
+    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+}
+
+fn composite_layers_from_info(
+    info: LayerInfo<'_>,
+    parse_ms: f64,
+    total_t0: std::time::Instant,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     if info.depth != 8 {
         return Err(format!(
             "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
@@ -1533,231 +1055,21 @@ pub fn composite_layers_from_bytes_with_cancel(
     })
 }
 
-/// SDR main-image state machine: flattened composite -> strict layer composite
-/// -> IR thumbnail -> explicit failure. Hidden layers are never opened.
-///
-/// P1 accepts a structurally valid flattened buffer only when it is not an
-/// absolute blank (all-alpha-0 or all-RGB-0). P2 accepts a strict-visibility
-/// composite only when it is not zero-information (all-alpha-0 or solid RGB
-/// with variance 0). P3 accepts an IR thumbnail under the same zero-information
-/// barrier as P2. All barriers are full-buffer SIMD scans.
-pub fn decode_psd_sdr_main_from_bytes_with_cancel(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, false)
-}
-
-/// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but skips P1 flattened
-/// Image Data. Used when an oversized PSB disk-tiled probe already rejected a
-/// blank (or unreadable) flat and must not re-decode the full canvas.
-pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, true)
-}
-
-fn decode_psd_sdr_main_inner(
-    bytes: &[u8],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-    skip_flattened: bool,
-) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    // P1: structurally valid flattened Image Data, then absolute blank barrier.
-    let mut skip_p2_after_structural_header = false;
-    if skip_flattened {
-        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_skipped -> degrade_P2");
-        log::debug!(
-            "PSD SDR main: skipping P1 flattened (caller already rejected blank/unreadable flat)"
-        );
-    } else {
-        match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
-            Ok(composite) => {
-                let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
-                    &composite.pixels,
-                    cancel,
-                )?;
-                if absolutely_blank {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_absolute_blank {}x{} \
-                     pixels={} -> degrade_P2",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P1 flattened {}x{} is absolute blank \
-                     (all-transparent or all-RGB-0); degrading to P2",
-                        composite.width,
-                        composite.height
-                    );
-                } else {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_flattened {}x{} pixels={}",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P1 flattened composite {}x{}",
-                        composite.width,
-                        composite.height
-                    );
-                    return Ok(composite);
-                }
-            }
-            Err(e) if e.is_cancelled() => return Err(e),
-            Err(e) => {
-                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
-                log::debug!("PSD SDR main P1 flattened decode failed: {e}");
-                // Header/structural failures cannot be recovered by P2; go straight to P3.
-                if is_psd_header_structural_error(e.as_str()) {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
-                    );
-                    log::debug!("PSD SDR main: skipping P2 after structural header failure");
-                    skip_p2_after_structural_header = true;
-                }
-            }
-        }
-    }
-
-    // P1 -> P2: poll cancel after absolute-blank degrade (or P1 fail) before P2 work.
-    crate::psb_reader::check_decode_cancel(cancel)?;
-
-    // P2: strict visibility layer composite, then zero-information barrier.
-    let mut p2_no_drawable_visible = false;
-    if !skip_p2_after_structural_header {
-        match composite_layers_from_bytes_with_cancel(bytes, cancel, gpu) {
-            Ok(composite) => {
-                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                    &composite.pixels,
-                    cancel,
-                )?;
-                if zero_info {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
-                         pixels={} -> degrade_P3",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P2 strict composite {}x{} is zero-information \
-                         (all-transparent or solid RGB); degrading to P3",
-                        composite.width,
-                        composite.height
-                    );
-                } else {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
-                        composite.width,
-                        composite.height,
-                        composite.pixels.len()
-                    );
-                    log::debug!(
-                        "PSD SDR main: P2 strict layer composite {}x{}",
-                        composite.width,
-                        composite.height
-                    );
-                    return Ok(composite);
-                }
-            }
-            Err(e) if e.is_cancelled() => return Err(e),
-            Err(e) => {
-                p2_no_drawable_visible = e.is_no_drawable_visible_layers();
-                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
-                log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
-            }
-        }
-    }
-
-    // P3: embedded Photoshop IR thumbnail, then zero-information barrier.
-    crate::psb_reader::check_decode_cancel(cancel)?;
-    match crate::psb_reader::try_extract_photoshop_thumbnail(bytes) {
-        Some(thumb) => {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-            let zero_info =
-                crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
-                     pixels={} -> fail",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
-                     (all-transparent or solid RGB); no displayable image",
-                    thumb.width,
-                    thumb.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{}",
-                    thumb.width,
-                    thumb.height
-                );
-                return Ok(thumb);
-            }
-        }
-        None => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P3_fail no_ir_thumbnail");
-            log::debug!("PSD SDR main P3: no embedded IR thumbnail");
-        }
-    }
-
-    crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=fail no_p1_p2_p3");
-    if p2_no_drawable_visible {
-        return Err(rust_i18n::t!("error.psd_all_layers_hidden")
-            .to_string()
-            .into());
-    }
-    Err(rust_i18n::t!("error.psd_no_displayable_image")
-        .to_string()
-        .into())
-}
-
-/// True when P1 failed for a reason that P2 cannot recover (same header parse).
-///
-/// Covers at least: invalid signature, unknown version, bad dimensions,
-/// channel-count variants, unsupported bit depth, and truncated header.
-/// Does **not** treat Image Data-only failures (e.g. invalid compression) as
-/// structural -- P2 layer composite may still succeed.
-fn is_psd_header_structural_error(err: &str) -> bool {
-    err.contains("invalid signature")
-        || err.starts_with("Unknown PSD/PSB version:")
-        || err.starts_with("PSD/PSB dimensions")
-        || err.contains("channel count")
-        || err.starts_with("Unsupported PSD/PSB bit depth")
-        || err.starts_with("PSD/PSB header is too short")
-}
-
-struct CompositeTiming {
+pub(crate) struct CompositeTiming {
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    parse_ms: f64,
+    pub(crate) parse_ms: f64,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    unpack_ms: f64,
+    pub(crate) unpack_ms: f64,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    cmyk_ms: f64,
+    pub(crate) cmyk_ms: f64,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    blend_ms: f64,
+    pub(crate) blend_ms: f64,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    readback_ms: f64,
+    pub(crate) readback_ms: f64,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    mode: &'static str,
+    pub(crate) mode: &'static str,
     #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
-    layers: usize,
+    pub(crate) layers: usize,
 }
 
 fn allocate_composite_canvas(len: usize, color_mode: u16) -> Vec<u8> {
@@ -1775,112 +1087,26 @@ fn clear_composite_canvas(canvas: &mut [u8], color_mode: u16) {
     }
 }
 
-/// Precompute each layer's `[start, end)` byte range in the contiguous channel
-/// image data block. Validates bounds once so parallel workers can slice
-/// independently without a shared cursor.
-fn layer_channel_byte_ranges(
-    records: &[LayerRecord],
-    channel_data_len: usize,
-) -> Result<Vec<(usize, usize)>, crate::loader::DecodeError> {
-    let mut ranges = Vec::with_capacity(records.len());
-    let mut cursor = 0usize;
-    for record in records {
-        let start = cursor;
-        for ch in &record.channels {
-            cursor = cursor
-                .checked_add(ch.data_len as usize)
-                .ok_or_else(|| "PSD/PSB layer channel data length overflow".to_string())?;
-        }
-        if cursor > channel_data_len {
-            return Err("PSD/PSB layer channel data out of bounds".into());
-        }
-        ranges.push((start, cursor));
-    }
-    Ok(ranges)
-}
-
-/// Decode every eligible visible layer (optionally in parallel). Blend order
-/// is preserved: results are collected in record order, skipping layers that
-/// decode to `None`.
-fn decode_layers_for_composite(
-    info: &LayerInfo<'_>,
-    visible: &[bool],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<DecodedLayer>, crate::loader::DecodeError> {
-    let ranges = layer_channel_byte_ranges(&info.records, info.channel_data.len())?;
-    // Fail fast on total decoded RGBA footprint before parallel alloc.
-    let mut decoded_bytes = 0u64;
-    for (i, record) in info.records.iter().enumerate() {
-        let should_decode = visible.get(i).copied().unwrap_or(false)
-            && !record.is_section_divider
-            && !record.is_empty_bounds()
-            && record.opacity > 0;
-        if !should_decode {
-            continue;
-        }
-        let width = record.width();
-        let height = record.height();
-        if !dimensions_within_limit(width, height) {
-            continue;
-        }
-        decoded_bytes = accumulate_decoded_layer_bytes(decoded_bytes, width, height)?;
-    }
-    let decode_at = |i: usize,
-                     record: &LayerRecord|
-     -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
-        crate::psb_reader::check_decode_cancel(cancel)?;
-        let should_decode = visible[i]
-            && !record.is_section_divider
-            && !record.is_empty_bounds()
-            && record.opacity > 0;
-        let (start, end) = ranges[i];
-        let mut cursor = 0usize;
-        decode_one_layer(
-            &info.channel_data[start..end],
-            &mut cursor,
-            record,
-            &LayerDecodeParams {
-                color_mode: info.color_mode,
-                is_psb: info.is_psb,
-                should_decode,
-                cancel,
-                cmyk_icc: info.cmyk_icc.as_slice(),
-            },
-        )
-    };
-
-    if info.records.len() >= crate::psb_layer_decode_pool::PARALLEL_LAYER_DECODE_MIN {
-        // Dedicated pool (capped at 2-4 workers): do not nest into img-loader /
-        // refinement / strip pools via bare `par_iter`.
-        use rayon::prelude::*;
-        let results: Vec<Result<Option<DecodedLayer>, crate::loader::DecodeError>> =
-            crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL.install(|| {
-                info.records
-                    .par_iter()
-                    .enumerate()
-                    .map(|(i, record)| decode_at(i, record))
-                    .collect()
-            });
-        let mut layers = Vec::new();
-        for result in results {
-            if let Some(layer) = result? {
-                layers.push(layer);
-            }
-        }
-        return Ok(layers);
-    }
-
-    let mut layers = Vec::new();
-    for (i, record) in info.records.iter().enumerate() {
-        if let Some(layer) = decode_at(i, record)? {
-            layers.push(layer);
-        }
-    }
-    Ok(layers)
+/// Whether `record` will actually decode into a
+/// [`crate::psb_layer_decode::DecodedLayer`] (mirrors the skip conditions
+/// applied in `decode_one_layer`/`decode_at`): visible, not a section
+/// divider, non-empty bounds, non-zero opacity, and within the per-layer
+/// dimension/pixel cap. Metadata-only -- never touches channel data.
+pub(crate) fn layer_will_decode(record: &LayerRecord, visible: bool) -> bool {
+    let should_decode =
+        visible && !record.is_section_divider && !record.is_empty_bounds() && record.opacity > 0;
+    should_decode && dimensions_within_limit(record.width(), record.height())
 }
 
 /// Decode and blend every eligible visible layer bottom to top, returning how
 /// many were actually composited.
+///
+/// Dispatches to one of two strategies:
+/// - GPU all-at-once batch ([`run_composite_pass_gpu_batch`]): only when a GPU
+///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds every
+///   composited layer Normal-blended, unclipped, and within budget.
+/// - CPU streaming ([`run_composite_pass_cpu_streaming`]): the default, and
+///   the fallback whenever the GPU batch is not eligible.
 #[allow(clippy::too_many_arguments)]
 fn run_composite_pass(
     info: &LayerInfo<'_>,
@@ -1892,95 +1118,131 @@ fn run_composite_pass(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     timing: &mut CompositeTiming,
 ) -> Result<usize, crate::loader::DecodeError> {
-    // Layer records and channel_data are both stored bottom to top (index 0
-    // is the bottommost layer). Decoding may run in parallel once per-layer
-    // byte ranges are known; blending still walks decoded layers bottom to top.
-    let decode_t0 = std::time::Instant::now();
-    let layers = decode_layers_for_composite(info, visible, cancel)?;
-    // Decode includes PackBits + planar convert + CMYK/ICC; split CMS later if needed.
-    timing.unpack_ms += decode_t0.elapsed().as_secs_f64() * 1000.0;
-    timing.layers = layers.len();
-
-    if layers.is_empty() {
-        return Ok(0);
+    let gpu_batch_ctx = gpu.filter(|_| gpu_batch_eligible_decoded_bytes(info, visible).is_some());
+    if let Some(gpu_ctx) = gpu_batch_ctx {
+        return run_composite_pass_gpu_batch(
+            info, visible, canvas, canvas_w, canvas_h, cancel, gpu_ctx, timing,
+        );
     }
-
-    let blend_t0 = std::time::Instant::now();
-    let clip_refs: Vec<crate::psb_layer_clip::ClipLayerRef<'_>> = layers
-        .iter()
-        .map(|l| crate::psb_layer_clip::ClipLayerRef {
-            left: l.left,
-            top: l.top,
-            width: l.width,
-            height: l.height,
-            blend: l.blend,
-            clipping: l.clipping,
-            rgba: &l.rgba,
-        })
-        .collect();
-    let all_normal = layers.iter().all(|l| l.blend == *b"norm");
-    let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
-    let used_gpu = if let Some(gpu_ctx) = gpu {
-        if !all_normal || has_clipping {
-            false
-        } else {
-            let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
-                .iter()
-                .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
-                    left: l.left,
-                    top: l.top,
-                    width: l.width,
-                    height: l.height,
-                    rgba: &l.rgba,
-                })
-                .collect();
-            let readback_t0 = std::time::Instant::now();
-            if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
-                gpu_ctx,
-                canvas_w,
-                canvas_h,
-                canvas,
-                &layer_refs,
-                cancel,
-            ) {
-                timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
-                // Take ownership of the GPU readback buffer (no full-canvas copy).
-                *canvas = gpu_pixels;
-                timing.mode = "gpu";
-                true
-            } else {
-                false
-            }
-        }
-    } else {
-        false
-    };
-
-    if !used_gpu {
-        crate::psb_layer_clip::blend_layers_with_clipping(
-            canvas, canvas_w, canvas_h, &clip_refs, cancel,
-        )?;
-        timing.mode = "cpu";
-    }
-    timing.blend_ms += blend_t0.elapsed().as_secs_f64() * 1000.0;
-    // For GPU, blend_ms includes upload+dispatch+readback; readback_ms is nested.
-    // Prefer reporting GPU wall as blend_ms and keep readback as a subset hint.
-    Ok(layers.len())
+    let peak_tracker = StreamingPeakTracker::default();
+    run_composite_pass_cpu_streaming(
+        info,
+        visible,
+        canvas,
+        canvas_w,
+        canvas_h,
+        cancel,
+        timing,
+        &peak_tracker,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
-        STRICT_LAYER_COMPOSITE_BLANK, blend_layer_onto, blend_normal_onto, blend_separable_onto,
-        build_layer_sized_mask, checked_layer_pixel_count, composite_layers_from_bytes_with_cancel,
-        compute_effective_visibility, decode_channel_image, decode_one_layer,
-        decode_psd_sdr_main_from_bytes_with_cancel, dimensions_within_limit,
-        is_psd_header_structural_error, layer_to_rgba8, parse_layer_records,
-        scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
+        CompositeTiming, LAYER_PREFETCH_WINDOW, LayerChannel, LayerInfo, LayerRecord,
+        STRICT_LAYER_COMPOSITE_BLANK, StreamingPeakTracker, checked_layer_pixel_count,
+        composite_layers_from_bytes_with_cancel, compute_effective_visibility,
+        dimensions_within_limit, gpu_batch_eligible_decoded_bytes, layer_will_decode,
+        parse_layer_records, run_composite_pass_cpu_streaming, scan_extra_tagged_blocks,
+        strict_visibility_has_drawable_output,
     };
-    use crate::psb_layer_blend_simd::SeparableBlendKind;
     use std::path::Path;
+
+    fn raw_channel_bytes(pixel: u8, pixel_count: usize) -> Vec<u8> {
+        let mut data = vec![0u8, 0u8]; // compression = 0 (raw)
+        data.extend(std::iter::repeat_n(pixel, pixel_count));
+        data
+    }
+
+    /// Minimal spec for a synthetic composite test layer: full RGB channels
+    /// (raw/uncompressed) covering `[left, right) x [top, bottom)`, no alpha
+    /// or mask channel (alpha defaults to fully opaque).
+    struct TestLayerSpec {
+        top: i32,
+        left: i32,
+        bottom: i32,
+        right: i32,
+        rgb: (u8, u8, u8),
+        blend: [u8; 4],
+        clipping: u8,
+        opacity: u8,
+    }
+
+    /// Build `LayerRecord`s + a matching contiguous `channel_data` blob for
+    /// [`super::run_composite_pass_cpu_streaming`] /
+    /// [`crate::psb_layer_decode::decode_layers_for_composite`] tests, bypassing
+    /// the full on-disk PSD byte format.
+    fn build_test_layers(specs: &[TestLayerSpec]) -> (Vec<LayerRecord>, Vec<u8>) {
+        let mut records = Vec::with_capacity(specs.len());
+        let mut channel_data = Vec::new();
+        for spec in specs {
+            let width = (spec.right - spec.left) as u32;
+            let height = (spec.bottom - spec.top) as u32;
+            let pixel_count = (width * height) as usize;
+            let mut channels = Vec::with_capacity(3);
+            for (id, value) in [(0i16, spec.rgb.0), (1, spec.rgb.1), (2, spec.rgb.2)] {
+                let bytes = raw_channel_bytes(value, pixel_count);
+                channels.push(LayerChannel {
+                    id,
+                    data_len: bytes.len() as u32,
+                });
+                channel_data.extend_from_slice(&bytes);
+            }
+            records.push(LayerRecord {
+                top: spec.top,
+                left: spec.left,
+                bottom: spec.bottom,
+                right: spec.right,
+                channels,
+                blend: spec.blend,
+                opacity: spec.opacity,
+                clipping: spec.clipping,
+                flags: 0,
+                mask_size: 0,
+                mask: None,
+                real_mask: None,
+                is_section_divider: false,
+                section_type: None,
+            });
+        }
+        (records, channel_data)
+    }
+
+    fn mk_layer_info(
+        width: u32,
+        height: u32,
+        records: Vec<LayerRecord>,
+        channel_data: &[u8],
+    ) -> LayerInfo<'_> {
+        LayerInfo {
+            records,
+            channel_data,
+            width,
+            height,
+            depth: 8,
+            color_mode: 3,
+            is_psb: false,
+            cmyk_icc: Vec::new(),
+        }
+    }
+
+    fn px(canvas: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
+        let o = ((y * w + x) * 4) as usize;
+        [canvas[o], canvas[o + 1], canvas[o + 2], canvas[o + 3]]
+    }
+
+    fn empty_timing() -> CompositeTiming {
+        CompositeTiming {
+            parse_ms: 0.0,
+            unpack_ms: 0.0,
+            cmyk_ms: 0.0,
+            blend_ms: 0.0,
+            readback_ms: 0.0,
+            mode: "cpu",
+            layers: 0,
+        }
+    }
 
     /// Build a minimal `LayerRecord` for `compute_effective_visibility` tests;
     /// only `flags` (hidden bit), `is_section_divider`, and `section_type`
@@ -2053,17 +1315,6 @@ mod tests {
         assert!(checked_layer_pixel_count(32_769, 32_769).is_none());
     }
 
-    #[test]
-    fn decode_channel_image_rejects_oversized_dims() {
-        let data = [0u8, 0u8]; // compression = Raw
-        let err =
-            decode_channel_image(&data, u32::MAX, u32::MAX, false, None).expect_err("oversized");
-        assert!(
-            err.as_str().contains("exceeds limit"),
-            "unexpected err: {err}"
-        );
-    }
-
     // RED until accumulate_decoded_layer_bytes + MAX_COMPOSITE_DECODED_BYTES land.
     #[test]
     fn composite_decoded_byte_budget_rejects_many_large_layers() {
@@ -2079,163 +1330,6 @@ mod tests {
             }
         }
         panic!("expected decoded-layer byte budget to reject");
-    }
-
-    #[test]
-    fn decode_one_layer_oversized_layer_rect_is_skipped() {
-        // A malicious/malformed layer record claiming an absurd width would
-        // otherwise make `decode_channel_image` try to `vec![0u8; w * h]`,
-        // risking an allocation-failure abort. It must be skipped instead.
-        let mut record = mk_layer(false, false, None);
-        record.top = 0;
-        record.left = 0;
-        record.bottom = 1_000_000_000;
-        record.right = 1_000_000_000;
-        record.channels = vec![LayerChannel {
-            id: -1,
-            data_len: 0,
-        }];
-
-        let channel_data: [u8; 0] = [];
-        let mut cursor = 0usize;
-        let result = decode_one_layer(
-            &channel_data,
-            &mut cursor,
-            &record,
-            &LayerDecodeParams {
-                color_mode: 3,
-                is_psb: false,
-                should_decode: true,
-                cancel: None,
-                cmyk_icc: &[],
-            },
-        );
-
-        assert!(result.is_ok(), "oversized layer must not error out");
-        assert!(
-            result.unwrap().is_none(),
-            "oversized layer must be skipped rather than decoded"
-        );
-        assert_eq!(cursor, 0, "cursor still advances past the channel bytes");
-    }
-
-    #[test]
-    fn decode_one_layer_oversized_mask_rect_is_skipped() {
-        // Same guard, but for the mask channel's own (potentially
-        // independently-sized) rect rather than the layer's rect.
-        let mut record = mk_layer(false, false, None);
-        record.top = 0;
-        record.left = 0;
-        record.bottom = 2;
-        record.right = 2;
-        record.mask = Some(LayerMaskInfo {
-            top: 0,
-            left: 0,
-            bottom: 1_000_000_000,
-            right: 1_000_000_000,
-            default_color: 0,
-            disabled: false,
-            has_parameters_applied: false,
-        });
-        record.channels = vec![LayerChannel {
-            id: -2,
-            data_len: 2,
-        }];
-
-        // Compression = 0 (raw), no pixel bytes follow -- irrelevant since
-        // the oversized mask rect must be rejected before any read/alloc.
-        let channel_data = [0u8, 0u8];
-        let mut cursor = 0usize;
-        let result = decode_one_layer(
-            &channel_data,
-            &mut cursor,
-            &record,
-            &LayerDecodeParams {
-                color_mode: 3,
-                is_psb: false,
-                should_decode: true,
-                cancel: None,
-                cmyk_icc: &[],
-            },
-        );
-
-        assert!(result.is_ok());
-        let layer = result.unwrap().expect("layer rect itself is valid");
-        assert_eq!(layer.width, 2);
-        assert_eq!(layer.height, 2);
-        // No mask could be decoded, so alpha defaults to fully opaque (255)
-        // via `layer_to_rgba8`'s `unwrap_or(255)` fallback for a missing mask.
-        assert!(layer.rgba.chunks_exact(4).all(|px| px[3] == 255));
-    }
-
-    #[test]
-    fn blend_normal_onto_2x2_straight_alpha() {
-        // Opaque red covers the top-left pixel; 50% green partially covers top-right;
-        // the bottom row of the layer is fully transparent and must not touch the canvas.
-        let mut canvas = vec![
-            10, 10, 10, 255, // (0,0)
-            20, 20, 20, 255, // (1,0)
-            30, 30, 30, 255, // (0,1)
-            40, 40, 40, 255, // (1,1)
-        ];
-        let layer = vec![
-            255, 0, 0, 255, // (0,0) opaque red
-            0, 255, 0, 128, // (1,0) 50% green
-            0, 0, 0, 0, // (0,1) transparent
-            0, 0, 0, 0, // (1,1) transparent
-        ];
-
-        blend_normal_onto(&mut canvas, 2, 2, &layer, 0, 0, 2, 2);
-
-        assert_eq!(&canvas[0..4], &[255, 0, 0, 255]);
-        assert_eq!(&canvas[8..12], &[30, 30, 30, 255]);
-        assert_eq!(&canvas[12..16], &[40, 40, 40, 255]);
-
-        // (1,0): green over gray20 at 50% alpha, straight-alpha src-over.
-        let blended = &canvas[4..8];
-        assert_eq!(blended[3], 255);
-        assert_eq!(blended[0], 10); // (0*128 + 20*255*127/255) / 255 ~= 10
-        assert_eq!(blended[1], 138); // (255*128 + 20*127) / 255 ~= 138
-        assert_eq!(blended[2], 10);
-    }
-
-    #[test]
-    fn blend_normal_onto_clips_to_canvas() {
-        // A 3x3 opaque white layer at (1,1) only overlaps the canvas's bottom-right pixel.
-        let mut canvas = vec![0u8; 2 * 2 * 4];
-        let layer = vec![255u8; 3 * 3 * 4];
-        blend_normal_onto(&mut canvas, 2, 2, &layer, 1, 1, 3, 3);
-        assert_eq!(&canvas[0..12], &[0u8; 12]);
-        assert_eq!(&canvas[12..16], &[255, 255, 255, 255]);
-    }
-
-    #[test]
-    fn blend_screen_opaque_black_preserves_backdrop() {
-        // Screen light-effect layers are often black + bright flare; black must
-        // not paint an opaque rectangle (the Normal-fallback bug).
-        let mut canvas = vec![40u8, 80, 120, 255, 40, 80, 120, 255];
-        let layer = [0u8, 0, 0, 255, 255, 255, 255, 255];
-        blend_separable_onto(
-            &mut canvas,
-            2,
-            1,
-            &layer,
-            0,
-            0,
-            2,
-            1,
-            SeparableBlendKind::Screen,
-        );
-        assert_eq!(&canvas[0..4], &[40, 80, 120, 255]);
-        assert_eq!(&canvas[4..8], &[255, 255, 255, 255]);
-    }
-
-    #[test]
-    fn blend_layer_onto_dispatches_screen_key() {
-        let mut canvas = vec![100u8, 100, 100, 255];
-        let layer = [0u8, 0, 0, 255];
-        blend_layer_onto(&mut canvas, 1, 1, &layer, 0, 0, 1, 1, b"scrn");
-        assert_eq!(&canvas, &[100, 100, 100, 255]);
     }
 
     #[test]
@@ -2342,95 +1436,6 @@ mod tests {
     }
 
     #[test]
-    fn build_layer_sized_mask_smaller_mask_with_offset() {
-        // 2x2 mask offset by (1,1) inside a 4x4 layer.
-        let mask_info = LayerMaskInfo {
-            top: 1,
-            left: 1,
-            bottom: 3,
-            right: 3,
-            default_color: 0,
-            disabled: false,
-            has_parameters_applied: false,
-        };
-        let mask_pixels = vec![10, 20, 30, 40];
-
-        let out = build_layer_sized_mask(&mask_info, &mask_pixels, 0, 0, 4, 4);
-
-        assert_eq!(out.len(), 16);
-        let mut expected = vec![0u8; 16];
-        expected[4 + 1] = 10;
-        expected[4 + 2] = 20;
-        expected[2 * 4 + 1] = 30;
-        expected[2 * 4 + 2] = 40;
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn build_layer_sized_mask_default_color_outside_mask_rect() {
-        // Mask rect falls entirely outside the layer's bounds, so every
-        // output pixel must fall back to `default_color`.
-        let mask_info = LayerMaskInfo {
-            top: 10,
-            left: 10,
-            bottom: 11,
-            right: 11,
-            default_color: 255,
-            disabled: false,
-            has_parameters_applied: false,
-        };
-        let mask_pixels = vec![99];
-
-        let out = build_layer_sized_mask(&mask_info, &mask_pixels, 0, 0, 3, 3);
-
-        assert_eq!(out, vec![255u8; 9]);
-    }
-
-    #[test]
-    fn layer_to_rgba8_cmyk_opacity_mask_numeric() {
-        // 1x1 CMYK pixel (Adobe polarity 0=100% ink): c=204, m=153, y=102, k=204.
-        // r = 204*204/255 = 163; g = 153*204/255 = 122; b = 102*204/255 = 81.
-        let color: [Option<Vec<u8>>; 4] = [
-            Some(vec![204]),
-            Some(vec![153]),
-            Some(vec![102]),
-            Some(vec![204]),
-        ];
-        let alpha = vec![200u8];
-        let mask = vec![128u8];
-
-        // Force naive path: invalid ICC makes lcms fail closed to cmyk_to_rgb.
-        let rgba = layer_to_rgba8(LayerRgbaArgs {
-            color_mode: 4,
-            width: 1,
-            height: 1,
-            color: &color,
-            alpha: Some(&alpha),
-            mask: Some(&mask),
-            opacity: 200,
-            cmyk_icc: b"not-icc",
-        });
-
-        // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
-        assert_eq!(rgba, vec![163, 122, 81, 78]);
-    }
-
-    #[test]
-    fn decode_01_02_psd_sdr_main_returns_structurally_valid_image() {
-        // Flattened Image Data may be a solid-ish placeholder; under the SDR
-        // state machine that is still a valid P1 result (no pixel heuristics).
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd");
-        if !path.is_file() {
-            eprintln!("skipping decode_01_02_psd_sdr_main...; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).unwrap();
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
-        assert_eq!((main.width, main.height), (5031, 3437));
-        assert_eq!(main.pixels.len(), 5031 * 3437 * 4);
-    }
-
-    #[test]
     fn composite_layers_all_hidden_returns_blank_error() {
         // Two top-level groups, both eye-off: strict composite must not invent
         // visibility and must report blank without pixel work.
@@ -2444,47 +1449,6 @@ mod tests {
             .expect_err("expected blank under strict visibility");
         assert!(err.is_no_drawable_visible_layers());
         assert_eq!(err.as_str(), STRICT_LAYER_COMPOSITE_BLANK);
-    }
-
-    #[test]
-    fn decode_psd_sdr_main_all_hidden_reports_photoshop_hint() {
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\18\18\1-2.psd");
-        if !path.is_file() {
-            eprintln!("skipping decode_psd_sdr_main_all_hidden...; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read");
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
-            .expect_err("expected fail when all layers hidden and P3 is blank");
-        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
-        assert_eq!(err.as_str(), expected);
-        assert!(
-            err.as_str().contains("designer")
-                || err.as_str().contains("设计师")
-                || err.as_str().contains("設計師"),
-            "error should attribute hidden layers to the designer: {err}"
-        );
-        assert!(
-            err.as_str().contains("Photoshop"),
-            "error should point users to Photoshop: {err}"
-        );
-    }
-
-    #[test]
-    fn decode_psd_sdr_main_prefers_structurally_valid_flattened() {
-        // 10.psd has a usable flattened composite -- P1 must win even if layers exist.
-        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\10\10.psd");
-        if !path.is_file() {
-            eprintln!(
-                "skipping decode_psd_sdr_main_prefers_structurally_valid_flattened; sample missing"
-            );
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read");
-        let flat = crate::psb_reader::read_composite_from_bytes(&bytes).expect("flat");
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
-        assert_eq!((main.width, main.height), (flat.width, flat.height));
-        assert_eq!(main.pixels, flat.pixels);
     }
 
     #[test]
@@ -2521,39 +1485,79 @@ mod tests {
     }
 
     #[test]
-    fn is_psd_header_structural_error_matches_known_messages() {
-        assert!(is_psd_header_structural_error(
-            "Not a PSD/PSB file (invalid signature)"
-        ));
-        assert!(is_psd_header_structural_error(
-            "Unknown PSD/PSB version: 99"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB dimensions 0x0 must be non-zero"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB dimensions must be non-zero"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB channel count 0 is out of range (1..=56)"
-        ));
-        // Layer-record wording also contains "channel count".
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB layer channel count 999 exceeds 56"
-        ));
-        assert!(is_psd_header_structural_error(
-            "Unsupported PSD/PSB bit depth 12 (supported: 8, 16, 32)"
-        ));
-        assert!(is_psd_header_structural_error(
-            "PSD/PSB header is too short"
-        ));
-        // Image Data compression is not a shared header failure -- P2 may work.
-        assert!(!is_psd_header_structural_error(
-            "Invalid PSD/PSB Image Data compression: 9"
-        ));
-        assert!(!is_psd_header_structural_error(
-            "Unsupported layer channel compression: 9"
-        ));
+    fn scan_extra_finds_lsct_after_garbage() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"garbage before signature");
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&3u32.to_be_bytes());
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(is_section_divider);
+        assert_eq!(section_type, Some(3));
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_terminates() {
+        let block = vec![0u8; 32 * 1024 * 1024];
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+        let started = std::time::Instant::now();
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(!is_section_divider);
+        assert_eq!(section_type, None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "signature-free scan should finish quickly"
+        );
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_stops_before_late_lsct() {
+        let mut block = Vec::new();
+        for _ in 0..=super::MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+            block.extend_from_slice(b"8BIM");
+            block.extend_from_slice(b"junk");
+            block.extend_from_slice(&(u32::MAX).to_be_bytes());
+        }
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&2u32.to_be_bytes());
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(!is_section_divider);
+        assert_eq!(section_type, None);
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_keeps_existing_lsct() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&1u32.to_be_bytes());
+        for _ in 0..=super::MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+            block.extend_from_slice(b"8BIM");
+            block.extend_from_slice(b"junk");
+            block.extend_from_slice(&(u32::MAX).to_be_bytes());
+        }
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(is_section_divider);
+        assert_eq!(section_type, Some(1));
     }
 
     #[test]
@@ -2573,5 +1577,262 @@ mod tests {
         );
         assert!(layers.records.iter().any(|l| l.is_section_divider));
         assert!(!layers.channel_data.is_empty());
+    }
+
+    #[test]
+    fn streaming_composite_peak_live_layers_at_most_prefetch_window() {
+        let (width, height) = (4u32, 4u32);
+        let specs = [
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (255, 0, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (0, 255, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (0, 0, 255),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let mut canvas = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+
+        let composited = run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut canvas,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        assert_eq!(composited, 3);
+        // Top (last) opaque layer wins under Normal blend.
+        assert_eq!(px(&canvas, width, 0, 0), [0, 0, 255, 255]);
+        let peak = tracker.peak();
+        assert!(
+            peak <= LAYER_PREFETCH_WINDOW,
+            "peak live decoded layers {peak} exceeded window {LAYER_PREFETCH_WINDOW}"
+        );
+        assert!(peak >= 1, "expected at least one live layer to be observed");
+    }
+
+    #[test]
+    fn streaming_composite_skips_zero_opacity_and_invisible_layers() {
+        let (width, height) = (2u32, 2u32);
+        let full_rect = |rgb: (u8, u8, u8), opacity: u8| TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 2,
+            right: 2,
+            rgb,
+            blend: *b"norm",
+            clipping: 0,
+            opacity,
+        };
+        let specs = [
+            full_rect((10, 20, 30), 255),
+            // Zero opacity -- must be skipped, not painted white.
+            full_rect((255, 255, 255), 0),
+            // Not visible (e.g. hidden layer/ancestor group, as computed
+            // upstream by `compute_effective_visibility`) -- also skipped.
+            full_rect((0, 255, 0), 255),
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true, true, false];
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let mut canvas = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+
+        let composited = run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut canvas,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        assert_eq!(composited, 1, "only the base layer should composite");
+        assert_eq!(px(&canvas, width, 0, 0), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn streaming_composite_matches_batch_with_clipping_and_screen_blend() {
+        // Bottom red base, a Screen-blended clip on top of it (clipped to the
+        // base's silhouette), and an unclipped green base above both. This
+        // exercises both blend dispatch and clipping-group handling on the
+        // streaming path, and must match the pre-existing batch API exactly.
+        let (width, height) = (4u32, 4u32);
+        let specs = [
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (200, 0, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 1,
+                left: 1,
+                bottom: 3,
+                right: 3,
+                rgb: (0, 0, 255),
+                blend: *b"scrn",
+                clipping: 1,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 2,
+                bottom: 2,
+                right: 4,
+                rgb: (0, 128, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 128,
+            },
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(width, height, records, &channel_data);
+
+        let mut streamed = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+        run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut streamed,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        let decoded = crate::psb_layer_decode::decode_layers_for_composite(&info, &visible, None)
+            .expect("decode");
+        let clip_refs: Vec<crate::psb_layer_clip::ClipLayerRef<'_>> = decoded
+            .iter()
+            .map(|l| crate::psb_layer_clip::ClipLayerRef {
+                left: l.left,
+                top: l.top,
+                width: l.width,
+                height: l.height,
+                blend: l.blend,
+                clipping: l.clipping,
+                rgba: &l.rgba,
+            })
+            .collect();
+        let mut batch = vec![0u8; (width * height * 4) as usize];
+        crate::psb_layer_clip::blend_layers_with_clipping(
+            &mut batch, width, height, &clip_refs, None,
+        )
+        .expect("batch blend");
+
+        assert_eq!(streamed, batch);
+    }
+
+    #[test]
+    fn gpu_batch_eligible_requires_normal_blend_and_no_clipping() {
+        let (width, height) = (4u32, 4u32);
+        let channel_data_owned = Vec::new();
+        let base_spec = |blend: [u8; 4], clipping: u8| TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 4,
+            right: 4,
+            rgb: (10, 10, 10),
+            blend,
+            clipping,
+            opacity: 255,
+        };
+
+        let (records, _) = build_test_layers(&[base_spec(*b"norm", 0)]);
+        let visible = vec![true; records.len()];
+        let eligible_info = mk_layer_info(width, height, records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&eligible_info, &visible).is_some(),
+            "all-Normal, unclipped stack should be GPU batch eligible"
+        );
+
+        let (non_normal_records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
+        let visible2 = vec![true; non_normal_records.len()];
+        let non_normal_info = mk_layer_info(width, height, non_normal_records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&non_normal_info, &visible2).is_none(),
+            "non-Normal blend must not be GPU batch eligible"
+        );
+
+        let (clipped_records, _) = build_test_layers(&[base_spec(*b"norm", 1)]);
+        let visible3 = vec![true; clipped_records.len()];
+        let clipped_info = mk_layer_info(width, height, clipped_records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_none(),
+            "clipping must not be GPU batch eligible"
+        );
+    }
+
+    #[test]
+    fn layer_will_decode_matches_should_decode_conditions() {
+        // `layer_will_decode` trusts the caller-supplied `visible` flag (that
+        // is where `is_hidden()`/group visibility is already folded in by
+        // `compute_effective_visibility`); it only re-checks the remaining
+        // decode-eligibility conditions.
+        let mut normal = mk_layer(false, false, None);
+        normal.right = 2;
+        normal.bottom = 2;
+        assert!(layer_will_decode(&normal, true));
+        assert!(!layer_will_decode(&normal, false), "not visible");
+
+        let mut zero_opacity = mk_layer(false, false, None);
+        zero_opacity.right = 2;
+        zero_opacity.bottom = 2;
+        zero_opacity.opacity = 0;
+        assert!(!layer_will_decode(&zero_opacity, true));
+
+        let divider = mk_layer(false, true, Some(1));
+        assert!(!layer_will_decode(&divider, true));
+
+        let mut oversized = mk_layer(false, false, None);
+        oversized.right = crate::psb_reader::PSD_MAX_DIMENSION as i32 + 1;
+        oversized.bottom = 1;
+        assert!(!layer_will_decode(&oversized, true));
     }
 }
