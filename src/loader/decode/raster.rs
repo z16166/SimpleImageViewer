@@ -336,14 +336,41 @@ pub(crate) fn load_psd(
             width,
             height
         );
-        match crate::psb_reader::open_tiled_source(path) {
-            Ok(source) => {
-                let blank = psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
-                if !blank {
-                    return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
-                }
+        let disk_tiled_compression = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..])
+            .and_then(|index| index.image_data_compression(&mmap[..]));
+        match disk_tiled_compression {
+            Ok(2 | 3) => {
                 log::debug!(
-                    "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                    "PSB disk tiled open skipped for ZIP Image Data; routing through P1/P2/P3"
+                );
+            }
+            Ok(0 | 1) => match crate::psb_reader::open_tiled_source(path) {
+                Ok(source) => {
+                    let blank =
+                        psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
+                    if !blank {
+                        return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
+                    }
+                    log::debug!(
+                        "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                        width,
+                        height
+                    );
+                    skip_flattened_for_disk_tiled_degrade = true;
+                }
+                Err(e) => {
+                    log::debug!(
+                        "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                        width,
+                        height
+                    );
+                    skip_flattened_for_disk_tiled_degrade = true;
+                }
+            },
+            Ok(other) => {
+                log::debug!(
+                    "PSB disk tiled compression {} is unsupported for header {}x{}; degrading to P2/P3",
+                    other,
                     width,
                     height
                 );
@@ -351,7 +378,7 @@ pub(crate) fn load_psd(
             }
             Err(e) => {
                 log::debug!(
-                    "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                    "PSB disk tiled compression probe failed for header {}x{} ({e}); degrading to P2/P3",
                     width,
                     height
                 );

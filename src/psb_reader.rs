@@ -42,11 +42,6 @@ use simple_image_viewer::simd_swizzle;
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
-/// Cap on fully-inflated ZIP / ZIP+prediction planar bytes retained inside a
-/// disk-tiled source. zlib Image Data is one sequential stream, so tiled open
-/// must inflate the whole planar buffer up front; beyond this budget we refuse
-/// and let the caller degrade to P2/P3 instead of a multi-GB memory spike.
-const MAX_TILED_ZIP_PLANAR_BYTES: usize = 512 * 1024 * 1024;
 /// Bytes per RGBA pixel when assembling the composite image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
@@ -86,9 +81,9 @@ pub struct PsbTiledSource {
     compression: u16,
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
-    /// For ZIP modes these are offsets into [`Self::zip_planar`].
     row_offsets: Vec<u64>,
-    /// Fully inflated planar bytes when Image Data uses ZIP / ZIP+prediction.
+    /// Defensive placeholder for ZIP / ZIP+prediction rows; tiled open refuses
+    /// those modes before source construction.
     zip_planar: Option<Arc<Vec<u8>>>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
@@ -1104,10 +1099,11 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         .map_err(|e| e.to_string())?;
 
     let compression = read_u16(&mut cursor)?;
+    tiled_compression_supported(compression)?;
     let row_counts_start = cursor.position();
 
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
-    let mut zip_planar: Option<Arc<Vec<u8>>> = None;
+    let zip_planar: Option<Arc<Vec<u8>>> = None;
 
     match compression {
         0 => {
@@ -1146,33 +1142,6 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 row_offsets.push(running_offset);
                 running_offset += cnt;
             }
-        }
-        2 | 3 => {
-            let compressed = &mmap[cursor.position() as usize..];
-            let channel_bytes = (height as usize)
-                .checked_mul(width as usize)
-                .and_then(|n| n.checked_mul(bps))
-                .ok_or_else(|| "PSD/PSB ZIP channel byte count overflow".to_string())?;
-            let expected = (channels as usize)
-                .checked_mul(channel_bytes)
-                .ok_or_else(|| "PSD/PSB ZIP planar size overflow".to_string())?;
-            if expected > MAX_TILED_ZIP_PLANAR_BYTES {
-                return Err(format!(
-                    "PSD/PSB ZIP planar size {expected} exceeds tiled inflate budget \
-                     {MAX_TILED_ZIP_PLANAR_BYTES}"
-                ));
-            }
-            let mut inflated = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
-            if compression == 3 {
-                crate::psb_zip::undo_zip_prediction(&mut inflated, width as usize, depth)?;
-            }
-            for ch in 0..channels as usize {
-                for row in 0..height as usize {
-                    let off = ch * channel_bytes + row * width as usize * bps;
-                    row_offsets.push(off as u64);
-                }
-            }
-            zip_planar = Some(Arc::new(inflated));
         }
         _ => {
             log::error!(
@@ -1393,6 +1362,14 @@ pub(crate) fn bytes_per_sample(depth: u16) -> Result<usize, String> {
         _ => Err(format!(
             "Unsupported PSD/PSB bit depth {depth} (supported: 8, 16, 32)"
         )),
+    }
+}
+
+pub(crate) fn tiled_compression_supported(compression: u16) -> Result<(), String> {
+    match compression {
+        0 | 1 => Ok(()),
+        2 | 3 => Err("PSD/PSB ZIP Image Data cannot be opened as disk-tiled".into()),
+        other => Err(format!("Unsupported compression: {other}")),
     }
 }
 
@@ -1836,6 +1813,17 @@ mod tests {
                 .contains("Invalid PSD/PSB Image Data compression"),
             "unexpected err: {err}"
         );
+    }
+
+    #[test]
+    fn tiled_compression_supported_refuses_zip_modes() {
+        assert!(super::tiled_compression_supported(0).is_ok());
+        assert!(super::tiled_compression_supported(1).is_ok());
+
+        for compression in [2, 3] {
+            let err = super::tiled_compression_supported(compression).unwrap_err();
+            assert_eq!(err, "PSD/PSB ZIP Image Data cannot be opened as disk-tiled");
+        }
     }
 
     #[test]
