@@ -1504,15 +1504,99 @@ fn allocate_composite_canvas(len: usize, color_mode: u16) -> Vec<u8> {
 
 fn clear_composite_canvas(canvas: &mut [u8], color_mode: u16) {
     if color_mode == 4 {
-        for px in canvas.chunks_exact_mut(4) {
-            px[0] = 255;
-            px[1] = 255;
-            px[2] = 255;
-            px[3] = 255;
-        }
+        // CMYK paper white is 255 per channel; SIMD fill beats per-pixel scalar stores.
+        crate::psb_packbits_simd::fill_bytes(canvas, 255);
     } else {
         canvas.fill(0);
     }
+}
+
+/// Precompute each layer's `[start, end)` byte range in the contiguous channel
+/// image data block. Validates bounds once so parallel workers can slice
+/// independently without a shared cursor.
+fn layer_channel_byte_ranges(
+    records: &[LayerRecord],
+    channel_data_len: usize,
+) -> Result<Vec<(usize, usize)>, crate::loader::DecodeError> {
+    let mut ranges = Vec::with_capacity(records.len());
+    let mut cursor = 0usize;
+    for record in records {
+        let start = cursor;
+        for ch in &record.channels {
+            cursor = cursor
+                .checked_add(ch.data_len as usize)
+                .ok_or_else(|| "PSD/PSB layer channel data length overflow".to_string())?;
+        }
+        if cursor > channel_data_len {
+            return Err("PSD/PSB layer channel data out of bounds".into());
+        }
+        ranges.push((start, cursor));
+    }
+    Ok(ranges)
+}
+
+/// Decode every eligible layer (optionally in parallel). Blend order is preserved:
+/// results are collected in record order, skipping layers that decode to `None`.
+#[allow(clippy::too_many_arguments)]
+fn decode_layers_for_composite(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+    respect_visibility: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<DecodedLayer>, crate::loader::DecodeError> {
+    let ranges = layer_channel_byte_ranges(&info.records, info.channel_data.len())?;
+    let decode_at = |i: usize,
+                     record: &LayerRecord|
+     -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
+        crate::psb_reader::check_decode_cancel(cancel)?;
+        let should_decode = (!respect_visibility || visible[i])
+            && !record.is_section_divider
+            && !record.is_empty_bounds()
+            && record.opacity > 0;
+        let (start, end) = ranges[i];
+        let mut cursor = 0usize;
+        decode_one_layer(
+            &info.channel_data[start..end],
+            &mut cursor,
+            record,
+            &LayerDecodeParams {
+                color_mode: info.color_mode,
+                is_psb: info.is_psb,
+                should_decode,
+                cancel,
+                cmyk_icc: info.cmyk_icc.as_slice(),
+            },
+        )
+    };
+
+    if info.records.len() >= crate::psb_layer_decode_pool::PARALLEL_LAYER_DECODE_MIN {
+        // Dedicated pool (capped at 2-4 workers): do not nest into img-loader /
+        // refinement / strip pools via bare `par_iter`.
+        use rayon::prelude::*;
+        let results: Vec<Result<Option<DecodedLayer>, crate::loader::DecodeError>> =
+            crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL.install(|| {
+                info.records
+                    .par_iter()
+                    .enumerate()
+                    .map(|(i, record)| decode_at(i, record))
+                    .collect()
+            });
+        let mut layers = Vec::new();
+        for result in results {
+            if let Some(layer) = result? {
+                layers.push(layer);
+            }
+        }
+        return Ok(layers);
+    }
+
+    let mut layers = Vec::new();
+    for (i, record) in info.records.iter().enumerate() {
+        if let Some(layer) = decode_at(i, record)? {
+            layers.push(layer);
+        }
+    }
+    Ok(layers)
 }
 
 /// Decode and blend every eligible layer bottom to top, returning how many were
@@ -1531,40 +1615,10 @@ fn run_composite_pass(
     timing: &mut CompositeTiming,
 ) -> Result<usize, crate::loader::DecodeError> {
     // Layer records and channel_data are both stored bottom to top (index 0
-    // is the bottommost layer). Decoding must walk that same order to stay
-    // aligned with `channel_data`; blending happens to want the identical
-    // order (draw the bottommost layer first, then successively higher ones
-    // on top), so a single forward pass does both. Skipped layers still
-    // advance `cursor` past their channel bytes so later layers stay aligned,
-    // even though they are not decoded or blended.
-    let mut cursor: usize = 0;
-    let mut layers: Vec<DecodedLayer> = Vec::new();
+    // is the bottommost layer). Decoding may run in parallel once per-layer
+    // byte ranges are known; blending still walks decoded layers bottom to top.
     let decode_t0 = std::time::Instant::now();
-    for (i, record) in info.records.iter().enumerate() {
-        // Poll every layer (not just periodically): with hundreds of layers,
-        // each potentially decoding a full-canvas image, waiting many layers
-        // between polls makes cancellation feel unresponsive.
-        crate::psb_reader::check_decode_cancel(cancel)?;
-        let should_decode = (!respect_visibility || visible[i])
-            && !record.is_section_divider
-            && !record.is_empty_bounds()
-            && record.opacity > 0;
-        let layer = decode_one_layer(
-            info.channel_data,
-            &mut cursor,
-            record,
-            &LayerDecodeParams {
-                color_mode: info.color_mode,
-                is_psb: info.is_psb,
-                should_decode,
-                cancel,
-                cmyk_icc: info.cmyk_icc.as_slice(),
-            },
-        )?;
-        if let Some(layer) = layer {
-            layers.push(layer);
-        }
-    }
+    let layers = decode_layers_for_composite(info, visible, respect_visibility, cancel)?;
     // Decode includes PackBits + planar convert + CMYK/ICC; split CMS later if needed.
     timing.unpack_ms += decode_t0.elapsed().as_secs_f64() * 1000.0;
     timing.layers = layers.len();
@@ -1625,11 +1679,7 @@ fn run_composite_pass(
 
     if !used_gpu {
         crate::psb_layer_clip::blend_layers_with_clipping(
-            canvas,
-            canvas_w,
-            canvas_h,
-            &clip_refs,
-            cancel,
+            canvas, canvas_w, canvas_h, &clip_refs, cancel,
         )?;
         timing.mode = "cpu";
     }

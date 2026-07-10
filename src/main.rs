@@ -56,6 +56,7 @@ mod psb_layer_blend_gpu;
 mod psb_layer_blend_simd;
 mod psb_layer_clip;
 pub mod psb_layer_composite;
+mod psb_layer_decode_pool;
 mod psb_packbits_simd;
 mod psb_reader;
 mod psb_zip;

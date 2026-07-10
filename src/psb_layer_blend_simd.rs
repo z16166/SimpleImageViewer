@@ -29,17 +29,11 @@ pub enum SeparableBlendKind {
     Multiply,
 }
 
-const fn make_u8_to_f32_lut() -> [f32; 256] {
-    let mut t = [0.0f32; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = (i as f32) / 255.0;
-        i += 1;
-    }
-    t
+#[inline]
+fn u8_to_f32(v: u8) -> f32 {
+    // Match former LUT formula `(i as f32) / 255.0` (not `* (1/255)`).
+    (v as f32) / 255.0
 }
-
-const U8_TO_F32: [f32; 256] = make_u8_to_f32_lut();
 
 #[inline]
 fn f32_to_u8_round(v: f32) -> u8 {
@@ -111,8 +105,8 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
         return;
     }
 
-    let sa_f = U8_TO_F32[sa as usize];
-    let da_f = U8_TO_F32[dst[3] as usize];
+    let sa_f = u8_to_f32(sa);
+    let da_f = u8_to_f32(dst[3]);
     let out_a_f = sa_f + da_f * (1.0 - sa_f);
     if out_a_f <= 0.0 {
         dst.fill(0);
@@ -120,8 +114,8 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
     }
 
     for c in 0..3 {
-        let sc = U8_TO_F32[src[c] as usize];
-        let dc = U8_TO_F32[dst[c] as usize];
+        let sc = u8_to_f32(src[c]);
+        let dc = u8_to_f32(dst[c]);
         let b = blend_b(kind, dc, sc);
         let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
         dst[c] = f32_to_u8_round(co / out_a_f);
@@ -130,21 +124,111 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
 }
 
 #[inline]
-fn load_pixel_f32(px: &[u8]) -> (f32, f32, f32, f32) {
-    (
-        U8_TO_F32[px[0] as usize],
-        U8_TO_F32[px[1] as usize],
-        U8_TO_F32[px[2] as usize],
-        U8_TO_F32[px[3] as usize],
-    )
-}
-
-#[inline]
 fn store_pixel_f32(px: &mut [u8], r: f32, g: f32, b: f32, a: f32) {
     px[0] = f32_to_u8_round(r);
     px[1] = f32_to_u8_round(g);
     px[2] = f32_to_u8_round(b);
     px[3] = f32_to_u8_round(a);
+}
+
+/// Load 4 RGBA8 pixels and convert to planar f32 (RRRR/GGGG/BBBB/AAAA).
+/// Uses unpack + `cvtepi32_ps` + `/255` instead of scattered LUT gathers.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn load_rgba8x4_f32_planes(
+    ptr: *const u8,
+) -> (
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        let v = _mm_loadu_si128(ptr.cast());
+        let zero = _mm_setzero_si128();
+        let scale_div = _mm_set1_ps(255.0);
+        let lo16 = _mm_unpacklo_epi8(v, zero);
+        let hi16 = _mm_unpackhi_epi8(v, zero);
+        let p0 = _mm_div_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(lo16, zero)), scale_div);
+        let p1 = _mm_div_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(lo16, zero)), scale_div);
+        let p2 = _mm_div_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(hi16, zero)), scale_div);
+        let p3 = _mm_div_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(hi16, zero)), scale_div);
+        // Transpose pixel-major RGBA rows into channel planes.
+        let t0 = _mm_unpacklo_ps(p0, p1); // r0 r1 g0 g1
+        let t1 = _mm_unpacklo_ps(p2, p3); // r2 r3 g2 g3
+        let t2 = _mm_unpackhi_ps(p0, p1); // b0 b1 a0 a1
+        let t3 = _mm_unpackhi_ps(p2, p3); // b2 b3 a2 a3
+        let r = _mm_movelh_ps(t0, t1);
+        let g = _mm_movehl_ps(t1, t0);
+        let b = _mm_movelh_ps(t2, t3);
+        let a = _mm_movehl_ps(t3, t2);
+        (r, g, b, a)
+    }
+}
+
+/// Load 8 RGBA8 pixels into AVX planar f32 (two 4-pixel conversions + insert).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "sse2")]
+unsafe fn load_rgba8x8_f32_planes(
+    ptr: *const u8,
+) -> (
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        let (r0, g0, b0, a0) = load_rgba8x4_f32_planes(ptr);
+        let (r1, g1, b1, a1) = load_rgba8x4_f32_planes(ptr.add(16));
+        (
+            _mm256_set_m128(r1, r0),
+            _mm256_set_m128(g1, g0),
+            _mm256_set_m128(b1, b0),
+            _mm256_set_m128(a1, a0),
+        )
+    }
+}
+
+/// Load 4 RGBA8 pixels via NEON deinterleave + u32 widen + `/255`.
+///
+/// `vld4_u8` reads 8 pixels (32 bytes); pad the 16-byte span so the load is
+/// in-bounds (high 4 lanes are ignored).
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn load_rgba8x4_f32_planes(
+    ptr: *const u8,
+) -> (
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+) {
+    use core::arch::aarch64::*;
+    unsafe {
+        let mut pad = [0u8; 32];
+        core::ptr::copy_nonoverlapping(ptr, pad.as_mut_ptr(), 16);
+        let pix = vld4_u8(pad.as_ptr());
+        let scale = vdupq_n_f32(255.0);
+        let r = vdivq_f32(
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(pix.0)))),
+            scale,
+        );
+        let g = vdivq_f32(
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(pix.1)))),
+            scale,
+        );
+        let b = vdivq_f32(
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(pix.2)))),
+            scale,
+        );
+        let a = vdivq_f32(
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(pix.3)))),
+            scale,
+        );
+        (r, g, b, a)
+    }
 }
 
 #[inline]
@@ -215,39 +299,16 @@ unsafe fn blend_separable_span_sse2(dst: &mut [u8], src: &[u8], kind: SeparableB
             continue;
         }
 
-        let mut sr = [0f32; LANES];
-        let mut sg = [0f32; LANES];
-        let mut sb = [0f32; LANES];
-        let mut sa = [0f32; LANES];
         let mut dr = [0f32; LANES];
         let mut dg = [0f32; LANES];
         let mut db = [0f32; LANES];
         let mut da = [0f32; LANES];
-        for lane in 0..LANES {
-            let o = lane * 4;
-            let (r, g, b, a) = load_pixel_f32(&src_chunk[o..o + 4]);
-            sr[lane] = r;
-            sg[lane] = g;
-            sb[lane] = b;
-            sa[lane] = a;
-            let (r, g, b, a) = load_pixel_f32(&dst_chunk[o..o + 4]);
-            dr[lane] = r;
-            dg[lane] = g;
-            db[lane] = b;
-            da[lane] = a;
-        }
-
+        let mut sa = [0f32; LANES];
         unsafe {
-            let v_sa = _mm_loadu_ps(sa.as_ptr());
-            let v_da = _mm_loadu_ps(da.as_ptr());
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba8x4_f32_planes(src_chunk.as_ptr());
+            let (v_dr, v_dg, v_db, v_da) = load_rgba8x4_f32_planes(dst_chunk.as_ptr());
             let one = _mm_set1_ps(1.0);
             let v_out_a = _mm_add_ps(v_sa, _mm_mul_ps(v_da, _mm_sub_ps(one, v_sa)));
-            let v_sr = _mm_loadu_ps(sr.as_ptr());
-            let v_sg = _mm_loadu_ps(sg.as_ptr());
-            let v_sb = _mm_loadu_ps(sb.as_ptr());
-            let v_dr = _mm_loadu_ps(dr.as_ptr());
-            let v_dg = _mm_loadu_ps(dg.as_ptr());
-            let v_db = _mm_loadu_ps(db.as_ptr());
             let out_r = blend_plane_sse2(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
             let out_g = blend_plane_sse2(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
             let out_b = blend_plane_sse2(v_sb, v_db, v_sa, v_da, v_out_a, kind);
@@ -255,6 +316,7 @@ unsafe fn blend_separable_span_sse2(dst: &mut [u8], src: &[u8], kind: SeparableB
             _mm_storeu_ps(dg.as_mut_ptr(), out_g);
             _mm_storeu_ps(db.as_mut_ptr(), out_b);
             _mm_storeu_ps(da.as_mut_ptr(), v_out_a);
+            _mm_storeu_ps(sa.as_mut_ptr(), v_sa);
         }
 
         for lane in 0..LANES {
@@ -317,7 +379,7 @@ unsafe fn blend_plane_avx2(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "sse2")]
 unsafe fn blend_separable_span_avx2(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind) {
     use core::arch::x86_64::*;
     const LANES: usize = 8;
@@ -343,61 +405,24 @@ unsafe fn blend_separable_span_avx2(dst: &mut [u8], src: &[u8], kind: SeparableB
             continue;
         }
 
-        let mut sr = [0f32; LANES];
-        let mut sg = [0f32; LANES];
-        let mut sb = [0f32; LANES];
-        let mut sa = [0f32; LANES];
         let mut dr = [0f32; LANES];
         let mut dg = [0f32; LANES];
         let mut db = [0f32; LANES];
         let mut da = [0f32; LANES];
-        for lane in 0..LANES {
-            let o = lane * 4;
-            let (r, g, b, a) = load_pixel_f32(&src_chunk[o..o + 4]);
-            sr[lane] = r;
-            sg[lane] = g;
-            sb[lane] = b;
-            sa[lane] = a;
-            let (r, g, b, a) = load_pixel_f32(&dst_chunk[o..o + 4]);
-            dr[lane] = r;
-            dg[lane] = g;
-            db[lane] = b;
-            da[lane] = a;
-        }
-
+        let mut sa = [0f32; LANES];
         unsafe {
-            let v_sa = _mm256_loadu_ps(sa.as_ptr());
-            let v_da = _mm256_loadu_ps(da.as_ptr());
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba8x8_f32_planes(src_chunk.as_ptr());
+            let (v_dr, v_dg, v_db, v_da) = load_rgba8x8_f32_planes(dst_chunk.as_ptr());
             let one = _mm256_set1_ps(1.0);
             let v_out_a = _mm256_add_ps(v_sa, _mm256_mul_ps(v_da, _mm256_sub_ps(one, v_sa)));
-            let out_r = blend_plane_avx2(
-                _mm256_loadu_ps(sr.as_ptr()),
-                _mm256_loadu_ps(dr.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
-            let out_g = blend_plane_avx2(
-                _mm256_loadu_ps(sg.as_ptr()),
-                _mm256_loadu_ps(dg.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
-            let out_b = blend_plane_avx2(
-                _mm256_loadu_ps(sb.as_ptr()),
-                _mm256_loadu_ps(db.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
+            let out_r = blend_plane_avx2(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
+            let out_g = blend_plane_avx2(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
+            let out_b = blend_plane_avx2(v_sb, v_db, v_sa, v_da, v_out_a, kind);
             _mm256_storeu_ps(dr.as_mut_ptr(), out_r);
             _mm256_storeu_ps(dg.as_mut_ptr(), out_g);
             _mm256_storeu_ps(db.as_mut_ptr(), out_b);
             _mm256_storeu_ps(da.as_mut_ptr(), v_out_a);
+            _mm256_storeu_ps(sa.as_mut_ptr(), v_sa);
         }
 
         for lane in 0..LANES {
@@ -485,61 +510,24 @@ unsafe fn blend_separable_span_neon(dst: &mut [u8], src: &[u8], kind: SeparableB
             continue;
         }
 
-        let mut sr = [0f32; LANES];
-        let mut sg = [0f32; LANES];
-        let mut sb = [0f32; LANES];
-        let mut sa = [0f32; LANES];
         let mut dr = [0f32; LANES];
         let mut dg = [0f32; LANES];
         let mut db = [0f32; LANES];
         let mut da = [0f32; LANES];
-        for lane in 0..LANES {
-            let o = lane * 4;
-            let (r, g, b, a) = load_pixel_f32(&src_chunk[o..o + 4]);
-            sr[lane] = r;
-            sg[lane] = g;
-            sb[lane] = b;
-            sa[lane] = a;
-            let (r, g, b, a) = load_pixel_f32(&dst_chunk[o..o + 4]);
-            dr[lane] = r;
-            dg[lane] = g;
-            db[lane] = b;
-            da[lane] = a;
-        }
-
+        let mut sa = [0f32; LANES];
         unsafe {
-            let v_sa = vld1q_f32(sa.as_ptr());
-            let v_da = vld1q_f32(da.as_ptr());
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba8x4_f32_planes(src_chunk.as_ptr());
+            let (v_dr, v_dg, v_db, v_da) = load_rgba8x4_f32_planes(dst_chunk.as_ptr());
             let one = vdupq_n_f32(1.0);
             let v_out_a = vaddq_f32(v_sa, vmulq_f32(v_da, vsubq_f32(one, v_sa)));
-            let out_r = blend_plane_neon(
-                vld1q_f32(sr.as_ptr()),
-                vld1q_f32(dr.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
-            let out_g = blend_plane_neon(
-                vld1q_f32(sg.as_ptr()),
-                vld1q_f32(dg.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
-            let out_b = blend_plane_neon(
-                vld1q_f32(sb.as_ptr()),
-                vld1q_f32(db.as_ptr()),
-                v_sa,
-                v_da,
-                v_out_a,
-                kind,
-            );
+            let out_r = blend_plane_neon(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
+            let out_g = blend_plane_neon(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
+            let out_b = blend_plane_neon(v_sb, v_db, v_sa, v_da, v_out_a, kind);
             vst1q_f32(dr.as_mut_ptr(), out_r);
             vst1q_f32(dg.as_mut_ptr(), out_g);
             vst1q_f32(db.as_mut_ptr(), out_b);
             vst1q_f32(da.as_mut_ptr(), v_out_a);
+            vst1q_f32(sa.as_mut_ptr(), v_sa);
         }
 
         for lane in 0..LANES {
