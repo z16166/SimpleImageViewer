@@ -99,7 +99,6 @@ impl PsdSectionIndex {
         let image_data_pos = r
             .stream_position()
             .map_err(|e| format!("Stream position error: {e}"))?;
-        checked_section_end(image_data_pos, 2, file_size, "Image Data compression")?;
 
         Ok(Self {
             is_psb,

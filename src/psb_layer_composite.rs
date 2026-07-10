@@ -196,7 +196,11 @@ fn layer_rgba_byte_len(width: u32, height: u32) -> Option<u64> {
 
 /// Add one layer's RGBA8 footprint to `acc`, enforcing
 /// [`MAX_COMPOSITE_DECODED_BYTES`].
-pub(crate) fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u64, String> {
+pub(crate) fn accumulate_decoded_layer_bytes(
+    acc: u64,
+    width: u32,
+    height: u32,
+) -> Result<u64, String> {
     let rgba = layer_rgba_byte_len(width, height)
         .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
     let next = acc

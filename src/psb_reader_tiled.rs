@@ -31,9 +31,9 @@ use std::sync::Arc;
 use simple_image_viewer::simd_swizzle;
 
 use crate::psb_reader::{
-    bytes_per_sample, channel_is_used, checked_section_end, cmyk_to_rgb,
-    downconvert_samples_to_u8, extract_icc_profile_from_ir, read_u16, read_u32, read_u64,
-    seek_forward_within, tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
+    bytes_per_sample, channel_is_used, checked_section_end, cmyk_to_rgb, downconvert_samples_to_u8,
+    extract_icc_profile_from_ir, read_u16, read_u32, read_u64, seek_forward_within,
+    tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
     validate_rle_total_bytes,
 };
 

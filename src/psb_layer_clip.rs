@@ -165,10 +165,9 @@ struct OpenClipGroup {
     base_width: u32,
     base_height: u32,
     base_blend: [u8; 4],
-    /// Owned copy of the base pixels -- the caller's `ClipLayerRef` borrow
-    /// does not outlive a single `push_layer` call, so this must be copied
-    /// once and reused across later clip layers.
-    base_rgba: Vec<u8>,
+    /// Owned copy of the base pixels while the group is still unmaterialized.
+    /// Dropped after `temp` + `base_alpha` have captured everything needed.
+    base_rgba: Option<Vec<u8>>,
     /// Full-canvas group content once a clip layer has been merged in.
     temp: Option<Vec<u8>>,
     base_alpha: Option<Vec<u8>>,
@@ -182,7 +181,7 @@ impl OpenClipGroup {
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: base.rgba.to_vec(),
+            base_rgba: Some(base.rgba.to_vec()),
             temp: None,
             base_alpha: None,
         }
@@ -200,12 +199,16 @@ impl OpenClipGroup {
                 .and_then(|n| n.checked_mul(4))
                 .ok_or_else(|| "PSD/PSB clip group buffer size overflow".to_string())?;
             let mut temp = vec![0u8; canvas_len];
+            let base_rgba = self
+                .base_rgba
+                .as_deref()
+                .expect("base_rgba is present until temp is initialized");
             // Build group content: base first (Normal into empty), then clips with their modes.
             blend_onto(
                 &mut temp,
                 canvas_w,
                 canvas_h,
-                &self.base_rgba,
+                base_rgba,
                 self.base_left,
                 self.base_top,
                 self.base_width,
@@ -222,9 +225,10 @@ impl OpenClipGroup {
                     height: self.base_height,
                     blend: self.base_blend,
                     clipping: 0,
-                    rgba: &self.base_rgba,
+                    rgba: base_rgba,
                 },
             )?);
+            self.base_rgba = None;
             self.temp = Some(temp);
         }
         blend_onto(
@@ -242,24 +246,34 @@ impl OpenClipGroup {
     }
 
     fn finalize(self, canvas: &mut [u8], canvas_w: u32, canvas_h: u32) {
-        match self.temp {
+        let OpenClipGroup {
+            base_left,
+            base_top,
+            base_width,
+            base_height,
+            base_blend,
+            base_rgba,
+            temp,
+            base_alpha,
+        } = self;
+        match temp {
             None => {
                 blend_onto(
                     canvas,
                     canvas_w,
                     canvas_h,
-                    &self.base_rgba,
-                    self.base_left,
-                    self.base_top,
-                    self.base_width,
-                    self.base_height,
-                    separable_kind(&self.base_blend),
+                    base_rgba
+                        .as_deref()
+                        .expect("base_rgba is present until temp is initialized"),
+                    base_left,
+                    base_top,
+                    base_width,
+                    base_height,
+                    separable_kind(&base_blend),
                 );
             }
             Some(mut temp) => {
-                let base_alpha = self
-                    .base_alpha
-                    .expect("base_alpha is set whenever temp is set");
+                let base_alpha = base_alpha.expect("base_alpha is set whenever temp is set");
                 apply_base_alpha_mask(&mut temp, &base_alpha);
                 blend_onto(
                     canvas,
@@ -270,7 +284,7 @@ impl OpenClipGroup {
                     0,
                     canvas_w,
                     canvas_h,
-                    separable_kind(&self.base_blend),
+                    separable_kind(&base_blend),
                 );
             }
         }

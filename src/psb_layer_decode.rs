@@ -640,7 +640,10 @@ pub(crate) fn layer_channel_byte_ranges(
 /// paying for any pixel work. Returns the total decoded-byte footprint on
 /// success (currently unused by callers beyond the eligibility signal, but
 /// kept for logging/diagnostics).
-pub(crate) fn gpu_batch_eligible_decoded_bytes(info: &LayerInfo<'_>, visible: &[bool]) -> Option<u64> {
+pub(crate) fn gpu_batch_eligible_decoded_bytes(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+) -> Option<u64> {
     let mut decoded_bytes = 0u64;
     for (i, record) in info.records.iter().enumerate() {
         let visible_i = visible.get(i).copied().unwrap_or(false);
@@ -1296,8 +1299,6 @@ mod tests {
             crate::psb_layer_composite::check_streaming_pair_budget(&current, 32_768, 32_768)
                 .is_ok()
         );
-        assert!(
-            crate::psb_layer_composite::check_streaming_pair_budget(&current, 1, 1).is_ok()
-        );
+        assert!(crate::psb_layer_composite::check_streaming_pair_budget(&current, 1, 1).is_ok());
     }
 }

@@ -24,10 +24,9 @@
 //!
 //! A structural index-parse failure skips P1 and P2 (there is no verified
 //! `image_data_pos`/`lm_start`/`lm_end` to use) and falls back to P3 only via
-//! the self-contained (re-walking) thumbnail extractor. A non-structural
-//! index-parse failure means some later section offset is unverified with no
-//! safe fallback, so the whole decode fails closed instead of re-walking the
-//! file through the legacy self-contained P2/P3 paths.
+//! the self-contained (re-walking) thumbnail extractor. Image Data truncation
+//! is handled by P1 after the shared index has been built, so P2 can still try
+//! the verified layer/mask section.
 
 use crate::psb_section_index::PsdSectionIndex;
 
@@ -76,10 +75,9 @@ fn decode_psd_sdr_main_inner(
             log::debug!("PSD SDR main: skipping P2 after structural header failure");
             return decode_psd_sdr_main_p3_only(bytes, cancel);
         }
-        // Non-structural index failure (e.g. a truncated Image Data compression
-        // field): every later section offset is otherwise verified, but there
-        // is still no valid index to drive P1/P2/P3 from. Fail closed instead
-        // of re-walking the file through the legacy self-contained paths.
+        // Unexpected non-structural index failures still leave no valid shared
+        // index to drive P1/P2/P3 from. Fail closed instead of re-walking the
+        // file through the legacy self-contained paths.
         Err(e) => return Err(e.into()),
     };
 
@@ -333,14 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_psd_sdr_main_fails_closed_on_non_structural_index_error() {
+    fn decode_psd_sdr_main_degrades_to_p2_when_image_data_compression_missing() {
         // Header + color-mode + image-resources + layer-mask sections are all
         // present (zero-length), but the file ends right before the 2-byte
-        // Image Data compression field. `PsdSectionIndex::parse` fails on that
-        // final bounds check with an "... exceeds file size" message, which is
-        // NOT a structural error (`is_structural_error` explicitly excludes
-        // Image-Data-only failures). P2/P3 must never run in this case; the
-        // raw index-parse error must propagate directly (fail closed).
+        // Image Data compression field. The shared index is still valid for P2
+        // because layer/mask offsets are known; only P1 should fail here.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"8BPS");
         bytes.extend_from_slice(&1u16.to_be_bytes()); // version = PSD
@@ -355,17 +350,17 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_be_bytes()); // layer and mask info length
         // No trailing Image Data compression u16 -- file ends here.
 
-        let index_err = PsdSectionIndex::parse(&bytes).unwrap_err();
-        assert!(
-            !PsdSectionIndex::is_structural_error(&index_err),
-            "fixture must exercise the non-structural index failure path: {index_err}"
-        );
+        let index = PsdSectionIndex::parse(&bytes)
+            .expect("missing Image Data compression must not reject the shared index");
+        assert_eq!(index.image_data_pos, bytes.len() as u64);
+        let p1_err = index.image_data_compression(&bytes).unwrap_err();
+        assert_eq!(p1_err, "PSD/PSB Image Data compression truncated");
 
         let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
-            .expect_err("non-structural index failure must fail closed");
-        // Equal to the raw index-parse error (not a localized P2/P3 fallback
-        // message) proves layer composite / thumbnail extraction never ran.
-        assert_eq!(err.as_str(), index_err);
+            .expect_err("P1 failure should degrade to P2/P3 fallback");
+        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
+        assert_eq!(err.as_str(), expected);
+        assert_ne!(err.as_str(), p1_err);
     }
 
     #[test]
