@@ -937,6 +937,7 @@ impl ImageLoader {
         current_index: usize,
         image_count: usize,
         max_distance: usize,
+        retain: &std::collections::HashSet<usize>,
     ) {
         if image_count == 0 {
             return;
@@ -947,12 +948,13 @@ impl ImageLoader {
                 .keys()
                 .copied()
                 .filter(|&idx| {
-                    super::preload_plan::index_outside_prefetch_window(
-                        current_index,
-                        image_count,
-                        idx,
-                        max_distance,
-                    )
+                    !retain.contains(&idx)
+                        && super::preload_plan::index_outside_prefetch_window(
+                            current_index,
+                            image_count,
+                            idx,
+                            max_distance,
+                        )
                 })
                 .collect()
         };
@@ -1072,13 +1074,14 @@ impl ImageLoader {
         }
     }
 
+    /// Returns `false` when the spawn was skipped (already covered or neighbor capacity full).
     pub fn request_load(
         &mut self,
         index: usize,
         path: PathBuf,
         high_quality: bool,
         raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    ) {
+    ) -> bool {
         let load_intent = if index == self.preload_plan.current_index() {
             LoadIntent::Current
         } else {
@@ -1098,7 +1101,7 @@ impl ImageLoader {
         let cancel = {
             let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
-                return;
+                return false;
             }
             loading
                 .get(&index)
@@ -1132,7 +1135,7 @@ impl ImageLoader {
             };
             let _ = self.tx.try_send(LoaderOutput::Image(Box::new(load_result)));
             self.loading.lock().remove(&index);
-            return;
+            return true;
         }
 
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1339,6 +1342,7 @@ impl ImageLoader {
             *slot = Some(delayed_job);
             cvar.notify_one();
         }
+        true
     }
 
     /// True when [`ImageLoader::loading`] shows a **strictly newer** registered profile for

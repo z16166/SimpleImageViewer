@@ -274,6 +274,31 @@ impl ImageViewerApp {
         }
     }
 
+    /// Retry main loads for strip rows still awaiting install after a capacity miss.
+    ///
+    /// Neighbor prefetch fills at most [`crate::loader::MAX_IMG_LOADER_THREADS`] slots and
+    /// never schedules the circular-window hole (comment on
+    /// [`Self::request_main_load_for_strip_deferred_index`]); without a per-frame retry the
+    /// hole index stays on a strip placeholder until the user navigates to it.
+    fn retry_strip_cold_awaiting_main_loads(&mut self) {
+        if self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .is_empty()
+        {
+            return;
+        }
+        self.strip_cold_awaiting_scratch.clear();
+        self.strip_cold_awaiting_scratch.extend(
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .iter()
+                .copied(),
+        );
+        for i in 0..self.strip_cold_awaiting_scratch.len() {
+            let index = self.strip_cold_awaiting_scratch[i];
+            self.request_main_load_for_strip_deferred_index(index);
+        }
+    }
+
     pub(crate) fn ensure_directory_tree_strip_thumbnails(&mut self, ctx: &egui::Context) {
         if !self.directory_tree_list_previews_active() {
             return;
@@ -319,6 +344,9 @@ impl ImageViewerApp {
             self.strip_preload_cooldown_frames =
                 self.strip_preload_cooldown_frames.saturating_sub(1);
         }
+        // After neighbor preload may have freed slots (and without canceling strip-deferred
+        // hole loads), retry any cold-awaiting main loads that missed capacity earlier.
+        self.retry_strip_cold_awaiting_main_loads();
         let max_inflight = if bootstrap_visible {
             MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
         } else {

@@ -1051,6 +1051,11 @@ impl ImageViewerApp {
     }
 
     /// Cancel loader in-flight entries for indices outside the effective preload window.
+    ///
+    /// Indices in `directory_tree_strip_cold_awaiting_main_loader` are retained: strip cold
+    /// defer can request a main load for a visible row that sits in the circular prefetch
+    /// hole (e.g. idx 3 with window radius 2 around current 0), and canceling that load
+    /// would leave the strip on a placeholder forever.
     pub(super) fn cancel_outside_prefetch_window_loader_tasks(&mut self) {
         let count = self.image_files.len();
         if count == 0 {
@@ -1060,6 +1065,7 @@ impl ImageViewerApp {
             self.current_index,
             count,
             self.prefetch_window_max_distance,
+            &self.directory_tree_strip_cold_awaiting_main_loader,
         );
     }
 

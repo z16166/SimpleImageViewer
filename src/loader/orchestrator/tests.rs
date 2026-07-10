@@ -101,7 +101,7 @@ fn cancel_outside_prefetch_window_only_touches_inflight_outside_window() {
     loader.test_register_inflight(50);
     loader.test_register_inflight(99);
 
-    loader.cancel_outside_prefetch_window(50, 100, 2);
+    loader.cancel_outside_prefetch_window(50, 100, 2, &std::collections::HashSet::new());
 
     let loading = loader.loading.lock();
     assert_eq!(loading.len(), 1);
@@ -109,6 +109,23 @@ fn cancel_outside_prefetch_window_only_touches_inflight_outside_window() {
     assert!(!loading.contains_key(&0));
     assert!(!loading.contains_key(&3));
     assert!(!loading.contains_key(&99));
+}
+
+#[test]
+fn cancel_outside_prefetch_window_retains_requested_indices() {
+    let mut loader = ImageLoader::new();
+    loader.test_register_inflight(0);
+    loader.test_register_inflight(3);
+    loader.test_register_inflight(50);
+    let retain = std::collections::HashSet::from([3usize]);
+
+    loader.cancel_outside_prefetch_window(50, 100, 2, &retain);
+
+    let loading = loader.loading.lock();
+    assert_eq!(loading.len(), 2);
+    assert!(loading.contains_key(&50));
+    assert!(loading.contains_key(&3));
+    assert!(!loading.contains_key(&0));
 }
 
 #[test]

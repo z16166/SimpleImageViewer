@@ -231,6 +231,8 @@ impl ImageViewerApp {
             // PSD/PSB (and other slow primaries) defer strip to the main loader. Neighbor
             // preload may never cover every visible strip row (e.g. idx 3 with window
             // [1,2]/[5,4]), so kick a main load here or the strip waits forever.
+            // Capacity misses are retried from ensure_directory_tree_strip_thumbnails;
+            // cancel_outside retains cold-awaiting indices so hole loads are not aborted.
             self.request_main_load_for_strip_deferred_index(active_index);
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
@@ -241,7 +243,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn request_main_load_for_strip_deferred_index(&mut self, index: usize) {
+    pub(super) fn request_main_load_for_strip_deferred_index(&mut self, index: usize) {
         if self.has_loaded_asset(index) || self.loader.is_loading(index) {
             return;
         }
@@ -249,17 +251,29 @@ impl ImageViewerApp {
             return;
         };
         #[cfg(feature = "preload-debug")]
-        crate::preload_debug!(
-            "[PreloadDebug][Strip] request main load for deferred strip idx={} path={}",
-            index,
-            path.display()
-        );
-        self.loader.request_load(
+        let path_for_log = path.clone();
+        let spawned = self.loader.request_load(
             index,
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(index),
         );
+        #[cfg(feature = "preload-debug")]
+        if spawned {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] request main load for deferred strip idx={} path={}",
+                index,
+                path_for_log.display()
+            );
+        } else {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] defer main load (loader capacity) idx={} path={}",
+                index,
+                path_for_log.display()
+            );
+        }
+        #[cfg(not(feature = "preload-debug"))]
+        let _ = spawned;
     }
 
     fn poll_successful_strip_result(
