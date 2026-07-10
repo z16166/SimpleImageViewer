@@ -266,16 +266,16 @@ pub fn read_composite_from_bytes_with_cancel(
 
     // -- Section 2: Color Mode Data --
     let cm_len = read_u32(&mut r)?;
-    seek_forward(&mut r, cm_len as u64)?;
+    seek_forward_within(&mut r, cm_len as u64, file_size, "color mode data")?;
 
     // -- Section 3: Image Resources --
     let ir_len = read_u32(&mut r)? as u64;
     let ir_start = r
         .stream_position()
         .map_err(|e| format!("Stream position error: {e}"))?;
-    let ir_end = ir_start.saturating_add(ir_len).min(file_size);
+    let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")?;
     let embedded_icc = extract_icc_profile_from_ir(bytes, ir_start, ir_end);
-    seek_forward(&mut r, ir_len)?;
+    seek_forward_within(&mut r, ir_len, file_size, "image resources")?;
 
     // -- Section 4: Layer and Mask Information --
     let lm_len = if is_psb {
@@ -283,7 +283,7 @@ pub fn read_composite_from_bytes_with_cancel(
     } else {
         read_u32(&mut r)? as u64
     };
-    seek_forward(&mut r, lm_len)?;
+    seek_forward_within(&mut r, lm_len, file_size, "layer and mask info")?;
 
     check_decode_cancel(cancel)?;
 
@@ -405,7 +405,12 @@ pub fn read_composite_from_bytes_with_cancel(
             } else {
                 match compression {
                     0 => {
-                        seek_forward(&mut r, raw_channel_bytes as u64)?;
+                        seek_forward_within(
+                            &mut r,
+                            raw_channel_bytes as u64,
+                            file_size,
+                            "raw channel data",
+                        )?;
                     }
                     1 => {
                         for row in 0..height {
@@ -416,7 +421,7 @@ pub fn read_composite_from_bytes_with_cancel(
                             let len = *row_counts
                                 .get(idx)
                                 .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                            seek_forward(&mut r, len as u64)?;
+                            seek_forward_within(&mut r, len as u64, file_size, "RLE row data")?;
                         }
                     }
                     _ => {}
@@ -1103,19 +1108,23 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         .ok_or_else(|| "PSD/PSB row byte count overflow".to_string())?;
 
     // Skip Sections 2, 3, 4 (capture ICC from IR when present).
+    let file_size = mmap.len() as u64;
     let cm_len = read_u32(&mut cursor)?;
-    seek_forward(&mut cursor, cm_len as u64).map_err(|e| e.to_string())?;
+    seek_forward_within(&mut cursor, cm_len as u64, file_size, "color mode data")
+        .map_err(|e| e.to_string())?;
     let ir_len = read_u32(&mut cursor)? as u64;
     let ir_start = cursor.position();
-    let ir_end = ir_start.saturating_add(ir_len).min(mmap.len() as u64);
+    let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")?;
     let embedded_icc = extract_icc_profile_from_ir(&mmap[..], ir_start, ir_end);
-    seek_forward(&mut cursor, ir_len).map_err(|e| e.to_string())?;
+    seek_forward_within(&mut cursor, ir_len, file_size, "image resources")
+        .map_err(|e| e.to_string())?;
     let lm_len = if is_psb {
         read_u64(&mut cursor)?
     } else {
         read_u32(&mut cursor)? as u64
     };
-    seek_forward(&mut cursor, lm_len).map_err(|e| e.to_string())?;
+    seek_forward_within(&mut cursor, lm_len, file_size, "layer and mask info")
+        .map_err(|e| e.to_string())?;
 
     let compression = read_u16(&mut cursor)?;
     let row_counts_start = cursor.position();
@@ -1670,6 +1679,35 @@ pub(crate) fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Seek forward `len` bytes only when the resulting position stays within
+/// `file_size`. `Cursor` allows seeking past EOF, which would otherwise defer
+/// failure to a later `read_exact`.
+pub(crate) fn seek_forward_within(
+    r: &mut impl Seek,
+    len: u64,
+    file_size: u64,
+    label: &str,
+) -> Result<(), String> {
+    let pos = r
+        .stream_position()
+        .map_err(|e| format!("Stream position error: {e}"))?;
+    let end = checked_section_end(pos, len, file_size, label)?;
+    debug_assert!(end <= file_size);
+    seek_forward(r, len)
+}
+
+fn checked_section_end(start: u64, len: u64, file_size: u64, label: &str) -> Result<u64, String> {
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| format!("PSD/PSB {label} length overflow"))?;
+    if end > file_size {
+        return Err(format!(
+            "PSD/PSB {label} exceeds file size ({end} > {file_size})"
+        ));
+    }
+    Ok(end)
+}
+
 fn validate_rle_total_bytes(row_counts: &[usize], remaining: u64) -> Result<(), String> {
     let total = row_counts.iter().try_fold(0u64, |acc, &len| {
         acc.checked_add(len as u64)
@@ -1811,6 +1849,29 @@ mod tests {
             err.as_str()
                 .contains("Invalid PSD/PSB Image Data compression"),
             "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn read_composite_rejects_color_mode_section_past_eof() {
+        // Cursor::seek past EOF succeeds; without a file_size check the failure
+        // is deferred to a later read_exact with a less specific error.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        // Color Mode Data length claims far more bytes than remain.
+        bytes.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        let err = super::read_composite_from_bytes(&bytes).expect_err("past eof");
+        let msg = err.as_str();
+        assert!(
+            msg.contains("color mode") && msg.contains("exceeds"),
+            "expected early section-bound error, got: {msg}"
         );
     }
 

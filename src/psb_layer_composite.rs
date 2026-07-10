@@ -44,6 +44,12 @@ const MAX_LAYER_RECORDS: usize = 8192;
 /// from OOM-killing the process while still allowing large legitimate layers
 /// (e.g. 32k x 32k, or a long strip up to `PSD_MAX_DIMENSION` on one side).
 const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
+/// Cap on the sum of decoded layer RGBA8 buffers held for one composite pass.
+///
+/// Per-layer pixel caps alone still allow many large layers to be decoded in
+/// parallel and retained until blending finishes. 8 GiB bounds that without
+/// rejecting typical multi-layer comps on a desktop viewer.
+const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const PSD_VERSION: u16 = 1;
 const PSB_VERSION: u16 = 2;
 const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
@@ -172,6 +178,25 @@ fn checked_layer_pixel_count(width: u32, height: u32) -> Option<usize> {
         .checked_mul(height as u64)
         .filter(|&n| n <= MAX_LAYER_PIXELS)
         .and_then(|n| usize::try_from(n).ok())
+}
+
+/// Add one layer's RGBA8 footprint to `acc`, enforcing
+/// [`MAX_COMPOSITE_DECODED_BYTES`].
+fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u64, String> {
+    let pixels = checked_layer_pixel_count(width, height)
+        .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
+    let rgba = (pixels as u64)
+        .checked_mul(4)
+        .ok_or_else(|| "PSD/PSB decoded layer RGBA size overflow".to_string())?;
+    let next = acc
+        .checked_add(rgba)
+        .ok_or_else(|| "PSD/PSB decoded layer byte total overflow".to_string())?;
+    if next > MAX_COMPOSITE_DECODED_BYTES {
+        return Err(format!(
+            "PSD/PSB decoded layer byte budget exceeded ({next} > {MAX_COMPOSITE_DECODED_BYTES})"
+        ));
+    }
+    Ok(next)
 }
 
 #[derive(Debug)]
@@ -802,6 +827,7 @@ fn decode_channel_image(
 
             let mut out = vec![0u8; pixel_count];
             let mut row_buf = Vec::with_capacity(width as usize);
+            let width_usize = width as usize;
             for (row, &count) in row_counts.iter().enumerate() {
                 if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
                     crate::psb_reader::check_decode_cancel(cancel)?;
@@ -813,10 +839,16 @@ fn decode_channel_image(
                 let compressed = data
                     .get(start..end)
                     .ok_or_else(|| "PSD/PSB layer channel RLE row out of bounds".to_string())?;
-                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, width as usize);
-                let dst_start = row * width as usize;
-                out[dst_start..dst_start + width as usize]
-                    .copy_from_slice(&row_buf[..width as usize]);
+                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, width_usize);
+                let dst_start = row
+                    .checked_mul(width_usize)
+                    .ok_or_else(|| "PSD/PSB layer channel row offset overflow".to_string())?;
+                let dst_end = dst_start
+                    .checked_add(width_usize)
+                    .ok_or_else(|| "PSD/PSB layer channel row end overflow".to_string())?;
+                out.get_mut(dst_start..dst_end)
+                    .ok_or_else(|| "PSD/PSB layer channel row out of bounds".to_string())?
+                    .copy_from_slice(&row_buf[..width_usize]);
                 r.set_position(end as u64);
             }
             Ok(out)
@@ -1776,6 +1808,23 @@ fn decode_layers_for_composite(
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<DecodedLayer>, crate::loader::DecodeError> {
     let ranges = layer_channel_byte_ranges(&info.records, info.channel_data.len())?;
+    // Fail fast on total decoded RGBA footprint before parallel alloc.
+    let mut decoded_bytes = 0u64;
+    for (i, record) in info.records.iter().enumerate() {
+        let should_decode = visible.get(i).copied().unwrap_or(false)
+            && !record.is_section_divider
+            && !record.is_empty_bounds()
+            && record.opacity > 0;
+        if !should_decode {
+            continue;
+        }
+        let width = record.width();
+        let height = record.height();
+        if !dimensions_within_limit(width, height) {
+            continue;
+        }
+        decoded_bytes = accumulate_decoded_layer_bytes(decoded_bytes, width, height)?;
+    }
     let decode_at = |i: usize,
                      record: &LayerRecord|
      -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
@@ -1924,10 +1973,11 @@ mod tests {
     use super::{
         LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
         STRICT_LAYER_COMPOSITE_BLANK, blend_layer_onto, blend_normal_onto, blend_separable_onto,
-        build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
-        compute_effective_visibility, decode_one_layer, decode_psd_sdr_main_from_bytes_with_cancel,
-        dimensions_within_limit, is_psd_header_structural_error, layer_to_rgba8,
-        parse_layer_records, scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
+        build_layer_sized_mask, checked_layer_pixel_count, composite_layers_from_bytes_with_cancel,
+        compute_effective_visibility, decode_channel_image, decode_one_layer,
+        decode_psd_sdr_main_from_bytes_with_cancel, dimensions_within_limit,
+        is_psd_header_structural_error, layer_to_rgba8, parse_layer_records,
+        scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use std::path::Path;
@@ -1988,8 +2038,47 @@ mod tests {
     fn max_layer_records_constant_is_sane() {
         // i16::unsigned_abs max is 65535; our DoS cap must be tighter and
         // still allow complex legitimate comps.
-        assert!(super::MAX_LAYER_RECORDS < 65_535);
-        assert!(super::MAX_LAYER_RECORDS >= 1024);
+        const {
+            assert!(super::MAX_LAYER_RECORDS < 65_535);
+            assert!(super::MAX_LAYER_RECORDS >= 1024);
+        }
+    }
+
+    #[test]
+    fn checked_layer_pixel_count_uses_checked_mul() {
+        // Defense in depth for decode_channel_image: do not rely solely on
+        // upstream dimensions_within_limit.
+        assert_eq!(checked_layer_pixel_count(2, 3), Some(6));
+        assert!(checked_layer_pixel_count(u32::MAX, u32::MAX).is_none());
+        assert!(checked_layer_pixel_count(32_769, 32_769).is_none());
+    }
+
+    #[test]
+    fn decode_channel_image_rejects_oversized_dims() {
+        let data = [0u8, 0u8]; // compression = Raw
+        let err =
+            decode_channel_image(&data, u32::MAX, u32::MAX, false, None).expect_err("oversized");
+        assert!(
+            err.as_str().contains("exceeds limit"),
+            "unexpected err: {err}"
+        );
+    }
+
+    // RED until accumulate_decoded_layer_bytes + MAX_COMPOSITE_DECODED_BYTES land.
+    #[test]
+    fn composite_decoded_byte_budget_rejects_many_large_layers() {
+        // Three 32k^2 RGBA layers are 12 GiB; budget must reject before alloc.
+        let mut total = 0u64;
+        for _ in 0..3 {
+            match super::accumulate_decoded_layer_bytes(total, 32_768, 32_768) {
+                Ok(next) => total = next,
+                Err(e) => {
+                    assert!(e.contains("decoded layer byte budget"), "err: {e}");
+                    return;
+                }
+            }
+        }
+        panic!("expected decoded-layer byte budget to reject");
     }
 
     #[test]
