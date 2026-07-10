@@ -1342,54 +1342,81 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, false)
+}
+
+/// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but skips P1 flattened
+/// Image Data. Used when an oversized PSB disk-tiled probe already rejected a
+/// blank (or unreadable) flat and must not re-decode the full canvas.
+pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, true)
+}
+
+fn decode_psd_sdr_main_inner(
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    skip_flattened: bool,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     // P1: structurally valid flattened Image Data, then absolute blank barrier.
     let mut skip_p2_after_structural_header = false;
-    match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
-        Ok(composite) => {
-            let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
-                &composite.pixels,
-                cancel,
-            )?;
-            if absolutely_blank {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P1_absolute_blank {}x{} \
+    if skip_flattened {
+        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_skipped -> degrade_P2");
+        log::info!(
+            "PSD SDR main: skipping P1 flattened (caller already rejected blank/unreadable flat)"
+        );
+    } else {
+        match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
+            Ok(composite) => {
+                let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
+                    &composite.pixels,
+                    cancel,
+                )?;
+                if absolutely_blank {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P1_absolute_blank {}x{} \
                      pixels={} -> degrade_P2",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::info!(
-                    "PSD SDR main: P1 flattened {}x{} is absolute blank \
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::info!(
+                        "PSD SDR main: P1 flattened {}x{} is absolute blank \
                      (all-transparent or all-RGB-0); degrading to P2",
-                    composite.width,
-                    composite.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P1_flattened {}x{} pixels={}",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::info!(
-                    "PSD SDR main: P1 flattened composite {}x{}",
-                    composite.width,
-                    composite.height
-                );
-                return Ok(composite);
+                        composite.width,
+                        composite.height
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P1_flattened {}x{} pixels={}",
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::info!(
+                        "PSD SDR main: P1 flattened composite {}x{}",
+                        composite.width,
+                        composite.height
+                    );
+                    return Ok(composite);
+                }
             }
-        }
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
-            log::debug!("PSD SDR main P1 flattened decode failed: {e}");
-            // Header/structural failures cannot be recovered by P2; go straight to P3.
-            if is_psd_header_structural_error(e.as_str()) {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
-                );
-                log::debug!("PSD SDR main: skipping P2 after structural header failure");
-                skip_p2_after_structural_header = true;
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
+                log::debug!("PSD SDR main P1 flattened decode failed: {e}");
+                // Header/structural failures cannot be recovered by P2; go straight to P3.
+                if is_psd_header_structural_error(e.as_str()) {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
+                    );
+                    log::debug!("PSD SDR main: skipping P2 after structural header failure");
+                    skip_p2_after_structural_header = true;
+                }
             }
         }
     }

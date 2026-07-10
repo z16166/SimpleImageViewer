@@ -31,9 +31,20 @@ fn craft_rgb8_raw_psd(width: u32, height: u32) -> Vec<u8> {
     for (i, b) in planar.iter_mut().enumerate() {
         *b = (i as u8).wrapping_mul(3).wrapping_add(7);
     }
+    craft_rgb8_raw_document(1, width, height, &planar)
+}
+
+/// PSB (version 2) with raw RGB Image Data. Layer/mask length is u64.
+fn craft_rgb8_raw_psb(width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
+    craft_rgb8_raw_document(2, width, height, planar)
+}
+
+fn craft_rgb8_raw_document(version: u16, width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
+    assert!(version == 1 || version == 2);
+    assert_eq!(planar.len(), (width * height * 3) as usize);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"8BPS");
-    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&[0u8; 6]);
     bytes.extend_from_slice(&3u16.to_be_bytes());
     bytes.extend_from_slice(&height.to_be_bytes());
@@ -42,9 +53,13 @@ fn craft_rgb8_raw_psd(width: u32, height: u32) -> Vec<u8> {
     bytes.extend_from_slice(&3u16.to_be_bytes());
     bytes.extend_from_slice(&0u32.to_be_bytes());
     bytes.extend_from_slice(&0u32.to_be_bytes());
-    bytes.extend_from_slice(&0u32.to_be_bytes());
+    if version == 2 {
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+    } else {
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+    }
     bytes.extend_from_slice(&0u16.to_be_bytes()); // raw
-    bytes.extend_from_slice(&planar);
+    bytes.extend_from_slice(planar);
     bytes
 }
 
@@ -99,6 +114,68 @@ fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
             std::mem::discriminant(&other)
         ),
     }
+}
+
+#[test]
+fn load_psb_disk_tiled_keeps_nonblank_flat() {
+    // Header over tiled threshold forces PSB disk tiling; non-blank flat must stay tiled.
+    let _lock = lock_tiled_threshold_for_test();
+    let _threshold = TiledThresholdOverride::set(1);
+    let mut planar = vec![0u8; 4 * 2 * 3];
+    planar[0] = 12;
+    planar[8] = 34;
+    planar[16] = 56;
+    let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
+    let data = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
+        .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let _ = std::fs::remove_file(&path);
+    match data {
+        ImageData::Tiled(src) => {
+            assert_eq!((src.width(), src.height()), (4, 2));
+            assert!(
+                src.full_pixels().is_none(),
+                "disk tiled PSB must not materialize full pixels"
+            );
+            let tile = src.extract_tile(0, 0, 4, 2);
+            assert!(
+                tile.iter().any(|&b| b != 0),
+                "non-blank flat must yield visible tile pixels"
+            );
+        }
+        other => panic!(
+            "expected disk Tiled for non-blank oversized PSB, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+#[test]
+fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
+    // Layers-only / blank-flat oversized PSB must not stick on blank disk tiling.
+    // With no layers and no IR thumb, P2/P3 fail -- that is preferable to forever-blank tiles.
+    let _lock = lock_tiled_threshold_for_test();
+    let _threshold = TiledThresholdOverride::set(1);
+    let planar = vec![0u8; 4 * 2 * 3];
+    let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
+    let result = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None);
+    let _ = std::fs::remove_file(&path);
+    let err = match result {
+        Err(e) => e,
+        Ok(ImageData::Tiled(src)) => {
+            let tile = src.extract_tile(0, 0, 4, 2);
+            let blank = tile
+                .chunks_exact(4)
+                .all(|p| (p[0] | p[1] | p[2]) == 0 || p[3] == 0);
+            panic!("blank-flat oversized PSB must not succeed as blank tiled (tile_blank={blank})");
+        }
+        Ok(_) => panic!("blank-flat oversized PSB must not succeed without P2/P3 content"),
+    };
+    let expected_no_image = rust_i18n::t!("error.psd_no_displayable_image").to_string();
+    let expected_hidden = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
+    assert!(
+        err.as_str() == expected_no_image || err.as_str() == expected_hidden,
+        "unexpected degrade error: {err}"
+    );
 }
 
 #[test]

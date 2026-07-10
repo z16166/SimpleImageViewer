@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - **Animation strip thumbnails**: File-list previews for animated images no longer stay blank when the main view already shows a larger frame than the strip size.
 
 ### Fixed
+- **Large layers-only PSB files**: Oversized PSB documents with an empty flattened preview no longer stay blank; the viewer falls back to layer composite or the embedded thumbnail when available.
 - **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
 - **Slideshow interval setting**: Changing the slideshow interval with the slider saves once when you release the control, not on every drag step.
 - **Faster quit**: The tray icon disappears immediately on exit, and background shutdown finishes sooner.

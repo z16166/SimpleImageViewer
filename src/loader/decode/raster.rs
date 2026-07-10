@@ -325,26 +325,58 @@ pub(crate) fn load_psd(
     // Step 4: Large PSB keeps on-demand disk tiling (Hubble-class files). Header size is
     // used only as an OOM guard before full decode; PSD and smaller PSB decode first, then
     // route Static vs in-memory tiled by *actual* P1/P2/P3 dimensions via make_image_data.
+    //
+    // Disk tiling only reads flattened Image Data. Layers-only / blank-flat documents must
+    // probe that flat first and degrade to P2/P3 (skipping a second full-canvas P1 decode).
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
+    let mut skip_flattened_for_disk_tiled_degrade = false;
     if version == 2 && psd_header_requires_disk_tiled(width, height) {
         log::info!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
             width,
             height
         );
-        let source = crate::psb_reader::open_tiled_source(path)?;
-        return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
+        match crate::psb_reader::open_tiled_source(path) {
+            Ok(source) => {
+                let blank = psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
+                if !blank {
+                    return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
+                }
+                log::info!(
+                    "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                    width,
+                    height
+                );
+                skip_flattened_for_disk_tiled_degrade = true;
+            }
+            Err(e) => {
+                log::info!(
+                    "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                    width,
+                    height
+                );
+                skip_flattened_for_disk_tiled_degrade = true;
+            }
+        }
     }
 
     if cancel.is_cancelled() {
         return Err(crate::loader::DecodeError::Cancelled);
     }
 
-    let composite = crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
-        &mmap[..],
-        Some(cancel.as_atomic()),
-        gpu.as_ref(),
-    )?;
+    let composite = if skip_flattened_for_disk_tiled_degrade {
+        crate::psb_layer_composite::decode_psd_sdr_main_skip_flattened_with_cancel(
+            &mmap[..],
+            Some(cancel.as_atomic()),
+            gpu.as_ref(),
+        )?
+    } else {
+        crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
+            &mmap[..],
+            Some(cancel.as_atomic()),
+            gpu.as_ref(),
+        )?
+    };
     let img = DecodedImage::new(composite.width, composite.height, composite.pixels);
     let oriented =
         apply_exif_orientation_to_image_data(path, ImageData::Static(img), Some(&mmap[..]));
@@ -364,6 +396,56 @@ pub(crate) fn load_psd(
             std::mem::discriminant(&other)
         )
         .into()),
+    }
+}
+
+/// Probe flattened Image Data behind a [`crate::psb_reader::PsbTiledSource`] for the same
+/// absolute-blank barrier as P1, without allocating a full-canvas RGBA buffer.
+///
+/// Accumulates nonzero-RGB / nonzero-alpha across row strips (independent strip checks are
+/// incorrect when one strip is all-RGB-0 and another is all-alpha-0).
+fn psb_tiled_flat_is_absolutely_blank(
+    source: &crate::psb_reader::PsbTiledSource,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<bool, crate::loader::DecodeError> {
+    use crate::loader::TiledImageSource;
+
+    let width = source.width();
+    let height = source.height();
+    if width == 0 || height == 0 {
+        return Ok(true);
+    }
+
+    let mut any_rgb = false;
+    let mut any_a = false;
+    let strip_rows = crate::constants::PSB_DISK_TILED_BLANK_PROBE_STRIP_ROWS;
+    let mut y = 0u32;
+    while y < height {
+        crate::psb_reader::check_decode_cancel(cancel)?;
+        let h = (height - y).min(strip_rows);
+        let tile = source.extract_tile(0, y, width, h);
+        feed_rgba8_absolute_blank_flags(&tile, &mut any_rgb, &mut any_a);
+        if any_rgb && any_a {
+            return Ok(false);
+        }
+        y = y.saturating_add(h);
+    }
+    Ok(!any_rgb || !any_a)
+}
+
+fn feed_rgba8_absolute_blank_flags(pixels: &[u8], any_rgb: &mut bool, any_a: &mut bool) {
+    let mut i = 0usize;
+    while i + 4 <= pixels.len() {
+        if (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
+            *any_rgb = true;
+        }
+        if pixels[i + 3] != 0 {
+            *any_a = true;
+        }
+        if *any_rgb && *any_a {
+            return;
+        }
+        i += 4;
     }
 }
 
