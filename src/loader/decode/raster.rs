@@ -330,21 +330,25 @@ pub(crate) fn load_psd(
         let source = crate::psb_reader::open_tiled_source(path)?;
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
+    } else if matches!(
+        crate::psb_reader::probe_layers_only_composite(&mmap)?,
+        crate::psb_reader::LayersOnlyCompositeProbe::NeedsLayerComposite
+    ) {
+        // Layers-only PSD: flattened composite is a solid-fill placeholder, but
+        // real pixels live in the layer section. Composite visible layers into a
+        // full-canvas RGBA8 buffer via the same async tiled path as PSD v1.
+        log::info!("Using async PSD layer composite (layers-only file)");
+        let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
+            mmap,
+            path.to_path_buf(),
+            width,
+            height,
+            notify,
+            cancel,
+            crate::loader::tiled_sources::PsdV1DecodeMode::LayerComposite,
+        );
+        Ok(ImageData::Tiled(source))
     } else {
-        // Layers-only PSD: solid-fill composite + huge layer section. Task 4 will
-        // route this to the layer compositor; for now use the existing async PSD path.
-        match crate::psb_reader::probe_layers_only_composite(&mmap)? {
-            crate::psb_reader::LayersOnlyCompositeProbe::NeedsLayerComposite => {
-                log::warn!(
-                    "[{}] layers-only PSD: layer compositor needed (canvas {}x{})",
-                    path.file_name().and_then(|n| n.to_str()).unwrap_or("psd"),
-                    width,
-                    height
-                );
-            }
-            crate::psb_reader::LayersOnlyCompositeProbe::NotApplicable => {}
-        }
-
         // PSD v1: return a tiled source immediately; full decode runs on REFINEMENT_POOL.
         log::info!("Using async PSD v1 decode via psb_reader");
         let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
@@ -354,6 +358,7 @@ pub(crate) fn load_psd(
             height,
             notify,
             cancel,
+            crate::loader::tiled_sources::PsdV1DecodeMode::FlattenedComposite,
         );
         Ok(ImageData::Tiled(source))
     }

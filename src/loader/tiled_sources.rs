@@ -744,6 +744,17 @@ enum PsdV1DecodeState {
     Failed(String),
 }
 
+/// Which decoder the async worker runs for a PSD v1 file.
+///
+/// `LayerComposite` is used for layers-only files where the flattened
+/// composite is a solid-fill placeholder (see `probe_layers_only_composite`);
+/// it composites visible layers into a full-canvas RGBA8 buffer instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PsdV1DecodeMode {
+    FlattenedComposite,
+    LayerComposite,
+}
+
 pub(crate) struct PsdV1LoadNotify {
     pub index: usize,
     pub decode_profile: crate::loader::DecodeProfile,
@@ -756,6 +767,7 @@ pub(crate) struct PsdV1AsyncSource {
     height: u32,
     pixels: Arc<PLRwLock<Option<Arc<Vec<u8>>>>>,
     decode_state: Arc<(Mutex<PsdV1DecodeState>, Condvar)>,
+    cancel: crate::loader::DecodeCancelFlag,
 }
 
 impl PsdV1AsyncSource {
@@ -765,6 +777,8 @@ impl PsdV1AsyncSource {
         width: u32,
         height: u32,
         notify: Option<PsdV1LoadNotify>,
+        cancel: crate::loader::DecodeCancelFlag,
+        mode: PsdV1DecodeMode,
     ) -> Arc<Self> {
         use crate::loader::preview_caps::REFINEMENT_POOL;
         use crate::loader::{ImageData, apply_exif_orientation_to_image_data};
@@ -775,6 +789,7 @@ impl PsdV1AsyncSource {
         let decode_mmap = Arc::clone(&mmap);
         let decode_pixels = Arc::clone(&pixels);
         let decode_state_worker = Arc::clone(&decode_state);
+        let cancel_worker = cancel.clone();
 
         REFINEMENT_POOL.spawn(move || {
             let finish = |state: PsdV1DecodeState| {
@@ -783,14 +798,48 @@ impl PsdV1AsyncSource {
                 cvar.notify_all();
             };
 
+            if cancel_worker.is_cancelled() {
+                finish(PsdV1DecodeState::Failed(
+                    crate::loader::DECODE_CANCELLED.to_string(),
+                ));
+                return;
+            }
+
             let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                let psd_file = psd::Psd::from_bytes(&decode_mmap[..])
-                    .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-                Ok((psd_file.width(), psd_file.height(), psd_file.rgba()))
+                let composite = match mode {
+                    PsdV1DecodeMode::FlattenedComposite => {
+                        crate::psb_reader::read_composite_from_bytes_with_cancel(
+                            &decode_mmap[..],
+                            Some(cancel_worker.as_atomic()),
+                        )?
+                    }
+                    PsdV1DecodeMode::LayerComposite => {
+                        crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
+                            &decode_mmap[..],
+                            Some(cancel_worker.as_atomic()),
+                        )?
+                    }
+                };
+                // The flattened path can "succeed" with a solid-fill placeholder
+                // (see `probe_layers_only_composite`); the layer compositor builds
+                // pixels directly from layer data so a blank result would be a
+                // genuine decode failure, not an expected placeholder.
+                if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
+                    && crate::psb_reader::rgba8_looks_visually_blank(&composite.pixels)
+                {
+                    return Err(crate::psb_reader::EMPTY_COMPOSITE_ERROR.to_string());
+                }
+                Ok((composite.width, composite.height, composite.pixels))
             });
 
             match result {
                 Ok((w, h, px)) => {
+                    if cancel_worker.is_cancelled() {
+                        finish(PsdV1DecodeState::Failed(
+                            crate::loader::DECODE_CANCELLED.to_string(),
+                        ));
+                        return;
+                    }
                     let img = DecodedImage::new(w, h, px);
                     let oriented_pixels = match apply_exif_orientation_to_image_data(
                         &path,
@@ -802,20 +851,31 @@ impl PsdV1AsyncSource {
                             source.full_pixels().unwrap_or_else(|| Arc::new(Vec::new()))
                         }
                         other => {
+                            let msg =
+                                "PSD v1 orientation produced unexpected image shape".to_string();
                             log::error!(
                                 "[Loader] PSD v1 unexpected oriented shape for {}: {:?}",
                                 path.display(),
                                 std::mem::discriminant(&other)
                             );
-                            finish(PsdV1DecodeState::Failed(
-                                "PSD v1 orientation produced unexpected image shape".into(),
-                            ));
+                            finish(PsdV1DecodeState::Failed(msg.clone()));
+                            if let Some(notify) = notify {
+                                notify_psd_v1_decode_failed(notify, msg);
+                            }
                             return;
                         }
                     };
                     if oriented_pixels.is_empty() {
+                        let msg = "PSD v1 decode produced empty pixel buffer".to_string();
+                        finish(PsdV1DecodeState::Failed(msg.clone()));
+                        if let Some(notify) = notify {
+                            notify_psd_v1_decode_failed(notify, msg);
+                        }
+                        return;
+                    }
+                    if cancel_worker.is_cancelled() {
                         finish(PsdV1DecodeState::Failed(
-                            "PSD v1 decode produced empty pixel buffer".into(),
+                            crate::loader::DECODE_CANCELLED.to_string(),
                         ));
                         return;
                     }
@@ -826,6 +886,11 @@ impl PsdV1AsyncSource {
                     }
                 }
                 Err(e) => {
+                    if crate::loader::is_decode_cancelled_error(&e) {
+                        log::debug!("[Loader] PSD decode cancelled for {}", path.display());
+                        finish(PsdV1DecodeState::Failed(e));
+                        return;
+                    }
                     const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
                     if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
                         log::error!(
@@ -836,7 +901,10 @@ impl PsdV1AsyncSource {
                     } else {
                         log::error!("[Loader] PSD decode failed for {}: {e}", path.display());
                     }
-                    finish(PsdV1DecodeState::Failed(e));
+                    finish(PsdV1DecodeState::Failed(e.clone()));
+                    if let Some(notify) = notify {
+                        notify_psd_v1_decode_failed(notify, e);
+                    }
                 }
             }
         });
@@ -846,6 +914,7 @@ impl PsdV1AsyncSource {
             height,
             pixels,
             decode_state,
+            cancel,
         })
     }
 }
@@ -874,6 +943,21 @@ fn notify_psd_v1_decode_complete(
             sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
         }));
     }
+}
+
+fn notify_psd_v1_decode_failed(notify: PsdV1LoadNotify, error: String) {
+    use crate::loader::{LoaderOutput, PreviewBundle, PreviewResult};
+
+    let _ = notify.load_tx.send(LoaderOutput::Preview(PreviewResult {
+        index: notify.index,
+        decode_profile: notify.decode_profile.clone(),
+        source_key: notify.source_key,
+        preview_bundle: PreviewBundle::refined(),
+        error: Some(error),
+        cpu_demosaic_ms: None,
+        raw_bootstrap_osd: None,
+        sdr_texture_tag: Some(crate::loader::TexturePreviewBufferTag::TiledRefinedLoader),
+    }));
 }
 
 impl TiledImageSource for PsdV1AsyncSource {
@@ -934,20 +1018,27 @@ impl TiledImageSource for PsdV1AsyncSource {
             }
         }
     }
+
+    fn request_cancel(&self) {
+        self.cancel.cancel();
+    }
 }
 
 #[cfg(test)]
 mod memory_preview_tests {
     use super::{
         MemoryImageSource, PSD_V1_PLACEHOLDER_RGBA, PsdV1AsyncSource, PsdV1DecodeState,
-        RawHdrRefiningSource, RawImageSource, RawImageSourceParams, memory_rgba_preview,
+        PsdV1LoadNotify, RawHdrRefiningSource, RawImageSource, RawImageSourceParams,
+        memory_rgba_preview, notify_psd_v1_decode_failed,
     };
     use crate::hdr::tiled::HdrTiledSource;
     use crate::loader::{
-        DecodedImage, RawDevelopedImageRank, TiledImageSource, decode_profile_stub,
-        preview_aspect_matches_logical,
+        DecodedImage, LoaderOutput, RawDevelopedImageRank, TiledImageSource, decode_profile_stub,
+        preview_aspect_matches_logical, source_key_for_path,
     };
+    use crossbeam_channel::unbounded;
     use parking_lot::{Condvar, Mutex, RwLock as PLRwLock};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn psd_v1_source_with_pixels(
@@ -965,6 +1056,7 @@ mod memory_preview_tests {
             height,
             pixels: Arc::new(PLRwLock::new(pixels)),
             decode_state: Arc::new((Mutex::new(state), Condvar::new())),
+            cancel: crate::loader::DecodeCancelFlag::new(),
         }
     }
 
@@ -1179,5 +1271,30 @@ mod memory_preview_tests {
         let source = psd_v1_source_with_pixels(2, 2, Some(Arc::new(vec![1; 3])));
 
         assert!(source.extract_tile(0, 0, 1, 1).is_empty());
+    }
+
+    #[test]
+    fn psd_v1_decode_failed_sends_error_only_preview() {
+        let (tx, rx) = unbounded();
+        let path = PathBuf::from("broken.psd");
+        notify_psd_v1_decode_failed(
+            PsdV1LoadNotify {
+                index: 3,
+                decode_profile: decode_profile_stub(),
+                source_key: source_key_for_path(&path),
+                load_tx: crate::loader::orchestrator::LoaderOutputSender::new(tx),
+            },
+            "unsupported compression: 2".into(),
+        );
+
+        let output = rx.try_recv().expect("expected failure preview");
+        match output {
+            LoaderOutput::Preview(preview) => {
+                assert_eq!(preview.index, 3);
+                assert!(preview.preview_bundle.sdr().is_none());
+                assert_eq!(preview.error.as_deref(), Some("unsupported compression: 2"));
+            }
+            _ => panic!("unexpected loader output variant (expected Preview)"),
+        }
     }
 }
