@@ -618,6 +618,19 @@ fn decode_channel_image(
             }
             Ok(out)
         }
+        2 | 3 => {
+            crate::psb_reader::check_decode_cancel(cancel)?;
+            let compressed = data
+                .get(2..)
+                .ok_or_else(|| "PSD/PSB layer channel ZIP payload missing".to_string())?;
+            crate::psb_zip::decode_zip_channel_bytes(
+                compressed,
+                width as usize,
+                height as usize,
+                8,
+                compression == 3,
+            )
+        }
         _ => Err(format!(
             "Unsupported layer channel compression: {compression}"
         )),

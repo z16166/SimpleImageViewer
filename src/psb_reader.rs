@@ -19,7 +19,8 @@
 //! Extracts the Image Data section (merged composite) and optional IR
 //! thumbnails. Layer compositing lives in `psb_layer_composite`. Supports PSD
 //! (v1) and PSB (v2), channel depths 8/16/32 (down-converted to RGBA8 for
-//! display), and RGB / Grayscale / CMYK.
+//! display), RGB / Grayscale / CMYK, and Image Data compression 0-3
+//! (Raw / RLE / ZIP / ZIP+prediction).
 //!
 //! PSB differs from PSD mainly in: version = 2, some lengths are u64, and RLE
 //! row byte counts are u32 instead of u16.
@@ -78,7 +79,10 @@ pub struct PsbTiledSource {
     compression: u16,
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
+    /// For ZIP modes these are offsets into [`Self::zip_planar`].
     row_offsets: Vec<u64>,
+    /// Fully inflated planar bytes when Image Data uses ZIP / ZIP+prediction.
+    zip_planar: Option<Arc<Vec<u8>>>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
     /// Resolved CMYK ICC bytes (embedded IR 1039 or bundled default). Empty when not CMYK.
@@ -137,6 +141,19 @@ impl PsbTiledSource {
                         unpack_bits_into(&mut raw, compressed, raw_len);
                         downconvert_samples_to_u8(buf, &raw, bps);
                     }
+                }
+            }
+            2 | 3 => {
+                let Some(planar) = self.zip_planar.as_ref() else {
+                    return;
+                };
+                let offset = match self.row_offsets.get(idx) {
+                    Some(&o) => o as usize,
+                    None => return,
+                };
+                let end = offset + raw_len;
+                if end <= planar.len() {
+                    downconvert_samples_to_u8(buf, &planar[offset..end], bps);
                 }
             }
             _ => {}
@@ -302,60 +319,97 @@ pub fn read_composite_from_bytes_with_cancel(
 
     // Step 1: Read planar channels and down-convert to 8-bit samples.
     let mut planar_channels: Vec<Option<Vec<u8>>> = vec![None; channels as usize];
-    for ch_idx in 0..channels {
-        check_decode_cancel(cancel)?;
-        let is_used = channel_is_used(color_mode, ch_idx, channels);
 
-        if is_used {
-            let mut ch_u8 = vec![0u8; samples_per_channel];
-            match compression {
-                0 => {
-                    let mut raw = vec![0u8; raw_channel_bytes];
-                    r.read_exact(&mut raw)
-                        .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
-                    check_decode_cancel(cancel)?;
-                    downconvert_samples_to_u8(&mut ch_u8, &raw, bps);
-                }
-                1 => {
-                    let mut row_raw = Vec::with_capacity(row_raw_bytes);
-                    for row in 0..height as usize {
-                        if row & 0x3F == 0 {
-                            check_decode_cancel(cancel)?;
-                        }
-                        let idx = ch_idx as usize * height as usize + row;
-                        let compressed_len = *row_counts
-                            .get(idx)
-                            .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                        let mut compressed = vec![0u8; compressed_len];
-                        r.read_exact(&mut compressed)
-                            .map_err(|e| format!("Read RLE: {e}"))?;
-                        unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes);
-                        let dst_start = row * width as usize;
-                        let dst_end = dst_start + width as usize;
-                        downconvert_samples_to_u8(&mut ch_u8[dst_start..dst_end], &row_raw, bps);
-                    }
-                }
-                _ => return Err(format!("Unsupported compression: {compression}")),
+    if compression == 2 || compression == 3 {
+        // ZIP / ZIP+prediction: one zlib stream for all planar channels.
+        let data_start = r
+            .stream_position()
+            .map_err(|e| format!("Stream position error: {e}"))? as usize;
+        let compressed = bytes
+            .get(data_start..)
+            .ok_or_else(|| "PSD/PSB ZIP image data out of bounds".to_string())?;
+        let expected = (channels as usize)
+            .checked_mul(raw_channel_bytes)
+            .ok_or_else(|| "PSD/PSB ZIP planar size overflow".to_string())?;
+        check_decode_cancel(cancel)?;
+        let mut planar = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
+        if compression == 3 {
+            crate::psb_zip::undo_zip_prediction(&mut planar, width as usize, depth)?;
+        }
+        check_decode_cancel(cancel)?;
+        for ch_idx in 0..channels {
+            if !channel_is_used(color_mode, ch_idx, channels) {
+                continue;
             }
+            let start = ch_idx as usize * raw_channel_bytes;
+            let end = start + raw_channel_bytes;
+            let raw = planar
+                .get(start..end)
+                .ok_or_else(|| "PSD/PSB ZIP channel slice out of bounds".to_string())?;
+            let mut ch_u8 = vec![0u8; samples_per_channel];
+            downconvert_samples_to_u8(&mut ch_u8, raw, bps);
             planar_channels[ch_idx as usize] = Some(ch_u8);
-        } else {
-            match compression {
-                0 => {
-                    seek_forward(&mut r, raw_channel_bytes as u64)?;
-                }
-                1 => {
-                    for row in 0..height {
-                        if row & 0x3F == 0 {
-                            check_decode_cancel(cancel)?;
-                        }
-                        let idx = ch_idx as usize * height as usize + row as usize;
-                        let len = *row_counts
-                            .get(idx)
-                            .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                        seek_forward(&mut r, len as u64)?;
+        }
+    } else {
+        for ch_idx in 0..channels {
+            check_decode_cancel(cancel)?;
+            let is_used = channel_is_used(color_mode, ch_idx, channels);
+
+            if is_used {
+                let mut ch_u8 = vec![0u8; samples_per_channel];
+                match compression {
+                    0 => {
+                        let mut raw = vec![0u8; raw_channel_bytes];
+                        r.read_exact(&mut raw)
+                            .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
+                        check_decode_cancel(cancel)?;
+                        downconvert_samples_to_u8(&mut ch_u8, &raw, bps);
                     }
+                    1 => {
+                        let mut row_raw = Vec::with_capacity(row_raw_bytes);
+                        for row in 0..height as usize {
+                            if row & 0x3F == 0 {
+                                check_decode_cancel(cancel)?;
+                            }
+                            let idx = ch_idx as usize * height as usize + row;
+                            let compressed_len = *row_counts
+                                .get(idx)
+                                .ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                            let mut compressed = vec![0u8; compressed_len];
+                            r.read_exact(&mut compressed)
+                                .map_err(|e| format!("Read RLE: {e}"))?;
+                            unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes);
+                            let dst_start = row * width as usize;
+                            let dst_end = dst_start + width as usize;
+                            downconvert_samples_to_u8(
+                                &mut ch_u8[dst_start..dst_end],
+                                &row_raw,
+                                bps,
+                            );
+                        }
+                    }
+                    _ => return Err(format!("Unsupported compression: {compression}")),
                 }
-                _ => {}
+                planar_channels[ch_idx as usize] = Some(ch_u8);
+            } else {
+                match compression {
+                    0 => {
+                        seek_forward(&mut r, raw_channel_bytes as u64)?;
+                    }
+                    1 => {
+                        for row in 0..height {
+                            if row & 0x3F == 0 {
+                                check_decode_cancel(cancel)?;
+                            }
+                            let idx = ch_idx as usize * height as usize + row as usize;
+                            let len = *row_counts
+                                .get(idx)
+                                .ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                            seek_forward(&mut r, len as u64)?;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -1074,6 +1128,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     let row_counts_start = cursor.position();
 
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
+    let mut zip_planar: Option<Arc<Vec<u8>>> = None;
 
     match compression {
         0 => {
@@ -1113,6 +1168,27 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 running_offset += cnt;
             }
         }
+        2 | 3 => {
+            let compressed = &mmap[cursor.position() as usize..];
+            let channel_bytes = (height as usize)
+                .checked_mul(width as usize)
+                .and_then(|n| n.checked_mul(bps))
+                .ok_or_else(|| "PSD/PSB ZIP channel byte count overflow".to_string())?;
+            let expected = (channels as usize)
+                .checked_mul(channel_bytes)
+                .ok_or_else(|| "PSD/PSB ZIP planar size overflow".to_string())?;
+            let mut inflated = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
+            if compression == 3 {
+                crate::psb_zip::undo_zip_prediction(&mut inflated, width as usize, depth)?;
+            }
+            for ch in 0..channels as usize {
+                for row in 0..height as usize {
+                    let off = ch * channel_bytes + row * width as usize * bps;
+                    row_offsets.push(off as u64);
+                }
+            }
+            zip_planar = Some(Arc::new(inflated));
+        }
         _ => {
             log::error!(
                 "[{}] PSD/PSB: Unsupported compression method {}",
@@ -1151,6 +1227,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         is_psb,
         compression,
         row_offsets,
+        zip_planar,
         row_cache,
         cmyk_icc,
     })
@@ -1773,6 +1850,89 @@ mod tests {
     #[test]
     fn try_extract_photoshop_thumbnail_returns_none_on_empty() {
         assert!(super::try_extract_photoshop_thumbnail(&[]).is_none());
+    }
+
+    fn craft_rgb8_psd(compression: u16, planar: &[u8], width: u32, height: u32) -> Vec<u8> {
+        assert_eq!(planar.len(), (width * height * 3) as usize);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&compression.to_be_bytes());
+        match compression {
+            0 => bytes.extend_from_slice(planar),
+            2 | 3 => {
+                let mut payload = planar.to_vec();
+                if compression == 3 {
+                    let w = width as usize;
+                    let h = height as usize;
+                    for ch in 0..3 {
+                        let base = ch * w * h;
+                        for y in 0..h {
+                            let row = base + y * w;
+                            for x in (1..w).rev() {
+                                payload[row + x] =
+                                    payload[row + x].wrapping_sub(payload[row + x - 1]);
+                            }
+                        }
+                    }
+                }
+                bytes.extend_from_slice(&miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
+            }
+            _ => panic!("craft helper only supports 0/2/3"),
+        }
+        bytes
+    }
+
+    #[test]
+    fn read_composite_zip_and_zip_prediction_rgb8() {
+        let width = 4u32;
+        let height = 2u32;
+        let mut planar = vec![0u8; (width * height * 3) as usize];
+        for (i, b) in planar.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(3).wrapping_add(7);
+        }
+        for compression in [2u16, 3u16] {
+            let bytes = craft_rgb8_psd(compression, &planar, width, height);
+            let composite = super::read_composite_from_bytes(&bytes).expect("decode");
+            assert_eq!((composite.width, composite.height), (width, height));
+            assert_eq!(composite.pixels[0], planar[0]);
+            assert_eq!(composite.pixels[1], planar[(width * height) as usize]);
+            assert_eq!(composite.pixels[2], planar[(width * height * 2) as usize]);
+            assert_eq!(composite.pixels[3], 255);
+        }
+    }
+
+    #[test]
+    fn read_composite_zip_fixtures_if_present() {
+        let dir = std::path::Path::new("tests/data/psd_compress");
+        for name in [
+            "rgb8_raw.psd",
+            "rgb8_rle.psd",
+            "rgb8_zip.psd",
+            "rgb8_zip_prediction.psd",
+        ] {
+            let path = dir.join(name);
+            if !path.is_file() {
+                eprintln!("skip missing fixture {}", path.display());
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("read fixture");
+            let composite = super::read_composite_from_bytes(&bytes).expect(name);
+            assert_eq!((composite.width, composite.height), (8, 4));
+            assert_eq!(composite.pixels.len(), 8 * 4 * 4);
+            assert!(
+                !super::rgba8_is_zero_information_with_cancel(&composite.pixels, None).unwrap()
+            );
+        }
     }
 
     #[test]

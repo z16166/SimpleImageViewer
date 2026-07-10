@@ -54,6 +54,7 @@ mod psb_layer_blend_gpu;
 pub mod psb_layer_composite;
 mod psb_packbits_simd;
 mod psb_reader;
+mod psb_zip;
 mod raw_processor;
 mod scanner;
 #[cfg(target_os = "windows")]
