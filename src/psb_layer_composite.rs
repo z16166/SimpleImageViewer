@@ -1013,7 +1013,9 @@ pub fn composite_layers_from_bytes_with_cancel(
         .checked_mul(canvas_h as usize)
         .and_then(|n| n.checked_mul(4))
         .ok_or_else(|| "PSD/PSB layer composite canvas size overflow".to_string())?;
-    let mut canvas = vec![0u8; canvas_len];
+    // CMYK documents composite over white paper in Photoshop; starting from
+    // transparent black leaves unpainted holes looking like a dark/black page.
+    let mut canvas = allocate_composite_canvas(canvas_len, info.color_mode);
 
     if info.records.is_empty() {
         return Ok(crate::psb_reader::PsbComposite {
@@ -1047,7 +1049,7 @@ pub fn composite_layers_from_bytes_with_cancel(
             "PSD/PSB layer composite: no layers visible under strict Photoshop \
              visibility, retrying while ignoring group (not leaf-layer) hidden flags"
         );
-        canvas.fill(0);
+        clear_composite_canvas(&mut canvas, info.color_mode);
         let group_visible = compute_effective_visibility(&info.records, true);
         run_composite_pass(
             &info,
@@ -1071,7 +1073,7 @@ pub fn composite_layers_from_bytes_with_cancel(
             "PSD/PSB layer composite: still nothing visible ignoring group hidden \
              flags, falling back to compositing all pixel layers unconditionally"
         );
-        canvas.fill(0);
+        clear_composite_canvas(&mut canvas, info.color_mode);
         // `respect_visibility=false` short-circuits before indexing `visible`.
         run_composite_pass(&info, &[], false, &mut canvas, canvas_w, canvas_h, cancel)?;
     }
@@ -1081,6 +1083,25 @@ pub fn composite_layers_from_bytes_with_cancel(
         height: canvas_h,
         pixels: canvas,
     })
+}
+
+fn allocate_composite_canvas(len: usize, color_mode: u16) -> Vec<u8> {
+    let mut canvas = vec![0u8; len];
+    clear_composite_canvas(&mut canvas, color_mode);
+    canvas
+}
+
+fn clear_composite_canvas(canvas: &mut [u8], color_mode: u16) {
+    if color_mode == 4 {
+        for px in canvas.chunks_exact_mut(4) {
+            px[0] = 255;
+            px[1] = 255;
+            px[2] = 255;
+            px[3] = 255;
+        }
+    } else {
+        canvas.fill(0);
+    }
 }
 
 /// Layer pixel-area threshold above which `run_composite_pass` polls `cancel`

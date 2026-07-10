@@ -806,7 +806,7 @@ impl PsdV1AsyncSource {
             }
 
             let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                let composite = match mode {
+                let mut composite = match mode {
                     PsdV1DecodeMode::FlattenedComposite => {
                         crate::psb_reader::read_composite_from_bytes_with_cancel(
                             &decode_mmap[..],
@@ -820,11 +820,25 @@ impl PsdV1AsyncSource {
                         )?
                     }
                 };
-                // The flattened path can "succeed" with a solid-fill placeholder
-                // (see `probe_layers_only_composite`); the layer compositor builds
-                // pixels directly from layer data so a blank result would be a
-                // genuine decode failure, not an expected placeholder.
+                // Flattened Image Data can be a blank or near-black placeholder while
+                // real pixels live in layers (e.g. brochure templates). Fall back to
+                // the layer compositor instead of showing a dark/empty frame.
                 if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
+                    && crate::psb_reader::flattened_should_fallback_to_layer_composite(
+                        &decode_mmap[..],
+                        &composite.pixels,
+                    )
+                {
+                    log::info!(
+                        "PSD/PSB flattened composite looks blank/unduly dark with a large \
+                         layer section -- falling back to layer composite"
+                    );
+                    composite =
+                        crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
+                            &decode_mmap[..],
+                            Some(cancel_worker.as_atomic()),
+                        )?;
+                } else if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
                     && crate::psb_reader::rgba8_looks_visually_blank(&composite.pixels)
                 {
                     return Err(crate::psb_reader::EMPTY_COMPOSITE_ERROR.to_string());

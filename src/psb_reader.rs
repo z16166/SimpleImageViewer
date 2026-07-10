@@ -648,6 +648,86 @@ pub fn rgba8_looks_visually_blank(pixels: &[u8]) -> bool {
     true
 }
 
+/// True when a flattened composite is mostly very dark (common for brochure PSDs
+/// whose Image Data is a near-black placeholder while real pixels live in layers).
+///
+/// Unlike [`rgba8_looks_visually_blank`], a bright frame or a few bright pixels do
+/// not disqualify the heuristic -- we require both a high dark-pixel fraction and
+/// a low mean luma across the sample grid.
+pub fn rgba8_looks_unduly_dark(pixels: &[u8]) -> bool {
+    if pixels.len() < 4 {
+        return true;
+    }
+    let pixel_count = pixels.len() / 4;
+    let step_px = (pixel_count / 4096).max(1);
+    let mut sum_luma: u64 = 0;
+    let mut dark = 0u64;
+    let mut n = 0u64;
+    let mut i = 0usize;
+    while i < pixel_count {
+        let off = i * 4;
+        let r = pixels[off] as u16;
+        let g = pixels[off + 1] as u16;
+        let b = pixels[off + 2] as u16;
+        let luma = ((r * 30 + g * 59 + b * 11) / 100) as u8;
+        sum_luma += luma as u64;
+        if luma <= 24 {
+            dark += 1;
+        }
+        n += 1;
+        i += step_px;
+    }
+    if n == 0 {
+        return true;
+    }
+    let mean = sum_luma / n;
+    let dark_frac = dark as f32 / n as f32;
+    mean < 96 && dark_frac >= 0.40
+}
+
+/// Large layer section + blank/unduly-dark flattened pixels => prefer layer composite.
+pub fn flattened_should_fallback_to_layer_composite(bytes: &[u8], pixels: &[u8]) -> bool {
+    if !rgba8_looks_visually_blank(pixels) && !rgba8_looks_unduly_dark(pixels) {
+        return false;
+    }
+    match probe_layer_mask_section_len(bytes) {
+        Ok(lm_len) => lm_len >= LAYERS_ONLY_LM_MIN_BYTES,
+        Err(_) => false,
+    }
+}
+
+/// Cheap header walk to the Layer and Mask section length (no pixel decode).
+fn probe_layer_mask_section_len(bytes: &[u8]) -> Result<u64, String> {
+    let mut r = std::io::Cursor::new(bytes);
+    let mut sig = [0u8; 4];
+    r.read_exact(&mut sig)
+        .map_err(|e| format!("Read error: {e}"))?;
+    if &sig != b"8BPS" {
+        return Err("Not a PSD/PSB file".into());
+    }
+    let version = read_u16(&mut r)?;
+    if version != 1 && version != 2 {
+        return Err(format!("Unknown PSD/PSB version: {version}"));
+    }
+    let is_psb = version == 2;
+    r.seek(SeekFrom::Current(6))
+        .map_err(|e| format!("Seek error: {e}"))?;
+    let _channels = read_u16(&mut r)?;
+    let _height = read_u32(&mut r)?;
+    let _width = read_u32(&mut r)?;
+    let _depth = read_u16(&mut r)?;
+    let _color_mode = read_u16(&mut r)?;
+    let cm_len = read_u32(&mut r)?;
+    seek_forward(&mut r, cm_len as u64)?;
+    let ir_len = read_u32(&mut r)?;
+    seek_forward(&mut r, ir_len as u64)?;
+    if is_psb {
+        read_u64(&mut r)
+    } else {
+        Ok(read_u32(&mut r)? as u64)
+    }
+}
+
 /// Initialize a tiled source for a PSD/PSB file.
 pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     // On Windows, use FILE_FLAG_RANDOM_ACCESS to disable aggressive sequential
@@ -1374,6 +1454,28 @@ mod tests {
         bright[2] = 200;
         bright[3] = 255;
         assert!(!super::rgba8_looks_visually_blank(&bright));
+    }
+
+    #[test]
+    fn rgba_unduly_dark_allows_bright_frame_but_dark_interior() {
+        // Mostly near-black with a few bright frame pixels -- blank() is false,
+        // but unduly_dark() should still fire (matches 1.psd-style placeholders).
+        let mut pixels = vec![0u8; 4096 * 4];
+        for i in 0..32 {
+            let off = i * 4;
+            pixels[off] = 180;
+            pixels[off + 1] = 160;
+            pixels[off + 2] = 160;
+            pixels[off + 3] = 255;
+        }
+        assert!(!super::rgba8_looks_visually_blank(&pixels));
+        assert!(super::rgba8_looks_unduly_dark(&pixels));
+
+        let mut bright = vec![200u8; 4096 * 4];
+        for px in bright.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        assert!(!super::rgba8_looks_unduly_dark(&bright));
     }
 
     #[test]
