@@ -320,6 +320,40 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &mut [f32], source_icc: &[u8
     true
 }
 
+/// Run CMYK→sRGB via lcms2 when a K plane was captured, and retag metadata as
+/// display-referred sRGB. Shared by the normal `JXL_DEC_SUCCESS` finish path and
+/// the animation-bootstrap early return (which otherwise skipped CMS and left
+/// raw CMY + Unknown ICC -- missing "black" text / lime greens on
+/// `cmyk_layers`).
+#[cfg(feature = "jpegxl")]
+fn jxl_apply_cmyk_cms_and_retag_metadata(
+    rgba: &mut [f32],
+    k_f32: &mut [f32],
+    k_extra_channel_index: Option<u32>,
+    cmyk_source_icc: &[u8],
+    metadata: &mut HdrImageMetadata,
+) {
+    if k_extra_channel_index.is_none() || k_f32.is_empty() {
+        return;
+    }
+    if !apply_cmyk_to_srgb_via_lcms(rgba, k_f32, cmyk_source_icc) {
+        return;
+    }
+    // After lcms2 CMYK→sRGB the float buffer holds sRGB-ENCODED values in 0..1
+    // (PostScript-style 0..100 input mapped through the embedded CMYK ICC +
+    // sRGB output profile, intent=Perceptual). Tag as Srgb so the SDR grade
+    // fallback (`jxl_sdr_grade_fallback_rgba8`) direct-quantizes via
+    // `srgb_unit_to_u8` and does NOT re-apply the OETF.
+    metadata.transfer_function = HdrTransferFunction::Srgb;
+    metadata.color_profile = HdrColorProfile::Cicp {
+        color_primaries: 1,
+        transfer_characteristics: 13,
+        matrix_coefficients: 0,
+        full_range: true,
+    };
+    metadata.luminance.mastering_max_nits = Some(100.0);
+}
+
 #[cfg(feature = "jpegxl")]
 fn jxl_build_hdr_fallback(hdr: &HdrImageBuffer) -> Result<DecodedImage, String> {
     if hdr.rgba_f32.is_empty() {
@@ -1036,27 +1070,13 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         expected_len
                     ));
                 }
-                if k_extra_channel_index.is_some() && !k_f32.is_empty() {
-                    let cmyk_converted =
-                        apply_cmyk_to_srgb_via_lcms(&mut rgba, &mut k_f32, &cmyk_source_icc);
-                    if cmyk_converted {
-                        // After lcms2 CMYK→sRGB the float buffer holds sRGB-
-                        // ENCODED values in 0..1 (PostScript-style 0..100 input
-                        // mapped through the embedded CMYK ICC + sRGB output
-                        // profile, intent=Perceptual). Tag as Srgb so the SDR
-                        // grade fallback (`jxl_sdr_grade_fallback_rgba8`)
-                        // direct-quantizes via `srgb_unit_to_u8` and does NOT
-                        // re-apply the OETF.
-                        metadata.transfer_function = HdrTransferFunction::Srgb;
-                        metadata.color_profile = HdrColorProfile::Cicp {
-                            color_primaries: 1,
-                            transfer_characteristics: 13,
-                            matrix_coefficients: 0,
-                            full_range: true,
-                        };
-                        metadata.luminance.mastering_max_nits = Some(100.0);
-                    }
-                }
+                jxl_apply_cmyk_cms_and_retag_metadata(
+                    &mut rgba,
+                    &mut k_f32,
+                    k_extra_channel_index,
+                    &cmyk_source_icc,
+                    &mut metadata,
+                );
                 jxl_sanitize_straight_alpha(&mut rgba);
                 jxl_tag_display_referred_when_sdr_grade(&mut metadata);
                 return Ok(jxl_wrap_decode_output(
@@ -1356,6 +1376,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if bootstrap_animation && !strip_baseline_only && !embedded_sdr_master_load {
                     let peek = unsafe { libjxl_sys::JxlDecoderProcessInput(decoder.0) };
                     if peek == libjxl_sys::JXL_DEC_SUCCESS {
+                        // Single-frame still image reached via the animation-
+                        // bootstrap probe: must still run CMYK→sRGB (same as
+                        // the JXL_DEC_SUCCESS finish path). The app always
+                        // loads `.jxl` with bootstrap_animation=true.
                         let mut rgba = captured_frames
                             .pop()
                             .map(|(buf, _)| buf)
@@ -1367,6 +1391,13 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                                 expected_len
                             ));
                         }
+                        jxl_apply_cmyk_cms_and_retag_metadata(
+                            &mut rgba,
+                            &mut k_f32,
+                            k_extra_channel_index,
+                            &cmyk_source_icc,
+                            &mut metadata,
+                        );
                         jxl_sanitize_straight_alpha(&mut rgba);
                         jxl_tag_display_referred_when_sdr_grade(&mut metadata);
                         return Ok(jxl_wrap_decode_output(

@@ -2023,3 +2023,93 @@ fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
         }
     }
 }
+/// App primary load always passes `bootstrap_animation=true` for `.jxl`
+/// (`loader/decode/mod.rs`). For still images that probe returns SUCCESS on
+/// the first FULL_IMAGE; that early-return path must still run CMYK→sRGB via
+/// lcms2. Without it, `cmyk_layers` shows missing "black" text and lime greens
+/// while the non-bootstrap decode path looks correct.
+#[cfg(feature = "jpegxl")]
+#[test]
+fn conformance_cmyk_layers_bootstrap_path_applies_cms_when_sample_present() {
+    use crate::hdr::types::HdrToneMapSettings;
+    let jxl_path = std::path::Path::new(r"F:\HDR\conformance\testcases\cmyk_layers\input.jxl");
+    let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases\cmyk_layers\ref.png");
+    if !jxl_path.is_file() || !ref_path.is_file() {
+        return;
+    }
+    let bytes = std::fs::read(jxl_path).expect("read cmyk_layers/input.jxl");
+    let tone = HdrToneMapSettings::default();
+    let out = super::load_jxl_hdr_with_target_capacity_from_bytes(
+        jxl_path,
+        &bytes,
+        tone.target_hdr_capacity(),
+        tone.target_hdr_capacity(),
+        tone,
+        true, // matches app primary `.jxl` load
+        false,
+    )
+    .expect("bootstrap decode cmyk_layers");
+    assert!(
+        !out.animation_remainder,
+        "cmyk_layers is a still image; bootstrap must not schedule remainder"
+    );
+    let crate::loader::ImageData::Hdr { hdr, fallback, .. } = out.image else {
+        panic!("expected ImageData::Hdr from bootstrap still decode");
+    };
+    assert_eq!(
+        hdr.color_space,
+        crate::hdr::types::HdrColorSpace::LinearSrgb,
+        "after CMYK CMS, color_space must not stay Unknown (CMYK ICC)"
+    );
+    assert!(
+        matches!(
+            hdr.metadata.color_profile,
+            crate::hdr::types::HdrColorProfile::Cicp {
+                color_primaries: 1,
+                ..
+            }
+        ),
+        "after CMYK CMS, profile must be retagged to sRGB CICP"
+    );
+    // "black" text center (from converted decode bbox)
+    let i = (47 * hdr.width as usize + 188) * 4;
+    let f = hdr.rgba_f32.as_slice();
+    let lum = 0.2126 * f[i] + 0.7152 * f[i + 1] + 0.0722 * f[i + 2];
+    assert!(
+        lum < 0.25,
+        "bootstrap path must keep K ink so 'black' text is dark (lum={lum:.3}, rgb=({:.3},{:.3},{:.3}))",
+        f[i],
+        f[i + 1],
+        f[i + 2]
+    );
+    // Teal "Background"/"layer" sample -- raw CMY is lime (~0.21,1.0,0.63)
+    let ig = (190 * hdr.width as usize + 200) * 4;
+    assert!(
+        f[ig] < 0.05 && f[ig + 1] > 0.5 && f[ig + 1] < 0.85,
+        "bootstrap path must CMS-convert process green to teal, not lime (rgb=({:.3},{:.3},{:.3}))",
+        f[ig],
+        f[ig + 1],
+        f[ig + 2]
+    );
+    let jxl_bytes = fallback.rgba();
+    let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
+    let ref_bytes = ref_img.as_raw();
+    assert_eq!(jxl_bytes.len(), ref_bytes.len());
+    let n = (jxl_bytes.len() / 4) as i64;
+    let (mut diff_r, mut diff_g, mut diff_b) = (0_i64, 0_i64, 0_i64);
+    for (j, r) in jxl_bytes.chunks_exact(4).zip(ref_bytes.chunks_exact(4)) {
+        diff_r += i64::from(j[0]) - i64::from(r[0]);
+        diff_g += i64::from(j[1]) - i64::from(r[1]);
+        diff_b += i64::from(j[2]) - i64::from(r[2]);
+    }
+    let bias_r = diff_r as f64 / n as f64;
+    let bias_g = diff_g as f64 / n as f64;
+    let bias_b = diff_b as f64 / n as f64;
+    eprintln!(
+        "cmyk_layers bootstrap fallback vs ref.png: bias=({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})"
+    );
+    assert!(
+        bias_r.abs() < 5.0 && bias_g.abs() < 5.0 && bias_b.abs() < 5.0,
+        "bootstrap CMYK CMS bias too large: ({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})"
+    );
+}
