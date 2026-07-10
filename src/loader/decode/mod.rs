@@ -118,7 +118,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             index,
             decode_profile: decode_profile.clone(),
             source_key: crate::loader::source_key_for_path(path),
-            result: Err(crate::loader::DECODE_CANCELLED.to_string()),
+            result: Err(crate::loader::DecodeError::Cancelled),
             preview_bundle: crate::loader::PreviewBundle::initial(),
             ultra_hdr_capacity_sensitive: false,
             sdr_fallback_is_placeholder: false,
@@ -140,7 +140,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
     // Retained when primary decode mapped the file so tiled EXIF thumbs skip a second map_file.
     let mut retained_mmap: Option<std::sync::Arc<memmap2::Mmap>> = None;
-    let result = (|| -> Result<ImageData, String> {
+    let result = (|| -> Result<ImageData, crate::loader::DecodeError> {
         // Size check: orchestrator already rejects tiny files before spawn; decode paths that
         // mmap also enforce MIN_IMAGE_FILE_BYTES inside `map_file` (single metadata() call).
         let is_system_native = {
@@ -164,7 +164,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
@@ -251,7 +251,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
         if ext == "tif" || ext == "tiff" {
             let file_mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
@@ -280,7 +280,8 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         raw_osd_info = Some(out.osd);
                     }
                     out.image
-                });
+                })
+                .map_err(Into::into);
             }
             let outcome = load_primary_with_detection_fallback(
                 path,
@@ -300,7 +301,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "avif" || ext == "avifs" {
@@ -335,7 +336,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "jxl" {
@@ -370,7 +371,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "heif" || ext == "heic" || ext == "hif" {
@@ -397,7 +398,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
@@ -457,7 +458,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 },
             );
             retained_mmap = outcome.retained_mmap;
-            return outcome.result;
+            return outcome.result.map_err(Into::into);
         }
 
         let outcome = load_primary_with_detection_fallback(
@@ -473,7 +474,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             },
         );
         retained_mmap = outcome.retained_mmap;
-        outcome.result
+        outcome.result.map_err(Into::into)
     })();
 
     let mut preview: Option<DecodedImage> = None;
@@ -746,7 +747,7 @@ pub(crate) fn path_ext_lower(path: &Path) -> Cow<'_, str> {
 fn is_hdr_capacity_sensitive_load(
     ext: &str,
     path: &Path,
-    result: &Result<ImageData, String>,
+    result: &Result<ImageData, crate::loader::DecodeError>,
 ) -> bool {
     let is_jpeg = ext == "jpg" || ext == "jpeg";
     let is_raw = crate::raw_processor::is_raw_extension(ext);

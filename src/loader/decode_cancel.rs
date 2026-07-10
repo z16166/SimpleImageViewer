@@ -19,11 +19,55 @@
 //! Shared across loader orchestration and format decoders (PSD composite today;
 //! other slow paths can poll the same flag later). Not a generation counter.
 
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Stable error marker returned when a decoder aborts after [`DecodeCancelFlag::cancel`].
+/// Display text for [`DecodeError::Cancelled`] (logging / UI).
 pub const DECODE_CANCELLED: &str = "decode cancelled";
+
+/// Typed decode failure. Cancel is a distinct variant so callers match by enum
+/// (checklist #30) instead of comparing error strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    Cancelled,
+    Message(String),
+}
+
+impl DecodeError {
+    #[inline]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Cancelled => DECODE_CANCELLED,
+            Self::Message(msg) => msg.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+impl From<String> for DecodeError {
+    fn from(msg: String) -> Self {
+        Self::Message(msg)
+    }
+}
+
+impl From<&str> for DecodeError {
+    fn from(msg: &str) -> Self {
+        Self::Message(msg.to_string())
+    }
+}
 
 /// Shared one-shot cancel flag for an in-flight load / decode request.
 #[derive(Debug, Clone, Default)]
@@ -55,14 +99,9 @@ impl DecodeCancelFlag {
     }
 }
 
-#[inline]
-pub fn is_decode_cancelled_error(err: &str) -> bool {
-    err == DECODE_CANCELLED || err.ends_with(DECODE_CANCELLED)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DECODE_CANCELLED, DecodeCancelFlag, is_decode_cancelled_error};
+    use super::{DECODE_CANCELLED, DecodeCancelFlag, DecodeError};
 
     #[test]
     fn cancel_is_visible_to_clones() {
@@ -75,11 +114,11 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_error_marker_matches() {
-        assert!(is_decode_cancelled_error(DECODE_CANCELLED));
-        assert!(is_decode_cancelled_error(&format!(
-            "PSD v1 decode: {DECODE_CANCELLED}"
-        )));
-        assert!(!is_decode_cancelled_error("unsupported compression"));
+    fn cancelled_is_typed_variant() {
+        let err = DecodeError::Cancelled;
+        assert!(err.is_cancelled());
+        assert_eq!(err.as_str(), DECODE_CANCELLED);
+        assert_eq!(err.to_string(), DECODE_CANCELLED);
+        assert!(!DecodeError::Message("unsupported compression".into()).is_cancelled());
     }
 }

@@ -201,14 +201,14 @@ impl PsbTiledSource {
 
 /// Read the flattened composite image from a PSD/PSB file path.
 #[allow(dead_code)]
-pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
+pub fn read_composite(path: &Path) -> Result<PsbComposite, crate::loader::DecodeError> {
     let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
     read_composite_from_bytes(&mmap[..])
 }
 
 /// Read the flattened composite from an in-memory PSD/PSB byte slice (e.g. mmap).
-pub fn read_composite_from_bytes(bytes: &[u8]) -> Result<PsbComposite, String> {
+pub fn read_composite_from_bytes(bytes: &[u8]) -> Result<PsbComposite, crate::loader::DecodeError> {
     read_composite_from_bytes_with_cancel(bytes, None)
 }
 
@@ -217,7 +217,7 @@ pub fn read_composite_from_bytes(bytes: &[u8]) -> Result<PsbComposite, String> {
 pub fn read_composite_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<PsbComposite, String> {
+) -> Result<PsbComposite, crate::loader::DecodeError> {
     let file_size = bytes.len() as u64;
     let mut r = std::io::Cursor::new(bytes);
 
@@ -233,7 +233,7 @@ pub fn read_composite_from_bytes_with_cancel(
 
     let version = read_u16(&mut r)?;
     if version != 1 && version != 2 {
-        return Err(format!("Unknown PSD/PSB version: {version}"));
+        return Err(format!("Unknown PSD/PSB version: {version}").into());
     }
     let is_psb = version == 2;
 
@@ -286,9 +286,7 @@ pub fn read_composite_from_bytes_with_cancel(
     let compression = read_u16(&mut r)?;
     // Spec: 0=Raw, 1=RLE, 2=ZIP, 3=ZIP+prediction. Anything else is invalid.
     if compression > 3 {
-        return Err(format!(
-            "Invalid PSD/PSB Image Data compression: {compression}"
-        ));
+        return Err(format!("Invalid PSD/PSB Image Data compression: {compression}").into());
     }
 
     let pixel_count = checked_pixel_count(width, height)?;
@@ -396,7 +394,7 @@ pub fn read_composite_from_bytes_with_cancel(
                             );
                         }
                     }
-                    _ => return Err(format!("Unsupported compression: {compression}")),
+                    _ => return Err(format!("Unsupported compression: {compression}").into()),
                 }
                 planar_channels[ch_idx as usize] = Some(ch_u8);
             } else {
@@ -470,9 +468,11 @@ pub fn read_composite_from_bytes_with_cancel(
 }
 
 #[inline]
-pub(crate) fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), String> {
+pub(crate) fn check_decode_cancel(
+    cancel: Option<&AtomicBool>,
+) -> Result<(), crate::loader::DecodeError> {
     if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
-        Err(crate::loader::DECODE_CANCELLED.to_string())
+        Err(crate::loader::DecodeError::Cancelled)
     } else {
         Ok(())
     }
@@ -490,7 +490,7 @@ pub(crate) fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), Str
 pub fn rgba8_is_absolutely_blank_with_cancel(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     if pixels.len() < 4 {
         return Ok(true);
     }
@@ -527,7 +527,7 @@ fn rgba8_any_rgb_alpha_scalar(
     cancel: Option<&AtomicBool>,
     mut any_rgb: bool,
     mut any_a: bool,
-) -> Result<(bool, bool), String> {
+) -> Result<(bool, bool), crate::loader::DecodeError> {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
@@ -550,7 +550,7 @@ fn rgba8_any_rgb_alpha_scalar(
 fn rgba8_absolutely_blank_scalar(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(pixels, cancel, false, false)?;
     Ok(!any_rgb || !any_a)
 }
@@ -560,7 +560,7 @@ fn rgba8_absolutely_blank_scalar(
 unsafe fn rgba8_absolutely_blank_sse2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let mut any_rgb = false;
     let mut any_a = false;
@@ -596,7 +596,7 @@ unsafe fn rgba8_absolutely_blank_sse2(
 unsafe fn rgba8_absolutely_blank_avx2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let mut any_rgb = false;
     let mut any_a = false;
@@ -631,7 +631,7 @@ unsafe fn rgba8_absolutely_blank_avx2(
 unsafe fn rgba8_absolutely_blank_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::aarch64::*;
     let mut any_rgb = false;
     let mut any_a = false;
@@ -675,7 +675,7 @@ unsafe fn rgba8_absolutely_blank_neon(
 pub fn rgba8_is_zero_information_with_cancel(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     if pixels.len() < 4 {
         return Ok(true);
     }
@@ -715,7 +715,7 @@ fn rgba8_rgb_varies_any_alpha_scalar(
     ref_b: u8,
     mut rgb_varies: bool,
     mut any_a: bool,
-) -> Result<(bool, bool), String> {
+) -> Result<(bool, bool), crate::loader::DecodeError> {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
@@ -738,7 +738,7 @@ fn rgba8_rgb_varies_any_alpha_scalar(
 fn rgba8_zero_information_scalar(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     let ref_r = pixels[0];
     let ref_g = pixels[1];
     let ref_b = pixels[2];
@@ -753,7 +753,7 @@ fn rgba8_zero_information_scalar(
 unsafe fn rgba8_zero_information_sse2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let ref_r = pixels[0];
     let ref_g = pixels[1];
@@ -801,7 +801,7 @@ unsafe fn rgba8_zero_information_sse2(
 unsafe fn rgba8_zero_information_avx2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let ref_r = pixels[0];
     let ref_g = pixels[1];
@@ -848,7 +848,7 @@ unsafe fn rgba8_zero_information_avx2(
 unsafe fn rgba8_zero_information_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::aarch64::*;
     let ref_r = pixels[0];
     let ref_g = pixels[1];
@@ -1707,7 +1707,7 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
     }
     let version = u16::from_be_bytes([bytes[4], bytes[5]]);
     if version != 1 && version != 2 {
-        return Err(format!("Unknown PSD/PSB version: {version}"));
+        return Err(format!("Unknown PSD/PSB version: {version}").into());
     }
     let channels = u16::from_be_bytes([bytes[12], bytes[13]]) as u32;
     let height = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
@@ -1797,7 +1797,8 @@ mod tests {
         bytes.extend_from_slice(&99u16.to_be_bytes());
         let err = super::read_composite_from_bytes(&bytes).expect_err("bad compression");
         assert!(
-            err.contains("Invalid PSD/PSB Image Data compression"),
+            err.as_str()
+                .contains("Invalid PSD/PSB Image Data compression"),
             "unexpected err: {err}"
         );
     }
@@ -1982,7 +1983,8 @@ mod tests {
             Ok(_) => panic!("expected cancel error"),
             Err(e) => e,
         };
-        assert_eq!(err, crate::loader::DECODE_CANCELLED);
+        assert!(err.is_cancelled());
+        assert_eq!(err.as_str(), crate::loader::DECODE_CANCELLED);
         assert!(cancel.load(Ordering::Acquire));
     }
 }

@@ -3279,7 +3279,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             index: 0,
             decode_profile,
             source_key,
-            result: Err("synthetic cpu fallback complete".to_string()),
+            result: Err("synthetic cpu fallback complete".into()),
             preview_bundle: PreviewBundle::initial(),
             ultra_hdr_capacity_sensitive: false,
             sdr_fallback_is_placeholder: false,

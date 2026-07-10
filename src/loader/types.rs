@@ -568,7 +568,7 @@ pub struct LoadResult {
     pub index: usize,
     pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
-    pub result: Result<ImageData, String>,
+    pub result: Result<ImageData, crate::loader::DecodeError>,
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
     /// True when [`ImageData::Hdr`] used a cheap SDR placeholder because the display HDR target

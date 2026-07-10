@@ -34,7 +34,7 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
         index,
         decode_profile: crate::loader::decode_profile_stub(),
         source_key: 0,
-        result: Err("synthetic".to_string()),
+        result: Err("synthetic".into()),
         preview_bundle: PreviewBundle::initial(),
         ultra_hdr_capacity_sensitive: false,
         sdr_fallback_is_placeholder: false,

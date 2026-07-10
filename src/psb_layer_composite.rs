@@ -599,7 +599,7 @@ fn decode_channel_image(
     height: u32,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::loader::DecodeError> {
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
     let pixel_count = checked_layer_pixel_count(width, height)
@@ -661,10 +661,9 @@ fn decode_channel_image(
                 8,
                 compression == 3,
             )
+            .map_err(Into::into)
         }
-        _ => Err(format!(
-            "Unsupported layer channel compression: {compression}"
-        )),
+        _ => Err(format!("Unsupported layer channel compression: {compression}").into()),
     }
 }
 
@@ -1075,7 +1074,7 @@ fn decode_one_layer(
     cursor: &mut usize,
     record: &LayerRecord,
     params: &LayerDecodeParams<'_>,
-) -> Result<Option<DecodedLayer>, String> {
+) -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
     let width = record.width();
     let height = record.height();
     let has_bounds = params.should_decode && width > 0 && height > 0;
@@ -1114,7 +1113,7 @@ fn decode_one_layer(
         match ch.id {
             -1 => match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
                 Ok(data) => alpha = Some(data),
-                Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+                Err(e) if e.is_cancelled() => return Err(e),
                 Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
             },
             -2 => {
@@ -1155,7 +1154,7 @@ fn decode_one_layer(
                                     height,
                                 ));
                             }
-                            Err(e) if crate::loader::is_decode_cancelled_error(&e) => {
+                            Err(e) if e.is_cancelled() => {
                                 return Err(e);
                             }
                             Err(e) => log::debug!("PSD/PSB layer mask channel decode failed: {e}"),
@@ -1172,7 +1171,7 @@ fn decode_one_layer(
                 let idx = ch.id as usize;
                 match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
                     Ok(data) => color[idx] = Some(data),
-                    Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+                    Err(e) if e.is_cancelled() => return Err(e),
                     Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
                 }
             }
@@ -1226,7 +1225,7 @@ pub fn composite_layers_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, String> {
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     let total_t0 = std::time::Instant::now();
     crate::psb_reader::check_decode_cancel(cancel)?;
     let parse_t0 = std::time::Instant::now();
@@ -1236,14 +1235,15 @@ pub fn composite_layers_from_bytes_with_cancel(
         return Err(format!(
             "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
             info.depth
-        ));
+        )
+        .into());
     }
 
     let canvas_w = info.width;
     let canvas_h = info.height;
     let visible = compute_effective_visibility(&info.records);
     if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, &visible) {
-        return Err(STRICT_LAYER_COMPOSITE_BLANK.to_string());
+        return Err(STRICT_LAYER_COMPOSITE_BLANK.into());
     }
 
     let canvas_len = (canvas_w as usize)
@@ -1314,7 +1314,7 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<crate::psb_reader::PsbComposite, String> {
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     // P1: structurally valid flattened Image Data, then absolute blank barrier.
     let mut skip_p2_after_structural_header = false;
     match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
@@ -1352,12 +1352,12 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
                 return Ok(composite);
             }
         }
-        Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+        Err(e) if e.is_cancelled() => return Err(e),
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
             log::debug!("PSD SDR main P1 flattened decode failed: {e}");
             // Header/structural failures cannot be recovered by P2; go straight to P3.
-            if is_psd_header_structural_error(&e) {
+            if is_psd_header_structural_error(e.as_str()) {
                 crate::preload_debug!(
                     "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
                 );
@@ -1405,9 +1405,9 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
                     return Ok(composite);
                 }
             }
-            Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+            Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
-                p2_no_drawable_visible = e == STRICT_LAYER_COMPOSITE_BLANK;
+                p2_no_drawable_visible = e.as_str() == STRICT_LAYER_COMPOSITE_BLANK;
                 crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
                 log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
             }
@@ -1456,9 +1456,13 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
 
     crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=fail no_p1_p2_p3");
     if p2_no_drawable_visible {
-        return Err(rust_i18n::t!("error.psd_all_layers_hidden").to_string());
+        return Err(rust_i18n::t!("error.psd_all_layers_hidden")
+            .to_string()
+            .into());
     }
-    Err(rust_i18n::t!("error.psd_no_displayable_image").to_string())
+    Err(rust_i18n::t!("error.psd_no_displayable_image")
+        .to_string()
+        .into())
 }
 
 /// True when P1 failed for a reason that P2 cannot recover (same header parse).
@@ -1526,7 +1530,7 @@ fn run_composite_pass(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     timing: &mut CompositeTiming,
-) -> Result<usize, String> {
+) -> Result<usize, crate::loader::DecodeError> {
     // Layer records and channel_data are both stored bottom to top (index 0
     // is the bottommost layer). Decoding must walk that same order to stay
     // aligned with `channel_data`; blending happens to want the identical
@@ -2059,7 +2063,7 @@ mod tests {
         let bytes = std::fs::read(path).expect("read");
         let err = composite_layers_from_bytes_with_cancel(&bytes, None, None)
             .expect_err("expected blank under strict visibility");
-        assert_eq!(err, STRICT_LAYER_COMPOSITE_BLANK);
+        assert_eq!(err.as_str(), STRICT_LAYER_COMPOSITE_BLANK);
     }
 
     #[test]
@@ -2073,13 +2077,15 @@ mod tests {
         let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
             .expect_err("expected fail when all layers hidden and P3 is blank");
         let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
-        assert_eq!(err, expected);
+        assert_eq!(err.as_str(), expected);
         assert!(
-            err.contains("designer") || err.contains("设计师") || err.contains("設計師"),
+            err.as_str().contains("designer")
+                || err.as_str().contains("设计师")
+                || err.as_str().contains("設計師"),
             "error should attribute hidden layers to the designer: {err}"
         );
         assert!(
-            err.contains("Photoshop"),
+            err.as_str().contains("Photoshop"),
             "error should point users to Photoshop: {err}"
         );
     }

@@ -293,7 +293,7 @@ pub(crate) fn load_psd(
     path: &Path,
     cancel: crate::loader::DecodeCancelFlag,
     gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
-) -> Result<ImageData, String> {
+) -> Result<ImageData, crate::loader::DecodeError> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
@@ -312,7 +312,8 @@ pub(crate) fn load_psd(
         return Err(format!(
             "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
              Please close other applications or convert to a smaller format."
-        ));
+        )
+        .into());
     }
 
     log::info!(
@@ -336,7 +337,7 @@ pub(crate) fn load_psd(
     }
 
     if cancel.is_cancelled() {
-        return Err(crate::loader::DECODE_CANCELLED.to_string());
+        return Err(crate::loader::DecodeError::Cancelled);
     }
 
     let composite = crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
@@ -361,7 +362,8 @@ pub(crate) fn load_psd(
         other => Err(format!(
             "PSD/PSB orientation produced unexpected image shape ({:?})",
             std::mem::discriminant(&other)
-        )),
+        )
+        .into()),
     }
 }
 

@@ -1144,7 +1144,7 @@ impl ImageLoader {
                 index,
                 decode_profile: decode_profile_for_job.clone(),
                 source_key: source_key_for_path(&path),
-                result: Err(e),
+                result: Err(e.into()),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
                 sdr_fallback_is_placeholder: false,
@@ -1490,7 +1490,7 @@ impl ImageLoader {
                 index,
                 decode_profile: decode_profile.clone(),
                 source_key: source_key_for_path(&path),
-                result: Err(format!("Decoder Panic: {}", msg)),
+                result: Err(format!("Decoder Panic: {}", msg).into()),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
                 sdr_fallback_is_placeholder: false,
@@ -1503,7 +1503,7 @@ impl ImageLoader {
         });
 
         if let Err(ref e) = load_result.result {
-            if crate::loader::is_decode_cancelled_error(e) {
+            if e.is_cancelled() {
                 log::debug!("[Loader] Load cancelled for index={}", index);
                 return;
             }

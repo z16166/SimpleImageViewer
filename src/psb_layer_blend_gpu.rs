@@ -328,7 +328,7 @@ fn blend_layers_gpu_inner(
     initial_canvas: &[u8],
     layers: &[DecodedLayerRef<'_>],
     cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::loader::DecodeError> {
     let device = &ctx.device;
     let queue = &ctx.queue;
 
@@ -388,7 +388,7 @@ fn blend_layers_gpu_inner(
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| "layer size overflow".to_string())?;
         if layer.rgba.len() != need {
-            return Err("layer rgba length mismatch".to_string());
+            return Err("layer rgba length mismatch".into());
         }
 
         let layer_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -509,7 +509,7 @@ fn blend_layers_gpu_inner(
     );
 
     if !ctx.is_device_current() {
-        return Err("wgpu device replaced during PSD blend".to_string());
+        return Err("wgpu device replaced during PSD blend".into());
     }
     queue.submit(Some(encoder.finish()));
     drop(bind_groups);
