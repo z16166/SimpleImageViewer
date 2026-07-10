@@ -23,6 +23,10 @@ const SECTION_DIVIDER_KEY: &[u8; 4] = b"lsct";
 const MAX_LAYER_CHANNELS_PER_RECORD: usize = 128;
 const PSD_VERSION: u16 = 1;
 const PSB_VERSION: u16 = 2;
+const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
+    *b"LMsk", *b"Lr16", *b"Lr32", *b"Layr", *b"Mt16", *b"Mt32", *b"Mtrn", *b"Alph", *b"FMsk",
+    *b"lnk2", *b"FEid", *b"FXid", *b"PxSD",
+];
 
 #[derive(Debug, Clone)]
 pub struct LayerChannel {
@@ -284,7 +288,7 @@ fn scan_extra_tagged_blocks(
     let mut is_section_divider = false;
     let mut section_type = None;
 
-    while r.position().saturating_add(tagged_block_header_len(is_psb)) <= extra_end {
+    while r.position().saturating_add(TAGGED_BLOCK_MIN_HEADER_LEN) <= extra_end {
         let block_start = r.position();
         let mut signature = [0u8; 4];
         r.read_exact(&mut signature)
@@ -297,7 +301,14 @@ fn scan_extra_tagged_blocks(
         let mut key = [0u8; 4];
         r.read_exact(&mut key)
             .map_err(|e| format!("Read layer tagged block key: {e}"))?;
-        let data_len = if is_psb {
+        let uses_u64_len = tagged_block_uses_u64_len(&signature, &key, is_psb);
+        if uses_u64_len
+            && checked_end(r.position(), 8, extra_end, "layer tagged block length").is_err()
+        {
+            r.set_position(block_start.saturating_add(1));
+            continue;
+        }
+        let data_len = if uses_u64_len {
             crate::psb_reader::read_u64(r)?
         } else {
             crate::psb_reader::read_u32(r)? as u64
@@ -397,8 +408,14 @@ fn cursor_slice(bytes: &[u8], start: u64, end: u64) -> Result<&[u8], String> {
         .ok_or_else(|| "PSD/PSB slice is out of bounds".to_string())
 }
 
-fn tagged_block_header_len(is_psb: bool) -> u64 {
-    if is_psb { 16 } else { 12 }
+const TAGGED_BLOCK_MIN_HEADER_LEN: u64 = 12;
+
+fn tagged_block_uses_u64_len(signature: &[u8; 4], key: &[u8; 4], is_psb: bool) -> bool {
+    signature == PSB_BLOCK_SIGNATURE
+        || (is_psb
+            && LARGE_TAGGED_BLOCK_KEYS
+                .iter()
+                .any(|large_key| large_key == key))
 }
 
 fn read_i16(r: &mut impl Read) -> Result<i16, String> {
@@ -411,8 +428,24 @@ fn read_i32(r: &mut impl Read) -> Result<i32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_layer_records;
+    use super::{parse_layer_records, scan_extra_tagged_blocks};
     use std::path::Path;
+
+    #[test]
+    fn psb_8bim_lsct_uses_u32_length() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&2u32.to_be_bytes());
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, true).unwrap();
+
+        assert!(is_section_divider);
+        assert_eq!(section_type, Some(2));
+    }
 
     #[test]
     fn parse_layer_records_11_psd_corpus() {
@@ -429,6 +462,7 @@ mod tests {
                 .iter()
                 .any(|l| !l.is_empty_bounds() && !l.is_hidden())
         );
+        assert!(layers.records.iter().any(|l| l.is_section_divider));
         assert!(!layers.channel_data.is_empty());
     }
 }
