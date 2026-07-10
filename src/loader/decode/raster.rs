@@ -344,7 +344,7 @@ pub(crate) fn load_psd(
                     "PSB disk tiled open skipped for ZIP Image Data; routing through P1/P2/P3"
                 );
             }
-            Ok(0 | 1) => match crate::psb_reader::open_tiled_source(path) {
+            Ok(0 | 1) => match crate::psb_reader_tiled::open_tiled_source(path) {
                 Ok(source) => {
                     let blank =
                         psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
@@ -426,13 +426,13 @@ pub(crate) fn load_psd(
     }
 }
 
-/// Probe flattened Image Data behind a [`crate::psb_reader::PsbTiledSource`] for the same
+/// Probe flattened Image Data behind a [`crate::psb_reader_tiled::PsbTiledSource`] for the same
 /// absolute-blank barrier as P1, without allocating a full-canvas RGBA buffer.
 ///
 /// Accumulates nonzero-RGB / nonzero-alpha across row strips (independent strip checks are
 /// incorrect when one strip is all-RGB-0 and another is all-alpha-0).
 fn psb_tiled_flat_is_absolutely_blank(
-    source: &crate::psb_reader::PsbTiledSource,
+    source: &crate::psb_reader_tiled::PsbTiledSource,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<bool, crate::loader::DecodeError> {
     use crate::loader::TiledImageSource;
