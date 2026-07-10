@@ -608,16 +608,32 @@ fn scan_extra_tagged_blocks(
 ) -> Result<(bool, Option<u32>), String> {
     let mut is_section_divider = false;
     let mut section_type = None;
+    let mut resyncs = 0u32;
+    let extra_end_usize = usize::try_from(extra_end)
+        .unwrap_or(usize::MAX)
+        .min(r.get_ref().len());
 
     while r.position().saturating_add(TAGGED_BLOCK_MIN_HEADER_LEN) <= extra_end {
-        let block_start = r.position();
+        let search_start = match usize::try_from(r.position()) {
+            Ok(pos) => pos,
+            Err(_) => break,
+        };
+        let Some(block_start_usize) =
+            find_next_tagged_block_signature(r.get_ref(), search_start, extra_end_usize)
+        else {
+            r.set_position(extra_end);
+            break;
+        };
+        let block_start = block_start_usize as u64;
+        if block_start.saturating_add(TAGGED_BLOCK_MIN_HEADER_LEN) > extra_end {
+            r.set_position(extra_end);
+            break;
+        }
+
+        r.set_position(block_start);
         let mut signature = [0u8; 4];
         r.read_exact(&mut signature)
             .map_err(|e| format!("Read layer tagged block signature: {e}"))?;
-        if &signature != PSD_BLEND_SIGNATURE && &signature != PSB_BLOCK_SIGNATURE {
-            r.set_position(block_start.saturating_add(1));
-            continue;
-        }
 
         let mut key = [0u8; 4];
         r.read_exact(&mut key)
@@ -626,7 +642,9 @@ fn scan_extra_tagged_blocks(
         if uses_u64_len
             && checked_end(r.position(), 8, extra_end, "layer tagged block length").is_err()
         {
-            r.set_position(block_start.saturating_add(1));
+            if abandon_tagged_block_candidate(r, block_start, extra_end, &mut resyncs) {
+                break;
+            }
             continue;
         }
         let data_len = if uses_u64_len {
@@ -638,7 +656,9 @@ fn scan_extra_tagged_blocks(
         let data_end = match checked_end(data_start, data_len, extra_end, "layer tagged block") {
             Ok(end) => end,
             Err(_) => {
-                r.set_position(block_start.saturating_add(1));
+                if abandon_tagged_block_candidate(r, block_start, extra_end, &mut resyncs) {
+                    break;
+                }
                 continue;
             }
         };
@@ -666,6 +686,40 @@ fn scan_extra_tagged_blocks(
     }
 
     Ok((is_section_divider, section_type))
+}
+
+fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
+    let mut cursor = start.min(limit);
+    while cursor.saturating_add(4) <= limit {
+        let offset = bytes[cursor..limit]
+            .iter()
+            .position(|&byte| byte == PSD_BLEND_SIGNATURE[0])?;
+        let candidate = cursor + offset;
+        if candidate.saturating_add(4) > limit {
+            return None;
+        }
+        let signature = &bytes[candidate..candidate + 4];
+        if signature == PSD_BLEND_SIGNATURE || signature == PSB_BLOCK_SIGNATURE {
+            return Some(candidate);
+        }
+        cursor = candidate.saturating_add(1);
+    }
+    None
+}
+
+fn abandon_tagged_block_candidate(
+    r: &mut std::io::Cursor<&[u8]>,
+    block_start: u64,
+    extra_end: u64,
+    resyncs: &mut u32,
+) -> bool {
+    *resyncs = resyncs.saturating_add(1);
+    if *resyncs > MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+        r.set_position(extra_end);
+        return true;
+    }
+    r.set_position(block_start.saturating_add(1));
+    false
 }
 
 fn skip_pascal_name(r: &mut std::io::Cursor<&[u8]>, extra_end: u64) -> Result<(), String> {
@@ -738,6 +792,7 @@ fn cursor_slice(bytes: &[u8], start: u64, end: u64) -> Result<&[u8], String> {
 }
 
 const TAGGED_BLOCK_MIN_HEADER_LEN: u64 = 12;
+const MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER: u32 = 64;
 
 fn tagged_block_uses_u64_len(signature: &[u8; 4], key: &[u8; 4], is_psb: bool) -> bool {
     signature == PSB_BLOCK_SIGNATURE
@@ -2250,6 +2305,82 @@ mod tests {
 
         assert!(!is_section_divider);
         assert_eq!(section_type, None);
+    }
+
+    #[test]
+    fn scan_extra_finds_lsct_after_garbage() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"garbage before signature");
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&3u32.to_be_bytes());
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(is_section_divider);
+        assert_eq!(section_type, Some(3));
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_terminates() {
+        let block = vec![0u8; 32 * 1024 * 1024];
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+        let started = std::time::Instant::now();
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(!is_section_divider);
+        assert_eq!(section_type, None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "signature-free scan should finish quickly"
+        );
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_stops_before_late_lsct() {
+        let mut block = Vec::new();
+        for _ in 0..=super::MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+            block.extend_from_slice(b"8BIM");
+            block.extend_from_slice(b"junk");
+            block.extend_from_slice(&(u32::MAX).to_be_bytes());
+        }
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&2u32.to_be_bytes());
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(!is_section_divider);
+        assert_eq!(section_type, None);
+    }
+
+    #[test]
+    fn scan_extra_resync_budget_keeps_existing_lsct() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&1u32.to_be_bytes());
+        for _ in 0..=super::MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER {
+            block.extend_from_slice(b"8BIM");
+            block.extend_from_slice(b"junk");
+            block.extend_from_slice(&(u32::MAX).to_be_bytes());
+        }
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(is_section_divider);
+        assert_eq!(section_type, Some(1));
     }
 
     #[test]
