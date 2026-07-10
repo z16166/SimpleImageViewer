@@ -302,6 +302,36 @@ mod tests {
     use super::{PsdSectionIndex, decode_psd_sdr_main_from_bytes_with_cancel};
     use std::path::Path;
 
+    fn tiny_raw_rgb_psd(width: u32, height: u32, rgb_planar: &[u8]) -> Vec<u8> {
+        assert_eq!(rgb_planar.len(), (width * height * 3) as usize);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // version = PSD
+        bytes.extend_from_slice(&[0u8; 6]); // reserved
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // channels
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes()); // depth
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // color mode (RGB)
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // color mode data length
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // image resources length
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // layer and mask info length
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // Image Data compression = Raw
+        bytes.extend_from_slice(rgb_planar);
+        bytes
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_decodes_tiny_raw_rgb_flattened() {
+        let bytes = tiny_raw_rgb_psd(1, 1, &[0x10, 0x20, 0x30]);
+
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+            .expect("tiny raw RGB PSD should decode through P1");
+
+        assert_eq!((main.width, main.height), (1, 1));
+        assert_eq!(main.pixels, vec![0x10, 0x20, 0x30, 0xFF]);
+    }
+
     #[test]
     fn decode_psd_sdr_main_fails_closed_on_non_structural_index_error() {
         // Header + color-mode + image-resources + layer-mask sections are all
