@@ -285,17 +285,25 @@ fn parse_layer_record(
     layer_info_end: u64,
     is_psb: bool,
 ) -> Result<LayerRecord, String> {
+    read_at(r, 16, layer_info_end, "layer rect")?;
     let top = read_i32(r)?;
     let left = read_i32(r)?;
     let bottom = read_i32(r)?;
     let right = read_i32(r)?;
 
+    read_at(r, 2, layer_info_end, "layer channel count")?;
     let channel_count = crate::psb_reader::read_u16(r)? as usize;
     if channel_count > MAX_LAYER_CHANNELS_PER_RECORD {
         return Err(format!(
             "PSD/PSB layer channel count {channel_count} exceeds {MAX_LAYER_CHANNELS_PER_RECORD}"
         ));
     }
+    // Channel length table: (i16 id + u32/u64 data_len) per channel.
+    let channel_entry_size: u64 = if is_psb { 10 } else { 6 };
+    let channel_table_len = (channel_count as u64)
+        .checked_mul(channel_entry_size)
+        .ok_or_else(|| "PSD/PSB layer channel table length overflow".to_string())?;
+    read_at(r, channel_table_len, layer_info_end, "layer channel table")?;
     let mut channels = Vec::with_capacity(channel_count);
     for _ in 0..channel_count {
         let id = read_i16(r)?;
@@ -310,6 +318,7 @@ fn parse_layer_record(
         channels.push(LayerChannel { id, data_len });
     }
 
+    read_at(r, 12, layer_info_end, "layer blend header")?;
     let mut blend_signature = [0u8; 4];
     r.read_exact(&mut blend_signature)
         .map_err(|e| format!("Read layer blend signature: {e}"))?;
@@ -330,6 +339,7 @@ fn parse_layer_record(
     let clipping = attrs[1];
     let flags = attrs[2];
 
+    read_at(r, 4, layer_info_end, "layer extra data length")?;
     let extra_size = crate::psb_reader::read_u32(r)? as u64;
     let extra_start = r.position();
     let extra_end = checked_end(extra_start, extra_size, layer_info_end, "layer extra data")?;
@@ -524,7 +534,7 @@ fn read_extra_u32(
     extra_end: u64,
     label: &str,
 ) -> Result<u32, String> {
-    checked_end(r.position(), 4, extra_end, label)?;
+    read_at(r, 4, extra_end, label)?;
     crate::psb_reader::read_u32(r)
 }
 
@@ -534,7 +544,7 @@ fn skip_extra_bytes(
     extra_end: u64,
     label: &str,
 ) -> Result<(), String> {
-    checked_end(r.position(), len, extra_end, label)?;
+    read_at(r, len, extra_end, label)?;
     crate::psb_reader::seek_forward(r, len)
 }
 
@@ -544,8 +554,20 @@ fn skip_section(
     file_len: u64,
     label: &str,
 ) -> Result<(), String> {
-    checked_end(r.position(), len, file_len, label)?;
+    read_at(r, len, file_len, label)?;
     crate::psb_reader::seek_forward(r, len)
+}
+
+/// Ensure `len` bytes remain before `limit` at the current cursor position.
+#[inline]
+fn read_at(
+    r: &mut std::io::Cursor<&[u8]>,
+    len: u64,
+    limit: u64,
+    label: &str,
+) -> Result<(), String> {
+    checked_end(r.position(), len, limit, label)?;
+    Ok(())
 }
 
 fn checked_end(start: u64, len: u64, limit: u64, label: &str) -> Result<u64, String> {
@@ -1372,6 +1394,9 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
         }
     }
 
+    // P1 -> P2: poll cancel after absolute-blank degrade (or P1 fail) before P2 work.
+    crate::psb_reader::check_decode_cancel(cancel)?;
+
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
     if !skip_p2_after_structural_header {
@@ -1420,8 +1445,10 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     }
 
     // P3: embedded Photoshop IR thumbnail, then zero-information barrier.
+    crate::psb_reader::check_decode_cancel(cancel)?;
     match crate::psb_reader::try_extract_photoshop_thumbnail(bytes) {
         Some(thumb) => {
+            crate::psb_reader::check_decode_cancel(cancel)?;
             let zero_info =
                 crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
             if zero_info {
@@ -1471,12 +1498,18 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
 }
 
 /// True when P1 failed for a reason that P2 cannot recover (same header parse).
+///
+/// Covers at least: invalid signature, unknown version, bad dimensions,
+/// channel-count variants, unsupported bit depth, and truncated header.
+/// Does **not** treat Image Data-only failures (e.g. invalid compression) as
+/// structural -- P2 layer composite may still succeed.
 fn is_psd_header_structural_error(err: &str) -> bool {
     err.contains("invalid signature")
         || err.starts_with("Unknown PSD/PSB version:")
         || err.starts_with("PSD/PSB dimensions")
-        || err.starts_with("PSD/PSB channel count")
+        || err.contains("channel count")
         || err.starts_with("Unsupported PSD/PSB bit depth")
+        || err.starts_with("PSD/PSB header is too short")
 }
 
 struct CompositeTiming {
@@ -2198,6 +2231,26 @@ mod tests {
         ));
         assert!(is_psd_header_structural_error(
             "PSD/PSB dimensions 0x0 must be non-zero"
+        ));
+        assert!(is_psd_header_structural_error(
+            "PSD/PSB dimensions must be non-zero"
+        ));
+        assert!(is_psd_header_structural_error(
+            "PSD/PSB channel count 0 is out of range (1..=56)"
+        ));
+        // Layer-record wording also contains "channel count".
+        assert!(is_psd_header_structural_error(
+            "PSD/PSB layer channel count 999 exceeds 56"
+        ));
+        assert!(is_psd_header_structural_error(
+            "Unsupported PSD/PSB bit depth 12 (supported: 8, 16, 32)"
+        ));
+        assert!(is_psd_header_structural_error(
+            "PSD/PSB header is too short"
+        ));
+        // Image Data compression is not a shared header failure -- P2 may work.
+        assert!(!is_psd_header_structural_error(
+            "Invalid PSD/PSB Image Data compression: 9"
         ));
         assert!(!is_psd_header_structural_error(
             "Unsupported layer channel compression: 9"

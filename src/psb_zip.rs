@@ -246,28 +246,15 @@ unsafe fn prefix_sum_u16be_avx2(row: &mut [u8]) {
         }
         i += PREFIX_SUM_U16_AVX2_SAMPLES;
     }
-    // Remainder: reuse SSE path when possible, else scalar with current carry.
-    if i + PREFIX_SUM_U16_SSE_SAMPLES <= n {
-        // Keep carry continuity via scalar for the tail (avoids re-entering SSE with carry=0).
-        while i < n {
-            let off = i * 2;
-            let delta = u16::from_be_bytes([row[off], row[off + 1]]);
-            carry = carry.wrapping_add(delta);
-            let be = carry.to_be_bytes();
-            row[off] = be[0];
-            row[off + 1] = be[1];
-            i += 1;
-        }
-    } else {
-        while i < n {
-            let off = i * 2;
-            let delta = u16::from_be_bytes([row[off], row[off + 1]]);
-            carry = carry.wrapping_add(delta);
-            let be = carry.to_be_bytes();
-            row[off] = be[0];
-            row[off + 1] = be[1];
-            i += 1;
-        }
+    // Remainder: scalar with current carry (avoids re-entering SSE/AVX with carry=0).
+    while i < n {
+        let off = i * 2;
+        let delta = u16::from_be_bytes([row[off], row[off + 1]]);
+        carry = carry.wrapping_add(delta);
+        let be = carry.to_be_bytes();
+        row[off] = be[0];
+        row[off + 1] = be[1];
+        i += 1;
     }
 }
 
@@ -487,7 +474,9 @@ pub(crate) fn decode_zip_channel_bytes(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_zip_channel_bytes, undo_zip_prediction};
+    use super::{
+        decode_zip_channel_bytes, prefix_sum_u8_inplace, prefix_sum_u8_scalar, undo_zip_prediction,
+    };
     use miniz_oxide::deflate::compress_to_vec_zlib;
 
     #[test]
@@ -519,6 +508,42 @@ mod tests {
             *px = acc;
         }
         undo_zip_prediction(&mut encoded, width, 8).unwrap();
+        assert_eq!(encoded, expected);
+    }
+
+    /// Odd length, non-multiple of SIMD chunk, and wrapping deltas across chunk boundaries.
+    #[test]
+    fn prefix_sum_u8_inplace_odd_and_cross_chunk() {
+        // 37 = AVX2(32) + 5 remainder; also covers SSE(16) multi-chunk carry.
+        let lens = [1usize, 3, 15, 17, 31, 33, 37, 48, 65];
+        for &n in &lens {
+            let mut encoded: Vec<u8> = (0..n)
+                .map(|i| match i % 5 {
+                    0 => 200u8,
+                    1 => 100,
+                    2 => 255,
+                    3 => 1,
+                    _ => 80,
+                })
+                .collect();
+            let mut expected = encoded.clone();
+            prefix_sum_u8_scalar(&mut expected);
+            prefix_sum_u8_inplace(&mut encoded);
+            assert_eq!(encoded, expected, "prefix_sum_u8 mismatch at len={n}");
+        }
+    }
+
+    #[test]
+    fn prefix_sum_u8_inplace_mixed_byte_distribution() {
+        // Mix of zeros, mid-range, and overflow-prone highs across >2 AVX2 chunks.
+        let n = 100usize;
+        let mut encoded = vec![0u8; n];
+        for (i, b) in encoded.iter_mut().enumerate() {
+            *b = [0u8, 1, 127, 128, 200, 255, 3, 250][i % 8];
+        }
+        let mut expected = encoded.clone();
+        prefix_sum_u8_scalar(&mut expected);
+        prefix_sum_u8_inplace(&mut encoded);
         assert_eq!(encoded, expected);
     }
 

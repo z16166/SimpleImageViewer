@@ -241,7 +241,8 @@ unsafe fn f32be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
         }
         i += AVX2_F32_SAMPLES;
     }
-    if i + SSE_F32_SAMPLES <= n && is_x86_feature_detected!("sse4.1") {
+    // AVX2 implies SSE4.1 on all supported CPUs; call the SSE kernel directly.
+    if i + SSE_F32_SAMPLES <= n {
         unsafe {
             f32be_to_u8_sse41(&mut dst[i..], &src[i * F32_BYTES..]);
         }

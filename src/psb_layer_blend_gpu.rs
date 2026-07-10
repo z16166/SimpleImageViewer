@@ -82,11 +82,8 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let dst = textureLoad(canvas, dst_coord);
     let da = dst.a;
+    // Invariant: sa > 0.0 here, so out_a = sa + da*(1-sa) > 0.0 always.
     let out_a = sa + da * (1.0 - sa);
-    if (out_a <= 0.0) {
-        textureStore(canvas, dst_coord, vec4<f32>(0.0));
-        return;
-    }
     let out_rgb = (src.rgb * sa + dst.rgb * da * (1.0 - sa)) / out_a;
     textureStore(canvas, dst_coord, vec4<f32>(out_rgb, out_a));
 }
