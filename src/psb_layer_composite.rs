@@ -943,8 +943,8 @@ pub use crate::loader::STRICT_LAYER_COMPOSITE_BLANK;
 /// mask + clipping groups + strict group/leaf visibility).
 ///
 /// When `gpu` is provided, the canvas is large enough, every decoded layer
-/// uses Normal blend, and none are clipped, blending may run on an offscreen
-/// wgpu compute path; failures, non-Normal stacks, or clipping fall back to CPU.
+/// uses a GPU-separable blend mode, blending may run on an offscreen wgpu
+/// compute path; failures or non-separable stacks fall back to CPU.
 ///
 /// Returns [`crate::loader::DecodeError::NoDrawableVisibleLayers`] when no
 /// visible layer intersects the canvas (no pixel work is performed).
@@ -1104,7 +1104,8 @@ pub(crate) fn layer_will_decode(record: &LayerRecord, visible: bool) -> bool {
 /// Dispatches to one of two strategies:
 /// - GPU all-at-once batch ([`run_composite_pass_gpu_batch`]): only when a GPU
 ///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds every
-///   composited layer Normal-blended, unclipped, and within budget.
+///   composited layer GPU-separable and within budget, including clipping
+///   groups made only from separable blend modes.
 /// - CPU streaming ([`run_composite_pass_cpu_streaming`]): the default, and
 ///   the fallback whenever the GPU batch is not eligible.
 #[allow(clippy::too_many_arguments)]
@@ -1770,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_batch_eligible_requires_normal_blend_and_no_clipping() {
+    fn gpu_batch_eligible_allows_clipping_with_separable_modes() {
         let (width, height) = (4u32, 4u32);
         let channel_data_owned = Vec::new();
         let base_spec = |blend: [u8; 4], clipping: u8| TestLayerSpec {
@@ -1784,28 +1785,32 @@ mod tests {
             opacity: 255,
         };
 
-        let (records, _) = build_test_layers(&[base_spec(*b"norm", 0)]);
+        let (records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
         let visible = vec![true; records.len()];
-        let eligible_info = mk_layer_info(width, height, records, &channel_data_owned);
+        let info = mk_layer_info(width, height, records, &channel_data_owned);
         assert!(
-            gpu_batch_eligible_decoded_bytes(&eligible_info, &visible).is_some(),
-            "all-Normal, unclipped stack should be GPU batch eligible"
+            gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+            "Screen without clipping should be GPU batch eligible after P0"
         );
 
-        let (non_normal_records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
-        let visible2 = vec![true; non_normal_records.len()];
-        let non_normal_info = mk_layer_info(width, height, non_normal_records, &channel_data_owned);
-        assert!(
-            gpu_batch_eligible_decoded_bytes(&non_normal_info, &visible2).is_none(),
-            "non-Normal blend must not be GPU batch eligible"
-        );
+        for key in [*b"norm", *b"mul ", *b"lddg"] {
+            let (records, _) = build_test_layers(&[base_spec(key, 0)]);
+            let visible = vec![true; records.len()];
+            let info = mk_layer_info(width, height, records, &channel_data_owned);
+            assert!(
+                gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+                "separable mode {:?} should be eligible",
+                key
+            );
+        }
 
-        let (clipped_records, _) = build_test_layers(&[base_spec(*b"norm", 1)]);
+        let (clipped_records, _) =
+            build_test_layers(&[base_spec(*b"norm", 0), base_spec(*b"scrn", 1)]);
         let visible3 = vec![true; clipped_records.len()];
         let clipped_info = mk_layer_info(width, height, clipped_records, &channel_data_owned);
         assert!(
-            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_none(),
-            "clipping must not be GPU batch eligible"
+            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_some(),
+            "clipping with separable modes should be GPU batch eligible"
         );
     }
 
