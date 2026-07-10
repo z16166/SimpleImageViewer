@@ -634,7 +634,7 @@ pub(crate) fn layer_channel_byte_ranges(
 
 /// Whether the GPU all-at-once batch path is eligible: every layer that will
 /// actually be composited must use a GPU-separable blend mode (Normal, Screen,
-/// Linear Dodge, Multiply) with no clipping, and the batch's total decoded
+/// Linear Dodge, Multiply), and the batch's total decoded
 /// RGBA footprint must fit
 /// [`crate::psb_layer_composite::MAX_COMPOSITE_DECODED_BYTES`]. Metadata-only
 /// (no channel decode), so the GPU-vs-CPU-streaming choice is made before
@@ -651,10 +651,7 @@ pub(crate) fn gpu_batch_eligible_decoded_bytes(
         if !layer_will_decode(record, visible_i) {
             continue;
         }
-        // P0: four separable modes OK; clipping still forces CPU until P1.
-        if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend)
-            || record.clipping != 0
-        {
+        if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend) {
             return None;
         }
         decoded_bytes =
@@ -794,7 +791,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
         .iter()
         .all(|l| crate::psb_layer_blend_gpu::is_gpu_separable_blend(&l.blend));
     let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
-    let used_gpu = if !all_separable || has_clipping {
+    let used_gpu = if !all_separable {
         false
     } else {
         let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
@@ -821,7 +818,11 @@ pub(crate) fn run_composite_pass_gpu_batch(
             timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
             // Take ownership of the GPU readback buffer (no full-canvas copy).
             *canvas = gpu_pixels;
-            timing.mode = "gpu-separable";
+            timing.mode = if has_clipping {
+                "gpu-separable+clip"
+            } else {
+                "gpu-separable"
+            };
             true
         } else {
             false
