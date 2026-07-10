@@ -26,11 +26,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Display text for [`DecodeError::Cancelled`] (logging / UI).
 pub const DECODE_CANCELLED: &str = "decode cancelled";
 
-/// Typed decode failure. Cancel is a distinct variant so callers match by enum
-/// (checklist #30) instead of comparing error strings.
+/// Display text for [`DecodeError::NoDrawableVisibleLayers`] (logging / UI).
+pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawable visible layers";
+
+/// Typed decode failure. Semantic cases are distinct variants so callers match
+/// by enum (checklist #30) instead of comparing error strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     Cancelled,
+    /// Strict PSD/PSB layer composite found no drawable visible layers.
+    NoDrawableVisibleLayers,
     Message(String),
 }
 
@@ -41,9 +46,15 @@ impl DecodeError {
     }
 
     #[inline]
+    pub fn is_no_drawable_visible_layers(&self) -> bool {
+        matches!(self, Self::NoDrawableVisibleLayers)
+    }
+
+    #[inline]
     pub fn as_str(&self) -> &str {
         match self {
             Self::Cancelled => DECODE_CANCELLED,
+            Self::NoDrawableVisibleLayers => STRICT_LAYER_COMPOSITE_BLANK,
             Self::Message(msg) => msg.as_str(),
         }
     }
@@ -101,7 +112,7 @@ impl DecodeCancelFlag {
 
 #[cfg(test)]
 mod tests {
-    use super::{DECODE_CANCELLED, DecodeCancelFlag, DecodeError};
+    use super::{DECODE_CANCELLED, DecodeCancelFlag, DecodeError, STRICT_LAYER_COMPOSITE_BLANK};
 
     #[test]
     fn cancel_is_visible_to_clones() {
@@ -120,5 +131,18 @@ mod tests {
         assert_eq!(err.as_str(), DECODE_CANCELLED);
         assert_eq!(err.to_string(), DECODE_CANCELLED);
         assert!(!DecodeError::Message("unsupported compression".into()).is_cancelled());
+    }
+
+    #[test]
+    fn no_drawable_visible_layers_is_typed_variant() {
+        let err = DecodeError::NoDrawableVisibleLayers;
+        assert!(err.is_no_drawable_visible_layers());
+        assert!(!err.is_cancelled());
+        assert_eq!(err.as_str(), STRICT_LAYER_COMPOSITE_BLANK);
+        assert_eq!(err.to_string(), STRICT_LAYER_COMPOSITE_BLANK);
+        assert!(
+            !DecodeError::Message(STRICT_LAYER_COMPOSITE_BLANK.into())
+                .is_no_drawable_visible_layers()
+        );
     }
 }

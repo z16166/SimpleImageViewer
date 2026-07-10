@@ -33,7 +33,9 @@ mod types;
 
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
-pub use decode_cancel::{DECODE_CANCELLED, DecodeCancelFlag, DecodeError};
+pub use decode_cancel::{
+    DECODE_CANCELLED, DecodeCancelFlag, DecodeError, STRICT_LAYER_COMPOSITE_BLANK,
+};
 #[allow(unused_imports)]
 pub use decode_profile::{
     DEFAULT_PREFETCH_WINDOW_DISTANCE, DecodeProfile, DisplayRequirements,

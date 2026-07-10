@@ -1235,8 +1235,8 @@ fn decode_one_layer(
     }))
 }
 
-/// Returned when strict visibility has no drawable layers (geometry/flags).
-pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawable visible layers";
+/// Display text for [`crate::loader::DecodeError::NoDrawableVisibleLayers`].
+pub use crate::loader::STRICT_LAYER_COMPOSITE_BLANK;
 
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
 /// (depth 8 only: Normal / Screen / Linear Dodge / Multiply + opacity + user
@@ -1246,8 +1246,8 @@ pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawa
 /// uses Normal blend, and none are clipped, blending may run on an offscreen
 /// wgpu compute path; failures, non-Normal stacks, or clipping fall back to CPU.
 ///
-/// Returns [`STRICT_LAYER_COMPOSITE_BLANK`] when no visible layer intersects
-/// the canvas (no pixel work is performed).
+/// Returns [`crate::loader::DecodeError::NoDrawableVisibleLayers`] when no
+/// visible layer intersects the canvas (no pixel work is performed).
 pub fn composite_layers_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -1270,7 +1270,7 @@ pub fn composite_layers_from_bytes_with_cancel(
     let canvas_h = info.height;
     let visible = compute_effective_visibility(&info.records);
     if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, &visible) {
-        return Err(STRICT_LAYER_COMPOSITE_BLANK.into());
+        return Err(crate::loader::DecodeError::NoDrawableVisibleLayers);
     }
 
     let canvas_len = (canvas_w as usize)
@@ -1464,7 +1464,7 @@ fn decode_psd_sdr_main_inner(
             }
             Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
-                p2_no_drawable_visible = e.as_str() == STRICT_LAYER_COMPOSITE_BLANK;
+                p2_no_drawable_visible = e.is_no_drawable_visible_layers();
                 crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
                 log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
             }
@@ -2171,6 +2171,7 @@ mod tests {
         let bytes = std::fs::read(path).expect("read");
         let err = composite_layers_from_bytes_with_cancel(&bytes, None, None)
             .expect_err("expected blank under strict visibility");
+        assert!(err.is_no_drawable_visible_layers());
         assert_eq!(err.as_str(), STRICT_LAYER_COMPOSITE_BLANK);
     }
 
