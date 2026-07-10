@@ -632,6 +632,14 @@ fn wait_for_readback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::psb_layer_clip::{ClipLayerRef, blend_layers_with_clipping};
+
+    const ACCURACY_CANVAS_W: u32 = 512;
+    const ACCURACY_CANVAS_H: u32 = 512;
+    const ACCURACY_LAYER_W: u32 = 32;
+    const ACCURACY_LAYER_H: u32 = 32;
+    const ACCURACY_LAYER_LEFT: i32 = 10;
+    const ACCURACY_LAYER_TOP: i32 = 10;
 
     #[test]
     fn gpu_blend_worthwhile_rejects_small_canvas() {
@@ -648,6 +656,142 @@ mod tests {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_separable"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn blend_b"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("sa * (1.0 - da)"));
+    }
+
+    #[test]
+    fn separable_mode_u32_mapping() {
+        assert_eq!(separable_blend_mode_u32(b"norm"), BLEND_MODE_NORMAL);
+        assert_eq!(separable_blend_mode_u32(b"scrn"), BLEND_MODE_SCREEN);
+        assert_eq!(separable_blend_mode_u32(b"lddg"), BLEND_MODE_LINEAR_DODGE);
+        assert_eq!(separable_blend_mode_u32(b"mul "), BLEND_MODE_MULTIPLY);
+        assert_eq!(separable_blend_mode_u32(b"xxxx"), BLEND_MODE_NORMAL);
+    }
+
+    fn max_abs_diff(a: &[u8], b: &[u8]) -> u8 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .map(|(&left, &right)| left.abs_diff(right))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn test_canvas() -> Vec<u8> {
+        let mut canvas = Vec::with_capacity((ACCURACY_CANVAS_W * ACCURACY_CANVAS_H * 4) as usize);
+        for y in 0..ACCURACY_CANVAS_H {
+            for x in 0..ACCURACY_CANVAS_W {
+                canvas.extend_from_slice(&[
+                    ((x * 3 + y) & 0xff) as u8,
+                    ((x + y * 5) & 0xff) as u8,
+                    ((x * 7 + y * 11) & 0xff) as u8,
+                    255,
+                ]);
+            }
+        }
+        canvas
+    }
+
+    fn test_layer_rgba() -> Vec<u8> {
+        let mut layer = Vec::with_capacity((ACCURACY_LAYER_W * ACCURACY_LAYER_H * 4) as usize);
+        for y in 0..ACCURACY_LAYER_H {
+            for x in 0..ACCURACY_LAYER_W {
+                layer.extend_from_slice(&[
+                    (40 + ((x * 5) & 0x7f)) as u8,
+                    (30 + ((y * 7) & 0x7f)) as u8,
+                    (80 + (((x + y) * 3) & 0x7f)) as u8,
+                    128,
+                ]);
+            }
+        }
+        layer
+    }
+
+    fn try_test_psd_gpu_context() -> Option<PsdGpuContext> {
+        let (device, queue, is_opengl) = pollster::block_on(async {
+            let instance = wgpu::Instance::default();
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: false,
+                    compatible_surface: None,
+                })
+                .await
+                .ok()?;
+            let is_opengl = adapter.get_info().backend == wgpu::Backend::Gl;
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .ok()?;
+            Some((device, queue, is_opengl))
+        })?;
+        let device_id_live = Arc::new(AtomicU64::new(1));
+        Some(PsdGpuContext {
+            device,
+            queue,
+            pipeline_cache: None,
+            device_id: 1,
+            device_id_live,
+            is_opengl,
+        })
+    }
+
+    #[test]
+    #[ignore]
+    fn gpu_separable_modes_match_cpu_within_one() {
+        let Some(ctx) = try_test_psd_gpu_context() else {
+            eprintln!("Skipping GPU separable blend accuracy test: no wgpu device available");
+            return;
+        };
+
+        let initial_canvas = test_canvas();
+        let layer_rgba = test_layer_rgba();
+        for blend in [*b"norm", *b"scrn", *b"lddg", *b"mul "] {
+            let mut cpu_canvas = initial_canvas.clone();
+            let cpu_layers = [ClipLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            blend_layers_with_clipping(
+                &mut cpu_canvas,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &cpu_layers,
+                None,
+            )
+            .unwrap();
+
+            let gpu_layers = [DecodedLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            let Some(gpu_canvas) = try_blend_layers_gpu(
+                &ctx,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &initial_canvas,
+                &gpu_layers,
+                None,
+            ) else {
+                eprintln!("Skipping GPU separable blend accuracy test: GPU path unavailable");
+                return;
+            };
+
+            assert!(
+                max_abs_diff(&cpu_canvas, &gpu_canvas) <= 1,
+                "blend {:?} exceeded max abs diff 1",
+                std::str::from_utf8(&blend).unwrap_or("????")
+            );
+        }
     }
 
     #[test]
