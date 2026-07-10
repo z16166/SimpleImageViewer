@@ -14,9 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Offscreen wgpu compute path for PSD/PSB Normal (straight-alpha src-over) layer blend.
+//! Offscreen wgpu compute path for PSD/PSB separable layer blend and clipping groups.
 //!
-//! Output is RGBA8 for the existing SDR display path. PackBits / ICC stay on CPU.
+//! Handles Normal, Screen, Linear Dodge, and Multiply for the existing SDR RGBA8
+//! display path. PackBits / ICC stay on CPU. See
+//! `docs/superpowers/specs/2026-07-10-psd-gpu-separable-clip-blend-design.md`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -423,7 +425,7 @@ pub(crate) fn try_blend_layers_gpu(
         match get_or_create_pipeline(&ctx.device, ctx.device_id, ctx.pipeline_cache.as_deref()) {
             Ok(p) => p,
             Err(e) => {
-                log::debug!("[PSD] GPU Normal blend pipeline unavailable: {e}");
+                log::debug!("[PSD] GPU separable blend pipeline unavailable: {e}");
                 return None;
             }
         };
@@ -1159,6 +1161,9 @@ mod tests {
     const ACCURACY_LAYER_H: u32 = 32;
     const ACCURACY_LAYER_LEFT: i32 = 10;
     const ACCURACY_LAYER_TOP: i32 = 10;
+    const CLIPPING_ACCURACY_LAYER_SIZE: u32 = 256;
+    const CLIPPING_ACCURACY_OFFSET: i32 = 128;
+    const CLIPPING_ACCURACY_OVERLAY_LEFT: i32 = 256;
 
     #[test]
     fn gpu_blend_worthwhile_rejects_small_canvas() {
@@ -1325,6 +1330,121 @@ mod tests {
                 std::str::from_utf8(&blend).unwrap_or("????")
             );
         }
+    }
+
+    fn solid_layer_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut layer = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..width * height {
+            layer.extend_from_slice(&rgba);
+        }
+        layer
+    }
+
+    #[test]
+    #[ignore]
+    fn gpu_screen_clipping_matches_cpu_within_one() {
+        let Some(ctx) = try_test_psd_gpu_context() else {
+            eprintln!("Skipping GPU clipping accuracy test: no wgpu device available");
+            return;
+        };
+
+        let initial_canvas = vec![0u8; (ACCURACY_CANVAS_W * ACCURACY_CANVAS_H * 4) as usize];
+        let base_rgba = solid_layer_rgba(ACCURACY_CANVAS_W, ACCURACY_CANVAS_H, [200, 0, 0, 255]);
+        let clip_rgba = solid_layer_rgba(
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            [0, 0, 255, 255],
+        );
+        let overlay_rgba = solid_layer_rgba(
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            [0, 128, 0, 128],
+        );
+
+        let mut cpu_canvas = initial_canvas.clone();
+        let cpu_layers = [
+            ClipLayerRef {
+                left: 0,
+                top: 0,
+                width: ACCURACY_CANVAS_W,
+                height: ACCURACY_CANVAS_H,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &base_rgba,
+            },
+            ClipLayerRef {
+                left: CLIPPING_ACCURACY_OFFSET,
+                top: CLIPPING_ACCURACY_OFFSET,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"scrn",
+                clipping: 1,
+                rgba: &clip_rgba,
+            },
+            ClipLayerRef {
+                left: CLIPPING_ACCURACY_OVERLAY_LEFT,
+                top: 0,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &overlay_rgba,
+            },
+        ];
+        blend_layers_with_clipping(
+            &mut cpu_canvas,
+            ACCURACY_CANVAS_W,
+            ACCURACY_CANVAS_H,
+            &cpu_layers,
+            None,
+        )
+        .unwrap();
+
+        let gpu_layers = [
+            DecodedLayerRef {
+                left: 0,
+                top: 0,
+                width: ACCURACY_CANVAS_W,
+                height: ACCURACY_CANVAS_H,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &base_rgba,
+            },
+            DecodedLayerRef {
+                left: CLIPPING_ACCURACY_OFFSET,
+                top: CLIPPING_ACCURACY_OFFSET,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"scrn",
+                clipping: 1,
+                rgba: &clip_rgba,
+            },
+            DecodedLayerRef {
+                left: CLIPPING_ACCURACY_OVERLAY_LEFT,
+                top: 0,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &overlay_rgba,
+            },
+        ];
+        let Some(gpu_canvas) = try_blend_layers_gpu(
+            &ctx,
+            ACCURACY_CANVAS_W,
+            ACCURACY_CANVAS_H,
+            &initial_canvas,
+            &gpu_layers,
+            None,
+        ) else {
+            eprintln!("Skipping GPU clipping accuracy test: GPU path unavailable");
+            return;
+        };
+
+        assert!(
+            max_abs_diff(&cpu_canvas, &gpu_canvas) <= 1,
+            "Screen clipping exceeded max abs diff 1"
+        );
     }
 
     #[test]
