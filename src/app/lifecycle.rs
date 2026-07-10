@@ -568,6 +568,7 @@ impl ImageViewerApp {
             hdr_register_prewarm_repush_counts: std::collections::HashMap::new(),
             gpu_demosaic_failed_indices: std::collections::HashSet::new(),
             main_loader_failed_indices: std::collections::HashSet::new(),
+            main_loader_failed_errors: std::collections::HashMap::new(),
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_pending_work,

@@ -1009,6 +1009,57 @@ fn strip_skip_slow_allows_neighbors_when_current_main_loader_failed() {
 }
 
 #[test]
+fn install_image_error_persists_and_surfaces_when_not_current() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("a.psd"), PathBuf::from("b.psd")];
+    app.current_index = 0;
+    app.record_installed_display_mode(1, crate::loader::RenderShape::Tiled);
+    app.directory_tree_strip_tiled_attempted.insert(1);
+
+    app.install_image_error(1, "hidden by the designer");
+
+    assert!(app.main_loader_failed_indices.contains(&1));
+    assert_eq!(
+        app.main_loader_failed_errors.get(&1).map(String::as_str),
+        Some("hidden by the designer")
+    );
+    assert!(
+        app.error_message.is_none(),
+        "non-current fail must not clobber current UI"
+    );
+    assert_eq!(app.installed_display_mode(1), None);
+    assert!(!app.directory_tree_strip_tiled_attempted.contains(&1));
+
+    app.current_index = 1;
+    app.surface_main_loader_failure_for_current();
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("failed index should surface error");
+    assert!(msg.contains("hidden by the designer"));
+
+    app.note_main_loader_install_success(1);
+    assert!(!app.main_loader_failed_indices.contains(&1));
+    assert!(!app.main_loader_failed_errors.contains_key(&1));
+}
+
+#[test]
+fn install_image_error_sets_message_when_current() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("a.psd")];
+    app.current_index = 0;
+
+    app.install_image_error(0, "no displayable image");
+
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("current fail should set error_message");
+    assert!(msg.contains("no displayable image"));
+    assert!(app.main_loader_failed_indices.contains(&0));
+}
+
+#[test]
 fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
@@ -2316,6 +2367,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
         main_loader_failed_indices: HashSet::new(),
+        main_loader_failed_errors: HashMap::new(),
         raw_gpu_demosaic_await_hdr_present: false,
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),

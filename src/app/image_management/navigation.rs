@@ -349,7 +349,6 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
-        self.main_loader_failed_indices.remove(&target_index);
         self.canvas_display_timing.on_navigate();
         #[cfg(feature = "preload-debug")]
         {
@@ -519,6 +518,7 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.is_font_error = false;
+        self.surface_main_loader_failure_for_current();
         ctx.request_repaint();
         // Close any open EXIF/XMP/PixelRegion modal — it shows data for the previous image
         if matches!(
@@ -689,7 +689,7 @@ impl ImageViewerApp {
                     }
                 }
                 self.flush_deferred_sdr_upload_for_index(idx, ctx);
-            } else {
+            } else if !self.main_loader_failed_indices.contains(&idx) {
                 #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
                 let missing_hdr = raw_hq_navigate_missing_hdr_plane(
                     &self.image_files,
@@ -744,7 +744,12 @@ impl ImageViewerApp {
         self.schedule_preloads(preload_forward);
         self.discard_stale_loader_outputs();
         self.refresh_pixel_data_source_for_current_index();
-        if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
+        if self.settings.show_pixel_inspector
+            && self.pixel_data_source.is_none()
+            && !self
+                .main_loader_failed_indices
+                .contains(&self.current_index)
+        {
             self.loader.request_load(
                 self.current_index,
                 self.image_files[self.current_index].clone(),
@@ -867,6 +872,7 @@ impl ImageViewerApp {
         self.refresh_hdr_view_status();
         self.error_message = None;
         self.is_font_error = false;
+        self.surface_main_loader_failure_for_current();
         self.canvas_display_timing.on_navigate();
     }
 

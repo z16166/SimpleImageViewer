@@ -47,6 +47,7 @@ impl ImageViewerApp {
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.main_loader_failed_indices.clear();
+        self.main_loader_failed_errors.clear();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.prefetched_tiles.clear();
@@ -115,6 +116,9 @@ impl ImageViewerApp {
         }
         if self.main_loader_failed_indices.remove(&from) {
             self.main_loader_failed_indices.insert(to);
+        }
+        if let Some(err) = self.main_loader_failed_errors.remove(&from) {
+            self.main_loader_failed_errors.insert(to, err);
         }
         if self.cpu_raw_refinement_pending_indices.remove(&from) {
             self.cpu_raw_refinement_pending_indices.insert(to);
@@ -489,6 +493,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.main_loader_failed_indices, old_to_new);
+        permute_usize_hashmap(&mut self.main_loader_failed_errors, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
         permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
         permute_usize_hashmap(&mut self.installed_display_modes, old_to_new);
