@@ -153,30 +153,27 @@ fn cmyk_span_adobe_to_rgba8_lcms(
     let mut offset = 0usize;
     while offset < n {
         let count = (n - offset).min(CHUNK);
-        for i in 0..count {
-            let src = offset + i;
-            let dst = i * 4;
-            // Adobe 0=100% ink -> lcms 0=no ink.
-            cmyk_buf[dst] = 255u8.wrapping_sub(span.c[src]);
-            cmyk_buf[dst + 1] = 255u8.wrapping_sub(span.m[src]);
-            cmyk_buf[dst + 2] = 255u8.wrapping_sub(span.y[src]);
-            cmyk_buf[dst + 3] = 255u8.wrapping_sub(span.k[src]);
-        }
+        crate::psb_cmyk_simd::pack_adobe_cmyk_inverted(
+            &span.c[offset..offset + count],
+            &span.m[offset..offset + count],
+            &span.y[offset..offset + count],
+            &span.k[offset..offset + count],
+            &mut cmyk_buf[..count * 4],
+        );
         transform.do_transform(
             cmyk_buf.as_ptr().cast(),
             rgb_buf.as_mut_ptr().cast(),
             count as u32,
         );
-        for i in 0..count {
-            let src = i * 3;
-            let dst = (offset + i) * 4;
-            dst_rgba[dst] = rgb_buf[src];
-            dst_rgba[dst + 1] = rgb_buf[src + 1];
-            dst_rgba[dst + 2] = rgb_buf[src + 2];
-            dst_rgba[dst + 3] = span
-                .alpha
-                .and_then(|a| a.get(offset + i).copied())
-                .unwrap_or(255);
+        let dst_chunk = &mut dst_rgba[offset * 4..(offset + count) * 4];
+        simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
+            &rgb_buf[..count * 3],
+            dst_chunk,
+        );
+        if let Some(a) = span.alpha {
+            for i in 0..count {
+                dst_chunk[i * 4 + 3] = a.get(offset + i).copied().unwrap_or(255);
+            }
         }
         offset += count;
     }

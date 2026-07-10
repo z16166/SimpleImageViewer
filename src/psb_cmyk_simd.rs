@@ -355,9 +355,149 @@ unsafe fn cmyk_planes_to_rgba8_neon(
     }
 }
 
+/// Pack planar Adobe-polarity CMYK into interleaved lcms polarity (`255 - sample`).
+///
+/// `dst` must hold at least `n * 4` bytes where `n` is the common plane length.
+pub fn pack_adobe_cmyk_inverted(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    let n = c
+        .len()
+        .min(m.len())
+        .min(y.len())
+        .min(k.len())
+        .min(dst.len() / 4);
+    if n == 0 {
+        return;
+    }
+    let c = &c[..n];
+    let m = &m[..n];
+    let y = &y[..n];
+    let k = &k[..n];
+    let dst = &mut dst[..n * 4];
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                pack_adobe_cmyk_inverted_avx2(c, m, y, k, dst);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                pack_adobe_cmyk_inverted_sse2(c, m, y, k, dst);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            pack_adobe_cmyk_inverted_neon(c, m, y, k, dst);
+        }
+        return;
+    }
+
+    pack_adobe_cmyk_inverted_scalar(c, m, y, k, dst);
+}
+
+fn pack_adobe_cmyk_inverted_scalar(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    for i in 0..c.len() {
+        let base = i * 4;
+        dst[base] = 255u8.wrapping_sub(c[i]);
+        dst[base + 1] = 255u8.wrapping_sub(m[i]);
+        dst[base + 2] = 255u8.wrapping_sub(y[i]);
+        dst[base + 3] = 255u8.wrapping_sub(k[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn pack_adobe_cmyk_inverted_sse2(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    use core::arch::x86_64::*;
+    let n = c.len();
+    let mut i = 0usize;
+    let ones = _mm_set1_epi8(-1); // 0xFF
+    while i + SSE_PIXELS <= n {
+        unsafe {
+            let cv = _mm_xor_si128(_mm_loadl_epi64(c.as_ptr().add(i).cast()), ones);
+            let mv = _mm_xor_si128(_mm_loadl_epi64(m.as_ptr().add(i).cast()), ones);
+            let yv = _mm_xor_si128(_mm_loadl_epi64(y.as_ptr().add(i).cast()), ones);
+            let kv = _mm_xor_si128(_mm_loadl_epi64(k.as_ptr().add(i).cast()), ones);
+            let cm = _mm_unpacklo_epi8(cv, mv);
+            let yk = _mm_unpacklo_epi8(yv, kv);
+            let cmyk0 = _mm_unpacklo_epi16(cm, yk);
+            let cmyk1 = _mm_unpackhi_epi16(cm, yk);
+            _mm_storeu_si128(dst.as_mut_ptr().add(i * 4).cast(), cmyk0);
+            _mm_storeu_si128(dst.as_mut_ptr().add(i * 4 + 16).cast(), cmyk1);
+        }
+        i += SSE_PIXELS;
+    }
+    if i < n {
+        pack_adobe_cmyk_inverted_scalar(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pack_adobe_cmyk_inverted_avx2(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    use core::arch::x86_64::*;
+    let n = c.len();
+    let mut i = 0usize;
+    let ones = _mm_set1_epi8(-1);
+    while i + AVX2_PIXELS <= n {
+        unsafe {
+            let cv = _mm_xor_si128(_mm_loadu_si128(c.as_ptr().add(i).cast()), ones);
+            let mv = _mm_xor_si128(_mm_loadu_si128(m.as_ptr().add(i).cast()), ones);
+            let yv = _mm_xor_si128(_mm_loadu_si128(y.as_ptr().add(i).cast()), ones);
+            let kv = _mm_xor_si128(_mm_loadu_si128(k.as_ptr().add(i).cast()), ones);
+            let cm_lo = _mm_unpacklo_epi8(cv, mv);
+            let cm_hi = _mm_unpackhi_epi8(cv, mv);
+            let yk_lo = _mm_unpacklo_epi8(yv, kv);
+            let yk_hi = _mm_unpackhi_epi8(yv, kv);
+            let out = dst.as_mut_ptr().add(i * 4);
+            _mm_storeu_si128(out.cast(), _mm_unpacklo_epi16(cm_lo, yk_lo));
+            _mm_storeu_si128(out.add(16).cast(), _mm_unpackhi_epi16(cm_lo, yk_lo));
+            _mm_storeu_si128(out.add(32).cast(), _mm_unpacklo_epi16(cm_hi, yk_hi));
+            _mm_storeu_si128(out.add(48).cast(), _mm_unpackhi_epi16(cm_hi, yk_hi));
+        }
+        i += AVX2_PIXELS;
+    }
+    if i + SSE_PIXELS <= n {
+        unsafe {
+            pack_adobe_cmyk_inverted_sse2(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
+        }
+    } else if i < n {
+        pack_adobe_cmyk_inverted_scalar(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn pack_adobe_cmyk_inverted_neon(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    use core::arch::aarch64::*;
+    let n = c.len();
+    let mut i = 0usize;
+    let ones = vdup_n_u8(255);
+    while i + NEON_PIXELS <= n {
+        unsafe {
+            let cv = veor_u8(vld1_u8(c.as_ptr().add(i)), ones);
+            let mv = veor_u8(vld1_u8(m.as_ptr().add(i)), ones);
+            let yv = veor_u8(vld1_u8(y.as_ptr().add(i)), ones);
+            let kv = veor_u8(vld1_u8(k.as_ptr().add(i)), ones);
+            // vst4 stores C,M,Y,K interleaved for 8 pixels.
+            let lanes = uint8x8x4_t(cv, mv, yv, kv);
+            vst4_u8(dst.as_mut_ptr().add(i * 4), lanes);
+        }
+        i += NEON_PIXELS;
+    }
+    if i < n {
+        pack_adobe_cmyk_inverted_scalar(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cmyk_planes_to_rgba8, div255_u16_exact};
+    use super::{cmyk_planes_to_rgba8, div255_u16_exact, pack_adobe_cmyk_inverted};
     use crate::psb_reader::cmyk_to_rgb;
 
     #[test]
@@ -393,5 +533,19 @@ mod tests {
         cmyk_planes_to_rgba8(&c, &m, &y, &k, None, &mut dst);
         assert_eq!(&dst[0..4], &[255, 255, 255, 255]);
         assert_eq!(&dst[4..8], &[0, 255, 255, 255]);
+    }
+
+    #[test]
+    fn pack_adobe_inverted_matches_scalar() {
+        let n = 100usize;
+        let c: Vec<u8> = (0..n).map(|i| i as u8).collect();
+        let m: Vec<u8> = (0..n).map(|i| (i * 2) as u8).collect();
+        let y: Vec<u8> = (0..n).map(|i| (i * 3) as u8).collect();
+        let k: Vec<u8> = (0..n).map(|i| 255u8.wrapping_sub((i * 5) as u8)).collect();
+        let mut simd = vec![0u8; n * 4];
+        let mut scalar = vec![0u8; n * 4];
+        pack_adobe_cmyk_inverted(&c, &m, &y, &k, &mut simd);
+        super::pack_adobe_cmyk_inverted_scalar(&c, &m, &y, &k, &mut scalar);
+        assert_eq!(simd, scalar);
     }
 }

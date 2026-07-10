@@ -49,6 +49,8 @@ const IR_THUMBNAIL_PS4: u16 = 1033;
 const IR_THUMBNAIL_PS5: u16 = 1036;
 /// Photoshop Image Resource: ICC Profile Settings (raw ICC bytes).
 const IR_ICC_PROFILE: u16 = 1039;
+/// Pixel-index mask for cancel polling in RGBA8 full-buffer scans (~every 256 KiB).
+const RGBA8_CANCEL_POLL_MASK: usize = 0x3_FFFF;
 
 // User-facing PSD empty-composite messages live in `locales/*.yaml`
 // (`error.psd_all_layers_hidden`, `error.psd_no_displayable_image`).
@@ -247,7 +249,7 @@ pub fn read_composite_from_bytes_with_cancel(
     validate_psd_dimensions(width, height, channels)?;
     let bps = bytes_per_sample(depth)?;
 
-    log::info!(
+    log::debug!(
         "PSD/PSB header: {}x{}, {} channels, {}-bit, color_mode={}, version={}",
         width,
         height,
@@ -528,7 +530,7 @@ fn rgba8_any_rgb_alpha_scalar(
 ) -> Result<(bool, bool), String> {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         if (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
@@ -568,7 +570,7 @@ unsafe fn rgba8_absolutely_blank_sse2(
     let a_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
     let zero = _mm_setzero_si128();
     while i + 16 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm_loadu_si128(pixels.as_ptr().add(i).cast()) };
@@ -604,7 +606,7 @@ unsafe fn rgba8_absolutely_blank_avx2(
     let a_mask = _mm256_set1_epi32(0xFF00_0000_u32 as i32);
     let zero = _mm256_setzero_si256();
     while i + 32 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm256_loadu_si256(pixels.as_ptr().add(i).cast()) };
@@ -638,7 +640,7 @@ unsafe fn rgba8_absolutely_blank_neon(
     let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
     let a_mask = vdupq_n_u32(0xFF00_0000);
     while i + 16 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
@@ -716,7 +718,7 @@ fn rgba8_rgb_varies_any_alpha_scalar(
 ) -> Result<(bool, bool), String> {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         if pixels[i] != ref_r || pixels[i + 1] != ref_g || pixels[i + 2] != ref_b {
@@ -765,7 +767,7 @@ unsafe fn rgba8_zero_information_sse2(
     let n = pixels.len();
     let mut i = 0usize;
     while i + 16 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm_loadu_si128(pixels.as_ptr().add(i).cast()) };
@@ -813,7 +815,7 @@ unsafe fn rgba8_zero_information_avx2(
     let n = pixels.len();
     let mut i = 0usize;
     while i + 32 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm256_loadu_si256(pixels.as_ptr().add(i).cast()) };
@@ -859,7 +861,7 @@ unsafe fn rgba8_zero_information_neon(
     let n = pixels.len();
     let mut i = 0usize;
     while i + 16 <= n {
-        if i & 0x3_FFFF == 0 {
+        if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
@@ -892,47 +894,13 @@ unsafe fn rgba8_zero_information_neon(
 }
 
 pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> Option<Vec<u8>> {
-    let mut pos = ir_start as usize;
-    let end = (ir_end as usize).min(bytes.len());
-    while pos + 12 <= end {
-        let sig = &bytes[pos..pos + 4];
-        if sig != b"8BIM" && sig != b"8B64" {
-            break;
+    for_each_image_resource(bytes, ir_start, ir_end, |rid, data| {
+        if rid == IR_ICC_PROFILE && !data.is_empty() {
+            Some(data.to_vec())
+        } else {
+            None
         }
-        pos += 4;
-        if pos + 2 > end {
-            break;
-        }
-        let rid = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]);
-        pos += 2;
-        if pos >= end {
-            break;
-        }
-        let name_len = bytes[pos] as usize;
-        pos += 1;
-        pos += name_len;
-        if (name_len + 1) % 2 == 1 {
-            pos += 1;
-        }
-        if pos + 4 > end {
-            break;
-        }
-        let size = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
-            as usize;
-        pos += 4;
-        let data_end = pos.saturating_add(size);
-        if data_end > end {
-            break;
-        }
-        if rid == IR_ICC_PROFILE && size > 0 {
-            return Some(bytes[pos..data_end].to_vec());
-        }
-        pos = data_end;
-        if size % 2 == 1 {
-            pos += 1;
-        }
-    }
-    None
+    })
 }
 
 /// Extract embedded ICC (IR 1039) from a full PSD/PSB byte buffer.
@@ -998,6 +966,23 @@ fn extract_photoshop_thumbnail_from_ir(
     ir_start: u64,
     ir_end: u64,
 ) -> Option<PsbComposite> {
+    for_each_image_resource(bytes, ir_start, ir_end, |rid, data| {
+        if (rid == IR_THUMBNAIL_PS4 || rid == IR_THUMBNAIL_PS5) && data.len() >= 28 {
+            decode_photoshop_thumbnail_resource(data)
+        } else {
+            None
+        }
+    })
+}
+
+/// Walk Photoshop Image Resources (8BIM/8B64), invoking `on_resource` for each.
+/// Returns the first `Some` from the callback.
+fn for_each_image_resource<T>(
+    bytes: &[u8],
+    ir_start: u64,
+    ir_end: u64,
+    mut on_resource: impl FnMut(u16, &[u8]) -> Option<T>,
+) -> Option<T> {
     let mut pos = ir_start as usize;
     let end = (ir_end as usize).min(bytes.len());
     while pos + 12 <= end {
@@ -1018,7 +1003,7 @@ fn extract_photoshop_thumbnail_from_ir(
         pos += 1;
         pos += name_len;
         if (name_len + 1) % 2 == 1 {
-            pos += 1; // pad to even
+            pos += 1;
         }
         if pos + 4 > end {
             break;
@@ -1030,11 +1015,8 @@ fn extract_photoshop_thumbnail_from_ir(
         if data_end > end {
             break;
         }
-        if (rid == IR_THUMBNAIL_PS4 || rid == IR_THUMBNAIL_PS5)
-            && size >= 28
-            && let Some(thumb) = decode_photoshop_thumbnail_resource(&bytes[pos..data_end])
-        {
-            return Some(thumb);
+        if let Some(found) = on_resource(rid, &bytes[pos..data_end]) {
+            return Some(found);
         }
         pos = data_end;
         if size % 2 == 1 {
@@ -1491,24 +1473,12 @@ fn interleave_row_rgba8(
         1 => {
             if let Some(gray) = planar.first().and_then(|c| c.as_ref()) {
                 let g_row = &gray[start..end];
-                let a_row = if channels >= 2 {
-                    planar
-                        .get(1)
-                        .and_then(|c| c.as_ref())
-                        .map(|d| &d[start..end])
+                if channels >= 2
+                    && let Some(a) = planar.get(1).and_then(|c| c.as_ref())
+                {
+                    simd_swizzle::interleave_rgba(g_row, g_row, g_row, &a[start..end], dst_row);
                 } else {
-                    None
-                };
-                for (col, &v) in g_row.iter().enumerate() {
-                    let base = col * 4;
-                    dst_row[base] = v;
-                    dst_row[base + 1] = v;
-                    dst_row[base + 2] = v;
-                    if let Some(a) = a_row
-                        && col < a.len()
-                    {
-                        dst_row[base + 3] = a[col];
-                    }
+                    simd_swizzle::interleave_rgb_with_alpha(g_row, g_row, g_row, 255, dst_row);
                 }
             }
         }
@@ -1594,17 +1564,12 @@ fn interleave_tile_row_rgba8(
         }
         1 => {
             if let Some(gray) = slice(0) {
-                let alpha = if channels >= 2 { slice(1) } else { None };
-                for (col, &v) in gray.iter().enumerate() {
-                    let base = col * 4;
-                    dst_row[base] = v;
-                    dst_row[base + 1] = v;
-                    dst_row[base + 2] = v;
-                    if let Some(a_buf) = alpha
-                        && col < a_buf.len()
-                    {
-                        dst_row[base + 3] = a_buf[col];
-                    }
+                if channels >= 2
+                    && let Some(a) = slice(1)
+                {
+                    simd_swizzle::interleave_rgba(gray, gray, gray, a, dst_row);
+                } else {
+                    simd_swizzle::interleave_rgb_with_alpha(gray, gray, gray, 255, dst_row);
                 }
             }
         }

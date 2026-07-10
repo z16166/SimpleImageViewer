@@ -456,13 +456,19 @@ fn scan_extra_tagged_blocks(
         if &key == SECTION_DIVIDER_KEY && data_len >= 4 {
             let data_start = data_start as usize;
             let bytes = r.get_ref();
-            section_type = Some(u32::from_be_bytes([
-                bytes[data_start],
-                bytes[data_start + 1],
-                bytes[data_start + 2],
-                bytes[data_start + 3],
-            ]));
-            is_section_divider = true;
+            // Defensive: checked_end already bounds data_end, but saturating_add
+            // on overflow could leave data_start past the buffer.
+            if let Some(section_bytes) = bytes.get(data_start..data_start.saturating_add(4))
+                && section_bytes.len() == 4
+            {
+                section_type = Some(u32::from_be_bytes([
+                    section_bytes[0],
+                    section_bytes[1],
+                    section_bytes[2],
+                    section_bytes[3],
+                ]));
+                is_section_divider = true;
+            }
         }
 
         let padded_end = data_end.saturating_add(data_len % 2);
@@ -577,10 +583,11 @@ fn decode_channel_image(
 
     match compression {
         0 => {
-            let mut out = vec![0u8; pixel_count];
+            // Avoid zero-filling the copied prefix: grow from the raw slice.
             let avail = data.len().saturating_sub(2);
             let copy = avail.min(pixel_count);
-            out[..copy].copy_from_slice(&data[2..2 + copy]);
+            let mut out = data[2..2 + copy].to_vec();
+            out.resize(pixel_count, 0);
             Ok(out)
         }
         1 => {
@@ -682,6 +689,28 @@ fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
             return rgba;
         }
+    }
+
+    // Gray fast path: broadcast G->RGB via SIMD, then fold opacity/mask into alpha.
+    if args.color_mode == 1
+        && let Some(gray) = args.color[0].as_deref()
+        && gray.len() >= pixel_count
+    {
+        let mut rgba = vec![0u8; pixel_count * 4];
+        let g = &gray[..pixel_count];
+        if let Some(a) = args.alpha.filter(|a| a.len() >= pixel_count) {
+            simple_image_viewer::simd_swizzle::interleave_rgba(
+                g,
+                g,
+                g,
+                &a[..pixel_count],
+                &mut rgba,
+            );
+        } else {
+            simple_image_viewer::simd_swizzle::interleave_rgb_with_alpha(g, g, g, 255, &mut rgba);
+        }
+        fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
+        return rgba;
     }
 
     let mut rgba = vec![0u8; pixel_count * 4];
@@ -1312,6 +1341,7 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, String> {
     // P1: structurally valid flattened Image Data, then absolute blank barrier.
+    let mut skip_p2_after_structural_header = false;
     match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
         Ok(composite) => {
             let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
@@ -1351,51 +1381,61 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
             log::debug!("PSD SDR main P1 flattened decode failed: {e}");
+            // Header/structural failures cannot be recovered by P2; go straight to P3.
+            if is_psd_header_structural_error(&e) {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P1_structural_fail -> skip_P2"
+                );
+                log::debug!("PSD SDR main: skipping P2 after structural header failure");
+                skip_p2_after_structural_header = true;
+            }
         }
     }
 
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
-    match composite_layers_from_bytes_with_cancel(bytes, cancel, gpu) {
-        Ok(composite) => {
-            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                &composite.pixels,
-                cancel,
-            )?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
-                     pixels={} -> degrade_P3",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::info!(
-                    "PSD SDR main: P2 strict composite {}x{} is zero-information \
-                     (all-transparent or solid RGB); degrading to P3",
-                    composite.width,
-                    composite.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::info!(
-                    "PSD SDR main: P2 strict layer composite {}x{}",
-                    composite.width,
-                    composite.height
-                );
-                return Ok(composite);
+    if !skip_p2_after_structural_header {
+        match composite_layers_from_bytes_with_cancel(bytes, cancel, gpu) {
+            Ok(composite) => {
+                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                    &composite.pixels,
+                    cancel,
+                )?;
+                if zero_info {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
+                         pixels={} -> degrade_P3",
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::info!(
+                        "PSD SDR main: P2 strict composite {}x{} is zero-information \
+                         (all-transparent or solid RGB); degrading to P3",
+                        composite.width,
+                        composite.height
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::info!(
+                        "PSD SDR main: P2 strict layer composite {}x{}",
+                        composite.width,
+                        composite.height
+                    );
+                    return Ok(composite);
+                }
             }
-        }
-        Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
-        Err(e) => {
-            p2_no_drawable_visible = e == STRICT_LAYER_COMPOSITE_BLANK;
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
-            log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
+            Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+            Err(e) => {
+                p2_no_drawable_visible = e == STRICT_LAYER_COMPOSITE_BLANK;
+                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
+                log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
+            }
         }
     }
 
@@ -1444,6 +1484,15 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
         return Err(rust_i18n::t!("error.psd_all_layers_hidden").to_string());
     }
     Err(rust_i18n::t!("error.psd_no_displayable_image").to_string())
+}
+
+/// True when P1 failed for a reason that P2 cannot recover (same header parse).
+fn is_psd_header_structural_error(err: &str) -> bool {
+    err.contains("invalid signature")
+        || err.starts_with("Unknown PSD/PSB version:")
+        || err.starts_with("PSD/PSB dimensions")
+        || err.starts_with("PSD/PSB channel count")
+        || err.starts_with("Unsupported PSD/PSB bit depth")
 }
 
 struct CompositeTiming {
@@ -1620,8 +1669,8 @@ mod tests {
         STRICT_LAYER_COMPOSITE_BLANK, blend_fn_screen, blend_layer_onto, blend_normal_onto,
         blend_separable_onto, build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
         compute_effective_visibility, decode_one_layer, decode_psd_sdr_main_from_bytes_with_cancel,
-        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
-        strict_visibility_has_drawable_output,
+        dimensions_within_limit, is_psd_header_structural_error, layer_to_rgba8,
+        parse_layer_records, scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
     };
     use std::path::Path;
 
@@ -2079,6 +2128,39 @@ mod tests {
 
         assert!(is_section_divider);
         assert_eq!(section_type, Some(2));
+    }
+
+    #[test]
+    fn scan_lsct_skips_when_payload_truncated() {
+        // data_len claims 4 bytes but only 2 remain after the length field.
+        let mut block = Vec::new();
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"lsct");
+        block.extend_from_slice(&4u32.to_be_bytes());
+        block.extend_from_slice(&[0x00, 0x01]); // truncated
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let (is_section_divider, section_type) =
+            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+
+        assert!(!is_section_divider);
+        assert_eq!(section_type, None);
+    }
+
+    #[test]
+    fn is_psd_header_structural_error_matches_known_messages() {
+        assert!(is_psd_header_structural_error(
+            "Not a PSD/PSB file (invalid signature)"
+        ));
+        assert!(is_psd_header_structural_error(
+            "Unknown PSD/PSB version: 99"
+        ));
+        assert!(is_psd_header_structural_error(
+            "PSD/PSB dimensions 0x0 must be non-zero"
+        ));
+        assert!(!is_psd_header_structural_error(
+            "Unsupported layer channel compression: 9"
+        ));
     }
 
     #[test]
