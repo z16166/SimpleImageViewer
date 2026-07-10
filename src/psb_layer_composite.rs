@@ -19,9 +19,9 @@
 //! Used when the flattened Image Data section cannot be decoded structurally
 //! (see `decode_psd_sdr_main_from_bytes_with_cancel`). Decodes each layer's
 //! channels (depth 8) and composites them bottom to top with Normal / Screen /
-//! Linear Dodge / Multiply blend + opacity + user mask, respecting strict
-//! Photoshop layer/group visibility only (no viewer heuristics that open
-//! hidden layers).
+//! Linear Dodge / Multiply blend + opacity + user mask + clipping groups,
+//! respecting strict Photoshop layer/group visibility only (no viewer
+//! heuristics that open hidden layers).
 
 use std::io::Read;
 
@@ -859,6 +859,7 @@ fn blend_mode_supported(blend: &[u8; 4]) -> bool {
 }
 
 /// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn blend_separable_onto(
     canvas: &mut [u8],
@@ -932,6 +933,7 @@ fn blend_normal_onto(
 }
 
 /// Dispatch by PSD blend-mode key; unknown modes fall back to Normal (logged once).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn blend_layer_onto(
     canvas: &mut [u8],
@@ -1056,6 +1058,8 @@ struct DecodedLayer {
     width: u32,
     height: u32,
     blend: [u8; 4],
+    /// 0 = base / unclipped; non-zero = clipped to nearest base below.
+    clipping: u8,
     rgba: Vec<u8>,
 }
 
@@ -1204,6 +1208,7 @@ fn decode_one_layer(
         width,
         height,
         blend: record.blend,
+        clipping: record.clipping,
         rgba,
     }))
 }
@@ -1213,11 +1218,11 @@ pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawa
 
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
 /// (depth 8 only: Normal / Screen / Linear Dodge / Multiply + opacity + user
-/// mask + strict group/leaf visibility).
+/// mask + clipping groups + strict group/leaf visibility).
 ///
-/// When `gpu` is provided, the canvas is large enough, and every decoded layer
-/// uses Normal blend, blending may run on an offscreen wgpu compute path;
-/// failures or non-Normal stacks fall back to CPU.
+/// When `gpu` is provided, the canvas is large enough, every decoded layer
+/// uses Normal blend, and none are clipped, blending may run on an offscreen
+/// wgpu compute path; failures, non-Normal stacks, or clipping fall back to CPU.
 ///
 /// Returns [`STRICT_LAYER_COMPOSITE_BLANK`] when no visible layer intersects
 /// the canvas (no pixel work is performed).
@@ -1510,12 +1515,6 @@ fn clear_composite_canvas(canvas: &mut [u8], color_mode: u16) {
     }
 }
 
-/// Layer pixel-area threshold above which `run_composite_pass` polls `cancel`
-/// immediately before and after `blend_normal_onto`, in addition to the
-/// per-layer poll at the top of the loop (blending a very large layer can
-/// take a while, so a cancellation should not have to wait for the next one).
-const LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS: u64 = 1_000_000;
-
 /// Decode and blend every eligible layer bottom to top, returning how many were
 /// actually composited. When `respect_visibility` is false, `visible` is ignored
 /// (every non-divider, non-empty, non-fully-transparent layer is composited).
@@ -1575,9 +1574,22 @@ fn run_composite_pass(
     }
 
     let blend_t0 = std::time::Instant::now();
+    let clip_refs: Vec<crate::psb_layer_clip::ClipLayerRef<'_>> = layers
+        .iter()
+        .map(|l| crate::psb_layer_clip::ClipLayerRef {
+            left: l.left,
+            top: l.top,
+            width: l.width,
+            height: l.height,
+            blend: l.blend,
+            clipping: l.clipping,
+            rgba: &l.rgba,
+        })
+        .collect();
     let all_normal = layers.iter().all(|l| l.blend == *b"norm");
+    let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
     let used_gpu = if let Some(gpu_ctx) = gpu {
-        if !all_normal {
+        if !all_normal || has_clipping {
             false
         } else {
             let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
@@ -1612,27 +1624,13 @@ fn run_composite_pass(
     };
 
     if !used_gpu {
-        for layer in &layers {
-            let is_large =
-                layer.width as u64 * layer.height as u64 > LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS;
-            if is_large {
-                crate::psb_reader::check_decode_cancel(cancel)?;
-            }
-            blend_layer_onto(
-                canvas,
-                canvas_w,
-                canvas_h,
-                &layer.rgba,
-                layer.left,
-                layer.top,
-                layer.width,
-                layer.height,
-                &layer.blend,
-            );
-            if is_large {
-                crate::psb_reader::check_decode_cancel(cancel)?;
-            }
-        }
+        crate::psb_layer_clip::blend_layers_with_clipping(
+            canvas,
+            canvas_w,
+            canvas_h,
+            &clip_refs,
+            cancel,
+        )?;
         timing.mode = "cpu";
     }
     timing.blend_ms += blend_t0.elapsed().as_secs_f64() * 1000.0;
