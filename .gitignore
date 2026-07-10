@@ -2,6 +2,7 @@
 target/
 **/target/
 .codex-target/
+.mimocode/
 
 # Ignore sub-crate lock files but keep root lock file
 **/Cargo.lock
