@@ -1452,15 +1452,13 @@ mod tests {
 
     #[test]
     fn layer_to_rgba8_cmyk_opacity_mask_numeric() {
-        // 1x1 CMYK pixel: c=51, m=102, y=153, k=51.
-        // r = (255-51)*(255-51)/255 = 204*204/255 = 163
-        // g = (255-102)*(255-51)/255 = 153*204/255 = 122
-        // b = (255-153)*(255-51)/255 = 102*204/255 = 81
+        // 1x1 CMYK pixel (Adobe polarity 0=100% ink): c=204, m=153, y=102, k=204.
+        // r = 204*204/255 = 163; g = 153*204/255 = 122; b = 102*204/255 = 81.
         let color: [Option<Vec<u8>>; 4] = [
-            Some(vec![51]),
-            Some(vec![102]),
+            Some(vec![204]),
             Some(vec![153]),
-            Some(vec![51]),
+            Some(vec![102]),
+            Some(vec![204]),
         ];
         let alpha = vec![200u8];
         let mask = vec![128u8];
@@ -1469,6 +1467,32 @@ mod tests {
 
         // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
         assert_eq!(rgba, vec![163, 122, 81, 78]);
+    }
+
+    #[test]
+    fn composite_01_02_psd_mean_not_near_black() {
+        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd");
+        if !path.is_file() {
+            eprintln!("skipping composite_01_02_psd_mean_not_near_black; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).unwrap();
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None).expect("composite");
+        assert_eq!((comp.width, comp.height), (5031, 3437));
+        let mut sum = 0u64;
+        let mut n = 0u64;
+        for chunk in comp.pixels.chunks_exact(4) {
+            sum += chunk[0] as u64 + chunk[1] as u64 + chunk[2] as u64;
+            n += 3;
+        }
+        let mean = sum as f64 / n as f64;
+        // psd-tools composite mean RGB is ~125/164/164; wrong CMYK polarity yields ~3.
+        assert!(
+            mean > 80.0,
+            "expected bright CMYK composite mean, got {mean:.1}"
+        );
+        assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
+        assert!(!crate::psb_reader::rgba8_looks_unduly_dark(&comp.pixels));
     }
 
     #[test]

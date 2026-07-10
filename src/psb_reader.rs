@@ -486,12 +486,9 @@ fn rle_row_counts_look_like_solid_fill(width: usize, row_counts: &[usize]) -> bo
     row_counts.iter().all(|&c| c > 0 && c <= max_ok)
 }
 
-/// CMYK composites that keep varying C/K detail but solid-fill M/Y (often 0xFF) decode to a
-/// strong red cast with naive CMYK->RGB. Brochure templates sometimes ship this unusable
-/// flattened Image Data while the real artwork lives in a large layer section.
-///
-/// Detect: among M/Y (and A when present), at least two channels are mostly solid-sized RLE
-/// rows, while C or K still has clearly non-solid rows (so the all-solid heuristic misses).
+/// Legacy probe kept for corpus files whose flattened Image Data is still unusable even
+/// with correct Adobe CMYK polarity (0 = 100% ink). Detects mostly-solid M/Y(/A) RLE rows
+/// while C or K still looks detailed -- a pattern common in brochure template placeholders.
 fn rle_row_counts_look_like_cmyk_degenerate_composite(
     width: usize,
     height: usize,
@@ -1070,15 +1067,20 @@ pub(crate) fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) 
     }
 }
 
+/// Convert one PSD/PSB CMYK sample to approximate display RGB.
+///
+/// Photoshop stores CMYK channel bytes with **0 = 100% ink** and **255 = 0% ink**
+/// (Adobe Photoshop File Formats Specification). The naive "0 = no ink" formula
+/// inverts whites to black and turns solid 0xFF M/Y into a red cast.
 #[inline]
 pub(crate) fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> (u8, u8, u8) {
     let c = c as u32;
     let m = m as u32;
     let y = y as u32;
     let k = k as u32;
-    let r = ((255 - c) * (255 - k) / 255) as u8;
-    let g = ((255 - m) * (255 - k) / 255) as u8;
-    let b = ((255 - y) * (255 - k) / 255) as u8;
+    let r = (c * k / 255) as u8;
+    let g = (m * k / 255) as u8;
+    let b = (y * k / 255) as u8;
     (r, g, b)
 }
 
@@ -1405,9 +1407,10 @@ mod tests {
 
     #[test]
     fn cmyk_black_and_white() {
-        assert_eq!(cmyk_to_rgb(0, 0, 0, 0), (255, 255, 255));
-        assert_eq!(cmyk_to_rgb(0, 0, 0, 255), (0, 0, 0));
-        assert_eq!(cmyk_to_rgb(255, 0, 0, 0), (0, 255, 255));
+        // Adobe polarity: 0 = 100% ink, 255 = 0% ink.
+        assert_eq!(cmyk_to_rgb(255, 255, 255, 255), (255, 255, 255));
+        assert_eq!(cmyk_to_rgb(255, 255, 255, 0), (0, 0, 0));
+        assert_eq!(cmyk_to_rgb(0, 255, 255, 255), (0, 255, 255));
     }
 
     #[test]
