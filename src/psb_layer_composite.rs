@@ -1123,10 +1123,32 @@ fn run_composite_pass(
 #[cfg(test)]
 mod tests {
     use super::{
-        blend_normal_onto, composite_layers_from_bytes_with_cancel, parse_layer_records,
-        scan_extra_tagged_blocks,
+        LayerMaskInfo, LayerRecord, blend_normal_onto, build_layer_sized_mask,
+        composite_layers_from_bytes_with_cancel, compute_effective_visibility, layer_to_rgba8,
+        parse_layer_records, scan_extra_tagged_blocks,
     };
     use std::path::Path;
+
+    /// Build a minimal `LayerRecord` for `compute_effective_visibility` tests;
+    /// only `flags` (hidden bit), `is_section_divider`, and `section_type`
+    /// matter for that function.
+    fn mk_layer(hidden: bool, is_section_divider: bool, section_type: Option<u32>) -> LayerRecord {
+        LayerRecord {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+            channels: Vec::new(),
+            blend: *b"norm",
+            opacity: 255,
+            clipping: 0,
+            flags: if hidden { 2 } else { 0 },
+            mask_size: 0,
+            mask: None,
+            is_section_divider,
+            section_type,
+        }
+    }
 
     #[test]
     fn blend_normal_onto_2x2_straight_alpha() {
@@ -1167,6 +1189,150 @@ mod tests {
         blend_normal_onto(&mut canvas, 2, 2, &layer, 1, 1, 3, 3);
         assert_eq!(&canvas[0..12], &[0u8; 12]);
         assert_eq!(&canvas[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn compute_effective_visibility_leaf_hidden_inside_visible_group() {
+        // Records in file (bottom-to-top) order:
+        //   0: outer bottom divider (type 3)
+        //   1: inner bottom divider (type 3)
+        //   2: leaf, hidden, inside inner group
+        //   3: inner folder header (type 1), visible
+        //   4: leaf, visible, inside outer group but outside inner group
+        //   5: outer folder header (type 2), visible
+        let records = vec![
+            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(3)),
+            mk_layer(true, false, None),
+            mk_layer(false, true, Some(1)),
+            mk_layer(false, false, None),
+            mk_layer(false, true, Some(2)),
+        ];
+
+        let visible = compute_effective_visibility(&records, false);
+
+        assert!(!visible[2], "leaf's own hidden flag must hide it");
+        assert!(
+            visible[4],
+            "sibling leaf in the same visible group stays visible"
+        );
+        assert!(visible[3], "inner group header itself is visible");
+        assert!(visible[5], "outer group header itself is visible");
+    }
+
+    #[test]
+    fn compute_effective_visibility_group_hidden_tier1_hides_leaf_tier2_shows_leaf() {
+        // Same nesting as above, but the *outer* group is hidden while every
+        // leaf/inner-group flag is visible.
+        let records = vec![
+            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(3)),
+            mk_layer(false, false, None),
+            mk_layer(false, true, Some(1)),
+            mk_layer(false, false, None),
+            mk_layer(true, true, Some(2)),
+        ];
+
+        let strict = compute_effective_visibility(&records, false);
+        assert!(
+            !strict[2],
+            "strict visibility: leaf inside a hidden ancestor group must be hidden"
+        );
+        assert!(!strict[4], "strict visibility: sibling leaf also hidden");
+        assert!(
+            !strict[5],
+            "strict visibility: the hidden group header itself is hidden"
+        );
+
+        let ignore_group_hidden = compute_effective_visibility(&records, true);
+        assert!(
+            ignore_group_hidden[2],
+            "tier2: ignoring group-hidden flags should reveal the leaf"
+        );
+        assert!(
+            ignore_group_hidden[4],
+            "tier2: sibling leaf is also revealed"
+        );
+        assert!(
+            ignore_group_hidden[5],
+            "tier2: the group header's own hidden flag is ignored"
+        );
+    }
+
+    #[test]
+    fn compute_effective_visibility_unpaired_divider_does_not_panic() {
+        // A lone bounding divider (type 3) with no matching folder header
+        // above it must not underflow the visibility stack.
+        let records = vec![mk_layer(false, true, Some(3)), mk_layer(false, false, None)];
+
+        let visible = compute_effective_visibility(&records, false);
+
+        assert_eq!(visible.len(), 2);
+        assert!(visible[1], "leaf above the unpaired divider stays visible");
+    }
+
+    #[test]
+    fn build_layer_sized_mask_smaller_mask_with_offset() {
+        // 2x2 mask offset by (1,1) inside a 4x4 layer.
+        let mask_info = LayerMaskInfo {
+            top: 1,
+            left: 1,
+            bottom: 3,
+            right: 3,
+            default_color: 0,
+            disabled: false,
+        };
+        let mask_pixels = vec![10, 20, 30, 40];
+
+        let out = build_layer_sized_mask(&mask_info, &mask_pixels, 0, 0, 4, 4);
+
+        assert_eq!(out.len(), 16);
+        let mut expected = vec![0u8; 16];
+        expected[4 + 1] = 10;
+        expected[4 + 2] = 20;
+        expected[2 * 4 + 1] = 30;
+        expected[2 * 4 + 2] = 40;
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn build_layer_sized_mask_default_color_outside_mask_rect() {
+        // Mask rect falls entirely outside the layer's bounds, so every
+        // output pixel must fall back to `default_color`.
+        let mask_info = LayerMaskInfo {
+            top: 10,
+            left: 10,
+            bottom: 11,
+            right: 11,
+            default_color: 255,
+            disabled: false,
+        };
+        let mask_pixels = vec![99];
+
+        let out = build_layer_sized_mask(&mask_info, &mask_pixels, 0, 0, 3, 3);
+
+        assert_eq!(out, vec![255u8; 9]);
+    }
+
+    #[test]
+    fn layer_to_rgba8_cmyk_opacity_mask_numeric() {
+        // 1x1 CMYK pixel: c=51, m=102, y=153, k=51.
+        // r = (255-51)*(255-51)/255 = 204*204/255 = 163
+        // g = (255-102)*(255-51)/255 = 153*204/255 = 122
+        // b = (255-153)*(255-51)/255 = 102*204/255 = 81
+        let color: [Option<Vec<u8>>; 4] = [
+            Some(vec![51]),
+            Some(vec![102]),
+            Some(vec![153]),
+            Some(vec![51]),
+        ];
+        let alpha = vec![200u8];
+        let mask = vec![128u8];
+
+        let rgba = layer_to_rgba8(4, 1, 1, &color, Some(&alpha), Some(&mask), 200);
+
+        // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
+        assert_eq!(rgba, vec![163, 122, 81, 78]);
     }
 
     #[test]
