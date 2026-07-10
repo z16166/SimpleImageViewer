@@ -292,6 +292,7 @@ pub(crate) fn load_webp(
 pub(crate) fn load_psd(
     path: &Path,
     notify: Option<crate::loader::tiled_sources::PsdV1LoadNotify>,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
@@ -315,7 +316,7 @@ pub(crate) fn load_psd(
     }
 
     log::info!(
-        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB — proceeding",
+        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB -- proceeding",
         width,
         height
     );
@@ -330,14 +331,29 @@ pub(crate) fn load_psd(
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
     } else {
+        // Layers-only PSD: solid-fill composite + huge layer section. Task 4 will
+        // route this to the layer compositor; for now use the existing async PSD path.
+        match crate::psb_reader::probe_layers_only_composite(&mmap)? {
+            crate::psb_reader::LayersOnlyCompositeProbe::NeedsLayerComposite => {
+                log::warn!(
+                    "[{}] layers-only PSD: layer compositor needed (canvas {}x{})",
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("psd"),
+                    width,
+                    height
+                );
+            }
+            crate::psb_reader::LayersOnlyCompositeProbe::NotApplicable => {}
+        }
+
         // PSD v1: return a tiled source immediately; full decode runs on REFINEMENT_POOL.
-        log::info!("Using async PSD v1 decode via psd crate");
+        log::info!("Using async PSD v1 decode via psb_reader");
         let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
             mmap,
             path.to_path_buf(),
             width,
             height,
             notify,
+            cancel,
         );
         Ok(ImageData::Tiled(source))
     }
