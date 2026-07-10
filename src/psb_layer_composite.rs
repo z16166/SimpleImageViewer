@@ -814,6 +814,19 @@ fn blend_mode_supported(blend: &[u8; 4]) -> bool {
     separable_blend_fn(blend).is_some()
 }
 
+const fn make_u8_to_f32_lut() -> [f32; 256] {
+    let mut t = [0.0f32; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = (i as f32) / 255.0;
+        i += 1;
+    }
+    t
+}
+
+/// Avoid repeated `as f32 / 255.0` in the per-pixel blend inner loop.
+const U8_TO_F32: [f32; 256] = make_u8_to_f32_lut();
+
 /// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
 /// `blend_fn` is Photoshop B(Cb, Cs); Normal is B = Cs (src-over).
 #[allow(clippy::too_many_arguments)]
@@ -867,8 +880,8 @@ fn blend_separable_onto(
                 continue;
             }
 
-            let sa_f = sa as f32 / 255.0;
-            let da_f = canvas[d_off + 3] as f32 / 255.0;
+            let sa_f = U8_TO_F32[sa as usize];
+            let da_f = U8_TO_F32[canvas[d_off + 3] as usize];
             let out_a_f = sa_f + da_f * (1.0 - sa_f);
             if out_a_f <= 0.0 {
                 canvas[d_off..d_off + 4].fill(0);
@@ -876,8 +889,8 @@ fn blend_separable_onto(
             }
 
             for c in 0..3 {
-                let sc = layer_rgba[s_off + c] as f32 / 255.0;
-                let dc = canvas[d_off + c] as f32 / 255.0;
+                let sc = U8_TO_F32[layer_rgba[s_off + c] as usize];
+                let dc = U8_TO_F32[canvas[d_off + c] as usize];
                 let b = blend_fn(dc, sc);
                 // Premultiplied channel, then un-premultiply to straight alpha.
                 let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;

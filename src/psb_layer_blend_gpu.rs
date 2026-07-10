@@ -49,6 +49,10 @@ struct BlendParams {
 @group(0) @binding(1) var layer_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: BlendParams;
 
+// One compute pass per layer today. Batching multiple layers into one dispatch
+// would cut GPU command overhead for 100+ layer docs, but must preserve
+// bottom-to-top order (each layer reads the previous composite).
+
 @compute @workgroup_size(16, 16, 1)
 fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sx = i32(gid.x);
@@ -69,6 +73,8 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let dst_coord = vec2<i32>(dx, dy);
+    // rgba8unorm loads are in [0,1]; sa >= 1.0 means fully opaque, so write
+    // alpha = 1.0 explicitly (same as src.a after unorm decode).
     if (sa >= 1.0) {
         textureStore(canvas, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;

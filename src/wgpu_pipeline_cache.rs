@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 use parking_lot::Mutex;
 
 /// Bump when wgpu render pipelines or WGSL change in ways that invalidate on-disk cache bytes.
-const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 5;
+const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 6;
 
 pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
     adapter.features().contains(wgpu::Features::PIPELINE_CACHE)

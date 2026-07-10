@@ -50,6 +50,8 @@ mod path_location;
 mod pixel_inspector;
 pub mod print;
 mod psb_cmyk_cms;
+mod psb_cmyk_simd;
+mod psb_downconvert_simd;
 mod psb_layer_blend_gpu;
 pub mod psb_layer_composite;
 mod psb_packbits_simd;

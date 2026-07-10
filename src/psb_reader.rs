@@ -103,7 +103,10 @@ impl PsbTiledSource {
     /// Write one decompressed 8-bit row into `buf` (length must be `self.width`).
     fn decode_row_into(&self, buf: &mut Vec<u8>, ch_idx: u32, global_row: u32) {
         let out_len = self.width as usize;
-        debug_assert_eq!(buf.len(), out_len);
+        // Release builds must keep this check: a short `buf` would OOB in downconvert.
+        if buf.len() != out_len {
+            return;
+        }
         let raw_len = self.raw_row_bytes();
         let bps = self.bytes_per_sample();
 
@@ -137,9 +140,11 @@ impl PsbTiledSource {
                     if bps == 1 {
                         unpack_bits_into(buf, compressed, out_len);
                     } else {
-                        let mut raw = Vec::new();
-                        unpack_bits_into(&mut raw, compressed, raw_len);
-                        downconvert_samples_to_u8(buf, &raw, bps);
+                        // Separate TLS from PSB_ROW_SCRATCH (already borrowed by caller).
+                        with_psb_raw_row_scratch(raw_len, |raw| {
+                            unpack_bits_into(raw, compressed, raw_len);
+                            downconvert_samples_to_u8(buf, raw, bps);
+                        });
                     }
                 }
             }
@@ -367,6 +372,7 @@ pub fn read_composite_from_bytes_with_cancel(
                     }
                     1 => {
                         let mut row_raw = Vec::with_capacity(row_raw_bytes);
+                        let mut compressed = Vec::new();
                         for row in 0..height as usize {
                             if row & 0x3F == 0 {
                                 check_decode_cancel(cancel)?;
@@ -375,7 +381,7 @@ pub fn read_composite_from_bytes_with_cancel(
                             let compressed_len = *row_counts
                                 .get(idx)
                                 .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                            let mut compressed = vec![0u8; compressed_len];
+                            compressed.resize(compressed_len, 0);
                             r.read_exact(&mut compressed)
                                 .map_err(|e| format!("Read RLE: {e}"))?;
                             unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes);
@@ -1329,6 +1335,8 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
 // Tile workers decode rows in parallel; per-thread scratch avoids per-row allocations.
 thread_local! {
     static PSB_ROW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    // Intermediate BE samples for RLE+16/32-bit rows (must not share PSB_ROW_SCRATCH).
+    static PSB_RAW_ROW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 #[inline]
@@ -1345,6 +1353,18 @@ fn with_psb_row_scratch(row_len: usize, f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8>
         f(&mut scratch);
         std::mem::replace(&mut *scratch, Vec::with_capacity(row_len))
     })
+}
+
+/// Scratch for PackBits expand before 16/32-bit down-convert (separate TLS key).
+fn with_psb_raw_row_scratch(raw_len: usize, f: impl FnOnce(&mut Vec<u8>)) {
+    PSB_RAW_ROW_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        let cap = scratch.capacity();
+        if cap < raw_len {
+            scratch.reserve(raw_len - cap);
+        }
+        f(&mut scratch);
+    });
 }
 
 /// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
@@ -1419,30 +1439,8 @@ pub(crate) fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) 
                 dst[copy..].fill(0);
             }
         }
-        2 => {
-            for (i, out) in dst.iter_mut().enumerate() {
-                let off = i * 2;
-                if off + 1 < src.len() {
-                    let v = u16::from_be_bytes([src[off], src[off + 1]]);
-                    *out = (v >> 8) as u8;
-                } else {
-                    *out = 0;
-                }
-            }
-        }
-        4 => {
-            for (i, out) in dst.iter_mut().enumerate() {
-                let off = i * 4;
-                if off + 3 < src.len() {
-                    let bits =
-                        u32::from_be_bytes([src[off], src[off + 1], src[off + 2], src[off + 3]]);
-                    let f = f32::from_bits(bits);
-                    *out = (f.clamp(0.0, 1.0) * 255.0).round() as u8;
-                } else {
-                    *out = 0;
-                }
-            }
-        }
+        2 => crate::psb_downconvert_simd::u16be_to_u8(dst, src),
+        4 => crate::psb_downconvert_simd::f32be_to_u8(dst, src),
         _ => dst.fill(0),
     }
 }
@@ -1472,7 +1470,6 @@ fn interleave_row_rgba8(
     start: usize,
     end: usize,
 ) {
-    let width = end.saturating_sub(start);
     match color_mode {
         4 if channels >= 4 => {
             let c = planar[0].as_ref().map(|d| &d[start..end]);
@@ -1488,14 +1485,7 @@ fn interleave_row_rgba8(
                 None
             };
             if let (Some(c), Some(m), Some(y), Some(k)) = (c, m, y, k) {
-                for col in 0..width {
-                    let (r, g, b) = cmyk_to_rgb(c[col], m[col], y[col], k[col]);
-                    let base = col * 4;
-                    dst_row[base] = r;
-                    dst_row[base + 1] = g;
-                    dst_row[base + 2] = b;
-                    dst_row[base + 3] = a.map(|buf| buf[col]).unwrap_or(255);
-                }
+                crate::psb_cmyk_simd::cmyk_planes_to_rgba8(c, m, y, k, a, dst_row);
             }
         }
         1 => {
@@ -1592,14 +1582,14 @@ fn interleave_tile_row_rgba8(
                 ) {
                     return;
                 }
-                for col in 0..width {
-                    let (r, g, b) = cmyk_to_rgb(c[col], m[col], y[col], k[col]);
-                    let base = col * 4;
-                    dst_row[base] = r;
-                    dst_row[base + 1] = g;
-                    dst_row[base + 2] = b;
-                    dst_row[base + 3] = a.map(|buf| buf[col]).unwrap_or(255);
-                }
+                crate::psb_cmyk_simd::cmyk_planes_to_rgba8(
+                    &c[..width],
+                    &m[..width],
+                    &y[..width],
+                    &k[..width],
+                    a.map(|buf| &buf[..width.min(buf.len())]),
+                    &mut dst_row[..width * 4],
+                );
             }
         }
         1 => {
