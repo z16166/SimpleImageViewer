@@ -134,6 +134,18 @@ impl LayerRecord {
     }
 }
 
+/// Whether `width`/`height` are within the same per-side limit used for the
+/// document's own canvas (`psb_reader::PSD_MAX_DIMENSION`).
+///
+/// A malformed or malicious layer record can claim absurd bounds (e.g.
+/// `right - left` near `u32::MAX`) that would make `decode_channel_image`'s
+/// `vec![0u8; width * height]` try to allocate an enormous buffer, aborting
+/// the whole process on allocation failure. Layer and mask rects are checked
+/// against this same limit before any such allocation.
+fn dimensions_within_limit(width: u32, height: u32) -> bool {
+    width <= crate::psb_reader::PSD_MAX_DIMENSION && height <= crate::psb_reader::PSD_MAX_DIMENSION
+}
+
 #[derive(Debug)]
 pub struct LayerInfo<'a> {
     pub records: Vec<LayerRecord>,
@@ -858,7 +870,18 @@ fn decode_one_layer(
 ) -> Result<Option<DecodedLayer>, String> {
     let width = record.width();
     let height = record.height();
-    let can_decode = should_decode && width > 0 && height > 0;
+    let has_bounds = should_decode && width > 0 && height > 0;
+    // Treat an oversized layer rect as corrupt *for that layer only*: skip
+    // decoding it (still advancing `cursor` past its channel bytes below so
+    // later layers stay aligned) rather than erroring out the whole
+    // composite, since every other layer in the file may well be fine.
+    if has_bounds && !dimensions_within_limit(width, height) {
+        log::debug!(
+            "PSD/PSB layer rect {width}x{height} exceeds max dimension {}, skipping layer",
+            crate::psb_reader::PSD_MAX_DIMENSION
+        );
+    }
+    let can_decode = has_bounds && dimensions_within_limit(width, height);
 
     let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
     let mut alpha: Option<Vec<u8>> = None;
@@ -895,7 +918,17 @@ fn decode_one_layer(
                 if let Some(mask_info) = &record.mask {
                     let mask_w = mask_info.width();
                     let mask_h = mask_info.height();
-                    if !mask_info.disabled && mask_w > 0 && mask_h > 0 {
+                    let mask_has_bounds = !mask_info.disabled && mask_w > 0 && mask_h > 0;
+                    // Same oversized-rect guard as the layer rect below: skip
+                    // just this mask (fall back to no mask) rather than
+                    // erroring out the whole layer/composite.
+                    if mask_has_bounds && !dimensions_within_limit(mask_w, mask_h) {
+                        log::debug!(
+                            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds max dimension \
+                             {}, skipping mask",
+                            crate::psb_reader::PSD_MAX_DIMENSION
+                        );
+                    } else if mask_has_bounds {
                         match decode_channel_image(slice, mask_w, mask_h, is_psb, cancel) {
                             Ok(mask_pixels) => {
                                 mask = Some(build_layer_sized_mask(
@@ -1123,9 +1156,9 @@ fn run_composite_pass(
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerMaskInfo, LayerRecord, blend_normal_onto, build_layer_sized_mask,
-        composite_layers_from_bytes_with_cancel, compute_effective_visibility, layer_to_rgba8,
-        parse_layer_records, scan_extra_tagged_blocks,
+        LayerChannel, LayerMaskInfo, LayerRecord, blend_normal_onto, build_layer_sized_mask,
+        composite_layers_from_bytes_with_cancel, compute_effective_visibility, decode_one_layer,
+        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
     };
     use std::path::Path;
 
@@ -1148,6 +1181,88 @@ mod tests {
             is_section_divider,
             section_type,
         }
+    }
+
+    #[test]
+    fn dimensions_within_limit_rejects_oversized_dimensions() {
+        assert!(dimensions_within_limit(1, 1));
+        assert!(dimensions_within_limit(
+            crate::psb_reader::PSD_MAX_DIMENSION,
+            crate::psb_reader::PSD_MAX_DIMENSION
+        ));
+        assert!(!dimensions_within_limit(
+            crate::psb_reader::PSD_MAX_DIMENSION + 1,
+            1
+        ));
+        assert!(!dimensions_within_limit(
+            1,
+            crate::psb_reader::PSD_MAX_DIMENSION + 1
+        ));
+        assert!(!dimensions_within_limit(u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn decode_one_layer_oversized_layer_rect_is_skipped() {
+        // A malicious/malformed layer record claiming an absurd width would
+        // otherwise make `decode_channel_image` try to `vec![0u8; w * h]`,
+        // risking an allocation-failure abort. It must be skipped instead.
+        let mut record = mk_layer(false, false, None);
+        record.top = 0;
+        record.left = 0;
+        record.bottom = 1_000_000_000;
+        record.right = 1_000_000_000;
+        record.channels = vec![LayerChannel {
+            id: -1,
+            data_len: 0,
+        }];
+
+        let channel_data: [u8; 0] = [];
+        let mut cursor = 0usize;
+        let result = decode_one_layer(&channel_data, &mut cursor, &record, 3, false, true, None);
+
+        assert!(result.is_ok(), "oversized layer must not error out");
+        assert!(
+            result.unwrap().is_none(),
+            "oversized layer must be skipped rather than decoded"
+        );
+        assert_eq!(cursor, 0, "cursor still advances past the channel bytes");
+    }
+
+    #[test]
+    fn decode_one_layer_oversized_mask_rect_is_skipped() {
+        // Same guard, but for the mask channel's own (potentially
+        // independently-sized) rect rather than the layer's rect.
+        let mut record = mk_layer(false, false, None);
+        record.top = 0;
+        record.left = 0;
+        record.bottom = 2;
+        record.right = 2;
+        record.mask = Some(LayerMaskInfo {
+            top: 0,
+            left: 0,
+            bottom: 1_000_000_000,
+            right: 1_000_000_000,
+            default_color: 0,
+            disabled: false,
+        });
+        record.channels = vec![LayerChannel {
+            id: -2,
+            data_len: 2,
+        }];
+
+        // Compression = 0 (raw), no pixel bytes follow -- irrelevant since
+        // the oversized mask rect must be rejected before any read/alloc.
+        let channel_data = [0u8, 0u8];
+        let mut cursor = 0usize;
+        let result = decode_one_layer(&channel_data, &mut cursor, &record, 3, false, true, None);
+
+        assert!(result.is_ok());
+        let layer = result.unwrap().expect("layer rect itself is valid");
+        assert_eq!(layer.width, 2);
+        assert_eq!(layer.height, 2);
+        // No mask could be decoded, so alpha defaults to fully opaque (255)
+        // via `layer_to_rgba8`'s `unwrap_or(255)` fallback for a missing mask.
+        assert!(layer.rgba.chunks_exact(4).all(|px| px[3] == 255));
     }
 
     #[test]

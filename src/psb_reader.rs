@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use simple_image_viewer::simd_swizzle;
 
 /// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
-const PSD_MAX_DIMENSION: u32 = 300_000;
+pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
 /// Bytes per RGBA pixel when assembling the composite image.
