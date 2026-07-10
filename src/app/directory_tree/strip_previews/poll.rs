@@ -228,6 +228,10 @@ impl ImageViewerApp {
             .unwrap_or(failure.key.index);
         if self.finish_strip_preview_job_for_key(&failure.key) {
             self.mark_strip_cold_awaiting_main_loader(active_index);
+            // PSD/PSB (and other slow primaries) defer strip to the main loader. Neighbor
+            // preload may never cover every visible strip row (e.g. idx 3 with window
+            // [1,2]/[5,4]), so kick a main load here or the strip waits forever.
+            self.request_main_load_for_strip_deferred_index(active_index);
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][StripPoll] idx={} cold deferred reason={} (await main loader fast path or install)",
@@ -235,6 +239,27 @@ impl ImageViewerApp {
                 _failure_reason
             );
         }
+    }
+
+    fn request_main_load_for_strip_deferred_index(&mut self, index: usize) {
+        if self.has_loaded_asset(index) || self.loader.is_loading(index) {
+            return;
+        }
+        let Some(path) = self.image_files.get(index).cloned() else {
+            return;
+        };
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][Strip] request main load for deferred strip idx={} path={}",
+            index,
+            path.display()
+        );
+        self.loader.request_load(
+            index,
+            path,
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(index),
+        );
     }
 
     fn poll_successful_strip_result(

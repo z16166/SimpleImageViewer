@@ -406,7 +406,7 @@ pub fn probe_layers_only_composite(bytes: &[u8]) -> Result<LayersOnlyCompositePr
     let height = read_u32(&mut r)?;
     let width = read_u32(&mut r)?;
     let _depth = read_u16(&mut r)?;
-    let _color_mode = read_u16(&mut r)?;
+    let color_mode = read_u16(&mut r)?;
     validate_psd_dimensions(width, height, channels)?;
 
     let cm_len = read_u32(&mut r)?;
@@ -447,12 +447,22 @@ pub fn probe_layers_only_composite(bytes: &[u8]) -> Result<LayersOnlyCompositePr
     );
     validate_rle_total_bytes(&row_counts, remaining)?;
 
-    if !rle_row_counts_look_like_solid_fill(width as usize, &row_counts) {
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let solid_fill = rle_row_counts_look_like_solid_fill(width_usize, &row_counts);
+    let cmyk_degenerate = color_mode == 4
+        && rle_row_counts_look_like_cmyk_degenerate_composite(
+            width_usize,
+            height_usize,
+            channels as usize,
+            &row_counts,
+        );
+    if !solid_fill && !cmyk_degenerate {
         return Ok(LayersOnlyCompositeProbe::NotApplicable);
     }
 
     log::warn!(
-        "PSD/PSB {}x{} has solid-fill composite RLE with large layer section ({lm_len} bytes) -- treating as layers-only",
+        "PSD/PSB {}x{} has unusable flattened composite RLE with large layer section ({lm_len} bytes; solid_fill={solid_fill}, cmyk_degenerate={cmyk_degenerate}) -- treating as layers-only",
         width,
         height
     );
@@ -474,6 +484,59 @@ fn rle_row_counts_look_like_solid_fill(width: usize, row_counts: &[usize]) -> bo
     let solid = packbits_identical_row_bytes(width);
     let max_ok = solid.saturating_mul(2).max(solid.saturating_add(8));
     row_counts.iter().all(|&c| c > 0 && c <= max_ok)
+}
+
+/// CMYK composites that keep varying C/K detail but solid-fill M/Y (often 0xFF) decode to a
+/// strong red cast with naive CMYK->RGB. Brochure templates sometimes ship this unusable
+/// flattened Image Data while the real artwork lives in a large layer section.
+///
+/// Detect: among M/Y (and A when present), at least two channels are mostly solid-sized RLE
+/// rows, while C or K still has clearly non-solid rows (so the all-solid heuristic misses).
+fn rle_row_counts_look_like_cmyk_degenerate_composite(
+    width: usize,
+    height: usize,
+    channels: usize,
+    row_counts: &[usize],
+) -> bool {
+    if width == 0 || height == 0 || channels < 4 {
+        return false;
+    }
+    let expected = height.saturating_mul(channels);
+    if row_counts.len() < expected {
+        return false;
+    }
+    let solid = packbits_identical_row_bytes(width);
+    let max_ok = solid.saturating_mul(2).max(solid.saturating_add(8));
+    let solidish_ratio = |ch: usize| -> f32 {
+        let start = ch.saturating_mul(height);
+        let end = start.saturating_add(height);
+        if end > row_counts.len() || height == 0 {
+            return 0.0;
+        }
+        let solid_rows = row_counts[start..end]
+            .iter()
+            .filter(|&&c| c > 0 && c <= max_ok)
+            .count();
+        solid_rows as f32 / height as f32
+    };
+    // M=1, Y=2 are the channels that turn full-ink into a red cast; A=4 is often solid too.
+    let mut solidish_fill_channels = 0u32;
+    for &ch in &[1usize, 2usize] {
+        if solidish_ratio(ch) >= 0.80 {
+            solidish_fill_channels += 1;
+        }
+    }
+    if channels >= 5 && solidish_ratio(4) >= 0.80 {
+        solidish_fill_channels += 1;
+    }
+    if solidish_fill_channels < 2 {
+        return false;
+    }
+    // Require at least one of C/K to look like real detail (not solid), otherwise the
+    // all-solid heuristic already covers the file.
+    let c_solidish = solidish_ratio(0);
+    let k_solidish = solidish_ratio(3);
+    c_solidish < 0.50 || k_solidish < 0.50
 }
 
 /// Parse Photoshop Image Resource 1033/1036 JPEG thumbnail into RGBA8.
@@ -1280,6 +1343,28 @@ mod tests {
     }
 
     #[test]
+    fn cmyk_degenerate_rle_heuristic_detects_solid_my_varying_ck() {
+        let width = 5031usize;
+        let height = 100usize;
+        let channels = 5usize;
+        let solid = super::packbits_identical_row_bytes(width);
+        let mut counts = Vec::with_capacity(height * channels);
+        // C: detailed
+        counts.extend(std::iter::repeat_n(solid * 20, height));
+        // M/Y: solid
+        counts.extend(std::iter::repeat_n(solid, height));
+        counts.extend(std::iter::repeat_n(solid, height));
+        // K: detailed
+        counts.extend(std::iter::repeat_n(solid * 25, height));
+        // A: solid
+        counts.extend(std::iter::repeat_n(solid, height));
+        assert!(super::rle_row_counts_look_like_cmyk_degenerate_composite(
+            width, height, channels, &counts
+        ));
+        assert!(!super::rle_row_counts_look_like_solid_fill(width, &counts));
+    }
+
+    #[test]
     fn rgba_blank_detects_near_black() {
         let black = vec![0u8; 64];
         assert!(super::rgba8_looks_visually_blank(&black));
@@ -1303,6 +1388,39 @@ mod tests {
         match super::probe_layers_only_composite(&bytes).expect("probe") {
             super::LayersOnlyCompositeProbe::NeedsLayerComposite => {}
             other => panic!("expected layer composite probe for 11.psd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layers_only_probe_on_12_01_02_red_cast_composite() {
+        // Flattened composite keeps varying C/K but solid-fill M/Y(=255) -- naive
+        // CMYK->RGB looks red; real pixels live in the large layer section.
+        let path = std::path::Path::new(
+            r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd",
+        );
+        if !path.is_file() {
+            eprintln!("skipping 01-02.psd layers-only probe; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read 01-02.psd");
+        match super::probe_layers_only_composite(&bytes).expect("probe") {
+            super::LayersOnlyCompositeProbe::NeedsLayerComposite => {}
+            other => panic!("expected layer composite probe for 01-02.psd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layers_only_probe_skips_10_psd_valid_composite() {
+        let path =
+            std::path::Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\10\10.psd");
+        if !path.is_file() {
+            eprintln!("skipping 10.psd probe regression; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read 10.psd");
+        match super::probe_layers_only_composite(&bytes).expect("probe") {
+            super::LayersOnlyCompositeProbe::NotApplicable => {}
+            other => panic!("expected NotApplicable for 10.psd, got {other:?}"),
         }
     }
 
