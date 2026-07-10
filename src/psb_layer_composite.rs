@@ -311,7 +311,7 @@ fn scan_extra_tagged_blocks(
             }
         };
 
-        if &signature == PSD_BLEND_SIGNATURE && &key == SECTION_DIVIDER_KEY && data_len >= 4 {
+        if &key == SECTION_DIVIDER_KEY && data_len >= 4 {
             let data_start = data_start as usize;
             let bytes = r.get_ref();
             section_type = Some(u32::from_be_bytes([
