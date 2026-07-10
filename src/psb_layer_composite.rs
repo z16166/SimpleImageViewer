@@ -17,7 +17,7 @@
 //! Layer-aware PSD/PSB compositor: a fallback renderer for "layers-only" files
 //! whose flattened Image Data section is blank (see `psb_reader::probe_layers_only_composite`).
 //! Decodes each layer's channels (depth 8, v1) and composites them bottom to
-//! top with Normal blend + opacity + user mask.
+//! top with Normal / Screen / Linear Dodge blend + opacity + user mask.
 //!
 //! Visibility fallback (viewer extension, not strict Photoshop fidelity):
 //! `composite_layers_from_bytes_with_cancel` first tries strict Photoshop
@@ -29,8 +29,9 @@
 //! routed us into this compositor in the first place, making the whole
 //! fallback path pointless. So if strict visibility composites nothing, we
 //! retry ignoring only *group* hidden flags (individual leaf-layer hidden
-//! flags are still respected), and only if that also composites nothing do we
-//! fall back to ignoring all hidden state. See `composite_layers_from_bytes_with_cancel`.
+//! flags are still respected). If that still leaves only sparse accents while
+//! large leaf-hidden content exists (or the page stays mostly black), escalate
+//! to compositing all pixel layers. See `composite_layers_from_bytes_with_cancel`.
 
 use std::io::Read;
 
@@ -775,11 +776,40 @@ fn build_layer_sized_mask(
     out
 }
 
-// -- Normal blend ----------------------------------------------------------
+// -- Blend modes -----------------------------------------------------------
 
-/// Straight-alpha src-over blend of `layer_rgba` onto `canvas`, clipped to canvas bounds.
+/// Separable blend function B(Cb, Cs) in [0, 1] (Photoshop / PDF).
+type SeparableBlendFn = fn(f32, f32) -> f32;
+
+fn blend_fn_normal(_cb: f32, cs: f32) -> f32 {
+    cs
+}
+
+fn blend_fn_screen(cb: f32, cs: f32) -> f32 {
+    1.0 - (1.0 - cb) * (1.0 - cs)
+}
+
+fn blend_fn_linear_dodge(cb: f32, cs: f32) -> f32 {
+    (cb + cs).min(1.0)
+}
+
+fn separable_blend_fn(blend: &[u8; 4]) -> Option<SeparableBlendFn> {
+    match blend {
+        b"norm" => Some(blend_fn_normal),
+        b"scrn" => Some(blend_fn_screen),
+        b"lddg" => Some(blend_fn_linear_dodge),
+        _ => None,
+    }
+}
+
+fn blend_mode_supported(blend: &[u8; 4]) -> bool {
+    separable_blend_fn(blend).is_some()
+}
+
+/// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
+/// `blend_fn` is Photoshop B(Cb, Cs); Normal is B = Cs (src-over).
 #[allow(clippy::too_many_arguments)]
-fn blend_normal_onto(
+fn blend_separable_onto(
     canvas: &mut [u8],
     canvas_w: u32,
     canvas_h: u32,
@@ -788,6 +818,8 @@ fn blend_normal_onto(
     top: i32,
     lw: u32,
     lh: u32,
+    blend_fn: SeparableBlendFn,
+    is_normal: bool,
 ) {
     if lw == 0 || lh == 0 || canvas_w == 0 || canvas_h == 0 {
         return;
@@ -821,7 +853,8 @@ fn blend_normal_onto(
             if sa == 0 {
                 continue;
             }
-            if sa == 255 {
+            // Opaque Normal is a straight copy; Screen/Add still need B(Cb, Cs).
+            if is_normal && sa == 255 {
                 canvas[d_off..d_off + 4].copy_from_slice(&layer_rgba[s_off..s_off + 4]);
                 continue;
             }
@@ -837,12 +870,67 @@ fn blend_normal_onto(
             for c in 0..3 {
                 let sc = layer_rgba[s_off + c] as f32 / 255.0;
                 let dc = canvas[d_off + c] as f32 / 255.0;
-                let out_c = (sc * sa_f + dc * da_f * (1.0 - sa_f)) / out_a_f;
-                canvas[d_off + c] = (out_c.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let b = blend_fn(dc, sc);
+                // Premultiplied channel, then un-premultiply to straight alpha.
+                let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
+                canvas[d_off + c] = ((co / out_a_f).clamp(0.0, 1.0) * 255.0).round() as u8;
             }
             canvas[d_off + 3] = (out_a_f.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
+}
+
+/// Straight-alpha src-over convenience used by unit tests (Normal = B(Cb,Cs)=Cs).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn blend_normal_onto(
+    canvas: &mut [u8],
+    canvas_w: u32,
+    canvas_h: u32,
+    layer_rgba: &[u8],
+    left: i32,
+    top: i32,
+    lw: u32,
+    lh: u32,
+) {
+    blend_separable_onto(
+        canvas,
+        canvas_w,
+        canvas_h,
+        layer_rgba,
+        left,
+        top,
+        lw,
+        lh,
+        blend_fn_normal,
+        true,
+    );
+}
+
+/// Dispatch by PSD blend-mode key; unknown modes fall back to Normal (logged once).
+#[allow(clippy::too_many_arguments)]
+fn blend_layer_onto(
+    canvas: &mut [u8],
+    canvas_w: u32,
+    canvas_h: u32,
+    layer_rgba: &[u8],
+    left: i32,
+    top: i32,
+    lw: u32,
+    lh: u32,
+    blend: &[u8; 4],
+) {
+    let (blend_fn, is_normal) = match separable_blend_fn(blend) {
+        Some(f) if blend == b"norm" => (f, true),
+        Some(f) => (f, false),
+        None => {
+            log_unsupported_blend_once(blend);
+            (blend_fn_normal as SeparableBlendFn, true)
+        }
+    };
+    blend_separable_onto(
+        canvas, canvas_w, canvas_h, layer_rgba, left, top, lw, lh, blend_fn, is_normal,
+    );
 }
 
 // -- Group visibility ------------------------------------------------------
@@ -891,7 +979,57 @@ fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bo
     visible
 }
 
-/// Log an unsupported blend-mode key once (v1 only implements Normal blending).
+/// Approximate union coverage of currently-visible pixel layers vs the canvas.
+/// Overlapping layers can over-count; that is fine for a sparse/dense heuristic.
+fn visible_layer_coverage_ratio(info: &LayerInfo<'_>, visible: &[bool]) -> f64 {
+    if visible.len() != info.records.len() || info.width == 0 || info.height == 0 {
+        return 0.0;
+    }
+    let canvas_area = u64::from(info.width).saturating_mul(u64::from(info.height));
+    if canvas_area == 0 {
+        return 0.0;
+    }
+    let mut area = 0u64;
+    for (i, record) in info.records.iter().enumerate() {
+        if !visible[i]
+            || record.is_section_divider
+            || record.is_empty_bounds()
+            || record.opacity == 0
+        {
+            continue;
+        }
+        area = area
+            .saturating_add(u64::from(record.width()).saturating_mul(u64::from(record.height())));
+    }
+    (area as f64 / canvas_area as f64).min(1.0)
+}
+
+/// True when some non-visible pixel layer covers at least 5% of the canvas.
+fn has_large_hidden_pixel_layers(info: &LayerInfo<'_>, visible: &[bool]) -> bool {
+    if visible.len() != info.records.len() || info.width == 0 || info.height == 0 {
+        return false;
+    }
+    let canvas_area = u64::from(info.width).saturating_mul(u64::from(info.height));
+    if canvas_area == 0 {
+        return false;
+    }
+    for (i, record) in info.records.iter().enumerate() {
+        if visible[i]
+            || record.is_section_divider
+            || record.is_empty_bounds()
+            || record.opacity == 0
+        {
+            continue;
+        }
+        let area = u64::from(record.width()).saturating_mul(u64::from(record.height()));
+        if area.saturating_mul(100) / canvas_area >= 5 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Log an unsupported blend-mode key once (unsupported modes fall back to Normal).
 fn log_unsupported_blend_once(blend: &[u8; 4]) {
     static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<[u8; 4]>>> =
         std::sync::OnceLock::new();
@@ -910,6 +1048,7 @@ struct DecodedLayer {
     top: i32,
     width: u32,
     height: u32,
+    blend: [u8; 4],
     rgba: Vec<u8>,
 }
 
@@ -1036,7 +1175,7 @@ fn decode_one_layer(
         return Ok(None);
     }
 
-    if record.blend != *b"norm" {
+    if !blend_mode_supported(&record.blend) {
         log_unsupported_blend_once(&record.blend);
     }
 
@@ -1056,15 +1195,18 @@ fn decode_one_layer(
         top: record.top,
         width,
         height,
+        blend: record.blend,
         rgba,
     }))
 }
 
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
-/// (depth 8 only, v1: Normal blend + opacity + user mask + group visibility).
+/// (depth 8 only, v1: Normal / Screen / Linear Dodge + opacity + user mask +
+/// group visibility).
 ///
-/// When `gpu` is provided and the canvas is large enough, Normal blending may run
-/// on an offscreen wgpu compute path; failures fall back to CPU.
+/// When `gpu` is provided, the canvas is large enough, and every decoded layer
+/// uses Normal blend, blending may run on an offscreen wgpu compute path;
+/// failures or non-Normal stacks fall back to CPU.
 pub fn composite_layers_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -1113,10 +1255,10 @@ pub fn composite_layers_from_bytes_with_cancel(
     // Tier 1: strict Photoshop visibility (respects both group and leaf
     // hidden flags). This is the faithful, primary behavior and is what most
     // well-behaved PSDs use.
-    let strict_visible = compute_effective_visibility(&info.records, false);
-    let composited = run_composite_pass(
+    let mut visible = compute_effective_visibility(&info.records, false);
+    let mut composited = run_composite_pass(
         &info,
-        &strict_visible,
+        &visible,
         true,
         &mut canvas,
         canvas_w,
@@ -1131,16 +1273,16 @@ pub fn composite_layers_from_bytes_with_cancel(
     // respected. This handles "template pack" PSDs where every top-level
     // page/section group is saved with its eye icon off, without discarding
     // legitimate per-layer hidden state (e.g. draft/reference layers).
-    let composited = if composited == 0 {
+    if composited == 0 {
         log::debug!(
             "PSD/PSB layer composite: no layers visible under strict Photoshop \
              visibility, retrying while ignoring group (not leaf-layer) hidden flags"
         );
         clear_composite_canvas(&mut canvas, info.color_mode);
-        let group_visible = compute_effective_visibility(&info.records, true);
-        run_composite_pass(
+        visible = compute_effective_visibility(&info.records, true);
+        composited = run_composite_pass(
             &info,
-            &group_visible,
+            &visible,
             true,
             &mut canvas,
             canvas_w,
@@ -1148,10 +1290,35 @@ pub fn composite_layers_from_bytes_with_cancel(
             cancel,
             gpu,
             &mut timing,
-        )?
-    } else {
-        composited
-    };
+        )?;
+    }
+
+    // Tier 2.5 -> 3 escalation: some packs hide *leaf* content (large photos /
+    // panels) while leaving only tiny accents + maybe a solid background eye-on.
+    // Detect sparse visible coverage with substantial hidden large layers, or a
+    // still-black page, then ignore all visibility (tier 3).
+    let escalate_to_tier3 = composited > 0
+        && has_large_hidden_pixel_layers(&info, &visible)
+        && (crate::psb_reader::rgba8_looks_unduly_dark(&canvas)
+            || visible_layer_coverage_ratio(&info, &visible) < 0.20);
+    if escalate_to_tier3 {
+        log::debug!(
+            "PSD/PSB layer composite: visible coverage still sparse/dark with large \
+             hidden leaves; compositing all pixel layers (tier 3)"
+        );
+        clear_composite_canvas(&mut canvas, info.color_mode);
+        composited = run_composite_pass(
+            &info,
+            &[],
+            false,
+            &mut canvas,
+            canvas_w,
+            canvas_h,
+            cancel,
+            gpu,
+            &mut timing,
+        )?;
+    }
 
     // Tier 3 (viewer extension, last resort): ignore all hidden/group
     // visibility state entirely. A blank preview is strictly less useful
@@ -1304,32 +1471,37 @@ fn run_composite_pass(
     }
 
     let blend_t0 = std::time::Instant::now();
+    let all_normal = layers.iter().all(|l| l.blend == *b"norm");
     let used_gpu = if let Some(gpu_ctx) = gpu {
-        let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
-            .iter()
-            .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
-                left: l.left,
-                top: l.top,
-                width: l.width,
-                height: l.height,
-                rgba: &l.rgba,
-            })
-            .collect();
-        let readback_t0 = std::time::Instant::now();
-        if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
-            gpu_ctx,
-            canvas_w,
-            canvas_h,
-            canvas,
-            &layer_refs,
-            cancel,
-        ) {
-            timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
-            canvas.copy_from_slice(&gpu_pixels);
-            timing.mode = "gpu";
-            true
-        } else {
+        if !all_normal {
             false
+        } else {
+            let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
+                .iter()
+                .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
+                    left: l.left,
+                    top: l.top,
+                    width: l.width,
+                    height: l.height,
+                    rgba: &l.rgba,
+                })
+                .collect();
+            let readback_t0 = std::time::Instant::now();
+            if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
+                gpu_ctx,
+                canvas_w,
+                canvas_h,
+                canvas,
+                &layer_refs,
+                cancel,
+            ) {
+                timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
+                canvas.copy_from_slice(&gpu_pixels);
+                timing.mode = "gpu";
+                true
+            } else {
+                false
+            }
         }
     } else {
         false
@@ -1342,7 +1514,7 @@ fn run_composite_pass(
             if is_large {
                 crate::psb_reader::check_decode_cancel(cancel)?;
             }
-            blend_normal_onto(
+            blend_layer_onto(
                 canvas,
                 canvas_w,
                 canvas_h,
@@ -1351,6 +1523,7 @@ fn run_composite_pass(
                 layer.top,
                 layer.width,
                 layer.height,
+                &layer.blend,
             );
             if is_large {
                 crate::psb_reader::check_decode_cancel(cancel)?;
@@ -1368,7 +1541,8 @@ fn run_composite_pass(
 mod tests {
     use super::{
         LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
-        blend_normal_onto, build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
+        blend_fn_screen, blend_layer_onto, blend_normal_onto, blend_separable_onto,
+        build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
         compute_effective_visibility, decode_one_layer, dimensions_within_limit, layer_to_rgba8,
         parse_layer_records, scan_extra_tagged_blocks,
     };
@@ -1538,6 +1712,36 @@ mod tests {
         blend_normal_onto(&mut canvas, 2, 2, &layer, 1, 1, 3, 3);
         assert_eq!(&canvas[0..12], &[0u8; 12]);
         assert_eq!(&canvas[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn blend_screen_opaque_black_preserves_backdrop() {
+        // Screen light-effect layers are often black + bright flare; black must
+        // not paint an opaque rectangle (the Normal-fallback bug).
+        let mut canvas = vec![40u8, 80, 120, 255, 40, 80, 120, 255];
+        let layer = [0u8, 0, 0, 255, 255, 255, 255, 255];
+        blend_separable_onto(
+            &mut canvas,
+            2,
+            1,
+            &layer,
+            0,
+            0,
+            2,
+            1,
+            blend_fn_screen,
+            false,
+        );
+        assert_eq!(&canvas[0..4], &[40, 80, 120, 255]);
+        assert_eq!(&canvas[4..8], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn blend_layer_onto_dispatches_screen_key() {
+        let mut canvas = vec![100u8, 100, 100, 255];
+        let layer = [0u8, 0, 0, 255];
+        blend_layer_onto(&mut canvas, 1, 1, &layer, 0, 0, 1, 1, b"scrn");
+        assert_eq!(&canvas, &[100, 100, 100, 255]);
     }
 
     #[test]
@@ -1738,6 +1942,75 @@ mod tests {
         // "ignore group hidden flags only" tier (see module doc comment),
         // which is what this assertion covers.
         assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
+    }
+
+    #[test]
+    fn composite_27059_forces_hidden_full_canvas_background() {
+        // Template pack: large content leaves are eye-off; tier2 only shows tiny
+        // accents. Escalation to tier3 must bring real page content (not just a
+        // white full-canvas fill).
+        for name in ["32 (5).psd", "32 (7).psd"] {
+            let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059")
+                .join(name);
+            if !path.is_file() {
+                eprintln!("skipping composite_27059...; {name} missing");
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("read");
+            let comp =
+                composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
+            assert!(
+                !crate::psb_reader::rgba8_looks_unduly_dark(&comp.pixels),
+                "{name}: page should not stay near-black"
+            );
+            assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
+            let mut nonwhite = 0u64;
+            let n = (comp.pixels.len() / 4) as u64;
+            for px in comp.pixels.chunks_exact(4) {
+                if px[0] < 250 || px[1] < 250 || px[2] < 250 {
+                    nonwhite += 1;
+                }
+            }
+            let nonwhite_frac = nonwhite as f64 / n.max(1) as f64;
+            assert!(
+                nonwhite_frac > 0.15,
+                "{name}: expected substantial non-white content, frac={nonwhite_frac:.3}"
+            );
+        }
+    }
+
+    #[test]
+    fn composite_27059_screen_flare_not_black_rect() {
+        // Layer "1" is Screen at bbox ~(1901,117)-(3126,979): black + lens flare.
+        // Treating Screen as Normal paints an opaque black rectangle there.
+        let path =
+            Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059\32 (7).psd");
+        if !path.is_file() {
+            eprintln!("skipping composite_27059_screen_flare_not_black_rect; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read");
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
+        let (x0, y0, x1, y1) = (2000u32, 200u32, 3000u32, 900u32);
+        let mut dark = 0u64;
+        let mut n = 0u64;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * comp.width + x) * 4) as usize;
+                let r = comp.pixels[i];
+                let g = comp.pixels[i + 1];
+                let b = comp.pixels[i + 2];
+                if r < 40 && g < 40 && b < 40 {
+                    dark += 1;
+                }
+                n += 1;
+            }
+        }
+        let dark_frac = dark as f64 / n.max(1) as f64;
+        assert!(
+            dark_frac < 0.25,
+            "Screen flare region should not be mostly black (Normal fallback); dark_frac={dark_frac:.3}"
+        );
     }
 
     #[test]
