@@ -508,6 +508,14 @@ pub struct CmsCiexyz {
 /// absolute) follow standard ICC numbering 1, 2, 3.
 pub const LCMS_INTENT_PERCEPTUAL: cmsUInt32Number = 0;
 
+/// Encoded as `COLORSPACE_SH(PT_CMYK=6) | CHANNELS_SH(4) | BYTES_SH(1)` --
+/// interleaved 8-bit CMYK. lcms2 uses `0 = no ink, 255 = max ink` (opposite of
+/// Photoshop PSD channel storage, which is `0 = 100% ink`).
+pub const LCMS_TYPE_CMYK_8: cmsUInt32Number = 0x00060021;
+
+/// Encoded as `COLORSPACE_SH(PT_RGB=4) | CHANNELS_SH(3) | BYTES_SH(1)`.
+pub const LCMS_TYPE_RGB_8: cmsUInt32Number = 0x00040019;
+
 /// Encoded as `FLOAT_SH(1) | COLORSPACE_SH(PT_CMYK=6) | CHANNELS_SH(4) | BYTES_SH(4)`
 /// from `lcms2.h` — interleaved 4-channel f32 CMYK with the standard ICC ink
 /// convention (`0 = no ink, 1 = max ink`). Note this is the **opposite** of

@@ -155,6 +155,8 @@ pub struct LayerInfo<'a> {
     pub depth: u16,
     pub color_mode: u16,
     pub is_psb: bool,
+    /// Resolved CMYK ICC (embedded or default). Empty when not CMYK.
+    pub cmyk_icc: Vec<u8>,
 }
 
 pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
@@ -185,7 +187,16 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
     skip_section(&mut r, cm_len, file_len, "color mode data")?;
 
     let ir_len = crate::psb_reader::read_u32(&mut r)? as u64;
+    let ir_start = r.position();
+    let ir_end = checked_end(ir_start, ir_len, file_len, "image resources")?;
+    let embedded_icc = crate::psb_reader::extract_icc_profile_from_ir(bytes, ir_start, ir_end);
     skip_section(&mut r, ir_len, file_len, "image resources")?;
+
+    let cmyk_icc = if color_mode == 4 {
+        crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec()
+    } else {
+        Vec::new()
+    };
 
     let lm_len = if is_psb {
         crate::psb_reader::read_u64(&mut r)?
@@ -204,6 +215,7 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
             depth,
             color_mode,
             is_psb,
+            cmyk_icc,
         });
     }
 
@@ -229,6 +241,7 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
             depth,
             color_mode,
             is_psb,
+            cmyk_icc,
         });
     }
 
@@ -249,6 +262,7 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
         depth,
         color_mode,
         is_psb,
+        cmyk_icc,
     })
 }
 
@@ -625,44 +639,73 @@ fn decode_channel_image(
 /// `color[0..3]` map to C/M/Y/K (mode 4) or R/G/B (mode 3, and fallback).
 /// `color[0]` alone is used as gray for mode 1. Opacity and the optional
 /// user mask are folded into alpha.
-fn layer_to_rgba8(
+struct LayerRgbaArgs<'a> {
     color_mode: u16,
     width: u32,
     height: u32,
-    color: &[Option<Vec<u8>>; 4],
-    alpha: Option<&[u8]>,
-    mask: Option<&[u8]>,
+    color: &'a [Option<Vec<u8>>; 4],
+    alpha: Option<&'a [u8]>,
+    mask: Option<&'a [u8]>,
     opacity: u8,
-) -> Vec<u8> {
-    let pixel_count = width as usize * height as usize;
-    let mut rgba = vec![0u8; pixel_count * 4];
-    let opacity = opacity as u32;
+    cmyk_icc: &'a [u8],
+}
 
+fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
+    let pixel_count = args.width as usize * args.height as usize;
+    let opacity = args.opacity as u32;
+
+    if args.color_mode == 4
+        && let (Some(c), Some(m), Some(y), Some(k)) = (
+            args.color[0].as_deref(),
+            args.color[1].as_deref(),
+            args.color[2].as_deref(),
+            args.color[3].as_deref(),
+        )
+    {
+        let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(if args.cmyk_icc.is_empty() {
+            None
+        } else {
+            Some(args.cmyk_icc)
+        });
+        let span = crate::psb_cmyk_cms::AdobeCmykSpan {
+            c,
+            m,
+            y,
+            k,
+            alpha: args.alpha,
+        };
+        if let Some(mut rgba) = crate::psb_cmyk_cms::planar_cmyk_adobe_to_rgba8(&span, icc) {
+            fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
+            return rgba;
+        }
+    }
+
+    let mut rgba = vec![0u8; pixel_count * 4];
     let sample =
         |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
 
     for i in 0..pixel_count {
-        let (r, g, b) = match color_mode {
+        let (r, g, b) = match args.color_mode {
             4 => crate::psb_reader::cmyk_to_rgb(
-                sample(&color[0], i),
-                sample(&color[1], i),
-                sample(&color[2], i),
-                sample(&color[3], i),
+                sample(&args.color[0], i),
+                sample(&args.color[1], i),
+                sample(&args.color[2], i),
+                sample(&args.color[3], i),
             ),
             1 => {
-                let v = sample(&color[0], i);
+                let v = sample(&args.color[0], i);
                 (v, v, v)
             }
             _ => (
-                sample(&color[0], i),
-                sample(&color[1], i),
-                sample(&color[2], i),
+                sample(&args.color[0], i),
+                sample(&args.color[1], i),
+                sample(&args.color[2], i),
             ),
         };
 
-        let base_alpha = alpha.and_then(|a| a.get(i)).copied().unwrap_or(255) as u32;
+        let base_alpha = args.alpha.and_then(|a| a.get(i)).copied().unwrap_or(255) as u32;
         let mut a = base_alpha * opacity / 255;
-        if let Some(m) = mask {
+        if let Some(m) = args.mask {
             let mv = m.get(i).copied().unwrap_or(255) as u32;
             a = a * mv / 255;
         }
@@ -675,6 +718,19 @@ fn layer_to_rgba8(
     }
 
     rgba
+}
+
+fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u32, mask: Option<&[u8]>) {
+    let pixel_count = rgba.len() / 4;
+    for i in 0..pixel_count {
+        let off = i * 4 + 3;
+        let mut a = rgba[off] as u32 * opacity / 255;
+        if let Some(m) = mask {
+            let mv = m.get(i).copied().unwrap_or(255) as u32;
+            a = a * mv / 255;
+        }
+        rgba[off] = a as u8;
+    }
 }
 
 /// Blit a decoded mask (its own `mask_info` rect, which may differ from the
@@ -857,20 +913,25 @@ struct DecodedLayer {
     rgba: Vec<u8>,
 }
 
+struct LayerDecodeParams<'a> {
+    color_mode: u16,
+    is_psb: bool,
+    should_decode: bool,
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    cmyk_icc: &'a [u8],
+}
+
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
 /// past every channel regardless of `should_decode` so later layers stay aligned.
 fn decode_one_layer(
     channel_data: &[u8],
     cursor: &mut usize,
     record: &LayerRecord,
-    color_mode: u16,
-    is_psb: bool,
-    should_decode: bool,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
+    params: &LayerDecodeParams<'_>,
 ) -> Result<Option<DecodedLayer>, String> {
     let width = record.width();
     let height = record.height();
-    let has_bounds = should_decode && width > 0 && height > 0;
+    let has_bounds = params.should_decode && width > 0 && height > 0;
     // Treat an oversized layer rect as corrupt *for that layer only*: skip
     // decoding it (still advancing `cursor` past its channel bytes below so
     // later layers stay aligned) rather than erroring out the whole
@@ -903,7 +964,7 @@ fn decode_one_layer(
         }
 
         match ch.id {
-            -1 => match decode_channel_image(slice, width, height, is_psb, cancel) {
+            -1 => match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
                 Ok(data) => alpha = Some(data),
                 Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
                 Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
@@ -929,7 +990,13 @@ fn decode_one_layer(
                             crate::psb_reader::PSD_MAX_DIMENSION
                         );
                     } else if mask_has_bounds {
-                        match decode_channel_image(slice, mask_w, mask_h, is_psb, cancel) {
+                        match decode_channel_image(
+                            slice,
+                            mask_w,
+                            mask_h,
+                            params.is_psb,
+                            params.cancel,
+                        ) {
                             Ok(mask_pixels) => {
                                 mask = Some(build_layer_sized_mask(
                                     mask_info,
@@ -955,7 +1022,7 @@ fn decode_one_layer(
             }
             0..=3 => {
                 let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, is_psb, cancel) {
+                match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
                     Ok(data) => color[idx] = Some(data),
                     Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
                     Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
@@ -973,15 +1040,16 @@ fn decode_one_layer(
         log_unsupported_blend_once(&record.blend);
     }
 
-    let rgba = layer_to_rgba8(
-        color_mode,
+    let rgba = layer_to_rgba8(LayerRgbaArgs {
+        color_mode: params.color_mode,
         width,
         height,
-        &color,
-        alpha.as_deref(),
-        mask.as_deref(),
-        record.opacity,
-    );
+        color: &color,
+        alpha: alpha.as_deref(),
+        mask: mask.as_deref(),
+        opacity: record.opacity,
+        cmyk_icc: params.cmyk_icc,
+    });
 
     Ok(Some(DecodedLayer {
         left: record.left,
@@ -1144,10 +1212,13 @@ fn run_composite_pass(
             info.channel_data,
             &mut cursor,
             record,
-            info.color_mode,
-            info.is_psb,
-            should_decode,
-            cancel,
+            &LayerDecodeParams {
+                color_mode: info.color_mode,
+                is_psb: info.is_psb,
+                should_decode,
+                cancel,
+                cmyk_icc: info.cmyk_icc.as_slice(),
+            },
         )?;
         if let Some(layer) = layer {
             let is_large =
@@ -1177,9 +1248,10 @@ fn run_composite_pass(
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerChannel, LayerMaskInfo, LayerRecord, blend_normal_onto, build_layer_sized_mask,
-        composite_layers_from_bytes_with_cancel, compute_effective_visibility, decode_one_layer,
-        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
+        LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
+        blend_normal_onto, build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
+        compute_effective_visibility, decode_one_layer, dimensions_within_limit, layer_to_rgba8,
+        parse_layer_records, scan_extra_tagged_blocks,
     };
     use std::path::Path;
 
@@ -1239,7 +1311,18 @@ mod tests {
 
         let channel_data: [u8; 0] = [];
         let mut cursor = 0usize;
-        let result = decode_one_layer(&channel_data, &mut cursor, &record, 3, false, true, None);
+        let result = decode_one_layer(
+            &channel_data,
+            &mut cursor,
+            &record,
+            &LayerDecodeParams {
+                color_mode: 3,
+                is_psb: false,
+                should_decode: true,
+                cancel: None,
+                cmyk_icc: &[],
+            },
+        );
 
         assert!(result.is_ok(), "oversized layer must not error out");
         assert!(
@@ -1275,7 +1358,18 @@ mod tests {
         // the oversized mask rect must be rejected before any read/alloc.
         let channel_data = [0u8, 0u8];
         let mut cursor = 0usize;
-        let result = decode_one_layer(&channel_data, &mut cursor, &record, 3, false, true, None);
+        let result = decode_one_layer(
+            &channel_data,
+            &mut cursor,
+            &record,
+            &LayerDecodeParams {
+                color_mode: 3,
+                is_psb: false,
+                should_decode: true,
+                cancel: None,
+                cmyk_icc: &[],
+            },
+        );
 
         assert!(result.is_ok());
         let layer = result.unwrap().expect("layer rect itself is valid");
@@ -1463,7 +1557,17 @@ mod tests {
         let alpha = vec![200u8];
         let mask = vec![128u8];
 
-        let rgba = layer_to_rgba8(4, 1, 1, &color, Some(&alpha), Some(&mask), 200);
+        // Force naive path: invalid ICC makes lcms fail closed to cmyk_to_rgb.
+        let rgba = layer_to_rgba8(LayerRgbaArgs {
+            color_mode: 4,
+            width: 1,
+            height: 1,
+            color: &color,
+            alpha: Some(&alpha),
+            mask: Some(&mask),
+            opacity: 200,
+            cmyk_icc: b"not-icc",
+        });
 
         // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
         assert_eq!(rgba, vec![163, 122, 81, 78]);

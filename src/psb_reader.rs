@@ -47,6 +47,8 @@ const LAYERS_ONLY_LM_MIN_BYTES: u64 = 1_000_000;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
 const IR_THUMBNAIL_PS4: u16 = 1033;
 const IR_THUMBNAIL_PS5: u16 = 1036;
+/// Photoshop Image Resource: ICC Profile Settings (raw ICC bytes).
+const IR_ICC_PROFILE: u16 = 1039;
 
 /// User-facing error when the flattened composite is empty and no IR thumbnail exists.
 pub const EMPTY_COMPOSITE_ERROR: &str = "PSD flattened composite is empty (layers-only file). \
@@ -90,6 +92,8 @@ pub struct PsbTiledSource {
     row_offsets: Vec<u64>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
+    /// Resolved CMYK ICC bytes (embedded IR 1039 or bundled default). Empty when not CMYK.
+    cmyk_icc: Arc<[u8]>,
 }
 
 impl PsbTiledSource {
@@ -247,8 +251,13 @@ pub fn read_composite_from_bytes_with_cancel(
     seek_forward(&mut r, cm_len as u64)?;
 
     // -- Section 3: Image Resources --
-    let ir_len = read_u32(&mut r)?;
-    seek_forward(&mut r, ir_len as u64)?;
+    let ir_len = read_u32(&mut r)? as u64;
+    let ir_start = r
+        .stream_position()
+        .map_err(|e| format!("Stream position error: {e}"))?;
+    let ir_end = ir_start.saturating_add(ir_len).min(file_size);
+    let embedded_icc = extract_icc_profile_from_ir(bytes, ir_start, ir_end);
+    seek_forward(&mut r, ir_len)?;
 
     // -- Section 4: Layer and Mask Information --
     let lm_len = if is_psb {
@@ -356,16 +365,44 @@ pub fn read_composite_from_bytes_with_cancel(
         }
     }
 
-    // Step 2: Interleave into RGBA8.
+    // Step 2: Interleave into RGBA8 (CMYK goes through lcms2 when possible).
     let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
-    for row in 0..height as usize {
-        if row & 0x3F == 0 {
-            check_decode_cancel(cancel)?;
+    let cmyk_cms_ok = color_mode == 4
+        && channels >= 4
+        && planar_channels[0].is_some()
+        && planar_channels[1].is_some()
+        && planar_channels[2].is_some()
+        && planar_channels[3].is_some()
+        && {
+            let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref());
+            let c = planar_channels[0].as_deref().unwrap();
+            let m = planar_channels[1].as_deref().unwrap();
+            let y = planar_channels[2].as_deref().unwrap();
+            let k = planar_channels[3].as_deref().unwrap();
+            let a = if channels >= 5 {
+                planar_channels.get(4).and_then(|c| c.as_deref())
+            } else {
+                None
+            };
+            let span = crate::psb_cmyk_cms::AdobeCmykSpan {
+                c,
+                m,
+                y,
+                k,
+                alpha: a,
+            };
+            crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(&span, icc, &mut rgba)
+        };
+    if !cmyk_cms_ok {
+        for row in 0..height as usize {
+            if row & 0x3F == 0 {
+                check_decode_cancel(cancel)?;
+            }
+            let start = row * width as usize;
+            let end = start + width as usize;
+            let dst_row = &mut rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
+            interleave_row_rgba8(dst_row, &planar_channels, color_mode, channels, start, end);
         }
-        let start = row * width as usize;
-        let end = start + width as usize;
-        let dst_row = &mut rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
-        interleave_row_rgba8(dst_row, &planar_channels, color_mode, channels, start, end);
     }
 
     Ok(PsbComposite {
@@ -534,6 +571,81 @@ fn rle_row_counts_look_like_cmyk_degenerate_composite(
     let c_solidish = solidish_ratio(0);
     let k_solidish = solidish_ratio(3);
     c_solidish < 0.50 || k_solidish < 0.50
+}
+
+/// Parse Photoshop Image Resource 1039 (ICC profile) bytes, if present.
+pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> Option<Vec<u8>> {
+    let mut pos = ir_start as usize;
+    let end = (ir_end as usize).min(bytes.len());
+    while pos + 12 <= end {
+        let sig = &bytes[pos..pos + 4];
+        if sig != b"8BIM" && sig != b"8B64" {
+            break;
+        }
+        pos += 4;
+        if pos + 2 > end {
+            break;
+        }
+        let rid = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]);
+        pos += 2;
+        if pos >= end {
+            break;
+        }
+        let name_len = bytes[pos] as usize;
+        pos += 1;
+        pos += name_len;
+        if (name_len + 1) % 2 == 1 {
+            pos += 1;
+        }
+        if pos + 4 > end {
+            break;
+        }
+        let size = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+            as usize;
+        pos += 4;
+        let data_end = pos.saturating_add(size);
+        if data_end > end {
+            break;
+        }
+        if rid == IR_ICC_PROFILE && size > 0 {
+            return Some(bytes[pos..data_end].to_vec());
+        }
+        pos = data_end;
+        if size % 2 == 1 {
+            pos += 1;
+        }
+    }
+    None
+}
+
+/// Extract embedded ICC (IR 1039) from a full PSD/PSB byte buffer.
+#[cfg(test)]
+pub fn extract_embedded_icc_from_psd(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 30 {
+        return None;
+    }
+    let mut r = std::io::Cursor::new(bytes);
+    let mut sig = [0u8; 4];
+    r.read_exact(&mut sig).ok()?;
+    if &sig != b"8BPS" {
+        return None;
+    }
+    let version = read_u16(&mut r).ok()?;
+    if version != 1 && version != 2 {
+        return None;
+    }
+    r.seek(SeekFrom::Current(6)).ok()?;
+    let _channels = read_u16(&mut r).ok()?;
+    let _height = read_u32(&mut r).ok()?;
+    let _width = read_u32(&mut r).ok()?;
+    let _depth = read_u16(&mut r).ok()?;
+    let _color_mode = read_u16(&mut r).ok()?;
+    let cm_len = read_u32(&mut r).ok()? as u64;
+    seek_forward(&mut r, cm_len).ok()?;
+    let ir_len = read_u32(&mut r).ok()? as u64;
+    let ir_start = r.stream_position().ok()?;
+    let ir_end = ir_start.saturating_add(ir_len).min(bytes.len() as u64);
+    extract_icc_profile_from_ir(bytes, ir_start, ir_end)
 }
 
 /// Parse Photoshop Image Resource 1033/1036 JPEG thumbnail into RGBA8.
@@ -765,11 +877,14 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         .checked_mul(bps as u64)
         .ok_or_else(|| "PSD/PSB row byte count overflow".to_string())?;
 
-    // Skip Sections 2, 3, 4
+    // Skip Sections 2, 3, 4 (capture ICC from IR when present).
     let cm_len = read_u32(&mut cursor)?;
     seek_forward(&mut cursor, cm_len as u64).map_err(|e| e.to_string())?;
-    let ir_len = read_u32(&mut cursor)?;
-    seek_forward(&mut cursor, ir_len as u64).map_err(|e| e.to_string())?;
+    let ir_len = read_u32(&mut cursor)? as u64;
+    let ir_start = cursor.position();
+    let ir_end = ir_start.saturating_add(ir_len).min(mmap.len() as u64);
+    let embedded_icc = extract_icc_profile_from_ir(&mmap[..], ir_start, ir_end);
+    seek_forward(&mut cursor, ir_len).map_err(|e| e.to_string())?;
     let lm_len = if is_psb {
         read_u64(&mut cursor)?
     } else {
@@ -841,6 +956,12 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         })
         .build();
 
+    let cmyk_icc: Arc<[u8]> = if color_mode == 4 {
+        Arc::<[u8]>::from(crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec())
+    } else {
+        Arc::from([])
+    };
+
     Ok(PsbTiledSource {
         path: path.to_path_buf(),
         mmap: Arc::new(mmap),
@@ -853,6 +974,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         compression,
         row_offsets,
         row_cache,
+        cmyk_icc,
     })
 }
 
@@ -893,6 +1015,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 self.channels,
                 start,
                 end,
+                self.cmyk_icc.as_ref(),
             );
         }
         std::sync::Arc::new(rgba)
@@ -995,7 +1118,9 @@ pub(crate) fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: 
                 let remaining = expected_len.saturating_sub(result.len());
                 let actual_count = count.min(remaining);
                 if actual_count > 0 {
-                    result.resize(result.len() + actual_count, val);
+                    let start = result.len();
+                    result.resize(start + actual_count, 0);
+                    crate::psb_packbits_simd::fill_bytes(&mut result[start..], val);
                 }
             }
         }
@@ -1176,6 +1301,7 @@ fn interleave_tile_row_rgba8(
     channels: u32,
     start: usize,
     end: usize,
+    cmyk_icc: &[u8],
 ) {
     let slice = |ch: usize| -> Option<&[u8]> {
         src_channels.get(ch).and_then(|o| {
@@ -1192,6 +1318,25 @@ fn interleave_tile_row_rgba8(
             if let (Some(c), Some(m), Some(y), Some(k)) = (slice(0), slice(1), slice(2), slice(3)) {
                 let a = if channels >= 5 { slice(4) } else { None };
                 let width = c.len().min(m.len()).min(y.len()).min(k.len());
+                let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(if cmyk_icc.is_empty() {
+                    None
+                } else {
+                    Some(cmyk_icc)
+                });
+                let span = crate::psb_cmyk_cms::AdobeCmykSpan {
+                    c: &c[..width],
+                    m: &m[..width],
+                    y: &y[..width],
+                    k: &k[..width],
+                    alpha: a.map(|buf| &buf[..width.min(buf.len())]),
+                };
+                if crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(
+                    &span,
+                    icc,
+                    &mut dst_row[..width * 4],
+                ) {
+                    return;
+                }
                 for col in 0..width {
                     let (r, g, b) = cmyk_to_rgb(c[col], m[col], y[col], k[col]);
                     let base = col * 4;
@@ -1403,6 +1548,18 @@ mod tests {
         assert_eq!(dst[1], 128);
         assert_eq!(dst[2], 255);
         assert_eq!(dst[3], 255);
+    }
+
+    #[test]
+    fn extract_embedded_icc_absent_on_brochure_without_1039() {
+        let path = std::path::Path::new(
+            r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd",
+        );
+        if !path.is_file() {
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read");
+        assert!(super::extract_embedded_icc_from_psd(&bytes).is_none());
     }
 
     #[test]
