@@ -426,10 +426,523 @@ fn read_i32(r: &mut impl Read) -> Result<i32, String> {
     Ok(crate::psb_reader::read_u32(r)? as i32)
 }
 
+// -- Layer channel decode ---------------------------------------------
+
+/// Decode one channel's image data (compression header + rows) into 8-bit samples.
+/// `data` must be exactly the channel's declared byte range (depth 8 only, v1).
+fn decode_channel_image(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    is_psb: bool,
+) -> Result<Vec<u8>, String> {
+    let mut r = std::io::Cursor::new(data);
+    let compression = crate::psb_reader::read_u16(&mut r)?;
+    let pixel_count = width as usize * height as usize;
+
+    match compression {
+        0 => {
+            let mut out = vec![0u8; pixel_count];
+            let avail = data.len().saturating_sub(2);
+            let copy = avail.min(pixel_count);
+            out[..copy].copy_from_slice(&data[2..2 + copy]);
+            Ok(out)
+        }
+        1 => {
+            let mut row_counts = Vec::with_capacity(height as usize);
+            for _ in 0..height {
+                let count = if is_psb {
+                    crate::psb_reader::read_u32(&mut r)? as usize
+                } else {
+                    crate::psb_reader::read_u16(&mut r)? as usize
+                };
+                row_counts.push(count);
+            }
+
+            let mut out = vec![0u8; pixel_count];
+            let mut row_buf = Vec::with_capacity(width as usize);
+            for (row, &count) in row_counts.iter().enumerate() {
+                let start = r.position() as usize;
+                let end = start
+                    .checked_add(count)
+                    .ok_or_else(|| "PSD/PSB layer channel RLE row length overflow".to_string())?;
+                let compressed = data
+                    .get(start..end)
+                    .ok_or_else(|| "PSD/PSB layer channel RLE row out of bounds".to_string())?;
+                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, width as usize);
+                let dst_start = row * width as usize;
+                out[dst_start..dst_start + width as usize]
+                    .copy_from_slice(&row_buf[..width as usize]);
+                r.set_position(end as u64);
+            }
+            Ok(out)
+        }
+        _ => Err(format!(
+            "Unsupported layer channel compression: {compression}"
+        )),
+    }
+}
+
+// -- Layer RGBA assembly -------------------------------------------------
+
+/// Build a layer's straight-alpha RGBA8 rect from its decoded channels.
+/// `color[0..3]` map to C/M/Y/K (mode 4) or R/G/B (mode 3, and fallback).
+/// `color[0]` alone is used as gray for mode 1. Opacity and the optional
+/// user mask are folded into alpha.
+fn layer_to_rgba8(
+    color_mode: u16,
+    width: u32,
+    height: u32,
+    color: &[Option<Vec<u8>>; 4],
+    alpha: Option<&[u8]>,
+    mask: Option<&[u8]>,
+    opacity: u8,
+) -> Vec<u8> {
+    let pixel_count = width as usize * height as usize;
+    let mut rgba = vec![0u8; pixel_count * 4];
+    let opacity = opacity as u32;
+
+    let sample =
+        |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
+
+    for i in 0..pixel_count {
+        let (r, g, b) = match color_mode {
+            4 => crate::psb_reader::cmyk_to_rgb(
+                sample(&color[0], i),
+                sample(&color[1], i),
+                sample(&color[2], i),
+                sample(&color[3], i),
+            ),
+            1 => {
+                let v = sample(&color[0], i);
+                (v, v, v)
+            }
+            _ => (
+                sample(&color[0], i),
+                sample(&color[1], i),
+                sample(&color[2], i),
+            ),
+        };
+
+        let base_alpha = alpha.and_then(|a| a.get(i)).copied().unwrap_or(255) as u32;
+        let mut a = base_alpha * opacity / 255;
+        if let Some(m) = mask {
+            let mv = m.get(i).copied().unwrap_or(255) as u32;
+            a = a * mv / 255;
+        }
+
+        let off = i * 4;
+        rgba[off] = r;
+        rgba[off + 1] = g;
+        rgba[off + 2] = b;
+        rgba[off + 3] = a as u8;
+    }
+
+    rgba
+}
+
+// -- Normal blend ----------------------------------------------------------
+
+/// Straight-alpha src-over blend of `layer_rgba` onto `canvas`, clipped to canvas bounds.
+#[allow(clippy::too_many_arguments)]
+fn blend_normal_onto(
+    canvas: &mut [u8],
+    canvas_w: u32,
+    canvas_h: u32,
+    layer_rgba: &[u8],
+    left: i32,
+    top: i32,
+    lw: u32,
+    lh: u32,
+) {
+    if lw == 0 || lh == 0 || canvas_w == 0 || canvas_h == 0 {
+        return;
+    }
+
+    let canvas_w_i = canvas_w as i64;
+    let canvas_h_i = canvas_h as i64;
+    let left = left as i64;
+    let top = top as i64;
+    let lw_i = lw as i64;
+    let lh_i = lh as i64;
+
+    let src_x0 = (-left).max(0);
+    let src_y0 = (-top).max(0);
+    let src_x1 = (canvas_w_i - left).min(lw_i);
+    let src_y1 = (canvas_h_i - top).min(lh_i);
+    if src_x0 >= src_x1 || src_y0 >= src_y1 {
+        return;
+    }
+
+    for sy in src_y0..src_y1 {
+        let dy = (top + sy) as usize;
+        let dst_row_start = dy * canvas_w as usize * 4;
+        let src_row_start = sy as usize * lw as usize * 4;
+        for sx in src_x0..src_x1 {
+            let dx = (left + sx) as usize;
+            let d_off = dst_row_start + dx * 4;
+            let s_off = src_row_start + sx as usize * 4;
+
+            let sa = layer_rgba[s_off + 3];
+            if sa == 0 {
+                continue;
+            }
+            if sa == 255 {
+                canvas[d_off..d_off + 4].copy_from_slice(&layer_rgba[s_off..s_off + 4]);
+                continue;
+            }
+
+            let sa_f = sa as f32 / 255.0;
+            let da_f = canvas[d_off + 3] as f32 / 255.0;
+            let out_a_f = sa_f + da_f * (1.0 - sa_f);
+            if out_a_f <= 0.0 {
+                canvas[d_off..d_off + 4].fill(0);
+                continue;
+            }
+
+            for c in 0..3 {
+                let sc = layer_rgba[s_off + c] as f32 / 255.0;
+                let dc = canvas[d_off + c] as f32 / 255.0;
+                let out_c = (sc * sa_f + dc * da_f * (1.0 - sa_f)) / out_a_f;
+                canvas[d_off + c] = (out_c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            canvas[d_off + 3] = (out_a_f.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+}
+
+// -- Group visibility ------------------------------------------------------
+
+/// Compute per-record effective visibility: a layer is visible only if it
+/// and every ancestor group is visible.
+///
+/// Photoshop stores layer records **bottom to top** in the file (index 0 is
+/// the bottommost layer, the last index is the topmost). A group's `lsct`
+/// bounding section divider (type 3, hidden in the UI) is therefore its
+/// *first* record in file order (the bottom of the group), while the actual
+/// folder record (type 1 open / type 2 closed, carrying the group's own
+/// hidden flag) is its *last* record in file order (the top of the group).
+///
+/// So this walks records in **reverse** (top to bottom, visually): the
+/// folder record is seen first and pushes a nested visibility scope (using
+/// the group's own hidden flag, which is only known at that point), and the
+/// bounding divider is seen last and pops it.
+fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
+    let mut visible = vec![false; records.len()];
+    let mut stack: Vec<bool> = vec![true];
+
+    for (i, layer) in records.iter().enumerate().rev() {
+        let current = *stack.last().unwrap_or(&true) && !layer.is_hidden();
+        visible[i] = current;
+
+        if layer.is_section_divider {
+            match layer.section_type {
+                Some(1) | Some(2) => stack.push(current),
+                Some(3) if stack.len() > 1 => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    visible
+}
+
+/// Log an unsupported blend-mode key once (v1 only implements Normal blending).
+fn log_unsupported_blend_once(blend: &[u8; 4]) {
+    static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<[u8; 4]>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+    let mut seen = seen.lock();
+    if seen.insert(*blend) {
+        let key = String::from_utf8_lossy(blend).into_owned();
+        log::debug!("PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal");
+    }
+}
+
+// -- Full composite ---------------------------------------------------------
+
+struct DecodedLayer {
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+/// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
+/// past every channel regardless of `should_decode` so later layers stay aligned.
+fn decode_one_layer(
+    channel_data: &[u8],
+    cursor: &mut usize,
+    record: &LayerRecord,
+    color_mode: u16,
+    is_psb: bool,
+    should_decode: bool,
+) -> Result<Option<DecodedLayer>, String> {
+    let width = record.width();
+    let height = record.height();
+    let can_decode = should_decode && width > 0 && height > 0;
+
+    let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    let mut alpha: Option<Vec<u8>> = None;
+    let mut mask: Option<Vec<u8>> = None;
+
+    for ch in &record.channels {
+        let data_len = ch.data_len as usize;
+        let start = *cursor;
+        let end = start
+            .checked_add(data_len)
+            .ok_or_else(|| "PSD/PSB layer channel data length overflow".to_string())?;
+        let slice = channel_data
+            .get(start..end)
+            .ok_or_else(|| "PSD/PSB layer channel data out of bounds".to_string())?;
+        *cursor = end;
+
+        if !can_decode {
+            continue;
+        }
+
+        match ch.id {
+            -1 => match decode_channel_image(slice, width, height, is_psb) {
+                Ok(data) => alpha = Some(data),
+                Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
+            },
+            -2 => match decode_channel_image(slice, width, height, is_psb) {
+                Ok(data) => mask = Some(data),
+                Err(e) => log::debug!("PSD/PSB layer mask channel decode failed: {e}"),
+            },
+            0..=3 => {
+                let idx = ch.id as usize;
+                match decode_channel_image(slice, width, height, is_psb) {
+                    Ok(data) => color[idx] = Some(data),
+                    Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !can_decode {
+        return Ok(None);
+    }
+
+    if record.blend != *b"norm" {
+        log_unsupported_blend_once(&record.blend);
+    }
+
+    let rgba = layer_to_rgba8(
+        color_mode,
+        width,
+        height,
+        &color,
+        alpha.as_deref(),
+        mask.as_deref(),
+        record.opacity,
+    );
+
+    Ok(Some(DecodedLayer {
+        left: record.left,
+        top: record.top,
+        width,
+        height,
+        rgba,
+    }))
+}
+
+/// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
+/// (depth 8 only, v1: Normal blend + opacity + user mask + group visibility).
+pub fn composite_layers_from_bytes_with_cancel(
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<crate::psb_reader::PsbComposite, String> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let info = parse_layer_records(bytes)?;
+    if info.depth != 8 {
+        return Err(format!(
+            "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
+            info.depth
+        ));
+    }
+
+    let canvas_w = info.width;
+    let canvas_h = info.height;
+    let canvas_len = (canvas_w as usize)
+        .checked_mul(canvas_h as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| "PSD/PSB layer composite canvas size overflow".to_string())?;
+    let mut canvas = vec![0u8; canvas_len];
+
+    if info.records.is_empty() {
+        return Ok(crate::psb_reader::PsbComposite {
+            width: canvas_w,
+            height: canvas_h,
+            pixels: canvas,
+        });
+    }
+
+    let visible = compute_effective_visibility(&info.records);
+
+    let composited = run_composite_pass(
+        &info,
+        &visible,
+        true,
+        &mut canvas,
+        canvas_w,
+        canvas_h,
+        cancel,
+    )?;
+
+    // Real-world "template pack" PSDs commonly organize each page/section as
+    // its own top-level group and save with *every* group's eye icon off
+    // (the user is expected to enable one page at a time). Respecting group
+    // visibility there faithfully reproduces Photoshop's own blank canvas --
+    // which is exactly the blank/solid-fill flattened composite that routed
+    // us into this layer compositor in the first place. A blank preview is
+    // strictly less useful than an "everything overlaid" one for a static
+    // image viewer, so fall back to ignoring hidden/group-visibility state
+    // entirely when strict visibility produced nothing at all.
+    if composited == 0 {
+        log::debug!(
+            "PSD/PSB layer composite: no layers visible under strict Photoshop \
+             visibility, falling back to compositing all pixel layers"
+        );
+        canvas.fill(0);
+        // `respect_visibility=false` short-circuits before indexing `visible`.
+        run_composite_pass(&info, &[], false, &mut canvas, canvas_w, canvas_h, cancel)?;
+    }
+
+    Ok(crate::psb_reader::PsbComposite {
+        width: canvas_w,
+        height: canvas_h,
+        pixels: canvas,
+    })
+}
+
+/// Decode and blend every eligible layer bottom to top, returning how many were
+/// actually composited. When `respect_visibility` is false, `visible` is ignored
+/// (every non-divider, non-empty, non-fully-transparent layer is composited).
+fn run_composite_pass(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+    respect_visibility: bool,
+    canvas: &mut [u8],
+    canvas_w: u32,
+    canvas_h: u32,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<usize, String> {
+    // Layer records and channel_data are both stored bottom to top (index 0
+    // is the bottommost layer). Decoding must walk that same order to stay
+    // aligned with `channel_data`; blending happens to want the identical
+    // order (draw the bottommost layer first, then successively higher ones
+    // on top), so a single forward pass does both. Skipped layers still
+    // advance `cursor` past their channel bytes so later layers stay aligned,
+    // even though they are not decoded or blended.
+    let mut cursor: usize = 0;
+    let mut composited = 0usize;
+    for (i, record) in info.records.iter().enumerate() {
+        if i & 0xF == 0 {
+            crate::psb_reader::check_decode_cancel(cancel)?;
+        }
+        let should_decode = (!respect_visibility || visible[i])
+            && !record.is_section_divider
+            && !record.is_empty_bounds()
+            && record.opacity > 0;
+        let layer = decode_one_layer(
+            info.channel_data,
+            &mut cursor,
+            record,
+            info.color_mode,
+            info.is_psb,
+            should_decode,
+        )?;
+        if let Some(layer) = layer {
+            blend_normal_onto(
+                canvas,
+                canvas_w,
+                canvas_h,
+                &layer.rgba,
+                layer.left,
+                layer.top,
+                layer.width,
+                layer.height,
+            );
+            composited += 1;
+        }
+    }
+    Ok(composited)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_layer_records, scan_extra_tagged_blocks};
+    use super::{
+        blend_normal_onto, composite_layers_from_bytes_with_cancel, parse_layer_records,
+        scan_extra_tagged_blocks,
+    };
     use std::path::Path;
+
+    #[test]
+    fn blend_normal_onto_2x2_straight_alpha() {
+        // Opaque red covers the top-left pixel; 50% green partially covers top-right;
+        // the bottom row of the layer is fully transparent and must not touch the canvas.
+        let mut canvas = vec![
+            10, 10, 10, 255, // (0,0)
+            20, 20, 20, 255, // (1,0)
+            30, 30, 30, 255, // (0,1)
+            40, 40, 40, 255, // (1,1)
+        ];
+        let layer = vec![
+            255, 0, 0, 255, // (0,0) opaque red
+            0, 255, 0, 128, // (1,0) 50% green
+            0, 0, 0, 0, // (0,1) transparent
+            0, 0, 0, 0, // (1,1) transparent
+        ];
+
+        blend_normal_onto(&mut canvas, 2, 2, &layer, 0, 0, 2, 2);
+
+        assert_eq!(&canvas[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&canvas[8..12], &[30, 30, 30, 255]);
+        assert_eq!(&canvas[12..16], &[40, 40, 40, 255]);
+
+        // (1,0): green over gray20 at 50% alpha, straight-alpha src-over.
+        let blended = &canvas[4..8];
+        assert_eq!(blended[3], 255);
+        assert_eq!(blended[0], 10); // (0*128 + 20*255*127/255) / 255 ~= 10
+        assert_eq!(blended[1], 138); // (255*128 + 20*127) / 255 ~= 138
+        assert_eq!(blended[2], 10);
+    }
+
+    #[test]
+    fn blend_normal_onto_clips_to_canvas() {
+        // A 3x3 opaque white layer at (1,1) only overlaps the canvas's bottom-right pixel.
+        let mut canvas = vec![0u8; 2 * 2 * 4];
+        let layer = vec![255u8; 3 * 3 * 4];
+        blend_normal_onto(&mut canvas, 2, 2, &layer, 1, 1, 3, 3);
+        assert_eq!(&canvas[0..12], &[0u8; 12]);
+        assert_eq!(&canvas[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn composite_11_psd_not_blank() {
+        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\11\11.psd");
+        if !path.is_file() {
+            eprintln!("skipping composite_11_psd_not_blank; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).unwrap();
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None).expect("composite");
+        assert_eq!((comp.width, comp.height), (5031, 3437));
+        // NOTE: this corpus file organizes each brochure page as a top-level
+        // `lsct` group and saves with *every* group's eye icon off (a common
+        // "template pack" convention: the end user enables one page at a
+        // time). Verified independently with the `psd-tools` Python library:
+        // its default (visibility-respecting) `PSDImage.composite()` is also
+        // fully blank for this file. `composite_layers_from_bytes_with_cancel`
+        // detects that strict visibility yields nothing and falls back to
+        // compositing every pixel layer, which is what this assertion covers.
+        assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
+    }
 
     #[test]
     fn psb_8bim_lsct_uses_u32_length() {

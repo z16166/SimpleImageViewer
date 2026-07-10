@@ -376,7 +376,7 @@ pub fn read_composite_from_bytes_with_cancel(
 }
 
 #[inline]
-fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), String> {
+pub(crate) fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), String> {
     if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
         Err(crate::loader::DECODE_CANCELLED.to_string())
     } else {
@@ -830,7 +830,7 @@ fn with_psb_row_scratch(row_len: usize, f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8>
 }
 
 /// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
-fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: usize) {
+pub(crate) fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: usize) {
     result.clear();
     if result.capacity() < expected_len {
         result.reserve(expected_len - result.capacity());
@@ -889,7 +889,7 @@ fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bool {
 
 /// Convert planar samples (8/16/32-bit BE) into 8-bit display samples.
 /// `dst.len()` is the sample count; `src` must hold `dst.len() * bps` bytes (or be truncated).
-fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) {
+pub(crate) fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) {
     let n = dst.len();
     match bps {
         1 => {
@@ -928,7 +928,7 @@ fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) {
 }
 
 #[inline]
-fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> (u8, u8, u8) {
+pub(crate) fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> (u8, u8, u8) {
     let c = c as u32;
     let m = m as u32;
     let y = y as u32;
