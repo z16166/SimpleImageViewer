@@ -32,6 +32,26 @@ const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
 pub(crate) const GPU_BLEND_MIN_SHORT_SIDE: u32 = 512;
 pub(crate) const GPU_BLEND_MIN_PIXELS: u64 = 512 * 512;
 
+/// WGSL `mode` uniform values (must match shader).
+pub(crate) const BLEND_MODE_NORMAL: u32 = 0;
+pub(crate) const BLEND_MODE_SCREEN: u32 = 1;
+pub(crate) const BLEND_MODE_LINEAR_DODGE: u32 = 2;
+pub(crate) const BLEND_MODE_MULTIPLY: u32 = 3;
+
+pub(crate) fn separable_blend_mode_u32(blend: &[u8; 4]) -> u32 {
+    match blend {
+        b"scrn" => BLEND_MODE_SCREEN,
+        b"lddg" => BLEND_MODE_LINEAR_DODGE,
+        b"mul " => BLEND_MODE_MULTIPLY,
+        // Unknown keys already treated as Normal on CPU.
+        _ => BLEND_MODE_NORMAL,
+    }
+}
+
+pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
+    matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
+}
+
 pub(crate) const PSD_NORMAL_BLEND_SHADER: &str = r#"
 struct BlendParams {
     canvas_w: u32,

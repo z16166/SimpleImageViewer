@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_batch_eligible_requires_normal_blend_and_no_clipping() {
+    fn gpu_batch_eligible_allows_separable_modes_rejects_clip_until_p1() {
         let (width, height) = (4u32, 4u32);
         let channel_data_owned = Vec::new();
         let base_spec = |blend: [u8; 4], clipping: u8| TestLayerSpec {
@@ -1784,28 +1784,31 @@ mod tests {
             opacity: 255,
         };
 
-        let (records, _) = build_test_layers(&[base_spec(*b"norm", 0)]);
+        let (records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
         let visible = vec![true; records.len()];
-        let eligible_info = mk_layer_info(width, height, records, &channel_data_owned);
+        let info = mk_layer_info(width, height, records, &channel_data_owned);
         assert!(
-            gpu_batch_eligible_decoded_bytes(&eligible_info, &visible).is_some(),
-            "all-Normal, unclipped stack should be GPU batch eligible"
+            gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+            "Screen without clipping should be GPU batch eligible after P0"
         );
 
-        let (non_normal_records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
-        let visible2 = vec![true; non_normal_records.len()];
-        let non_normal_info = mk_layer_info(width, height, non_normal_records, &channel_data_owned);
-        assert!(
-            gpu_batch_eligible_decoded_bytes(&non_normal_info, &visible2).is_none(),
-            "non-Normal blend must not be GPU batch eligible"
-        );
+        for key in [*b"norm", *b"mul ", *b"lddg"] {
+            let (records, _) = build_test_layers(&[base_spec(key, 0)]);
+            let visible = vec![true; records.len()];
+            let info = mk_layer_info(width, height, records, &channel_data_owned);
+            assert!(
+                gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+                "separable mode {:?} should be eligible",
+                key
+            );
+        }
 
         let (clipped_records, _) = build_test_layers(&[base_spec(*b"norm", 1)]);
         let visible3 = vec![true; clipped_records.len()];
         let clipped_info = mk_layer_info(width, height, clipped_records, &channel_data_owned);
         assert!(
             gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_none(),
-            "clipping must not be GPU batch eligible"
+            "P0: clipping must still reject GPU batch eligibility"
         );
     }
 

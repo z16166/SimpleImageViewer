@@ -633,8 +633,9 @@ pub(crate) fn layer_channel_byte_ranges(
 }
 
 /// Whether the GPU all-at-once batch path is eligible: every layer that will
-/// actually be composited must use Normal blend with no clipping, and the
-/// batch's total decoded RGBA footprint must fit
+/// actually be composited must use a GPU-separable blend mode (Normal, Screen,
+/// Linear Dodge, Multiply) with no clipping, and the batch's total decoded
+/// RGBA footprint must fit
 /// [`crate::psb_layer_composite::MAX_COMPOSITE_DECODED_BYTES`]. Metadata-only
 /// (no channel decode), so the GPU-vs-CPU-streaming choice is made before
 /// paying for any pixel work. Returns the total decoded-byte footprint on
@@ -650,7 +651,10 @@ pub(crate) fn gpu_batch_eligible_decoded_bytes(
         if !layer_will_decode(record, visible_i) {
             continue;
         }
-        if record.blend != *b"norm" || record.clipping != 0 {
+        // P0: four separable modes OK; clipping still forces CPU until P1.
+        if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend)
+            || record.clipping != 0
+        {
             return None;
         }
         decoded_bytes =
