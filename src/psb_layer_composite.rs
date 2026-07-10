@@ -1104,7 +1104,8 @@ pub(crate) fn layer_will_decode(record: &LayerRecord, visible: bool) -> bool {
 /// Dispatches to one of two strategies:
 /// - GPU all-at-once batch ([`run_composite_pass_gpu_batch`]): only when a GPU
 ///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds every
-///   composited layer Normal-blended, unclipped, and within budget.
+///   composited layer GPU-separable, unclipped, and within budget. Clipping
+///   still forces CPU compositing until P1.
 /// - CPU streaming ([`run_composite_pass_cpu_streaming`]): the default, and
 ///   the fallback whenever the GPU batch is not eligible.
 #[allow(clippy::too_many_arguments)]

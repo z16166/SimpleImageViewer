@@ -790,9 +790,11 @@ pub(crate) fn run_composite_pass_gpu_batch(
     // Re-verified from the decoded layers themselves (not just the metadata
     // pre-check in `gpu_batch_eligible_decoded_bytes`): correctness of the
     // GPU dispatch must never depend solely on a prediction.
-    let all_normal = layers.iter().all(|l| l.blend == *b"norm");
+    let all_separable = layers
+        .iter()
+        .all(|l| crate::psb_layer_blend_gpu::is_gpu_separable_blend(&l.blend));
     let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
-    let used_gpu = if !all_normal || has_clipping {
+    let used_gpu = if !all_separable || has_clipping {
         false
     } else {
         let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
@@ -819,7 +821,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
             timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
             // Take ownership of the GPU readback buffer (no full-canvas copy).
             *canvas = gpu_pixels;
-            timing.mode = "gpu";
+            timing.mode = "gpu-separable";
             true
         } else {
             false
