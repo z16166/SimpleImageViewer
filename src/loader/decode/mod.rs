@@ -209,17 +209,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
-            return load_psd(
-                path,
-                Some(crate::loader::tiled_sources::PsdV1LoadNotify {
-                    index,
-                    decode_profile: decode_profile.clone(),
-                    source_key: crate::loader::source_key_for_path(path),
-                    load_tx: tx.clone(),
-                }),
-                cancel,
-                psd_gpu,
-            );
+            return load_psd(path, cancel, psd_gpu);
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);

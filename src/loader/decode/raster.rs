@@ -291,7 +291,6 @@ pub(crate) fn load_webp(
 
 pub(crate) fn load_psd(
     path: &Path,
-    notify: Option<crate::loader::tiled_sources::PsdV1LoadNotify>,
     cancel: crate::loader::DecodeCancelFlag,
     gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<ImageData, String> {
@@ -322,29 +321,57 @@ pub(crate) fn load_psd(
         height
     );
 
-    // Step 4: Detect version and choose decoder
+    // Step 4: Large PSB keeps on-demand disk tiling (Hubble-class files). Header size is
+    // used only as an OOM guard before full decode; PSD and smaller PSB decode first, then
+    // route Static vs in-memory tiled by *actual* P1/P2/P3 dimensions via make_image_data.
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
-
-    if version == 2 {
-        // PSB v2: Use tiled source for large files
-        log::info!("Using custom PSB tiled source for v2 format");
-        let source = crate::psb_reader::open_tiled_source(path)?;
-        let arc_source = std::sync::Arc::new(source);
-        Ok(ImageData::Tiled(arc_source))
-    } else {
-        // PSD v1: async SDR main state machine (flattened -> strict layers -> IR thumb).
-        log::info!("Using async PSD v1 SDR main decode");
-        let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
-            mmap,
-            path.to_path_buf(),
+    if version == 2 && psd_header_requires_disk_tiled(width, height) {
+        log::info!(
+            "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
             width,
-            height,
-            notify,
-            cancel,
-            gpu,
+            height
         );
-        Ok(ImageData::Tiled(source))
+        let source = crate::psb_reader::open_tiled_source(path)?;
+        return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
     }
+
+    if cancel.is_cancelled() {
+        return Err(crate::loader::DECODE_CANCELLED.to_string());
+    }
+
+    let composite = crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
+        &mmap[..],
+        Some(cancel.as_atomic()),
+        gpu.as_ref(),
+    )?;
+    let img = DecodedImage::new(composite.width, composite.height, composite.pixels);
+    let oriented =
+        apply_exif_orientation_to_image_data(path, ImageData::Static(img), Some(&mmap[..]));
+    match oriented {
+        ImageData::Static(decoded) => {
+            log::info!(
+                "PSD/PSB decoded display size {}x{} (header was {}x{}); routing via make_image_data",
+                decoded.width,
+                decoded.height,
+                width,
+                height
+            );
+            Ok(make_image_data(decoded))
+        }
+        other => Err(format!(
+            "PSD/PSB orientation produced unexpected image shape ({:?})",
+            std::mem::discriminant(&other)
+        )),
+    }
+}
+
+/// Same limits as [`super::assemble::make_image_data`], applied to PSB header dims so
+/// multi-GB documents skip full-canvas decode.
+fn psd_header_requires_disk_tiled(width: u32, height: u32) -> bool {
+    let pixel_count = u64::from(width) * u64::from(height);
+    let max_side = width.max(height);
+    pixel_count >= crate::tile_cache::get_tiled_threshold()
+        || max_side > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
 }
 
 /// Returns true if the extension belongs to a format that we prefer to load

@@ -730,8 +730,8 @@ impl ImageViewerApp {
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
-            // Async PSD v1 sources return empty previews until composite pixels land. Wait on
-            // the strip worker (not the UI thread) so we do not spin PermanentFailure retries.
+            // Tiled sources that defer HQ pixels: wait on the strip worker (not the UI
+            // thread) so we do not spin PermanentFailure retries.
             if source.defers_loader_hq_preview()
                 && let Err(err) =
                     source.wait_for_async_pixels(crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT)

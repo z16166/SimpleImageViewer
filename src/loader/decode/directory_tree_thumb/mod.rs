@@ -167,9 +167,10 @@ fn try_directory_tree_exif_thumb(
 
 /// Builds a navigation-strip thumbnail decode for `path`.
 ///
-/// May block up to [`PSD_V1_ASYNC_DECODE_TIMEOUT`] while PSD v1 pixels finish decoding.
-/// **Must run on a strip worker thread** (`DIRECTORY_TREE_STRIP_POOL` in
-/// `strip_previews/schedule.rs`); never call from the UI `logic()` / `ui()` path.
+/// For tiled sources that defer HQ pixels, may block briefly on the strip worker
+/// while async pixels finish. **Must run on a strip worker thread**
+/// (`DIRECTORY_TREE_STRIP_POOL` in `strip_previews/schedule.rs`); never call from
+/// the UI `logic()` / `ui()` path.
 pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     path: &Path,
     max_side: u32,
@@ -590,7 +591,7 @@ fn open_image_data_for_directory_tree_thumb(
         }
     }
 
-    // PSD/PSB composite decode is owned by the main loader (`PsdV1AsyncSource` /
+    // PSD/PSB composite decode is owned by the main loader (`load_psd` /
     // tiled PSB). Cold strip must not spawn a second full decode -- defer and let
     // `try_generate_directory_tree_strip_from_tiled_source` reuse the installed source.
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
