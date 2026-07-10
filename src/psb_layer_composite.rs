@@ -30,6 +30,13 @@ const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
 const SECTION_DIVIDER_KEY: &[u8; 4] = b"lsct";
 const MAX_LAYER_CHANNELS_PER_RECORD: usize = 128;
+/// Cap on `width * height` for a single layer/mask rect.
+///
+/// `PSD_MAX_DIMENSION` alone still allows `300_000 x 300_000` (~90GB for one
+/// 8-bit channel). This pixel budget keeps malicious/malformed layer bounds
+/// from OOM-killing the process while still allowing large legitimate layers
+/// (e.g. 32k x 32k, or a long strip up to `PSD_MAX_DIMENSION` on one side).
+const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
 const PSD_VERSION: u16 = 1;
 const PSB_VERSION: u16 = 2;
 const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
@@ -125,16 +132,32 @@ impl LayerRecord {
     }
 }
 
-/// Whether `width`/`height` are within the same per-side limit used for the
-/// document's own canvas (`psb_reader::PSD_MAX_DIMENSION`).
+/// Whether `width`/`height` are within the per-side limit used for the
+/// document canvas (`psb_reader::PSD_MAX_DIMENSION`) and the total pixel cap
+/// (`MAX_LAYER_PIXELS`).
 ///
 /// A malformed or malicious layer record can claim absurd bounds (e.g.
-/// `right - left` near `u32::MAX`) that would make `decode_channel_image`'s
-/// `vec![0u8; width * height]` try to allocate an enormous buffer, aborting
-/// the whole process on allocation failure. Layer and mask rects are checked
-/// against this same limit before any such allocation.
+/// `right - left` near `u32::MAX`, or both sides at `PSD_MAX_DIMENSION`) that
+/// would make `decode_channel_image`'s allocation try to reserve tens of GB
+/// and abort the process. Layer and mask rects are checked before any such
+/// allocation.
 fn dimensions_within_limit(width: u32, height: u32) -> bool {
-    width <= crate::psb_reader::PSD_MAX_DIMENSION && height <= crate::psb_reader::PSD_MAX_DIMENSION
+    if width > crate::psb_reader::PSD_MAX_DIMENSION || height > crate::psb_reader::PSD_MAX_DIMENSION
+    {
+        return false;
+    }
+    match (width as u64).checked_mul(height as u64) {
+        Some(pixels) => pixels <= MAX_LAYER_PIXELS,
+        None => false,
+    }
+}
+
+/// `width * height` for a layer/mask buffer, rejecting overflow.
+fn checked_layer_pixel_count(width: u32, height: u32) -> Option<usize> {
+    (width as u64)
+        .checked_mul(height as u64)
+        .filter(|&n| n <= MAX_LAYER_PIXELS)
+        .and_then(|n| usize::try_from(n).ok())
 }
 
 #[derive(Debug)]
@@ -579,7 +602,8 @@ fn decode_channel_image(
 ) -> Result<Vec<u8>, String> {
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
-    let pixel_count = width as usize * height as usize;
+    let pixel_count = checked_layer_pixel_count(width, height)
+        .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
 
     match compression {
         0 => {
@@ -662,7 +686,12 @@ struct LayerRgbaArgs<'a> {
 }
 
 fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
-    let pixel_count = args.width as usize * args.height as usize;
+    let Some(pixel_count) = checked_layer_pixel_count(args.width, args.height) else {
+        return Vec::new();
+    };
+    let Some(rgba_len) = pixel_count.checked_mul(4) else {
+        return Vec::new();
+    };
     let opacity = args.opacity as u32;
 
     if args.color_mode == 4
@@ -696,7 +725,7 @@ fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         && let Some(gray) = args.color[0].as_deref()
         && gray.len() >= pixel_count
     {
-        let mut rgba = vec![0u8; pixel_count * 4];
+        let mut rgba = vec![0u8; rgba_len];
         let g = &gray[..pixel_count];
         if let Some(a) = args.alpha.filter(|a| a.len() >= pixel_count) {
             simple_image_viewer::simd_swizzle::interleave_rgba(
@@ -713,7 +742,7 @@ fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         return rgba;
     }
 
-    let mut rgba = vec![0u8; pixel_count * 4];
+    let mut rgba = vec![0u8; rgba_len];
     let sample =
         |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
 
@@ -778,7 +807,10 @@ fn build_layer_sized_mask(
     layer_w: u32,
     layer_h: u32,
 ) -> Vec<u8> {
-    let mut out = vec![mask_info.default_color; layer_w as usize * layer_h as usize];
+    let Some(pixel_count) = checked_layer_pixel_count(layer_w, layer_h) else {
+        return Vec::new();
+    };
+    let mut out = vec![mask_info.default_color; pixel_count];
     let mask_w = mask_info.width() as i64;
     let mask_h = mask_info.height() as i64;
     if mask_w == 0 || mask_h == 0 {
@@ -810,54 +842,24 @@ fn build_layer_sized_mask(
 
 // -- Blend modes -----------------------------------------------------------
 
-/// Separable blend function B(Cb, Cs) in [0, 1] (Photoshop / PDF).
-type SeparableBlendFn = fn(f32, f32) -> f32;
-
-fn blend_fn_normal(_cb: f32, cs: f32) -> f32 {
-    cs
-}
-
-fn blend_fn_screen(cb: f32, cs: f32) -> f32 {
-    1.0 - (1.0 - cb) * (1.0 - cs)
-}
-
-fn blend_fn_linear_dodge(cb: f32, cs: f32) -> f32 {
-    (cb + cs).min(1.0)
-}
-
-fn blend_fn_multiply(cb: f32, cs: f32) -> f32 {
-    cb * cs
-}
-
-fn separable_blend_fn(blend: &[u8; 4]) -> Option<SeparableBlendFn> {
+fn separable_blend_kind(
+    blend: &[u8; 4],
+) -> Option<crate::psb_layer_blend_simd::SeparableBlendKind> {
+    use crate::psb_layer_blend_simd::SeparableBlendKind;
     match blend {
-        b"norm" => Some(blend_fn_normal),
-        b"scrn" => Some(blend_fn_screen),
-        b"lddg" => Some(blend_fn_linear_dodge),
-        b"mul " => Some(blend_fn_multiply),
+        b"norm" => Some(SeparableBlendKind::Normal),
+        b"scrn" => Some(SeparableBlendKind::Screen),
+        b"lddg" => Some(SeparableBlendKind::LinearDodge),
+        b"mul " => Some(SeparableBlendKind::Multiply),
         _ => None,
     }
 }
 
 fn blend_mode_supported(blend: &[u8; 4]) -> bool {
-    separable_blend_fn(blend).is_some()
+    separable_blend_kind(blend).is_some()
 }
-
-const fn make_u8_to_f32_lut() -> [f32; 256] {
-    let mut t = [0.0f32; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = (i as f32) / 255.0;
-        i += 1;
-    }
-    t
-}
-
-/// Avoid repeated `as f32 / 255.0` in the per-pixel blend inner loop.
-const U8_TO_F32: [f32; 256] = make_u8_to_f32_lut();
 
 /// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
-/// `blend_fn` is Photoshop B(Cb, Cs); Normal is B = Cs (src-over).
 #[allow(clippy::too_many_arguments)]
 fn blend_separable_onto(
     canvas: &mut [u8],
@@ -868,8 +870,7 @@ fn blend_separable_onto(
     top: i32,
     lw: u32,
     lh: u32,
-    blend_fn: SeparableBlendFn,
-    is_normal: bool,
+    kind: crate::psb_layer_blend_simd::SeparableBlendKind,
 ) {
     if lw == 0 || lh == 0 || canvas_w == 0 || canvas_h == 0 {
         return;
@@ -890,43 +891,18 @@ fn blend_separable_onto(
         return;
     }
 
+    let span_w = (src_x1 - src_x0) as usize;
+    let span_bytes = span_w * 4;
     for sy in src_y0..src_y1 {
         let dy = (top + sy) as usize;
-        let dst_row_start = dy * canvas_w as usize * 4;
-        let src_row_start = sy as usize * lw as usize * 4;
-        for sx in src_x0..src_x1 {
-            let dx = (left + sx) as usize;
-            let d_off = dst_row_start + dx * 4;
-            let s_off = src_row_start + sx as usize * 4;
-
-            let sa = layer_rgba[s_off + 3];
-            if sa == 0 {
-                continue;
-            }
-            // Opaque Normal is a straight copy; Screen/Add still need B(Cb, Cs).
-            if is_normal && sa == 255 {
-                canvas[d_off..d_off + 4].copy_from_slice(&layer_rgba[s_off..s_off + 4]);
-                continue;
-            }
-
-            let sa_f = U8_TO_F32[sa as usize];
-            let da_f = U8_TO_F32[canvas[d_off + 3] as usize];
-            let out_a_f = sa_f + da_f * (1.0 - sa_f);
-            if out_a_f <= 0.0 {
-                canvas[d_off..d_off + 4].fill(0);
-                continue;
-            }
-
-            for c in 0..3 {
-                let sc = U8_TO_F32[layer_rgba[s_off + c] as usize];
-                let dc = U8_TO_F32[canvas[d_off + c] as usize];
-                let b = blend_fn(dc, sc);
-                // Premultiplied channel, then un-premultiply to straight alpha.
-                let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
-                canvas[d_off + c] = ((co / out_a_f).clamp(0.0, 1.0) * 255.0).round() as u8;
-            }
-            canvas[d_off + 3] = (out_a_f.clamp(0.0, 1.0) * 255.0).round() as u8;
-        }
+        let dx0 = (left + src_x0) as usize;
+        let d_off = dy * canvas_w as usize * 4 + dx0 * 4;
+        let s_off = sy as usize * lw as usize * 4 + src_x0 as usize * 4;
+        crate::psb_layer_blend_simd::blend_separable_span(
+            &mut canvas[d_off..d_off + span_bytes],
+            &layer_rgba[s_off..s_off + span_bytes],
+            kind,
+        );
     }
 }
 
@@ -952,8 +928,7 @@ fn blend_normal_onto(
         top,
         lw,
         lh,
-        blend_fn_normal,
-        true,
+        crate::psb_layer_blend_simd::SeparableBlendKind::Normal,
     );
 }
 
@@ -970,16 +945,15 @@ fn blend_layer_onto(
     lh: u32,
     blend: &[u8; 4],
 ) {
-    let (blend_fn, is_normal) = match separable_blend_fn(blend) {
-        Some(f) if blend == b"norm" => (f, true),
-        Some(f) => (f, false),
+    let kind = match separable_blend_kind(blend) {
+        Some(k) => k,
         None => {
             log_unsupported_blend_once(blend);
-            (blend_fn_normal as SeparableBlendFn, true)
+            crate::psb_layer_blend_simd::SeparableBlendKind::Normal
         }
     };
     blend_separable_onto(
-        canvas, canvas_w, canvas_h, layer_rgba, left, top, lw, lh, blend_fn, is_normal,
+        canvas, canvas_w, canvas_h, layer_rgba, left, top, lw, lh, kind,
     );
 }
 
@@ -1111,7 +1085,8 @@ fn decode_one_layer(
     // composite, since every other layer in the file may well be fine.
     if has_bounds && !dimensions_within_limit(width, height) {
         log::debug!(
-            "PSD/PSB layer rect {width}x{height} exceeds max dimension {}, skipping layer",
+            "PSD/PSB layer rect {width}x{height} exceeds dimension/pixel limit \
+             (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping layer",
             crate::psb_reader::PSD_MAX_DIMENSION
         );
     }
@@ -1158,8 +1133,8 @@ fn decode_one_layer(
                     // erroring out the whole layer/composite.
                     if mask_has_bounds && !dimensions_within_limit(mask_w, mask_h) {
                         log::debug!(
-                            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds max dimension \
-                             {}, skipping mask",
+                            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds dimension/pixel \
+                             limit (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping mask",
                             crate::psb_reader::PSD_MAX_DIMENSION
                         );
                     } else if mask_has_bounds {
@@ -1666,12 +1641,13 @@ fn run_composite_pass(
 mod tests {
     use super::{
         LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
-        STRICT_LAYER_COMPOSITE_BLANK, blend_fn_screen, blend_layer_onto, blend_normal_onto,
-        blend_separable_onto, build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
+        STRICT_LAYER_COMPOSITE_BLANK, blend_layer_onto, blend_normal_onto, blend_separable_onto,
+        build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
         compute_effective_visibility, decode_one_layer, decode_psd_sdr_main_from_bytes_with_cancel,
         dimensions_within_limit, is_psd_header_structural_error, layer_to_rgba8,
         parse_layer_records, scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
     };
+    use crate::psb_layer_blend_simd::SeparableBlendKind;
     use std::path::Path;
 
     /// Build a minimal `LayerRecord` for `compute_effective_visibility` tests;
@@ -1700,6 +1676,15 @@ mod tests {
         assert!(dimensions_within_limit(1, 1));
         assert!(dimensions_within_limit(
             crate::psb_reader::PSD_MAX_DIMENSION,
+            1
+        ));
+        assert!(dimensions_within_limit(
+            1,
+            crate::psb_reader::PSD_MAX_DIMENSION
+        ));
+        // Per-side max alone would allow 300k x 300k (~90GB); pixel cap must reject it.
+        assert!(!dimensions_within_limit(
+            crate::psb_reader::PSD_MAX_DIMENSION,
             crate::psb_reader::PSD_MAX_DIMENSION
         ));
         assert!(!dimensions_within_limit(
@@ -1711,6 +1696,9 @@ mod tests {
             crate::psb_reader::PSD_MAX_DIMENSION + 1
         ));
         assert!(!dimensions_within_limit(u32::MAX, u32::MAX));
+        // Pixel budget is exactly 32768^2 (= 1G); one pixel over must fail.
+        assert!(dimensions_within_limit(32_768, 32_768));
+        assert!(!dimensions_within_limit(32_769, 32_769));
     }
 
     #[test]
@@ -1855,8 +1843,7 @@ mod tests {
             0,
             2,
             1,
-            blend_fn_screen,
-            false,
+            SeparableBlendKind::Screen,
         );
         assert_eq!(&canvas[0..4], &[40, 80, 120, 255]);
         assert_eq!(&canvas[4..8], &[255, 255, 255, 255]);

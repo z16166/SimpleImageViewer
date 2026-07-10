@@ -552,9 +552,7 @@ fn wait_for_readback(
         if Instant::now() >= deadline {
             return Err("PSD blend readback timed out".to_string());
         }
-        device
-            .poll(wgpu::PollType::Poll)
-            .map_err(|err| format!("PSD blend device poll failed: {err:?}"))?;
+        // Wait already polls the device; a prior PollType::Poll was redundant.
         match device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(READBACK_POLL_SLICE),

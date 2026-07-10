@@ -97,7 +97,6 @@ fn undo_zip_prediction_32(buf: &mut [u8], width: usize) -> Result<(), String> {
             prefix_sum_u8_inplace(&mut row[start..end]);
         }
         // Re-interleave: plane p sample x -> sample bytes [x*4 + p]
-        scratch.fill(0);
         for x in 0..width {
             scratch[x * 4] = row[x];
             scratch[x * 4 + 1] = row[width + x];

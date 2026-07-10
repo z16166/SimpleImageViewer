@@ -17,7 +17,7 @@
 //! SIMD helpers for PackBits RLE expand (repeat-byte fills).
 //!
 //! PackBits control flow stays scalar; large repeat runs are filled with
-//! SSE4.1 / AVX2 / NEON stores. Bit-identical to `slice.fill(val)`.
+//! SSE2 / AVX2 / NEON stores. Bit-identical to `slice.fill(val)`.
 
 /// Fill `dst` with `val` using the widest available SIMD path.
 #[inline]
