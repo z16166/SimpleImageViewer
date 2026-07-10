@@ -54,7 +54,7 @@ fn optional_psd_libavif_sources_decode_to_pixels() {
             continue;
         }
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_psd(&path, None, crate::loader::DecodeCancelFlag::new())
+            load_psd(&path, None, crate::loader::DecodeCancelFlag::new(), None)
         }));
         assert!(
             outcome.is_ok(),
@@ -112,7 +112,7 @@ fn optional_psd_cmyk_samples_decode_to_pixels() {
             continue;
         }
         found = true;
-        let data = load_psd(&path, None, crate::loader::DecodeCancelFlag::new())
+        let data = load_psd(&path, None, crate::loader::DecodeCancelFlag::new(), None)
             .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
         match data {
             ImageData::Tiled(src) => {

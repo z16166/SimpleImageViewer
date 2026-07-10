@@ -94,6 +94,7 @@ pub(crate) struct ImageLoadRequest<'a> {
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Option<&'a crate::loader::orchestrator::RawOpenPrefetch>,
     pub(crate) prefer_embedded_sdr_master: bool,
+    pub(crate) psd_gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
 }
 
 pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
@@ -110,6 +111,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         hdr_tone_map,
         raw_open_prefetch,
         prefer_embedded_sdr_master,
+        psd_gpu,
     } = request;
     if cancel.is_cancelled() {
         return LoadResult {
@@ -216,6 +218,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     load_tx: tx.clone(),
                 }),
                 cancel,
+                psd_gpu,
             );
         }
 

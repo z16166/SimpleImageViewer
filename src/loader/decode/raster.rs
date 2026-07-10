@@ -293,6 +293,7 @@ pub(crate) fn load_psd(
     path: &Path,
     notify: Option<crate::loader::tiled_sources::PsdV1LoadNotify>,
     cancel: crate::loader::DecodeCancelFlag,
+    gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<ImageData, String> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
@@ -346,6 +347,7 @@ pub(crate) fn load_psd(
             notify,
             cancel,
             crate::loader::tiled_sources::PsdV1DecodeMode::LayerComposite,
+            gpu,
         );
         Ok(ImageData::Tiled(source))
     } else {
@@ -359,6 +361,7 @@ pub(crate) fn load_psd(
             notify,
             cancel,
             crate::loader::tiled_sources::PsdV1DecodeMode::FlattenedComposite,
+            gpu,
         );
         Ok(ImageData::Tiled(source))
     }

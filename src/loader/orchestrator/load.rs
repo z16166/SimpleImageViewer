@@ -129,6 +129,7 @@ struct LoadWorkerInput {
     wgpu_device_id_at_spawn: u64,
     wgpu_is_opengl: bool,
     wgpu_device_id_live: Arc<AtomicU64>,
+    wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
     hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
@@ -308,6 +309,7 @@ impl ImageLoader {
                             wgpu_device_id_at_spawn: job.wgpu_device_id_at_spawn,
                             wgpu_is_opengl: job.wgpu_is_opengl,
                             wgpu_device_id_live: Arc::clone(&job.wgpu_device_id_live),
+                            wgpu_pipeline_cache: job.wgpu_pipeline_cache.clone(),
                             hdr_callback_upload_active_live: Arc::clone(
                                 &job.hdr_callback_upload_active_live,
                             ),
@@ -816,6 +818,7 @@ impl ImageLoader {
             wgpu_queue: None,
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
             wgpu_is_opengl: false,
+            wgpu_pipeline_cache: None,
             output_mode_bits,
             current_image_os_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             capacity_requeue_counts: std::collections::HashMap::new(),
@@ -827,12 +830,29 @@ impl ImageLoader {
         device: Option<wgpu::Device>,
         queue: Option<wgpu::Queue>,
         device_id: u64,
+        pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     ) {
         self.wgpu_is_opengl = device
             .as_ref()
             .is_some_and(|d| d.adapter_info().backend == wgpu::Backend::Gl);
+        if let (Some(dev), Some(cache)) = (device.as_ref(), pipeline_cache.as_ref()) {
+            crate::psb_layer_blend_gpu::prewarm_psd_normal_blend_pipeline(
+                dev,
+                device_id,
+                self.wgpu_is_opengl,
+                Some(cache.as_ref()),
+            );
+        } else if let Some(dev) = device.as_ref() {
+            crate::psb_layer_blend_gpu::prewarm_psd_normal_blend_pipeline(
+                dev,
+                device_id,
+                self.wgpu_is_opengl,
+                None,
+            );
+        }
         self.wgpu_device = device;
         self.wgpu_queue = queue;
+        self.wgpu_pipeline_cache = pipeline_cache;
         self.wgpu_device_id
             .store(device_id, std::sync::atomic::Ordering::Release);
         self.bump_profile_epoch();
@@ -844,7 +864,7 @@ impl ImageLoader {
         queue: Option<wgpu::Queue>,
         device_id: u64,
     ) -> Self {
-        self.apply_wgpu_context(device, queue, device_id);
+        self.apply_wgpu_context(device, queue, device_id, None);
         self
     }
 
@@ -862,8 +882,9 @@ impl ImageLoader {
         device: Option<wgpu::Device>,
         queue: Option<wgpu::Queue>,
         device_id: u64,
+        pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     ) {
-        self.apply_wgpu_context(device, queue, device_id);
+        self.apply_wgpu_context(device, queue, device_id, pipeline_cache);
     }
 
     pub(crate) fn wgpu_device_handle(&self) -> Option<&wgpu::Device> {
@@ -1161,6 +1182,7 @@ impl ImageLoader {
             .load(std::sync::atomic::Ordering::Relaxed);
         let wgpu_is_opengl = self.wgpu_is_opengl;
         let wgpu_device_id_live = Arc::clone(&self.wgpu_device_id);
+        let wgpu_pipeline_cache = self.wgpu_pipeline_cache.clone();
         let hdr_callback_upload_active_live = Arc::clone(&self.hdr_callback_upload_active);
         let embedded_iso_gain_map_sdr_master_live =
             Arc::clone(&self.embedded_iso_gain_map_sdr_master);
@@ -1180,6 +1202,7 @@ impl ImageLoader {
         let wgpu_device_spawn = wgpu_device.clone();
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
+        let wgpu_pipeline_cache_spawn = wgpu_pipeline_cache.clone();
         let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
         let embedded_iso_gain_map_sdr_master_live_spawn =
             Arc::clone(&embedded_iso_gain_map_sdr_master_live);
@@ -1220,6 +1243,7 @@ impl ImageLoader {
                 wgpu_device_id_at_spawn,
                 wgpu_is_opengl,
                 wgpu_device_id_live: wgpu_device_id_live_spawn,
+                wgpu_pipeline_cache: wgpu_pipeline_cache_spawn,
                 hdr_callback_upload_active_live: hdr_callback_upload_active_live_spawn,
                 embedded_iso_gain_map_sdr_master_live: embedded_iso_gain_map_sdr_master_live_spawn,
             });
@@ -1333,6 +1357,7 @@ impl ImageLoader {
             wgpu_device_id_at_spawn,
             wgpu_is_opengl,
             wgpu_device_id_live,
+            wgpu_pipeline_cache,
             hdr_callback_upload_active_live,
             embedded_iso_gain_map_sdr_master_live,
         };
@@ -1391,6 +1416,7 @@ impl ImageLoader {
             wgpu_device_id_at_spawn,
             wgpu_is_opengl,
             wgpu_device_id_live,
+            wgpu_pipeline_cache,
             hdr_callback_upload_active_live,
             embedded_iso_gain_map_sdr_master_live,
             hdr_pending_gpu_writes,
@@ -1430,6 +1456,19 @@ impl ImageLoader {
                         raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
                         prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
                             .load(std::sync::atomic::Ordering::Acquire),
+                        psd_gpu: match (wgpu_device.clone(), wgpu_queue.clone()) {
+                            (Some(device), Some(queue)) => {
+                                Some(crate::psb_layer_blend_gpu::PsdGpuContext {
+                                    device,
+                                    queue,
+                                    pipeline_cache: wgpu_pipeline_cache.clone(),
+                                    device_id: wgpu_device_id_at_spawn,
+                                    device_id_live: Arc::clone(&wgpu_device_id_live),
+                                    is_opengl: wgpu_is_opengl,
+                                })
+                            }
+                            _ => None,
+                        },
                     })
                 },
             )

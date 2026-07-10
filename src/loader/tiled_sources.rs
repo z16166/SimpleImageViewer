@@ -771,6 +771,7 @@ pub(crate) struct PsdV1AsyncSource {
 }
 
 impl PsdV1AsyncSource {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mmap: memmap2::Mmap,
         path: std::path::PathBuf,
@@ -779,6 +780,7 @@ impl PsdV1AsyncSource {
         notify: Option<PsdV1LoadNotify>,
         cancel: crate::loader::DecodeCancelFlag,
         mode: PsdV1DecodeMode,
+        gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
     ) -> Arc<Self> {
         use crate::loader::preview_caps::REFINEMENT_POOL;
         use crate::loader::{ImageData, apply_exif_orientation_to_image_data};
@@ -805,6 +807,7 @@ impl PsdV1AsyncSource {
                 return;
             }
 
+            let gpu_ref = gpu.as_ref();
             let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
                 let mut composite = match mode {
                     PsdV1DecodeMode::FlattenedComposite => {
@@ -817,6 +820,7 @@ impl PsdV1AsyncSource {
                         crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
                             &decode_mmap[..],
                             Some(cancel_worker.as_atomic()),
+                            gpu_ref,
                         )?
                     }
                 };
@@ -837,6 +841,7 @@ impl PsdV1AsyncSource {
                         crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
                             &decode_mmap[..],
                             Some(cancel_worker.as_atomic()),
+                            gpu_ref,
                         )?;
                 } else if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
                     && crate::psb_reader::rgba8_looks_visually_blank(&composite.pixels)

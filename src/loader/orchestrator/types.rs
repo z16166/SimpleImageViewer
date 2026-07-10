@@ -334,6 +334,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) wgpu_device_id_at_spawn: u64,
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) wgpu_device_id_live: Arc<AtomicU64>,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     pub(crate) hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
@@ -394,6 +395,7 @@ pub struct ImageLoader {
     /// Live epoch; compare before background GPU upload and on the main thread at registration.
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     pub(crate) output_mode_bits: Arc<AtomicU32>,
     /// Dedicated OS threads running [`LoadIntent::Current`] decode (bounded — see
     /// [`crate::loader::MAX_CURRENT_IMAGE_OS_THREADS`]).

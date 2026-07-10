@@ -240,6 +240,7 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         prefer_embedded_sdr_master: false,
+        psd_gpu: None,
     });
 
     assert!(

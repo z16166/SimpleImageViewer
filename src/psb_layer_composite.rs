@@ -1062,12 +1062,19 @@ fn decode_one_layer(
 
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
 /// (depth 8 only, v1: Normal blend + opacity + user mask + group visibility).
+///
+/// When `gpu` is provided and the canvas is large enough, Normal blending may run
+/// on an offscreen wgpu compute path; failures fall back to CPU.
 pub fn composite_layers_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, String> {
+    let total_t0 = std::time::Instant::now();
     crate::psb_reader::check_decode_cancel(cancel)?;
+    let parse_t0 = std::time::Instant::now();
     let info = parse_layer_records(bytes)?;
+    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
     if info.depth != 8 {
         return Err(format!(
             "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
@@ -1093,6 +1100,16 @@ pub fn composite_layers_from_bytes_with_cancel(
         });
     }
 
+    let mut timing = CompositeTiming {
+        parse_ms,
+        unpack_ms: 0.0,
+        cmyk_ms: 0.0,
+        blend_ms: 0.0,
+        readback_ms: 0.0,
+        mode: "cpu",
+        layers: 0,
+    };
+
     // Tier 1: strict Photoshop visibility (respects both group and leaf
     // hidden flags). This is the faithful, primary behavior and is what most
     // well-behaved PSDs use.
@@ -1105,6 +1122,8 @@ pub fn composite_layers_from_bytes_with_cancel(
         canvas_w,
         canvas_h,
         cancel,
+        gpu,
+        &mut timing,
     )?;
 
     // Tier 2 (viewer extension -- see module doc comment): ignore only
@@ -1127,6 +1146,8 @@ pub fn composite_layers_from_bytes_with_cancel(
             canvas_w,
             canvas_h,
             cancel,
+            gpu,
+            &mut timing,
         )?
     } else {
         composited
@@ -1143,14 +1164,60 @@ pub fn composite_layers_from_bytes_with_cancel(
         );
         clear_composite_canvas(&mut canvas, info.color_mode);
         // `respect_visibility=false` short-circuits before indexing `visible`.
-        run_composite_pass(&info, &[], false, &mut canvas, canvas_w, canvas_h, cancel)?;
+        run_composite_pass(
+            &info,
+            &[],
+            false,
+            &mut canvas,
+            canvas_w,
+            canvas_h,
+            cancel,
+            gpu,
+            &mut timing,
+        )?;
     }
+
+    let total_ms = total_t0.elapsed().as_secs_f64() * 1000.0;
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][PsdComposite] mode={} parse_ms={:.1} unpack_ms={:.1} cmyk_ms={:.1} \
+         blend_ms={:.1} readback_ms={:.1} total_ms={:.1} layers={} {}x{}",
+        timing.mode,
+        timing.parse_ms,
+        timing.unpack_ms,
+        timing.cmyk_ms,
+        timing.blend_ms,
+        timing.readback_ms,
+        total_ms,
+        timing.layers,
+        canvas_w,
+        canvas_h
+    );
+    #[cfg(not(feature = "preload-debug"))]
+    let _ = (total_ms, &timing);
 
     Ok(crate::psb_reader::PsbComposite {
         width: canvas_w,
         height: canvas_h,
         pixels: canvas,
     })
+}
+
+struct CompositeTiming {
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    parse_ms: f64,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    unpack_ms: f64,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    cmyk_ms: f64,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    blend_ms: f64,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    readback_ms: f64,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    mode: &'static str,
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    layers: usize,
 }
 
 fn allocate_composite_canvas(len: usize, color_mode: u16) -> Vec<u8> {
@@ -1181,6 +1248,7 @@ const LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS: u64 = 1_000_000;
 /// Decode and blend every eligible layer bottom to top, returning how many were
 /// actually composited. When `respect_visibility` is false, `visible` is ignored
 /// (every non-divider, non-empty, non-fully-transparent layer is composited).
+#[allow(clippy::too_many_arguments)]
 fn run_composite_pass(
     info: &LayerInfo<'_>,
     visible: &[bool],
@@ -1189,6 +1257,8 @@ fn run_composite_pass(
     canvas_w: u32,
     canvas_h: u32,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    timing: &mut CompositeTiming,
 ) -> Result<usize, String> {
     // Layer records and channel_data are both stored bottom to top (index 0
     // is the bottommost layer). Decoding must walk that same order to stay
@@ -1198,7 +1268,8 @@ fn run_composite_pass(
     // advance `cursor` past their channel bytes so later layers stay aligned,
     // even though they are not decoded or blended.
     let mut cursor: usize = 0;
-    let mut composited = 0usize;
+    let mut layers: Vec<DecodedLayer> = Vec::new();
+    let decode_t0 = std::time::Instant::now();
     for (i, record) in info.records.iter().enumerate() {
         // Poll every layer (not just periodically): with hundreds of layers,
         // each potentially decoding a full-canvas image, waiting many layers
@@ -1221,6 +1292,51 @@ fn run_composite_pass(
             },
         )?;
         if let Some(layer) = layer {
+            layers.push(layer);
+        }
+    }
+    // Decode includes PackBits + planar convert + CMYK/ICC; split CMS later if needed.
+    timing.unpack_ms += decode_t0.elapsed().as_secs_f64() * 1000.0;
+    timing.layers = layers.len();
+
+    if layers.is_empty() {
+        return Ok(0);
+    }
+
+    let blend_t0 = std::time::Instant::now();
+    let used_gpu = if let Some(gpu_ctx) = gpu {
+        let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
+            .iter()
+            .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
+                left: l.left,
+                top: l.top,
+                width: l.width,
+                height: l.height,
+                rgba: &l.rgba,
+            })
+            .collect();
+        let readback_t0 = std::time::Instant::now();
+        if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
+            gpu_ctx,
+            canvas_w,
+            canvas_h,
+            canvas,
+            &layer_refs,
+            cancel,
+        ) {
+            timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
+            canvas.copy_from_slice(&gpu_pixels);
+            timing.mode = "gpu";
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !used_gpu {
+        for layer in &layers {
             let is_large =
                 layer.width as u64 * layer.height as u64 > LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS;
             if is_large {
@@ -1239,10 +1355,13 @@ fn run_composite_pass(
             if is_large {
                 crate::psb_reader::check_decode_cancel(cancel)?;
             }
-            composited += 1;
         }
+        timing.mode = "cpu";
     }
-    Ok(composited)
+    timing.blend_ms += blend_t0.elapsed().as_secs_f64() * 1000.0;
+    // For GPU, blend_ms includes upload+dispatch+readback; readback_ms is nested.
+    // Prefer reporting GPU wall as blend_ms and keep readback as a subset hint.
+    Ok(layers.len())
 }
 
 #[cfg(test)]
@@ -1581,7 +1700,7 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None).expect("composite");
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
         assert_eq!((comp.width, comp.height), (5031, 3437));
         let mut sum = 0u64;
         let mut n = 0u64;
@@ -1607,7 +1726,7 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None).expect("composite");
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
         assert_eq!((comp.width, comp.height), (5031, 3437));
         // NOTE: this corpus file organizes each brochure page as a top-level
         // `lsct` group and saves with *every* group's eye icon off (a common

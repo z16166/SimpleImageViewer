@@ -78,8 +78,12 @@ impl ImageViewerApp {
             );
         }
 
-        self.loader
-            .set_wgpu_context(Some(device), Some(queue), self.current_device_id);
+        self.loader.set_wgpu_context(
+            Some(device),
+            Some(queue),
+            self.current_device_id,
+            self.wgpu_pipeline_cache.clone(),
+        );
     }
 
     pub(crate) fn with_loader_preview_tone_map_gpu<R>(&self, f: impl FnOnce() -> R) -> R {
