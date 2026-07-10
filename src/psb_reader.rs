@@ -1408,7 +1408,7 @@ pub(crate) fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: 
 
 // -- Helpers ---------------------------------------------------------
 
-fn bytes_per_sample(depth: u16) -> Result<usize, String> {
+pub(crate) fn bytes_per_sample(depth: u16) -> Result<usize, String> {
     match depth {
         8 => Ok(1),
         16 => Ok(2),
@@ -1638,7 +1638,11 @@ fn sample_pixel_rgba8(
     }
 }
 
-fn validate_psd_dimensions(width: u32, height: u32, channels: u32) -> Result<(), String> {
+pub(crate) fn validate_psd_dimensions(
+    width: u32,
+    height: u32,
+    channels: u32,
+) -> Result<(), String> {
     if width == 0 || height == 0 {
         return Err("PSD/PSB dimensions must be non-zero".into());
     }
@@ -1696,7 +1700,12 @@ pub(crate) fn seek_forward_within(
     seek_forward(r, len)
 }
 
-fn checked_section_end(start: u64, len: u64, file_size: u64, label: &str) -> Result<u64, String> {
+pub(crate) fn checked_section_end(
+    start: u64,
+    len: u64,
+    file_size: u64,
+    label: &str,
+) -> Result<u64, String> {
     let end = start
         .checked_add(len)
         .ok_or_else(|| format!("PSD/PSB {label} length overflow"))?;
