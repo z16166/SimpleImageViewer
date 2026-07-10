@@ -737,6 +737,16 @@ impl TiledImageSource for RawImageSource {
 
 const PSD_V1_PLACEHOLDER_RGBA: [u8; 4] = [32, 32, 32, 255];
 
+/// Decoded RGBA8 buffer for [`PsdV1AsyncSource`].
+///
+/// Width/height are the actual pixel buffer dimensions. For P1/P2 these match the
+/// PSD header; for P3 IR thumbnails they are typically much smaller.
+struct PsdV1DecodedRgba {
+    width: u32,
+    height: u32,
+    pixels: Arc<Vec<u8>>,
+}
+
 #[derive(Debug)]
 enum PsdV1DecodeState {
     Pending,
@@ -744,17 +754,7 @@ enum PsdV1DecodeState {
     Failed(String),
 }
 
-/// Which decoder the async worker runs for a PSD v1 file.
-///
-/// `LayerComposite` is used for layers-only files where the flattened
-/// composite is a solid-fill placeholder (see `probe_layers_only_composite`);
-/// it composites visible layers into a full-canvas RGBA8 buffer instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PsdV1DecodeMode {
-    FlattenedComposite,
-    LayerComposite,
-}
-
+/// Async PSD v1 SDR main decode (flattened -> strict layers -> IR thumbnail).
 pub(crate) struct PsdV1LoadNotify {
     pub index: usize,
     pub decode_profile: crate::loader::DecodeProfile,
@@ -763,9 +763,10 @@ pub(crate) struct PsdV1LoadNotify {
 }
 
 pub(crate) struct PsdV1AsyncSource {
-    width: u32,
-    height: u32,
-    pixels: Arc<PLRwLock<Option<Arc<Vec<u8>>>>>,
+    /// Document size from the PSD header (used while decode is still pending).
+    header_width: u32,
+    header_height: u32,
+    decoded: Arc<PLRwLock<Option<PsdV1DecodedRgba>>>,
     decode_state: Arc<(Mutex<PsdV1DecodeState>, Condvar)>,
     cancel: crate::loader::DecodeCancelFlag,
 }
@@ -779,17 +780,16 @@ impl PsdV1AsyncSource {
         height: u32,
         notify: Option<PsdV1LoadNotify>,
         cancel: crate::loader::DecodeCancelFlag,
-        mode: PsdV1DecodeMode,
         gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
     ) -> Arc<Self> {
         use crate::loader::preview_caps::REFINEMENT_POOL;
         use crate::loader::{ImageData, apply_exif_orientation_to_image_data};
 
         let mmap = Arc::new(mmap);
-        let pixels = Arc::new(PLRwLock::new(None));
+        let decoded = Arc::new(PLRwLock::new(None));
         let decode_state = Arc::new((Mutex::new(PsdV1DecodeState::Pending), Condvar::new()));
         let decode_mmap = Arc::clone(&mmap);
-        let decode_pixels = Arc::clone(&pixels);
+        let decode_decoded = Arc::clone(&decoded);
         let decode_state_worker = Arc::clone(&decode_state);
         let cancel_worker = cancel.clone();
 
@@ -809,45 +809,12 @@ impl PsdV1AsyncSource {
 
             let gpu_ref = gpu.as_ref();
             let result = crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
-                let mut composite = match mode {
-                    PsdV1DecodeMode::FlattenedComposite => {
-                        crate::psb_reader::read_composite_from_bytes_with_cancel(
-                            &decode_mmap[..],
-                            Some(cancel_worker.as_atomic()),
-                        )?
-                    }
-                    PsdV1DecodeMode::LayerComposite => {
-                        crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
-                            &decode_mmap[..],
-                            Some(cancel_worker.as_atomic()),
-                            gpu_ref,
-                        )?
-                    }
-                };
-                // Flattened Image Data can be a blank or near-black placeholder while
-                // real pixels live in layers (e.g. brochure templates). Fall back to
-                // the layer compositor instead of showing a dark/empty frame.
-                if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
-                    && crate::psb_reader::flattened_should_fallback_to_layer_composite(
+                let composite =
+                    crate::psb_layer_composite::decode_psd_sdr_main_from_bytes_with_cancel(
                         &decode_mmap[..],
-                        &composite.pixels,
-                    )
-                {
-                    log::info!(
-                        "PSD/PSB flattened composite looks blank/unduly dark with a large \
-                         layer section -- falling back to layer composite"
-                    );
-                    composite =
-                        crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
-                            &decode_mmap[..],
-                            Some(cancel_worker.as_atomic()),
-                            gpu_ref,
-                        )?;
-                } else if matches!(mode, PsdV1DecodeMode::FlattenedComposite)
-                    && crate::psb_reader::rgba8_looks_visually_blank(&composite.pixels)
-                {
-                    return Err(crate::psb_reader::EMPTY_COMPOSITE_ERROR.to_string());
-                }
+                        Some(cancel_worker.as_atomic()),
+                        gpu_ref,
+                    )?;
                 Ok((composite.width, composite.height, composite.pixels))
             });
 
@@ -865,9 +832,15 @@ impl PsdV1AsyncSource {
                         ImageData::Static(img),
                         Some(&decode_mmap[..]),
                     ) {
-                        ImageData::Static(oriented) => oriented.into_arc_pixels(),
+                        ImageData::Static(oriented) => {
+                            // Orientation may swap width/height; trust the oriented image.
+                            (oriented.width, oriented.height, oriented.into_arc_pixels())
+                        }
                         ImageData::Tiled(source) => {
-                            source.full_pixels().unwrap_or_else(|| Arc::new(Vec::new()))
+                            let ow = source.width();
+                            let oh = source.height();
+                            let px = source.full_pixels().unwrap_or_else(|| Arc::new(Vec::new()));
+                            (ow, oh, px)
                         }
                         other => {
                             let msg =
@@ -884,7 +857,8 @@ impl PsdV1AsyncSource {
                             return;
                         }
                     };
-                    if oriented_pixels.is_empty() {
+                    let (ow, oh, oriented_pixels) = oriented_pixels;
+                    if oriented_pixels.is_empty() || ow == 0 || oh == 0 {
                         let msg = "PSD v1 decode produced empty pixel buffer".to_string();
                         finish(PsdV1DecodeState::Failed(msg.clone()));
                         if let Some(notify) = notify {
@@ -898,10 +872,25 @@ impl PsdV1AsyncSource {
                         ));
                         return;
                     }
-                    *decode_pixels.write() = Some(Arc::clone(&oriented_pixels));
+                    if ow != width || oh != height {
+                        log::info!(
+                            "[Loader] PSD v1 display size {}x{} (header was {}x{}) for {}",
+                            ow,
+                            oh,
+                            width,
+                            height,
+                            path.display()
+                        );
+                    }
+                    *decode_decoded.write() = Some(PsdV1DecodedRgba {
+                        width: ow,
+                        height: oh,
+                        pixels: Arc::clone(&oriented_pixels),
+                    });
                     finish(PsdV1DecodeState::Ready);
                     if let Some(notify) = notify {
-                        notify_psd_v1_decode_complete(notify, width, height, &oriented_pixels);
+                        // Use actual buffer dimensions (P3 thumb != header size).
+                        notify_psd_v1_decode_complete(notify, ow, oh, &oriented_pixels);
                     }
                 }
                 Err(e) => {
@@ -929,12 +918,19 @@ impl PsdV1AsyncSource {
         });
 
         Arc::new(Self {
-            width,
-            height,
-            pixels,
+            header_width: width,
+            header_height: height,
+            decoded,
             decode_state,
             cancel,
         })
+    }
+
+    fn display_size(&self) -> (u32, u32) {
+        match self.decoded.read().as_ref() {
+            Some(decoded) => (decoded.width, decoded.height),
+            None => (self.header_width, self.header_height),
+        }
     }
 }
 
@@ -981,25 +977,40 @@ fn notify_psd_v1_decode_failed(notify: PsdV1LoadNotify, error: String) {
 
 impl TiledImageSource for PsdV1AsyncSource {
     fn width(&self) -> u32 {
-        self.width
+        self.display_size().0
     }
 
     fn height(&self) -> u32 {
-        self.height
+        self.display_size().1
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        if let Some(px) = self.pixels.read().as_ref() {
-            return extract_rgba8_tile_from_pixels(self.width, self.height, px, x, y, w, h)
-                .map(Arc::new)
-                .unwrap_or_else(empty_tile_pixels);
+        let (dw, dh) = self.display_size();
+        if let Some(decoded) = self.decoded.read().as_ref() {
+            return extract_rgba8_tile_from_pixels(
+                decoded.width,
+                decoded.height,
+                &decoded.pixels,
+                x,
+                y,
+                w,
+                h,
+            )
+            .map(Arc::new)
+            .unwrap_or_else(empty_tile_pixels);
         }
-        solid_rgba8_tile(self.width, self.height, x, y, w, h, PSD_V1_PLACEHOLDER_RGBA)
+        solid_rgba8_tile(dw, dh, x, y, w, h, PSD_V1_PLACEHOLDER_RGBA)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        if let Some(px) = self.pixels.read().as_ref() {
-            return memory_rgba_preview(self.width, self.height, px, max_w, max_h);
+        if let Some(decoded) = self.decoded.read().as_ref() {
+            return memory_rgba_preview(
+                decoded.width,
+                decoded.height,
+                &decoded.pixels,
+                max_w,
+                max_h,
+            );
         }
         // Do not synthesize a solid-color bootstrap preview: the loader would upload it
         // and the async HQ preview would flash gray -> image on the first frame.
@@ -1011,11 +1022,14 @@ impl TiledImageSource for PsdV1AsyncSource {
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        self.pixels.read().clone()
+        self.decoded
+            .read()
+            .as_ref()
+            .map(|decoded| Arc::clone(&decoded.pixels))
     }
 
     fn defers_loader_hq_preview(&self) -> bool {
-        self.pixels.read().is_none()
+        self.decoded.read().is_none()
     }
 
     fn wait_for_async_pixels(&self, timeout: std::time::Duration) -> Result<(), String> {
@@ -1070,11 +1084,38 @@ mod memory_preview_tests {
         } else {
             PsdV1DecodeState::Pending
         };
-        PsdV1AsyncSource {
+        let decoded = pixels.map(|px| super::PsdV1DecodedRgba {
             width,
             height,
-            pixels: Arc::new(PLRwLock::new(pixels)),
+            pixels: px,
+        });
+        PsdV1AsyncSource {
+            header_width: width,
+            header_height: height,
+            decoded: Arc::new(PLRwLock::new(decoded)),
             decode_state: Arc::new((Mutex::new(state), Condvar::new())),
+            cancel: crate::loader::DecodeCancelFlag::new(),
+        }
+    }
+
+    /// P3 IR thumbnail is much smaller than the PSD header; display size must
+    /// follow the decoded buffer or previews/tiles reject the short buffer.
+    fn psd_v1_source_with_thumb_pixels(
+        header_w: u32,
+        header_h: u32,
+        thumb_w: u32,
+        thumb_h: u32,
+        pixels: Arc<Vec<u8>>,
+    ) -> PsdV1AsyncSource {
+        PsdV1AsyncSource {
+            header_width: header_w,
+            header_height: header_h,
+            decoded: Arc::new(PLRwLock::new(Some(super::PsdV1DecodedRgba {
+                width: thumb_w,
+                height: thumb_h,
+                pixels,
+            }))),
+            decode_state: Arc::new((Mutex::new(PsdV1DecodeState::Ready), Condvar::new())),
             cancel: crate::loader::DecodeCancelFlag::new(),
         }
     }
@@ -1290,6 +1331,28 @@ mod memory_preview_tests {
         let source = psd_v1_source_with_pixels(2, 2, Some(Arc::new(vec![1; 3])));
 
         assert!(source.extract_tile(0, 0, 1, 1).is_empty());
+    }
+
+    #[test]
+    fn psd_v1_p3_thumb_uses_decoded_dimensions_not_header() {
+        // Header claims a large canvas; decoded IR thumb is 4x2.
+        let thumb_w = 4u32;
+        let thumb_h = 2u32;
+        let mut pixels = vec![0u8; (thumb_w * thumb_h * 4) as usize];
+        // Non-black opaque so preview is non-empty.
+        for px in pixels.chunks_exact_mut(4) {
+            px.copy_from_slice(&[200, 100, 50, 255]);
+        }
+        let source =
+            psd_v1_source_with_thumb_pixels(6614, 3307, thumb_w, thumb_h, Arc::new(pixels));
+        assert_eq!(source.width(), thumb_w);
+        assert_eq!(source.height(), thumb_h);
+        let tile = source.extract_tile(0, 0, 2, 1);
+        assert_eq!(tile.len(), 8);
+        assert_eq!(&tile[..4], &[200, 100, 50, 255]);
+        let (pw, ph, preview) = source.generate_full_image_preview(256, 256);
+        assert!(pw > 0 && ph > 0);
+        assert!(!preview.is_empty());
     }
 
     #[test]

@@ -331,28 +331,9 @@ pub(crate) fn load_psd(
         let source = crate::psb_reader::open_tiled_source(path)?;
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
-    } else if matches!(
-        crate::psb_reader::probe_layers_only_composite(&mmap)?,
-        crate::psb_reader::LayersOnlyCompositeProbe::NeedsLayerComposite
-    ) {
-        // Layers-only PSD: flattened composite is a solid-fill placeholder, but
-        // real pixels live in the layer section. Composite visible layers into a
-        // full-canvas RGBA8 buffer via the same async tiled path as PSD v1.
-        log::info!("Using async PSD layer composite (layers-only file)");
-        let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
-            mmap,
-            path.to_path_buf(),
-            width,
-            height,
-            notify,
-            cancel,
-            crate::loader::tiled_sources::PsdV1DecodeMode::LayerComposite,
-            gpu,
-        );
-        Ok(ImageData::Tiled(source))
     } else {
-        // PSD v1: return a tiled source immediately; full decode runs on REFINEMENT_POOL.
-        log::info!("Using async PSD v1 decode via psb_reader");
+        // PSD v1: async SDR main state machine (flattened -> strict layers -> IR thumb).
+        log::info!("Using async PSD v1 SDR main decode");
         let source = crate::loader::tiled_sources::PsdV1AsyncSource::new(
             mmap,
             path.to_path_buf(),
@@ -360,7 +341,6 @@ pub(crate) fn load_psd(
             height,
             notify,
             cancel,
-            crate::loader::tiled_sources::PsdV1DecodeMode::FlattenedComposite,
             gpu,
         );
         Ok(ImageData::Tiled(source))

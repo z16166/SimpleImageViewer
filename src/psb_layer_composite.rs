@@ -14,27 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Layer-aware PSD/PSB compositor: a fallback renderer for "layers-only" files
-//! whose flattened Image Data section is blank (see `psb_reader::probe_layers_only_composite`).
-//! Decodes each layer's channels (depth 8, v1) and composites them bottom to
-//! top with Normal / Screen / Linear Dodge blend + opacity + user mask.
+//! Layer-aware PSD/PSB compositor and SDR main-image fallback.
 //!
-//! Visibility fallback (viewer extension, not strict Photoshop fidelity):
-//! `composite_layers_from_bytes_with_cancel` first tries strict Photoshop
-//! layer/group visibility. Real-world "template pack" PSDs commonly organize
-//! each page/section as its own top-level `lsct` group and save with *every*
-//! group's eye icon off (the end user is expected to enable one page at a
-//! time). Respecting that strictly would faithfully reproduce Photoshop's own
-//! blank canvas -- exactly the blank/solid-fill flattened composite that
-//! routed us into this compositor in the first place, making the whole
-//! fallback path pointless. So if strict visibility composites nothing, we
-//! retry with a single "best" top-level group unlocked (largest pixel area)
-//! plus top-level leaf layers (often shared titles/copy), without unlocking
-//! sibling alternate-design groups that would paint over each other. If that
-//! still leaves only sparse accents while large leaf-hidden content exists
-//! outside suppressed alternate groups (or the page stays mostly black),
-//! escalate to compositing all pixel layers. See
-//! `composite_layers_from_bytes_with_cancel`.
+//! Used when the flattened Image Data section cannot be decoded structurally
+//! (see `decode_psd_sdr_main_from_bytes_with_cancel`). Decodes each layer's
+//! channels (depth 8) and composites them bottom to top with Normal / Screen /
+//! Linear Dodge / Multiply blend + opacity + user mask, respecting strict
+//! Photoshop layer/group visibility only (no viewer heuristics that open
+//! hidden layers).
 
 use std::io::Read;
 
@@ -943,69 +930,11 @@ fn blend_layer_onto(
 
 // -- Group visibility ------------------------------------------------------
 
-/// One top-level `lsct` group: folder header index and inclusive record range.
-#[derive(Debug, Clone, Copy)]
-struct TopLevelGroup {
-    folder_idx: usize,
-    start_idx: usize,
-    end_idx: usize,
-    area: u64,
-}
-
-impl TopLevelGroup {
-    fn contains(self, idx: usize) -> bool {
-        idx >= self.start_idx && idx <= self.end_idx
-    }
-}
-
-/// Discover top-level groups and the sum of their leaf pixel areas (overlaps OK).
-fn top_level_groups(records: &[LayerRecord]) -> Vec<TopLevelGroup> {
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut area = 0u64;
-    let mut start_idx = 0usize;
-    for (i, layer) in records.iter().enumerate() {
-        if layer.is_section_divider {
-            match layer.section_type {
-                Some(3) => {
-                    if depth == 0 {
-                        start_idx = i;
-                        area = 0;
-                    }
-                    depth += 1;
-                }
-                Some(1) | Some(2) => {
-                    if depth == 1 {
-                        out.push(TopLevelGroup {
-                            folder_idx: i,
-                            start_idx,
-                            end_idx: i,
-                            area,
-                        });
-                    }
-                    depth = (depth - 1).max(0);
-                }
-                _ => {}
-            }
-            continue;
-        }
-        if depth >= 1 && !layer.is_empty_bounds() && layer.opacity > 0 {
-            area = area
-                .saturating_add(u64::from(layer.width()).saturating_mul(u64::from(layer.height())));
-        }
-    }
-    out
-}
-
-fn best_top_level_group(records: &[LayerRecord]) -> Option<TopLevelGroup> {
-    top_level_groups(records).into_iter().max_by_key(|g| g.area)
-}
-
 /// Compute per-record effective visibility: a layer is visible only if it
 /// and every ancestor group is visible.
 ///
 /// Photoshop stores layer records **bottom to top** in the file (index 0 is
-/// the bottommost layer, the last index is the topmost). A group's `lsct`
+/// the bottommost layer, the last index is the topmost). A group's lsct
 /// bounding section divider (type 3, hidden in the UI) is therefore its
 /// *first* record in file order (the bottom of the group), while the actual
 /// folder record (type 1 open / type 2 closed, carrying the group's own
@@ -1015,18 +944,12 @@ fn best_top_level_group(records: &[LayerRecord]) -> Option<TopLevelGroup> {
 /// folder record is seen first and pushes a nested visibility scope (using
 /// the group's own hidden flag, which is only known at that point), and the
 /// bounding divider is seen last and pops it.
-///
-/// When `ignore_group_hidden` is true, a folder header's own hidden flag is
-/// ignored (the group is always treated as self-visible), while individual
-/// leaf layers' hidden flags are still respected. Prefer
-/// [`compute_effective_visibility_best_group`] for template-pack Tier 2.
-fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bool) -> Vec<bool> {
+fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
     let mut visible = vec![false; records.len()];
     let mut stack: Vec<bool> = vec![true];
 
     for (i, layer) in records.iter().enumerate().rev() {
-        let is_folder_header = matches!(layer.section_type, Some(1) | Some(2));
-        let self_visible = (ignore_group_hidden && is_folder_header) || !layer.is_hidden();
+        let self_visible = !layer.is_hidden();
         let current = *stack.last().unwrap_or(&true) && self_visible;
         visible[i] = current;
 
@@ -1044,106 +967,41 @@ fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bo
     visible
 }
 
-/// Tier-2 template visibility: unlock only the largest top-level group (ignore
-/// that folder's hidden flag), keep sibling top-level groups suppressed, force
-/// top-level leaves on (shared titles/copy), and ignore nested group hidden
-/// flags inside the chosen group while still respecting leaf hidden flags
-/// inside groups.
-fn compute_effective_visibility_best_group(records: &[LayerRecord]) -> Vec<bool> {
-    let best = best_top_level_group(records);
-    let mut visible = vec![false; records.len()];
-    let mut stack: Vec<bool> = vec![true];
-
-    for (i, layer) in records.iter().enumerate().rev() {
-        let is_folder_header = matches!(layer.section_type, Some(1) | Some(2));
-        let at_root = stack.len() == 1;
-        let self_visible = if is_folder_header && at_root {
-            best.is_some_and(|g| g.folder_idx == i)
-        } else if is_folder_header {
-            // Nested folders inside the unlocked group: ignore their eye-off.
-            true
-        } else if at_root && !layer.is_section_divider {
-            // Top-level leaves (often text) -- show even when saved eye-off.
-            true
-        } else {
-            !layer.is_hidden()
-        };
-        let current = *stack.last().unwrap_or(&true) && self_visible;
-        visible[i] = current;
-
-        if layer.is_section_divider {
-            match layer.section_type {
-                Some(1) | Some(2) => stack.push(current),
-                Some(3) if stack.len() > 1 => {
-                    stack.pop();
-                }
-                _ => {}
-            }
-        }
-    }
-
-    visible
-}
-
-/// Approximate union coverage of currently-visible pixel layers vs the canvas.
-/// Overlapping layers can over-count; that is fine for a sparse/dense heuristic.
-fn visible_layer_coverage_ratio(info: &LayerInfo<'_>, visible: &[bool]) -> f64 {
-    if visible.len() != info.records.len() || info.width == 0 || info.height == 0 {
-        return 0.0;
-    }
-    let canvas_area = u64::from(info.width).saturating_mul(u64::from(info.height));
-    if canvas_area == 0 {
-        return 0.0;
-    }
-    let mut area = 0u64;
-    for (i, record) in info.records.iter().enumerate() {
-        if !visible[i]
-            || record.is_section_divider
-            || record.is_empty_bounds()
-            || record.opacity == 0
-        {
-            continue;
-        }
-        area = area
-            .saturating_add(u64::from(record.width()).saturating_mul(u64::from(record.height())));
-    }
-    (area as f64 / canvas_area as f64).min(1.0)
-}
-
-/// True when some non-visible pixel layer covers at least 5% of the canvas.
-/// When `best` is set, layers that belong only to a *different* top-level group
-/// are ignored (alternate page/design variants must not force Tier 3).
-fn has_large_hidden_pixel_layers(
-    info: &LayerInfo<'_>,
+/// True when strict visibility yields at least one pixel layer that can affect
+/// the canvas (flag + geometry only; no pixel sampling).
+fn strict_visibility_has_drawable_output(
+    canvas_w: u32,
+    canvas_h: u32,
+    records: &[LayerRecord],
     visible: &[bool],
-    best: Option<TopLevelGroup>,
 ) -> bool {
-    if visible.len() != info.records.len() || info.width == 0 || info.height == 0 {
+    if visible.len() != records.len() || canvas_w == 0 || canvas_h == 0 {
         return false;
     }
-    let canvas_area = u64::from(info.width).saturating_mul(u64::from(info.height));
-    if canvas_area == 0 {
-        return false;
-    }
-    let groups = top_level_groups(&info.records);
-    for (i, record) in info.records.iter().enumerate() {
-        if visible[i]
-            || record.is_section_divider
-            || record.is_empty_bounds()
-            || record.opacity == 0
+    let canvas_l = 0i64;
+    let canvas_t = 0i64;
+    let canvas_r = i64::from(canvas_w);
+    let canvas_b = i64::from(canvas_h);
+
+    for (i, record) in records.iter().enumerate() {
+        if !visible[i] || record.is_section_divider || record.opacity == 0 {
+            continue;
+        }
+        if record.is_empty_bounds() {
+            continue;
+        }
+        // Present mask with empty bounds produces no output.
+        if let Some(mask) = &record.mask
+            && !mask.disabled
+            && mask.is_empty_bounds()
         {
             continue;
         }
-        if let Some(best) = best {
-            let in_other = groups
-                .iter()
-                .any(|g| g.folder_idx != best.folder_idx && g.contains(i));
-            if in_other {
-                continue;
-            }
-        }
-        let area = u64::from(record.width()).saturating_mul(u64::from(record.height()));
-        if area.saturating_mul(100) / canvas_area >= 5 {
+        let l = i64::from(record.left).max(canvas_l);
+        let t = i64::from(record.top).max(canvas_t);
+        let r = i64::from(record.right).min(canvas_r);
+        let b = i64::from(record.bottom).min(canvas_b);
+        if r > l && b > t {
             return true;
         }
     }
@@ -1321,13 +1179,19 @@ fn decode_one_layer(
     }))
 }
 
+/// Returned when strict visibility has no drawable layers (geometry/flags).
+pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawable visible layers";
+
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
-/// (depth 8 only, v1: Normal / Screen / Linear Dodge / Multiply + opacity +
-/// user mask + group visibility).
+/// (depth 8 only: Normal / Screen / Linear Dodge / Multiply + opacity + user
+/// mask + strict group/leaf visibility).
 ///
 /// When `gpu` is provided, the canvas is large enough, and every decoded layer
 /// uses Normal blend, blending may run on an offscreen wgpu compute path;
 /// failures or non-Normal stacks fall back to CPU.
+///
+/// Returns [`STRICT_LAYER_COMPOSITE_BLANK`] when no visible layer intersects
+/// the canvas (no pixel work is performed).
 pub fn composite_layers_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -1347,6 +1211,11 @@ pub fn composite_layers_from_bytes_with_cancel(
 
     let canvas_w = info.width;
     let canvas_h = info.height;
+    let visible = compute_effective_visibility(&info.records);
+    if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, &visible) {
+        return Err(STRICT_LAYER_COMPOSITE_BLANK.to_string());
+    }
+
     let canvas_len = (canvas_w as usize)
         .checked_mul(canvas_h as usize)
         .and_then(|n| n.checked_mul(4))
@@ -1354,14 +1223,6 @@ pub fn composite_layers_from_bytes_with_cancel(
     // CMYK documents composite over white paper in Photoshop; starting from
     // transparent black leaves unpainted holes looking like a dark/black page.
     let mut canvas = allocate_composite_canvas(canvas_len, info.color_mode);
-
-    if info.records.is_empty() {
-        return Ok(crate::psb_reader::PsbComposite {
-            width: canvas_w,
-            height: canvas_h,
-            pixels: canvas,
-        });
-    }
 
     let mut timing = CompositeTiming {
         parse_ms,
@@ -1373,11 +1234,7 @@ pub fn composite_layers_from_bytes_with_cancel(
         layers: 0,
     };
 
-    // Tier 1: strict Photoshop visibility (respects both group and leaf
-    // hidden flags). This is the faithful, primary behavior and is what most
-    // well-behaved PSDs use.
-    let mut visible = compute_effective_visibility(&info.records, false);
-    let mut composited = run_composite_pass(
+    run_composite_pass(
         &info,
         &visible,
         true,
@@ -1388,84 +1245,6 @@ pub fn composite_layers_from_bytes_with_cancel(
         gpu,
         &mut timing,
     )?;
-
-    // Tier 2 (viewer extension -- see module doc comment): unlock only the
-    // largest top-level page/section group, plus top-level leaf layers
-    // (titles/copy). Unlocking *every* hidden group at once mixes mutually
-    // exclusive design variants (e.g. a white mask + line-art houses over a
-    // photo page).
-    let best_group = best_top_level_group(&info.records);
-    if composited == 0 {
-        log::debug!(
-            "PSD/PSB layer composite: no layers visible under strict Photoshop \
-             visibility, retrying with best top-level group + top-level leaves"
-        );
-        clear_composite_canvas(&mut canvas, info.color_mode);
-        visible = compute_effective_visibility_best_group(&info.records);
-        composited = run_composite_pass(
-            &info,
-            &visible,
-            true,
-            &mut canvas,
-            canvas_w,
-            canvas_h,
-            cancel,
-            gpu,
-            &mut timing,
-        )?;
-    }
-
-    // Tier 2.5 -> 3 escalation: some packs hide *leaf* content (large photos /
-    // panels) while leaving only tiny accents + maybe a solid background eye-on.
-    // Detect sparse visible coverage with substantial hidden large layers
-    // outside suppressed alternate groups, or a still-black page, then ignore
-    // all visibility (tier 3).
-    let escalate_to_tier3 = composited > 0
-        && has_large_hidden_pixel_layers(&info, &visible, best_group)
-        && (crate::psb_reader::rgba8_looks_unduly_dark(&canvas)
-            || visible_layer_coverage_ratio(&info, &visible) < 0.20);
-    if escalate_to_tier3 {
-        log::debug!(
-            "PSD/PSB layer composite: visible coverage still sparse/dark with large \
-             hidden leaves; compositing all pixel layers (tier 3)"
-        );
-        clear_composite_canvas(&mut canvas, info.color_mode);
-        composited = run_composite_pass(
-            &info,
-            &[],
-            false,
-            &mut canvas,
-            canvas_w,
-            canvas_h,
-            cancel,
-            gpu,
-            &mut timing,
-        )?;
-    }
-
-    // Tier 3 (viewer extension, last resort): ignore all hidden/group
-    // visibility state entirely. A blank preview is strictly less useful
-    // than an "everything overlaid" one for a static image viewer, so this
-    // guarantees the layers-only fallback path always shows *something*.
-    if composited == 0 {
-        log::debug!(
-            "PSD/PSB layer composite: still nothing visible ignoring group hidden \
-             flags, falling back to compositing all pixel layers unconditionally"
-        );
-        clear_composite_canvas(&mut canvas, info.color_mode);
-        // `respect_visibility=false` short-circuits before indexing `visible`.
-        run_composite_pass(
-            &info,
-            &[],
-            false,
-            &mut canvas,
-            canvas_w,
-            canvas_h,
-            cancel,
-            gpu,
-            &mut timing,
-        )?;
-    }
 
     let total_ms = total_t0.elapsed().as_secs_f64() * 1000.0;
     #[cfg(feature = "preload-debug")]
@@ -1491,6 +1270,154 @@ pub fn composite_layers_from_bytes_with_cancel(
         height: canvas_h,
         pixels: canvas,
     })
+}
+
+/// SDR main-image state machine: flattened composite -> strict layer composite
+/// -> IR thumbnail -> explicit failure. Hidden layers are never opened.
+///
+/// P1 accepts a structurally valid flattened buffer only when it is not an
+/// absolute blank (all-alpha-0 or all-RGB-0). P2 accepts a strict-visibility
+/// composite only when it is not zero-information (all-alpha-0 or solid RGB
+/// with variance 0). P3 accepts an IR thumbnail under the same zero-information
+/// barrier as P2. All barriers are full-buffer SIMD scans.
+pub fn decode_psd_sdr_main_from_bytes_with_cancel(
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, String> {
+    // P1: structurally valid flattened Image Data, then absolute blank barrier.
+    match crate::psb_reader::read_composite_from_bytes_with_cancel(bytes, cancel) {
+        Ok(composite) => {
+            let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
+                &composite.pixels,
+                cancel,
+            )?;
+            if absolutely_blank {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P1_absolute_blank {}x{} \
+                     pixels={} -> degrade_P2",
+                    composite.width,
+                    composite.height,
+                    composite.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P1 flattened {}x{} is absolute blank \
+                     (all-transparent or all-RGB-0); degrading to P2",
+                    composite.width,
+                    composite.height
+                );
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P1_flattened {}x{} pixels={}",
+                    composite.width,
+                    composite.height,
+                    composite.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P1 flattened composite {}x{}",
+                    composite.width,
+                    composite.height
+                );
+                return Ok(composite);
+            }
+        }
+        Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
+            log::debug!("PSD SDR main P1 flattened decode failed: {e}");
+        }
+    }
+
+    // P2: strict visibility layer composite, then zero-information barrier.
+    let mut p2_no_drawable_visible = false;
+    match composite_layers_from_bytes_with_cancel(bytes, cancel, gpu) {
+        Ok(composite) => {
+            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                &composite.pixels,
+                cancel,
+            )?;
+            if zero_info {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
+                     pixels={} -> degrade_P3",
+                    composite.width,
+                    composite.height,
+                    composite.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P2 strict composite {}x{} is zero-information \
+                     (all-transparent or solid RGB); degrading to P3",
+                    composite.width,
+                    composite.height
+                );
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
+                    composite.width,
+                    composite.height,
+                    composite.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P2 strict layer composite {}x{}",
+                    composite.width,
+                    composite.height
+                );
+                return Ok(composite);
+            }
+        }
+        Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
+        Err(e) => {
+            p2_no_drawable_visible = e == STRICT_LAYER_COMPOSITE_BLANK;
+            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
+            log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
+        }
+    }
+
+    // P3: embedded Photoshop IR thumbnail, then zero-information barrier.
+    match crate::psb_reader::try_extract_photoshop_thumbnail(bytes) {
+        Some(thumb) => {
+            let zero_info =
+                crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
+            if zero_info {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
+                     pixels={} -> fail",
+                    thumb.width,
+                    thumb.height,
+                    thumb.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
+                     (all-transparent or solid RGB); no displayable image",
+                    thumb.width,
+                    thumb.height
+                );
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
+                    thumb.width,
+                    thumb.height,
+                    thumb.pixels.len()
+                );
+                log::info!(
+                    "PSD SDR main: P3 IR thumbnail {}x{}",
+                    thumb.width,
+                    thumb.height
+                );
+                return Ok(thumb);
+            }
+        }
+        None => {
+            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P3_fail no_ir_thumbnail");
+            log::debug!("PSD SDR main P3: no embedded IR thumbnail");
+        }
+    }
+
+    crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=fail no_p1_p2_p3");
+    if p2_no_drawable_visible {
+        return Err(rust_i18n::t!("error.psd_all_layers_hidden").to_string());
+    }
+    Err(rust_i18n::t!("error.psd_no_displayable_image").to_string())
 }
 
 struct CompositeTiming {
@@ -1664,11 +1591,11 @@ fn run_composite_pass(
 mod tests {
     use super::{
         LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
-        blend_fn_screen, blend_layer_onto, blend_normal_onto, blend_separable_onto,
-        build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
-        compute_effective_visibility, compute_effective_visibility_best_group, decode_one_layer,
+        STRICT_LAYER_COMPOSITE_BLANK, blend_fn_screen, blend_layer_onto, blend_normal_onto,
+        blend_separable_onto, build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
+        compute_effective_visibility, decode_one_layer, decode_psd_sdr_main_from_bytes_with_cancel,
         dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
-        top_level_groups,
+        strict_visibility_has_drawable_output,
     };
     use std::path::Path;
 
@@ -1886,7 +1813,7 @@ mod tests {
             mk_layer(false, true, Some(2)),
         ];
 
-        let visible = compute_effective_visibility(&records, false);
+        let visible = compute_effective_visibility(&records);
 
         assert!(!visible[2], "leaf's own hidden flag must hide it");
         assert!(
@@ -1898,7 +1825,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_effective_visibility_group_hidden_tier1_hides_leaf_tier2_shows_leaf() {
+    fn compute_effective_visibility_group_hidden_hides_descendants() {
         // Same nesting as above, but the *outer* group is hidden while every
         // leaf/inner-group flag is visible.
         let records = vec![
@@ -1910,7 +1837,7 @@ mod tests {
             mk_layer(true, true, Some(2)),
         ];
 
-        let strict = compute_effective_visibility(&records, false);
+        let strict = compute_effective_visibility(&records);
         assert!(
             !strict[2],
             "strict visibility: leaf inside a hidden ancestor group must be hidden"
@@ -1920,20 +1847,43 @@ mod tests {
             !strict[5],
             "strict visibility: the hidden group header itself is hidden"
         );
+    }
 
-        let ignore_group_hidden = compute_effective_visibility(&records, true);
-        assert!(
-            ignore_group_hidden[2],
-            "tier2: ignoring group-hidden flags should reveal the leaf"
-        );
-        assert!(
-            ignore_group_hidden[4],
-            "tier2: sibling leaf is also revealed"
-        );
-        assert!(
-            ignore_group_hidden[5],
-            "tier2: the group header's own hidden flag is ignored"
-        );
+    #[test]
+    fn strict_visibility_has_drawable_output_rejects_hidden_and_offcanvas() {
+        let mut on_canvas = mk_layer(false, false, None);
+        on_canvas.left = 0;
+        on_canvas.top = 0;
+        on_canvas.right = 10;
+        on_canvas.bottom = 10;
+        let mut off_canvas = mk_layer(false, false, None);
+        off_canvas.left = 100;
+        off_canvas.top = 100;
+        off_canvas.right = 110;
+        off_canvas.bottom = 110;
+        let mut hidden = mk_layer(true, false, None);
+        hidden.left = 0;
+        hidden.top = 0;
+        hidden.right = 10;
+        hidden.bottom = 10;
+
+        let records = vec![on_canvas.clone()];
+        let visible = compute_effective_visibility(&records);
+        assert!(strict_visibility_has_drawable_output(
+            50, 50, &records, &visible
+        ));
+
+        let records = vec![off_canvas];
+        let visible = compute_effective_visibility(&records);
+        assert!(!strict_visibility_has_drawable_output(
+            50, 50, &records, &visible
+        ));
+
+        let records = vec![hidden];
+        let visible = compute_effective_visibility(&records);
+        assert!(!strict_visibility_has_drawable_output(
+            50, 50, &records, &visible
+        ));
     }
 
     #[test]
@@ -1942,7 +1892,7 @@ mod tests {
         // above it must not underflow the visibility stack.
         let records = vec![mk_layer(false, true, Some(3)), mk_layer(false, false, None)];
 
-        let visible = compute_effective_visibility(&records, false);
+        let visible = compute_effective_visibility(&records);
 
         assert_eq!(visible.len(), 2);
         assert!(visible[1], "leaf above the unpaired divider stays visible");
@@ -2021,210 +1971,72 @@ mod tests {
     }
 
     #[test]
-    fn composite_01_02_psd_mean_not_near_black() {
+    fn decode_01_02_psd_sdr_main_returns_structurally_valid_image() {
+        // Flattened Image Data may be a solid-ish placeholder; under the SDR
+        // state machine that is still a valid P1 result (no pixel heuristics).
         let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd");
         if !path.is_file() {
-            eprintln!("skipping composite_01_02_psd_mean_not_near_black; sample missing");
+            eprintln!("skipping decode_01_02_psd_sdr_main...; sample missing");
             return;
         }
         let bytes = std::fs::read(path).unwrap();
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
-        assert_eq!((comp.width, comp.height), (5031, 3437));
-        let mut sum = 0u64;
-        let mut n = 0u64;
-        for chunk in comp.pixels.chunks_exact(4) {
-            sum += chunk[0] as u64 + chunk[1] as u64 + chunk[2] as u64;
-            n += 3;
-        }
-        let mean = sum as f64 / n as f64;
-        // psd-tools composite mean RGB is ~125/164/164; wrong CMYK polarity yields ~3.
-        assert!(
-            mean > 80.0,
-            "expected bright CMYK composite mean, got {mean:.1}"
-        );
-        assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
-        assert!(!crate::psb_reader::rgba8_looks_unduly_dark(&comp.pixels));
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
+        assert_eq!((main.width, main.height), (5031, 3437));
+        assert_eq!(main.pixels.len(), 5031 * 3437 * 4);
     }
 
     #[test]
-    fn composite_11_psd_not_blank() {
+    fn composite_layers_all_hidden_returns_blank_error() {
+        // Two top-level groups, both eye-off: strict composite must not invent
+        // visibility and must report blank without pixel work.
         let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\11\11.psd");
         if !path.is_file() {
-            eprintln!("skipping composite_11_psd_not_blank; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).unwrap();
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
-        assert_eq!((comp.width, comp.height), (5031, 3437));
-        // NOTE: this corpus file organizes each brochure page as a top-level
-        // `lsct` group and saves with *every* group's eye icon off (a common
-        // "template pack" convention: the end user enables one page at a
-        // time). Verified independently with the `psd-tools` Python library:
-        // its default (visibility-respecting) `PSDImage.composite()` is also
-        // fully blank for this file. `composite_layers_from_bytes_with_cancel`
-        // detects that strict visibility yields nothing and falls back to the
-        // best-group Tier 2 (see module doc comment), which is what this
-        // assertion covers.
-        assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
-    }
-
-    #[test]
-    fn composite_27059_forces_hidden_full_canvas_background() {
-        // Template pack: large content leaves are eye-off; tier2 only shows tiny
-        // accents. Escalation to tier3 must bring real page content (not just a
-        // white full-canvas fill).
-        for name in ["32 (5).psd", "32 (7).psd"] {
-            let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059")
-                .join(name);
-            if !path.is_file() {
-                eprintln!("skipping composite_27059...; {name} missing");
-                continue;
-            }
-            let bytes = std::fs::read(&path).expect("read");
-            let comp =
-                composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
-            assert!(
-                !crate::psb_reader::rgba8_looks_unduly_dark(&comp.pixels),
-                "{name}: page should not stay near-black"
-            );
-            assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
-            let mut nonwhite = 0u64;
-            let n = (comp.pixels.len() / 4) as u64;
-            for px in comp.pixels.chunks_exact(4) {
-                if px[0] < 250 || px[1] < 250 || px[2] < 250 {
-                    nonwhite += 1;
-                }
-            }
-            let nonwhite_frac = nonwhite as f64 / n.max(1) as f64;
-            assert!(
-                nonwhite_frac > 0.15,
-                "{name}: expected substantial non-white content, frac={nonwhite_frac:.3}"
-            );
-        }
-    }
-
-    #[test]
-    fn composite_27059_screen_flare_not_black_rect() {
-        // Layer "1" is Screen at bbox ~(1901,117)-(3126,979): black + lens flare.
-        // Treating Screen as Normal paints an opaque black rectangle there.
-        let path =
-            Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059\32 (7).psd");
-        if !path.is_file() {
-            eprintln!("skipping composite_27059_screen_flare_not_black_rect; sample missing");
+            eprintln!("skipping composite_layers_all_hidden_returns_blank_error; sample missing");
             return;
         }
         let bytes = std::fs::read(path).expect("read");
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
-        let (x0, y0, x1, y1) = (2000u32, 200u32, 3000u32, 900u32);
-        let mut dark = 0u64;
-        let mut n = 0u64;
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let i = ((y * comp.width + x) * 4) as usize;
-                let r = comp.pixels[i];
-                let g = comp.pixels[i + 1];
-                let b = comp.pixels[i + 2];
-                if r < 40 && g < 40 && b < 40 {
-                    dark += 1;
-                }
-                n += 1;
-            }
-        }
-        let dark_frac = dark as f64 / n.max(1) as f64;
-        assert!(
-            dark_frac < 0.25,
-            "Screen flare region should not be mostly black (Normal fallback); dark_frac={dark_frac:.3}"
-        );
+        let err = composite_layers_from_bytes_with_cancel(&bytes, None, None)
+            .expect_err("expected blank under strict visibility");
+        assert_eq!(err, STRICT_LAYER_COMPOSITE_BLANK);
     }
 
     #[test]
-    fn compute_effective_visibility_best_group_unlocks_largest_only() {
-        // Two top-level groups (both eye-off) + one top-level hidden leaf.
-        // File order bottom-to-top:
-        //   g0: div3, big leaf, folder2(hidden)
-        //   g1: div3, small leaf, folder2(hidden)
-        //   top leaf (hidden)
-        let mut big = mk_layer(false, false, None);
-        big.left = 0;
-        big.top = 0;
-        big.right = 100;
-        big.bottom = 100; // area 10000
-        let mut small = mk_layer(false, false, None);
-        small.left = 0;
-        small.top = 0;
-        small.right = 10;
-        small.bottom = 10; // area 100
-        let top_leaf = mk_layer(true, false, None);
-        let records = vec![
-            mk_layer(false, true, Some(3)),
-            big,
-            mk_layer(true, true, Some(2)),
-            mk_layer(false, true, Some(3)),
-            small,
-            mk_layer(true, true, Some(2)),
-            top_leaf,
-        ];
-        let groups = top_level_groups(&records);
-        assert_eq!(groups.len(), 2);
-        assert!(groups[0].area > groups[1].area);
-
-        let visible = compute_effective_visibility_best_group(&records);
-        assert!(visible[1], "largest group's leaf must show");
-        assert!(!visible[4], "smaller alternate group's leaf must stay off");
-        assert!(visible[6], "top-level leaf must show even when eye-off");
-    }
-
-    #[test]
-    fn composite_32_6_keeps_photo_page_not_illust_overlay() {
-        // Two alternate top-level groups: photo page (largest) vs white-mask +
-        // gray line-art houses. Mixing them washes the photo and leaves
-        // uncoordinated houses on empty gray. Best-group Tier2 must keep the
-        // photo page and suppress the illust group.
-        let path =
-            Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059\32 (6).psd");
+    fn decode_psd_sdr_main_all_hidden_reports_photoshop_hint() {
+        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\18\18\1-2.psd");
         if !path.is_file() {
-            eprintln!("skipping composite_32_6...; sample missing");
+            eprintln!("skipping decode_psd_sdr_main_all_hidden...; sample missing");
             return;
         }
         let bytes = std::fs::read(path).expect("read");
-        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
-        assert_eq!((comp.width, comp.height), (5031, 3425));
-
-        let sample_mean = |x0: u32, y0: u32, x1: u32, y1: u32| -> (f64, f64, f64) {
-            let mut sum = [0u64; 3];
-            let mut n = 0u64;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let i = ((y * comp.width + x) * 4) as usize;
-                    sum[0] += u64::from(comp.pixels[i]);
-                    sum[1] += u64::from(comp.pixels[i + 1]);
-                    sum[2] += u64::from(comp.pixels[i + 2]);
-                    n += 1;
-                }
-            }
-            (
-                sum[0] as f64 / n as f64,
-                sum[1] as f64 / n as f64,
-                sum[2] as f64 / n as f64,
-            )
-        };
-
-        let (tl_r, tl_g, tl_b) = sample_mean(50, 50, 400, 400);
-        // Photo page top-left is blue sky / horses -- not near-white washout.
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+            .expect_err("expected fail when all layers hidden and P3 is blank");
+        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
+        assert_eq!(err, expected);
         assert!(
-            tl_b > 120.0 && tl_b > tl_r + 20.0,
-            "expected blue-ish photo page top-left, got mean=({tl_r:.0},{tl_g:.0},{tl_b:.0})"
+            err.contains("designer") || err.contains("设计师") || err.contains("設計師"),
+            "error should attribute hidden layers to the designer: {err}"
         );
-
-        // Illust houses live around (3800,2700)-(4800,3200). With the illust
-        // group suppressed this region should stay near paper white, not gray
-        // line-art on empty canvas.
-        let (br_r, br_g, br_b) = sample_mean(3800, 2700, 4800, 3200);
         assert!(
-            br_r > 240.0 && br_g > 240.0 && br_b > 240.0,
-            "illust-house region should stay near-white without alternate group, \
-             got mean=({br_r:.0},{br_g:.0},{br_b:.0})"
+            err.contains("Photoshop"),
+            "error should point users to Photoshop: {err}"
         );
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_prefers_structurally_valid_flattened() {
+        // 10.psd has a usable flattened composite -- P1 must win even if layers exist.
+        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\10\10.psd");
+        if !path.is_file() {
+            eprintln!(
+                "skipping decode_psd_sdr_main_prefers_structurally_valid_flattened; sample missing"
+            );
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read");
+        let flat = crate::psb_reader::read_composite_from_bytes(&bytes).expect("flat");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
+        assert_eq!((main.width, main.height), (flat.width, flat.height));
+        assert_eq!(main.pixels, flat.pixels);
     }
 
     #[test]

@@ -554,7 +554,9 @@ impl ImageViewerApp {
                     );
                 }
                 tm.decode_profile = self.decode_profile_for_index(self.current_index);
+                let _ = tm.sync_dimensions_from_source();
                 self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
+                crate::tile_cache::set_tile_size_for_image(tm.full_width, tm.full_height);
 
                 tm.get_source()
                     .request_refinement(self.current_index, tm.decode_profile.clone());

@@ -16,9 +16,10 @@
 
 //! Minimal PSD/PSB flattened-composite reader for viewing.
 //!
-//! Extracts only the Image Data section (merged composite). Layers, masks, and
-//! image resources are skipped. Supports PSD (v1) and PSB (v2), channel depths
-//! 8/16/32 (down-converted to RGBA8 for display), and RGB / Grayscale / CMYK.
+//! Extracts the Image Data section (merged composite) and optional IR
+//! thumbnails. Layer compositing lives in `psb_layer_composite`. Supports PSD
+//! (v1) and PSB (v2), channel depths 8/16/32 (down-converted to RGBA8 for
+//! display), and RGB / Grayscale / CMYK.
 //!
 //! PSB differs from PSD mainly in: version = 2, some lengths are u64, and RLE
 //! row byte counts are u32 instead of u16.
@@ -42,26 +43,14 @@ pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 const PSD_MAX_CHANNELS: u32 = 56;
 /// Bytes per RGBA pixel when assembling the composite image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
-/// Layer section large enough that a solid-fill composite is almost certainly layers-only.
-const LAYERS_ONLY_LM_MIN_BYTES: u64 = 1_000_000;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
 const IR_THUMBNAIL_PS4: u16 = 1033;
 const IR_THUMBNAIL_PS5: u16 = 1036;
 /// Photoshop Image Resource: ICC Profile Settings (raw ICC bytes).
 const IR_ICC_PROFILE: u16 = 1039;
 
-/// User-facing error when the flattened composite is empty and no IR thumbnail exists.
-pub const EMPTY_COMPOSITE_ERROR: &str = "PSD flattened composite is empty (layers-only file). \
-Re-save in Photoshop with Maximize Compatibility enabled, or export to PNG/JPEG.";
-
-/// Result of a cheap probe for layers-only PSD files (solid-fill composite).
-#[derive(Debug)]
-pub enum LayersOnlyCompositeProbe {
-    /// Composite RLE does not look like a solid fill -- proceed with normal decode.
-    NotApplicable,
-    /// Solid-fill composite + large layer section -- run layer compositor.
-    NeedsLayerComposite,
-}
+// User-facing PSD empty-composite messages live in `locales/*.yaml`
+// (`error.psd_all_layers_hidden`, `error.psd_no_displayable_image`).
 
 /// Decoded PSD/PSB composite image (full in-memory RGBA8).
 #[derive(Debug)]
@@ -271,6 +260,12 @@ pub fn read_composite_from_bytes_with_cancel(
 
     // -- Section 5: Image Data (flattened composite) --
     let compression = read_u16(&mut r)?;
+    // Spec: 0=Raw, 1=RLE, 2=ZIP, 3=ZIP+prediction. Anything else is invalid.
+    if compression > 3 {
+        return Err(format!(
+            "Invalid PSD/PSB Image Data compression: {compression}"
+        ));
+    }
 
     let pixel_count = checked_pixel_count(width, height)?;
     let samples_per_channel = pixel_count;
@@ -421,159 +416,421 @@ pub(crate) fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), Str
     }
 }
 
-/// Cheap probe: solid-fill RLE composite + large layer section => layers-only file.
-pub fn probe_layers_only_composite(bytes: &[u8]) -> Result<LayersOnlyCompositeProbe, String> {
-    let file_size = bytes.len() as u64;
-    let mut r = std::io::Cursor::new(bytes);
-
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != b"8BPS" {
-        return Ok(LayersOnlyCompositeProbe::NotApplicable);
+/// Absolute blank barrier for P1 flattened composites (RGBA8).
+///
+/// Returns true when the buffer is semantically empty:
+/// - every alpha byte is 0 (fully transparent), or
+/// - every RGB triple is (0,0,0) (absolute pure black).
+///
+/// Structural decode success alone is not enough; this is an O(N) SIMD scan
+/// with early exit once both a nonzero alpha and a nonzero RGB sample exist.
+/// Polls `cancel` on large buffers when provided.
+pub fn rgba8_is_absolutely_blank_with_cancel(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    if pixels.len() < 4 {
+        return Ok(true);
     }
-    let version = read_u16(&mut r)?;
-    if version != 1 && version != 2 {
-        return Ok(LayersOnlyCompositeProbe::NotApplicable);
+    let n = pixels.len() - (pixels.len() % 4);
+    if n == 0 {
+        return Ok(true);
     }
-    let is_psb = version == 2;
-    r.seek(SeekFrom::Current(6))
-        .map_err(|e| format!("Seek error: {e}"))?;
-    let channels = read_u16(&mut r)? as u32;
-    let height = read_u32(&mut r)?;
-    let width = read_u32(&mut r)?;
-    let _depth = read_u16(&mut r)?;
-    let color_mode = read_u16(&mut r)?;
-    validate_psd_dimensions(width, height, channels)?;
+    let pixels = &pixels[..n];
 
-    let cm_len = read_u32(&mut r)?;
-    seek_forward(&mut r, cm_len as u64)?;
-    let ir_len = read_u32(&mut r)?;
-    seek_forward(&mut r, ir_len as u64)?;
-    let lm_len = if is_psb {
-        read_u64(&mut r)?
-    } else {
-        read_u32(&mut r)? as u64
-    };
-    seek_forward(&mut r, lm_len)?;
-
-    if lm_len < LAYERS_ONLY_LM_MIN_BYTES {
-        return Ok(LayersOnlyCompositeProbe::NotApplicable);
-    }
-
-    let compression = read_u16(&mut r)?;
-    if compression != 1 {
-        return Ok(LayersOnlyCompositeProbe::NotApplicable);
-    }
-
-    let total_rows = (height as usize)
-        .checked_mul(channels as usize)
-        .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
-    let mut row_counts = Vec::with_capacity(total_rows);
-    for _ in 0..total_rows {
-        let count = if is_psb {
-            read_u32(&mut r)? as usize
-        } else {
-            read_u16(&mut r)? as usize
-        };
-        row_counts.push(count);
-    }
-    let remaining = file_size.saturating_sub(
-        r.stream_position()
-            .map_err(|e| format!("Stream position error: {e}"))?,
-    );
-    validate_rle_total_bytes(&row_counts, remaining)?;
-
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let solid_fill = rle_row_counts_look_like_solid_fill(width_usize, &row_counts);
-    let cmyk_degenerate = color_mode == 4
-        && rle_row_counts_look_like_cmyk_degenerate_composite(
-            width_usize,
-            height_usize,
-            channels as usize,
-            &row_counts,
-        );
-    if !solid_fill && !cmyk_degenerate {
-        return Ok(LayersOnlyCompositeProbe::NotApplicable);
-    }
-
-    log::warn!(
-        "PSD/PSB {}x{} has unusable flattened composite RLE with large layer section ({lm_len} bytes; solid_fill={solid_fill}, cmyk_degenerate={cmyk_degenerate}) -- treating as layers-only",
-        width,
-        height
-    );
-
-    Ok(LayersOnlyCompositeProbe::NeedsLayerComposite)
-}
-
-/// PackBits size for a row of identical samples (max run length 128).
-#[inline]
-fn packbits_identical_row_bytes(width: usize) -> usize {
-    width.div_ceil(128).saturating_mul(2)
-}
-
-/// True when every RLE row is no larger than a solid-color PackBits encoding (with slack).
-fn rle_row_counts_look_like_solid_fill(width: usize, row_counts: &[usize]) -> bool {
-    if width == 0 || row_counts.is_empty() {
-        return false;
-    }
-    let solid = packbits_identical_row_bytes(width);
-    let max_ok = solid.saturating_mul(2).max(solid.saturating_add(8));
-    row_counts.iter().all(|&c| c > 0 && c <= max_ok)
-}
-
-/// Legacy probe kept for corpus files whose flattened Image Data is still unusable even
-/// with correct Adobe CMYK polarity (0 = 100% ink). Detects mostly-solid M/Y(/A) RLE rows
-/// while C or K still looks detailed -- a pattern common in brochure template placeholders.
-fn rle_row_counts_look_like_cmyk_degenerate_composite(
-    width: usize,
-    height: usize,
-    channels: usize,
-    row_counts: &[usize],
-) -> bool {
-    if width == 0 || height == 0 || channels < 4 {
-        return false;
-    }
-    let expected = height.saturating_mul(channels);
-    if row_counts.len() < expected {
-        return false;
-    }
-    let solid = packbits_identical_row_bytes(width);
-    let max_ok = solid.saturating_mul(2).max(solid.saturating_add(8));
-    let solidish_ratio = |ch: usize| -> f32 {
-        let start = ch.saturating_mul(height);
-        let end = start.saturating_add(height);
-        if end > row_counts.len() || height == 0 {
-            return 0.0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { rgba8_absolutely_blank_avx2(pixels, cancel) };
         }
-        let solid_rows = row_counts[start..end]
-            .iter()
-            .filter(|&&c| c > 0 && c <= max_ok)
-            .count();
-        solid_rows as f32 / height as f32
-    };
-    // M=1, Y=2 are the channels that turn full-ink into a red cast; A=4 is often solid too.
-    let mut solidish_fill_channels = 0u32;
-    for &ch in &[1usize, 2usize] {
-        if solidish_ratio(ch) >= 0.80 {
-            solidish_fill_channels += 1;
+        if is_x86_feature_detected!("sse2") {
+            return unsafe { rgba8_absolutely_blank_sse2(pixels, cancel) };
         }
     }
-    if channels >= 5 && solidish_ratio(4) >= 0.80 {
-        solidish_fill_channels += 1;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { rgba8_absolutely_blank_neon(pixels, cancel) };
     }
-    if solidish_fill_channels < 2 {
-        return false;
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        rgba8_absolutely_blank_scalar(pixels, cancel)
     }
-    // Require at least one of C/K to look like real detail (not solid), otherwise the
-    // all-solid heuristic already covers the file.
-    let c_solidish = solidish_ratio(0);
-    let k_solidish = solidish_ratio(3);
-    c_solidish < 0.50 || k_solidish < 0.50
 }
 
-/// Parse Photoshop Image Resource 1039 (ICC profile) bytes, if present.
+/// Scan RGBA8; returns `(any_nonzero_rgb, any_nonzero_alpha)`.
+fn rgba8_any_rgb_alpha_scalar(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+    mut any_rgb: bool,
+    mut any_a: bool,
+) -> Result<(bool, bool), String> {
+    let mut i = 0usize;
+    while i + 4 <= pixels.len() {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        if (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
+            any_rgb = true;
+        }
+        if pixels[i + 3] != 0 {
+            any_a = true;
+        }
+        if any_rgb && any_a {
+            return Ok((true, true));
+        }
+        i += 4;
+    }
+    Ok((any_rgb, any_a))
+}
+
+fn rgba8_absolutely_blank_scalar(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(pixels, cancel, false, false)?;
+    Ok(!any_rgb || !any_a)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn rgba8_absolutely_blank_sse2(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::x86_64::*;
+    let mut any_rgb = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    let rgb_mask = _mm_set1_epi32(0x00FF_FFFF_u32 as i32);
+    let a_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let zero = _mm_setzero_si128();
+    while i + 16 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { _mm_loadu_si128(pixels.as_ptr().add(i).cast()) };
+        let rgb = _mm_and_si128(v, rgb_mask);
+        let alpha = _mm_and_si128(v, a_mask);
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(rgb, zero)) != 0xFFFF {
+            any_rgb = true;
+        }
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha, zero)) != 0xFFFF {
+            any_a = true;
+        }
+        if any_rgb && any_a {
+            return Ok(false);
+        }
+        i += 16;
+    }
+    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
+    Ok(!any_rgb || !any_a)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn rgba8_absolutely_blank_avx2(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::x86_64::*;
+    let mut any_rgb = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    let rgb_mask = _mm256_set1_epi32(0x00FF_FFFF_u32 as i32);
+    let a_mask = _mm256_set1_epi32(0xFF00_0000_u32 as i32);
+    let zero = _mm256_setzero_si256();
+    while i + 32 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { _mm256_loadu_si256(pixels.as_ptr().add(i).cast()) };
+        let rgb = _mm256_and_si256(v, rgb_mask);
+        let alpha = _mm256_and_si256(v, a_mask);
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(rgb, zero)) != -1 {
+            any_rgb = true;
+        }
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha, zero)) != -1 {
+            any_a = true;
+        }
+        if any_rgb && any_a {
+            return Ok(false);
+        }
+        i += 32;
+    }
+    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
+    Ok(!any_rgb || !any_a)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn rgba8_absolutely_blank_neon(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::aarch64::*;
+    let mut any_rgb = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
+    let a_mask = vdupq_n_u32(0xFF00_0000);
+    while i + 16 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
+        let vu = vreinterpretq_u32_u8(v);
+        let rgb = vandq_u32(vu, rgb_mask);
+        let alpha = vandq_u32(vu, a_mask);
+        if vmaxvq_u32(rgb) != 0 {
+            any_rgb = true;
+        }
+        if vmaxvq_u32(alpha) != 0 {
+            any_a = true;
+        }
+        if any_rgb && any_a {
+            return Ok(false);
+        }
+        i += 16;
+    }
+    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
+    Ok(!any_rgb || !any_a)
+}
+
+/// Zero-information barrier for P2 strict layer composites (RGBA8).
+///
+/// Returns true when the buffer has no visual information content:
+/// - every alpha byte is 0 (fully transparent), or
+/// - every RGB triple is identical (solid fill; variance / range is 0).
+///
+/// Unlike P1 absolute blank (all-RGB-0 only), any solid color fails here
+/// (white, gray, etc.). Early-exits once a nonzero alpha and an RGB that
+/// differs from the first pixel are both observed. Polls `cancel` on large
+/// buffers when provided.
+pub fn rgba8_is_zero_information_with_cancel(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    if pixels.len() < 4 {
+        return Ok(true);
+    }
+    let n = pixels.len() - (pixels.len() % 4);
+    if n == 0 {
+        return Ok(true);
+    }
+    let pixels = &pixels[..n];
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { rgba8_zero_information_avx2(pixels, cancel) };
+        }
+        if is_x86_feature_detected!("sse2") {
+            return unsafe { rgba8_zero_information_sse2(pixels, cancel) };
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { rgba8_zero_information_neon(pixels, cancel) };
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        rgba8_zero_information_scalar(pixels, cancel)
+    }
+}
+
+/// Scan RGBA8 against `ref_rgb`; returns `(rgb_varies, any_nonzero_alpha)`.
+fn rgba8_rgb_varies_any_alpha_scalar(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+    ref_r: u8,
+    ref_g: u8,
+    ref_b: u8,
+    mut rgb_varies: bool,
+    mut any_a: bool,
+) -> Result<(bool, bool), String> {
+    let mut i = 0usize;
+    while i + 4 <= pixels.len() {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        if pixels[i] != ref_r || pixels[i + 1] != ref_g || pixels[i + 2] != ref_b {
+            rgb_varies = true;
+        }
+        if pixels[i + 3] != 0 {
+            any_a = true;
+        }
+        if rgb_varies && any_a {
+            return Ok((true, true));
+        }
+        i += 4;
+    }
+    Ok((rgb_varies, any_a))
+}
+
+fn rgba8_zero_information_scalar(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    let ref_r = pixels[0];
+    let ref_g = pixels[1];
+    let ref_b = pixels[2];
+    let (rgb_varies, any_a) =
+        rgba8_rgb_varies_any_alpha_scalar(pixels, cancel, ref_r, ref_g, ref_b, false, false)?;
+    // Zero info when fully transparent or solid RGB (no variance).
+    Ok(!any_a || !rgb_varies)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn rgba8_zero_information_sse2(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::x86_64::*;
+    let ref_r = pixels[0];
+    let ref_g = pixels[1];
+    let ref_b = pixels[2];
+    let ref_rgb = _mm_set1_epi32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]) as i32);
+    let rgb_mask = _mm_set1_epi32(0x00FF_FFFF_u32 as i32);
+    let a_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let zero = _mm_setzero_si128();
+    let mut rgb_varies = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    while i + 16 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { _mm_loadu_si128(pixels.as_ptr().add(i).cast()) };
+        let rgb = _mm_and_si128(v, rgb_mask);
+        let alpha = _mm_and_si128(v, a_mask);
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(rgb, ref_rgb)) != 0xFFFF {
+            rgb_varies = true;
+        }
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha, zero)) != 0xFFFF {
+            any_a = true;
+        }
+        if rgb_varies && any_a {
+            return Ok(false);
+        }
+        i += 16;
+    }
+    let (rgb_varies, any_a) = rgba8_rgb_varies_any_alpha_scalar(
+        &pixels[i..],
+        cancel,
+        ref_r,
+        ref_g,
+        ref_b,
+        rgb_varies,
+        any_a,
+    )?;
+    Ok(!any_a || !rgb_varies)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn rgba8_zero_information_avx2(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::x86_64::*;
+    let ref_r = pixels[0];
+    let ref_g = pixels[1];
+    let ref_b = pixels[2];
+    let ref_rgb = _mm256_set1_epi32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]) as i32);
+    let rgb_mask = _mm256_set1_epi32(0x00FF_FFFF_u32 as i32);
+    let a_mask = _mm256_set1_epi32(0xFF00_0000_u32 as i32);
+    let zero = _mm256_setzero_si256();
+    let mut rgb_varies = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    while i + 32 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { _mm256_loadu_si256(pixels.as_ptr().add(i).cast()) };
+        let rgb = _mm256_and_si256(v, rgb_mask);
+        let alpha = _mm256_and_si256(v, a_mask);
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(rgb, ref_rgb)) != -1 {
+            rgb_varies = true;
+        }
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha, zero)) != -1 {
+            any_a = true;
+        }
+        if rgb_varies && any_a {
+            return Ok(false);
+        }
+        i += 32;
+    }
+    let (rgb_varies, any_a) = rgba8_rgb_varies_any_alpha_scalar(
+        &pixels[i..],
+        cancel,
+        ref_r,
+        ref_g,
+        ref_b,
+        rgb_varies,
+        any_a,
+    )?;
+    Ok(!any_a || !rgb_varies)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn rgba8_zero_information_neon(
+    pixels: &[u8],
+    cancel: Option<&AtomicBool>,
+) -> Result<bool, String> {
+    use core::arch::aarch64::*;
+    let ref_r = pixels[0];
+    let ref_g = pixels[1];
+    let ref_b = pixels[2];
+    let ref_rgb = vdupq_n_u32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]));
+    let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
+    let a_mask = vdupq_n_u32(0xFF00_0000);
+    let mut rgb_varies = false;
+    let mut any_a = false;
+    let n = pixels.len();
+    let mut i = 0usize;
+    while i + 16 <= n {
+        if i & 0x3_FFFF == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
+        let vu = vreinterpretq_u32_u8(v);
+        let rgb = vandq_u32(vu, rgb_mask);
+        let alpha = vandq_u32(vu, a_mask);
+        // Any lane differing from ref => RGB variance.
+        let eq = vceqq_u32(rgb, ref_rgb);
+        if vminvq_u32(eq) == 0 {
+            rgb_varies = true;
+        }
+        if vmaxvq_u32(alpha) != 0 {
+            any_a = true;
+        }
+        if rgb_varies && any_a {
+            return Ok(false);
+        }
+        i += 16;
+    }
+    let (rgb_varies, any_a) = rgba8_rgb_varies_any_alpha_scalar(
+        &pixels[i..],
+        cancel,
+        ref_r,
+        ref_g,
+        ref_b,
+        rgb_varies,
+        any_a,
+    )?;
+    Ok(!any_a || !rgb_varies)
+}
+
 pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> Option<Vec<u8>> {
     let mut pos = ir_start as usize;
     let end = (ir_end as usize).min(bytes.len());
@@ -648,8 +905,34 @@ pub fn extract_embedded_icc_from_psd(bytes: &[u8]) -> Option<Vec<u8>> {
     extract_icc_profile_from_ir(bytes, ir_start, ir_end)
 }
 
+/// Try to extract Photoshop Image Resource 1033/1036 JPEG thumbnail as RGBA8.
+pub fn try_extract_photoshop_thumbnail(bytes: &[u8]) -> Option<PsbComposite> {
+    let file_size = bytes.len() as u64;
+    let mut r = std::io::Cursor::new(bytes);
+    let mut sig = [0u8; 4];
+    r.read_exact(&mut sig).ok()?;
+    if &sig != b"8BPS" {
+        return None;
+    }
+    let version = read_u16(&mut r).ok()?;
+    if version != 1 && version != 2 {
+        return None;
+    }
+    r.seek(SeekFrom::Current(6)).ok()?;
+    let _channels = read_u16(&mut r).ok()?;
+    let _height = read_u32(&mut r).ok()?;
+    let _width = read_u32(&mut r).ok()?;
+    let _depth = read_u16(&mut r).ok()?;
+    let _color_mode = read_u16(&mut r).ok()?;
+    let cm_len = read_u32(&mut r).ok()? as u64;
+    seek_forward(&mut r, cm_len).ok()?;
+    let ir_len = read_u32(&mut r).ok()? as u64;
+    let ir_start = r.stream_position().ok()?;
+    let ir_end = ir_start.saturating_add(ir_len).min(file_size);
+    extract_photoshop_thumbnail_from_ir(bytes, ir_start, ir_end)
+}
+
 /// Parse Photoshop Image Resource 1033/1036 JPEG thumbnail into RGBA8.
-#[allow(dead_code)]
 fn extract_photoshop_thumbnail_from_ir(
     bytes: &[u8],
     ir_start: u64,
@@ -733,111 +1016,6 @@ fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
     })
 }
 
-/// True when sampled RGB luma is near-black (blank flattened composite).
-pub fn rgba8_looks_visually_blank(pixels: &[u8]) -> bool {
-    if pixels.len() < 4 {
-        return true;
-    }
-    let pixel_count = pixels.len() / 4;
-    let step_px = (pixel_count / 4096).max(1);
-    let mut max_luma = 0u8;
-    let mut i = 0usize;
-    while i < pixel_count {
-        let off = i * 4;
-        let r = pixels[off] as u16;
-        let g = pixels[off + 1] as u16;
-        let b = pixels[off + 2] as u16;
-        let luma = ((r * 30 + g * 59 + b * 11) / 100) as u8;
-        max_luma = max_luma.max(luma);
-        if max_luma > 8 {
-            return false;
-        }
-        i += step_px;
-    }
-    true
-}
-
-/// True when a flattened composite is mostly very dark (common for brochure PSDs
-/// whose Image Data is a near-black placeholder while real pixels live in layers).
-///
-/// Unlike [`rgba8_looks_visually_blank`], a bright frame or a few bright pixels do
-/// not disqualify the heuristic -- we require both a high dark-pixel fraction and
-/// a low mean luma across the sample grid.
-pub fn rgba8_looks_unduly_dark(pixels: &[u8]) -> bool {
-    if pixels.len() < 4 {
-        return true;
-    }
-    let pixel_count = pixels.len() / 4;
-    let step_px = (pixel_count / 4096).max(1);
-    let mut sum_luma: u64 = 0;
-    let mut dark = 0u64;
-    let mut n = 0u64;
-    let mut i = 0usize;
-    while i < pixel_count {
-        let off = i * 4;
-        let r = pixels[off] as u16;
-        let g = pixels[off + 1] as u16;
-        let b = pixels[off + 2] as u16;
-        let luma = ((r * 30 + g * 59 + b * 11) / 100) as u8;
-        sum_luma += luma as u64;
-        if luma <= 24 {
-            dark += 1;
-        }
-        n += 1;
-        i += step_px;
-    }
-    if n == 0 {
-        return true;
-    }
-    let mean = sum_luma / n;
-    let dark_frac = dark as f32 / n as f32;
-    mean < 96 && dark_frac >= 0.40
-}
-
-/// Large layer section + blank/unduly-dark flattened pixels => prefer layer composite.
-pub fn flattened_should_fallback_to_layer_composite(bytes: &[u8], pixels: &[u8]) -> bool {
-    if !rgba8_looks_visually_blank(pixels) && !rgba8_looks_unduly_dark(pixels) {
-        return false;
-    }
-    match probe_layer_mask_section_len(bytes) {
-        Ok(lm_len) => lm_len >= LAYERS_ONLY_LM_MIN_BYTES,
-        Err(_) => false,
-    }
-}
-
-/// Cheap header walk to the Layer and Mask section length (no pixel decode).
-fn probe_layer_mask_section_len(bytes: &[u8]) -> Result<u64, String> {
-    let mut r = std::io::Cursor::new(bytes);
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != b"8BPS" {
-        return Err("Not a PSD/PSB file".into());
-    }
-    let version = read_u16(&mut r)?;
-    if version != 1 && version != 2 {
-        return Err(format!("Unknown PSD/PSB version: {version}"));
-    }
-    let is_psb = version == 2;
-    r.seek(SeekFrom::Current(6))
-        .map_err(|e| format!("Seek error: {e}"))?;
-    let _channels = read_u16(&mut r)?;
-    let _height = read_u32(&mut r)?;
-    let _width = read_u32(&mut r)?;
-    let _depth = read_u16(&mut r)?;
-    let _color_mode = read_u16(&mut r)?;
-    let cm_len = read_u32(&mut r)?;
-    seek_forward(&mut r, cm_len as u64)?;
-    let ir_len = read_u32(&mut r)?;
-    seek_forward(&mut r, ir_len as u64)?;
-    if is_psb {
-        read_u64(&mut r)
-    } else {
-        Ok(read_u32(&mut r)? as u64)
-    }
-}
-
-/// Initialize a tiled source for a PSD/PSB file.
 pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     // On Windows, use FILE_FLAG_RANDOM_ACCESS to disable aggressive sequential
     // prefetching. Tile workers access scattered regions of a 6GB+ file -- the
@@ -1571,119 +1749,114 @@ mod tests {
     }
 
     #[test]
-    fn solid_rle_row_heuristic_matches_packbits_identical_row() {
-        let width = 5031usize;
-        let solid = super::packbits_identical_row_bytes(width);
-        assert_eq!(solid, 80);
-        let counts = vec![solid; 100];
-        assert!(super::rle_row_counts_look_like_solid_fill(width, &counts));
-        let mut varied = counts;
-        varied[50] = solid * 10;
-        assert!(!super::rle_row_counts_look_like_solid_fill(width, &varied));
+    fn invalid_image_data_compression_is_rejected() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&99u16.to_be_bytes());
+        let err = super::read_composite_from_bytes(&bytes).expect_err("bad compression");
+        assert!(
+            err.contains("Invalid PSD/PSB Image Data compression"),
+            "unexpected err: {err}"
+        );
     }
 
     #[test]
-    fn cmyk_degenerate_rle_heuristic_detects_solid_my_varying_ck() {
-        let width = 5031usize;
-        let height = 100usize;
-        let channels = 5usize;
-        let solid = super::packbits_identical_row_bytes(width);
-        let mut counts = Vec::with_capacity(height * channels);
-        // C: detailed
-        counts.extend(std::iter::repeat_n(solid * 20, height));
-        // M/Y: solid
-        counts.extend(std::iter::repeat_n(solid, height));
-        counts.extend(std::iter::repeat_n(solid, height));
-        // K: detailed
-        counts.extend(std::iter::repeat_n(solid * 25, height));
-        // A: solid
-        counts.extend(std::iter::repeat_n(solid, height));
-        assert!(super::rle_row_counts_look_like_cmyk_degenerate_composite(
-            width, height, channels, &counts
-        ));
-        assert!(!super::rle_row_counts_look_like_solid_fill(width, &counts));
+    fn try_extract_photoshop_thumbnail_returns_none_on_empty() {
+        assert!(super::try_extract_photoshop_thumbnail(&[]).is_none());
     }
 
     #[test]
-    fn rgba_blank_detects_near_black() {
-        let black = vec![0u8; 64];
-        assert!(super::rgba8_looks_visually_blank(&black));
-        let mut bright = vec![0u8; 64];
-        bright[0] = 200;
-        bright[1] = 200;
-        bright[2] = 200;
-        bright[3] = 255;
-        assert!(!super::rgba8_looks_visually_blank(&bright));
+    fn rgba8_absolute_blank_detects_all_transparent_and_all_black() {
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&[], None).unwrap());
+        assert!(
+            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 0, 0, 0, 0, 0], None).unwrap()
+        );
+        assert!(
+            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 0, 0, 0, 255], None)
+                .unwrap()
+        );
+        assert!(
+            super::rgba8_is_absolutely_blank_with_cancel(&[10, 20, 30, 0, 40, 50, 60, 0], None)
+                .unwrap()
+        );
+        assert!(
+            !super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 1, 0, 0, 255], None)
+                .unwrap()
+        );
+        assert!(
+            !super::rgba8_is_absolutely_blank_with_cancel(&[255, 255, 255, 255], None).unwrap()
+        );
     }
 
     #[test]
-    fn rgba_unduly_dark_allows_bright_frame_but_dark_interior() {
-        // Mostly near-black with a few bright frame pixels -- blank() is false,
-        // but unduly_dark() should still fire (matches 1.psd-style placeholders).
+    fn rgba8_absolute_blank_large_buffer_with_single_lit_pixel() {
         let mut pixels = vec![0u8; 4096 * 4];
-        for i in 0..32 {
-            let off = i * 4;
-            pixels[off] = 180;
-            pixels[off + 1] = 160;
-            pixels[off + 2] = 160;
-            pixels[off + 3] = 255;
-        }
-        assert!(!super::rgba8_looks_visually_blank(&pixels));
-        assert!(super::rgba8_looks_unduly_dark(&pixels));
-
-        let mut bright = vec![200u8; 4096 * 4];
-        for px in bright.chunks_exact_mut(4) {
+        for px in pixels.chunks_exact_mut(4) {
             px[3] = 255;
         }
-        assert!(!super::rgba8_looks_unduly_dark(&bright));
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&pixels, None).unwrap());
+        let off = 1234 * 4;
+        pixels[off] = 7;
+        assert!(!super::rgba8_is_absolutely_blank_with_cancel(&pixels, None).unwrap());
     }
 
     #[test]
-    fn layers_only_probe_on_11_psd_corpus() {
-        let path =
-            std::path::Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\11\11.psd");
-        if !path.is_file() {
-            eprintln!("skipping 11.psd layers-only probe; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read 11.psd");
-        match super::probe_layers_only_composite(&bytes).expect("probe") {
-            super::LayersOnlyCompositeProbe::NeedsLayerComposite => {}
-            other => panic!("expected layer composite probe for 11.psd, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn layers_only_probe_on_12_01_02_red_cast_composite() {
-        // Flattened composite keeps varying C/K but solid-fill M/Y(=255) -- naive
-        // CMYK->RGB looks red; real pixels live in the large layer section.
-        let path = std::path::Path::new(
-            r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\12\01-02.psd",
+    fn rgba8_zero_information_detects_transparent_and_solid_fills() {
+        assert!(super::rgba8_is_zero_information_with_cancel(&[], None).unwrap());
+        // Fully transparent (RGB may vary).
+        assert!(
+            super::rgba8_is_zero_information_with_cancel(&[10, 20, 30, 0, 40, 50, 60, 0], None)
+                .unwrap()
         );
-        if !path.is_file() {
-            eprintln!("skipping 01-02.psd layers-only probe; sample missing");
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read 01-02.psd");
-        match super::probe_layers_only_composite(&bytes).expect("probe") {
-            super::LayersOnlyCompositeProbe::NeedsLayerComposite => {}
-            other => panic!("expected layer composite probe for 01-02.psd, got {other:?}"),
-        }
+        // Solid black / white / gray.
+        assert!(
+            super::rgba8_is_zero_information_with_cancel(&[0, 0, 0, 255, 0, 0, 0, 128], None)
+                .unwrap()
+        );
+        assert!(
+            super::rgba8_is_zero_information_with_cancel(
+                &[255, 255, 255, 255, 255, 255, 255, 200],
+                None
+            )
+            .unwrap()
+        );
+        assert!(
+            super::rgba8_is_zero_information_with_cancel(
+                &[128, 128, 128, 255, 128, 128, 128, 255],
+                None
+            )
+            .unwrap()
+        );
+        // Two distinct opaque RGB samples => has information.
+        assert!(
+            !super::rgba8_is_zero_information_with_cancel(&[0, 0, 0, 255, 1, 0, 0, 255], None)
+                .unwrap()
+        );
     }
 
     #[test]
-    fn layers_only_probe_skips_10_psd_valid_composite() {
-        let path =
-            std::path::Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\10\10.psd");
-        if !path.is_file() {
-            eprintln!("skipping 10.psd probe regression; sample missing");
-            return;
+    fn rgba8_zero_information_large_solid_then_one_variant() {
+        let mut pixels = vec![0u8; 4096 * 4];
+        for px in pixels.chunks_exact_mut(4) {
+            px[0] = 128;
+            px[1] = 128;
+            px[2] = 128;
+            px[3] = 255;
         }
-        let bytes = std::fs::read(path).expect("read 10.psd");
-        match super::probe_layers_only_composite(&bytes).expect("probe") {
-            super::LayersOnlyCompositeProbe::NotApplicable => {}
-            other => panic!("expected NotApplicable for 10.psd, got {other:?}"),
-        }
+        assert!(super::rgba8_is_zero_information_with_cancel(&pixels, None).unwrap());
+        let off = 2000 * 4;
+        pixels[off] = 129;
+        assert!(!super::rgba8_is_zero_information_with_cancel(&pixels, None).unwrap());
     }
 
     #[test]
