@@ -155,54 +155,80 @@ fn apply_base_alpha_mask(group: &mut [u8], base_alpha: &[u8]) {
     }
 }
 
-fn composite_clip_group(
-    canvas: &mut [u8],
-    canvas_w: u32,
-    canvas_h: u32,
-    group: &[ClipLayerRef<'_>],
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<(), crate::loader::DecodeError> {
-    debug_assert!(!group.is_empty());
-    let base = &group[0];
-    if group.len() == 1 {
-        blend_onto(
-            canvas,
-            canvas_w,
-            canvas_h,
-            base.rgba,
-            base.left,
-            base.top,
-            base.width,
-            base.height,
-            separable_kind(&base.blend),
-        );
-        return Ok(());
+/// One in-flight clipping group: a base layer plus every clip layer seen for
+/// it so far. The group buffer (`temp` + `base_alpha`) is only materialized
+/// once the first clip layer arrives, so a lone base (the common case) never
+/// pays for it.
+struct OpenClipGroup {
+    base_left: i32,
+    base_top: i32,
+    base_width: u32,
+    base_height: u32,
+    base_blend: [u8; 4],
+    /// Owned copy of the base pixels -- the caller's `ClipLayerRef` borrow
+    /// does not outlive a single `push_layer` call, so this must be copied
+    /// once and reused across later clip layers.
+    base_rgba: Vec<u8>,
+    /// Full-canvas group content once a clip layer has been merged in.
+    temp: Option<Vec<u8>>,
+    base_alpha: Option<Vec<u8>>,
+}
+
+impl OpenClipGroup {
+    fn new(base: &ClipLayerRef<'_>) -> Self {
+        Self {
+            base_left: base.left,
+            base_top: base.top,
+            base_width: base.width,
+            base_height: base.height,
+            base_blend: base.blend,
+            base_rgba: base.rgba.to_vec(),
+            temp: None,
+            base_alpha: None,
+        }
     }
 
-    crate::psb_reader::check_decode_cancel(cancel)?;
-    let canvas_len = (canvas_w as usize)
-        .checked_mul(canvas_h as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| "PSD/PSB clip group buffer size overflow".to_string())?;
-    let mut temp = vec![0u8; canvas_len];
-    let base_alpha = capture_base_alpha(canvas_w, canvas_h, base)?;
-
-    // Build group content: base first (Normal into empty), then clips with their modes.
-    blend_onto(
-        &mut temp,
-        canvas_w,
-        canvas_h,
-        base.rgba,
-        base.left,
-        base.top,
-        base.width,
-        base.height,
-        SeparableBlendKind::Normal,
-    );
-    for clip in &group[1..] {
-        crate::psb_reader::check_decode_cancel(cancel)?;
+    fn add_clip(
+        &mut self,
+        canvas_w: u32,
+        canvas_h: u32,
+        clip: &ClipLayerRef<'_>,
+    ) -> Result<(), crate::loader::DecodeError> {
+        if self.temp.is_none() {
+            let canvas_len = (canvas_w as usize)
+                .checked_mul(canvas_h as usize)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or_else(|| "PSD/PSB clip group buffer size overflow".to_string())?;
+            let mut temp = vec![0u8; canvas_len];
+            // Build group content: base first (Normal into empty), then clips with their modes.
+            blend_onto(
+                &mut temp,
+                canvas_w,
+                canvas_h,
+                &self.base_rgba,
+                self.base_left,
+                self.base_top,
+                self.base_width,
+                self.base_height,
+                SeparableBlendKind::Normal,
+            );
+            self.base_alpha = Some(capture_base_alpha(
+                canvas_w,
+                canvas_h,
+                &ClipLayerRef {
+                    left: self.base_left,
+                    top: self.base_top,
+                    width: self.base_width,
+                    height: self.base_height,
+                    blend: self.base_blend,
+                    clipping: 0,
+                    rgba: &self.base_rgba,
+                },
+            )?);
+            self.temp = Some(temp);
+        }
         blend_onto(
-            &mut temp,
+            self.temp.as_mut().expect("temp initialized above"),
             canvas_w,
             canvas_h,
             clip.rgba,
@@ -212,21 +238,99 @@ fn composite_clip_group(
             clip.height,
             separable_kind(&clip.blend),
         );
+        Ok(())
     }
 
-    apply_base_alpha_mask(&mut temp, &base_alpha);
-    blend_onto(
-        canvas,
-        canvas_w,
-        canvas_h,
-        &temp,
-        0,
-        0,
-        canvas_w,
-        canvas_h,
-        separable_kind(&base.blend),
-    );
-    Ok(())
+    fn finalize(self, canvas: &mut [u8], canvas_w: u32, canvas_h: u32) {
+        match self.temp {
+            None => {
+                blend_onto(
+                    canvas,
+                    canvas_w,
+                    canvas_h,
+                    &self.base_rgba,
+                    self.base_left,
+                    self.base_top,
+                    self.base_width,
+                    self.base_height,
+                    separable_kind(&self.base_blend),
+                );
+            }
+            Some(mut temp) => {
+                let base_alpha = self
+                    .base_alpha
+                    .expect("base_alpha is set whenever temp is set");
+                apply_base_alpha_mask(&mut temp, &base_alpha);
+                blend_onto(
+                    canvas,
+                    canvas_w,
+                    canvas_h,
+                    &temp,
+                    0,
+                    0,
+                    canvas_w,
+                    canvas_h,
+                    separable_kind(&self.base_blend),
+                );
+            }
+        }
+    }
+}
+
+/// Streaming counterpart of [`blend_layers_with_clipping`]: lets callers feed
+/// decoded layers one at a time (bottom-to-top) instead of holding every
+/// layer's pixels resident at once.
+///
+/// Orphan clip layers (no base below) are skipped. Lone bases blend as usual.
+pub(crate) struct ClipBlendState {
+    canvas_w: u32,
+    canvas_h: u32,
+    open: Option<OpenClipGroup>,
+}
+
+impl ClipBlendState {
+    pub(crate) fn new(canvas_w: u32, canvas_h: u32) -> Self {
+        Self {
+            canvas_w,
+            canvas_h,
+            open: None,
+        }
+    }
+
+    /// Feed the next layer (bottom-to-top). May flush the previous group
+    /// onto `canvas` if `layer` starts a new one.
+    pub(crate) fn push_layer(
+        &mut self,
+        canvas: &mut [u8],
+        layer: &ClipLayerRef<'_>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), crate::loader::DecodeError> {
+        crate::psb_reader::check_decode_cancel(cancel)?;
+        if layer.clipping != 0 {
+            if let Some(open) = self.open.as_mut() {
+                open.add_clip(self.canvas_w, self.canvas_h, layer)?;
+            }
+            // Else: clipped with no base in the decoded stack -- invisible.
+            return Ok(());
+        }
+        // A new base starts here; flush whatever group was open before it.
+        self.finish(canvas, cancel)?;
+        self.open = Some(OpenClipGroup::new(layer));
+        Ok(())
+    }
+
+    /// Flush any open group onto `canvas`. Safe to call multiple times.
+    pub(crate) fn finish(
+        &mut self,
+        canvas: &mut [u8],
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), crate::loader::DecodeError> {
+        crate::psb_reader::check_decode_cancel(cancel)?;
+        if let Some(open) = self.open.take() {
+            open.finalize(canvas, self.canvas_w, self.canvas_h);
+        }
+        Ok(())
+    }
 }
 
 /// Blend decoded layers bottom-to-top, honoring clipping groups.
@@ -239,27 +343,16 @@ pub(crate) fn blend_layers_with_clipping(
     layers: &[ClipLayerRef<'_>],
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), crate::loader::DecodeError> {
-    let mut i = 0usize;
-    while i < layers.len() {
-        crate::psb_reader::check_decode_cancel(cancel)?;
-        if layers[i].clipping != 0 {
-            // Clipped with no base in the decoded stack -- invisible.
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        while j < layers.len() && layers[j].clipping != 0 {
-            j += 1;
-        }
-        composite_clip_group(canvas, canvas_w, canvas_h, &layers[i..j], cancel)?;
-        i = j;
+    let mut state = ClipBlendState::new(canvas_w, canvas_h);
+    for layer in layers {
+        state.push_layer(canvas, layer, cancel)?;
     }
-    Ok(())
+    state.finish(canvas, cancel)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ClipLayerRef, blend_layers_with_clipping};
+    use super::{ClipBlendState, ClipLayerRef, blend_layers_with_clipping};
 
     fn solid_rgba(w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
         let mut v = Vec::with_capacity((w * h * 4) as usize);
@@ -313,6 +406,44 @@ mod tests {
         assert_eq!(px(&canvas, 8, 4, 2), [0, 0, 0, 0]);
         assert_eq!(px(&canvas, 8, 5, 5), [0, 0, 0, 0]);
         assert_eq!(px(&canvas, 8, 2, 4), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn streaming_clip_matches_batch_api() {
+        // Same two-layer fixture as clipping_masks_clip_layer_to_base_alpha.
+        let base_rgba = solid_rgba(4, 4, 255, 0, 0, 255);
+        let clip_rgba = solid_rgba(4, 4, 0, 0, 255, 255);
+        let layers = [
+            ClipLayerRef {
+                left: 0,
+                top: 0,
+                width: 4,
+                height: 4,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &base_rgba,
+            },
+            ClipLayerRef {
+                left: 2,
+                top: 2,
+                width: 4,
+                height: 4,
+                blend: *b"norm",
+                clipping: 1,
+                rgba: &clip_rgba,
+            },
+        ];
+
+        let mut batch = vec![0u8; 8 * 8 * 4];
+        blend_layers_with_clipping(&mut batch, 8, 8, &layers, None).unwrap();
+
+        let mut stream = vec![0u8; 8 * 8 * 4];
+        let mut state = ClipBlendState::new(8, 8);
+        state.push_layer(&mut stream, &layers[0], None).unwrap();
+        state.push_layer(&mut stream, &layers[1], None).unwrap();
+        state.finish(&mut stream, None).unwrap();
+
+        assert_eq!(batch, stream);
     }
 
     #[test]
