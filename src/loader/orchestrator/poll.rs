@@ -216,7 +216,13 @@ impl ImageLoader {
     }
 
     pub fn cancel_all(&mut self) {
-        self.loading.lock().clear();
+        {
+            let mut loading = self.loading.lock();
+            for entry in loading.values() {
+                entry.cancel.cancel();
+            }
+            loading.clear();
+        }
         self.local_queue.clear();
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -249,9 +255,7 @@ impl ImageLoader {
     pub(crate) fn test_register_inflight(&self, index: usize) {
         self.loading.lock().insert(
             index,
-            crate::loader::InFlightLoad {
-                profile: crate::loader::decode_profile_stub(),
-            },
+            crate::loader::InFlightLoad::new(crate::loader::decode_profile_stub()),
         );
     }
 

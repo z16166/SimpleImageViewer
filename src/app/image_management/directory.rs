@@ -144,7 +144,12 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
         self.transition_start = None;
-        self.tile_manager = None;
+        if let Some(tm) = self.tile_manager.take() {
+            tm.get_source().request_cancel();
+        }
+        for tm in self.prefetched_tiles.values() {
+            tm.get_source().request_cancel();
+        }
         self.prefetched_tiles.clear();
         self.clear_prefetch_resource_indices();
         crate::tile_cache::PIXEL_CACHE.write().clear();

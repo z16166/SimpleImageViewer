@@ -233,6 +233,7 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
         tx: crate::loader::orchestrator::LoaderOutputSender::new(tx),
         refine_tx,
         decode_profile: crate::loader::decode_profile_stub(),
+        cancel: crate::loader::DecodeCancelFlag::new(),
         high_quality: false,
         raw_demosaic_mode: crate::settings::RawDemosaicMode::Cpu,
         hdr_target_capacity: HdrToneMapSettings::default().target_hdr_capacity(),

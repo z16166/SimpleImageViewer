@@ -432,6 +432,11 @@ impl ImageViewerApp {
         if self.strip_main_loader_decode_in_flight(index) {
             return true;
         }
+        // Prefetched/current tiled SDR (async PSD) is owned by the main loader even before
+        // texture_cache has a bootstrap preview -- cold strip must not call load_psd again.
+        if self.tiled_sdr_source_for_index(index).is_some() {
+            return true;
+        }
         !self.strip_main_loader_sdr_unreliable_for_strip(index)
             && (self.deferred_sdr_uploads.contains_key(&index)
                 || self.texture_cache.contains(index))
@@ -461,6 +466,10 @@ impl ImageViewerApp {
     ) -> bool {
         if !can_share_with_main {
             return false;
+        }
+        // Tiled SDR (async PSD/PSB) is filled by the tiled strip worker; never cold-decode.
+        if self.tiled_sdr_source_for_index(index).is_some() {
+            return true;
         }
         if self.strip_main_loader_decode_in_flight(index) {
             return true;

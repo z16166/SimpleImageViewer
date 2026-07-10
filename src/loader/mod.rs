@@ -17,6 +17,7 @@
 //! Image loading (`ImageLoader`), decode pipeline ([`decode`]), helper modules, and GPU texture cache.
 
 mod decode;
+mod decode_cancel;
 mod decode_profile;
 pub(crate) mod embedded_sdr_fallback;
 mod hdr_fallback;
@@ -32,6 +33,8 @@ mod types;
 
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
+pub use decode_cancel::{DECODE_CANCELLED, DecodeCancelFlag, is_decode_cancelled_error};
+#[allow(unused_imports)]
 pub use decode_profile::{
     DEFAULT_PREFETCH_WINDOW_DISTANCE, DecodeProfile, DisplayRequirements,
     HDR_CAPACITY_MATCH_EPSILON, InFlightLoad, LoadIntent, MAX_CURRENT_IMAGE_OS_THREADS,

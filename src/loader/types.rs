@@ -229,6 +229,10 @@ pub trait TiledImageSource: Send + Sync {
     fn wait_for_async_pixels(&self, _timeout: std::time::Duration) -> Result<(), String> {
         Ok(())
     }
+
+    /// Cooperative cancel for long async decode work owned by this source (e.g. PSD composite).
+    /// Default no-op; directory switch / eviction should call this before dropping the source.
+    fn request_cancel(&self) {}
 }
 
 /// A single frame of an animated image. RGBA8 lives in a shared [`Arc`] so frame lists and

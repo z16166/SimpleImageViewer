@@ -471,12 +471,21 @@ impl ImageViewerApp {
         ) {
             return false;
         }
+        // Async PSD/PSB installs into `prefetched_tiles` / `tile_manager` before any SDR
+        // texture exists. Treat that as loaded so schedule_preloads does not respawn
+        // `load_psd` every frame (each spawn queues another REFINEMENT_POOL composite).
+        let has_tiled_sdr = self.prefetched_tiles.contains_key(&index)
+            || self
+                .tile_manager
+                .as_ref()
+                .is_some_and(|tm| tm.image_index == index);
         let base_loaded = current_image_has_loaded_asset(
             self.texture_cache.contains(index),
             has_static_hdr,
             has_hdr_tiled_source,
             self.animation_cache.contains_key(&index),
-        ) || self.deferred_sdr_uploads.contains_key(&index);
+        ) || self.deferred_sdr_uploads.contains_key(&index)
+            || has_tiled_sdr;
         if !base_loaded {
             return false;
         }

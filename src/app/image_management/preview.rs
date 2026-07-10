@@ -322,11 +322,16 @@ impl ImageViewerApp {
                 }
             }
             (None, Some(error)) => {
-                log::error!(
-                    "Preview update failed for index {}: {}",
-                    update.index,
-                    error
-                );
+                // Async tiled decode failures (e.g. PSD v1 composite) arrive as
+                // error-only PreviewResult; surface them like a main load failure.
+                self.install_image_error(update.index, &error);
+                if should_request_repaint_for_asset_update(
+                    AssetUpdateKind::ImageLoaded,
+                    update.index == self.current_index,
+                    false,
+                ) {
+                    ctx.request_repaint();
+                }
             }
             (None, None) => {
                 if update.preview_bundle.hdr().is_some() {

@@ -19,6 +19,7 @@
 use crate::hdr::types::HdrOutputMode;
 use crate::settings::RawDemosaicMode;
 
+use super::DecodeCancelFlag;
 use super::RenderShape;
 
 pub const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
@@ -86,9 +87,26 @@ pub struct DisplayRequirements {
 }
 
 /// Registered in-flight load for an index (replaces generation-only `loading[idx]`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct InFlightLoad {
     pub profile: DecodeProfile,
+    /// Cooperative cancel for this registration; clones share the same atomic.
+    pub cancel: DecodeCancelFlag,
+}
+
+impl InFlightLoad {
+    pub fn new(profile: DecodeProfile) -> Self {
+        Self {
+            profile,
+            cancel: DecodeCancelFlag::new(),
+        }
+    }
+}
+
+impl PartialEq for InFlightLoad {
+    fn eq(&self, other: &Self) -> bool {
+        self.profile == other.profile
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

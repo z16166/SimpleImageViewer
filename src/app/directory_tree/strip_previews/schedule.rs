@@ -730,6 +730,14 @@ impl ImageViewerApp {
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
+            // Async PSD v1 sources return empty previews until composite pixels land. Wait on
+            // the strip worker (not the UI thread) so we do not spin PermanentFailure retries.
+            if source.defers_loader_hq_preview()
+                && let Err(err) =
+                    source.wait_for_async_pixels(crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT)
+            {
+                log::debug!("[DirectoryTree] Strip tiled async wait failed idx={index}: {err}");
+            }
             // SAFETY: panic in generate_full_image_preview is caught below; the rayon worker
             // thread stays healthy without spawning a nested OS thread.
             let preview_result = if com_ok {

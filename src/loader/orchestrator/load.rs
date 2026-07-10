@@ -118,6 +118,7 @@ struct LoadWorkerInput {
     refine_tx: Sender<RefinementRequest>,
     loading_ref: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
     decode_profile: DecodeProfile,
+    cancel: crate::loader::DecodeCancelFlag,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
@@ -295,6 +296,7 @@ impl ImageLoader {
                             refine_tx: job.refine_tx.clone(),
                             loading_ref: job.loading.clone(),
                             decode_profile: job.decode_profile.clone(),
+                            cancel: job.cancel.clone(),
                             high_quality: job.high_quality,
                             raw_demosaic_mode: job.raw_demosaic_mode,
                             hdr_target_capacity: job.hdr_target_capacity,
@@ -969,7 +971,9 @@ impl ImageLoader {
         {
             let mut loading = self.loading.lock();
             for idx in &cancelled {
-                loading.remove(idx);
+                if let Some(entry) = loading.remove(idx) {
+                    entry.cancel.cancel();
+                }
             }
         }
         {
@@ -1091,12 +1095,19 @@ impl ImageLoader {
         };
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
-        {
+        let cancel = {
             let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
                 return;
             }
-        }
+            loading
+                .get(&index)
+                .expect("should_spawn_load_task inserted in-flight entry")
+                .cancel
+                .clone()
+        };
+        let cancel_spawn = cancel.clone();
+        let cancel_delayed = cancel;
 
         if let Err(e) = crate::mmap_util::reject_if_image_file_too_small(&path) {
             log::debug!(
@@ -1194,6 +1205,7 @@ impl ImageLoader {
                 refine_tx: rtx1,
                 loading_ref: loading1,
                 decode_profile: decode_profile_spawn,
+                cancel: cancel_spawn,
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
@@ -1301,6 +1313,7 @@ impl ImageLoader {
         let delayed_job = DelayedFallbackJob {
             index,
             decode_profile: decode_profile_for_job,
+            cancel: cancel_delayed,
             path: path2,
             high_quality,
             raw_demosaic_mode,
@@ -1363,6 +1376,7 @@ impl ImageLoader {
             refine_tx,
             loading_ref,
             decode_profile,
+            cancel,
             high_quality,
             raw_demosaic_mode,
             hdr_target_capacity,
@@ -1385,6 +1399,9 @@ impl ImageLoader {
                 return;
             }
         }
+        if cancel.is_cancelled() {
+            return;
+        }
 
         let decode_profile_for_load = decode_profile.clone();
         let wgpu_device_for_preview = wgpu_device.clone();
@@ -1401,6 +1418,7 @@ impl ImageLoader {
                         tx: tx.clone(),
                         refine_tx: refine_tx.clone(),
                         decode_profile: decode_profile_for_load,
+                        cancel: cancel.clone(),
                         high_quality,
                         raw_demosaic_mode,
                         hdr_target_capacity,
@@ -1442,6 +1460,10 @@ impl ImageLoader {
         });
 
         if let Err(ref e) = load_result.result {
+            if crate::loader::is_decode_cancelled_error(e) {
+                log::debug!("[Loader] Load cancelled for index={}", index);
+                return;
+            }
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
         #[cfg(feature = "preload-debug")]

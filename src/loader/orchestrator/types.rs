@@ -318,6 +318,7 @@ impl Ord for TileRequest {
 pub(crate) struct DelayedFallbackJob {
     pub(crate) index: usize,
     pub(crate) decode_profile: DecodeProfile,
+    pub(crate) cancel: crate::loader::DecodeCancelFlag,
     pub(crate) path: PathBuf,
     pub(crate) high_quality: bool,
     pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
@@ -343,30 +344,21 @@ pub(crate) fn should_spawn_load_task(
     index: usize,
     profile: DecodeProfile,
 ) -> bool {
-    match loading.get(&index) {
-        Some(existing) => match profile_spawn_relation(&existing.profile, &profile) {
-            ProfileSpawnRelation::Equal => false,
-            ProfileSpawnRelation::Upgrade => {
-                loading.insert(index, InFlightLoad { profile });
-                true
+    if let Some(existing) = loading.get(&index) {
+        match profile_spawn_relation(&existing.profile, &profile) {
+            ProfileSpawnRelation::Equal => return false,
+            ProfileSpawnRelation::Upgrade | ProfileSpawnRelation::Downgrade => {
+                // Abort the previous worker's long decode; new registration gets a fresh flag.
+                existing.cancel.cancel();
             }
-            ProfileSpawnRelation::Downgrade => {
-                // Supersede the registered profile so gate/install reject stale output; spawn the
-                // downgraded request (old worker may still finish but is no longer registered).
-                loading.insert(index, InFlightLoad { profile });
-                true
-            }
-        },
-        None => {
-            if profile.load_intent == LoadIntent::NeighborPrefetch
-                && loading.len() >= MAX_IMG_LOADER_THREADS
-            {
-                return false;
-            }
-            loading.insert(index, InFlightLoad { profile });
-            true
         }
+    } else if profile.load_intent == LoadIntent::NeighborPrefetch
+        && loading.len() >= MAX_IMG_LOADER_THREADS
+    {
+        return false;
     }
+    loading.insert(index, InFlightLoad::new(profile));
+    true
 }
 
 pub struct ImageLoader {

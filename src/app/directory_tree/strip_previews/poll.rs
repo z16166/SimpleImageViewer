@@ -54,6 +54,9 @@ impl ImageViewerApp {
     }
 
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
+    ///
+    /// Also leaves `directory_tree_strip_tiled_attempted` set: empty async tiled previews
+    /// (PSD v1 before pixels land) must not clear that flag, or ensure_strip respawns every frame.
     fn finish_strip_preview_job_for_key(&mut self, key: &DirectoryTreeStripJobKey) -> bool {
         let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
             return false;
@@ -63,8 +66,6 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_tokens
             .remove(&active_index);
         self.directory_tree_strip_static_full_decode_inflight
-            .remove(&active_index);
-        self.directory_tree_strip_tiled_attempted
             .remove(&active_index);
         self.flush_strip_pending_main_handoff_for_index(active_index);
         true
@@ -92,6 +93,8 @@ impl ImageViewerApp {
         self.finish_strip_preview_job_for_key(key);
         // Keep `cold_attempted` so undecodable files (e.g. motion-video JPG) do not monopolize
         // the limited cold-generate budget and block thumbnails for neighboring rows.
+        // Keep `tiled_attempted` as well: async PSD/PSB sources return empty previews until
+        // composite pixels arrive; clearing would cause a per-frame tiled strip storm.
     }
 
     fn strip_preview_result_matches_index(&self, key: &DirectoryTreeStripJobKey) -> bool {
@@ -390,6 +393,11 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::super::strip_full_decode_reuse_allowed;
+    use crate::app::directory_tree_strip_cache::{
+        DirectoryTreeStripJobKey, DirectoryTreeStripJobToken,
+    };
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
 
     #[test]
     fn strip_full_decode_reuse_keeps_current_even_when_preload_disabled() {
@@ -409,5 +417,31 @@ mod tests {
         assert!(strip_full_decode_reuse_allowed(19, 0, 20, 1, true));
         assert!(strip_full_decode_reuse_allowed(0, 19, 20, 1, true));
         assert!(!strip_full_decode_reuse_allowed(17, 0, 20, 1, true));
+    }
+
+    #[test]
+    fn permanent_failure_keeps_tiled_attempted_to_avoid_retry_storm() {
+        let mut app = crate::app::image_management::tests::make_test_app();
+        app.image_files = vec![PathBuf::from("async.psd")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+        let token = NonZeroU64::new(9).expect("non-zero");
+        app.directory_tree_strip_generate_inflight.insert(0);
+        app.directory_tree_strip_inflight_tokens.insert(0, token);
+        app.directory_tree_strip_tiled_attempted.insert(0);
+
+        let key = DirectoryTreeStripJobKey {
+            index: 0,
+            path: PathBuf::from("async.psd"),
+            image_list_generation: 1,
+            job_token: DirectoryTreeStripJobToken::Worker(token),
+        };
+        app.abandon_strip_preview_attempt_after_failure_for_key(&key);
+
+        assert!(
+            app.directory_tree_strip_tiled_attempted.contains(&0),
+            "empty async tiled strip must keep tiled_attempted"
+        );
+        assert!(!app.directory_tree_strip_generate_inflight.contains(&0));
+        assert!(!app.directory_tree_strip_inflight_tokens.contains_key(&0));
     }
 }

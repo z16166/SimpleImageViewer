@@ -587,6 +587,24 @@ fn current_image_load_guard_treats_hdr_tiled_source_as_loaded() {
 }
 
 #[test]
+fn has_loaded_asset_treats_prefetched_tiles_as_loaded() {
+    let source = Arc::new(DummyTiledSource {
+        width: 11811,
+        height: 11811,
+    });
+    let mut app = make_test_app();
+    assert!(!app.has_loaded_asset(1));
+    app.prefetched_tiles.insert(
+        1,
+        TileManager::with_source(1, crate::loader::decode_profile_stub(), source),
+    );
+    assert!(
+        app.has_loaded_asset(1),
+        "async PSD install into prefetched_tiles must stop preload respawn"
+    );
+}
+
+#[test]
 fn hdr_fallback_texture_without_hdr_plane_is_not_loaded_asset() {
     assert!(hdr_fallback_asset_is_loaded(false, false));
     assert!(hdr_fallback_asset_is_loaded(true, true));

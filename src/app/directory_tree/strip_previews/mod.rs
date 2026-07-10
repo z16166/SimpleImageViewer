@@ -325,12 +325,13 @@ impl ImageViewerApp {
             MAX_STRIP_GENERATE_INFLIGHT
         };
 
-        // Do not drop `cold_attempted` here when cache is empty: failed decodes (e.g. motion-video
-        // JPG) stay out of cache but must remain attempted so they do not monopolize cold slots.
-        self.directory_tree_strip_tiled_attempted.retain(|index| {
-            self.directory_tree_strip_cache.contains(*index)
-                || self.directory_tree_strip_generate_inflight.contains(index)
-        });
+        // Keep `tiled_attempted` even when the strip cache is still empty. Async PSD v1 sources
+        // return empty previews until composite pixels land; pruning here used to clear the flag
+        // every frame after PermanentFailure and respawn thousands of strip jobs.
+        // Entries are dropped on list invalidate / explicit invalidate_for_index.
+        let file_count_for_tiled = self.image_files.len();
+        self.directory_tree_strip_tiled_attempted
+            .retain(|index| *index < file_count_for_tiled);
 
         self.strip_indices_scratch.clear();
         self.strip_indices_scratch

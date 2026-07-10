@@ -45,7 +45,7 @@ use super::detect::{
 use super::hdr_formats::{load_hdr, load_hdr_from_mmap};
 use super::is_maybe_animated;
 use super::open_raw_processor_with_preview;
-use super::raster::{load_gif, load_png, load_psd, load_static, load_webp};
+use super::raster::{load_gif, load_png, load_static, load_webp};
 
 mod probe_log;
 mod static_raster;
@@ -590,8 +590,11 @@ fn open_image_data_for_directory_tree_thumb(
         }
     }
 
+    // PSD/PSB composite decode is owned by the main loader (`PsdV1AsyncSource` /
+    // tiled PSB). Cold strip must not spawn a second full decode -- defer and let
+    // `try_generate_directory_tree_strip_from_tiled_source` reuse the installed source.
     if path_has_extension(path, "psd") || path_has_extension(path, "psb") {
-        return load_psd(path, None);
+        return Err(STRIP_DEFER_SLOW_STATIC_FULL_DECODE.to_string());
     }
 
     if crate::raw_processor::is_raw_extension(&ext) {
@@ -1002,6 +1005,24 @@ mod tests {
             super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE,
             "strip_deferred_slow_static_full_decode"
         );
+    }
+
+    #[test]
+    fn psd_cold_strip_always_defers_to_main_loader() {
+        let path =
+            std::env::temp_dir().join(format!("siv_strip_psd_defer_{}.psd", std::process::id()));
+        // Extension gate runs before format parse; contents only need to be mappable.
+        std::fs::write(&path, b"not a real psd").expect("write stub psd");
+        let err = match super::generate_directory_tree_thumb_decode_from_path(
+            &path,
+            256,
+            super::DirectoryTreeThumbDecodeOptions::default(),
+        ) {
+            Ok(_) => panic!("PSD cold strip must not full-decode"),
+            Err(e) => e,
+        };
+        assert_eq!(err, super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

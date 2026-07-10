@@ -35,12 +35,12 @@ fn modern_hdr_format_path_helpers_detect_supported_extensions() {
 }
 
 /// Set `SIV_PSD_SAMPLES_DIR` to a folder that contains `colors.psd` and `seine.psd`
-/// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test the `psd` crate composite
-/// path: it must not unwind (historical `psd_channel` index OOB panics).
+/// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test
+/// the self-written PSD composite path (16/32-bit RGB).
 ///
 /// When the variable is unset or files are missing, this test is a no-op so CI stays green.
 #[test]
-fn optional_psd_libavif_sources_load_without_panic() {
+fn optional_psd_libavif_sources_decode_to_pixels() {
     let Some(dir) = std::env::var("SIV_PSD_SAMPLES_DIR")
         .ok()
         .filter(|p| Path::new(p).is_dir())
@@ -53,26 +53,85 @@ fn optional_psd_libavif_sources_load_without_panic() {
         if !path.is_file() {
             continue;
         }
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_psd(&path, None)));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            load_psd(&path, None, crate::loader::DecodeCancelFlag::new())
+        }));
         assert!(
             outcome.is_ok(),
             "load_psd must not panic for {}",
             path.display()
         );
-        match outcome.unwrap() {
-            Ok(data) => match &data {
-                ImageData::Static(img) => {
-                    assert!(img.width > 0 && img.height > 0, "{name}: static dims");
-                }
-                ImageData::Tiled(src) => {
-                    assert!(src.width() > 0 && src.height() > 0, "{name}: tiled dims");
-                }
-                _ => panic!("{name}: unexpected PSD ImageData shape"),
-            },
-            Err(_msg) => {
-                // OOM guard, `psd` parse error, or composite `Err` after catch_unwind — all OK.
+        let data = outcome
+            .unwrap()
+            .unwrap_or_else(|e| panic!("{name}: load_psd failed: {e}"));
+        match data {
+            ImageData::Static(img) => {
+                assert!(img.width > 0 && img.height > 0, "{name}: static dims");
+                assert!(
+                    !img.rgba().is_empty() || img.width * img.height == 0,
+                    "{name}: empty static pixels"
+                );
             }
+            ImageData::Tiled(src) => {
+                assert!(src.width() > 0 && src.height() > 0, "{name}: tiled dims");
+                src.wait_for_async_pixels(std::time::Duration::from_secs(30))
+                    .unwrap_or_else(|e| panic!("{name}: async decode failed: {e}"));
+                let px = src
+                    .full_pixels()
+                    .unwrap_or_else(|| panic!("{name}: missing full pixels after decode"));
+                assert_eq!(
+                    px.len(),
+                    (src.width() as usize) * (src.height() as usize) * 4,
+                    "{name}: unexpected RGBA length"
+                );
+            }
+            _ => panic!("{name}: unexpected PSD ImageData shape"),
         }
     }
+}
+
+/// Set `SIV_PSD_CMYK_SAMPLES_DIR` to a folder with 8-bit CMYK PSD files to smoke-test CMYK→RGB.
+#[test]
+fn optional_psd_cmyk_samples_decode_to_pixels() {
+    let Some(dir) = std::env::var("SIV_PSD_CMYK_SAMPLES_DIR")
+        .ok()
+        .filter(|p| Path::new(p).is_dir())
+    else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let mut found = false;
+    for entry in std::fs::read_dir(&dir).expect("read CMYK samples dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_none_or(|e| !e.eq_ignore_ascii_case("psd"))
+        {
+            continue;
+        }
+        found = true;
+        let data = load_psd(&path, None, crate::loader::DecodeCancelFlag::new())
+            .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
+        match data {
+            ImageData::Tiled(src) => {
+                src.wait_for_async_pixels(std::time::Duration::from_secs(120))
+                    .unwrap_or_else(|e| panic!("{}: async decode failed: {e}", path.display()));
+                let px = src
+                    .full_pixels()
+                    .unwrap_or_else(|| panic!("{}: missing full pixels", path.display()));
+                assert_eq!(
+                    px.len(),
+                    (src.width() as usize) * (src.height() as usize) * 4
+                );
+            }
+            ImageData::Static(img) => {
+                assert!(img.width > 0 && img.height > 0);
+            }
+            _ => panic!("{}: unexpected ImageData", path.display()),
+        }
+        break; // one file is enough for smoke
+    }
+    let _ = found;
 }

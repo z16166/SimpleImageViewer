@@ -87,6 +87,7 @@ pub(crate) struct ImageLoadRequest<'a> {
     pub(crate) tx: crate::loader::orchestrator::LoaderOutputSender,
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) decode_profile: crate::loader::DecodeProfile,
+    pub(crate) cancel: crate::loader::DecodeCancelFlag,
     pub(crate) high_quality: bool,
     pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
     pub(crate) hdr_target_capacity: f32,
@@ -102,6 +103,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         tx,
         refine_tx,
         decode_profile,
+        cancel,
         high_quality,
         raw_demosaic_mode,
         hdr_target_capacity,
@@ -109,6 +111,22 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         raw_open_prefetch,
         prefer_embedded_sdr_master,
     } = request;
+    if cancel.is_cancelled() {
+        return LoadResult {
+            index,
+            decode_profile: decode_profile.clone(),
+            source_key: crate::loader::source_key_for_path(path),
+            result: Err(crate::loader::DECODE_CANCELLED.to_string()),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: hdr_target_capacity,
+            raw_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+            staged_gpu_plane_upload: false,
+        };
+    }
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -187,7 +205,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             }
         }
 
-        // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
+        // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
             return load_psd(
                 path,
@@ -197,6 +215,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     source_key: crate::loader::source_key_for_path(path),
                     load_tx: tx.clone(),
                 }),
+                cancel,
             );
         }
 

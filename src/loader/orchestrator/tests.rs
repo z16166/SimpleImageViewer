@@ -1,7 +1,6 @@
 use super::should_spawn_load_task;
 use crate::loader::{
-    DecodeProfile, ImageLoader, InFlightLoad, LoadIntent, MAX_IMG_LOADER_THREADS,
-    decode_profile_stub,
+    DecodeProfile, ImageLoader, LoadIntent, MAX_IMG_LOADER_THREADS, decode_profile_stub,
 };
 use std::collections::HashMap;
 
@@ -11,12 +10,7 @@ fn should_spawn_load_task_only_for_profile_upgrade() {
     let base = decode_profile_stub();
 
     assert!(should_spawn_load_task(&mut loading, 7, base.clone()));
-    assert_eq!(
-        loading.get(&7),
-        Some(&InFlightLoad {
-            profile: base.clone(),
-        })
-    );
+    assert_eq!(loading.get(&7).map(|e| &e.profile), Some(&base));
 
     // Same profile should not schedule duplicate load task.
     assert!(!should_spawn_load_task(&mut loading, 7, base.clone()));
@@ -115,6 +109,35 @@ fn cancel_outside_prefetch_window_only_touches_inflight_outside_window() {
     assert!(!loading.contains_key(&0));
     assert!(!loading.contains_key(&3));
     assert!(!loading.contains_key(&99));
+}
+
+#[test]
+fn cancel_indices_sets_decode_cancel_flag() {
+    let mut loader = ImageLoader::new();
+    loader.test_register_inflight(4);
+    let flag = {
+        let loading = loader.loading.lock();
+        loading.get(&4).expect("registered").cancel.clone()
+    };
+    assert!(!flag.is_cancelled());
+    loader.cancel_indices([4]);
+    assert!(flag.is_cancelled());
+    assert!(!loader.loading.lock().contains_key(&4));
+}
+
+#[test]
+fn should_spawn_upgrade_cancels_previous_flag() {
+    let mut loading = HashMap::new();
+    let base = decode_profile_stub();
+    assert!(should_spawn_load_task(&mut loading, 1, base.clone()));
+    let old_flag = loading.get(&1).unwrap().cancel.clone();
+    let upgraded = DecodeProfile {
+        load_intent: LoadIntent::Current,
+        ..base
+    };
+    assert!(should_spawn_load_task(&mut loading, 1, upgraded));
+    assert!(old_flag.is_cancelled());
+    assert!(!loading.get(&1).unwrap().cancel.is_cancelled());
 }
 
 #[test]
