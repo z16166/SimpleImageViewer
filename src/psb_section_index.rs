@@ -23,6 +23,13 @@ use crate::psb_reader::{
     validate_psd_dimensions,
 };
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task 1 adds the index API before later PSD routing tasks consume it"
+    )
+)]
 #[derive(Debug, Clone)]
 pub struct PsdSectionIndex {
     pub is_psb: bool,
@@ -39,6 +46,13 @@ pub struct PsdSectionIndex {
     pub image_data_pos: u64,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task 1 adds the index API before later PSD routing tasks consume it"
+    )
+)]
 impl PsdSectionIndex {
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 4 {
@@ -125,6 +139,7 @@ impl PsdSectionIndex {
     }
 
     pub fn is_structural_error(err: &str) -> bool {
+        let is_image_data_compression_error = err.contains("Image Data compression");
         err.contains("invalid signature")
             || err.starts_with("Unknown PSD/PSB version:")
             || err.starts_with("PSD/PSB dimensions")
@@ -132,6 +147,12 @@ impl PsdSectionIndex {
             || err.starts_with("Unsupported PSD/PSB bit depth")
             || err.starts_with("PSD/PSB header is too short")
             || err.starts_with("Not a PSD/PSB file")
+            || err.contains("exceeds section boundary")
+            || err.contains("color mode data")
+            || err.contains("image resources")
+            || err.contains("layer and mask")
+            || (!is_image_data_compression_error
+                && (err.contains("truncated") || err.contains("failed to fill whole buffer")))
     }
 }
 
@@ -153,6 +174,31 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes
+    }
+
+    fn minimal_psb_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        bytes.extend_from_slice(&[0; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes
+    }
+
+    fn psd_with_truncated_layer_mask() -> Vec<u8> {
+        let mut bytes = minimal_psd_bytes();
+        bytes.truncate(34);
+        bytes.extend_from_slice(&4u32.to_be_bytes());
+        bytes.push(0);
         bytes
     }
 
@@ -182,6 +228,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_minimal_psb_uses_u64_layer_mask_length() {
+        let bytes = minimal_psb_bytes();
+        let index = PsdSectionIndex::parse(&bytes).unwrap();
+
+        assert!(index.is_psb);
+        assert!(index.ir_start <= index.ir_end);
+        assert!(index.ir_end <= index.lm_start);
+        assert!(index.lm_start <= index.lm_end);
+        assert!(index.lm_end <= index.image_data_pos);
+        assert!(index.image_data_pos + 2 <= bytes.len() as u64);
+        assert_eq!(index.image_data_compression(&bytes).unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_truncated_mid_section_is_structural_error() {
+        let err = PsdSectionIndex::parse(&psd_with_truncated_layer_mask()).unwrap_err();
+
+        assert!(PsdSectionIndex::is_structural_error(&err), "{err}");
+    }
+
+    #[test]
     fn structural_error_matches_header_failures() {
         assert!(PsdSectionIndex::is_structural_error(
             "Not a PSD/PSB file (invalid signature)"
@@ -203,6 +270,9 @@ mod tests {
         ));
         assert!(!PsdSectionIndex::is_structural_error(
             "Invalid PSD/PSB Image Data compression: 9"
+        ));
+        assert!(!PsdSectionIndex::is_structural_error(
+            "PSD/PSB Image Data compression truncated"
         ));
     }
 }
