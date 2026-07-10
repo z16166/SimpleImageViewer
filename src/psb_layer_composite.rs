@@ -49,6 +49,13 @@ const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
 /// parallel and retained until blending finishes. 8 GiB bounds that without
 /// rejecting typical multi-layer comps on a desktop viewer.
 const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Max [`DecodedLayer`]s resident at once on the CPU streaming composite
+/// path: the layer currently being blended, plus the next one prefetched in
+/// parallel on [`crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL`].
+const LAYER_PREFETCH_WINDOW: usize = 2;
+// `run_composite_pass_cpu_streaming` overlaps exactly one prefetch with the
+// current layer's blend; the design does not support a wider window.
+const _: () = assert!(LAYER_PREFETCH_WINDOW == 2);
 const LARGE_TAGGED_BLOCK_KEYS: [[u8; 4]; 13] = [
     *b"LMsk", *b"Lr16", *b"Lr32", *b"Layr", *b"Mt16", *b"Mt32", *b"Mtrn", *b"Alph", *b"FMsk",
     *b"lnk2", *b"FEid", *b"FXid", *b"PxSD",
@@ -177,14 +184,16 @@ fn checked_layer_pixel_count(width: u32, height: u32) -> Option<usize> {
         .and_then(|n| usize::try_from(n).ok())
 }
 
+/// Byte footprint of a layer's decoded straight-alpha RGBA8 buffer.
+fn layer_rgba_byte_len(width: u32, height: u32) -> Option<u64> {
+    checked_layer_pixel_count(width, height).map(|pixels| pixels as u64 * 4)
+}
+
 /// Add one layer's RGBA8 footprint to `acc`, enforcing
 /// [`MAX_COMPOSITE_DECODED_BYTES`].
 fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u64, String> {
-    let pixels = checked_layer_pixel_count(width, height)
+    let rgba = layer_rgba_byte_len(width, height)
         .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
-    let rgba = (pixels as u64)
-        .checked_mul(4)
-        .ok_or_else(|| "PSD/PSB decoded layer RGBA size overflow".to_string())?;
     let next = acc
         .checked_add(rgba)
         .ok_or_else(|| "PSD/PSB decoded layer byte total overflow".to_string())?;
@@ -194,6 +203,31 @@ fn accumulate_decoded_layer_bytes(acc: u64, width: u32, height: u32) -> Result<u
         ));
     }
     Ok(next)
+}
+
+/// CPU streaming budget check: the layer currently held plus the next one
+/// about to be prefetched (the only [`LAYER_PREFETCH_WINDOW`] `DecodedLayer`s
+/// ever resident at once) must fit [`MAX_COMPOSITE_DECODED_BYTES`]. Unlike the
+/// GPU batch path, this never sums the whole layer stack up front.
+fn check_streaming_pair_budget(
+    current: &DecodedLayer,
+    next_width: u32,
+    next_height: u32,
+) -> Result<(), crate::loader::DecodeError> {
+    let current_bytes = layer_rgba_byte_len(current.width, current.height).unwrap_or(0);
+    let Some(next_bytes) = layer_rgba_byte_len(next_width, next_height) else {
+        return Ok(());
+    };
+    let total = current_bytes
+        .checked_add(next_bytes)
+        .ok_or_else(|| "PSD/PSB decoded layer byte total overflow".to_string())?;
+    if total > MAX_COMPOSITE_DECODED_BYTES {
+        return Err(format!(
+            "PSD/PSB decoded layer byte budget exceeded ({total} > {MAX_COMPOSITE_DECODED_BYTES})"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1643,9 +1677,49 @@ fn layer_channel_byte_ranges(
     Ok(ranges)
 }
 
+/// Whether `record` will actually decode into a [`DecodedLayer`] (mirrors the
+/// skip conditions applied in `decode_one_layer`/`decode_at`): visible, not a
+/// section divider, non-empty bounds, non-zero opacity, and within the
+/// per-layer dimension/pixel cap. Metadata-only -- never touches channel data.
+fn layer_will_decode(record: &LayerRecord, visible: bool) -> bool {
+    let should_decode =
+        visible && !record.is_section_divider && !record.is_empty_bounds() && record.opacity > 0;
+    should_decode && dimensions_within_limit(record.width(), record.height())
+}
+
+/// Whether the GPU all-at-once batch path is eligible: every layer that will
+/// actually be composited must use Normal blend with no clipping, and the
+/// batch's total decoded RGBA footprint must fit
+/// [`MAX_COMPOSITE_DECODED_BYTES`]. Metadata-only (no channel decode), so the
+/// GPU-vs-CPU-streaming choice is made before paying for any pixel work.
+/// Returns the total decoded-byte footprint on success (currently unused by
+/// callers beyond the eligibility signal, but kept for logging/diagnostics).
+fn gpu_batch_eligible_decoded_bytes(info: &LayerInfo<'_>, visible: &[bool]) -> Option<u64> {
+    let mut decoded_bytes = 0u64;
+    for (i, record) in info.records.iter().enumerate() {
+        let visible_i = visible.get(i).copied().unwrap_or(false);
+        if !layer_will_decode(record, visible_i) {
+            continue;
+        }
+        if record.blend != *b"norm" || record.clipping != 0 {
+            return None;
+        }
+        decoded_bytes =
+            accumulate_decoded_layer_bytes(decoded_bytes, record.width(), record.height()).ok()?;
+    }
+    Some(decoded_bytes)
+}
+
 /// Decode every eligible visible layer (optionally in parallel). Blend order
 /// is preserved: results are collected in record order, skipping layers that
 /// decode to `None`.
+///
+/// Used only by the GPU all-at-once batch path (see
+/// [`run_composite_pass_gpu_batch`]): every decoded layer is held resident
+/// simultaneously, so the pre-pass sums the *whole* layer stack into
+/// [`MAX_COMPOSITE_DECODED_BYTES`] before any allocation. The CPU streaming
+/// path never calls this; it bounds only the current + prefetched layer via
+/// [`check_streaming_pair_budget`].
 fn decode_layers_for_composite(
     info: &LayerInfo<'_>,
     visible: &[bool],
@@ -1655,19 +1729,12 @@ fn decode_layers_for_composite(
     // Fail fast on total decoded RGBA footprint before parallel alloc.
     let mut decoded_bytes = 0u64;
     for (i, record) in info.records.iter().enumerate() {
-        let should_decode = visible.get(i).copied().unwrap_or(false)
-            && !record.is_section_divider
-            && !record.is_empty_bounds()
-            && record.opacity > 0;
-        if !should_decode {
+        let visible_i = visible.get(i).copied().unwrap_or(false);
+        if !layer_will_decode(record, visible_i) {
             continue;
         }
-        let width = record.width();
-        let height = record.height();
-        if !dimensions_within_limit(width, height) {
-            continue;
-        }
-        decoded_bytes = accumulate_decoded_layer_bytes(decoded_bytes, width, height)?;
+        decoded_bytes =
+            accumulate_decoded_layer_bytes(decoded_bytes, record.width(), record.height())?;
     }
     let decode_at = |i: usize,
                      record: &LayerRecord|
@@ -1725,6 +1792,13 @@ fn decode_layers_for_composite(
 
 /// Decode and blend every eligible visible layer bottom to top, returning how
 /// many were actually composited.
+///
+/// Dispatches to one of two strategies:
+/// - GPU all-at-once batch ([`run_composite_pass_gpu_batch`]): only when a GPU
+///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds every
+///   composited layer Normal-blended, unclipped, and within budget.
+/// - CPU streaming ([`run_composite_pass_cpu_streaming`]): the default, and
+///   the fallback whenever the GPU batch is not eligible.
 #[allow(clippy::too_many_arguments)]
 fn run_composite_pass(
     info: &LayerInfo<'_>,
@@ -1734,6 +1808,41 @@ fn run_composite_pass(
     canvas_h: u32,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    timing: &mut CompositeTiming,
+) -> Result<usize, crate::loader::DecodeError> {
+    let gpu_batch_ctx = gpu.filter(|_| gpu_batch_eligible_decoded_bytes(info, visible).is_some());
+    if let Some(gpu_ctx) = gpu_batch_ctx {
+        return run_composite_pass_gpu_batch(
+            info, visible, canvas, canvas_w, canvas_h, cancel, gpu_ctx, timing,
+        );
+    }
+    let peak_tracker = StreamingPeakTracker::default();
+    run_composite_pass_cpu_streaming(
+        info,
+        visible,
+        canvas,
+        canvas_w,
+        canvas_h,
+        cancel,
+        timing,
+        &peak_tracker,
+    )
+}
+
+/// GPU all-at-once batch composite: decode every eligible visible layer up
+/// front (bottom to top), then blend on the GPU in one pass. Falls back to a
+/// single CPU `blend_layers_with_clipping` batch call (not streaming) if the
+/// GPU dispatch itself fails -- the layers are already resident, so there is
+/// nothing to save by streaming at that point.
+#[allow(clippy::too_many_arguments)]
+fn run_composite_pass_gpu_batch(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+    canvas: &mut Vec<u8>,
+    canvas_w: u32,
+    canvas_h: u32,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu_ctx: &crate::psb_layer_blend_gpu::PsdGpuContext,
     timing: &mut CompositeTiming,
 ) -> Result<usize, crate::loader::DecodeError> {
     // Layer records and channel_data are both stored bottom to top (index 0
@@ -1762,42 +1871,41 @@ fn run_composite_pass(
             rgba: &l.rgba,
         })
         .collect();
+    // Re-verified from the decoded layers themselves (not just the metadata
+    // pre-check in `gpu_batch_eligible_decoded_bytes`): correctness of the
+    // GPU dispatch must never depend solely on a prediction.
     let all_normal = layers.iter().all(|l| l.blend == *b"norm");
     let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
-    let used_gpu = if let Some(gpu_ctx) = gpu {
-        if !all_normal || has_clipping {
-            false
-        } else {
-            let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
-                .iter()
-                .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
-                    left: l.left,
-                    top: l.top,
-                    width: l.width,
-                    height: l.height,
-                    rgba: &l.rgba,
-                })
-                .collect();
-            let readback_t0 = std::time::Instant::now();
-            if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
-                gpu_ctx,
-                canvas_w,
-                canvas_h,
-                canvas,
-                &layer_refs,
-                cancel,
-            ) {
-                timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
-                // Take ownership of the GPU readback buffer (no full-canvas copy).
-                *canvas = gpu_pixels;
-                timing.mode = "gpu";
-                true
-            } else {
-                false
-            }
-        }
-    } else {
+    let used_gpu = if !all_normal || has_clipping {
         false
+    } else {
+        let layer_refs: Vec<crate::psb_layer_blend_gpu::DecodedLayerRef<'_>> = layers
+            .iter()
+            .map(|l| crate::psb_layer_blend_gpu::DecodedLayerRef {
+                left: l.left,
+                top: l.top,
+                width: l.width,
+                height: l.height,
+                rgba: &l.rgba,
+            })
+            .collect();
+        let readback_t0 = std::time::Instant::now();
+        if let Some(gpu_pixels) = crate::psb_layer_blend_gpu::try_blend_layers_gpu(
+            gpu_ctx,
+            canvas_w,
+            canvas_h,
+            canvas,
+            &layer_refs,
+            cancel,
+        ) {
+            timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
+            // Take ownership of the GPU readback buffer (no full-canvas copy).
+            *canvas = gpu_pixels;
+            timing.mode = "gpu";
+            true
+        } else {
+            false
+        }
     };
 
     if !used_gpu {
@@ -1812,18 +1920,281 @@ fn run_composite_pass(
     Ok(layers.len())
 }
 
+/// CPU streaming composite (default path): decode one layer, blend it via
+/// [`crate::psb_layer_clip::ClipBlendState::push_layer`], then drop its RGBA
+/// before decoding the next one. At most [`LAYER_PREFETCH_WINDOW`] decoded
+/// layers are resident at once: while the current layer blends on this
+/// thread, the next layer's channels decode in parallel on
+/// [`crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL`].
+///
+/// Layers that are hidden/dividers/empty/oversized decode to `None` quickly
+/// (no channel decode work, just cursor bookkeeping); the scan past them is
+/// sequential rather than overlapped with the previous layer's blend, since
+/// there is no real decode cost to hide.
+#[allow(clippy::too_many_arguments)]
+fn run_composite_pass_cpu_streaming(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+    canvas: &mut [u8],
+    canvas_w: u32,
+    canvas_h: u32,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    timing: &mut CompositeTiming,
+    peak_tracker: &StreamingPeakTracker,
+) -> Result<usize, crate::loader::DecodeError> {
+    let ranges = layer_channel_byte_ranges(&info.records, info.channel_data.len())?;
+    let record_count = info.records.len();
+    let decode_t0 = std::time::Instant::now();
+
+    let decode_at = |i: usize| -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
+        crate::psb_reader::check_decode_cancel(cancel)?;
+        let record = &info.records[i];
+        let should_decode = visible[i]
+            && !record.is_section_divider
+            && !record.is_empty_bounds()
+            && record.opacity > 0;
+        let (start, end) = ranges[i];
+        let mut cursor = 0usize;
+        decode_one_layer(
+            &info.channel_data[start..end],
+            &mut cursor,
+            record,
+            &LayerDecodeParams {
+                color_mode: info.color_mode,
+                is_psb: info.is_psb,
+                should_decode,
+                cancel,
+                cmyk_icc: info.cmyk_icc.as_slice(),
+            },
+        )
+    };
+
+    let mut clip_state = crate::psb_layer_clip::ClipBlendState::new(canvas_w, canvas_h);
+    let mut composited = 0usize;
+    let mut idx = 0usize;
+
+    let mut current: Option<DecodedLayer> = None;
+    while idx < record_count {
+        let decoded = decode_at(idx)?;
+        idx += 1;
+        if decoded.is_some() {
+            current = decoded;
+            peak_tracker.acquire();
+            break;
+        }
+    }
+
+    while let Some(layer) = current.take() {
+        composited += 1;
+        let next_idx = idx;
+        let next_will_decode = next_idx < record_count
+            && layer_will_decode(&info.records[next_idx], visible[next_idx]);
+        if next_will_decode {
+            let next_record = &info.records[next_idx];
+            check_streaming_pair_budget(&layer, next_record.width(), next_record.height())?;
+        }
+
+        let clip_ref = crate::psb_layer_clip::ClipLayerRef {
+            left: layer.left,
+            top: layer.top,
+            width: layer.width,
+            height: layer.height,
+            blend: layer.blend,
+            clipping: layer.clipping,
+            rgba: &layer.rgba,
+        };
+
+        let (next_result, blend_result) = if next_idx < record_count {
+            let prefetch_next = || {
+                let result = decode_at(next_idx);
+                if matches!(result, Ok(Some(_))) {
+                    peak_tracker.acquire();
+                }
+                result
+            };
+            crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL.install(|| {
+                rayon::join(prefetch_next, || {
+                    clip_state.push_layer(canvas, &clip_ref, cancel)
+                })
+            })
+        } else {
+            (Ok(None), clip_state.push_layer(canvas, &clip_ref, cancel))
+        };
+
+        blend_result?;
+        peak_tracker.release();
+        drop(layer);
+        idx = next_idx + 1;
+
+        current = match next_result? {
+            Some(next_layer) => Some(next_layer),
+            None => {
+                // Scan forward sequentially past skipped layers -- see doc
+                // comment above for why this does not need to overlap.
+                let mut found = None;
+                while idx < record_count {
+                    let decoded = decode_at(idx)?;
+                    idx += 1;
+                    if decoded.is_some() {
+                        found = decoded;
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    peak_tracker.acquire();
+                }
+                found
+            }
+        };
+    }
+
+    clip_state.finish(canvas, cancel)?;
+    // Decode and blend interleave on this path (prefetch overlaps with the
+    // previous layer's blend), so there is no clean split between the two;
+    // report the whole pass as unpack_ms and leave blend_ms at its default.
+    timing.unpack_ms += decode_t0.elapsed().as_secs_f64() * 1000.0;
+    timing.layers = composited;
+    timing.mode = "cpu";
+    Ok(composited)
+}
+
+/// Tracks how many [`DecodedLayer`]s are resident at once during one CPU
+/// streaming composite pass, and the peak seen. Every call site owns its own
+/// instance (no shared/global state), so concurrent composites -- including
+/// concurrent unit tests exercising this path -- can never interfere with
+/// each other's counts.
+#[derive(Default)]
+struct StreamingPeakTracker {
+    live: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl StreamingPeakTracker {
+    fn acquire(&self) {
+        use std::sync::atomic::Ordering;
+        let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(live, Ordering::SeqCst);
+    }
+
+    fn release(&self) {
+        self.live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
-        STRICT_LAYER_COMPOSITE_BLANK, blend_layer_onto, blend_normal_onto, blend_separable_onto,
-        build_layer_sized_mask, checked_layer_pixel_count, composite_layers_from_bytes_with_cancel,
-        compute_effective_visibility, decode_channel_image, decode_one_layer,
-        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
+        CompositeTiming, LAYER_PREFETCH_WINDOW, LayerChannel, LayerDecodeParams, LayerInfo,
+        LayerMaskInfo, LayerRecord, LayerRgbaArgs, STRICT_LAYER_COMPOSITE_BLANK,
+        StreamingPeakTracker, blend_layer_onto, blend_normal_onto, blend_separable_onto,
+        build_layer_sized_mask, check_streaming_pair_budget, checked_layer_pixel_count,
+        composite_layers_from_bytes_with_cancel, compute_effective_visibility,
+        decode_channel_image, decode_one_layer, dimensions_within_limit,
+        gpu_batch_eligible_decoded_bytes, layer_to_rgba8, layer_will_decode, parse_layer_records,
+        run_composite_pass_cpu_streaming, scan_extra_tagged_blocks,
         strict_visibility_has_drawable_output,
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use std::path::Path;
+
+    fn raw_channel_bytes(pixel: u8, pixel_count: usize) -> Vec<u8> {
+        let mut data = vec![0u8, 0u8]; // compression = 0 (raw)
+        data.extend(std::iter::repeat_n(pixel, pixel_count));
+        data
+    }
+
+    /// Minimal spec for a synthetic composite test layer: full RGB channels
+    /// (raw/uncompressed) covering `[left, right) x [top, bottom)`, no alpha
+    /// or mask channel (alpha defaults to fully opaque).
+    struct TestLayerSpec {
+        top: i32,
+        left: i32,
+        bottom: i32,
+        right: i32,
+        rgb: (u8, u8, u8),
+        blend: [u8; 4],
+        clipping: u8,
+        opacity: u8,
+    }
+
+    /// Build `LayerRecord`s + a matching contiguous `channel_data` blob for
+    /// [`super::run_composite_pass_cpu_streaming`] / [`super::decode_layers_for_composite`]
+    /// tests, bypassing the full on-disk PSD byte format.
+    fn build_test_layers(specs: &[TestLayerSpec]) -> (Vec<LayerRecord>, Vec<u8>) {
+        let mut records = Vec::with_capacity(specs.len());
+        let mut channel_data = Vec::new();
+        for spec in specs {
+            let width = (spec.right - spec.left) as u32;
+            let height = (spec.bottom - spec.top) as u32;
+            let pixel_count = (width * height) as usize;
+            let mut channels = Vec::with_capacity(3);
+            for (id, value) in [(0i16, spec.rgb.0), (1, spec.rgb.1), (2, spec.rgb.2)] {
+                let bytes = raw_channel_bytes(value, pixel_count);
+                channels.push(LayerChannel {
+                    id,
+                    data_len: bytes.len() as u32,
+                });
+                channel_data.extend_from_slice(&bytes);
+            }
+            records.push(LayerRecord {
+                top: spec.top,
+                left: spec.left,
+                bottom: spec.bottom,
+                right: spec.right,
+                channels,
+                blend: spec.blend,
+                opacity: spec.opacity,
+                clipping: spec.clipping,
+                flags: 0,
+                mask_size: 0,
+                mask: None,
+                real_mask: None,
+                is_section_divider: false,
+                section_type: None,
+            });
+        }
+        (records, channel_data)
+    }
+
+    fn mk_layer_info(
+        width: u32,
+        height: u32,
+        records: Vec<LayerRecord>,
+        channel_data: &[u8],
+    ) -> LayerInfo<'_> {
+        LayerInfo {
+            records,
+            channel_data,
+            width,
+            height,
+            depth: 8,
+            color_mode: 3,
+            is_psb: false,
+            cmyk_icc: Vec::new(),
+        }
+    }
+
+    fn px(canvas: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
+        let o = ((y * w + x) * 4) as usize;
+        [canvas[o], canvas[o + 1], canvas[o + 2], canvas[o + 3]]
+    }
+
+    fn empty_timing() -> CompositeTiming {
+        CompositeTiming {
+            parse_ms: 0.0,
+            unpack_ms: 0.0,
+            cmyk_ms: 0.0,
+            blend_ms: 0.0,
+            readback_ms: 0.0,
+            mode: "cpu",
+            layers: 0,
+        }
+    }
 
     /// Build a minimal `LayerRecord` for `compute_effective_visibility` tests;
     /// only `flags` (hidden bit), `is_section_divider`, and `section_type`
@@ -2400,5 +2771,283 @@ mod tests {
         );
         assert!(layers.records.iter().any(|l| l.is_section_divider));
         assert!(!layers.channel_data.is_empty());
+    }
+
+    #[test]
+    fn streaming_composite_peak_live_layers_at_most_prefetch_window() {
+        let (width, height) = (4u32, 4u32);
+        let specs = [
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (255, 0, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (0, 255, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (0, 0, 255),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let mut canvas = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+
+        let composited = run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut canvas,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        assert_eq!(composited, 3);
+        // Top (last) opaque layer wins under Normal blend.
+        assert_eq!(px(&canvas, width, 0, 0), [0, 0, 255, 255]);
+        let peak = tracker.peak();
+        assert!(
+            peak <= LAYER_PREFETCH_WINDOW,
+            "peak live decoded layers {peak} exceeded window {LAYER_PREFETCH_WINDOW}"
+        );
+        assert!(peak >= 1, "expected at least one live layer to be observed");
+    }
+
+    #[test]
+    fn streaming_composite_skips_zero_opacity_and_invisible_layers() {
+        let (width, height) = (2u32, 2u32);
+        let full_rect = |rgb: (u8, u8, u8), opacity: u8| TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 2,
+            right: 2,
+            rgb,
+            blend: *b"norm",
+            clipping: 0,
+            opacity,
+        };
+        let specs = [
+            full_rect((10, 20, 30), 255),
+            // Zero opacity -- must be skipped, not painted white.
+            full_rect((255, 255, 255), 0),
+            // Not visible (e.g. hidden layer/ancestor group, as computed
+            // upstream by `compute_effective_visibility`) -- also skipped.
+            full_rect((0, 255, 0), 255),
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true, true, false];
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let mut canvas = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+
+        let composited = run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut canvas,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        assert_eq!(composited, 1, "only the base layer should composite");
+        assert_eq!(px(&canvas, width, 0, 0), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn streaming_composite_matches_batch_with_clipping_and_screen_blend() {
+        // Bottom red base, a Screen-blended clip on top of it (clipped to the
+        // base's silhouette), and an unclipped green base above both. This
+        // exercises both blend dispatch and clipping-group handling on the
+        // streaming path, and must match the pre-existing batch API exactly.
+        let (width, height) = (4u32, 4u32);
+        let specs = [
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (200, 0, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 1,
+                left: 1,
+                bottom: 3,
+                right: 3,
+                rgb: (0, 0, 255),
+                blend: *b"scrn",
+                clipping: 1,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 2,
+                bottom: 2,
+                right: 4,
+                rgb: (0, 128, 0),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 128,
+            },
+        ];
+        let (records, channel_data) = build_test_layers(&specs);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(width, height, records, &channel_data);
+
+        let mut streamed = vec![0u8; (width * height * 4) as usize];
+        let mut timing = empty_timing();
+        let tracker = StreamingPeakTracker::default();
+        run_composite_pass_cpu_streaming(
+            &info,
+            &visible,
+            &mut streamed,
+            width,
+            height,
+            None,
+            &mut timing,
+            &tracker,
+        )
+        .expect("stream composite");
+
+        let decoded = super::decode_layers_for_composite(&info, &visible, None).expect("decode");
+        let clip_refs: Vec<crate::psb_layer_clip::ClipLayerRef<'_>> = decoded
+            .iter()
+            .map(|l| crate::psb_layer_clip::ClipLayerRef {
+                left: l.left,
+                top: l.top,
+                width: l.width,
+                height: l.height,
+                blend: l.blend,
+                clipping: l.clipping,
+                rgba: &l.rgba,
+            })
+            .collect();
+        let mut batch = vec![0u8; (width * height * 4) as usize];
+        crate::psb_layer_clip::blend_layers_with_clipping(
+            &mut batch, width, height, &clip_refs, None,
+        )
+        .expect("batch blend");
+
+        assert_eq!(streamed, batch);
+    }
+
+    #[test]
+    fn gpu_batch_eligible_requires_normal_blend_and_no_clipping() {
+        let (width, height) = (4u32, 4u32);
+        let channel_data_owned = Vec::new();
+        let base_spec = |blend: [u8; 4], clipping: u8| TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 4,
+            right: 4,
+            rgb: (10, 10, 10),
+            blend,
+            clipping,
+            opacity: 255,
+        };
+
+        let (records, _) = build_test_layers(&[base_spec(*b"norm", 0)]);
+        let visible = vec![true; records.len()];
+        let eligible_info = mk_layer_info(width, height, records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&eligible_info, &visible).is_some(),
+            "all-Normal, unclipped stack should be GPU batch eligible"
+        );
+
+        let (non_normal_records, _) = build_test_layers(&[base_spec(*b"scrn", 0)]);
+        let visible2 = vec![true; non_normal_records.len()];
+        let non_normal_info = mk_layer_info(width, height, non_normal_records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&non_normal_info, &visible2).is_none(),
+            "non-Normal blend must not be GPU batch eligible"
+        );
+
+        let (clipped_records, _) = build_test_layers(&[base_spec(*b"norm", 1)]);
+        let visible3 = vec![true; clipped_records.len()];
+        let clipped_info = mk_layer_info(width, height, clipped_records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_none(),
+            "clipping must not be GPU batch eligible"
+        );
+    }
+
+    #[test]
+    fn layer_will_decode_matches_should_decode_conditions() {
+        // `layer_will_decode` trusts the caller-supplied `visible` flag (that
+        // is where `is_hidden()`/group visibility is already folded in by
+        // `compute_effective_visibility`); it only re-checks the remaining
+        // decode-eligibility conditions.
+        let mut normal = mk_layer(false, false, None);
+        normal.right = 2;
+        normal.bottom = 2;
+        assert!(layer_will_decode(&normal, true));
+        assert!(!layer_will_decode(&normal, false), "not visible");
+
+        let mut zero_opacity = mk_layer(false, false, None);
+        zero_opacity.right = 2;
+        zero_opacity.bottom = 2;
+        zero_opacity.opacity = 0;
+        assert!(!layer_will_decode(&zero_opacity, true));
+
+        let divider = mk_layer(false, true, Some(1));
+        assert!(!layer_will_decode(&divider, true));
+
+        let mut oversized = mk_layer(false, false, None);
+        oversized.right = crate::psb_reader::PSD_MAX_DIMENSION as i32 + 1;
+        oversized.bottom = 1;
+        assert!(!layer_will_decode(&oversized, true));
+    }
+
+    #[test]
+    fn check_streaming_pair_budget_allows_two_max_sized_layers() {
+        // MAX_COMPOSITE_DECODED_BYTES (8 GiB) is exactly twice the max
+        // single-layer RGBA footprint (MAX_LAYER_PIXELS * 4 = 4 GiB), so the
+        // 2-layer streaming window can never itself exceed the budget for
+        // individually-valid layers -- the check exists to stay correct if
+        // either constant's relationship changes later, not because it is
+        // reachable today. Confirm the boundary case is accepted (not a
+        // false rejection) and a tiny pair is trivially accepted too.
+        let current = super::DecodedLayer {
+            left: 0,
+            top: 0,
+            width: 32_768,
+            height: 32_768,
+            blend: *b"norm",
+            clipping: 0,
+            rgba: Vec::new(),
+        };
+        assert!(check_streaming_pair_budget(&current, 32_768, 32_768).is_ok());
+        assert!(check_streaming_pair_budget(&current, 1, 1).is_ok());
     }
 }
