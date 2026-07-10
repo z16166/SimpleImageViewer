@@ -1148,7 +1148,7 @@ fn checked_rgba_len(pixel_count: usize) -> Result<usize, String> {
         .ok_or_else(|| "PSD/PSB RGBA buffer size overflow".into())
 }
 
-fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
+pub(crate) fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
     if len > i64::MAX as u64 {
         return Err(format!(
             "PSD/PSB section length {len} exceeds seekable range"
@@ -1172,21 +1172,21 @@ fn validate_rle_total_bytes(row_counts: &[usize], remaining: u64) -> Result<(), 
     Ok(())
 }
 
-fn read_u16(r: &mut impl Read) -> Result<u16, String> {
+pub(crate) fn read_u16(r: &mut impl Read) -> Result<u16, String> {
     let mut buf = [0u8; 2];
     r.read_exact(&mut buf)
         .map_err(|e| format!("Read u16: {e}"))?;
     Ok(u16::from_be_bytes(buf))
 }
 
-fn read_u32(r: &mut impl Read) -> Result<u32, String> {
+pub(crate) fn read_u32(r: &mut impl Read) -> Result<u32, String> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)
         .map_err(|e| format!("Read u32: {e}"))?;
     Ok(u32::from_be_bytes(buf))
 }
 
-fn read_u64(r: &mut impl Read) -> Result<u64, String> {
+pub(crate) fn read_u64(r: &mut impl Read) -> Result<u64, String> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf)
         .map_err(|e| format!("Read u64: {e}"))?;

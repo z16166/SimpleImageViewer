@@ -49,6 +49,7 @@ mod mmap_util;
 mod path_location;
 mod pixel_inspector;
 pub mod print;
+pub mod psb_layer_composite;
 mod psb_reader;
 mod raw_processor;
 mod scanner;
