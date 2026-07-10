@@ -374,10 +374,9 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).expect("read clipping_on.psd");
-        let composite = crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(
-            &bytes, None, None,
-        )
-        .expect("composite clipping_on.psd");
+        let composite =
+            crate::psb_layer_composite::composite_layers_from_bytes_with_cancel(&bytes, None, None)
+                .expect("composite clipping_on.psd");
         assert_eq!((composite.width, composite.height), (256, 256));
 
         let px = |x: u32, y: u32| -> [u8; 4] {
@@ -392,11 +391,17 @@ mod tests {
 
         // Inside red base, outside blue clip -> red.
         let r = px(50, 100);
-        assert!(r[0] > 200 && r[1] < 80 && r[2] < 80 && r[3] > 200, "expected red got {r:?}");
+        assert!(
+            r[0] > 200 && r[1] < 80 && r[2] < 80 && r[3] > 200,
+            "expected red got {r:?}"
+        );
 
         // Overlap region -> blue-ish (clip on top).
         let o = px(100, 100);
-        assert!(o[2] > o[0] && o[3] > 100, "expected blue-ish overlap got {o:?}");
+        assert!(
+            o[2] > o[0] && o[3] > 100,
+            "expected blue-ish overlap got {o:?}"
+        );
 
         // Blue clip outside red base -> must stay transparent.
         let outside = px(200, 100);

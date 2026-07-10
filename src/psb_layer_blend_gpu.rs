@@ -27,7 +27,6 @@ use wgpu::util::DeviceExt;
 
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
-const READBACK_POLL_SLICE: Duration = Duration::from_millis(2);
 
 /// Skip GPU when the canvas is small enough that upload/sync dominate.
 pub(crate) const GPU_BLEND_MIN_SHORT_SIDE: u32 = 512;
@@ -546,13 +545,16 @@ fn wait_for_readback(
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Err("PSD blend readback timed out".to_string());
         }
-        // Wait already polls the device; a prior PollType::Poll was redundant.
+        // Block until the device signals progress or the overall deadline.
+        // map_async completion is delivered on `rx`; Wait avoids a fixed
+        // short poll slice (checklist #37).
         match device.poll(wgpu::PollType::Wait {
             submission_index: None,
-            timeout: Some(READBACK_POLL_SLICE),
+            timeout: Some(deadline.saturating_duration_since(now)),
         }) {
             Ok(_) => {}
             Err(wgpu::PollError::Timeout) => {}

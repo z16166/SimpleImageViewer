@@ -42,6 +42,11 @@ use simple_image_viewer::simd_swizzle;
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
+/// Cap on fully-inflated ZIP / ZIP+prediction planar bytes retained inside a
+/// disk-tiled source. zlib Image Data is one sequential stream, so tiled open
+/// must inflate the whole planar buffer up front; beyond this budget we refuse
+/// and let the caller degrade to P2/P3 instead of a multi-GB memory spike.
+const MAX_TILED_ZIP_PLANAR_BYTES: usize = 512 * 1024 * 1024;
 /// Bytes per RGBA pixel when assembling the composite image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
@@ -1165,6 +1170,12 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             let expected = (channels as usize)
                 .checked_mul(channel_bytes)
                 .ok_or_else(|| "PSD/PSB ZIP planar size overflow".to_string())?;
+            if expected > MAX_TILED_ZIP_PLANAR_BYTES {
+                return Err(format!(
+                    "PSD/PSB ZIP planar size {expected} exceeds tiled inflate budget \
+                     {MAX_TILED_ZIP_PLANAR_BYTES}"
+                ));
+            }
             let mut inflated = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
             if compression == 3 {
                 crate::psb_zip::undo_zip_prediction(&mut inflated, width as usize, depth)?;
@@ -1707,7 +1718,7 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
     }
     let version = u16::from_be_bytes([bytes[4], bytes[5]]);
     if version != 1 && version != 2 {
-        return Err(format!("Unknown PSD/PSB version: {version}").into());
+        return Err(format!("Unknown PSD/PSB version: {version}"));
     }
     let channels = u16::from_be_bytes([bytes[12], bytes[13]]) as u32;
     let height = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);

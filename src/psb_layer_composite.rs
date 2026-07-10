@@ -30,6 +30,13 @@ const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
 const SECTION_DIVIDER_KEY: &[u8; 4] = b"lsct";
 const MAX_LAYER_CHANNELS_PER_RECORD: usize = 128;
+/// Cap on layer records in the Layer Info section.
+///
+/// The on-disk count is an `i16` absolute value (at most 65535). Without a
+/// tighter cap, a malicious file can force `Vec::with_capacity` + a parse loop
+/// over tens of thousands of records and DoS the decoder. Real documents
+/// rarely approach this; 8192 leaves headroom for complex comps.
+const MAX_LAYER_RECORDS: usize = 8192;
 /// Cap on `width * height` for a single layer/mask rect.
 ///
 /// `PSD_MAX_DIMENSION` alone still allows `300_000 x 300_000` (~90GB for one
@@ -63,6 +70,10 @@ pub struct LayerMaskInfo {
     pub default_color: u8,
     /// Mask disabled (bit 1 of the mask flags byte): treat as if no mask.
     pub disabled: bool,
+    /// Flags bit 4: user/vector masks have density/feather parameters. When
+    /// set, extra parameter bytes sit between the user-mask header and any
+    /// real-user-mask rect in the mask data block.
+    pub has_parameters_applied: bool,
 }
 
 impl LayerMaskInfo {
@@ -99,9 +110,12 @@ pub struct LayerRecord {
     pub clipping: u8,
     pub flags: u8,
     pub mask_size: u32,
-    /// Mask rect/flags parsed from the mask data block, when present and long
-    /// enough to contain the standard rect + default color + flags fields.
+    /// User mask rect/flags parsed from the mask data block, when present and
+    /// long enough to contain the standard rect + default color + flags fields.
     pub mask: Option<LayerMaskInfo>,
+    /// Real user mask rect (channel id -3), when the mask data block includes
+    /// a second rect after the user-mask header (typically `mask_size >= 36`).
+    pub real_mask: Option<LayerMaskInfo>,
     pub is_section_divider: bool,
     pub section_type: Option<u32>,
 }
@@ -260,6 +274,11 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
     }
 
     let layer_count = read_i16(&mut r)?.unsigned_abs() as usize;
+    if layer_count > MAX_LAYER_RECORDS {
+        return Err(format!(
+            "PSD/PSB layer count {layer_count} exceeds {MAX_LAYER_RECORDS}"
+        ));
+    }
     let mut records = Vec::with_capacity(layer_count);
     for _ in 0..layer_count {
         records.push(parse_layer_record(&mut r, layer_info_end, is_psb)?);
@@ -343,8 +362,13 @@ fn parse_layer_record(
     let extra_size = crate::psb_reader::read_u32(r)? as u64;
     let extra_start = r.position();
     let extra_end = checked_end(extra_start, extra_size, layer_info_end, "layer extra data")?;
-    let (mask_size, mask, is_section_divider, section_type) =
-        parse_layer_extra(r, extra_end, is_psb)?;
+    let ParsedLayerExtra {
+        mask_size,
+        mask,
+        real_mask,
+        is_section_divider,
+        section_type,
+    } = parse_layer_extra(r, extra_end, is_psb)?;
 
     r.set_position(extra_end);
 
@@ -360,31 +384,46 @@ fn parse_layer_record(
         flags,
         mask_size,
         mask,
+        real_mask,
         is_section_divider,
         section_type,
     })
+}
+
+struct ParsedLayerExtra {
+    mask_size: u32,
+    mask: Option<LayerMaskInfo>,
+    real_mask: Option<LayerMaskInfo>,
+    is_section_divider: bool,
+    section_type: Option<u32>,
 }
 
 fn parse_layer_extra(
     r: &mut std::io::Cursor<&[u8]>,
     extra_end: u64,
     is_psb: bool,
-) -> Result<(u32, Option<LayerMaskInfo>, bool, Option<u32>), String> {
+) -> Result<ParsedLayerExtra, String> {
     if r.position() >= extra_end {
-        return Ok((0, None, false, None));
+        return Ok(ParsedLayerExtra {
+            mask_size: 0,
+            mask: None,
+            real_mask: None,
+            is_section_divider: false,
+            section_type: None,
+        });
     }
 
     let mask_size = read_extra_u32(r, extra_end, "layer mask data length")?;
     let mask_start = r.position();
     let mask_end = checked_end(mask_start, mask_size as u64, extra_end, "layer mask data")?;
-    // Standard layer mask data (when >= 20 bytes): rect (4 x i32) + default
-    // color (1 byte) + flags (1 byte), possibly followed by mask parameters
-    // and/or a "real" user mask rect that v1 does not need. Shorter blocks
-    // (rare, malformed, or absent) leave `mask` as `None`.
-    let mask = if mask_size >= 20 {
-        parse_layer_mask_rect(r, mask_end)?
+    // Standard layer mask data (when >= 20 bytes): user-mask rect + default
+    // color + flags (+ 2-byte pad). When >= 36 bytes, a real user mask rect
+    // follows (after optional density/feather parameters when flags bit 4 is
+    // set). Shorter blocks leave both masks as `None`.
+    let (mask, real_mask) = if mask_size >= LAYER_MASK_USER_HEADER_LEN {
+        parse_layer_mask_data(r, mask_end)?
     } else {
-        None
+        (None, None)
     };
     r.set_position(mask_end);
 
@@ -398,13 +437,122 @@ fn parse_layer_extra(
 
     skip_pascal_name(r, extra_end)?;
     let (is_section_divider, section_type) = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
-    Ok((mask_size, mask, is_section_divider, section_type))
+    Ok(ParsedLayerExtra {
+        mask_size,
+        mask,
+        real_mask,
+        is_section_divider,
+        section_type,
+    })
+}
+
+/// Minimum mask-data size that can hold a user-mask header (rect + color +
+/// flags + 2-byte pad).
+const LAYER_MASK_USER_HEADER_LEN: u32 = 20;
+/// Flags bit 4: density/feather parameters follow the user-mask header.
+const LAYER_MASK_FLAGS_HAS_PARAMETERS: u8 = 0x10;
+
+/// Parse user-mask and optional real-user-mask fields from a layer mask data
+/// block. Cursor must be at the start of the mask payload; caller seeks to
+/// `mask_end` afterward.
+fn parse_layer_mask_data(
+    r: &mut std::io::Cursor<&[u8]>,
+    mask_end: u64,
+) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>), String> {
+    let Some(mask) = parse_layer_mask_rect(r, mask_end)? else {
+        return Ok((None, None));
+    };
+    // Spec pads the user-mask header to 20 bytes (2 bytes after flags).
+    const USER_MASK_PAD: u64 = 2;
+    if checked_end(r.position(), USER_MASK_PAD, mask_end, "layer mask pad").is_ok() {
+        crate::psb_reader::seek_forward(r, USER_MASK_PAD)?;
+    }
+
+    let real_mask = parse_real_user_mask_rect(r, mask_end, &mask)?;
+    Ok((Some(mask), real_mask))
+}
+
+/// When the mask data block is long enough, parse the real user mask rect
+/// used by channel id -3. Density/feather parameter bytes (flags bit 4) are
+/// skipped when present; if their layout cannot be trusted, real mask is
+/// left as `None` and channel -3 falls back to the user-mask rect.
+///
+/// Common on-disk sizes after the 20-byte user-mask header:
+/// - +16 bytes: real-mask rect only (total 36)
+/// - +18 bytes: real-mask rect + default color + flags
+fn parse_real_user_mask_rect(
+    r: &mut std::io::Cursor<&[u8]>,
+    mask_end: u64,
+    user_mask: &LayerMaskInfo,
+) -> Result<Option<LayerMaskInfo>, String> {
+    const REAL_MASK_RECT_LEN: u64 = 4 * 4;
+    const REAL_MASK_FULL_LEN: u64 = REAL_MASK_RECT_LEN + 1 + 1;
+    if user_mask.has_parameters_applied && !skip_mask_parameters_prefix(r, mask_end)? {
+        return Ok(None);
+    }
+    let remaining = mask_end.saturating_sub(r.position());
+    if remaining >= REAL_MASK_FULL_LEN {
+        return parse_layer_mask_rect(r, mask_end);
+    }
+    if remaining < REAL_MASK_RECT_LEN {
+        return Ok(None);
+    }
+    let top = read_i32(r)?;
+    let left = read_i32(r)?;
+    let bottom = read_i32(r)?;
+    let right = read_i32(r)?;
+    Ok(Some(LayerMaskInfo {
+        top,
+        left,
+        bottom,
+        right,
+        default_color: 0,
+        disabled: false,
+        has_parameters_applied: false,
+    }))
+}
+
+/// Skip the density/feather parameter prefix that follows the user-mask
+/// header when flags bit 4 is set. Returns `true` when the cursor is left
+/// at a plausible real-mask header (or section end with nothing left).
+fn skip_mask_parameters_prefix(
+    r: &mut std::io::Cursor<&[u8]>,
+    mask_end: u64,
+) -> Result<bool, String> {
+    let remaining_before = mask_end.saturating_sub(r.position());
+    if remaining_before < 1 {
+        return Ok(false);
+    }
+    let mut present = [0u8; 1];
+    r.read_exact(&mut present)
+        .map_err(|e| format!("Read layer mask parameters flags: {e}"))?;
+    // Bit 0: user density, bit 1: user feather, bit 2: vector density,
+    // bit 3: vector feather.
+    let mut need = 0u64;
+    if present[0] & 0x01 != 0 {
+        need = need.saturating_add(1);
+    }
+    if present[0] & 0x02 != 0 {
+        need = need.saturating_add(8);
+    }
+    if present[0] & 0x04 != 0 {
+        need = need.saturating_add(1);
+    }
+    if present[0] & 0x08 != 0 {
+        need = need.saturating_add(8);
+    }
+    if checked_end(r.position(), need, mask_end, "layer mask parameters").is_err() {
+        return Ok(false);
+    }
+    crate::psb_reader::seek_forward(r, need)?;
+    let remaining = mask_end.saturating_sub(r.position());
+    // Real mask may be rect-only (16) or rect+color+flags (18).
+    Ok(remaining == 0 || remaining >= 4 * 4)
 }
 
 /// Parse the rect + default color + flags fields at the start of a layer's
 /// mask data block (see [`LayerMaskInfo`]). Returns `None` if the block is
-/// too short to hold them (defensive; `parse_layer_extra` already checks
-/// `mask_size >= 20` before calling this).
+/// too short to hold them (defensive; callers check size before calling).
 fn parse_layer_mask_rect(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
@@ -433,6 +581,7 @@ fn parse_layer_mask_rect(
     r.read_exact(&mut mask_flags)
         .map_err(|e| format!("Read layer mask flags: {e}"))?;
     let disabled = mask_flags[0] & 0x02 != 0;
+    let has_parameters_applied = mask_flags[0] & LAYER_MASK_FLAGS_HAS_PARAMETERS != 0;
 
     Ok(Some(LayerMaskInfo {
         top,
@@ -441,6 +590,7 @@ fn parse_layer_mask_rect(
         right,
         default_color: default_color[0],
         disabled,
+        has_parameters_applied,
     }))
 }
 
@@ -816,6 +966,46 @@ fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u32, mask: Option<&[u8
     }
 }
 
+/// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
+/// when the mask is disabled, empty, or oversized (caller keeps no-mask).
+#[allow(clippy::too_many_arguments)]
+fn decode_mask_channel_to_layer(
+    slice: &[u8],
+    mask_info: &LayerMaskInfo,
+    layer_left: i32,
+    layer_top: i32,
+    layer_w: u32,
+    layer_h: u32,
+    is_psb: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Option<Vec<u8>>, crate::loader::DecodeError> {
+    let mask_w = mask_info.width();
+    let mask_h = mask_info.height();
+    let mask_has_bounds = !mask_info.disabled && mask_w > 0 && mask_h > 0;
+    if !mask_has_bounds {
+        return Ok(None);
+    }
+    // Same oversized-rect guard as the layer rect: skip just this mask
+    // (fall back to no mask) rather than erroring out the whole composite.
+    if !dimensions_within_limit(mask_w, mask_h) {
+        log::debug!(
+            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds dimension/pixel \
+             limit (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping mask",
+            crate::psb_reader::PSD_MAX_DIMENSION
+        );
+        return Ok(None);
+    }
+    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, is_psb, cancel)?;
+    Ok(Some(build_layer_sized_mask(
+        mask_info,
+        &mask_pixels,
+        layer_left,
+        layer_top,
+        layer_w,
+        layer_h,
+    )))
+}
+
 /// Blit a decoded mask (its own `mask_info` rect, which may differ from the
 /// layer's rect in size and/or offset) into a layer-sized alpha-multiplier
 /// buffer. Layer pixels outside the mask's rect use `mask_info.default_color`
@@ -1142,56 +1332,39 @@ fn decode_one_layer(
                 Err(e) if e.is_cancelled() => return Err(e),
                 Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
             },
-            -2 => {
-                // The mask channel's own rect (from the layer's mask data
-                // block) can differ in size and/or offset from the layer's
-                // rect -- decode at the mask's own dimensions, then blit into
-                // a layer-sized buffer. With no parsed rect (`mask_size == 0`
-                // or too short to contain one), the mask's true geometry is
-                // unknown, so it is skipped entirely (no mask applied).
-                if let Some(mask_info) = &record.mask {
-                    let mask_w = mask_info.width();
-                    let mask_h = mask_info.height();
-                    let mask_has_bounds = !mask_info.disabled && mask_w > 0 && mask_h > 0;
-                    // Same oversized-rect guard as the layer rect below: skip
-                    // just this mask (fall back to no mask) rather than
-                    // erroring out the whole layer/composite.
-                    if mask_has_bounds && !dimensions_within_limit(mask_w, mask_h) {
-                        log::debug!(
-                            "PSD/PSB layer mask rect {mask_w}x{mask_h} exceeds dimension/pixel \
-                             limit (max side {}, max pixels {MAX_LAYER_PIXELS}), skipping mask",
-                            crate::psb_reader::PSD_MAX_DIMENSION
-                        );
-                    } else if mask_has_bounds {
-                        match decode_channel_image(
-                            slice,
-                            mask_w,
-                            mask_h,
-                            params.is_psb,
-                            params.cancel,
-                        ) {
-                            Ok(mask_pixels) => {
-                                mask = Some(build_layer_sized_mask(
-                                    mask_info,
-                                    &mask_pixels,
-                                    record.left,
-                                    record.top,
-                                    width,
-                                    height,
-                                ));
-                            }
-                            Err(e) if e.is_cancelled() => {
-                                return Err(e);
-                            }
-                            Err(e) => log::debug!("PSD/PSB layer mask channel decode failed: {e}"),
+            -2 | -3 => {
+                // Channel -2 = user mask; -3 = real user mask (combined
+                // vector+user). Prefer -3 when both are present: it is the
+                // authoritative rendered mask. Geometry comes from
+                // `real_mask` for -3 when parsed, otherwise the user-mask
+                // rect. Missing/disabled/oversized rects skip that channel.
+                let mask_info = if ch.id == -3 {
+                    record.real_mask.as_ref().or(record.mask.as_ref())
+                } else if record.real_mask.is_some() && record.channels.iter().any(|c| c.id == -3) {
+                    // User mask is superseded by a real user mask channel.
+                    None
+                } else {
+                    record.mask.as_ref()
+                };
+                if let Some(mask_info) = mask_info {
+                    match decode_mask_channel_to_layer(
+                        slice,
+                        mask_info,
+                        record.left,
+                        record.top,
+                        width,
+                        height,
+                        params.is_psb,
+                        params.cancel,
+                    ) {
+                        Ok(Some(layer_mask)) => mask = Some(layer_mask),
+                        Ok(None) => {}
+                        Err(e) if e.is_cancelled() => return Err(e),
+                        Err(e) => {
+                            log::debug!("PSD/PSB layer mask channel {} decode failed: {e}", ch.id);
                         }
                     }
                 }
-            }
-            -3 => {
-                // Real user mask (rendered from a combined vector + user
-                // mask). Not supported in v1; the channel's bytes are still
-                // consumed above via `cursor`, so later layers stay aligned.
             }
             0..=3 => {
                 let idx = ch.id as usize;
@@ -1294,7 +1467,6 @@ pub fn composite_layers_from_bytes_with_cancel(
     run_composite_pass(
         &info,
         &visible,
-        true,
         &mut canvas,
         canvas_w,
         canvas_h,
@@ -1366,7 +1538,7 @@ fn decode_psd_sdr_main_inner(
     let mut skip_p2_after_structural_header = false;
     if skip_flattened {
         crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_skipped -> degrade_P2");
-        log::info!(
+        log::debug!(
             "PSD SDR main: skipping P1 flattened (caller already rejected blank/unreadable flat)"
         );
     } else {
@@ -1384,7 +1556,7 @@ fn decode_psd_sdr_main_inner(
                         composite.height,
                         composite.pixels.len()
                     );
-                    log::info!(
+                    log::debug!(
                         "PSD SDR main: P1 flattened {}x{} is absolute blank \
                      (all-transparent or all-RGB-0); degrading to P2",
                         composite.width,
@@ -1397,7 +1569,7 @@ fn decode_psd_sdr_main_inner(
                         composite.height,
                         composite.pixels.len()
                     );
-                    log::info!(
+                    log::debug!(
                         "PSD SDR main: P1 flattened composite {}x{}",
                         composite.width,
                         composite.height
@@ -1441,7 +1613,7 @@ fn decode_psd_sdr_main_inner(
                         composite.height,
                         composite.pixels.len()
                     );
-                    log::info!(
+                    log::debug!(
                         "PSD SDR main: P2 strict composite {}x{} is zero-information \
                          (all-transparent or solid RGB); degrading to P3",
                         composite.width,
@@ -1454,7 +1626,7 @@ fn decode_psd_sdr_main_inner(
                         composite.height,
                         composite.pixels.len()
                     );
-                    log::info!(
+                    log::debug!(
                         "PSD SDR main: P2 strict layer composite {}x{}",
                         composite.width,
                         composite.height
@@ -1486,7 +1658,7 @@ fn decode_psd_sdr_main_inner(
                     thumb.height,
                     thumb.pixels.len()
                 );
-                log::info!(
+                log::debug!(
                     "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
                      (all-transparent or solid RGB); no displayable image",
                     thumb.width,
@@ -1499,7 +1671,7 @@ fn decode_psd_sdr_main_inner(
                     thumb.height,
                     thumb.pixels.len()
                 );
-                log::info!(
+                log::debug!(
                     "PSD SDR main: P3 IR thumbnail {}x{}",
                     thumb.width,
                     thumb.height
@@ -1595,13 +1767,12 @@ fn layer_channel_byte_ranges(
     Ok(ranges)
 }
 
-/// Decode every eligible layer (optionally in parallel). Blend order is preserved:
-/// results are collected in record order, skipping layers that decode to `None`.
-#[allow(clippy::too_many_arguments)]
+/// Decode every eligible visible layer (optionally in parallel). Blend order
+/// is preserved: results are collected in record order, skipping layers that
+/// decode to `None`.
 fn decode_layers_for_composite(
     info: &LayerInfo<'_>,
     visible: &[bool],
-    respect_visibility: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<DecodedLayer>, crate::loader::DecodeError> {
     let ranges = layer_channel_byte_ranges(&info.records, info.channel_data.len())?;
@@ -1609,7 +1780,7 @@ fn decode_layers_for_composite(
                      record: &LayerRecord|
      -> Result<Option<DecodedLayer>, crate::loader::DecodeError> {
         crate::psb_reader::check_decode_cancel(cancel)?;
-        let should_decode = (!respect_visibility || visible[i])
+        let should_decode = visible[i]
             && !record.is_section_divider
             && !record.is_empty_bounds()
             && record.opacity > 0;
@@ -1659,15 +1830,13 @@ fn decode_layers_for_composite(
     Ok(layers)
 }
 
-/// Decode and blend every eligible layer bottom to top, returning how many were
-/// actually composited. When `respect_visibility` is false, `visible` is ignored
-/// (every non-divider, non-empty, non-fully-transparent layer is composited).
+/// Decode and blend every eligible visible layer bottom to top, returning how
+/// many were actually composited.
 #[allow(clippy::too_many_arguments)]
 fn run_composite_pass(
     info: &LayerInfo<'_>,
     visible: &[bool],
-    respect_visibility: bool,
-    canvas: &mut [u8],
+    canvas: &mut Vec<u8>,
     canvas_w: u32,
     canvas_h: u32,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -1678,7 +1847,7 @@ fn run_composite_pass(
     // is the bottommost layer). Decoding may run in parallel once per-layer
     // byte ranges are known; blending still walks decoded layers bottom to top.
     let decode_t0 = std::time::Instant::now();
-    let layers = decode_layers_for_composite(info, visible, respect_visibility, cancel)?;
+    let layers = decode_layers_for_composite(info, visible, cancel)?;
     // Decode includes PackBits + planar convert + CMYK/ICC; split CMS later if needed.
     timing.unpack_ms += decode_t0.elapsed().as_secs_f64() * 1000.0;
     timing.layers = layers.len();
@@ -1726,7 +1895,8 @@ fn run_composite_pass(
                 cancel,
             ) {
                 timing.readback_ms += readback_t0.elapsed().as_secs_f64() * 1000.0;
-                canvas.copy_from_slice(&gpu_pixels);
+                // Take ownership of the GPU readback buffer (no full-canvas copy).
+                *canvas = gpu_pixels;
                 timing.mode = "gpu";
                 true
             } else {
@@ -1778,6 +1948,7 @@ mod tests {
             flags: if hidden { 2 } else { 0 },
             mask_size: 0,
             mask: None,
+            real_mask: None,
             is_section_divider,
             section_type,
         }
@@ -1811,6 +1982,14 @@ mod tests {
         // Pixel budget is exactly 32768^2 (= 1G); one pixel over must fail.
         assert!(dimensions_within_limit(32_768, 32_768));
         assert!(!dimensions_within_limit(32_769, 32_769));
+    }
+
+    #[test]
+    fn max_layer_records_constant_is_sane() {
+        // i16::unsigned_abs max is 65535; our DoS cap must be tighter and
+        // still allow complex legitimate comps.
+        assert!(super::MAX_LAYER_RECORDS < 65_535);
+        assert!(super::MAX_LAYER_RECORDS >= 1024);
     }
 
     #[test]
@@ -1867,6 +2046,7 @@ mod tests {
             right: 1_000_000_000,
             default_color: 0,
             disabled: false,
+            has_parameters_applied: false,
         });
         record.channels = vec![LayerChannel {
             id: -2,
@@ -2082,6 +2262,7 @@ mod tests {
             right: 3,
             default_color: 0,
             disabled: false,
+            has_parameters_applied: false,
         };
         let mask_pixels = vec![10, 20, 30, 40];
 
@@ -2107,6 +2288,7 @@ mod tests {
             right: 11,
             default_color: 255,
             disabled: false,
+            has_parameters_applied: false,
         };
         let mask_pixels = vec![99];
 

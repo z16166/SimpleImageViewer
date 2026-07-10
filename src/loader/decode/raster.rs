@@ -316,7 +316,7 @@ pub(crate) fn load_psd(
         .into());
     }
 
-    log::info!(
+    log::debug!(
         "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB -- proceeding",
         width,
         height
@@ -331,7 +331,7 @@ pub(crate) fn load_psd(
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
     let mut skip_flattened_for_disk_tiled_degrade = false;
     if version == 2 && psd_header_requires_disk_tiled(width, height) {
-        log::info!(
+        log::debug!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
             width,
             height
@@ -342,7 +342,7 @@ pub(crate) fn load_psd(
                 if !blank {
                     return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
                 }
-                log::info!(
+                log::debug!(
                     "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
                     width,
                     height
@@ -350,7 +350,7 @@ pub(crate) fn load_psd(
                 skip_flattened_for_disk_tiled_degrade = true;
             }
             Err(e) => {
-                log::info!(
+                log::debug!(
                     "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
                     width,
                     height
@@ -382,7 +382,7 @@ pub(crate) fn load_psd(
         apply_exif_orientation_to_image_data(path, ImageData::Static(img), Some(&mmap[..]));
     match oriented {
         ImageData::Static(decoded) => {
-            log::info!(
+            log::debug!(
                 "PSD/PSB decoded display size {}x{} (header was {}x{}); routing via make_image_data",
                 decoded.width,
                 decoded.height,
