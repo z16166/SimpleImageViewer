@@ -64,7 +64,7 @@ struct BlendParams {
     _pad0: u32,
 };
 
-@group(0) @binding(0) var canvas: texture_storage_2d<rgba8unorm, read_write>;
+@group(0) @binding(0) var target: texture_storage_2d<rgba8unorm, read_write>;
 @group(0) @binding(1) var layer_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: BlendParams;
 
@@ -115,17 +115,56 @@ fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst_coord = vec2<i32>(dx, dy);
     // rgba8unorm loads are in [0,1]; only Normal can skip destination reads.
     if (params.mode == 0u && sa >= 1.0) {
-        textureStore(canvas, dst_coord, vec4<f32>(src.rgb, 1.0));
+        textureStore(target, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;
     }
 
-    let dst = textureLoad(canvas, dst_coord);
+    let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
     let blended = blend_rgb(params.mode, dst.rgb, src.rgb);
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / out_a;
-    textureStore(canvas, dst_coord, vec4<f32>(out_rgb, out_a));
+    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_capture_base_alpha(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = i32(gid.x);
+    let sy = i32(gid.y);
+    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
+        return;
+    }
+    let dx = params.layer_left + sx;
+    let dy = params.layer_top + sy;
+    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
+        return;
+    }
+
+    let base = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
+    textureStore(target, vec2<i32>(dx, dy), vec4<f32>(base.a, 0.0, 0.0, 0.0));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= params.canvas_w || gid.y >= params.canvas_h) {
+        return;
+    }
+
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let mask = textureLoad(layer_tex, coord, 0).r;
+    if (mask <= 0.0) {
+        textureStore(target, coord, vec4<f32>(0.0));
+        return;
+    }
+
+    let group = textureLoad(target, coord);
+    let out_a = group.a * mask;
+    if (out_a <= 0.0) {
+        textureStore(target, coord, vec4<f32>(0.0));
+        return;
+    }
+    textureStore(target, coord, vec4<f32>(group.rgb, out_a));
 }
 "#;
 
@@ -173,7 +212,9 @@ pub(crate) struct DecodedLayerRef<'a> {
 
 struct PsdBlendPipeline {
     device_id: u64,
-    pipeline: wgpu::ComputePipeline,
+    blend_pipeline: wgpu::ComputePipeline,
+    capture_base_alpha_pipeline: wgpu::ComputePipeline,
+    apply_base_alpha_mask_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -311,7 +352,7 @@ fn create_pipeline(
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let blend_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("simple-image-viewer-psd-separable-blend-pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
@@ -319,9 +360,29 @@ fn create_pipeline(
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: pipeline_cache,
     });
+    let capture_base_alpha_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("simple-image-viewer-psd-capture-base-alpha-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_capture_base_alpha"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: pipeline_cache,
+        });
+    let apply_base_alpha_mask_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("simple-image-viewer-psd-apply-base-alpha-mask-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_apply_base_alpha_mask"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: pipeline_cache,
+        });
     Ok(PsdBlendPipeline {
         device_id,
-        pipeline,
+        blend_pipeline,
+        capture_base_alpha_pipeline,
+        apply_base_alpha_mask_pipeline,
         bind_group_layout,
     })
 }
@@ -377,6 +438,496 @@ pub(crate) fn try_blend_layers_gpu(
     }
 }
 
+struct GpuBlendResources {
+    textures: Vec<wgpu::Texture>,
+    uniform_buffers: Vec<wgpu::Buffer>,
+    bind_groups: Vec<wgpu::BindGroup>,
+}
+
+impl GpuBlendResources {
+    fn with_capacity(layer_count: usize) -> Self {
+        Self {
+            textures: Vec::with_capacity(layer_count.saturating_mul(2)),
+            uniform_buffers: Vec::with_capacity(layer_count.saturating_mul(2)),
+            bind_groups: Vec::with_capacity(layer_count.saturating_mul(2)),
+        }
+    }
+}
+
+struct MaterializedClipGroup {
+    group_texture: wgpu::Texture,
+    group_view: wgpu::TextureView,
+    base_alpha_texture: wgpu::Texture,
+    base_alpha_view: wgpu::TextureView,
+}
+
+fn validate_gpu_layer(layer: &DecodedLayerRef<'_>) -> Result<(), crate::loader::DecodeError> {
+    if !is_gpu_separable_blend(&layer.blend) {
+        return Err("layer is not eligible for GPU separable blend".into());
+    }
+    let need = (layer.width as usize)
+        .checked_mul(layer.height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| "layer size overflow".to_string())?;
+    if layer.rgba.len() != need {
+        return Err("layer rgba length mismatch".into());
+    }
+    Ok(())
+}
+
+fn create_uploaded_layer_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layer: &DecodedLayerRef<'_>,
+) -> Result<(wgpu::Texture, wgpu::TextureView), crate::loader::DecodeError> {
+    let layer_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("psd-separable-blend-layer"),
+        size: wgpu::Extent3d {
+            width: layer.width,
+            height: layer.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &layer_tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        layer.rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(tight_rgba8_bytes_per_row(layer.width)?),
+            rows_per_image: Some(layer.height),
+        },
+        wgpu::Extent3d {
+            width: layer.width,
+            height: layer.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let layer_view = layer_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok((layer_tex, layer_view))
+}
+
+fn create_zeroed_full_canvas_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    canvas_w: u32,
+    canvas_h: u32,
+    zero_canvas: &[u8],
+) -> Result<(wgpu::Texture, wgpu::TextureView), crate::loader::DecodeError> {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: canvas_w,
+            height: canvas_h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        zero_canvas,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(tight_rgba8_bytes_per_row(canvas_w)?),
+            rows_per_image: Some(canvas_h),
+        },
+        wgpu::Extent3d {
+            width: canvas_w,
+            height: canvas_h,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok((texture, view))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_blend_texture(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    target_view: &wgpu::TextureView,
+    source_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+    layer_w: u32,
+    layer_h: u32,
+    layer_left: i32,
+    layer_top: i32,
+    mode: u32,
+    pass_label: &'static str,
+) -> Result<(), crate::loader::DecodeError> {
+    if layer_w == 0 || layer_h == 0 {
+        return Ok(());
+    }
+    let params = BlendParamsUniform {
+        canvas_w,
+        canvas_h,
+        layer_w,
+        layer_h,
+        layer_left,
+        layer_top,
+        mode,
+        _pad0: 0,
+    };
+    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("psd-separable-blend-params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("psd-separable-blend-bg"),
+        layout: &pipe.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(target_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(source_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(pass_label),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipe.blend_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
+    }
+    resources.uniform_buffers.push(uniform);
+    resources.bind_groups.push(bind_group);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_blend_decoded_layer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    target_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+    layer: &DecodedLayerRef<'_>,
+    mode: u32,
+    pass_label: &'static str,
+) -> Result<(), crate::loader::DecodeError> {
+    validate_gpu_layer(layer)?;
+    if layer.width == 0 || layer.height == 0 {
+        return Ok(());
+    }
+    let (layer_tex, layer_view) = create_uploaded_layer_texture(device, queue, layer)?;
+    encode_blend_texture(
+        device,
+        encoder,
+        pipe,
+        resources,
+        target_view,
+        &layer_view,
+        canvas_w,
+        canvas_h,
+        layer.width,
+        layer.height,
+        layer.left,
+        layer.top,
+        mode,
+        pass_label,
+    )?;
+    resources.textures.push(layer_tex);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_capture_base_alpha(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    base_alpha_view: &wgpu::TextureView,
+    base_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+    base: &DecodedLayerRef<'_>,
+) -> Result<(), crate::loader::DecodeError> {
+    if base.width == 0 || base.height == 0 {
+        return Ok(());
+    }
+    let params = BlendParamsUniform {
+        canvas_w,
+        canvas_h,
+        layer_w: base.width,
+        layer_h: base.height,
+        layer_left: base.left,
+        layer_top: base.top,
+        mode: BLEND_MODE_NORMAL,
+        _pad0: 0,
+    };
+    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("psd-capture-base-alpha-params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("psd-capture-base-alpha-bg"),
+        layout: &pipe.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(base_alpha_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(base_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("psd-capture-base-alpha-pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipe.capture_base_alpha_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(
+            base.width.div_ceil(WORKGROUP),
+            base.height.div_ceil(WORKGROUP),
+            1,
+        );
+    }
+    resources.uniform_buffers.push(uniform);
+    resources.bind_groups.push(bind_group);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_apply_base_alpha_mask(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    group_view: &wgpu::TextureView,
+    base_alpha_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+) {
+    let params = BlendParamsUniform {
+        canvas_w,
+        canvas_h,
+        layer_w: canvas_w,
+        layer_h: canvas_h,
+        layer_left: 0,
+        layer_top: 0,
+        mode: BLEND_MODE_NORMAL,
+        _pad0: 0,
+    };
+    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("psd-apply-base-alpha-mask-params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("psd-apply-base-alpha-mask-bg"),
+        layout: &pipe.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(group_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(base_alpha_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("psd-apply-base-alpha-mask-pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipe.apply_base_alpha_mask_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(
+            canvas_w.div_ceil(WORKGROUP),
+            canvas_h.div_ceil(WORKGROUP),
+            1,
+        );
+    }
+    resources.uniform_buffers.push(uniform);
+    resources.bind_groups.push(bind_group);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_clip_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    canvas_w: u32,
+    canvas_h: u32,
+    base: &DecodedLayerRef<'_>,
+    zero_canvas: &[u8],
+) -> Result<MaterializedClipGroup, crate::loader::DecodeError> {
+    validate_gpu_layer(base)?;
+    let (group_texture, group_view) = create_zeroed_full_canvas_texture(
+        device,
+        queue,
+        "psd-clip-group-texture",
+        canvas_w,
+        canvas_h,
+        zero_canvas,
+    )?;
+    let (base_alpha_texture, base_alpha_view) = create_zeroed_full_canvas_texture(
+        device,
+        queue,
+        "psd-clip-base-alpha-texture",
+        canvas_w,
+        canvas_h,
+        zero_canvas,
+    )?;
+    if base.width != 0 && base.height != 0 {
+        let (base_texture, base_view) = create_uploaded_layer_texture(device, queue, base)?;
+        encode_blend_texture(
+            device,
+            encoder,
+            pipe,
+            resources,
+            &group_view,
+            &base_view,
+            canvas_w,
+            canvas_h,
+            base.width,
+            base.height,
+            base.left,
+            base.top,
+            BLEND_MODE_NORMAL,
+            "psd-clip-base-normal-pass",
+        )?;
+        encode_capture_base_alpha(
+            device,
+            encoder,
+            pipe,
+            resources,
+            &base_alpha_view,
+            &base_view,
+            canvas_w,
+            canvas_h,
+            base,
+        )?;
+        resources.textures.push(base_texture);
+    }
+    Ok(MaterializedClipGroup {
+        group_texture,
+        group_view,
+        base_alpha_texture,
+        base_alpha_view,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_open_clip_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    main_canvas_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+    open_base: Option<&DecodedLayerRef<'_>>,
+    materialized_group: Option<MaterializedClipGroup>,
+) -> Result<(), crate::loader::DecodeError> {
+    let Some(base) = open_base else {
+        return Ok(());
+    };
+    if let Some(group) = materialized_group {
+        validate_gpu_layer(base)?;
+        encode_apply_base_alpha_mask(
+            device,
+            encoder,
+            pipe,
+            resources,
+            &group.group_view,
+            &group.base_alpha_view,
+            canvas_w,
+            canvas_h,
+        );
+        encode_blend_texture(
+            device,
+            encoder,
+            pipe,
+            resources,
+            main_canvas_view,
+            &group.group_view,
+            canvas_w,
+            canvas_h,
+            canvas_w,
+            canvas_h,
+            0,
+            0,
+            separable_blend_mode_u32(&base.blend),
+            "psd-clip-group-flush-pass",
+        )?;
+        resources.textures.push(group.group_texture);
+        resources.textures.push(group.base_alpha_texture);
+        return Ok(());
+    }
+    encode_blend_decoded_layer(
+        device,
+        queue,
+        encoder,
+        pipe,
+        resources,
+        main_canvas_view,
+        canvas_w,
+        canvas_h,
+        base,
+        separable_blend_mode_u32(&base.blend),
+        "psd-lone-base-flush-pass",
+    )
+}
+
 fn blend_layers_gpu_inner(
     ctx: &PsdGpuContext,
     pipe: &PsdBlendPipeline,
@@ -430,115 +981,78 @@ fn blend_layers_gpu_inner(
         label: Some("psd-separable-blend-encoder"),
     });
 
-    // Keep GPU resources alive until submit.
-    let mut layer_textures: Vec<wgpu::Texture> = Vec::with_capacity(layers.len());
-    let mut uniform_buffers: Vec<wgpu::Buffer> = Vec::with_capacity(layers.len());
-    let mut bind_groups: Vec<wgpu::BindGroup> = Vec::with_capacity(layers.len());
+    let mut resources = GpuBlendResources::with_capacity(layers.len());
+    let mut zero_canvas: Option<Vec<u8>> = None;
+    let mut open_base: Option<&DecodedLayerRef<'_>> = None;
+    let mut materialized_group: Option<MaterializedClipGroup> = None;
 
     for layer in layers {
         crate::psb_reader::check_decode_cancel(cancel)?;
-        if layer.width == 0 || layer.height == 0 {
+        if layer.clipping != 0 {
+            let Some(base) = open_base else {
+                continue;
+            };
+            if materialized_group.is_none() {
+                let zeros = zero_canvas.get_or_insert_with(|| vec![0u8; initial_canvas.len()]);
+                materialized_group = Some(materialize_clip_group(
+                    device,
+                    queue,
+                    &mut encoder,
+                    pipe,
+                    &mut resources,
+                    canvas_w,
+                    canvas_h,
+                    base,
+                    zeros,
+                )?);
+            }
+            let group_view = &materialized_group
+                .as_ref()
+                .expect("clip group materialized before clip blend")
+                .group_view;
+            encode_blend_decoded_layer(
+                device,
+                queue,
+                &mut encoder,
+                pipe,
+                &mut resources,
+                group_view,
+                canvas_w,
+                canvas_h,
+                layer,
+                separable_blend_mode_u32(&layer.blend),
+                "psd-clip-layer-blend-pass",
+            )?;
             continue;
         }
-        if layer.clipping != 0 || !is_gpu_separable_blend(&layer.blend) {
-            return Err("layer is not eligible for GPU separable blend".into());
-        }
-        let need = (layer.width as usize)
-            .checked_mul(layer.height as usize)
-            .and_then(|n| n.checked_mul(4))
-            .ok_or_else(|| "layer size overflow".to_string())?;
-        if layer.rgba.len() != need {
-            return Err("layer rgba length mismatch".into());
-        }
 
-        let layer_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("psd-separable-blend-layer"),
-            size: wgpu::Extent3d {
-                width: layer.width,
-                height: layer.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &layer_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            layer.rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(tight_rgba8_bytes_per_row(layer.width)?),
-                rows_per_image: Some(layer.height),
-            },
-            wgpu::Extent3d {
-                width: layer.width,
-                height: layer.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let layer_view = layer_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let params = BlendParamsUniform {
+        flush_open_clip_group(
+            device,
+            queue,
+            &mut encoder,
+            pipe,
+            &mut resources,
+            &canvas_view,
             canvas_w,
             canvas_h,
-            layer_w: layer.width,
-            layer_h: layer.height,
-            layer_left: layer.left,
-            layer_top: layer.top,
-            mode: separable_blend_mode_u32(&layer.blend),
-            _pad0: 0,
-        };
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("psd-separable-blend-params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("psd-separable-blend-bg"),
-            layout: &pipe.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&canvas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&layer_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform.as_entire_binding(),
-                },
-            ],
-        });
-
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("psd-separable-blend-pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipe.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(
-                layer.width.div_ceil(WORKGROUP),
-                layer.height.div_ceil(WORKGROUP),
-                1,
-            );
-        }
-
-        layer_textures.push(layer_tex);
-        uniform_buffers.push(uniform);
-        bind_groups.push(bind_group);
+            open_base.take(),
+            materialized_group.take(),
+        )?;
+        open_base = Some(layer);
     }
+
+    flush_open_clip_group(
+        device,
+        queue,
+        &mut encoder,
+        pipe,
+        &mut resources,
+        &canvas_view,
+        canvas_w,
+        canvas_h,
+        open_base.take(),
+        materialized_group.take(),
+    )?;
 
     let unpadded_bpr = tight_rgba8_bytes_per_row(canvas_w)?;
     let padded_bpr = padded_copy_bytes_per_row(unpadded_bpr);
@@ -572,9 +1086,7 @@ fn blend_layers_gpu_inner(
         return Err("wgpu device replaced during PSD blend".into());
     }
     queue.submit(Some(encoder.finish()));
-    drop(bind_groups);
-    drop(layer_textures);
-    drop(uniform_buffers);
+    drop(resources);
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     readback
@@ -656,6 +1168,12 @@ mod tests {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_separable"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn blend_b"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("sa * (1.0 - da)"));
+    }
+
+    #[test]
+    fn clip_shader_declares_capture_and_mask_entries() {
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_capture_base_alpha"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_apply_base_alpha_mask"));
     }
 
     #[test]
