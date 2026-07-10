@@ -14,6 +14,24 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! Layer-aware PSD/PSB compositor: a fallback renderer for "layers-only" files
+//! whose flattened Image Data section is blank (see `psb_reader::probe_layers_only_composite`).
+//! Decodes each layer's channels (depth 8, v1) and composites them bottom to
+//! top with Normal blend + opacity + user mask.
+//!
+//! Visibility fallback (viewer extension, not strict Photoshop fidelity):
+//! `composite_layers_from_bytes_with_cancel` first tries strict Photoshop
+//! layer/group visibility. Real-world "template pack" PSDs commonly organize
+//! each page/section as its own top-level `lsct` group and save with *every*
+//! group's eye icon off (the end user is expected to enable one page at a
+//! time). Respecting that strictly would faithfully reproduce Photoshop's own
+//! blank canvas -- exactly the blank/solid-fill flattened composite that
+//! routed us into this compositor in the first place, making the whole
+//! fallback path pointless. So if strict visibility composites nothing, we
+//! retry ignoring only *group* hidden flags (individual leaf-layer hidden
+//! flags are still respected), and only if that also composites nothing do we
+//! fall back to ignoring all hidden state. See `composite_layers_from_bytes_with_cancel`.
+
 use std::io::Read;
 
 const PSD_SIGNATURE: &[u8; 4] = b"8BPS";
@@ -34,6 +52,43 @@ pub struct LayerChannel {
     pub data_len: u32,
 }
 
+/// Parsed rectangle + flags from a layer's mask data block (channel id -2).
+/// The mask's own rect can differ from the layer's rect (smaller, larger, or
+/// offset), so it is decoded and blitted separately -- see `build_layer_sized_mask`.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerMaskInfo {
+    pub top: i32,
+    pub left: i32,
+    pub bottom: i32,
+    pub right: i32,
+    /// Value (0 or 255) used for layer pixels outside the mask rect.
+    pub default_color: u8,
+    /// Mask disabled (bit 1 of the mask flags byte): treat as if no mask.
+    pub disabled: bool,
+}
+
+impl LayerMaskInfo {
+    fn is_empty_bounds(&self) -> bool {
+        self.left >= self.right || self.top >= self.bottom
+    }
+
+    pub fn width(&self) -> u32 {
+        if self.is_empty_bounds() {
+            0
+        } else {
+            self.right.saturating_sub(self.left) as u32
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        if self.is_empty_bounds() {
+            0
+        } else {
+            self.bottom.saturating_sub(self.top) as u32
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LayerRecord {
     pub top: i32,
@@ -46,6 +101,9 @@ pub struct LayerRecord {
     pub clipping: u8,
     pub flags: u8,
     pub mask_size: u32,
+    /// Mask rect/flags parsed from the mask data block, when present and long
+    /// enough to contain the standard rect + default color + flags fields.
+    pub mask: Option<LayerMaskInfo>,
     pub is_section_divider: bool,
     pub section_type: Option<u32>,
 }
@@ -235,7 +293,8 @@ fn parse_layer_record(
     let extra_size = crate::psb_reader::read_u32(r)? as u64;
     let extra_start = r.position();
     let extra_end = checked_end(extra_start, extra_size, layer_info_end, "layer extra data")?;
-    let (mask_size, is_section_divider, section_type) = parse_layer_extra(r, extra_end, is_psb)?;
+    let (mask_size, mask, is_section_divider, section_type) =
+        parse_layer_extra(r, extra_end, is_psb)?;
 
     r.set_position(extra_end);
 
@@ -250,6 +309,7 @@ fn parse_layer_record(
         clipping,
         flags,
         mask_size,
+        mask,
         is_section_divider,
         section_type,
     })
@@ -259,13 +319,24 @@ fn parse_layer_extra(
     r: &mut std::io::Cursor<&[u8]>,
     extra_end: u64,
     is_psb: bool,
-) -> Result<(u32, bool, Option<u32>), String> {
+) -> Result<(u32, Option<LayerMaskInfo>, bool, Option<u32>), String> {
     if r.position() >= extra_end {
-        return Ok((0, false, None));
+        return Ok((0, None, false, None));
     }
 
     let mask_size = read_extra_u32(r, extra_end, "layer mask data length")?;
-    skip_extra_bytes(r, mask_size as u64, extra_end, "layer mask data")?;
+    let mask_start = r.position();
+    let mask_end = checked_end(mask_start, mask_size as u64, extra_end, "layer mask data")?;
+    // Standard layer mask data (when >= 20 bytes): rect (4 x i32) + default
+    // color (1 byte) + flags (1 byte), possibly followed by mask parameters
+    // and/or a "real" user mask rect that v1 does not need. Shorter blocks
+    // (rare, malformed, or absent) leave `mask` as `None`.
+    let mask = if mask_size >= 20 {
+        parse_layer_mask_rect(r, mask_end)?
+    } else {
+        None
+    };
+    r.set_position(mask_end);
 
     let blending_ranges_len = read_extra_u32(r, extra_end, "layer blending ranges length")?;
     skip_extra_bytes(
@@ -277,7 +348,50 @@ fn parse_layer_extra(
 
     skip_pascal_name(r, extra_end)?;
     let (is_section_divider, section_type) = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
-    Ok((mask_size, is_section_divider, section_type))
+    Ok((mask_size, mask, is_section_divider, section_type))
+}
+
+/// Parse the rect + default color + flags fields at the start of a layer's
+/// mask data block (see [`LayerMaskInfo`]). Returns `None` if the block is
+/// too short to hold them (defensive; `parse_layer_extra` already checks
+/// `mask_size >= 20` before calling this).
+fn parse_layer_mask_rect(
+    r: &mut std::io::Cursor<&[u8]>,
+    mask_end: u64,
+) -> Result<Option<LayerMaskInfo>, String> {
+    const RECT_PLUS_COLOR_AND_FLAGS_LEN: u64 = 4 * 4 + 1 + 1;
+    if checked_end(
+        r.position(),
+        RECT_PLUS_COLOR_AND_FLAGS_LEN,
+        mask_end,
+        "layer mask rect",
+    )
+    .is_err()
+    {
+        return Ok(None);
+    }
+
+    let top = read_i32(r)?;
+    let left = read_i32(r)?;
+    let bottom = read_i32(r)?;
+    let right = read_i32(r)?;
+
+    let mut default_color = [0u8; 1];
+    r.read_exact(&mut default_color)
+        .map_err(|e| format!("Read layer mask default color: {e}"))?;
+    let mut mask_flags = [0u8; 1];
+    r.read_exact(&mut mask_flags)
+        .map_err(|e| format!("Read layer mask flags: {e}"))?;
+    let disabled = mask_flags[0] & 0x02 != 0;
+
+    Ok(Some(LayerMaskInfo {
+        top,
+        left,
+        bottom,
+        right,
+        default_color: default_color[0],
+        disabled,
+    }))
 }
 
 fn scan_extra_tagged_blocks(
@@ -428,6 +542,9 @@ fn read_i32(r: &mut impl Read) -> Result<i32, String> {
 
 // -- Layer channel decode ---------------------------------------------
 
+/// How often (in rows) to poll `cancel` inside a single channel's RLE decode.
+const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
+
 /// Decode one channel's image data (compression header + rows) into 8-bit samples.
 /// `data` must be exactly the channel's declared byte range (depth 8 only, v1).
 fn decode_channel_image(
@@ -435,6 +552,7 @@ fn decode_channel_image(
     width: u32,
     height: u32,
     is_psb: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<u8>, String> {
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
@@ -450,7 +568,10 @@ fn decode_channel_image(
         }
         1 => {
             let mut row_counts = Vec::with_capacity(height as usize);
-            for _ in 0..height {
+            for row in 0..height as usize {
+                if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
+                    crate::psb_reader::check_decode_cancel(cancel)?;
+                }
                 let count = if is_psb {
                     crate::psb_reader::read_u32(&mut r)? as usize
                 } else {
@@ -462,6 +583,9 @@ fn decode_channel_image(
             let mut out = vec![0u8; pixel_count];
             let mut row_buf = Vec::with_capacity(width as usize);
             for (row, &count) in row_counts.iter().enumerate() {
+                if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
+                    crate::psb_reader::check_decode_cancel(cancel)?;
+                }
                 let start = r.position() as usize;
                 let end = start
                     .checked_add(count)
@@ -539,6 +663,48 @@ fn layer_to_rgba8(
     }
 
     rgba
+}
+
+/// Blit a decoded mask (its own `mask_info` rect, which may differ from the
+/// layer's rect in size and/or offset) into a layer-sized alpha-multiplier
+/// buffer. Layer pixels outside the mask's rect use `mask_info.default_color`
+/// (the standard PSD convention for "area not covered by the mask").
+fn build_layer_sized_mask(
+    mask_info: &LayerMaskInfo,
+    mask_pixels: &[u8],
+    layer_left: i32,
+    layer_top: i32,
+    layer_w: u32,
+    layer_h: u32,
+) -> Vec<u8> {
+    let mut out = vec![mask_info.default_color; layer_w as usize * layer_h as usize];
+    let mask_w = mask_info.width() as i64;
+    let mask_h = mask_info.height() as i64;
+    if mask_w == 0 || mask_h == 0 {
+        return out;
+    }
+
+    let off_x = mask_info.left as i64 - layer_left as i64;
+    let off_y = mask_info.top as i64 - layer_top as i64;
+    let dst_x0 = off_x.max(0);
+    let dst_y0 = off_y.max(0);
+    let dst_x1 = (off_x + mask_w).min(layer_w as i64);
+    let dst_y1 = (off_y + mask_h).min(layer_h as i64);
+    if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
+        return out;
+    }
+
+    for dy in dst_y0..dst_y1 {
+        let sy = (dy - off_y) as usize;
+        let dst_row_start = dy as usize * layer_w as usize;
+        let src_row_start = sy * mask_w as usize;
+        for dx in dst_x0..dst_x1 {
+            let sx = (dx - off_x) as usize;
+            out[dst_row_start + dx as usize] = mask_pixels[src_row_start + sx];
+        }
+    }
+
+    out
 }
 
 // -- Normal blend ----------------------------------------------------------
@@ -627,12 +793,20 @@ fn blend_normal_onto(
 /// folder record is seen first and pushes a nested visibility scope (using
 /// the group's own hidden flag, which is only known at that point), and the
 /// bounding divider is seen last and pops it.
-fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
+///
+/// When `ignore_group_hidden` is true, a folder header's own hidden flag is
+/// ignored (the group is always treated as self-visible), while individual
+/// leaf layers' hidden flags are still respected. This is the middle fallback
+/// tier used by `composite_layers_from_bytes_with_cancel` -- see the module
+/// doc comment.
+fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bool) -> Vec<bool> {
     let mut visible = vec![false; records.len()];
     let mut stack: Vec<bool> = vec![true];
 
     for (i, layer) in records.iter().enumerate().rev() {
-        let current = *stack.last().unwrap_or(&true) && !layer.is_hidden();
+        let is_folder_header = matches!(layer.section_type, Some(1) | Some(2));
+        let self_visible = (ignore_group_hidden && is_folder_header) || !layer.is_hidden();
+        let current = *stack.last().unwrap_or(&true) && self_visible;
         visible[i] = current;
 
         if layer.is_section_divider {
@@ -680,6 +854,7 @@ fn decode_one_layer(
     color_mode: u16,
     is_psb: bool,
     should_decode: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<DecodedLayer>, String> {
     let width = record.width();
     let height = record.height();
@@ -705,18 +880,51 @@ fn decode_one_layer(
         }
 
         match ch.id {
-            -1 => match decode_channel_image(slice, width, height, is_psb) {
+            -1 => match decode_channel_image(slice, width, height, is_psb, cancel) {
                 Ok(data) => alpha = Some(data),
+                Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
                 Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
             },
-            -2 => match decode_channel_image(slice, width, height, is_psb) {
-                Ok(data) => mask = Some(data),
-                Err(e) => log::debug!("PSD/PSB layer mask channel decode failed: {e}"),
-            },
+            -2 => {
+                // The mask channel's own rect (from the layer's mask data
+                // block) can differ in size and/or offset from the layer's
+                // rect -- decode at the mask's own dimensions, then blit into
+                // a layer-sized buffer. With no parsed rect (`mask_size == 0`
+                // or too short to contain one), the mask's true geometry is
+                // unknown, so it is skipped entirely (no mask applied).
+                if let Some(mask_info) = &record.mask {
+                    let mask_w = mask_info.width();
+                    let mask_h = mask_info.height();
+                    if !mask_info.disabled && mask_w > 0 && mask_h > 0 {
+                        match decode_channel_image(slice, mask_w, mask_h, is_psb, cancel) {
+                            Ok(mask_pixels) => {
+                                mask = Some(build_layer_sized_mask(
+                                    mask_info,
+                                    &mask_pixels,
+                                    record.left,
+                                    record.top,
+                                    width,
+                                    height,
+                                ));
+                            }
+                            Err(e) if crate::loader::is_decode_cancelled_error(&e) => {
+                                return Err(e);
+                            }
+                            Err(e) => log::debug!("PSD/PSB layer mask channel decode failed: {e}"),
+                        }
+                    }
+                }
+            }
+            -3 => {
+                // Real user mask (rendered from a combined vector + user
+                // mask). Not supported in v1; the channel's bytes are still
+                // consumed above via `cursor`, so later layers stay aligned.
+            }
             0..=3 => {
                 let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, is_psb) {
+                match decode_channel_image(slice, width, height, is_psb, cancel) {
                     Ok(data) => color[idx] = Some(data),
+                    Err(e) if crate::loader::is_decode_cancelled_error(&e) => return Err(e),
                     Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
                 }
             }
@@ -782,11 +990,13 @@ pub fn composite_layers_from_bytes_with_cancel(
         });
     }
 
-    let visible = compute_effective_visibility(&info.records);
-
+    // Tier 1: strict Photoshop visibility (respects both group and leaf
+    // hidden flags). This is the faithful, primary behavior and is what most
+    // well-behaved PSDs use.
+    let strict_visible = compute_effective_visibility(&info.records, false);
     let composited = run_composite_pass(
         &info,
-        &visible,
+        &strict_visible,
         true,
         &mut canvas,
         canvas_w,
@@ -794,19 +1004,39 @@ pub fn composite_layers_from_bytes_with_cancel(
         cancel,
     )?;
 
-    // Real-world "template pack" PSDs commonly organize each page/section as
-    // its own top-level group and save with *every* group's eye icon off
-    // (the user is expected to enable one page at a time). Respecting group
-    // visibility there faithfully reproduces Photoshop's own blank canvas --
-    // which is exactly the blank/solid-fill flattened composite that routed
-    // us into this layer compositor in the first place. A blank preview is
-    // strictly less useful than an "everything overlaid" one for a static
-    // image viewer, so fall back to ignoring hidden/group-visibility state
-    // entirely when strict visibility produced nothing at all.
-    if composited == 0 {
+    // Tier 2 (viewer extension -- see module doc comment): ignore only
+    // *group* hidden flags, keeping individual leaf-layer hidden flags
+    // respected. This handles "template pack" PSDs where every top-level
+    // page/section group is saved with its eye icon off, without discarding
+    // legitimate per-layer hidden state (e.g. draft/reference layers).
+    let composited = if composited == 0 {
         log::debug!(
             "PSD/PSB layer composite: no layers visible under strict Photoshop \
-             visibility, falling back to compositing all pixel layers"
+             visibility, retrying while ignoring group (not leaf-layer) hidden flags"
+        );
+        canvas.fill(0);
+        let group_visible = compute_effective_visibility(&info.records, true);
+        run_composite_pass(
+            &info,
+            &group_visible,
+            true,
+            &mut canvas,
+            canvas_w,
+            canvas_h,
+            cancel,
+        )?
+    } else {
+        composited
+    };
+
+    // Tier 3 (viewer extension, last resort): ignore all hidden/group
+    // visibility state entirely. A blank preview is strictly less useful
+    // than an "everything overlaid" one for a static image viewer, so this
+    // guarantees the layers-only fallback path always shows *something*.
+    if composited == 0 {
+        log::debug!(
+            "PSD/PSB layer composite: still nothing visible ignoring group hidden \
+             flags, falling back to compositing all pixel layers unconditionally"
         );
         canvas.fill(0);
         // `respect_visibility=false` short-circuits before indexing `visible`.
@@ -819,6 +1049,12 @@ pub fn composite_layers_from_bytes_with_cancel(
         pixels: canvas,
     })
 }
+
+/// Layer pixel-area threshold above which `run_composite_pass` polls `cancel`
+/// immediately before and after `blend_normal_onto`, in addition to the
+/// per-layer poll at the top of the loop (blending a very large layer can
+/// take a while, so a cancellation should not have to wait for the next one).
+const LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS: u64 = 1_000_000;
 
 /// Decode and blend every eligible layer bottom to top, returning how many were
 /// actually composited. When `respect_visibility` is false, `visible` is ignored
@@ -842,9 +1078,10 @@ fn run_composite_pass(
     let mut cursor: usize = 0;
     let mut composited = 0usize;
     for (i, record) in info.records.iter().enumerate() {
-        if i & 0xF == 0 {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-        }
+        // Poll every layer (not just periodically): with hundreds of layers,
+        // each potentially decoding a full-canvas image, waiting many layers
+        // between polls makes cancellation feel unresponsive.
+        crate::psb_reader::check_decode_cancel(cancel)?;
         let should_decode = (!respect_visibility || visible[i])
             && !record.is_section_divider
             && !record.is_empty_bounds()
@@ -856,8 +1093,14 @@ fn run_composite_pass(
             info.color_mode,
             info.is_psb,
             should_decode,
+            cancel,
         )?;
         if let Some(layer) = layer {
+            let is_large =
+                layer.width as u64 * layer.height as u64 > LARGE_LAYER_BLEND_CANCEL_POLL_PIXELS;
+            if is_large {
+                crate::psb_reader::check_decode_cancel(cancel)?;
+            }
             blend_normal_onto(
                 canvas,
                 canvas_w,
@@ -868,6 +1111,9 @@ fn run_composite_pass(
                 layer.width,
                 layer.height,
             );
+            if is_large {
+                crate::psb_reader::check_decode_cancel(cancel)?;
+            }
             composited += 1;
         }
     }
@@ -939,8 +1185,9 @@ mod tests {
         // time). Verified independently with the `psd-tools` Python library:
         // its default (visibility-respecting) `PSDImage.composite()` is also
         // fully blank for this file. `composite_layers_from_bytes_with_cancel`
-        // detects that strict visibility yields nothing and falls back to
-        // compositing every pixel layer, which is what this assertion covers.
+        // detects that strict visibility yields nothing and falls back to the
+        // "ignore group hidden flags only" tier (see module doc comment),
+        // which is what this assertion covers.
         assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
     }
 
