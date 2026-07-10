@@ -158,13 +158,20 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    if (mask >= 1.0) {
+        return;
+    }
+
     let group = textureLoad(target, coord);
-    let out_a = group.a * mask;
-    if (out_a <= 0.0) {
+    // Match CPU's u8 alpha math before deciding whether RGB survives.
+    let a_u = u32(round(group.a * 255.0));
+    let m_u = u32(round(mask * 255.0));
+    let out_a_u = (a_u * m_u) / 255u;
+    if (out_a_u == 0u) {
         textureStore(target, coord, vec4<f32>(0.0));
         return;
     }
-    textureStore(target, coord, vec4<f32>(group.rgb, out_a));
+    textureStore(target, coord, vec4<f32>(group.rgb, f32(out_a_u) / 255.0));
 }
 "#;
 
@@ -1174,6 +1181,14 @@ mod tests {
     fn clip_shader_declares_capture_and_mask_entries() {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_capture_base_alpha"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_apply_base_alpha_mask"));
+    }
+
+    #[test]
+    fn clip_shader_quantizes_masked_alpha_like_cpu() {
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let a_u = u32(round(group.a * 255.0));"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let m_u = u32(round(mask * 255.0));"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let out_a_u = (a_u * m_u) / 255u;"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("if (out_a_u == 0u)"));
     }
 
     #[test]
