@@ -28,10 +28,13 @@
 //! blank canvas -- exactly the blank/solid-fill flattened composite that
 //! routed us into this compositor in the first place, making the whole
 //! fallback path pointless. So if strict visibility composites nothing, we
-//! retry ignoring only *group* hidden flags (individual leaf-layer hidden
-//! flags are still respected). If that still leaves only sparse accents while
-//! large leaf-hidden content exists (or the page stays mostly black), escalate
-//! to compositing all pixel layers. See `composite_layers_from_bytes_with_cancel`.
+//! retry with a single "best" top-level group unlocked (largest pixel area)
+//! plus top-level leaf layers (often shared titles/copy), without unlocking
+//! sibling alternate-design groups that would paint over each other. If that
+//! still leaves only sparse accents while large leaf-hidden content exists
+//! outside suppressed alternate groups (or the page stays mostly black),
+//! escalate to compositing all pixel layers. See
+//! `composite_layers_from_bytes_with_cancel`.
 
 use std::io::Read;
 
@@ -793,11 +796,16 @@ fn blend_fn_linear_dodge(cb: f32, cs: f32) -> f32 {
     (cb + cs).min(1.0)
 }
 
+fn blend_fn_multiply(cb: f32, cs: f32) -> f32 {
+    cb * cs
+}
+
 fn separable_blend_fn(blend: &[u8; 4]) -> Option<SeparableBlendFn> {
     match blend {
         b"norm" => Some(blend_fn_normal),
         b"scrn" => Some(blend_fn_screen),
         b"lddg" => Some(blend_fn_linear_dodge),
+        b"mul " => Some(blend_fn_multiply),
         _ => None,
     }
 }
@@ -935,6 +943,64 @@ fn blend_layer_onto(
 
 // -- Group visibility ------------------------------------------------------
 
+/// One top-level `lsct` group: folder header index and inclusive record range.
+#[derive(Debug, Clone, Copy)]
+struct TopLevelGroup {
+    folder_idx: usize,
+    start_idx: usize,
+    end_idx: usize,
+    area: u64,
+}
+
+impl TopLevelGroup {
+    fn contains(self, idx: usize) -> bool {
+        idx >= self.start_idx && idx <= self.end_idx
+    }
+}
+
+/// Discover top-level groups and the sum of their leaf pixel areas (overlaps OK).
+fn top_level_groups(records: &[LayerRecord]) -> Vec<TopLevelGroup> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut area = 0u64;
+    let mut start_idx = 0usize;
+    for (i, layer) in records.iter().enumerate() {
+        if layer.is_section_divider {
+            match layer.section_type {
+                Some(3) => {
+                    if depth == 0 {
+                        start_idx = i;
+                        area = 0;
+                    }
+                    depth += 1;
+                }
+                Some(1) | Some(2) => {
+                    if depth == 1 {
+                        out.push(TopLevelGroup {
+                            folder_idx: i,
+                            start_idx,
+                            end_idx: i,
+                            area,
+                        });
+                    }
+                    depth = (depth - 1).max(0);
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if depth >= 1 && !layer.is_empty_bounds() && layer.opacity > 0 {
+            area = area
+                .saturating_add(u64::from(layer.width()).saturating_mul(u64::from(layer.height())));
+        }
+    }
+    out
+}
+
+fn best_top_level_group(records: &[LayerRecord]) -> Option<TopLevelGroup> {
+    top_level_groups(records).into_iter().max_by_key(|g| g.area)
+}
+
 /// Compute per-record effective visibility: a layer is visible only if it
 /// and every ancestor group is visible.
 ///
@@ -952,9 +1018,8 @@ fn blend_layer_onto(
 ///
 /// When `ignore_group_hidden` is true, a folder header's own hidden flag is
 /// ignored (the group is always treated as self-visible), while individual
-/// leaf layers' hidden flags are still respected. This is the middle fallback
-/// tier used by `composite_layers_from_bytes_with_cancel` -- see the module
-/// doc comment.
+/// leaf layers' hidden flags are still respected. Prefer
+/// [`compute_effective_visibility_best_group`] for template-pack Tier 2.
 fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bool) -> Vec<bool> {
     let mut visible = vec![false; records.len()];
     let mut stack: Vec<bool> = vec![true];
@@ -962,6 +1027,47 @@ fn compute_effective_visibility(records: &[LayerRecord], ignore_group_hidden: bo
     for (i, layer) in records.iter().enumerate().rev() {
         let is_folder_header = matches!(layer.section_type, Some(1) | Some(2));
         let self_visible = (ignore_group_hidden && is_folder_header) || !layer.is_hidden();
+        let current = *stack.last().unwrap_or(&true) && self_visible;
+        visible[i] = current;
+
+        if layer.is_section_divider {
+            match layer.section_type {
+                Some(1) | Some(2) => stack.push(current),
+                Some(3) if stack.len() > 1 => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    visible
+}
+
+/// Tier-2 template visibility: unlock only the largest top-level group (ignore
+/// that folder's hidden flag), keep sibling top-level groups suppressed, force
+/// top-level leaves on (shared titles/copy), and ignore nested group hidden
+/// flags inside the chosen group while still respecting leaf hidden flags
+/// inside groups.
+fn compute_effective_visibility_best_group(records: &[LayerRecord]) -> Vec<bool> {
+    let best = best_top_level_group(records);
+    let mut visible = vec![false; records.len()];
+    let mut stack: Vec<bool> = vec![true];
+
+    for (i, layer) in records.iter().enumerate().rev() {
+        let is_folder_header = matches!(layer.section_type, Some(1) | Some(2));
+        let at_root = stack.len() == 1;
+        let self_visible = if is_folder_header && at_root {
+            best.is_some_and(|g| g.folder_idx == i)
+        } else if is_folder_header {
+            // Nested folders inside the unlocked group: ignore their eye-off.
+            true
+        } else if at_root && !layer.is_section_divider {
+            // Top-level leaves (often text) -- show even when saved eye-off.
+            true
+        } else {
+            !layer.is_hidden()
+        };
         let current = *stack.last().unwrap_or(&true) && self_visible;
         visible[i] = current;
 
@@ -1005,7 +1111,13 @@ fn visible_layer_coverage_ratio(info: &LayerInfo<'_>, visible: &[bool]) -> f64 {
 }
 
 /// True when some non-visible pixel layer covers at least 5% of the canvas.
-fn has_large_hidden_pixel_layers(info: &LayerInfo<'_>, visible: &[bool]) -> bool {
+/// When `best` is set, layers that belong only to a *different* top-level group
+/// are ignored (alternate page/design variants must not force Tier 3).
+fn has_large_hidden_pixel_layers(
+    info: &LayerInfo<'_>,
+    visible: &[bool],
+    best: Option<TopLevelGroup>,
+) -> bool {
     if visible.len() != info.records.len() || info.width == 0 || info.height == 0 {
         return false;
     }
@@ -1013,6 +1125,7 @@ fn has_large_hidden_pixel_layers(info: &LayerInfo<'_>, visible: &[bool]) -> bool
     if canvas_area == 0 {
         return false;
     }
+    let groups = top_level_groups(&info.records);
     for (i, record) in info.records.iter().enumerate() {
         if visible[i]
             || record.is_section_divider
@@ -1020,6 +1133,14 @@ fn has_large_hidden_pixel_layers(info: &LayerInfo<'_>, visible: &[bool]) -> bool
             || record.opacity == 0
         {
             continue;
+        }
+        if let Some(best) = best {
+            let in_other = groups
+                .iter()
+                .any(|g| g.folder_idx != best.folder_idx && g.contains(i));
+            if in_other {
+                continue;
+            }
         }
         let area = u64::from(record.width()).saturating_mul(u64::from(record.height()));
         if area.saturating_mul(100) / canvas_area >= 5 {
@@ -1201,8 +1322,8 @@ fn decode_one_layer(
 }
 
 /// Decode a PSD/PSB layer stack and composite it into a single RGBA8 canvas
-/// (depth 8 only, v1: Normal / Screen / Linear Dodge + opacity + user mask +
-/// group visibility).
+/// (depth 8 only, v1: Normal / Screen / Linear Dodge / Multiply + opacity +
+/// user mask + group visibility).
 ///
 /// When `gpu` is provided, the canvas is large enough, and every decoded layer
 /// uses Normal blend, blending may run on an offscreen wgpu compute path;
@@ -1268,18 +1389,19 @@ pub fn composite_layers_from_bytes_with_cancel(
         &mut timing,
     )?;
 
-    // Tier 2 (viewer extension -- see module doc comment): ignore only
-    // *group* hidden flags, keeping individual leaf-layer hidden flags
-    // respected. This handles "template pack" PSDs where every top-level
-    // page/section group is saved with its eye icon off, without discarding
-    // legitimate per-layer hidden state (e.g. draft/reference layers).
+    // Tier 2 (viewer extension -- see module doc comment): unlock only the
+    // largest top-level page/section group, plus top-level leaf layers
+    // (titles/copy). Unlocking *every* hidden group at once mixes mutually
+    // exclusive design variants (e.g. a white mask + line-art houses over a
+    // photo page).
+    let best_group = best_top_level_group(&info.records);
     if composited == 0 {
         log::debug!(
             "PSD/PSB layer composite: no layers visible under strict Photoshop \
-             visibility, retrying while ignoring group (not leaf-layer) hidden flags"
+             visibility, retrying with best top-level group + top-level leaves"
         );
         clear_composite_canvas(&mut canvas, info.color_mode);
-        visible = compute_effective_visibility(&info.records, true);
+        visible = compute_effective_visibility_best_group(&info.records);
         composited = run_composite_pass(
             &info,
             &visible,
@@ -1295,10 +1417,11 @@ pub fn composite_layers_from_bytes_with_cancel(
 
     // Tier 2.5 -> 3 escalation: some packs hide *leaf* content (large photos /
     // panels) while leaving only tiny accents + maybe a solid background eye-on.
-    // Detect sparse visible coverage with substantial hidden large layers, or a
-    // still-black page, then ignore all visibility (tier 3).
+    // Detect sparse visible coverage with substantial hidden large layers
+    // outside suppressed alternate groups, or a still-black page, then ignore
+    // all visibility (tier 3).
     let escalate_to_tier3 = composited > 0
-        && has_large_hidden_pixel_layers(&info, &visible)
+        && has_large_hidden_pixel_layers(&info, &visible, best_group)
         && (crate::psb_reader::rgba8_looks_unduly_dark(&canvas)
             || visible_layer_coverage_ratio(&info, &visible) < 0.20);
     if escalate_to_tier3 {
@@ -1543,8 +1666,9 @@ mod tests {
         LayerChannel, LayerDecodeParams, LayerMaskInfo, LayerRecord, LayerRgbaArgs,
         blend_fn_screen, blend_layer_onto, blend_normal_onto, blend_separable_onto,
         build_layer_sized_mask, composite_layers_from_bytes_with_cancel,
-        compute_effective_visibility, decode_one_layer, dimensions_within_limit, layer_to_rgba8,
-        parse_layer_records, scan_extra_tagged_blocks,
+        compute_effective_visibility, compute_effective_visibility_best_group, decode_one_layer,
+        dimensions_within_limit, layer_to_rgba8, parse_layer_records, scan_extra_tagged_blocks,
+        top_level_groups,
     };
     use std::path::Path;
 
@@ -1939,8 +2063,8 @@ mod tests {
         // its default (visibility-respecting) `PSDImage.composite()` is also
         // fully blank for this file. `composite_layers_from_bytes_with_cancel`
         // detects that strict visibility yields nothing and falls back to the
-        // "ignore group hidden flags only" tier (see module doc comment),
-        // which is what this assertion covers.
+        // best-group Tier 2 (see module doc comment), which is what this
+        // assertion covers.
         assert!(!crate::psb_reader::rgba8_looks_visually_blank(&comp.pixels));
     }
 
@@ -2010,6 +2134,96 @@ mod tests {
         assert!(
             dark_frac < 0.25,
             "Screen flare region should not be mostly black (Normal fallback); dark_frac={dark_frac:.3}"
+        );
+    }
+
+    #[test]
+    fn compute_effective_visibility_best_group_unlocks_largest_only() {
+        // Two top-level groups (both eye-off) + one top-level hidden leaf.
+        // File order bottom-to-top:
+        //   g0: div3, big leaf, folder2(hidden)
+        //   g1: div3, small leaf, folder2(hidden)
+        //   top leaf (hidden)
+        let mut big = mk_layer(false, false, None);
+        big.left = 0;
+        big.top = 0;
+        big.right = 100;
+        big.bottom = 100; // area 10000
+        let mut small = mk_layer(false, false, None);
+        small.left = 0;
+        small.top = 0;
+        small.right = 10;
+        small.bottom = 10; // area 100
+        let top_leaf = mk_layer(true, false, None);
+        let records = vec![
+            mk_layer(false, true, Some(3)),
+            big,
+            mk_layer(true, true, Some(2)),
+            mk_layer(false, true, Some(3)),
+            small,
+            mk_layer(true, true, Some(2)),
+            top_leaf,
+        ];
+        let groups = top_level_groups(&records);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].area > groups[1].area);
+
+        let visible = compute_effective_visibility_best_group(&records);
+        assert!(visible[1], "largest group's leaf must show");
+        assert!(!visible[4], "smaller alternate group's leaf must stay off");
+        assert!(visible[6], "top-level leaf must show even when eye-off");
+    }
+
+    #[test]
+    fn composite_32_6_keeps_photo_page_not_illust_overlay() {
+        // Two alternate top-level groups: photo page (largest) vs white-mask +
+        // gray line-art houses. Mixing them washes the photo and leaves
+        // uncoordinated houses on empty gray. Best-group Tier2 must keep the
+        // photo page and suppress the illust group.
+        let path =
+            Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\32\27059\32 (6).psd");
+        if !path.is_file() {
+            eprintln!("skipping composite_32_6...; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read");
+        let comp = composite_layers_from_bytes_with_cancel(&bytes, None, None).expect("composite");
+        assert_eq!((comp.width, comp.height), (5031, 3425));
+
+        let sample_mean = |x0: u32, y0: u32, x1: u32, y1: u32| -> (f64, f64, f64) {
+            let mut sum = [0u64; 3];
+            let mut n = 0u64;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y * comp.width + x) * 4) as usize;
+                    sum[0] += u64::from(comp.pixels[i]);
+                    sum[1] += u64::from(comp.pixels[i + 1]);
+                    sum[2] += u64::from(comp.pixels[i + 2]);
+                    n += 1;
+                }
+            }
+            (
+                sum[0] as f64 / n as f64,
+                sum[1] as f64 / n as f64,
+                sum[2] as f64 / n as f64,
+            )
+        };
+
+        let (tl_r, tl_g, tl_b) = sample_mean(50, 50, 400, 400);
+        // Photo page top-left is blue sky / horses -- not near-white washout.
+        assert!(
+            tl_b > 120.0 && tl_b > tl_r + 20.0,
+            "expected blue-ish photo page top-left, got mean=({tl_r:.0},{tl_g:.0},{tl_b:.0})"
+        );
+
+        // Illust houses live around (3800,2700)-(4800,3200). With the illust
+        // group suppressed this region should stay near paper white, not gray
+        // line-art on empty canvas.
+        let (br_r, br_g, br_b) = sample_mean(3800, 2700, 4800, 3200);
+        assert!(
+            br_r > 240.0 && br_g > 240.0 && br_b > 240.0,
+            "illust-house region should stay near-white without alternate group, \
+             got mean=({br_r:.0},{br_g:.0},{br_b:.0})"
         );
     }
 
