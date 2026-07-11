@@ -170,7 +170,7 @@ pub(super) fn draw_viewing_tab(
         .on_hover_text(t!("hint.psd_hidden_layer_heuristic"))
         .changed()
         {
-            app.reload_current();
+            app.reload_after_psd_hidden_layer_heuristic_change();
             app.queue_save();
         }
 

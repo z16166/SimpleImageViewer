@@ -292,6 +292,79 @@ impl ImageViewerApp {
         self.schedule_preloads(true);
     }
 
+    /// Re-decode PSD/PSB after [`Settings::psd_hidden_layer_heuristic`] changes.
+    ///
+    /// Unlike [`Self::reload_current`] (RAW-only), this clears failed-load marks so a previously
+    /// unopenable PSD can be retried without restarting the process.
+    pub(crate) fn reload_after_psd_hidden_layer_heuristic_change(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        let psd_indices: Vec<usize> = self
+            .image_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, path)| path_is_psd_or_psb(path).then_some(idx))
+            .collect();
+        if psd_indices.is_empty() {
+            return;
+        }
+
+        self.invalidate_decode_profile_epoch();
+        self.loader.cancel_all();
+
+        let current = self.current_index;
+        for idx in psd_indices {
+            self.texture_cache.remove(idx);
+            self.clear_installed_display_mode(idx);
+            self.remove_hdr_image_resources(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.deferred_sdr_uploads.remove(&idx);
+            self.animation_cache.remove(&idx);
+            self.pending_anim_frames.remove(&idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
+            self.main_loader_failed_indices.remove(&idx);
+            self.main_loader_failed_errors.remove(&idx);
+            self.directory_tree_strip_cache.remove_index(idx);
+            self.directory_tree_strip_tiled_attempted.remove(&idx);
+            self.directory_tree_strip_cold_attempted.remove(&idx);
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .remove(&idx);
+            if idx == current {
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
+                self.transition_start = None;
+                self.pending_transition_target = None;
+                self.pixel_data_source = None;
+                self.error_message = None;
+                self.is_font_error = false;
+            }
+        }
+
+        crate::preload_debug!(
+            "[PreloadDebug][PSD] setting_reload heuristic={} current_idx={}",
+            self.settings.psd_hidden_layer_heuristic,
+            current,
+        );
+
+        if path_is_psd_or_psb(&self.image_files[current]) {
+            self.loader.request_load(
+                current,
+                self.image_files[current].clone(),
+                self.settings.raw_high_quality,
+                self.raw_demosaic_mode_for_index(current),
+                self.settings.psd_hidden_layer_heuristic,
+            );
+        }
+        self.schedule_preloads(true);
+        self.wake_root_for_logic();
+    }
+
     /// Drop every cached/prefetched RAW decode so a [`Settings::raw_high_quality`] toggle cannot
     /// leave neighbor images stuck in the previous performance/HQ pipeline.
     fn invalidate_all_raw_image_caches(&mut self) {
@@ -937,4 +1010,13 @@ impl ImageViewerApp {
 
         self.pixel_data_source = None;
     }
+}
+
+fn path_is_psd_or_psb(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            ext == "psd" || ext == "psb"
+        })
 }

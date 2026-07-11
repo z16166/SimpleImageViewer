@@ -1060,6 +1060,51 @@ fn install_image_error_sets_message_when_current() {
 }
 
 #[test]
+fn reload_current_does_not_reload_psd_only_directory() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.psd"]);
+    app.current_index = 0;
+    app.error_message = Some("load failed".into());
+    app.main_loader_failed_indices.insert(0);
+
+    app.reload_current();
+
+    assert!(
+        !app.loader.is_loading(0),
+        "reload_current is RAW-only and must not start a PSD reload"
+    );
+    assert!(app.error_message.is_some());
+    assert!(app.main_loader_failed_indices.contains(&0));
+}
+
+#[test]
+fn psd_hidden_layer_heuristic_change_reloads_failed_current_psd() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.psd", "b.jpg"]);
+    app.current_index = 0;
+    app.error_message = Some("load failed".into());
+    app.main_loader_failed_indices.insert(0);
+    app.main_loader_failed_errors
+        .insert(0, "all layers hidden".into());
+    app.settings.psd_hidden_layer_heuristic = true;
+
+    app.reload_after_psd_hidden_layer_heuristic_change();
+
+    assert!(
+        app.loader.is_loading(0),
+        "enabling the PSD heuristic must re-request the current PSD"
+    );
+    assert!(
+        app.error_message.is_none(),
+        "stale load error must clear so the canvas can show the new decode"
+    );
+    assert!(
+        !app.main_loader_failed_indices.contains(&0),
+        "failed mark must clear or schedule_preloads will refuse to retry"
+    );
+}
+
+#[test]
 fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
