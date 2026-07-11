@@ -26,6 +26,7 @@ mod orchestrator;
 mod orientation;
 mod preview_aspect;
 mod preview_caps;
+mod psd_osd;
 mod raw_osd;
 mod texture_cache;
 mod tiled_sources;
@@ -57,6 +58,8 @@ pub use preview_caps::{
     GPU_DEMOSAIC_SUPPORTED, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side,
     refresh_hq_preview_monitor_cap,
 };
+#[allow(unused_imports)]
+pub use psd_osd::{PsdDecodeStage, PsdOsdInfo, PsdStageDetail};
 pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::{TextureCache, TextureCacheInsert};

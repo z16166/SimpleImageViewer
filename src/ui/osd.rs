@@ -177,6 +177,7 @@ pub enum OsdEvent {
     UltraHdrDecodeCapacity(Option<f32>),
     HdrMonitorLabel(Option<Arc<str>>),
     HdrExposureEv(f32),
+    PsdLine(Option<Arc<str>>),
 }
 
 impl OsdEvent {
@@ -263,6 +264,10 @@ impl OsdEvent {
     pub fn hdr_exposure_ev(value: &f32) -> Self {
         Self::HdrExposureEv(*value)
     }
+
+    pub fn psd_line(value: &Option<String>) -> Self {
+        Self::PsdLine(value.as_deref().map(Arc::from))
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -288,6 +293,7 @@ struct SupplementalOsdInputs {
     ultra_hdr_decode_capacity: Option<f32>,
     hdr_monitor_label: Option<Arc<str>>,
     hdr_exposure_ev: f32,
+    psd_line: Option<Arc<str>>,
 }
 
 impl Default for SupplementalOsdInputs {
@@ -317,6 +323,7 @@ impl Default for SupplementalOsdInputs {
             ultra_hdr_decode_capacity: None,
             hdr_monitor_label: None,
             hdr_exposure_ev: 0.0,
+            psd_line: None,
         }
     }
 }
@@ -374,6 +381,7 @@ impl SupplementalOsdInputs {
             OsdEvent::UltraHdrDecodeCapacity(value) => self.ultra_hdr_decode_capacity = value,
             OsdEvent::HdrMonitorLabel(value) => self.hdr_monitor_label = value,
             OsdEvent::HdrExposureEv(value) => self.hdr_exposure_ev = value,
+            OsdEvent::PsdLine(value) => self.psd_line = value,
         }
     }
 }
@@ -410,6 +418,7 @@ struct LayoutLines {
     main: String,
     raw: String,
     hdr: String,
+    psd: String,
 }
 
 pub struct OsdRenderer {
@@ -417,8 +426,10 @@ pub struct OsdRenderer {
     cached_hud: String,
     cached_hdr_line_display: String,
     cached_raw_line: String,
+    cached_psd_line: String,
     has_raw_line: bool,
     has_hdr_line: bool,
+    has_psd_line: bool,
     layout: Option<LayoutLines>,
     layout_content_stamp: u64,
     layout_built_stamp: u64,
@@ -443,8 +454,10 @@ impl OsdRenderer {
             cached_hud: String::new(),
             cached_hdr_line_display: String::new(),
             cached_raw_line: String::new(),
+            cached_psd_line: String::new(),
             has_raw_line: false,
             has_hdr_line: false,
+            has_psd_line: false,
             layout: None,
             layout_content_stamp: 0,
             layout_built_stamp: 0,
@@ -492,6 +505,10 @@ impl OsdRenderer {
         self.has_hdr_line
     }
 
+    pub fn has_psd_line(&self) -> bool {
+        self.has_psd_line
+    }
+
     fn bump_content(&mut self) {
         self.layout_content_stamp = self.layout_content_stamp.wrapping_add(1);
     }
@@ -511,6 +528,7 @@ impl OsdRenderer {
         self.rebuild_hud_from_state();
         self.refresh_cached_raw_line();
         self.refresh_cached_hdr_line();
+        self.refresh_cached_psd_line();
         self.bump_content();
     }
 
@@ -531,6 +549,7 @@ impl OsdRenderer {
         self.rebuild_hud_from_state();
         self.refresh_cached_raw_line();
         self.refresh_cached_hdr_line();
+        self.refresh_cached_psd_line();
         self.bump_content();
     }
 
@@ -548,6 +567,14 @@ impl OsdRenderer {
         self.cached_raw_line.clear();
         if let Some(raw) = raw {
             self.cached_raw_line.push_str(&raw);
+        }
+    }
+
+    fn refresh_cached_psd_line(&mut self) {
+        self.has_psd_line = self.supplemental_state.psd_line.is_some();
+        self.cached_psd_line.clear();
+        if let Some(psd) = self.supplemental_state.psd_line.as_deref() {
+            self.cached_psd_line.push_str(psd);
         }
     }
 
@@ -598,6 +625,7 @@ impl OsdRenderer {
             main: String::new(),
             raw: String::new(),
             hdr: String::new(),
+            psd: String::new(),
         };
         truncate_into(
             ui,
@@ -620,6 +648,15 @@ impl OsdRenderer {
                 ui,
                 &mut lines.hdr,
                 &self.cached_hdr_line_display,
+                max_width,
+                &mut self.measure_scratch,
+            );
+        }
+        if self.has_psd_line {
+            truncate_into(
+                ui,
+                &mut lines.psd,
+                &self.cached_psd_line,
                 max_width,
                 &mut self.measure_scratch,
             );
@@ -693,6 +730,18 @@ impl OsdRenderer {
                 OSD_FONT,
                 palette.osd_text,
             );
+            line_offset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+        }
+
+        if self.has_psd_line {
+            let psd_pos = base_pos + Vec2::new(0.0, -line_offset);
+            ui.painter().text(
+                psd_pos,
+                Align2::LEFT_BOTTOM,
+                layout.psd.as_str(),
+                OSD_FONT,
+                palette.osd_text,
+            );
         }
 
         if !self.cached_save_error.is_empty() {
@@ -701,6 +750,9 @@ impl OsdRenderer {
                 err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
             }
             if self.has_hdr_line {
+                err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
+            }
+            if self.has_psd_line {
                 err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
             }
             let err_pos =

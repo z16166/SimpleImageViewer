@@ -748,6 +748,24 @@ pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> 
     })
 }
 
+#[allow(clippy::needless_lifetimes, dead_code)]
+pub(crate) fn find_image_resource<'a>(
+    bytes: &'a [u8],
+    ir_start: u64,
+    ir_end: u64,
+    rid: u16,
+) -> Option<&'a [u8]> {
+    let base = bytes.as_ptr() as usize;
+    let (start, len) = for_each_image_resource(bytes, ir_start, ir_end, |resource_id, data| {
+        if resource_id != rid {
+            return None;
+        }
+        let start = (data.as_ptr() as usize).checked_sub(base)?;
+        Some((start, data.len()))
+    })?;
+    bytes.get(start..start.checked_add(len)?)
+}
+
 /// Extract embedded ICC (IR 1039) from a full PSD/PSB byte buffer.
 #[cfg(test)]
 pub fn extract_embedded_icc_from_psd(bytes: &[u8]) -> Option<Vec<u8>> {

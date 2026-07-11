@@ -80,7 +80,7 @@ fn write_temp_psd(bytes: &[u8]) -> PathBuf {
 fn load_psd_small_decoded_routes_to_static() {
     let _lock = lock_tiled_threshold_for_test();
     let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
-    let data = load_psd(
+    let (data, _osd) = load_psd(
         &path,
         crate::loader::DecodeCancelFlag::new(),
         None,
@@ -106,7 +106,7 @@ fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
     let _lock = lock_tiled_threshold_for_test();
     let _threshold = TiledThresholdOverride::set(1);
     let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
-    let data = load_psd(
+    let (data, _osd) = load_psd(
         &path,
         crate::loader::DecodeCancelFlag::new(),
         None,
@@ -138,7 +138,7 @@ fn load_psb_disk_tiled_keeps_nonblank_flat() {
     planar[8] = 34;
     planar[16] = 56;
     let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
-    let data = load_psd(
+    let (data, _osd) = load_psd(
         &path,
         crate::loader::DecodeCancelFlag::new(),
         None,
@@ -185,7 +185,7 @@ fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
     let _ = std::fs::remove_file(&path);
     let err = match result {
         Err(e) => e,
-        Ok(ImageData::Tiled(src)) => {
+        Ok((ImageData::Tiled(src), _osd)) => {
             let tile = src.extract_tile(0, 0, 4, 2);
             let blank = tile
                 .chunks_exact(4)
@@ -245,7 +245,7 @@ fn optional_psd_libavif_sources_decode_to_pixels() {
             "load_psd must not panic for {}",
             path.display()
         );
-        let data = outcome
+        let (data, _osd) = outcome
             .unwrap()
             .unwrap_or_else(|e| panic!("{name}: load_psd failed: {e}"));
         match data {
@@ -296,7 +296,7 @@ fn optional_psd_cmyk_samples_decode_to_pixels() {
             continue;
         }
         found = true;
-        let data = load_psd(
+        let (data, _osd) = load_psd(
             &path,
             crate::loader::DecodeCancelFlag::new(),
             None,

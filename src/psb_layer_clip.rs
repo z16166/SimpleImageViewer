@@ -558,7 +558,7 @@ mod tests {
                 .expect("decode_psd_sdr_main clipping_on.psd");
         let o = ((100u32 * 256 + 200) * 4) as usize;
         assert_eq!(
-            &main.pixels[o..o + 4],
+            &main.composite.pixels[o..o + 4],
             &[0, 0, 0, 0],
             "P2 path must also mask clip outside base"
         );

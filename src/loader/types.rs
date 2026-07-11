@@ -578,6 +578,8 @@ pub struct LoadResult {
     pub target_hdr_capacity: f32,
     /// RAW-only OSD metadata (embedded preview, sensor grid, active pixel source).
     pub raw_osd: Option<RawOsdInfo>,
+    /// PSD/PSB decode-stage OSD (P1/P2/P2.5/P3 and compat-reveal disclosure).
+    pub psd_osd: Option<crate::loader::PsdOsdInfo>,
     /// GPU textures uploaded on a background loader thread (static HDR plane only).
     ///
     /// `ImagePlaneUpload` contains `Send` wgpu handles; the loader worker fills this field and
@@ -608,6 +610,7 @@ impl Clone for LoadResult {
             sdr_fallback_is_placeholder: self.sdr_fallback_is_placeholder,
             target_hdr_capacity: self.target_hdr_capacity,
             raw_osd: self.raw_osd.clone(),
+            psd_osd: self.psd_osd.clone(),
             uploaded_planes: None,
             device_id: self.device_id,
             staged_gpu_plane_upload: false,

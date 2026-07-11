@@ -119,6 +119,13 @@ pub struct LayerRecord {
     pub left: i32,
     pub bottom: i32,
     pub right: i32,
+    /// Layer name, preferring the Unicode `luni` tagged block over the Pascal
+    /// layer-name fallback in the extra data.
+    pub name: String,
+    pub layer_id: Option<u32>,
+    /// Raw `cmls` descriptor payload found inside `shmd`, retained for the
+    /// later Layer Comp descriptor pass.
+    pub cmls_payload: Option<Vec<u8>>,
     pub channels: Vec<LayerChannel>,
     pub blend: [u8; 4],
     pub opacity: u8,
@@ -418,6 +425,9 @@ fn parse_layer_record(
         real_mask,
         is_section_divider,
         section_type,
+        name,
+        layer_id,
+        cmls_payload,
     } = parse_layer_extra(r, extra_end, is_psb)?;
 
     r.set_position(extra_end);
@@ -427,6 +437,9 @@ fn parse_layer_record(
         left,
         bottom,
         right,
+        name,
+        layer_id,
+        cmls_payload,
         channels,
         blend,
         opacity,
@@ -446,6 +459,9 @@ struct ParsedLayerExtra {
     real_mask: Option<LayerMaskInfo>,
     is_section_divider: bool,
     section_type: Option<u32>,
+    name: String,
+    layer_id: Option<u32>,
+    cmls_payload: Option<Vec<u8>>,
 }
 
 fn parse_layer_extra(
@@ -460,6 +476,9 @@ fn parse_layer_extra(
             real_mask: None,
             is_section_divider: false,
             section_type: None,
+            name: String::new(),
+            layer_id: None,
+            cmls_payload: None,
         });
     }
 
@@ -485,14 +504,24 @@ fn parse_layer_extra(
         "layer blending ranges",
     )?;
 
-    skip_pascal_name(r, extra_end)?;
-    let (is_section_divider, section_type) = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
+    let pascal_name = read_pascal_name(r, extra_end)?;
+    let TaggedBlockScan {
+        is_section_divider,
+        section_type,
+        layer_id,
+        unicode_name,
+        cmls_payload,
+    } = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
+    let name = unicode_name.unwrap_or(pascal_name);
     Ok(ParsedLayerExtra {
         mask_size,
         mask,
         real_mask,
         is_section_divider,
         section_type,
+        name,
+        layer_id,
+        cmls_payload,
     })
 }
 
@@ -648,9 +677,12 @@ fn scan_extra_tagged_blocks(
     r: &mut std::io::Cursor<&[u8]>,
     extra_end: u64,
     is_psb: bool,
-) -> Result<(bool, Option<u32>), String> {
+) -> Result<TaggedBlockScan, String> {
     let mut is_section_divider = false;
     let mut section_type = None;
+    let mut layer_id = None;
+    let mut unicode_name = None;
+    let mut cmls_payload = None;
     let mut resyncs = 0u32;
     let extra_end_usize = usize::try_from(extra_end)
         .unwrap_or(usize::MAX)
@@ -706,9 +738,13 @@ fn scan_extra_tagged_blocks(
             }
         };
 
+        let bytes = r.get_ref();
+        let data_start_usize = usize::try_from(data_start).unwrap_or(usize::MAX);
+        let data_end_usize = usize::try_from(data_end).unwrap_or(usize::MAX);
+        let payload = bytes.get(data_start_usize..data_end_usize).unwrap_or(&[]);
+
         if &key == SECTION_DIVIDER_KEY && data_len >= 4 {
             let data_start = data_start as usize;
-            let bytes = r.get_ref();
             // Defensive: checked_end already bounds data_end, but saturating_add
             // on overflow could leave data_start past the buffer.
             if let Some(section_bytes) = bytes.get(data_start..data_start.saturating_add(4))
@@ -722,13 +758,76 @@ fn scan_extra_tagged_blocks(
                 ]));
                 is_section_divider = true;
             }
+        } else if &key == b"lyid" && payload.len() >= 4 {
+            layer_id = Some(u32::from_be_bytes([
+                payload[0], payload[1], payload[2], payload[3],
+            ]));
+        } else if &key == b"luni" {
+            if let Some(name) = parse_luni_name(payload) {
+                unicode_name = Some(name);
+            }
+        } else if &key == b"shmd"
+            && let Some(payload) = parse_shmd_cmls_payload(payload)
+        {
+            cmls_payload = Some(payload);
         }
 
         let padded_end = data_end.saturating_add(data_len % 2);
         r.set_position(padded_end.min(extra_end));
     }
 
-    Ok((is_section_divider, section_type))
+    Ok(TaggedBlockScan {
+        is_section_divider,
+        section_type,
+        layer_id,
+        unicode_name,
+        cmls_payload,
+    })
+}
+
+struct TaggedBlockScan {
+    is_section_divider: bool,
+    section_type: Option<u32>,
+    layer_id: Option<u32>,
+    unicode_name: Option<String>,
+    cmls_payload: Option<Vec<u8>>,
+}
+
+fn parse_luni_name(payload: &[u8]) -> Option<String> {
+    let len_bytes: [u8; 4] = payload.get(0..4)?.try_into().ok()?;
+    let unit_count = u32::from_be_bytes(len_bytes) as usize;
+    let byte_len = unit_count.checked_mul(2)?;
+    let string_bytes = payload.get(4..4usize.checked_add(byte_len)?)?;
+    let mut units = Vec::with_capacity(unit_count);
+    for chunk in string_bytes.chunks_exact(2) {
+        units.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+    String::from_utf16(&units).ok()
+}
+
+fn parse_shmd_cmls_payload(payload: &[u8]) -> Option<Vec<u8>> {
+    let count_bytes: [u8; 4] = payload.get(0..4)?.try_into().ok()?;
+    let entry_count = u32::from_be_bytes(count_bytes) as usize;
+    let mut pos = 4usize;
+    for _ in 0..entry_count {
+        let header_end = pos.checked_add(SHMD_ENTRY_HEADER_LEN)?;
+        let header = payload.get(pos..header_end)?;
+        let signature = header.get(0..4)?;
+        let key = header.get(4..8)?;
+        let len_bytes: [u8; 4] = header.get(12..16)?.try_into().ok()?;
+        let data_len = u32::from_be_bytes(len_bytes) as usize;
+        let data_start = header_end;
+        let data_end = data_start.checked_add(data_len)?;
+        let data = payload.get(data_start..data_end)?;
+        if signature == PSD_BLEND_SIGNATURE && key == b"cmls" {
+            return Some(data.to_vec());
+        }
+        pos = data_end.checked_add(data_len % 2)?;
+        if pos > payload.len() {
+            return None;
+        }
+    }
+    None
 }
 
 fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
@@ -765,9 +864,9 @@ fn abandon_tagged_block_candidate(
     false
 }
 
-fn skip_pascal_name(r: &mut std::io::Cursor<&[u8]>, extra_end: u64) -> Result<(), String> {
+fn read_pascal_name(r: &mut std::io::Cursor<&[u8]>, extra_end: u64) -> Result<String, String> {
     if r.position() >= extra_end {
-        return Ok(());
+        return Ok(String::new());
     }
 
     let mut len = [0u8; 1];
@@ -775,12 +874,24 @@ fn skip_pascal_name(r: &mut std::io::Cursor<&[u8]>, extra_end: u64) -> Result<()
         .map_err(|e| format!("Read layer name length: {e}"))?;
     let raw_len = 1u64 + len[0] as u64;
     let padded_len = raw_len.next_multiple_of(4);
-    skip_extra_bytes(
+    read_at(
         r,
         padded_len.saturating_sub(1),
         extra_end,
         "layer name data",
-    )
+    )?;
+    let name_len = len[0] as usize;
+    let name_start = r.position() as usize;
+    let name_end = name_start
+        .checked_add(name_len)
+        .ok_or_else(|| "PSD/PSB layer name length overflow".to_string())?;
+    let name_bytes = r
+        .get_ref()
+        .get(name_start..name_end)
+        .ok_or_else(|| "PSD/PSB layer name exceeds section boundary".to_string())?;
+    let name = String::from_utf8_lossy(name_bytes).into_owned();
+    crate::psb_reader::seek_forward(r, padded_len.saturating_sub(1))?;
+    Ok(name)
 }
 
 fn read_extra_u32(
@@ -835,6 +946,7 @@ fn cursor_slice(bytes: &[u8], start: u64, end: u64) -> Result<&[u8], String> {
 }
 
 const TAGGED_BLOCK_MIN_HEADER_LEN: u64 = 12;
+const SHMD_ENTRY_HEADER_LEN: usize = 16;
 const MAX_TAGGED_BLOCK_RESYNCS_PER_LAYER: u32 = 64;
 
 fn tagged_block_uses_u64_len(signature: &[u8; 4], key: &[u8; 4], is_psb: bool) -> bool {
@@ -985,6 +1097,25 @@ fn composite_layers_from_info(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    let visible = compute_effective_visibility(&info.records);
+    composite_layers_with_visibility_from_info(info, &visible, parse_ms, total_t0, cancel, gpu)
+}
+
+/// Same as [`composite_layers_from_info`], but takes an explicit per-record
+/// `visible` mask instead of deriving it from strict Photoshop layer/group
+/// flags via [`compute_effective_visibility`].
+///
+/// Used by callers that need to override strict flag-based visibility (e.g.
+/// a future Layer Comp or max-bounding-box "reveal" pass); ordinary decode
+/// paths should go through [`composite_layers_from_info`] instead.
+pub(crate) fn composite_layers_with_visibility_from_info(
+    info: LayerInfo<'_>,
+    visible: &[bool],
+    parse_ms: f64,
+    total_t0: std::time::Instant,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     if info.depth != 8 {
         return Err(format!(
             "PSD/PSB layer composite requires 8-bit depth (found {}-bit)",
@@ -992,11 +1123,13 @@ fn composite_layers_from_info(
         )
         .into());
     }
+    if visible.len() != info.records.len() {
+        return Err("PSD/PSB visibility mask length mismatch".into());
+    }
 
     let canvas_w = info.width;
     let canvas_h = info.height;
-    let visible = compute_effective_visibility(&info.records);
-    if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, &visible) {
+    if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, visible) {
         return Err(crate::loader::DecodeError::NoDrawableVisibleLayers);
     }
 
@@ -1020,7 +1153,7 @@ fn composite_layers_from_info(
 
     run_composite_pass(
         &info,
-        &visible,
+        visible,
         &mut canvas,
         canvas_w,
         canvas_h,
@@ -1143,10 +1276,10 @@ mod tests {
     use super::{
         CompositeTiming, LAYER_PREFETCH_WINDOW, LayerChannel, LayerInfo, LayerRecord,
         STRICT_LAYER_COMPOSITE_BLANK, StreamingPeakTracker, checked_layer_pixel_count,
-        composite_layers_from_bytes_with_cancel, compute_effective_visibility,
-        dimensions_within_limit, gpu_batch_eligible_decoded_bytes, layer_will_decode,
-        parse_layer_records, run_composite_pass_cpu_streaming, scan_extra_tagged_blocks,
-        strict_visibility_has_drawable_output,
+        composite_layers_from_bytes_with_cancel, composite_layers_with_visibility_from_info,
+        compute_effective_visibility, dimensions_within_limit, gpu_batch_eligible_decoded_bytes,
+        layer_will_decode, parse_layer_records, run_composite_pass_cpu_streaming,
+        scan_extra_tagged_blocks, strict_visibility_has_drawable_output,
     };
     use std::path::Path;
 
@@ -1195,6 +1328,9 @@ mod tests {
                 left: spec.left,
                 bottom: spec.bottom,
                 right: spec.right,
+                name: String::new(),
+                layer_id: None,
+                cmls_payload: None,
                 channels,
                 blend: spec.blend,
                 opacity: spec.opacity,
@@ -1245,6 +1381,109 @@ mod tests {
         }
     }
 
+    fn push_tagged_block(bytes: &mut Vec<u8>, key: &[u8; 4], payload: &[u8]) {
+        bytes.extend_from_slice(b"8BIM");
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(payload);
+        if !payload.len().is_multiple_of(2) {
+            bytes.push(0);
+        }
+    }
+
+    fn minimal_psd_with_layer_extra(extra: Vec<u8>) -> Vec<u8> {
+        let mut layer_record = Vec::new();
+        layer_record.extend_from_slice(&0i32.to_be_bytes()); // top
+        layer_record.extend_from_slice(&0i32.to_be_bytes()); // left
+        layer_record.extend_from_slice(&1i32.to_be_bytes()); // bottom
+        layer_record.extend_from_slice(&1i32.to_be_bytes()); // right
+        layer_record.extend_from_slice(&0u16.to_be_bytes()); // channel count
+        layer_record.extend_from_slice(b"8BIM");
+        layer_record.extend_from_slice(b"norm");
+        layer_record.extend_from_slice(&[255, 0, 0, 0]); // opacity, clipping, flags, filler
+        layer_record.extend_from_slice(&(extra.len() as u32).to_be_bytes());
+        layer_record.extend_from_slice(&extra);
+
+        let mut layer_info = Vec::new();
+        layer_info.extend_from_slice(&1i16.to_be_bytes());
+        layer_info.extend_from_slice(&layer_record);
+
+        let mut layer_mask_info = Vec::new();
+        layer_mask_info.extend_from_slice(&(layer_info.len() as u32).to_be_bytes());
+        layer_mask_info.extend_from_slice(&layer_info);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // color mode data
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // image resources
+        bytes.extend_from_slice(&(layer_mask_info.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&layer_mask_info);
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // image data compression
+        bytes
+    }
+
+    fn layer_extra_with_pascal_name(name: &[u8]) -> Vec<u8> {
+        let mut extra = Vec::new();
+        extra.extend_from_slice(&0u32.to_be_bytes()); // mask data length
+        extra.extend_from_slice(&0u32.to_be_bytes()); // blending ranges length
+        extra.push(name.len() as u8);
+        extra.extend_from_slice(name);
+        while extra.len() % 4 != 0 {
+            extra.push(0);
+        }
+        extra
+    }
+
+    #[test]
+    fn parse_lyid_and_luni_from_extra_block() {
+        let mut extra = layer_extra_with_pascal_name(b"A");
+        push_tagged_block(&mut extra, b"lyid", &42u32.to_be_bytes());
+        let mut luni = Vec::new();
+        luni.extend_from_slice(&5u32.to_be_bytes());
+        for unit in "Hello".encode_utf16() {
+            luni.extend_from_slice(&unit.to_be_bytes());
+        }
+        push_tagged_block(&mut extra, b"luni", &luni);
+
+        let bytes = minimal_psd_with_layer_extra(extra);
+        let info = parse_layer_records(&bytes).expect("parse layers");
+
+        assert_eq!(info.records.len(), 1);
+        assert_eq!(info.records[0].layer_id, Some(42));
+        assert_eq!(info.records[0].name, "Hello");
+    }
+
+    #[test]
+    fn parse_shmd_stores_cmls_payload() {
+        let cmls_payload = [0, 0, 0, 16, b'c', b'm', b'l', b's'];
+        let mut shmd = Vec::new();
+        shmd.extend_from_slice(&1u32.to_be_bytes());
+        shmd.extend_from_slice(b"8BIM");
+        shmd.extend_from_slice(b"cmls");
+        shmd.push(1); // copy flag
+        shmd.extend_from_slice(&[0; 3]);
+        shmd.extend_from_slice(&(cmls_payload.len() as u32).to_be_bytes());
+        shmd.extend_from_slice(&cmls_payload);
+
+        let mut extra = layer_extra_with_pascal_name(b"A");
+        push_tagged_block(&mut extra, b"shmd", &shmd);
+
+        let bytes = minimal_psd_with_layer_extra(extra);
+        let info = parse_layer_records(&bytes).expect("parse layers");
+
+        assert_eq!(
+            info.records[0].cmls_payload.as_deref(),
+            Some(&cmls_payload[..])
+        );
+    }
+
     /// Build a minimal `LayerRecord` for `compute_effective_visibility` tests;
     /// only `flags` (hidden bit), `is_section_divider`, and `section_type`
     /// matter for that function.
@@ -1254,6 +1493,9 @@ mod tests {
             left: 0,
             bottom: 1,
             right: 1,
+            name: String::new(),
+            layer_id: None,
+            cmls_payload: None,
             channels: Vec::new(),
             blend: *b"norm",
             opacity: 255,
@@ -1453,6 +1695,95 @@ mod tests {
     }
 
     #[test]
+    fn composite_with_visibility_forces_hidden_layer_when_mask_says_so() {
+        // Both layers are hidden per their on-disk flags, so the default
+        // strict-visibility path (`compute_effective_visibility`) would find
+        // nothing drawable and return `NoDrawableVisibleLayers`. An explicit
+        // `visible` override (as a future Layer Comp / max-bbox reveal pass
+        // will supply) must be able to force them on regardless of flags.
+        let (width, height) = (2u32, 2u32);
+        let specs = [
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 2,
+                right: 2,
+                rgb: (10, 20, 30),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 2,
+                right: 2,
+                rgb: (40, 50, 60),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+        ];
+        let (mut records, channel_data) = build_test_layers(&specs);
+        for record in &mut records {
+            record.flags = 2; // hidden bit set on every record
+        }
+        let default_visible = compute_effective_visibility(&records);
+        assert!(
+            default_visible.iter().all(|v| !v),
+            "sanity: default strict visibility must hide every record here"
+        );
+
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let visible = vec![true, true];
+
+        let composite = composite_layers_with_visibility_from_info(
+            info,
+            &visible,
+            0.0,
+            std::time::Instant::now(),
+            None,
+            None,
+        )
+        .expect("explicit visibility override should produce a drawable composite");
+
+        assert_eq!(composite.width, width);
+        assert_eq!(composite.height, height);
+        // Top (last) opaque layer wins under Normal blend.
+        assert_eq!(px(&composite.pixels, width, 0, 0), [40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn composite_with_visibility_length_mismatch_is_an_error() {
+        let (width, height) = (2u32, 2u32);
+        let specs = [TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 2,
+            right: 2,
+            rgb: (1, 2, 3),
+            blend: *b"norm",
+            clipping: 0,
+            opacity: 255,
+        }];
+        let (records, channel_data) = build_test_layers(&specs);
+        let info = mk_layer_info(width, height, records, &channel_data);
+        let visible = vec![true, true]; // wrong length: 2 vs 1 record
+
+        let err = composite_layers_with_visibility_from_info(
+            info,
+            &visible,
+            0.0,
+            std::time::Instant::now(),
+            None,
+            None,
+        )
+        .expect_err("mismatched visibility length must be rejected");
+        assert!(!err.is_no_drawable_visible_layers());
+        assert!(err.as_str().contains("visibility"));
+    }
+
+    #[test]
     fn psb_8bim_lsct_uses_u32_length() {
         let mut block = Vec::new();
         block.extend_from_slice(b"8BIM");
@@ -1461,11 +1792,10 @@ mod tests {
         block.extend_from_slice(&2u32.to_be_bytes());
         let mut cursor = std::io::Cursor::new(block.as_slice());
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, true).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, true).unwrap();
 
-        assert!(is_section_divider);
-        assert_eq!(section_type, Some(2));
+        assert!(scan.is_section_divider);
+        assert_eq!(scan.section_type, Some(2));
     }
 
     #[test]
@@ -1478,11 +1808,10 @@ mod tests {
         block.extend_from_slice(&[0x00, 0x01]); // truncated
         let mut cursor = std::io::Cursor::new(block.as_slice());
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
-        assert!(!is_section_divider);
-        assert_eq!(section_type, None);
+        assert!(!scan.is_section_divider);
+        assert_eq!(scan.section_type, None);
     }
 
     #[test]
@@ -1495,11 +1824,10 @@ mod tests {
         block.extend_from_slice(&3u32.to_be_bytes());
         let mut cursor = std::io::Cursor::new(block.as_slice());
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
-        assert!(is_section_divider);
-        assert_eq!(section_type, Some(3));
+        assert!(scan.is_section_divider);
+        assert_eq!(scan.section_type, Some(3));
     }
 
     #[test]
@@ -1508,11 +1836,10 @@ mod tests {
         let mut cursor = std::io::Cursor::new(block.as_slice());
         let started = std::time::Instant::now();
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
-        assert!(!is_section_divider);
-        assert_eq!(section_type, None);
+        assert!(!scan.is_section_divider);
+        assert_eq!(scan.section_type, None);
         assert!(
             started.elapsed() < std::time::Duration::from_millis(500),
             "signature-free scan should finish quickly"
@@ -1533,11 +1860,10 @@ mod tests {
         block.extend_from_slice(&2u32.to_be_bytes());
         let mut cursor = std::io::Cursor::new(block.as_slice());
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
-        assert!(!is_section_divider);
-        assert_eq!(section_type, None);
+        assert!(!scan.is_section_divider);
+        assert_eq!(scan.section_type, None);
     }
 
     #[test]
@@ -1554,11 +1880,10 @@ mod tests {
         }
         let mut cursor = std::io::Cursor::new(block.as_slice());
 
-        let (is_section_divider, section_type) =
-            scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
-        assert!(is_section_divider);
-        assert_eq!(section_type, Some(1));
+        assert!(scan.is_section_divider);
+        assert_eq!(scan.section_type, Some(1));
     }
 
     #[test]

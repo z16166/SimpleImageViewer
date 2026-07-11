@@ -167,6 +167,20 @@ raw.osd.demosaic.preview: "預覽"
 raw.osd.timing.cpu: "CPU %{ms}ms"
 raw.osd.timing.gpu: "GPU %{ms}ms"
 
+# PSD OSD (decode stage / compat reveal)
+osd.psd.compat_reveal: "相容恢復"
+osd.psd.stage.p1: "P1"
+osd.psd.stage.p2: "P2"
+osd.psd.stage.p25a: "P2.5a"
+osd.psd.stage.p25b: "P2.5b"
+osd.psd.stage.p3: "P3"
+osd.psd.detail.flattened: "flattened"
+osd.psd.detail.strict: "strict"
+osd.psd.detail.layer_comp: "layer-comp"
+osd.psd.detail.max_bbox: "max-bbox"
+osd.psd.detail.max_bbox_force_open: "max-bbox force-open"
+osd.psd.detail.ir_thumb: "thumbnail"
+
 # Scale mode
 scale.fit: "適應視窗"
 scale.original: "實際大小"

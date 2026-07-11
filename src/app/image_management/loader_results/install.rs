@@ -139,6 +139,19 @@ impl ImageViewerApp {
             self.set_raw_metadata_for_index(idx, None, ctx);
         }
 
+        // `psd_osd_line` is a single current-image shadow (not a per-index store like
+        // `raw_metadata`), so only the currently displayed index may update it -- otherwise a
+        // background neighbor-prefetch install could clobber the OSD for the visible image.
+        if idx == self.current_index {
+            let line = load_result
+                .psd_osd
+                .as_ref()
+                .map(crate::loader::PsdOsdInfo::compose_osd_line);
+            self.image_status.set_psd_osd_line(line);
+            self.osd.sync_events();
+            ctx.request_repaint();
+        }
+
         if !matches!(install_plan, ImageInstallPlan::Error { .. }) {
             self.note_main_loader_install_success(idx);
         }

@@ -155,6 +155,7 @@ impl ImageViewerApp {
         crate::tile_cache::PIXEL_CACHE.write().clear();
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
+        self.image_status.set_psd_osd_line(None);
         self.current_file_name.clear();
         self.osd.invalidate();
         self.loader.cancel_all();
