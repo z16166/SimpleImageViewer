@@ -869,7 +869,7 @@ fn read_i32(r: &mut impl Read) -> Result<i32, String> {
 /// folder record is seen first and pushes a nested visibility scope (using
 /// the group's own hidden flag, which is only known at that point), and the
 /// bounding divider is seen last and pops it.
-fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
+pub(crate) fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
     let mut visible = vec![false; records.len()];
     let mut stack: Vec<bool> = vec![true];
 
@@ -894,7 +894,7 @@ fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
 
 /// True when strict visibility yields at least one pixel layer that can affect
 /// the canvas (flag + geometry only; no pixel sampling).
-fn strict_visibility_has_drawable_output(
+pub(crate) fn strict_visibility_has_drawable_output(
     canvas_w: u32,
     canvas_h: u32,
     records: &[LayerRecord],

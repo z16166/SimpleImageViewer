@@ -21,12 +21,13 @@ use crate::constants::{
 };
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_image_data,
+    AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair,
+    apply_exif_orientation_to_image_data, hdr_sdr_fallback_rgba8_or_placeholder,
 };
 use std::path::Path;
 use std::time::Duration;
 
-use super::assemble::make_image_data;
+use super::assemble::{make_hdr_image_data, make_image_data};
 use super::hdr_formats::{is_exr_path, load_hdr};
 
 pub(crate) fn load_static_from_mmap(
@@ -293,6 +294,8 @@ pub(crate) fn load_psd(
     path: &Path,
     cancel: crate::loader::DecodeCancelFlag,
     gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, crate::loader::DecodeError> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
@@ -328,9 +331,22 @@ pub(crate) fn load_psd(
     //
     // Disk tiling only reads flattened Image Data. Layers-only / blank-flat documents must
     // probe that flat first and degrade to P2/P3 (skipping a second full-canvas P1 decode).
+    // When the HDR content gate is active, skip the SDR disk-tiled shortcut.
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
+    let depth = u16::from_be_bytes([mmap[22], mmap[23]]);
+    let embedded_icc = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..])
+        .ok()
+        .and_then(|idx| {
+            crate::psb_reader::extract_icc_profile_from_ir(&mmap[..], idx.ir_start, idx.ir_end)
+        });
+    let try_hdr = crate::psb_hdr_main::psd_should_try_hdr(
+        depth,
+        embedded_icc.as_deref(),
+        hdr_target_capacity,
+    );
+
     let mut skip_flattened_for_disk_tiled_degrade = false;
-    if version == 2 && psd_header_requires_disk_tiled(width, height) {
+    if version == 2 && psd_header_requires_disk_tiled(width, height) && !try_hdr {
         log::debug!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
             width,
@@ -385,10 +401,47 @@ pub(crate) fn load_psd(
                 skip_flattened_for_disk_tiled_degrade = true;
             }
         }
+    } else if try_hdr && version == 2 && psd_header_requires_disk_tiled(width, height) {
+        log::debug!(
+            "PSB header {}x{} would use disk tiled SDR, but HDR content gate is active; full HDR decode",
+            width,
+            height
+        );
     }
 
     if cancel.is_cancelled() {
         return Err(crate::loader::DecodeError::Cancelled);
+    }
+
+    // HDR path (Approach A): try P1/P2 HDR, fall back to SDR on failure.
+    if try_hdr {
+        match crate::psb_hdr_main::decode_psd_hdr_main_from_bytes_with_cancel(
+            &mmap[..],
+            Some(cancel.as_atomic()),
+            &hdr_tone_map,
+            skip_flattened_for_disk_tiled_degrade,
+        ) {
+            Ok(hdr) => {
+                let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr)
+                    .map_err(|e| format!("PSD HDR SDR fallback failed: {e}"))?;
+                let fallback =
+                    DecodedImage::from_hdr_sdr_fallback(hdr.width, hdr.height, fallback_pixels);
+                let (hdr, fallback) =
+                    apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(&mmap[..]));
+                log::debug!(
+                    "PSD/PSB HDR decoded {}x{} (header was {}x{}); routing via make_hdr_image_data",
+                    hdr.width,
+                    hdr.height,
+                    width,
+                    height
+                );
+                return Ok(make_hdr_image_data(hdr, fallback));
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                log::debug!("PSD/PSB HDR path failed ({e}); falling back to SDR P1/P2/P3");
+            }
+        }
     }
 
     let composite = if skip_flattened_for_disk_tiled_degrade {

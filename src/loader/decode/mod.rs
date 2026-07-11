@@ -209,7 +209,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
-            return load_psd(path, cancel, psd_gpu);
+            return load_psd(path, cancel, psd_gpu, hdr_target_capacity, hdr_tone_map);
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
@@ -751,7 +751,9 @@ fn is_hdr_capacity_sensitive_load(
 ) -> bool {
     let is_jpeg = ext == "jpg" || ext == "jpeg";
     let is_raw = crate::raw_processor::is_raw_extension(ext);
+    let is_psd = ext == "psd" || ext == "psb";
     (is_jpeg
+        || is_psd
         || modern::is_hdr_capable_modern_format_path(path)
         || crate::hdr::decode::is_hdr_candidate_ext(ext)
         || is_raw)

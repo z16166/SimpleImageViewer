@@ -32,27 +32,38 @@ use crate::psb_layer_composite::{
 /// How often (in rows) to poll `cancel` inside a single channel's RLE decode.
 const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
 
-/// Decode one channel's image data (compression header + rows) into 8-bit samples.
-/// `data` must be exactly the channel's declared byte range (depth 8 only, v1).
+/// Decode one channel's image data (compression header + payload) into raw samples.
+///
+/// `data` must be exactly the channel's declared byte range. `depth` controls
+/// bytes-per-sample: 8 → 1 byte, 16 → 2 bytes BE, 32 → 4 bytes BE (f32 planes).
+/// The returned `Vec<u8>` is `width * height * bps` bytes in raster order.
 pub(crate) fn decode_channel_image(
     data: &[u8],
     width: u32,
     height: u32,
+    depth: u16,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<u8>, crate::loader::DecodeError> {
+    let bps = crate::psb_reader::bytes_per_sample(depth)?;
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
     let pixel_count = checked_layer_pixel_count(width, height)
         .ok_or_else(|| format!("PSD/PSB layer channel size {width}x{height} exceeds limit"))?;
+    let row_raw_bytes = (width as usize)
+        .checked_mul(bps)
+        .ok_or_else(|| "PSD/PSB layer row byte count overflow".to_string())?;
+    let total_raw_bytes = pixel_count
+        .checked_mul(bps)
+        .ok_or_else(|| "PSD/PSB layer channel byte count overflow".to_string())?;
 
     match compression {
         0 => {
             // Avoid zero-filling the copied prefix: grow from the raw slice.
             let avail = data.len().saturating_sub(2);
-            let copy = avail.min(pixel_count);
+            let copy = avail.min(total_raw_bytes);
             let mut out = data[2..2 + copy].to_vec();
-            out.resize(pixel_count, 0);
+            out.resize(total_raw_bytes, 0);
             Ok(out)
         }
         1 => {
@@ -69,9 +80,8 @@ pub(crate) fn decode_channel_image(
                 row_counts.push(count);
             }
 
-            let mut out = vec![0u8; pixel_count];
-            let mut row_buf = Vec::with_capacity(width as usize);
-            let width_usize = width as usize;
+            let mut out = vec![0u8; total_raw_bytes];
+            let mut row_buf = Vec::with_capacity(row_raw_bytes);
             for (row, &count) in row_counts.iter().enumerate() {
                 if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
                     crate::psb_reader::check_decode_cancel(cancel)?;
@@ -83,16 +93,16 @@ pub(crate) fn decode_channel_image(
                 let compressed = data
                     .get(start..end)
                     .ok_or_else(|| "PSD/PSB layer channel RLE row out of bounds".to_string())?;
-                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, width_usize);
+                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, row_raw_bytes);
                 let dst_start = row
-                    .checked_mul(width_usize)
+                    .checked_mul(row_raw_bytes)
                     .ok_or_else(|| "PSD/PSB layer channel row offset overflow".to_string())?;
                 let dst_end = dst_start
-                    .checked_add(width_usize)
+                    .checked_add(row_raw_bytes)
                     .ok_or_else(|| "PSD/PSB layer channel row end overflow".to_string())?;
                 out.get_mut(dst_start..dst_end)
                     .ok_or_else(|| "PSD/PSB layer channel row out of bounds".to_string())?
-                    .copy_from_slice(&row_buf[..width_usize]);
+                    .copy_from_slice(&row_buf[..row_raw_bytes]);
                 r.set_position(end as u64);
             }
             Ok(out)
@@ -106,7 +116,7 @@ pub(crate) fn decode_channel_image(
                 compressed,
                 width as usize,
                 height as usize,
-                8,
+                depth,
                 compression == 3,
             )
             .map_err(Into::into)
@@ -271,8 +281,114 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     rgba
 }
 
+// -- HDR f32 channel helpers -------------------------------------------------
+
+/// Convert raw channel bytes (from `decode_channel_image`) to linear-light f32 samples.
+///
+/// - depth 8: `byte / 255.0` (transfer ignored; 8-bit HDR is not a supported case).
+/// - depth 16: big-endian u16 → 0-1 float, then `decode_transfer_to_display_linear`
+///   applied per sample (use `HdrTransferFunction::Linear` for alpha / CMYK channels).
+/// - depth 32: big-endian f32 raw (already linear in PSD spec).
+pub(crate) fn channel_samples_to_f32(
+    raw: &[u8],
+    depth: u16,
+    transfer: crate::hdr::types::HdrTransferFunction,
+    sdr_white_nits: f32,
+) -> Vec<f32> {
+    match depth {
+        8 => raw.iter().map(|&b| b as f32 / 255.0).collect(),
+        16 => raw
+            .chunks_exact(2)
+            .map(|c| {
+                let v = u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0;
+                crate::hdr::decode::decode_transfer_to_display_linear(
+                    [v, v, v],
+                    transfer,
+                    sdr_white_nits,
+                )[0]
+            })
+            .collect(),
+        32 => raw
+            .chunks_exact(4)
+            .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Assemble a straight-alpha RGBA f32 rect from decoded f32 channel planes.
+///
+/// `color[0..3]` are color-channel planes (C/M/Y/K for mode 4, R/G/B for mode 3,
+/// gray for mode 1). `alpha` and `mask` are linear 0-1. `opacity` is the PSD
+/// layer opacity byte (0-255). All f32 values are already transfer-decoded;
+/// CMYK uses a simple device-RGB approximation then a 2.2-gamma linearisation.
+pub(crate) fn layer_planes_to_rgba_f32(
+    color_mode: u16,
+    width: u32,
+    height: u32,
+    color: &[Option<Vec<f32>>; 4],
+    alpha: Option<&[f32]>,
+    mask: Option<&[f32]>,
+    opacity: u8,
+) -> Vec<f32> {
+    let Some(pixel_count) = checked_layer_pixel_count(width, height) else {
+        return Vec::new();
+    };
+    let Some(rgba_len) = pixel_count.checked_mul(4) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(rgba_len);
+    let opacity_f = opacity as f32 / 255.0;
+    let sample = |ch: &Option<Vec<f32>>, i: usize| {
+        ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0.0)
+    };
+
+    for i in 0..pixel_count {
+        let (r, g, b) = match color_mode {
+            4 => {
+                // Adobe CMYK polarity: 0.0 = full ink, 1.0 = no ink.
+                // R_device = C_sample * K_sample per channel.
+                let c = sample(&color[0], i);
+                let m = sample(&color[1], i);
+                let yv = sample(&color[2], i);
+                let k = sample(&color[3], i);
+                let r_dev = c * k;
+                let g_dev = m * k;
+                let b_dev = yv * k;
+                // Approximate gamma linearisation (device sRGB-like).
+                (r_dev.powf(2.2), g_dev.powf(2.2), b_dev.powf(2.2))
+            }
+            1 => {
+                let v = sample(&color[0], i);
+                (v, v, v)
+            }
+            _ => (
+                sample(&color[0], i),
+                sample(&color[1], i),
+                sample(&color[2], i),
+            ),
+        };
+
+        let base_alpha = alpha.and_then(|a| a.get(i)).copied().unwrap_or(1.0);
+        let mut a = base_alpha * opacity_f;
+        if let Some(m) = mask {
+            let mv = m.get(i).copied().unwrap_or(1.0);
+            a *= mv;
+        }
+
+        out.push(r);
+        out.push(g);
+        out.push(b);
+        out.push(a.clamp(0.0, 1.0));
+    }
+
+    out
+}
+
 /// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
 /// when the mask is disabled, empty, or oversized (caller keeps no-mask).
+/// `depth` is the document bit-depth (8, 16, or 32); the raw bytes returned
+/// have the same `bps` so the caller can interpret them as u8 / u16-BE / f32-BE.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_mask_channel_to_layer(
     slice: &[u8],
@@ -281,6 +397,7 @@ pub(crate) fn decode_mask_channel_to_layer(
     layer_top: i32,
     layer_w: u32,
     layer_h: u32,
+    depth: u16,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<Vec<u8>>, crate::loader::DecodeError> {
@@ -301,7 +418,7 @@ pub(crate) fn decode_mask_channel_to_layer(
         );
         return Ok(None);
     }
-    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, is_psb, cancel)?;
+    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, depth, is_psb, cancel)?;
     Ok(Some(build_layer_sized_mask(
         mask_info,
         &mask_pixels,
@@ -503,6 +620,8 @@ pub(crate) struct DecodedLayer {
 
 pub(crate) struct LayerDecodeParams<'a> {
     pub(crate) color_mode: u16,
+    /// Document bit-depth (8, 16, or 32). Threaded into every channel decode call.
+    pub(crate) depth: u16,
     pub(crate) is_psb: bool,
     pub(crate) should_decode: bool,
     pub(crate) cancel: Option<&'a std::sync::atomic::AtomicBool>,
@@ -554,7 +673,14 @@ pub(crate) fn decode_one_layer(
         }
 
         match ch.id {
-            -1 => match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
+            -1 => match decode_channel_image(
+                slice,
+                width,
+                height,
+                params.depth,
+                params.is_psb,
+                params.cancel,
+            ) {
                 Ok(data) => alpha = Some(data),
                 Err(e) if e.is_cancelled() => return Err(e),
                 Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
@@ -581,6 +707,7 @@ pub(crate) fn decode_one_layer(
                         record.top,
                         width,
                         height,
+                        params.depth,
                         params.is_psb,
                         params.cancel,
                     ) {
@@ -595,7 +722,14 @@ pub(crate) fn decode_one_layer(
             }
             0..=3 => {
                 let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, params.is_psb, params.cancel) {
+                match decode_channel_image(
+                    slice,
+                    width,
+                    height,
+                    params.depth,
+                    params.is_psb,
+                    params.cancel,
+                ) {
                     Ok(data) => color[idx] = Some(data),
                     Err(e) if e.is_cancelled() => return Err(e),
                     Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
@@ -733,6 +867,7 @@ pub(crate) fn decode_layers_for_composite(
             record,
             &LayerDecodeParams {
                 color_mode: info.color_mode,
+                depth: info.depth,
                 is_psb: info.is_psb,
                 should_decode,
                 cancel,
@@ -912,6 +1047,7 @@ pub(crate) fn run_composite_pass_cpu_streaming(
             record,
             &LayerDecodeParams {
                 color_mode: info.color_mode,
+                depth: info.depth,
                 is_psb: info.is_psb,
                 should_decode,
                 cancel,
@@ -1077,7 +1213,7 @@ mod tests {
     fn decode_channel_image_rejects_oversized_dims() {
         let data = [0u8, 0u8]; // compression = Raw
         let err =
-            decode_channel_image(&data, u32::MAX, u32::MAX, false, None).expect_err("oversized");
+            decode_channel_image(&data, u32::MAX, u32::MAX, 8, false, None).expect_err("oversized");
         assert!(
             err.as_str().contains("exceeds limit"),
             "unexpected err: {err}"
@@ -1107,6 +1243,7 @@ mod tests {
             &record,
             &LayerDecodeParams {
                 color_mode: 3,
+                depth: 8,
                 is_psb: false,
                 should_decode: true,
                 cancel: None,
@@ -1155,6 +1292,7 @@ mod tests {
             &record,
             &LayerDecodeParams {
                 color_mode: 3,
+                depth: 8,
                 is_psb: false,
                 should_decode: true,
                 cancel: None,

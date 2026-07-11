@@ -80,8 +80,14 @@ fn write_temp_psd(bytes: &[u8]) -> PathBuf {
 fn load_psd_small_decoded_routes_to_static() {
     let _lock = lock_tiled_threshold_for_test();
     let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
-    let data = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
-        .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let data = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
     match data {
         ImageData::Static(img) => {
@@ -100,8 +106,14 @@ fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
     let _lock = lock_tiled_threshold_for_test();
     let _threshold = TiledThresholdOverride::set(1);
     let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
-    let data = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
-        .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let data = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
     match data {
         ImageData::Tiled(src) => {
@@ -126,8 +138,14 @@ fn load_psb_disk_tiled_keeps_nonblank_flat() {
     planar[8] = 34;
     planar[16] = 56;
     let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
-    let data = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
-        .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let data = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
     match data {
         ImageData::Tiled(src) => {
@@ -157,7 +175,13 @@ fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
     let _threshold = TiledThresholdOverride::set(1);
     let planar = vec![0u8; 4 * 2 * 3];
     let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
-    let result = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None);
+    let result = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+    );
     let _ = std::fs::remove_file(&path);
     let err = match result {
         Err(e) => e,
@@ -208,7 +232,13 @@ fn optional_psd_libavif_sources_decode_to_pixels() {
             continue;
         }
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
+            load_psd(
+                &path,
+                crate::loader::DecodeCancelFlag::new(),
+                None,
+                1.0,
+                crate::hdr::types::HdrToneMapSettings::default(),
+            )
         }));
         assert!(
             outcome.is_ok(),
@@ -266,8 +296,14 @@ fn optional_psd_cmyk_samples_decode_to_pixels() {
             continue;
         }
         found = true;
-        let data = load_psd(&path, crate::loader::DecodeCancelFlag::new(), None)
-            .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
+        let data = load_psd(
+            &path,
+            crate::loader::DecodeCancelFlag::new(),
+            None,
+            1.0,
+            crate::hdr::types::HdrToneMapSettings::default(),
+        )
+        .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
         match data {
             ImageData::Tiled(src) => {
                 src.wait_for_async_pixels(std::time::Duration::from_secs(120))
