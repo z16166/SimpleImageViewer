@@ -547,15 +547,44 @@ pub fn composite_layers_hdr_from_index(
     sdr_white_nits: f32,
 ) -> Result<HdrImageBuffer, DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
-
     let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
+    let visible = compute_effective_visibility(&info.records);
+    composite_layers_hdr_with_visibility(info, bytes, index, &visible, cancel, sdr_white_nits)
+}
+
+/// Same as [`composite_layers_hdr_from_index`], but uses an explicit visibility mask
+/// (for P2.5 Layer Comp / max-bbox reveal paths).
+pub fn composite_layers_hdr_with_visibility_from_index(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    visible: &[bool],
+    cancel: Option<&AtomicBool>,
+    sdr_white_nits: f32,
+) -> Result<HdrImageBuffer, DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
+    composite_layers_hdr_with_visibility(info, bytes, index, visible, cancel, sdr_white_nits)
+}
+
+fn composite_layers_hdr_with_visibility(
+    info: crate::psb_layer_composite::LayerInfo<'_>,
+    bytes: &[u8],
+    index: &PsdSectionIndex,
+    visible: &[bool],
+    cancel: Option<&AtomicBool>,
+    sdr_white_nits: f32,
+) -> Result<HdrImageBuffer, DecodeError> {
+    if visible.len() != info.records.len() {
+        return Err(DecodeError::Message(
+            "PSD HDR visibility mask length mismatch".into(),
+        ));
+    }
 
     let depth = info.depth;
     let color_mode = info.color_mode;
     let canvas_w = info.width;
     let canvas_h = info.height;
 
-    // Probe ICC for HDR transfer function.
     let embedded_icc =
         crate::psb_reader::extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     let icc_probe = embedded_icc
@@ -569,8 +598,7 @@ pub fn composite_layers_hdr_from_index(
         icc_probe.transfer
     };
 
-    let visible = compute_effective_visibility(&info.records);
-    if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, &visible) {
+    if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, visible) {
         return Err(DecodeError::NoDrawableVisibleLayers);
     }
 
@@ -635,10 +663,7 @@ pub fn composite_layers_hdr_from_index(
     }
     clip_state.finish(&mut canvas, cancel)?;
 
-    let color_space = match color_mode {
-        4 => HdrColorSpace::LinearSrgb,
-        _ => HdrColorSpace::LinearSrgb,
-    };
+    let color_space = HdrColorSpace::LinearSrgb;
     let mut metadata = HdrImageMetadata::from_color_space(color_space);
     metadata.transfer_function = HdrTransferFunction::Linear;
     if let Some(nits) = icc_probe.peak_nits {

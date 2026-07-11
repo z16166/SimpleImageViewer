@@ -35,6 +35,7 @@ pub(crate) struct ImageViewStatus {
     ultra_hdr_decode_capacity: TrackedParam<Option<f32>, OsdEvent>,
     hdr_monitor_label: TrackedParam<Option<String>, OsdEvent>,
     hdr_exposure_ev: TrackedParam<f32, OsdEvent>,
+    psd_osd_line: TrackedParam<Option<String>, OsdEvent>,
 }
 
 impl ImageViewStatus {
@@ -67,7 +68,8 @@ impl ImageViewStatus {
                 OsdEvent::ultra_hdr_decode_capacity,
             ),
             hdr_monitor_label: TrackedParam::new(None, tx.clone(), OsdEvent::hdr_monitor_label),
-            hdr_exposure_ev: TrackedParam::new(0.0, tx, OsdEvent::hdr_exposure_ev),
+            hdr_exposure_ev: TrackedParam::new(0.0, tx.clone(), OsdEvent::hdr_exposure_ev),
+            psd_osd_line: TrackedParam::new(None, tx, OsdEvent::psd_line),
         }
     }
 
@@ -109,6 +111,10 @@ impl ImageViewStatus {
                 .set(hdr.monitor_label.map(str::to_owned));
         }
         self.hdr_exposure_ev.set(hdr.exposure_ev);
+    }
+
+    pub(crate) fn set_psd_osd_line(&mut self, line: Option<String>) {
+        self.psd_osd_line.set(line);
     }
 }
 

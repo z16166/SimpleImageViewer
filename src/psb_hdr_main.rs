@@ -16,16 +16,24 @@
 
 //! PSD/PSB HDR main-image decode state machine (Approach A).
 //!
-//! P1 flattened HDR -> P2 linear-light layer composite. P3 stays on the SDR
-//! path (IR JPEG is 8-bit). On hard failure the caller falls back to
-//! [`crate::psb_sdr_main`].
+//! P1 flattened HDR -> P2 linear-light layer composite -> P2.5a Layer Comp
+//! reveal -> P2.5b max-bbox reveal. P3 stays on the SDR path (IR JPEG is
+//! 8-bit). On hard failure the caller falls back to [`crate::psb_sdr_main`].
 
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
-use crate::psb_hdr_composite::composite_layers_hdr_from_index;
+use crate::psb_hdr_composite::{
+    composite_layers_hdr_from_index, composite_layers_hdr_with_visibility_from_index,
+};
 use crate::psb_hdr_flat::{read_composite_hdr_from_index, rgba_f32_is_absolutely_blank};
 use crate::psb_icc_hdr::{psd_content_wants_hdr, psd_env_wants_hdr};
 use crate::psb_reader::extract_icc_profile_from_ir;
 use crate::psb_section_index::PsdSectionIndex;
+
+#[derive(Debug)]
+pub struct PsdHdrMainDecode {
+    pub hdr: HdrImageBuffer,
+    pub osd: crate::loader::PsdOsdInfo,
+}
 
 /// True when both environment and content gates select the HDR path.
 pub fn psd_should_try_hdr(
@@ -36,7 +44,7 @@ pub fn psd_should_try_hdr(
     psd_env_wants_hdr(hdr_target_capacity) && psd_content_wants_hdr(depth, embedded_icc)
 }
 
-/// HDR main-image: P1 flattened -> P2 layer composite. No P3 HDR.
+/// HDR main-image: P1 flattened -> P2 layer composite -> P2.5a/b. No P3 HDR.
 ///
 /// `skip_flattened`: when an oversized PSB disk-tiled probe already rejected a
 /// blank flat, skip P1 and go straight to P2 HDR.
@@ -45,7 +53,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     tone: &HdrToneMapSettings,
     skip_flattened: bool,
-) -> Result<HdrImageBuffer, crate::loader::DecodeError> {
+) -> Result<PsdHdrMainDecode, crate::loader::DecodeError> {
     let index = PsdSectionIndex::parse(bytes)?;
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     if !psd_content_wants_hdr(index.depth, embedded_icc.as_deref()) {
@@ -75,7 +83,10 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
                         hdr.width,
                         hdr.height
                     );
-                    return Ok(hdr);
+                    return Ok(PsdHdrMainDecode {
+                        hdr,
+                        osd: crate::loader::PsdOsdInfo::p1_flattened(),
+                    });
                 }
             }
             Err(e) if e.is_cancelled() => return Err(e),
@@ -95,25 +106,196 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
                 || rgba_f32_is_zero_information(&hdr.rgba_f32)
             {
                 crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> fail",
+                    "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25",
                     hdr.width,
                     hdr.height
                 );
-                return Err(
-                    "PSD HDR main: P2 composite is zero-information; falling back to SDR".into(),
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P2_strict_layers {}x{}",
+                    hdr.width,
+                    hdr.height
                 );
+                return Ok(PsdHdrMainDecode {
+                    hdr,
+                    osd: crate::loader::PsdOsdInfo::p2_strict(),
+                });
             }
-            crate::preload_debug!(
-                "[PreloadDebug][PsdHdrMain] stage=P2_strict_layers {}x{}",
-                hdr.width,
-                hdr.height
-            );
-            Ok(hdr)
         }
+        Err(e) if e.is_cancelled() => return Err(e),
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P2_fail err={e}");
             log::debug!("PSD HDR main P2 layer composite unavailable: {e}");
-            Err(e)
+        }
+    }
+
+    if let Some(main) = decode_psd_hdr_main_p25a(&index, bytes, cancel, sdr_white)? {
+        return Ok(main);
+    }
+    if let Some(main) = decode_psd_hdr_main_p25b(&index, bytes, cancel, sdr_white)? {
+        return Ok(main);
+    }
+
+    Err("PSD HDR main: P2/P2.5 unavailable; falling back to SDR".into())
+}
+
+fn decode_psd_hdr_main_p25a(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    sdr_white: f32,
+) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let Some(comps) =
+        crate::psb_layer_comps::parse_layer_comps_from_ir(bytes, index.ir_start, index.ir_end)
+    else {
+        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_no_comps");
+        return Ok(None);
+    };
+    let Some(comp) = crate::psb_layer_comps::select_layer_comp(&comps.comps, comps.last_applied)
+    else {
+        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_no_selected_comp");
+        return Ok(None);
+    };
+    let comp_id = comp.id;
+    let comp_name = if comp.name.is_empty() {
+        None
+    } else {
+        Some(comp.name.clone())
+    };
+
+    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
+    {
+        Ok(info) => info,
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_parse_fail err={e}");
+            return Ok(None);
+        }
+    };
+    let Some(visible) =
+        crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id)
+    else {
+        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_visibility_fail");
+        return Ok(None);
+    };
+
+    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
+    {
+        Ok(hdr) => {
+            if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                || rgba_f32_is_zero_information(&hdr.rgba_f32)
+            {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25a_zero_information -> degrade_P25b"
+                );
+                Ok(None)
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25a_layer_comp {}x{}",
+                    hdr.width,
+                    hdr.height
+                );
+                Ok(Some(PsdHdrMainDecode {
+                    hdr,
+                    osd: crate::loader::PsdOsdInfo::p25a_layer_comp(comp_name),
+                }))
+            }
+        }
+        Err(e) if e.is_cancelled() => Err(e),
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_fail err={e}");
+            Ok(None)
+        }
+    }
+}
+
+fn decode_psd_hdr_main_p25b(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    sdr_white: f32,
+) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
+    {
+        Ok(info) => info,
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_parse_fail err={e}");
+            return Ok(None);
+        }
+    };
+    let Some(selection) = crate::psb_p25_reveal::select_max_bbox_top_level(&layer_info.records)
+    else {
+        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_no_candidate");
+        return Ok(None);
+    };
+    let root_name = if selection.root_name.is_empty() {
+        None
+    } else {
+        Some(selection.root_name.clone())
+    };
+
+    let visible = crate::psb_p25_reveal::visibility_respect_subtree(
+        &layer_info.records,
+        &selection.member_indices,
+    );
+    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
+    {
+        Ok(hdr)
+            if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][PsdHdrMain] stage=P25b_max_bbox {}x{}",
+                hdr.width,
+                hdr.height
+            );
+            return Ok(Some(PsdHdrMainDecode {
+                hdr,
+                osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name.clone(), false),
+            }));
+        }
+        Ok(_) => {
+            crate::preload_debug!(
+                "[PreloadDebug][PsdHdrMain] stage=P25b_zero_information -> force_open"
+            );
+        }
+        Err(e) if e.is_cancelled() => return Err(e),
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_pass1_fail err={e}");
+        }
+    }
+
+    let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
+        &layer_info.records,
+        &selection.member_indices,
+    );
+    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
+    {
+        Ok(hdr) => {
+            if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                || rgba_f32_is_zero_information(&hdr.rgba_f32)
+            {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_zero_information"
+                );
+                Ok(None)
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open {}x{}",
+                    hdr.width,
+                    hdr.height
+                );
+                Ok(Some(PsdHdrMainDecode {
+                    hdr,
+                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
+                }))
+            }
+        }
+        Err(e) if e.is_cancelled() => Err(e),
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_force_open_fail err={e}");
+            Ok(None)
         }
     }
 }

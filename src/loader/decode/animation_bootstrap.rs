@@ -356,6 +356,7 @@ pub(crate) fn spawn_raster_animation_remainder_decode(
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: hdr_target_capacity,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             device_id: None,
             staged_gpu_plane_upload: false,

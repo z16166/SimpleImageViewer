@@ -124,6 +124,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: hdr_target_capacity,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             device_id: None,
             staged_gpu_plane_upload: false,
@@ -135,6 +136,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         .unwrap_or("unknown");
 
     let mut raw_osd_info: Option<crate::loader::RawOsdInfo> = None;
+    let mut psd_osd_info: Option<crate::loader::PsdOsdInfo> = None;
     // Once per load: reused for dispatch and capacity-sensitive classification.
     let ext = path_ext_lower(path);
 
@@ -209,7 +211,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
-            return load_psd(path, cancel, psd_gpu, hdr_target_capacity, hdr_tone_map);
+            let (img, osd) = load_psd(path, cancel, psd_gpu, hdr_target_capacity, hdr_tone_map)?;
+            psd_osd_info = osd;
+            return Ok(img);
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
@@ -727,6 +731,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         sdr_fallback_is_placeholder,
         target_hdr_capacity: hdr_target_capacity,
         raw_osd: raw_osd_info,
+        psd_osd: psd_osd_info,
         uploaded_planes: None,
         device_id: None,
         staged_gpu_plane_upload: false,

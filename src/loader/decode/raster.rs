@@ -296,7 +296,7 @@ pub(crate) fn load_psd(
     gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, crate::loader::DecodeError> {
+) -> Result<(ImageData, Option<crate::loader::PsdOsdInfo>), crate::loader::DecodeError> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
@@ -365,7 +365,7 @@ pub(crate) fn load_psd(
                     let blank =
                         psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
                     if !blank {
-                        return Ok(ImageData::Tiled(std::sync::Arc::new(source)));
+                        return Ok((ImageData::Tiled(std::sync::Arc::new(source)), None));
                     }
                     log::debug!(
                         "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
@@ -422,20 +422,23 @@ pub(crate) fn load_psd(
             skip_flattened_for_disk_tiled_degrade,
         ) {
             Ok(hdr) => {
-                let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr)
+                let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr.hdr)
                     .map_err(|e| format!("PSD HDR SDR fallback failed: {e}"))?;
-                let fallback =
-                    DecodedImage::from_hdr_sdr_fallback(hdr.width, hdr.height, fallback_pixels);
-                let (hdr, fallback) =
-                    apply_exif_orientation_to_hdr_pair(path, hdr, fallback, Some(&mmap[..]));
+                let fallback = DecodedImage::from_hdr_sdr_fallback(
+                    hdr.hdr.width,
+                    hdr.hdr.height,
+                    fallback_pixels,
+                );
+                let (hdr_buf, fallback) =
+                    apply_exif_orientation_to_hdr_pair(path, hdr.hdr, fallback, Some(&mmap[..]));
                 log::debug!(
                     "PSD/PSB HDR decoded {}x{} (header was {}x{}); routing via make_hdr_image_data",
-                    hdr.width,
-                    hdr.height,
+                    hdr_buf.width,
+                    hdr_buf.height,
                     width,
                     height
                 );
-                return Ok(make_hdr_image_data(hdr, fallback));
+                return Ok((make_hdr_image_data(hdr_buf, fallback), Some(hdr.osd)));
             }
             Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
@@ -444,7 +447,7 @@ pub(crate) fn load_psd(
         }
     }
 
-    let composite = if skip_flattened_for_disk_tiled_degrade {
+    let main = if skip_flattened_for_disk_tiled_degrade {
         crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
@@ -457,6 +460,8 @@ pub(crate) fn load_psd(
             gpu.as_ref(),
         )?
     };
+    let composite = main.composite;
+    let psd_osd = Some(main.osd);
     let img = DecodedImage::new(composite.width, composite.height, composite.pixels);
     let oriented =
         apply_exif_orientation_to_image_data(path, ImageData::Static(img), Some(&mmap[..]));
@@ -469,7 +474,7 @@ pub(crate) fn load_psd(
                 width,
                 height
             );
-            Ok(make_image_data(decoded))
+            Ok((make_image_data(decoded), psd_osd))
         }
         other => Err(format!(
             "PSD/PSB orientation produced unexpected image shape ({:?})",

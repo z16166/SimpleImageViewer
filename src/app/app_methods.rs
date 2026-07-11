@@ -146,6 +146,9 @@ impl ImageViewerApp {
             if self.osd.has_raw_line() {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
+            if self.osd.has_psd_line() {
+                inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+            }
             if self.last_save_error.is_some() {
                 inset = inset.max(
                     crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_TEXT_SIZE,
