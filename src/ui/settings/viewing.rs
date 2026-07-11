@@ -132,6 +132,7 @@ pub(super) fn draw_viewing_tab(
                         app.image_files[app.current_index].clone(),
                         app.settings.raw_high_quality,
                         app.settings.raw_demosaic_mode,
+                        app.settings.psd_hidden_layer_heuristic,
                     );
                 }
             }
@@ -154,6 +155,19 @@ pub(super) fn draw_viewing_tab(
             &palette,
         )
         .on_hover_text(t!("hint.raw_high_quality"))
+        .changed()
+        {
+            app.reload_current();
+            app.queue_save();
+        }
+
+        if themed_labeled_toggle(
+            ui,
+            &mut app.settings.psd_hidden_layer_heuristic,
+            t!("label.psd_hidden_layer_heuristic"),
+            &palette,
+        )
+        .on_hover_text(t!("hint.psd_hidden_layer_heuristic"))
         .changed()
         {
             app.reload_current();

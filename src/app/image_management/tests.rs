@@ -1071,6 +1071,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_heuristic,
     );
 
     assert!(
@@ -1090,6 +1091,7 @@ fn strip_cold_defers_current_index_while_main_loader_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_heuristic,
     );
 
     assert!(
@@ -1110,6 +1112,7 @@ fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_heuristic,
     );
 
     assert!(
@@ -1139,6 +1142,7 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_heuristic,
     );
     assert!(app.loader.is_loading(0));
 

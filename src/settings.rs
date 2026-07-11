@@ -329,6 +329,10 @@ pub struct Settings {
     #[serde(default = "default_raw_demosaic_method")]
     pub raw_demosaic_method: RawDemosaicMethod,
 
+    /// When true, PSD/PSB decode may run P2.5b max-bbox reveal (up to 3 candidates).
+    #[serde(default)]
+    pub psd_hidden_layer_heuristic: bool,
+
     // HDR tone mapping
     /// Request a native HDR swap chain (Windows scRGB / macOS EDR / Wayland HDR10).
     /// On Linux X11 this is ignored; use [`Settings::hdr_native_surface_enabled_effective`].
@@ -499,6 +503,7 @@ impl Default for Settings {
             raw_high_quality: false,
             raw_demosaic_mode: default_raw_demosaic_mode(),
             raw_demosaic_method: default_raw_demosaic_method(),
+            psd_hidden_layer_heuristic: false,
             hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
             hdr_exposure_ev_native: 0.0,
             hdr_exposure_ev_sdr: 0.0,
@@ -947,6 +952,17 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
+
+    #[test]
+    fn psd_hidden_layer_heuristic_defaults_false() {
+        let settings = Settings::default();
+        assert!(!settings.psd_hidden_layer_heuristic);
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+        assert!(!settings.psd_hidden_layer_heuristic);
+        let settings: Settings =
+            serde_yaml::from_str("psd_hidden_layer_heuristic: true").expect("deserialize true");
+        assert!(settings.psd_hidden_layer_heuristic);
+    }
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {

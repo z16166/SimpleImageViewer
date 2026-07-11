@@ -53,6 +53,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     tone: &HdrToneMapSettings,
     skip_flattened: bool,
+    psd_hidden_layer_heuristic: bool,
 ) -> Result<PsdHdrMainDecode, crate::loader::DecodeError> {
     let index = PsdSectionIndex::parse(bytes)?;
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
@@ -132,8 +133,12 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     if let Some(main) = decode_psd_hdr_main_p25a(&index, bytes, cancel, sdr_white)? {
         return Ok(main);
     }
-    if let Some(main) = decode_psd_hdr_main_p25b(&index, bytes, cancel, sdr_white)? {
-        return Ok(main);
+    if psd_hidden_layer_heuristic {
+        if let Some(main) = decode_psd_hdr_main_p25b(&index, bytes, cancel, sdr_white)? {
+            return Ok(main);
+        }
+    } else {
+        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_skipped heuristic_off");
     }
 
     Err("PSD HDR main: P2/P2.5 unavailable; falling back to SDR".into())
@@ -224,80 +229,109 @@ fn decode_psd_hdr_main_p25b(
             return Ok(None);
         }
     };
-    let Some(selection) = crate::psb_p25_reveal::select_max_bbox_top_level(&layer_info.records)
-    else {
+    let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
+        &layer_info.records,
+        crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
+    );
+    if candidates.is_empty() {
         crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_no_candidate");
         return Ok(None);
-    };
-    let root_name = if selection.root_name.is_empty() {
-        None
-    } else {
-        Some(selection.root_name.clone())
-    };
-
-    let visible = crate::psb_p25_reveal::visibility_respect_subtree(
-        &layer_info.records,
-        &selection.member_indices,
-    );
-    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
-    {
-        Ok(hdr)
-            if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>
-        {
-            crate::preload_debug!(
-                "[PreloadDebug][PsdHdrMain] stage=P25b_max_bbox {}x{}",
-                hdr.width,
-                hdr.height
-            );
-            return Ok(Some(PsdHdrMainDecode {
-                hdr,
-                osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name.clone(), false),
-            }));
-        }
-        Ok(_) => {
-            crate::preload_debug!(
-                "[PreloadDebug][PsdHdrMain] stage=P25b_zero_information -> force_open"
-            );
-        }
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_pass1_fail err={e}");
-        }
     }
 
-    let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
-        &layer_info.records,
-        &selection.member_indices,
-    );
-    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
-    {
-        Ok(hdr) => {
-            if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                || rgba_f32_is_zero_information(&hdr.rgba_f32)
+    for (cand_i, selection) in candidates.iter().enumerate() {
+        let root_name = if selection.root_name.is_empty() {
+            None
+        } else {
+            Some(selection.root_name.clone())
+        };
+        crate::preload_debug!(
+            "[PreloadDebug][PsdHdrMain] stage=P25b_try cand={} root={}",
+            cand_i,
+            selection.root_name
+        );
+        log::debug!(
+            "PSD HDR main P2.5b try cand={} root={}",
+            cand_i,
+            selection.root_name
+        );
+
+        let visible = crate::psb_p25_reveal::visibility_respect_subtree(
+            &layer_info.records,
+            &selection.member_indices,
+        );
+        match composite_layers_hdr_with_visibility_from_index(
+            index, bytes, &visible, cancel, sdr_white,
+        ) {
+            Ok(hdr)
+                if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                    && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>
             {
                 crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_zero_information"
-                );
-                Ok(None)
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open {}x{}",
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_max_bbox cand={} {}x{}",
+                    cand_i,
                     hdr.width,
                     hdr.height
                 );
-                Ok(Some(PsdHdrMainDecode {
+                return Ok(Some(PsdHdrMainDecode {
                     hdr,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
-                }))
+                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name.clone(), false),
+                }));
+            }
+            Ok(_) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_zero_information cand={} -> force_open",
+                    cand_i
+                );
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_pass1_fail cand={} err={e}",
+                    cand_i
+                );
             }
         }
-        Err(e) if e.is_cancelled() => Err(e),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_force_open_fail err={e}");
-            Ok(None)
+
+        let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
+            &layer_info.records,
+            &selection.member_indices,
+        );
+        match composite_layers_hdr_with_visibility_from_index(
+            index, bytes, &visible, cancel, sdr_white,
+        ) {
+            Ok(hdr) => {
+                if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                    || rgba_f32_is_zero_information(&hdr.rgba_f32)
+                {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_zero_information cand={}",
+                        cand_i
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdHdrMain] stage=P25b_force_open cand={} {}x{}",
+                        cand_i,
+                        hdr.width,
+                        hdr.height
+                    );
+                    return Ok(Some(PsdHdrMainDecode {
+                        hdr,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
+                    }));
+                }
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_fail cand={} err={e}",
+                    cand_i
+                );
+            }
         }
     }
+
+    crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_exhausted");
+    Ok(None)
 }
 
 /// Zero-information for HDR: all alpha 0, or solid RGB (no variance) with any alpha.

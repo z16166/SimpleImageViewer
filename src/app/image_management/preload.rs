@@ -74,6 +74,7 @@ impl ImageViewerApp {
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(cur),
+            self.settings.psd_hidden_layer_heuristic,
         );
     }
 
@@ -166,6 +167,7 @@ impl ImageViewerApp {
                 path,
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
+                self.settings.psd_hidden_layer_heuristic,
             );
             current_is_loading = true;
         }
@@ -441,6 +443,7 @@ impl ImageViewerApp {
                 path.clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),
+                self.settings.psd_hidden_layer_heuristic,
             );
             in_flight.insert(idx);
             count += 1;

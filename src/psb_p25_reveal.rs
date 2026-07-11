@@ -27,8 +27,21 @@ pub struct MaxBboxSelection {
     pub member_indices: Vec<usize>,
 }
 
+/// Max top-level bbox candidates tried by P2.5b when the heuristic is enabled.
+pub const P25B_MAX_CANDIDATES: usize = 3;
+
+/// Convenience wrapper: largest top-level bbox only (limit 1).
+/// Kept for unit tests and single-candidate call sites.
+#[allow(dead_code)]
 pub fn select_max_bbox_top_level(records: &[LayerRecord]) -> Option<MaxBboxSelection> {
-    let mut best: Option<(u64, MaxBboxSelection)> = None;
+    rank_max_bbox_top_level(records, 1).into_iter().next()
+}
+
+pub fn rank_max_bbox_top_level(records: &[LayerRecord], limit: usize) -> Vec<MaxBboxSelection> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut ranked: Vec<(u64, MaxBboxSelection)> = Vec::new();
     let mut open_group_starts = Vec::new();
 
     for (index, record) in records.iter().enumerate() {
@@ -40,18 +53,27 @@ pub fn select_max_bbox_top_level(records: &[LayerRecord]) -> Option<MaxBboxSelec
                 };
                 if open_group_starts.is_empty() {
                     let members: Vec<usize> = (start..=index).collect();
-                    consider_candidate(records, index, members, &mut best);
+                    push_candidate(records, index, members, &mut ranked);
                 }
             }
             _ if open_group_starts.is_empty() => {
                 let members = vec![index];
-                consider_candidate(records, index, members, &mut best);
+                push_candidate(records, index, members, &mut ranked);
             }
             _ => {}
         }
     }
 
-    best.map(|(_, selection)| selection)
+    ranked.sort_by(|(area_a, sel_a), (area_b, sel_b)| {
+        area_b
+            .cmp(area_a)
+            .then_with(|| sel_a.root_index.cmp(&sel_b.root_index))
+    });
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, selection)| selection)
+        .collect()
 }
 
 pub fn visibility_respect_subtree(records: &[LayerRecord], members: &[usize]) -> Vec<bool> {
@@ -78,11 +100,11 @@ pub fn visibility_force_open_subtree(records: &[LayerRecord], members: &[usize])
     visible
 }
 
-fn consider_candidate(
+fn push_candidate(
     records: &[LayerRecord],
     root_index: usize,
     member_indices: Vec<usize>,
-    best: &mut Option<(u64, MaxBboxSelection)>,
+    ranked: &mut Vec<(u64, MaxBboxSelection)>,
 ) {
     let Some(area) = bbox_area(records, &member_indices) else {
         return;
@@ -90,23 +112,18 @@ fn consider_candidate(
     if area == 0 {
         return;
     }
-    let should_replace = best.as_ref().is_none_or(|(best_area, best_selection)| {
-        area > *best_area || (area == *best_area && root_index < best_selection.root_index)
-    });
-    if should_replace {
-        let root_name = records
-            .get(root_index)
-            .map(|record| record.name.clone())
-            .unwrap_or_default();
-        *best = Some((
-            area,
-            MaxBboxSelection {
-                root_index,
-                root_name,
-                member_indices,
-            },
-        ));
-    }
+    let root_name = records
+        .get(root_index)
+        .map(|record| record.name.clone())
+        .unwrap_or_default();
+    ranked.push((
+        area,
+        MaxBboxSelection {
+            root_index,
+            root_name,
+            member_indices,
+        },
+    ));
 }
 
 fn bbox_area(records: &[LayerRecord], members: &[usize]) -> Option<u64> {
@@ -154,7 +171,8 @@ fn is_drawable_leaf(record: &LayerRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        select_max_bbox_top_level, visibility_force_open_subtree, visibility_respect_subtree,
+        P25B_MAX_CANDIDATES, rank_max_bbox_top_level, select_max_bbox_top_level,
+        visibility_force_open_subtree, visibility_respect_subtree,
     };
     use crate::psb_layer_composite::LayerRecord;
 
@@ -196,6 +214,24 @@ mod tests {
 
     fn divider() -> LayerRecord {
         test_record("</Layer group>", None, false, Some(3))
+    }
+
+    #[test]
+    fn rank_max_bbox_top_level_orders_by_area_and_limits() {
+        let records = vec![
+            layer("tiny", (0, 0, 2, 2), true),
+            layer("large", (0, 0, 20, 20), true),
+            layer("medium", (0, 0, 10, 10), true),
+        ];
+        let ranked = rank_max_bbox_top_level(&records, P25B_MAX_CANDIDATES);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0].root_name, "large");
+        assert_eq!(ranked[1].root_name, "medium");
+        assert_eq!(ranked[2].root_name, "tiny");
+
+        let top1 = rank_max_bbox_top_level(&records, 1);
+        assert_eq!(top1.len(), 1);
+        assert_eq!(top1[0].root_name, "large");
     }
 
     #[test]

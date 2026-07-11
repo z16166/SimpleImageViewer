@@ -73,6 +73,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_heuristic,
                 );
             } else {
                 log::warn!(
@@ -85,6 +86,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_heuristic,
                 );
             }
 

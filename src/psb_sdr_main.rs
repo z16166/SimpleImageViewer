@@ -53,8 +53,9 @@ pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_heuristic: bool,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, false)
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, false, psd_hidden_layer_heuristic)
 }
 
 /// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but skips P1 flattened
@@ -64,8 +65,9 @@ pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_heuristic: bool,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, true)
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, true, psd_hidden_layer_heuristic)
 }
 
 fn decode_psd_sdr_main_inner(
@@ -73,6 +75,7 @@ fn decode_psd_sdr_main_inner(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     skip_flattened: bool,
+    psd_hidden_layer_heuristic: bool,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
     // Single structural walk feeds P1 (image_data_pos), P2 (lm_start/lm_end),
     // and P3 (ir_start/ir_end); every stage below reuses this same index.
@@ -201,8 +204,12 @@ fn decode_psd_sdr_main_inner(
     if let Some(main) = decode_psd_sdr_main_p25a(&index, bytes, cancel, gpu)? {
         return Ok(main);
     }
-    if let Some(main) = decode_psd_sdr_main_p25b(&index, bytes, cancel, gpu)? {
-        return Ok(main);
+    if psd_hidden_layer_heuristic {
+        if let Some(main) = decode_psd_sdr_main_p25b(&index, bytes, cancel, gpu)? {
+            return Ok(main);
+        }
+    } else {
+        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_skipped heuristic_off");
     }
 
     // P3: embedded Photoshop IR thumbnail (via the already-parsed index's
@@ -434,114 +441,145 @@ fn decode_psd_sdr_main_p25b(
         }
     };
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
-    let Some(selection) = crate::psb_p25_reveal::select_max_bbox_top_level(&layer_info.records)
-    else {
+    let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
+        &layer_info.records,
+        crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
+    );
+    drop(layer_info);
+    if candidates.is_empty() {
         crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_no_candidate");
         log::debug!("PSD SDR main P2.5b: no max-bbox candidate");
         return Ok(None);
-    };
+    }
 
-    let root_name = if selection.root_name.is_empty() {
-        None
-    } else {
-        Some(selection.root_name.clone())
-    };
-    let visible = crate::psb_p25_reveal::visibility_respect_subtree(
-        &layer_info.records,
-        &selection.member_indices,
-    );
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
-        Ok(composite) => {
-            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                &composite.pixels,
-                cancel,
-            )?;
-            if !zero_info {
+    for (cand_i, selection) in candidates.iter().enumerate() {
+        let root_name = if selection.root_name.is_empty() {
+            None
+        } else {
+            Some(selection.root_name.clone())
+        };
+        crate::preload_debug!(
+            "[PreloadDebug][PsdSdrMain] stage=P25b_try cand={} root={}",
+            cand_i,
+            selection.root_name
+        );
+        log::debug!(
+            "PSD SDR main P2.5b try cand={} root={}",
+            cand_i,
+            selection.root_name
+        );
+
+        let layer_info =
+            match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes) {
+                Ok(info) => info,
+                Err(e) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P25b_reparse_fail cand={} err={e}",
+                        cand_i
+                    );
+                    continue;
+                }
+            };
+        let visible = crate::psb_p25_reveal::visibility_respect_subtree(
+            &layer_info.records,
+            &selection.member_indices,
+        );
+        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+            Ok(composite) => {
+                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                    &composite.pixels,
+                    cancel,
+                )?;
+                if !zero_info {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P25b_max_bbox cand={} {}x{} pixels={}",
+                        cand_i,
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::debug!(
+                        "PSD SDR main: P2.5b max-bbox composite {}",
+                        selection.root_name
+                    );
+                    return Ok(Some(PsdMainDecode {
+                        composite,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, false),
+                    }));
+                }
                 crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P25b_max_bbox {}x{} pixels={}",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
+                    "[PreloadDebug][PsdSdrMain] stage=P25b_zero_information cand={} -> force_open",
+                    cand_i
                 );
-                log::debug!(
-                    "PSD SDR main: P2.5b max-bbox composite {}",
-                    selection.root_name
-                );
-                return Ok(Some(PsdMainDecode {
-                    composite,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, false),
-                }));
             }
-            crate::preload_debug!(
-                "[PreloadDebug][PsdSdrMain] stage=P25b_zero_information -> force_open"
-            );
-            log::debug!("PSD SDR main: P2.5b max-bbox respected pass is zero-information");
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P25b_pass1_fail cand={} err={e}",
+                    cand_i
+                );
+            }
         }
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_pass1_fail err={e}");
-            log::debug!("PSD SDR main P2.5b respected pass unavailable: {e}");
+
+        let layer_info =
+            match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes) {
+                Ok(info) => info,
+                Err(e) => {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P25b_reparse_fail cand={} err={e}",
+                        cand_i
+                    );
+                    continue;
+                }
+            };
+        let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
+            &layer_info.records,
+            &selection.member_indices,
+        );
+        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+            Ok(composite) => {
+                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                    &composite.pixels,
+                    cancel,
+                )?;
+                if zero_info {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_zero_information \
+                         cand={} {}x{} -> next",
+                        cand_i,
+                        composite.width,
+                        composite.height
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P25b_force_open cand={} {}x{} pixels={}",
+                        cand_i,
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::debug!(
+                        "PSD SDR main: P2.5b force-open max-bbox composite {}",
+                        selection.root_name
+                    );
+                    return Ok(Some(PsdMainDecode {
+                        composite,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
+                    }));
+                }
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_fail cand={} err={e}",
+                    cand_i
+                );
+            }
         }
     }
 
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_reparse_fail err={e}");
-            log::debug!("PSD SDR main P2.5b force-open reparse unavailable: {e}");
-            return Ok(None);
-        }
-    };
-    let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
-        &layer_info.records,
-        &selection.member_indices,
-    );
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
-        Ok(composite) => {
-            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                &composite.pixels,
-                cancel,
-            )?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_zero_information \
-                     {}x{} pixels={} -> degrade_P3",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P2.5b force-open composite {}x{} is zero-information; \
-                     degrading to P3",
-                    composite.width,
-                    composite.height
-                );
-                Ok(None)
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P25b_force_open {}x{} pixels={}",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P2.5b force-open max-bbox composite {}",
-                    selection.root_name
-                );
-                Ok(Some(PsdMainDecode {
-                    composite,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
-                }))
-            }
-        }
-        Err(e) if e.is_cancelled() => Err(e),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_force_open_fail err={e}");
-            log::debug!("PSD SDR main P2.5b force-open pass unavailable: {e}");
-            Ok(None)
-        }
-    }
+    crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_exhausted -> degrade_P3");
+    Ok(None)
 }
 
 fn composite_p25b_pass(
@@ -669,7 +707,7 @@ mod tests {
     fn decode_psd_sdr_main_decodes_tiny_raw_rgb_flattened() {
         let bytes = tiny_raw_rgb_psd(1, 1, &[0x10, 0x20, 0x30]);
 
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
             .expect("tiny raw RGB PSD should decode through P1");
 
         assert_eq!((main.composite.width, main.composite.height), (1, 1));
@@ -703,7 +741,7 @@ mod tests {
         let p1_err = index.image_data_compression(&bytes).unwrap_err();
         assert_eq!(p1_err, "PSD/PSB Image Data compression truncated");
 
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
             .expect_err("P1 failure should degrade to P2/P3 fallback");
         let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
         assert_eq!(err.as_str(), expected);
@@ -721,7 +759,7 @@ mod tests {
             &[10, 10, 200, 200],
         );
 
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, true)
             .expect("hidden layer should decode through P2.5b force-open");
 
         assert_eq!((main.composite.width, main.composite.height), (2, 2));
@@ -730,6 +768,128 @@ mod tests {
         assert_eq!(
             main.osd,
             crate::loader::PsdOsdInfo::p25b_max_bbox(Some("Hidden red".into()), true)
+        );
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_skips_p25b_when_heuristic_disabled() {
+        let bytes = hidden_single_layer_psd(
+            2,
+            2,
+            &[200, 200, 10, 10],
+            &[30, 80, 30, 80],
+            &[10, 10, 200, 200],
+        );
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
+            .expect_err("P2.5b must not run when heuristic disabled");
+        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
+        assert_eq!(err.as_str(), expected);
+    }
+
+    /// Two hidden layers: large solid-black (zero-info) + smaller variegated content.
+    /// Bottom-to-top PSD order: large first, then small.
+    fn two_hidden_layers_large_blank_small_content_psd() -> Vec<u8> {
+        let width = 4u32;
+        let height = 4u32;
+        let pixel_count = (width * height) as usize;
+        let large_r = vec![0u8; pixel_count];
+        let large_g = vec![0u8; pixel_count];
+        let large_b = vec![0u8; pixel_count];
+        let small_r = [200u8, 200, 10, 10];
+        let small_g = [30u8, 80, 30, 80];
+        let small_b = [10u8, 10, 200, 200];
+
+        fn one_layer(
+            name: &[u8],
+            top: i32,
+            left: i32,
+            bottom: i32,
+            right: i32,
+            r: &[u8],
+            g: &[u8],
+            b: &[u8],
+        ) -> (Vec<u8>, Vec<Vec<u8>>) {
+            let channels = [
+                (0i16, raw_layer_channel_plane(r)),
+                (1i16, raw_layer_channel_plane(g)),
+                (2i16, raw_layer_channel_plane(b)),
+            ];
+            let extra = layer_extra_with_name(name);
+            let mut layer_record = Vec::new();
+            layer_record.extend_from_slice(&top.to_be_bytes());
+            layer_record.extend_from_slice(&left.to_be_bytes());
+            layer_record.extend_from_slice(&bottom.to_be_bytes());
+            layer_record.extend_from_slice(&right.to_be_bytes());
+            layer_record.extend_from_slice(&(channels.len() as u16).to_be_bytes());
+            for (id, data) in &channels {
+                layer_record.extend_from_slice(&id.to_be_bytes());
+                layer_record.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            }
+            layer_record.extend_from_slice(b"8BIM");
+            layer_record.extend_from_slice(b"norm");
+            layer_record.extend_from_slice(&[255, 0, 2, 0]);
+            layer_record.extend_from_slice(&(extra.len() as u32).to_be_bytes());
+            layer_record.extend_from_slice(&extra);
+            let channel_data: Vec<Vec<u8>> = channels.into_iter().map(|(_, d)| d).collect();
+            (layer_record, channel_data)
+        }
+
+        let (large_rec, large_ch) = one_layer(
+            b"Large blank",
+            0,
+            0,
+            height as i32,
+            width as i32,
+            &large_r,
+            &large_g,
+            &large_b,
+        );
+        let (small_rec, small_ch) =
+            one_layer(b"Small content", 0, 0, 2, 2, &small_r, &small_g, &small_b);
+
+        let mut layer_info = Vec::new();
+        layer_info.extend_from_slice(&2i16.to_be_bytes());
+        layer_info.extend_from_slice(&large_rec);
+        layer_info.extend_from_slice(&small_rec);
+        for data in large_ch.iter().chain(small_ch.iter()) {
+            layer_info.extend_from_slice(data);
+        }
+
+        let mut layer_mask_info = Vec::new();
+        layer_mask_info.extend_from_slice(&(layer_info.len() as u32).to_be_bytes());
+        layer_mask_info.extend_from_slice(&layer_info);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&(layer_mask_info.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&layer_mask_info);
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend(std::iter::repeat_n(0u8, pixel_count * 3));
+        bytes
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_p25b_tries_second_max_bbox_candidate() {
+        let bytes = two_hidden_layers_large_blank_small_content_psd();
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, true)
+            .expect("second candidate should provide content");
+        assert_eq!(
+            main.osd,
+            crate::loader::PsdOsdInfo::p25b_max_bbox(Some("Small content".into()), true)
+        );
+        assert_ne!(
+            main.composite.pixels[0..3],
+            main.composite.pixels[4..7],
+            "small layer must keep RGB variance"
         );
     }
 
@@ -743,7 +903,8 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
+        let main =
+            decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false).expect("main");
         assert_eq!((main.composite.width, main.composite.height), (5031, 3437));
         assert_eq!(main.composite.pixels.len(), 5031 * 3437 * 4);
     }
@@ -758,7 +919,7 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).expect("read");
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None)
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
             .expect_err("expected fail when all layers hidden and P2.5b/P3 are blank");
         let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
         assert_eq!(err.as_str(), expected);
@@ -786,7 +947,8 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read");
         let flat = crate::psb_reader::read_composite_from_bytes(&bytes).expect("flat");
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None).expect("main");
+        let main =
+            decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false).expect("main");
         assert_eq!(
             (main.composite.width, main.composite.height),
             (flat.width, flat.height)

@@ -344,6 +344,7 @@ impl ImageViewerApp {
                             path,
                             self.settings.raw_high_quality,
                             crate::settings::RawDemosaicMode::Cpu,
+                            self.settings.psd_hidden_layer_heuristic,
                         );
                     }
                 } else {

@@ -211,7 +211,14 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
         // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
-            let (img, osd) = load_psd(path, cancel, psd_gpu, hdr_target_capacity, hdr_tone_map)?;
+            let (img, osd) = load_psd(
+                path,
+                cancel,
+                psd_gpu,
+                hdr_target_capacity,
+                hdr_tone_map,
+                decode_profile.psd_hidden_layer_heuristic,
+            )?;
             psd_osd_info = osd;
             return Ok(img);
         }
