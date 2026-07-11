@@ -17,8 +17,24 @@
 //! Offscreen wgpu compute path for PSD/PSB separable layer blend and clipping groups.
 //!
 //! Handles Normal, Screen, Linear Dodge, and Multiply for the existing SDR RGBA8
-//! display path. PackBits / ICC stay on CPU. See
-//! `docs/superpowers/specs/2026-07-10-psd-gpu-separable-clip-blend-design.md`.
+//! display path. PackBits / ICC stay on CPU.
+//!
+//! # Current GPU shader limitations (as of separable + clip path)
+//!
+//! 1. **Blend modes:** only the four separable keys (`norm` / `scrn` / `lddg` /
+//!    `mul `). Overlay, Soft Light, and other non-separable modes are not in
+//!    the shader (unknown keys still map to Normal, matching CPU).
+//! 2. **User mask vs clipping:** user/real mask is folded into layer alpha on
+//!    CPU before upload (not a separate shader pass; acceptable). Clipping
+//!    groups *are* on GPU (`cs_capture_base_alpha` /
+//!    `cs_apply_base_alpha_mask` + CPU-side group orchestration mirroring
+//!    `OpenClipGroup`). Vector masks / knockout / clip-to-folder remain out
+//!    of scope.
+//! 3. **Admission fallback:** if any decoded layer is not GPU-separable, the
+//!    whole stack falls back to CPU `blend_layers_with_clipping` (all-or-
+//!    nothing per document). Same full-CPU fallback on device/OpenGL/size
+//!    gate, OOM, cancel, or readback failure.
+//!
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
