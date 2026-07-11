@@ -162,7 +162,11 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             alpha: args.alpha,
         };
         if let Some(mut rgba) = crate::psb_cmyk_cms::planar_cmyk_adobe_to_rgba8(&span, icc) {
-            fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
+            crate::psb_layer_rgba_simd::fold_opacity_mask_into_alpha(
+                &mut rgba,
+                args.opacity,
+                args.mask,
+            );
             return rgba;
         }
     }
@@ -185,7 +189,45 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         } else {
             simple_image_viewer::simd_swizzle::interleave_rgb_with_alpha(g, g, g, 255, &mut rgba);
         }
-        fold_opacity_mask_into_alpha(&mut rgba, opacity, args.mask);
+        crate::psb_layer_rgba_simd::fold_opacity_mask_into_alpha(
+            &mut rgba,
+            args.opacity,
+            args.mask,
+        );
+        return rgba;
+    }
+
+    // RGB fast path: planar R/G/B -> interleaved via SIMD, then fold opacity/mask.
+    if args.color_mode == 3
+        && let (Some(r), Some(g), Some(b)) = (
+            args.color[0].as_deref(),
+            args.color[1].as_deref(),
+            args.color[2].as_deref(),
+        )
+        && r.len() >= pixel_count
+        && g.len() >= pixel_count
+        && b.len() >= pixel_count
+    {
+        let mut rgba = vec![0u8; rgba_len];
+        let r = &r[..pixel_count];
+        let g = &g[..pixel_count];
+        let b = &b[..pixel_count];
+        if let Some(a) = args.alpha.filter(|a| a.len() >= pixel_count) {
+            simple_image_viewer::simd_swizzle::interleave_rgba(
+                r,
+                g,
+                b,
+                &a[..pixel_count],
+                &mut rgba,
+            );
+        } else {
+            simple_image_viewer::simd_swizzle::interleave_rgb_with_alpha(r, g, b, 255, &mut rgba);
+        }
+        crate::psb_layer_rgba_simd::fold_opacity_mask_into_alpha(
+            &mut rgba,
+            args.opacity,
+            args.mask,
+        );
         return rgba;
     }
 
@@ -227,19 +269,6 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     }
 
     rgba
-}
-
-fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u32, mask: Option<&[u8]>) {
-    let pixel_count = rgba.len() / 4;
-    for i in 0..pixel_count {
-        let off = i * 4 + 3;
-        let mut a = rgba[off] as u32 * opacity / 255;
-        if let Some(m) = mask {
-            let mv = m.get(i).copied().unwrap_or(255) as u32;
-            a = a * mv / 255;
-        }
-        rgba[off] = a as u8;
-    }
 }
 
 /// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
@@ -1284,6 +1313,60 @@ mod tests {
 
         // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
         assert_eq!(rgba, vec![163, 122, 81, 78]);
+    }
+
+    #[test]
+    fn layer_to_rgba8_rgb_opacity_mask_numeric() {
+        // 1x1 RGB: (10,20,30), alpha=200, opacity=200, mask=128
+        // a = 200*200/255 = 156; then 156*128/255 = 78
+        let color: [Option<Vec<u8>>; 4] = [Some(vec![10]), Some(vec![20]), Some(vec![30]), None];
+        let alpha = vec![200u8];
+        let mask = vec![128u8];
+        let rgba = layer_to_rgba8(LayerRgbaArgs {
+            color_mode: 3,
+            width: 1,
+            height: 1,
+            color: &color,
+            alpha: Some(&alpha),
+            mask: Some(&mask),
+            opacity: 200,
+            cmyk_icc: &[],
+        });
+        assert_eq!(rgba, vec![10, 20, 30, 78]);
+    }
+
+    #[test]
+    fn layer_to_rgba8_rgb_no_alpha_full_opacity() {
+        let color: [Option<Vec<u8>>; 4] =
+            [Some(vec![1, 2]), Some(vec![3, 4]), Some(vec![5, 6]), None];
+        let rgba = layer_to_rgba8(LayerRgbaArgs {
+            color_mode: 3,
+            width: 2,
+            height: 1,
+            color: &color,
+            alpha: None,
+            mask: None,
+            opacity: 255,
+            cmyk_icc: &[],
+        });
+        assert_eq!(rgba, vec![1, 3, 5, 255, 2, 4, 6, 255]);
+    }
+
+    #[test]
+    fn layer_to_rgba8_rgb_missing_g_falls_back() {
+        // Missing G plane: must not panic; scalar fallback zeros missing samples.
+        let color: [Option<Vec<u8>>; 4] = [Some(vec![9]), None, Some(vec![7]), None];
+        let rgba = layer_to_rgba8(LayerRgbaArgs {
+            color_mode: 3,
+            width: 1,
+            height: 1,
+            color: &color,
+            alpha: None,
+            mask: None,
+            opacity: 255,
+            cmyk_icc: &[],
+        });
+        assert_eq!(rgba, vec![9, 0, 7, 255]);
     }
 
     #[test]

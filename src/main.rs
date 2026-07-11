@@ -58,6 +58,7 @@ mod psb_layer_clip;
 pub mod psb_layer_composite;
 mod psb_layer_decode;
 mod psb_layer_decode_pool;
+mod psb_layer_rgba_simd;
 mod psb_packbits_simd;
 mod psb_reader;
 mod psb_reader_tiled;
