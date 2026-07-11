@@ -46,6 +46,21 @@ use wgpu::util::DeviceExt;
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
+static COMPUTE_PASS_BEGINS: AtomicU64 = AtomicU64::new(0);
+
+fn begin_psd_compute_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    label: &'static str,
+) -> wgpu::ComputePass<'a> {
+    #[cfg(test)]
+    COMPUTE_PASS_BEGINS.fetch_add(1, Ordering::Relaxed);
+    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some(label),
+        timestamp_writes: None,
+    })
+}
+
 /// Skip GPU when the canvas is small enough that upload/sync dominate.
 pub(crate) const GPU_BLEND_MIN_SHORT_SIDE: u32 = 512;
 pub(crate) const GPU_BLEND_MIN_PIXELS: u64 = 512 * 512;
@@ -643,10 +658,7 @@ fn encode_blend_texture(
         ],
     });
     {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(pass_label),
-            timestamp_writes: None,
-        });
+        let mut pass = begin_psd_compute_pass(encoder, pass_label);
         pass.set_pipeline(&pipe.blend_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
@@ -744,10 +756,7 @@ fn encode_capture_base_alpha(
         ],
     });
     {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("psd-capture-base-alpha-pass"),
-            timestamp_writes: None,
-        });
+        let mut pass = begin_psd_compute_pass(encoder, "psd-capture-base-alpha-pass");
         pass.set_pipeline(&pipe.capture_base_alpha_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(
@@ -806,10 +815,7 @@ fn encode_apply_base_alpha_mask(
         ],
     });
     {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("psd-apply-base-alpha-mask-pass"),
-            timestamp_writes: None,
-        });
+        let mut pass = begin_psd_compute_pass(encoder, "psd-apply-base-alpha-mask-pass");
         pass.set_pipeline(&pipe.apply_base_alpha_mask_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(
@@ -1460,6 +1466,87 @@ mod tests {
         assert!(
             max_abs_diff(&cpu_canvas, &gpu_canvas) <= 1,
             "Screen clipping exceeded max abs diff 1"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn gpu_batch_uses_single_compute_pass() {
+        let Some(ctx) = try_test_psd_gpu_context() else {
+            eprintln!("Skipping single-pass batch test: no wgpu device available");
+            return;
+        };
+
+        let initial_canvas = vec![0u8; (ACCURACY_CANVAS_W * ACCURACY_CANVAS_H * 4) as usize];
+        let base_rgba = solid_layer_rgba(ACCURACY_CANVAS_W, ACCURACY_CANVAS_H, [200, 0, 0, 255]);
+        let clip_rgba = solid_layer_rgba(
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            [0, 0, 255, 255],
+        );
+        let overlay_rgba = solid_layer_rgba(
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            CLIPPING_ACCURACY_LAYER_SIZE,
+            [0, 128, 0, 128],
+        );
+        let layer_rgba = test_layer_rgba();
+
+        let gpu_layers = [
+            DecodedLayerRef {
+                left: 0,
+                top: 0,
+                width: ACCURACY_CANVAS_W,
+                height: ACCURACY_CANVAS_H,
+                blend: *b"norm",
+                clipping: 0,
+                rgba: &base_rgba,
+            },
+            DecodedLayerRef {
+                left: CLIPPING_ACCURACY_OFFSET,
+                top: CLIPPING_ACCURACY_OFFSET,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"scrn",
+                clipping: 1,
+                rgba: &clip_rgba,
+            },
+            DecodedLayerRef {
+                left: CLIPPING_ACCURACY_OVERLAY_LEFT,
+                top: 0,
+                width: CLIPPING_ACCURACY_LAYER_SIZE,
+                height: CLIPPING_ACCURACY_LAYER_SIZE,
+                blend: *b"mul ",
+                clipping: 0,
+                rgba: &overlay_rgba,
+            },
+            DecodedLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend: *b"lddg",
+                clipping: 0,
+                rgba: &layer_rgba,
+            },
+        ];
+
+        COMPUTE_PASS_BEGINS.store(0, Ordering::Relaxed);
+        let Some(_gpu_canvas) = try_blend_layers_gpu(
+            &ctx,
+            ACCURACY_CANVAS_W,
+            ACCURACY_CANVAS_H,
+            &initial_canvas,
+            &gpu_layers,
+            None,
+        ) else {
+            eprintln!("Skipping single-pass batch test: GPU path unavailable");
+            return;
+        };
+
+        let begins = COMPUTE_PASS_BEGINS.load(Ordering::Relaxed);
+        assert_eq!(
+            begins, 1,
+            "expected one compute pass for the whole GPU batch, got {begins}"
         );
     }
 
