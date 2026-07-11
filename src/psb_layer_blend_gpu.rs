@@ -101,8 +101,8 @@ struct BlendParams {
 @group(0) @binding(1) var layer_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: BlendParams;
 
-// One compute pass per layer today. Batching multiple layers into one dispatch
-// would cut GPU command overhead for 100+ layer docs, but must preserve
+// One compute pass per document batch; each layer op is still its own
+// dispatch_workgroups. Same-pass sequential dispatches preserve
 // bottom-to-top order (each layer reads the previous composite).
 
 fn blend_b(mode: u32, cb: f32, cs: f32) -> f32 {
@@ -607,7 +607,7 @@ fn create_zeroed_full_canvas_texture(
 #[allow(clippy::too_many_arguments)]
 fn encode_blend_texture(
     device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     target_view: &wgpu::TextureView,
@@ -619,7 +619,6 @@ fn encode_blend_texture(
     layer_left: i32,
     layer_top: i32,
     mode: u32,
-    pass_label: &'static str,
 ) -> Result<(), crate::loader::DecodeError> {
     if layer_w == 0 || layer_h == 0 {
         return Ok(());
@@ -657,12 +656,9 @@ fn encode_blend_texture(
             },
         ],
     });
-    {
-        let mut pass = begin_psd_compute_pass(encoder, pass_label);
-        pass.set_pipeline(&pipe.blend_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
-    }
+    pass.set_pipeline(&pipe.blend_pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
     resources.uniform_buffers.push(uniform);
     resources.bind_groups.push(bind_group);
     Ok(())
@@ -672,7 +668,7 @@ fn encode_blend_texture(
 fn encode_blend_decoded_layer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     target_view: &wgpu::TextureView,
@@ -680,7 +676,6 @@ fn encode_blend_decoded_layer(
     canvas_h: u32,
     layer: &DecodedLayerRef<'_>,
     mode: u32,
-    pass_label: &'static str,
 ) -> Result<(), crate::loader::DecodeError> {
     validate_gpu_layer(layer)?;
     if layer.width == 0 || layer.height == 0 {
@@ -689,7 +684,7 @@ fn encode_blend_decoded_layer(
     let (layer_tex, layer_view) = create_uploaded_layer_texture(device, queue, layer)?;
     encode_blend_texture(
         device,
-        encoder,
+        pass,
         pipe,
         resources,
         target_view,
@@ -701,7 +696,6 @@ fn encode_blend_decoded_layer(
         layer.left,
         layer.top,
         mode,
-        pass_label,
     )?;
     resources.textures.push(layer_tex);
     Ok(())
@@ -710,7 +704,7 @@ fn encode_blend_decoded_layer(
 #[allow(clippy::too_many_arguments)]
 fn encode_capture_base_alpha(
     device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     base_alpha_view: &wgpu::TextureView,
@@ -755,16 +749,13 @@ fn encode_capture_base_alpha(
             },
         ],
     });
-    {
-        let mut pass = begin_psd_compute_pass(encoder, "psd-capture-base-alpha-pass");
-        pass.set_pipeline(&pipe.capture_base_alpha_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(
-            base.width.div_ceil(WORKGROUP),
-            base.height.div_ceil(WORKGROUP),
-            1,
-        );
-    }
+    pass.set_pipeline(&pipe.capture_base_alpha_pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.dispatch_workgroups(
+        base.width.div_ceil(WORKGROUP),
+        base.height.div_ceil(WORKGROUP),
+        1,
+    );
     resources.uniform_buffers.push(uniform);
     resources.bind_groups.push(bind_group);
     Ok(())
@@ -773,7 +764,7 @@ fn encode_capture_base_alpha(
 #[allow(clippy::too_many_arguments)]
 fn encode_apply_base_alpha_mask(
     device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     group_view: &wgpu::TextureView,
@@ -814,16 +805,13 @@ fn encode_apply_base_alpha_mask(
             },
         ],
     });
-    {
-        let mut pass = begin_psd_compute_pass(encoder, "psd-apply-base-alpha-mask-pass");
-        pass.set_pipeline(&pipe.apply_base_alpha_mask_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(
-            canvas_w.div_ceil(WORKGROUP),
-            canvas_h.div_ceil(WORKGROUP),
-            1,
-        );
-    }
+    pass.set_pipeline(&pipe.apply_base_alpha_mask_pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.dispatch_workgroups(
+        canvas_w.div_ceil(WORKGROUP),
+        canvas_h.div_ceil(WORKGROUP),
+        1,
+    );
     resources.uniform_buffers.push(uniform);
     resources.bind_groups.push(bind_group);
 }
@@ -832,7 +820,7 @@ fn encode_apply_base_alpha_mask(
 fn materialize_clip_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     canvas_w: u32,
@@ -861,7 +849,7 @@ fn materialize_clip_group(
         let (base_texture, base_view) = create_uploaded_layer_texture(device, queue, base)?;
         encode_blend_texture(
             device,
-            encoder,
+            pass,
             pipe,
             resources,
             &group_view,
@@ -873,11 +861,10 @@ fn materialize_clip_group(
             base.left,
             base.top,
             BLEND_MODE_NORMAL,
-            "psd-clip-base-normal-pass",
         )?;
         encode_capture_base_alpha(
             device,
-            encoder,
+            pass,
             pipe,
             resources,
             &base_alpha_view,
@@ -900,7 +887,7 @@ fn materialize_clip_group(
 fn flush_open_clip_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
+    pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
     main_canvas_view: &wgpu::TextureView,
@@ -916,7 +903,7 @@ fn flush_open_clip_group(
         validate_gpu_layer(base)?;
         encode_apply_base_alpha_mask(
             device,
-            encoder,
+            pass,
             pipe,
             resources,
             &group.group_view,
@@ -926,7 +913,7 @@ fn flush_open_clip_group(
         );
         encode_blend_texture(
             device,
-            encoder,
+            pass,
             pipe,
             resources,
             main_canvas_view,
@@ -938,7 +925,6 @@ fn flush_open_clip_group(
             0,
             0,
             separable_blend_mode_u32(&base.blend),
-            "psd-clip-group-flush-pass",
         )?;
         resources.textures.push(group.group_texture);
         resources.textures.push(group.base_alpha_texture);
@@ -947,7 +933,7 @@ fn flush_open_clip_group(
     encode_blend_decoded_layer(
         device,
         queue,
-        encoder,
+        pass,
         pipe,
         resources,
         main_canvas_view,
@@ -955,7 +941,6 @@ fn flush_open_clip_group(
         canvas_h,
         base,
         separable_blend_mode_u32(&base.blend),
-        "psd-lone-base-flush-pass",
     )
 }
 
@@ -1013,54 +998,71 @@ fn blend_layers_gpu_inner(
     });
 
     let mut resources = GpuBlendResources::with_capacity(layers.len());
-    let mut zero_canvas: Option<Vec<u8>> = None;
-    let mut open_base: Option<&DecodedLayerRef<'_>> = None;
-    let mut materialized_group: Option<MaterializedClipGroup> = None;
 
-    for layer in layers {
-        crate::psb_reader::check_decode_cancel(cancel)?;
-        if layer.clipping != 0 {
-            let Some(base) = open_base else {
-                continue;
-            };
-            if materialized_group.is_none() {
-                let zeros = zero_canvas.get_or_insert_with(|| vec![0u8; initial_canvas.len()]);
-                materialized_group = Some(materialize_clip_group(
+    {
+        let mut pass = begin_psd_compute_pass(&mut encoder, "psd-separable-blend-batch");
+        let mut zero_canvas: Option<Vec<u8>> = None;
+        let mut open_base: Option<&DecodedLayerRef<'_>> = None;
+        let mut materialized_group: Option<MaterializedClipGroup> = None;
+
+        for layer in layers {
+            crate::psb_reader::check_decode_cancel(cancel)?;
+            if layer.clipping != 0 {
+                let Some(base) = open_base else {
+                    continue;
+                };
+                if materialized_group.is_none() {
+                    let zeros = zero_canvas.get_or_insert_with(|| vec![0u8; initial_canvas.len()]);
+                    materialized_group = Some(materialize_clip_group(
+                        device,
+                        queue,
+                        &mut pass,
+                        pipe,
+                        &mut resources,
+                        canvas_w,
+                        canvas_h,
+                        base,
+                        zeros,
+                    )?);
+                }
+                let group_view = &materialized_group
+                    .as_ref()
+                    .expect("clip group materialized before clip blend")
+                    .group_view;
+                encode_blend_decoded_layer(
                     device,
                     queue,
-                    &mut encoder,
+                    &mut pass,
                     pipe,
                     &mut resources,
+                    group_view,
                     canvas_w,
                     canvas_h,
-                    base,
-                    zeros,
-                )?);
+                    layer,
+                    separable_blend_mode_u32(&layer.blend),
+                )?;
+                continue;
             }
-            let group_view = &materialized_group
-                .as_ref()
-                .expect("clip group materialized before clip blend")
-                .group_view;
-            encode_blend_decoded_layer(
+
+            flush_open_clip_group(
                 device,
                 queue,
-                &mut encoder,
+                &mut pass,
                 pipe,
                 &mut resources,
-                group_view,
+                &canvas_view,
                 canvas_w,
                 canvas_h,
-                layer,
-                separable_blend_mode_u32(&layer.blend),
-                "psd-clip-layer-blend-pass",
+                open_base.take(),
+                materialized_group.take(),
             )?;
-            continue;
+            open_base = Some(layer);
         }
 
         flush_open_clip_group(
             device,
             queue,
-            &mut encoder,
+            &mut pass,
             pipe,
             &mut resources,
             &canvas_view,
@@ -1069,21 +1071,7 @@ fn blend_layers_gpu_inner(
             open_base.take(),
             materialized_group.take(),
         )?;
-        open_base = Some(layer);
     }
-
-    flush_open_clip_group(
-        device,
-        queue,
-        &mut encoder,
-        pipe,
-        &mut resources,
-        &canvas_view,
-        canvas_w,
-        canvas_h,
-        open_base.take(),
-        materialized_group.take(),
-    )?;
 
     let unpadded_bpr = tight_rgba8_bytes_per_row(canvas_w)?;
     let padded_bpr = padded_copy_bytes_per_row(unpadded_bpr);
