@@ -17,11 +17,11 @@
 //! PSD/PSB SDR main-image decode state machine.
 //!
 //! Drives the flattened-composite -> layer-composite -> P2.5a layer-comp reveal
-//! -> P2.5b max-bbox reveal -> IR-thumbnail fallback
-//! (see `decode_psd_sdr_main_from_bytes_with_cancel`) from a single
-//! `PsdSectionIndex` structural walk, shared by P1/P2/P3, instead of each
-//! stage re-parsing the header/color-mode/image-resources/layer-mask sections
-//! on its own.
+//! -> P2.5b hidden-layer strategy (heuristic top-N or force-open-all) ->
+//! IR-thumbnail fallback (see `decode_psd_sdr_main_from_bytes_with_cancel`) from
+//! a single `PsdSectionIndex` structural walk, shared by P1/P2/P3, instead of
+//! each stage re-parsing the header/color-mode/image-resources/layer-mask
+//! sections on its own.
 //!
 //! A structural index-parse failure skips P1 and P2 (there is no verified
 //! `image_data_pos`/`lm_start`/`lm_end` to use) and falls back to P3 only via
@@ -38,24 +38,24 @@ pub struct PsdMainDecode {
 }
 
 /// SDR main-image state machine: flattened composite -> strict layer composite
-/// -> P2.5a layer-comp reveal -> P2.5b max-bbox reveal -> IR thumbnail -> fail.
+/// -> P2.5a layer-comp reveal -> P2.5b hidden-layer strategy -> IR thumbnail -> fail.
 ///
 /// P1 accepts a structurally valid flattened buffer only when it is not an
 /// absolute blank (all-alpha-0 or all-RGB-0). P2 accepts a strict-visibility
 /// composite only when it is not zero-information (all-alpha-0 or solid RGB
 /// with variance 0). P2.5a applies IR 1065 Layer Comp visibility when present.
-/// P2.5b selects the top-level subtree with the largest geometry bbox, first
-/// respecting Photoshop visibility and then force-opening only that selected
-/// subtree if needed. Neither P2.5 path uses fuzzy pixel heuristics.
+/// P2.5b follows [`crate::settings::PsdHiddenLayerStrategy`]: heuristic top-N
+/// max-bbox reveal, or force-open-all drawable leaves. Neither P2.5 path uses
+/// fuzzy pixel heuristics.
 /// P3 accepts an IR thumbnail under the same zero-information barrier as P2.
 /// All barriers are full-buffer SIMD scans.
 pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-    psd_hidden_layer_heuristic: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, false, psd_hidden_layer_heuristic)
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, false, psd_hidden_layer_strategy)
 }
 
 /// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but skips P1 flattened
@@ -65,9 +65,9 @@ pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
-    psd_hidden_layer_heuristic: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_inner(bytes, cancel, gpu, true, psd_hidden_layer_heuristic)
+    decode_psd_sdr_main_inner(bytes, cancel, gpu, true, psd_hidden_layer_strategy)
 }
 
 fn decode_psd_sdr_main_inner(
@@ -75,7 +75,7 @@ fn decode_psd_sdr_main_inner(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     skip_flattened: bool,
-    psd_hidden_layer_heuristic: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
     // Single structural walk feeds P1 (image_data_pos), P2 (lm_start/lm_end),
     // and P3 (ir_start/ir_end); every stage below reuses this same index.
@@ -204,12 +204,17 @@ fn decode_psd_sdr_main_inner(
     if let Some(main) = decode_psd_sdr_main_p25a(&index, bytes, cancel, gpu)? {
         return Ok(main);
     }
-    if psd_hidden_layer_heuristic {
-        if let Some(main) = decode_psd_sdr_main_p25b(&index, bytes, cancel, gpu)? {
-            return Ok(main);
+    match psd_hidden_layer_strategy {
+        crate::settings::PsdHiddenLayerStrategy::Heuristic => {
+            if let Some(main) = decode_psd_sdr_main_p25b_heuristic(&index, bytes, cancel, gpu)? {
+                return Ok(main);
+            }
         }
-    } else {
-        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_skipped heuristic_off");
+        crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
+            if let Some(main) = decode_psd_sdr_main_p25b_show_all(&index, bytes, cancel, gpu)? {
+                return Ok(main);
+            }
+        }
     }
 
     // P3: embedded Photoshop IR thumbnail (via the already-parsed index's
@@ -423,7 +428,7 @@ fn decode_psd_sdr_main_p25a(
     }
 }
 
-fn decode_psd_sdr_main_p25b(
+fn decode_psd_sdr_main_p25b_heuristic(
     index: &PsdSectionIndex,
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -582,6 +587,73 @@ fn decode_psd_sdr_main_p25b(
     Ok(None)
 }
 
+fn decode_psd_sdr_main_p25b_show_all(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let parse_t0 = std::time::Instant::now();
+    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
+    {
+        Ok(info) => info,
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_parse_fail err={e}");
+            log::debug!("PSD SDR main P2.5b layer parse unavailable: {e}");
+            return Ok(None);
+        }
+    };
+    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    let visible = crate::psb_p25_reveal::visibility_force_open_all(&layer_info.records);
+    crate::preload_debug!(
+        "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all drawable={}",
+        visible.iter().filter(|v| **v).count()
+    );
+    log::debug!(
+        "PSD SDR main P2.5b force-open-all drawable={}",
+        visible.iter().filter(|v| **v).count()
+    );
+
+    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        Ok(composite) => {
+            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                &composite.pixels,
+                cancel,
+            )?;
+            if zero_info {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all_zero_information \
+                     {}x{} -> degrade_P3",
+                    composite.width,
+                    composite.height
+                );
+                Ok(None)
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all {}x{} pixels={}",
+                    composite.width,
+                    composite.height,
+                    composite.pixels.len()
+                );
+                log::debug!("PSD SDR main: P2.5b force-open-all composite");
+                Ok(Some(PsdMainDecode {
+                    composite,
+                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(None, true),
+                }))
+            }
+        }
+        Err(e) if e.is_cancelled() => Err(e),
+        Err(e) => {
+            crate::preload_debug!(
+                "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all_fail err={e}"
+            );
+            log::debug!("PSD SDR main P2.5b force-open-all unavailable: {e}");
+            Ok(None)
+        }
+    }
+}
+
 fn composite_p25b_pass(
     layer_info: crate::psb_layer_composite::LayerInfo<'_>,
     visible: &[bool],
@@ -602,6 +674,7 @@ fn composite_p25b_pass(
 #[cfg(test)]
 mod tests {
     use super::{PsdSectionIndex, decode_psd_sdr_main_from_bytes_with_cancel};
+    use crate::settings::PsdHiddenLayerStrategy;
     use std::path::Path;
 
     fn tiny_raw_rgb_psd(width: u32, height: u32, rgb_planar: &[u8]) -> Vec<u8> {
@@ -707,8 +780,13 @@ mod tests {
     fn decode_psd_sdr_main_decodes_tiny_raw_rgb_flattened() {
         let bytes = tiny_raw_rgb_psd(1, 1, &[0x10, 0x20, 0x30]);
 
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
-            .expect("tiny raw RGB PSD should decode through P1");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("tiny raw RGB PSD should decode through P1");
 
         assert_eq!((main.composite.width, main.composite.height), (1, 1));
         assert_eq!(main.composite.pixels, vec![0x10, 0x20, 0x30, 0xFF]);
@@ -741,15 +819,20 @@ mod tests {
         let p1_err = index.image_data_compression(&bytes).unwrap_err();
         assert_eq!(p1_err, "PSD/PSB Image Data compression truncated");
 
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
-            .expect_err("P1 failure should degrade to P2/P3 fallback");
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect_err("P1 failure should degrade to P2/P3 fallback");
         let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
         assert_eq!(err.as_str(), expected);
         assert_ne!(err.as_str(), p1_err);
     }
 
     #[test]
-    fn decode_psd_sdr_main_p25b_force_opens_hidden_max_bbox_layer() {
+    fn decode_psd_sdr_main_p25b_heuristic_force_opens_hidden_max_bbox_layer() {
         // Non-uniform RGB so force-open survives the zero-information barrier.
         let bytes = hidden_single_layer_psd(
             2,
@@ -759,8 +842,13 @@ mod tests {
             &[10, 10, 200, 200],
         );
 
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, true)
-            .expect("hidden layer should decode through P2.5b force-open");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("hidden layer should decode through P2.5b heuristic force-open");
 
         assert_eq!((main.composite.width, main.composite.height), (2, 2));
         assert_eq!(&main.composite.pixels[0..4], &[200, 30, 10, 255]);
@@ -772,7 +860,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_psd_sdr_main_skips_p25b_when_heuristic_disabled() {
+    fn decode_psd_sdr_main_p25b_show_all_force_opens_hidden_layer() {
+        // Non-uniform RGB so force-open survives the zero-information barrier.
         let bytes = hidden_single_layer_psd(
             2,
             2,
@@ -780,13 +869,25 @@ mod tests {
             &[30, 80, 30, 80],
             &[10, 10, 200, 200],
         );
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
-            .expect_err("P2.5b must not run when heuristic disabled");
-        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
-        assert_eq!(err.as_str(), expected);
+
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::ShowAllLayers,
+        )
+        .expect("hidden layer should decode through P2.5b show-all");
+
+        assert_eq!((main.composite.width, main.composite.height), (2, 2));
+        assert_eq!(&main.composite.pixels[0..4], &[200, 30, 10, 255]);
+        assert_eq!(&main.composite.pixels[4..8], &[200, 80, 10, 255]);
+        assert_eq!(
+            main.osd,
+            crate::loader::PsdOsdInfo::p25b_max_bbox(None, true)
+        );
     }
 
-    /// Two hidden layers: large solid-black (zero-info) + smaller variegated content.
+    /// Two hidden layers: large solid-black (zero-info alone) + smaller variegated content.
     /// Bottom-to-top PSD order: large first, then small.
     fn two_hidden_layers_large_blank_small_content_psd() -> Vec<u8> {
         let width = 4u32;
@@ -878,10 +979,15 @@ mod tests {
     }
 
     #[test]
-    fn decode_psd_sdr_main_p25b_tries_second_max_bbox_candidate() {
+    fn decode_psd_sdr_main_p25b_heuristic_tries_second_max_bbox_candidate() {
         let bytes = two_hidden_layers_large_blank_small_content_psd();
-        let main = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, true)
-            .expect("second candidate should provide content");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("second candidate should provide content");
         assert_eq!(
             main.osd,
             crate::loader::PsdOsdInfo::p25b_max_bbox(Some("Small content".into()), true)
@@ -890,6 +996,28 @@ mod tests {
             main.composite.pixels[0..3],
             main.composite.pixels[4..7],
             "small layer must keep RGB variance"
+        );
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_p25b_show_all_composites_both_hidden_layers() {
+        // Both layers are force-opened; the small variegated layer keeps RGB variance.
+        let bytes = two_hidden_layers_large_blank_small_content_psd();
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::ShowAllLayers,
+        )
+        .expect("show-all should composite both hidden layers");
+        assert_eq!(
+            main.osd,
+            crate::loader::PsdOsdInfo::p25b_max_bbox(None, true)
+        );
+        assert_ne!(
+            main.composite.pixels[0..3],
+            main.composite.pixels[4..7],
+            "composited stack must keep RGB variance from the small layer"
         );
     }
 
@@ -903,15 +1031,20 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
-        let main =
-            decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false).expect("main");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("main");
         assert_eq!((main.composite.width, main.composite.height), (5031, 3437));
         assert_eq!(main.composite.pixels.len(), 5031 * 3437 * 4);
     }
 
     #[test]
     fn decode_psd_sdr_main_all_hidden_reports_photoshop_hint() {
-        // All layers hidden: P2 fails, P2.5b force-open of this corpus yields
+        // All layers hidden: P2 fails, P2.5b of this corpus yields
         // zero-information (or no usable IR thumb), so the designer hint wins.
         let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\18\18\1-2.psd");
         if !path.is_file() {
@@ -919,8 +1052,13 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(path).expect("read");
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
-            .expect_err("expected fail when all layers hidden and P2.5b/P3 are blank");
+        let err = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect_err("expected fail when all layers hidden and P2.5b/P3 are blank");
         let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
         assert_eq!(err.as_str(), expected);
         assert!(
@@ -947,8 +1085,13 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read");
         let flat = crate::psb_reader::read_composite_from_bytes(&bytes).expect("flat");
-        let main =
-            decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false).expect("main");
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("main");
         assert_eq!(
             (main.composite.width, main.composite.height),
             (flat.width, flat.height)

@@ -86,7 +86,7 @@ fn load_psd_small_decoded_routes_to_static() {
         None,
         1.0,
         crate::hdr::types::HdrToneMapSettings::default(),
-        false,
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
     )
     .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
@@ -113,7 +113,7 @@ fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
         None,
         1.0,
         crate::hdr::types::HdrToneMapSettings::default(),
-        false,
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
     )
     .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
@@ -146,7 +146,7 @@ fn load_psb_disk_tiled_keeps_nonblank_flat() {
         None,
         1.0,
         crate::hdr::types::HdrToneMapSettings::default(),
-        false,
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
     )
     .unwrap_or_else(|e| panic!("load_psd: {e}"));
     let _ = std::fs::remove_file(&path);
@@ -184,7 +184,7 @@ fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
         None,
         1.0,
         crate::hdr::types::HdrToneMapSettings::default(),
-        false,
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
     );
     let _ = std::fs::remove_file(&path);
     let err = match result {
@@ -242,7 +242,7 @@ fn optional_psd_libavif_sources_decode_to_pixels() {
                 None,
                 1.0,
                 crate::hdr::types::HdrToneMapSettings::default(),
-                false,
+                crate::settings::PsdHiddenLayerStrategy::Heuristic,
             )
         }));
         assert!(
@@ -307,7 +307,7 @@ fn optional_psd_cmyk_samples_decode_to_pixels() {
             None,
             1.0,
             crate::hdr::types::HdrToneMapSettings::default(),
-            false,
+            crate::settings::PsdHiddenLayerStrategy::Heuristic,
         )
         .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
         match data {

@@ -217,7 +217,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 psd_gpu,
                 hdr_target_capacity,
                 hdr_tone_map,
-                decode_profile.psd_hidden_layer_heuristic,
+                decode_profile.psd_hidden_layer_strategy,
             )?;
             psd_osd_info = osd;
             return Ok(img);

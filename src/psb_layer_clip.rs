@@ -554,7 +554,10 @@ mod tests {
 
         // P1 blank Image Data must degrade to P2 and still apply clipping.
         let main = crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
-            &bytes, None, None, false,
+            &bytes,
+            None,
+            None,
+            crate::settings::PsdHiddenLayerStrategy::Heuristic,
         )
         .expect("decode_psd_sdr_main clipping_on.psd");
         let o = ((100u32 * 256 + 200) * 4) as usize;

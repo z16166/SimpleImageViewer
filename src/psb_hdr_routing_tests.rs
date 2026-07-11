@@ -92,7 +92,11 @@ mod tests {
                     );
                     let crate::psb_hdr_main::PsdHdrMainDecode { hdr, .. } =
                         decode_psd_hdr_main_from_bytes_with_cancel(
-                            &bytes, None, &tone, false, false,
+                            &bytes,
+                            None,
+                            &tone,
+                            false,
+                            crate::settings::PsdHiddenLayerStrategy::Heuristic,
                         )
                         .unwrap_or_else(|e| panic!("{file}: HDR decode failed: {e}"));
                     assert!(hdr.width > 0 && hdr.height > 0, "{file}: empty HDR dims");
@@ -103,8 +107,13 @@ mod tests {
                         !psd_should_try_hdr(index.depth, icc.as_deref(), 2.0),
                         "{file}: SDR fixture must not trip HDR content gate"
                     );
-                    let sdr = decode_psd_sdr_main_from_bytes_with_cancel(&bytes, None, None, false)
-                        .unwrap_or_else(|e| panic!("{file}: SDR decode failed: {e}"));
+                    let sdr = decode_psd_sdr_main_from_bytes_with_cancel(
+                        &bytes,
+                        None,
+                        None,
+                        crate::settings::PsdHiddenLayerStrategy::Heuristic,
+                    )
+                    .unwrap_or_else(|e| panic!("{file}: SDR decode failed: {e}"));
                     assert!(
                         sdr.composite.width > 0 && sdr.composite.height > 0,
                         "{file}: empty SDR dims"

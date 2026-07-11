@@ -193,7 +193,7 @@ impl ImageViewerApp {
             self.image_files[current].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(current),
-            self.settings.psd_hidden_layer_heuristic,
+            self.settings.psd_hidden_layer_strategy,
         );
         self.schedule_preloads(true);
         self.wake_root_for_logic();
@@ -285,18 +285,18 @@ impl ImageViewerApp {
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),
-            self.settings.psd_hidden_layer_heuristic,
+            self.settings.psd_hidden_layer_strategy,
         );
 
         // Re-schedule preloads so nearby RAW files pick up the new mode too.
         self.schedule_preloads(true);
     }
 
-    /// Re-decode PSD/PSB after [`Settings::psd_hidden_layer_heuristic`] changes.
+    /// Re-decode PSD/PSB after [`Settings::psd_hidden_layer_strategy`] changes.
     ///
     /// Unlike [`Self::reload_current`] (RAW-only), this clears failed-load marks so a previously
     /// unopenable PSD can be retried without restarting the process.
-    pub(crate) fn reload_after_psd_hidden_layer_heuristic_change(&mut self) {
+    pub(crate) fn reload_after_psd_hidden_layer_strategy_change(&mut self) {
         if self.image_files.is_empty() {
             return;
         }
@@ -347,8 +347,8 @@ impl ImageViewerApp {
         }
 
         crate::preload_debug!(
-            "[PreloadDebug][PSD] setting_reload heuristic={} current_idx={}",
-            self.settings.psd_hidden_layer_heuristic,
+            "[PreloadDebug][PSD] setting_reload strategy={} current_idx={}",
+            self.settings.psd_hidden_layer_strategy,
             current,
         );
 
@@ -358,7 +358,7 @@ impl ImageViewerApp {
                 self.image_files[current].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(current),
-                self.settings.psd_hidden_layer_heuristic,
+                self.settings.psd_hidden_layer_strategy,
             );
         }
         self.schedule_preloads(true);
@@ -687,7 +687,7 @@ impl ImageViewerApp {
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
-                self.settings.psd_hidden_layer_heuristic,
+                self.settings.psd_hidden_layer_strategy,
             );
         } else if self.has_loaded_asset(self.current_index)
             && !raw_hq_navigate_missing_hdr_plane(
@@ -727,7 +727,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
-                    self.settings.psd_hidden_layer_heuristic,
+                    self.settings.psd_hidden_layer_strategy,
                 );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
@@ -806,7 +806,7 @@ impl ImageViewerApp {
                     self.image_files[idx].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(idx),
-                    self.settings.psd_hidden_layer_heuristic,
+                    self.settings.psd_hidden_layer_strategy,
                 );
             }
         }
@@ -833,7 +833,7 @@ impl ImageViewerApp {
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
-                self.settings.psd_hidden_layer_heuristic,
+                self.settings.psd_hidden_layer_strategy,
             );
         }
         self.sync_and_ensure_hq_tiled_preview(self.current_index, ctx);
@@ -895,7 +895,7 @@ impl ImageViewerApp {
             self.image_files[self.current_index].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),
-            self.settings.psd_hidden_layer_heuristic,
+            self.settings.psd_hidden_layer_strategy,
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();

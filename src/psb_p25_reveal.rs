@@ -27,7 +27,7 @@ pub struct MaxBboxSelection {
     pub member_indices: Vec<usize>,
 }
 
-/// Max top-level bbox candidates tried by P2.5b when the heuristic is enabled.
+/// Max top-level bbox candidates tried by P2.5b heuristic strategy.
 pub const P25B_MAX_CANDIDATES: usize = 3;
 
 /// Convenience wrapper: largest top-level bbox only (limit 1).
@@ -98,6 +98,14 @@ pub fn visibility_force_open_subtree(records: &[LayerRecord], members: &[usize])
         }
     }
     visible
+}
+
+/// Force every drawable leaf visible, ignoring Photoshop visibility flags.
+///
+/// Used by the experimental P2.5b path that composites the full layer stack
+/// instead of top-N max-bbox subtree candidates.
+pub fn visibility_force_open_all(records: &[LayerRecord]) -> Vec<bool> {
+    records.iter().map(is_drawable_leaf).collect()
 }
 
 fn push_candidate(
@@ -172,7 +180,7 @@ fn is_drawable_leaf(record: &LayerRecord) -> bool {
 mod tests {
     use super::{
         P25B_MAX_CANDIDATES, rank_max_bbox_top_level, select_max_bbox_top_level,
-        visibility_force_open_subtree, visibility_respect_subtree,
+        visibility_force_open_all, visibility_force_open_subtree, visibility_respect_subtree,
     };
     use crate::psb_layer_composite::LayerRecord;
 
@@ -300,5 +308,12 @@ mod tests {
         let forced = visibility_force_open_subtree(&all_hidden_records, &members);
 
         assert_eq!(forced, vec![false, true, true, false, false]);
+
+        let force_all = visibility_force_open_all(&all_hidden_records);
+        assert_eq!(
+            force_all,
+            vec![false, true, true, false, true],
+            "force-open-all must ignore visibility and include every drawable leaf"
+        );
     }
 }

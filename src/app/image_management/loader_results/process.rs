@@ -208,7 +208,7 @@ impl ImageViewerApp {
                                         self.image_files[idx].clone(),
                                         self.settings.raw_high_quality,
                                         self.raw_demosaic_mode_for_index(idx),
-                                        self.settings.psd_hidden_layer_heuristic,
+                                        self.settings.psd_hidden_layer_strategy,
                                     );
                                 }
                             } else {

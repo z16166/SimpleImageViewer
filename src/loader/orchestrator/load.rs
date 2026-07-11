@@ -1102,7 +1102,7 @@ impl ImageLoader {
         path: PathBuf,
         high_quality: bool,
         raw_demosaic_mode: crate::settings::RawDemosaicMode,
-        psd_hidden_layer_heuristic: bool,
+        psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
     ) -> bool {
         let load_intent = if index == self.preload_plan.current_index() {
             LoadIntent::Current
@@ -1111,7 +1111,7 @@ impl ImageLoader {
         };
         let decode_profile = DecodeProfile {
             raw_high_quality: high_quality,
-            psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy,
             raw_demosaic_mode,
             output_mode: self.output_mode_snapshot(),
             ultra_hdr_decode_capacity: self.hdr_target_capacity(),

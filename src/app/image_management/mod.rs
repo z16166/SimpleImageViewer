@@ -1004,7 +1004,7 @@ impl ImageViewerApp {
         use crate::loader::{LoadIntent, RenderShape};
         crate::loader::DisplayRequirements {
             raw_high_quality: self.settings.raw_high_quality,
-            psd_hidden_layer_heuristic: self.settings.psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy: self.settings.psd_hidden_layer_strategy,
             raw_demosaic_mode: self.raw_demosaic_mode_for_index(idx),
             output_mode: self.hdr_capabilities.output_mode,
             ultra_hdr_decode_capacity: self.effective_ultra_hdr_decode_capacity(),
@@ -1027,7 +1027,7 @@ impl ImageViewerApp {
         let req = self.display_requirements_for_index(idx);
         crate::loader::DecodeProfile {
             raw_high_quality: req.raw_high_quality,
-            psd_hidden_layer_heuristic: req.psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy: req.psd_hidden_layer_strategy,
             raw_demosaic_mode: req.raw_demosaic_mode,
             output_mode: req.output_mode,
             ultra_hdr_decode_capacity: req.ultra_hdr_decode_capacity,
@@ -1076,7 +1076,7 @@ impl ImageViewerApp {
         let files = &self.image_files;
         let current = self.current_index;
         let raw_hq = self.settings.raw_high_quality;
-        let psd_heuristic = self.settings.psd_hidden_layer_heuristic;
+        let psd_heuristic = self.settings.psd_hidden_layer_strategy;
         let output_mode = self.hdr_capabilities.output_mode;
         let ultra_cap = self.effective_ultra_hdr_decode_capacity();
         let device_id = self.current_device_id;
@@ -1094,7 +1094,7 @@ impl ImageViewerApp {
                 };
                 let display_for = |idx: usize| crate::loader::DisplayRequirements {
                     raw_high_quality: raw_hq,
-                    psd_hidden_layer_heuristic: psd_heuristic,
+                    psd_hidden_layer_strategy: psd_heuristic,
                     raw_demosaic_mode: demosaic_for(idx),
                     output_mode,
                     ultra_hdr_decode_capacity: ultra_cap,
@@ -1272,7 +1272,7 @@ mod tiled_hq_preview_apply_tests {
     fn sample_profile(epoch: u64) -> DecodeProfile {
         DecodeProfile {
             raw_high_quality: false,
-            psd_hidden_layer_heuristic: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Cpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,
@@ -1285,7 +1285,7 @@ mod tiled_hq_preview_apply_tests {
     fn sample_display() -> DisplayRequirements {
         DisplayRequirements {
             raw_high_quality: false,
-            psd_hidden_layer_heuristic: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Cpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,

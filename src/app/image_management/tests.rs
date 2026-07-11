@@ -1078,7 +1078,7 @@ fn reload_current_does_not_reload_psd_only_directory() {
 }
 
 #[test]
-fn psd_hidden_layer_heuristic_change_reloads_failed_current_psd() {
+fn psd_hidden_layer_strategy_change_reloads_failed_current_psd() {
     let mut app = make_test_app();
     set_test_image_files(&mut app, &["a.psd", "b.jpg"]);
     app.current_index = 0;
@@ -1086,13 +1086,13 @@ fn psd_hidden_layer_heuristic_change_reloads_failed_current_psd() {
     app.main_loader_failed_indices.insert(0);
     app.main_loader_failed_errors
         .insert(0, "all layers hidden".into());
-    app.settings.psd_hidden_layer_heuristic = true;
+    app.settings.psd_hidden_layer_strategy = crate::settings::PsdHiddenLayerStrategy::ShowAllLayers;
 
-    app.reload_after_psd_hidden_layer_heuristic_change();
+    app.reload_after_psd_hidden_layer_strategy_change();
 
     assert!(
         app.loader.is_loading(0),
-        "enabling the PSD heuristic must re-request the current PSD"
+        "changing the PSD hidden-layer strategy must re-request the current PSD"
     );
     assert!(
         app.error_message.is_none(),
@@ -1116,7 +1116,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
-        app.settings.psd_hidden_layer_heuristic,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1136,7 +1136,7 @@ fn strip_cold_defers_current_index_while_main_loader_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
-        app.settings.psd_hidden_layer_heuristic,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1157,7 +1157,7 @@ fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
-        app.settings.psd_hidden_layer_heuristic,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1187,7 +1187,7 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
-        app.settings.psd_hidden_layer_heuristic,
+        app.settings.psd_hidden_layer_strategy,
     );
     assert!(app.loader.is_loading(0));
 

@@ -340,7 +340,7 @@ mod tests {
     fn sample_tiled_profile() -> DecodeProfile {
         DecodeProfile {
             raw_high_quality: false,
-            psd_hidden_layer_heuristic: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Cpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,

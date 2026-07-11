@@ -147,6 +147,40 @@ pub enum RawDemosaicMode {
     Gpu,
 }
 
+/// P2.5b strategy when PSD/PSB strict visibility has nothing drawable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PsdHiddenLayerStrategy {
+    /// Top-N max-bbox reveal (up to [`crate::psb_p25_reveal::P25B_MAX_CANDIDATES`]).
+    #[default]
+    Heuristic,
+    /// Force-open every drawable leaf and composite the full stack (slow fallback).
+    ShowAllLayers,
+}
+
+impl PsdHiddenLayerStrategy {
+    pub fn label(self) -> String {
+        match self {
+            Self::Heuristic => rust_i18n::t!("psd_hidden_layer.heuristic").to_string(),
+            Self::ShowAllLayers => rust_i18n::t!("psd_hidden_layer.show_all_layers").to_string(),
+        }
+    }
+
+    /// Stable ASCII id for logs / preload-debug (not localized).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Heuristic => "heuristic",
+            Self::ShowAllLayers => "show_all_layers",
+        }
+    }
+}
+
+impl std::fmt::Display for PsdHiddenLayerStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl RawDemosaicMode {
     pub fn label(self) -> String {
         match self {
@@ -329,9 +363,9 @@ pub struct Settings {
     #[serde(default = "default_raw_demosaic_method")]
     pub raw_demosaic_method: RawDemosaicMethod,
 
-    /// When true, PSD/PSB decode may run P2.5b max-bbox reveal (up to 3 candidates).
+    /// P2.5b strategy when PSD/PSB layers are all hidden / not drawable.
     #[serde(default)]
-    pub psd_hidden_layer_heuristic: bool,
+    pub psd_hidden_layer_strategy: PsdHiddenLayerStrategy,
 
     // HDR tone mapping
     /// Request a native HDR swap chain (Windows scRGB / macOS EDR / Wayland HDR10).
@@ -503,7 +537,7 @@ impl Default for Settings {
             raw_high_quality: false,
             raw_demosaic_mode: default_raw_demosaic_mode(),
             raw_demosaic_method: default_raw_demosaic_method(),
-            psd_hidden_layer_heuristic: false,
+            psd_hidden_layer_strategy: PsdHiddenLayerStrategy::Heuristic,
             hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
             hdr_exposure_ev_native: 0.0,
             hdr_exposure_ev_sdr: 0.0,
@@ -954,14 +988,24 @@ mod tests {
     use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
 
     #[test]
-    fn psd_hidden_layer_heuristic_defaults_false() {
+    fn psd_hidden_layer_strategy_defaults_heuristic() {
+        use super::PsdHiddenLayerStrategy;
         let settings = Settings::default();
-        assert!(!settings.psd_hidden_layer_heuristic);
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::Heuristic
+        );
         let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
-        assert!(!settings.psd_hidden_layer_heuristic);
-        let settings: Settings =
-            serde_yaml::from_str("psd_hidden_layer_heuristic: true").expect("deserialize true");
-        assert!(settings.psd_hidden_layer_heuristic);
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::Heuristic
+        );
+        let settings: Settings = serde_yaml::from_str("psd_hidden_layer_strategy: show_all_layers")
+            .expect("deserialize show_all_layers");
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::ShowAllLayers
+        );
     }
 
     #[test]

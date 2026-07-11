@@ -296,7 +296,7 @@ pub(crate) fn load_psd(
     gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-    psd_hidden_layer_heuristic: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<(ImageData, Option<crate::loader::PsdOsdInfo>), crate::loader::DecodeError> {
     // Step 1: Map the file once standardly
     let (mmap, _) =
@@ -421,7 +421,7 @@ pub(crate) fn load_psd(
             Some(cancel.as_atomic()),
             &hdr_tone_map,
             skip_flattened_for_disk_tiled_degrade,
-            psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy,
         ) {
             Ok(hdr) => {
                 let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr.hdr)
@@ -454,14 +454,14 @@ pub(crate) fn load_psd(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
-            psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy,
         )?
     } else {
         crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
-            psd_hidden_layer_heuristic,
+            psd_hidden_layer_strategy,
         )?
     };
     let composite = main.composite;
