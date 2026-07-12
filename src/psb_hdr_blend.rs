@@ -43,11 +43,13 @@ fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
 /// Color channels (R, G, B) are NOT clamped after blending so HDR values >1.0
 /// are preserved. Alpha is clamped to [0, 1].
 ///
-/// # Panics (debug)
+/// # Panics
 /// Panics when `dst.len() != src.len()` or length is not a multiple of 4.
+/// These invariants are required by the SIMD paths (pointer loads keyed off
+/// `dst.len()`); release builds must not skip the checks.
 pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
-    debug_assert_eq!(dst.len(), src.len());
-    debug_assert!(dst.len().is_multiple_of(4));
+    assert_eq!(dst.len(), src.len());
+    assert!(dst.len().is_multiple_of(4));
     if dst.is_empty() {
         return;
     }

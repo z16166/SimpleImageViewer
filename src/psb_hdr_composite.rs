@@ -162,10 +162,12 @@ fn capture_base_alpha_f32(
 }
 
 /// Multiply every pixel's alpha in `group` by the corresponding base-alpha sample.
+///
+/// # Panics
+/// Panics when `group.len() != base_alpha.len() * 4`. Callers must keep the
+/// RGBA interleaved buffer and per-pixel mask in lockstep; SIMD paths assume it.
 fn apply_base_alpha_mask_f32(group: &mut [f32], base_alpha: &[f32]) {
-    if group.len() != base_alpha.len().saturating_mul(4) {
-        return;
-    }
+    assert_eq!(group.len(), base_alpha.len() * 4);
 
     #[cfg(target_arch = "x86_64")]
     {

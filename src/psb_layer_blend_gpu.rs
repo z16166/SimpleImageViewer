@@ -269,6 +269,8 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
     let group = textureLoad(target, coord);
     // Match CPU's u8 alpha math (round-half-away-from-zero) before deciding
     // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5).
+    // a_u/m_u are quantized from [0,1] alphas into u8 range [0,255], so
+    // a_u * m_u <= 255*255 = 65025 and fits in u32 without overflow.
     let a_u = u32(floor(group.a * 255.0 + 0.5));
     let m_u = u32(floor(mask * 255.0 + 0.5));
     let out_a_u = (a_u * m_u) / 255u;
