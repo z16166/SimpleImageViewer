@@ -36,14 +36,14 @@ use crate::hdr::types::{
 };
 use crate::psb_icc_hdr::probe_icc_hdr;
 use crate::psb_reader::{
-    bytes_per_sample, channel_is_used, check_decode_cancel, cmyk_to_rgb, downconvert_samples_to_u8,
+    bytes_per_sample, channel_is_used, check_decode_cancel, downconvert_samples_to_u8,
     extract_icc_profile_from_ir, read_u16, read_u32, seek_forward_within, unpack_bits_into,
     validate_rle_total_bytes,
 };
 use crate::psb_section_index::PsdSectionIndex;
 
-/// Pixel-index mask for cancel polling in HDR rgba_f32 loops (~every 256 KiB pixels).
-const HDR_CANCEL_POLL_MASK: usize = 0x3_FFFF;
+/// Chunk size for SIMD HDR interleave so cancel can be polled between batches.
+const HDR_INTERLEAVE_CHUNK_PIXELS: usize = 1 << 16;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -368,20 +368,40 @@ fn interleave_rgb_hdr(
     } else {
         None
     };
-    for i in 0..pixel_count {
-        if i & HDR_CANCEL_POLL_MASK == 0 {
-            check_decode_cancel(cancel)?;
+
+    let mut start = 0usize;
+    while start < pixel_count {
+        check_decode_cancel(cancel)?;
+        let n = (pixel_count - start).min(HDR_INTERLEAVE_CHUNK_PIXELS);
+        let dst = &mut rgba_f32[start * 4..(start + n) * 4];
+        let r = plane_chunk(r_ch, start, n, ctx.bps);
+        let g = plane_chunk(g_ch, start, n, ctx.bps);
+        let b = plane_chunk(b_ch, start, n, ctx.bps);
+        let a = plane_chunk(a_ch, start, n, ctx.bps);
+        match ctx.bps {
+            2 => {
+                crate::psb_hdr_interleave_simd::interleave_planar_u16be_rgba_f32(r, g, b, a, dst, n)
+            }
+            4 => {
+                crate::psb_hdr_interleave_simd::interleave_planar_f32be_rgba_f32(r, g, b, a, dst, n)
+            }
+            _ => {
+                for i in 0..n {
+                    let gi = start + i;
+                    let rv = r_ch.map_or(0.0, |ch| native_sample_f32(ch, gi, ctx.bps));
+                    let gv = g_ch.map_or(0.0, |ch| native_sample_f32(ch, gi, ctx.bps));
+                    let bv = b_ch.map_or(0.0, |ch| native_sample_f32(ch, gi, ctx.bps));
+                    let av = alpha_sample_f32(a_ch, gi, ctx.bps);
+                    let base = i * 4;
+                    dst[base] = rv;
+                    dst[base + 1] = gv;
+                    dst[base + 2] = bv;
+                    dst[base + 3] = av;
+                }
+            }
         }
-        let r = r_ch.map_or(0.0, |ch| native_sample_f32(ch, i, ctx.bps));
-        let g = g_ch.map_or(0.0, |ch| native_sample_f32(ch, i, ctx.bps));
-        let b = b_ch.map_or(0.0, |ch| native_sample_f32(ch, i, ctx.bps));
-        let a = alpha_sample_f32(a_ch, i, ctx.bps);
-        let [lr, lg, lb] = apply_rgb_transfer([r, g, b], ctx);
-        let base = i * 4;
-        rgba_f32[base] = lr;
-        rgba_f32[base + 1] = lg;
-        rgba_f32[base + 2] = lb;
-        rgba_f32[base + 3] = a;
+        apply_transfer_chunk(dst, n, ctx);
+        start += n;
     }
     Ok(())
 }
@@ -400,18 +420,32 @@ fn interleave_gray_hdr(
     } else {
         None
     };
-    for i in 0..pixel_count {
-        if i & HDR_CANCEL_POLL_MASK == 0 {
-            check_decode_cancel(cancel)?;
+
+    let mut start = 0usize;
+    while start < pixel_count {
+        check_decode_cancel(cancel)?;
+        let n = (pixel_count - start).min(HDR_INTERLEAVE_CHUNK_PIXELS);
+        let dst = &mut rgba_f32[start * 4..(start + n) * 4];
+        let gray = plane_chunk(gray_ch, start, n, ctx.bps);
+        let a = plane_chunk(a_ch, start, n, ctx.bps);
+        match ctx.bps {
+            2 => crate::psb_hdr_interleave_simd::interleave_planar_u16be_gray_f32(gray, a, dst, n),
+            4 => crate::psb_hdr_interleave_simd::interleave_planar_f32be_gray_f32(gray, a, dst, n),
+            _ => {
+                for i in 0..n {
+                    let gi = start + i;
+                    let v = gray_ch.map_or(0.0, |ch| native_sample_f32(ch, gi, ctx.bps));
+                    let av = alpha_sample_f32(a_ch, gi, ctx.bps);
+                    let base = i * 4;
+                    dst[base] = v;
+                    dst[base + 1] = v;
+                    dst[base + 2] = v;
+                    dst[base + 3] = av;
+                }
+            }
         }
-        let gray = gray_ch.map_or(0.0, |ch| native_sample_f32(ch, i, ctx.bps));
-        let a = alpha_sample_f32(a_ch, i, ctx.bps);
-        let [lg, _, _] = apply_rgb_transfer([gray, gray, gray], ctx);
-        let base = i * 4;
-        rgba_f32[base] = lg;
-        rgba_f32[base + 1] = lg;
-        rgba_f32[base + 2] = lg;
-        rgba_f32[base + 3] = a;
+        apply_transfer_chunk(dst, n, ctx);
+        start += n;
     }
     Ok(())
 }
@@ -427,7 +461,7 @@ fn interleave_cmyk_hdr(
     pixel_count: usize,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), crate::loader::DecodeError> {
-    // Downconvert each CMYK plane to u8 display values.
+    // Downconvert each CMYK plane to u8 display values (SIMD in psb_downconvert_simd).
     let c_u8 = downconvert_channel_to_u8(
         planar_raw.first().and_then(|c| c.as_deref()),
         bps,
@@ -455,28 +489,65 @@ fn interleave_cmyk_hdr(
     };
     let a_u8 = downconvert_channel_to_u8(a_raw, bps, pixel_count);
 
-    for i in 0..pixel_count {
-        if i & HDR_CANCEL_POLL_MASK == 0 {
-            check_decode_cancel(cancel)?;
-        }
-        let c = c_u8.as_ref().map_or(255, |ch| ch[i]);
-        let m = m_u8.as_ref().map_or(255, |ch| ch[i]);
-        let y_v = y_u8.as_ref().map_or(255, |ch| ch[i]);
-        let k = k_u8.as_ref().map_or(255, |ch| ch[i]);
-        let (r8, g8, b8) = cmyk_to_rgb(c, m, y_v, k);
-        let a = a_u8.as_ref().map_or(1.0f32, |ch| ch[i] as f32 / 255.0);
-        let [lr, lg, lb] = crate::hdr::decode::decode_transfer_to_display_linear(
-            [r8 as f32 / 255.0, g8 as f32 / 255.0, b8 as f32 / 255.0],
-            HdrTransferFunction::Srgb,
-            1.0,
+    // Missing CMYK planes default to 255 (no ink) to match the prior scalar path.
+    let c = c_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
+    let m = m_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
+    let y = y_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
+    let k = k_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
+
+    let mut rgba8 = vec![0u8; HDR_INTERLEAVE_CHUNK_PIXELS * 4];
+    let mut start = 0usize;
+    while start < pixel_count {
+        check_decode_cancel(cancel)?;
+        let n = (pixel_count - start).min(HDR_INTERLEAVE_CHUNK_PIXELS);
+        let end = start + n;
+        let alpha = a_u8.as_ref().map(|ch| &ch[start..end]);
+        crate::psb_cmyk_simd::cmyk_planes_to_rgba8(
+            &c[start..end],
+            &m[start..end],
+            &y[start..end],
+            &k[start..end],
+            alpha,
+            &mut rgba8[..n * 4],
         );
-        let base = i * 4;
-        rgba_f32[base] = lr;
-        rgba_f32[base + 1] = lg;
-        rgba_f32[base + 2] = lb;
-        rgba_f32[base + 3] = a;
+        simple_image_viewer::simd_pixel_convert::srgb8_rgba_to_scene_linear_f32(
+            &rgba8[..n * 4],
+            &mut rgba_f32[start * 4..end * 4],
+        );
+        start = end;
     }
     Ok(())
+}
+
+/// Slice one planar channel chunk; returns `None` when the plane is missing or short.
+fn plane_chunk(channel: Option<&[u8]>, start: usize, count: usize, bps: usize) -> Option<&[u8]> {
+    let ch = channel?;
+    let byte_start = start.checked_mul(bps)?;
+    let byte_len = count.checked_mul(bps)?;
+    let byte_end = byte_start.checked_add(byte_len)?;
+    if byte_end > ch.len() {
+        return None;
+    }
+    Some(&ch[byte_start..byte_end])
+}
+
+/// Apply transfer to interleaved RGB (alpha unchanged). No-op for 32-bit / Linear.
+fn apply_transfer_chunk(rgba: &mut [f32], pixel_count: usize, ctx: &SampleDecodeCtx) {
+    if ctx.depth == 32
+        || matches!(
+            ctx.transfer,
+            HdrTransferFunction::Linear | HdrTransferFunction::Gamma | HdrTransferFunction::Unknown
+        )
+    {
+        return;
+    }
+    for i in 0..pixel_count {
+        let base = i * 4;
+        let [lr, lg, lb] = apply_rgb_transfer([rgba[base], rgba[base + 1], rgba[base + 2]], ctx);
+        rgba[base] = lr;
+        rgba[base + 1] = lg;
+        rgba[base + 2] = lb;
+    }
 }
 
 // ---------------------------------------------------------------------------
