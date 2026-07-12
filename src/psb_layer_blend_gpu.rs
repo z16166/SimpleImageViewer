@@ -28,8 +28,9 @@
 //!    CPU before upload (not a separate shader pass; acceptable). Clipping
 //!    groups *are* on GPU (`cs_capture_base_alpha` /
 //!    `cs_apply_base_alpha_mask` + CPU-side group orchestration mirroring
-//!    `OpenClipGroup`). Vector masks / knockout / clip-to-folder remain out
-//!    of scope.
+//!    `OpenClipGroup`). Sequential clip groups reuse one document-scoped
+//!    scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM).
+//!    Vector masks / knockout / clip-to-folder remain out of scope.
 //! 3. **Admission fallback:** if any decoded layer is not GPU-separable, the
 //!    whole stack falls back to CPU `blend_layers_with_clipping` (all-or-
 //!    nothing per document). Same full-CPU fallback on device/OpenGL/size
@@ -277,6 +278,16 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(target, coord, vec4<f32>(group.rgb, f32(out_a_u) / 255.0));
 }
+
+// Clears a full-canvas storage texture so clip-group scratch can be reused
+// across sequential groups inside one compute pass (no mid-pass queue writes).
+@compute @workgroup_size(16, 16, 1)
+fn cs_clear_storage(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= params.canvas_w || gid.y >= params.canvas_h) {
+        return;
+    }
+    textureStore(target, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(0.0));
+}
 "#;
 
 #[repr(C)]
@@ -329,6 +340,7 @@ struct PsdBlendPipeline {
     blend_multiply_pipeline: wgpu::ComputePipeline,
     capture_base_alpha_pipeline: wgpu::ComputePipeline,
     apply_base_alpha_mask_pipeline: wgpu::ComputePipeline,
+    clear_storage_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -529,6 +541,14 @@ fn create_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: pipeline_cache,
         });
+    let clear_storage_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("simple-image-viewer-psd-clear-storage-pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs_clear_storage"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: pipeline_cache,
+    });
     Ok(PsdBlendPipeline {
         device_id,
         blend_normal_pipeline,
@@ -537,6 +557,7 @@ fn create_pipeline(
         blend_multiply_pipeline,
         capture_base_alpha_pipeline,
         apply_base_alpha_mask_pipeline,
+        clear_storage_pipeline,
         bind_group_layout,
     })
 }
@@ -609,10 +630,21 @@ impl GpuBlendResources {
     }
 }
 
-struct MaterializedClipGroup {
-    group_texture: wgpu::Texture,
+/// Document-scoped scratch for clipping groups. Sequential groups reuse the same
+/// pair of full-canvas textures (O(1) VRAM); `dirty` forces an in-pass clear
+/// before the next materialize.
+struct ClipGroupScratch {
+    /// Kept so views remain valid until after queue submit.
+    _group_texture: wgpu::Texture,
     group_view: wgpu::TextureView,
-    base_alpha_texture: wgpu::Texture,
+    _base_alpha_texture: wgpu::Texture,
+    base_alpha_view: wgpu::TextureView,
+    dirty: bool,
+}
+
+/// Soft handle while a clip group is open; textures live in [`ClipGroupScratch`].
+struct MaterializedClipGroup {
+    group_view: wgpu::TextureView,
     base_alpha_view: wgpu::TextureView,
 }
 
@@ -672,14 +704,12 @@ fn create_uploaded_layer_texture(
     Ok((layer_tex, layer_view))
 }
 
-fn create_zeroed_full_canvas_texture(
+fn create_full_canvas_storage_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     label: &'static str,
     canvas_w: u32,
     canvas_h: u32,
-    zero_canvas: &[u8],
-) -> Result<(wgpu::Texture, wgpu::TextureView), crate::loader::DecodeError> {
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -691,9 +721,29 @@ fn create_zeroed_full_canvas_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_dummy_layer_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("psd-clear-dummy-layer"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     queue.write_texture(
@@ -703,20 +753,105 @@ fn create_zeroed_full_canvas_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        zero_canvas,
+        &[0u8; 4],
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(tight_rgba8_bytes_per_row(canvas_w)?),
-            rows_per_image: Some(canvas_h),
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
         },
         wgpu::Extent3d {
-            width: canvas_w,
-            height: canvas_h,
+            width: 1,
+            height: 1,
             depth_or_array_layers: 1,
         },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok((texture, view))
+    (texture, view)
+}
+
+fn ensure_clip_group_scratch<'a>(
+    device: &wgpu::Device,
+    canvas_w: u32,
+    canvas_h: u32,
+    scratch: &'a mut Option<ClipGroupScratch>,
+) -> &'a mut ClipGroupScratch {
+    scratch.get_or_insert_with(|| {
+        let (group_texture, group_view) = create_full_canvas_storage_texture(
+            device,
+            "psd-clip-group-texture",
+            canvas_w,
+            canvas_h,
+        );
+        let (base_alpha_texture, base_alpha_view) = create_full_canvas_storage_texture(
+            device,
+            "psd-clip-base-alpha-texture",
+            canvas_w,
+            canvas_h,
+        );
+        ClipGroupScratch {
+            _group_texture: group_texture,
+            group_view,
+            _base_alpha_texture: base_alpha_texture,
+            base_alpha_view,
+            // Uninitialized GPU memory -- first materialize always clears.
+            dirty: true,
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_clear_storage(
+    device: &wgpu::Device,
+    pass: &mut wgpu::ComputePass<'_>,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    target_view: &wgpu::TextureView,
+    dummy_layer_view: &wgpu::TextureView,
+    canvas_w: u32,
+    canvas_h: u32,
+) {
+    let params = BlendParamsUniform {
+        canvas_w,
+        canvas_h,
+        layer_w: canvas_w,
+        layer_h: canvas_h,
+        layer_left: 0,
+        layer_top: 0,
+        mode: BLEND_MODE_NORMAL,
+        _pad0: 0,
+    };
+    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("psd-clear-storage-params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("psd-clear-storage-bg"),
+        layout: &pipe.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(target_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(dummy_layer_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    pass.set_pipeline(&pipe.clear_storage_pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.dispatch_workgroups(
+        canvas_w.div_ceil(WORKGROUP),
+        canvas_h.div_ceil(WORKGROUP),
+        1,
+    );
+    resources.uniform_buffers.push(uniform);
+    resources.bind_groups.push(bind_group);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -938,28 +1073,35 @@ fn materialize_clip_group(
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    scratch: &mut ClipGroupScratch,
+    dummy_layer_view: &wgpu::TextureView,
     canvas_w: u32,
     canvas_h: u32,
     base: &DecodedLayerRef<'_>,
-    zero_canvas: &[u8],
 ) -> Result<MaterializedClipGroup, crate::loader::DecodeError> {
     validate_gpu_layer(base)?;
-    let (group_texture, group_view) = create_zeroed_full_canvas_texture(
-        device,
-        queue,
-        "psd-clip-group-texture",
-        canvas_w,
-        canvas_h,
-        zero_canvas,
-    )?;
-    let (base_alpha_texture, base_alpha_view) = create_zeroed_full_canvas_texture(
-        device,
-        queue,
-        "psd-clip-base-alpha-texture",
-        canvas_w,
-        canvas_h,
-        zero_canvas,
-    )?;
+    if scratch.dirty {
+        encode_clear_storage(
+            device,
+            pass,
+            pipe,
+            resources,
+            &scratch.group_view,
+            dummy_layer_view,
+            canvas_w,
+            canvas_h,
+        );
+        encode_clear_storage(
+            device,
+            pass,
+            pipe,
+            resources,
+            &scratch.base_alpha_view,
+            dummy_layer_view,
+            canvas_w,
+            canvas_h,
+        );
+    }
     if base.width != 0 && base.height != 0 {
         let (base_texture, base_view) = create_uploaded_layer_texture(device, queue, base)?;
         encode_blend_texture(
@@ -967,7 +1109,7 @@ fn materialize_clip_group(
             pass,
             pipe,
             resources,
-            &group_view,
+            &scratch.group_view,
             &base_view,
             canvas_w,
             canvas_h,
@@ -982,7 +1124,7 @@ fn materialize_clip_group(
             pass,
             pipe,
             resources,
-            &base_alpha_view,
+            &scratch.base_alpha_view,
             &base_view,
             canvas_w,
             canvas_h,
@@ -990,11 +1132,10 @@ fn materialize_clip_group(
         )?;
         resources.textures.push(base_texture);
     }
+    scratch.dirty = true;
     Ok(MaterializedClipGroup {
-        group_texture,
-        group_view,
-        base_alpha_texture,
-        base_alpha_view,
+        group_view: scratch.group_view.clone(),
+        base_alpha_view: scratch.base_alpha_view.clone(),
     })
 }
 
@@ -1041,8 +1182,6 @@ fn flush_open_clip_group(
             0,
             separable_blend_mode_u32(&base.blend),
         )?;
-        resources.textures.push(group.group_texture);
-        resources.textures.push(group.base_alpha_texture);
         return Ok(());
     }
     encode_blend_decoded_layer(
@@ -1113,10 +1252,12 @@ fn blend_layers_gpu_inner(
     });
 
     let mut resources = GpuBlendResources::with_capacity(layers.len());
+    // Kept until after submit so bind groups referencing scratch/dummy stay valid.
+    let mut clip_scratch: Option<ClipGroupScratch> = None;
+    let (dummy_layer_tex, dummy_layer_view) = create_dummy_layer_texture(device, queue);
 
     {
         let mut pass = begin_psd_compute_pass(&mut encoder, "psd-separable-blend-batch");
-        let mut zero_canvas: Option<Vec<u8>> = None;
         let mut open_base: Option<&DecodedLayerRef<'_>> = None;
         let mut materialized_group: Option<MaterializedClipGroup> = None;
 
@@ -1127,17 +1268,19 @@ fn blend_layers_gpu_inner(
                     continue;
                 };
                 if materialized_group.is_none() {
-                    let zeros = zero_canvas.get_or_insert_with(|| vec![0u8; initial_canvas.len()]);
+                    let scratch =
+                        ensure_clip_group_scratch(device, canvas_w, canvas_h, &mut clip_scratch);
                     materialized_group = Some(materialize_clip_group(
                         device,
                         queue,
                         &mut pass,
                         pipe,
                         &mut resources,
+                        scratch,
+                        &dummy_layer_view,
                         canvas_w,
                         canvas_h,
                         base,
-                        zeros,
                     )?);
                 }
                 let Some(group) = materialized_group.as_ref() else {
@@ -1223,6 +1366,8 @@ fn blend_layers_gpu_inner(
     }
     queue.submit(Some(encoder.finish()));
     drop(resources);
+    drop(clip_scratch);
+    drop(dummy_layer_tex);
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     readback
@@ -1323,6 +1468,7 @@ mod tests {
     fn clip_shader_declares_capture_and_mask_entries() {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_capture_base_alpha"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_apply_base_alpha_mask"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_clear_storage"));
     }
 
     #[test]
