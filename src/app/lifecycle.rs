@@ -606,6 +606,7 @@ impl ImageViewerApp {
             directory_tree_strip_pending_main_handoff: std::collections::HashMap::new(),
             directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
             directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
+            directory_tree_strip_inflight_cancel: std::collections::HashMap::new(),
             directory_tree_strip_next_job_token: 0,
             directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
             directory_tree_strip_preview_tx,

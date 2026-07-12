@@ -175,7 +175,9 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     path: &Path,
     max_side: u32,
     options: DirectoryTreeThumbDecodeOptions,
+    cancel: &crate::loader::DecodeCancelFlag,
 ) -> Result<DirectoryTreeThumbDecode, String> {
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     crate::mmap_util::reject_if_image_file_too_small(path)?;
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
@@ -431,7 +433,9 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
         }
     }
     let path_buf = path.to_path_buf();
-    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.clone())?;
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
+    let image_data = open_image_data_for_directory_tree_thumb(&path_buf, mmap.clone(), cancel)?;
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     let logical = logical_size_from_image_data(&image_data);
 
     if let Some(exif) = exif.as_ref()
@@ -553,7 +557,9 @@ pub(super) fn path_extension_ascii_lower(path: &Path) -> Option<Cow<'_, str>> {
 fn open_image_data_for_directory_tree_thumb(
     path: &Path,
     file_mmap: Option<Arc<memmap2::Mmap>>,
+    cancel: &crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.as_deref().map(|m| m.as_ref());
     let file_name = path
@@ -577,7 +583,7 @@ fn open_image_data_for_directory_tree_thumb(
                     path,
                     hdr_target_capacity,
                     hdr_tone_map,
-                    None,
+                    Some(cancel.as_atomic()),
                 ))
             },
         )
@@ -593,7 +599,7 @@ fn open_image_data_for_directory_tree_thumb(
                     Arc::new(mmap),
                     hdr_target_capacity,
                     hdr_tone_map,
-                    None,
+                    Some(cancel.as_atomic()),
                 ) {
                     return Ok(img);
                 }
@@ -628,7 +634,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
-                        None,
+                        Some(cancel.as_atomic()),
                     );
                     PrimaryDecodeAttempt::with_mmap(result, Some(mmap))
                 } else {
@@ -637,7 +643,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
-                        None,
+                        Some(cancel.as_atomic()),
                     )
                 }
             },
@@ -671,7 +677,7 @@ fn open_image_data_for_directory_tree_thumb(
                         mmap,
                         hdr_target_capacity,
                         hdr_tone_map,
-                        None,
+                        Some(cancel.as_atomic()),
                     )
                 })
             },
@@ -694,7 +700,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
-                        crate::loader::DecodeCancelFlag::new(),
+                        cancel.clone(),
                     )
                 })
             },
@@ -717,7 +723,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
-                        crate::loader::DecodeCancelFlag::new(),
+                        cancel.clone(),
                     )
                 })
             },
@@ -747,7 +753,7 @@ fn open_image_data_for_directory_tree_thumb(
                             path: Some(path),
                         },
                         false,
-                        None,
+                        Some(cancel.as_atomic()),
                     )
                 })
             },
@@ -758,11 +764,18 @@ fn open_image_data_for_directory_tree_thumb(
     let reg = crate::formats::get_registry().read();
     if reg.extensions.contains(ext.as_ref()) && !is_maybe_animated(ext.as_ref()) {
         #[cfg(target_os = "windows")]
-        if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None, None) {
+        if let Ok(img) =
+            crate::wic::load_via_wic(path, high_quality, None, Some(cancel.as_atomic()))
+        {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
         #[cfg(target_os = "macos")]
-        if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None, None) {
+        if let Ok(img) = crate::macos_image_io::load_via_image_io(
+            path,
+            high_quality,
+            None,
+            Some(cancel.as_atomic()),
+        ) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
     }
@@ -778,7 +791,12 @@ fn open_image_data_for_directory_tree_thumb(
                 "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
                 "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
                 "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-                _ => load_static(path, hdr_target_capacity, hdr_tone_map, None),
+                _ => load_static(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    Some(cancel.as_atomic()),
+                ),
             })
         },
     )
@@ -1035,6 +1053,7 @@ mod tests {
             &path,
             256,
             super::DirectoryTreeThumbDecodeOptions::default(),
+            &crate::loader::DecodeCancelFlag::new(),
         ) {
             Ok(_) => panic!("PSD cold strip must not full-decode"),
             Err(e) => e,
@@ -1082,6 +1101,7 @@ mod tests {
                 skip_slow_primary: super::DirectoryTreeThumbSlowPrimarySkipReason::StaticFullDecode,
                 defer_iso_gain_map_baseline: false,
             },
+            &crate::loader::DecodeCancelFlag::new(),
         );
         match defer_err {
             Err(err) => assert_eq!(err, super::STRIP_DEFER_SLOW_STATIC_FULL_DECODE),
@@ -1092,6 +1112,7 @@ mod tests {
             &path,
             256,
             super::DirectoryTreeThumbDecodeOptions::default(),
+            &crate::loader::DecodeCancelFlag::new(),
         )
         .expect("PNG strip without defer");
         assert_eq!((ok.preview.width, ok.preview.height), (1, 1));
@@ -1116,6 +1137,7 @@ mod tests {
                 &path,
                 128,
                 super::DirectoryTreeThumbDecodeOptions::default(),
+                &crate::loader::DecodeCancelFlag::new(),
             )
             .unwrap_or_else(|err| panic!("strip decode for {name}: {err}"));
             assert!(

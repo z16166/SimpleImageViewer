@@ -34,6 +34,7 @@ impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_inflight_tokens.remove(&index);
+        self.directory_tree_strip_inflight_cancel.remove(&index);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
@@ -64,6 +65,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_generate_inflight
             .remove(&active_index);
         self.directory_tree_strip_inflight_tokens
+            .remove(&active_index);
+        self.directory_tree_strip_inflight_cancel
             .remove(&active_index);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&active_index);

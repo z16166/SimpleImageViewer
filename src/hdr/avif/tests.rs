@@ -242,6 +242,7 @@ fn avif_kimono_rotate90_strip_applies_container_orientation_when_sample_present(
         path,
         128,
         DirectoryTreeThumbDecodeOptions::default(),
+        &crate::loader::DecodeCancelFlag::new(),
     )
     .expect("kimono.rotate90 strip decode");
     assert_eq!(strip.logical_size, (722, 1024));

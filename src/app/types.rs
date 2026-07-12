@@ -550,6 +550,9 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_inflight_tokens:
         std::collections::HashMap<usize, std::num::NonZeroU64>,
+    /// Per-index cooperative cancel for strip workers (independent of ImageLoader cancel).
+    pub(crate) directory_tree_strip_inflight_cancel:
+        std::collections::HashMap<usize, crate::loader::DecodeCancelFlag>,
     pub(crate) directory_tree_strip_next_job_token: u64,
     /// Cold strip jobs known to produce reusable full-SDR pixels for the main loader.
     /// This is not derived from `generate_inflight`: PNG/WebP need an animation probe.
