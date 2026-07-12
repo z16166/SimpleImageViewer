@@ -299,9 +299,10 @@ pub(crate) fn load_psd(
     hdr_tone_map: HdrToneMapSettings,
     psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<(ImageData, Option<crate::loader::PsdOsdInfo>), crate::loader::DecodeError> {
-    // Step 1: Map the file once standardly
+    // Step 1: Map the file once (checklist #29: reuse for disk-tiled openers).
     let (mmap, _) =
         crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
+    let mmap = std::sync::Arc::new(mmap);
 
     // Step 2: Estimate memory requirement from header bytes
     let (width, height, _channels, estimated_bytes) =
@@ -364,7 +365,10 @@ pub(crate) fn load_psd(
                 // Phase 3: ZIP Image Data. Try flat HDR (planar inflate within
                 // budget), then the HDR layer compositor, before routing SDR.
                 if try_hdr {
-                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source(path) {
+                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source_from_mmap(
+                        path,
+                        std::sync::Arc::clone(&mmap),
+                    ) {
                         Ok(source) => {
                             let blank = source.is_absolute_blank(Some(cancel.as_atomic()))?;
                             if !blank {
@@ -387,9 +391,12 @@ pub(crate) fn load_psd(
                             );
                         }
                     }
-                    if let Some(ret) =
-                        try_hdr_tiled_layers(path, &cancel, psd_hidden_layer_strategy)?
-                    {
+                    if let Some(ret) = try_hdr_tiled_layers(
+                        path,
+                        std::sync::Arc::clone(&mmap),
+                        &cancel,
+                        psd_hidden_layer_strategy,
+                    )? {
                         return Ok(ret);
                     }
                 }
@@ -399,7 +406,10 @@ pub(crate) fn load_psd(
             }
             Ok(0 | 1) => {
                 if try_hdr {
-                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source(path) {
+                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source_from_mmap(
+                        path,
+                        std::sync::Arc::clone(&mmap),
+                    ) {
                         Ok(source) => {
                             let blank = source.is_absolute_blank(Some(cancel.as_atomic()))?;
                             if !blank {
@@ -425,14 +435,20 @@ pub(crate) fn load_psd(
                     }
                     // Blank / unparseable flat HDR but drawable layers: composite
                     // tiles from the layer stack instead of a full-canvas HDR.
-                    if let Some(ret) =
-                        try_hdr_tiled_layers(path, &cancel, psd_hidden_layer_strategy)?
-                    {
+                    if let Some(ret) = try_hdr_tiled_layers(
+                        path,
+                        std::sync::Arc::clone(&mmap),
+                        &cancel,
+                        psd_hidden_layer_strategy,
+                    )? {
                         return Ok(ret);
                     }
                 }
                 if !skip_flattened_for_disk_tiled_degrade {
-                    match crate::psb_reader_tiled::open_tiled_source(path) {
+                    match crate::psb_reader_tiled::open_tiled_source_from_mmap(
+                        path,
+                        std::sync::Arc::clone(&mmap),
+                    ) {
                         Ok(source) => {
                             let blank = psb_tiled_flat_is_absolutely_blank(
                                 &source,
@@ -626,11 +642,13 @@ fn hdr_tiled_image_data(
 /// output; otherwise `Ok(None)` so the caller degrades to the SDR path.
 fn try_hdr_tiled_layers(
     path: &Path,
+    mmap: std::sync::Arc<memmap2::Mmap>,
     cancel: &crate::loader::DecodeCancelFlag,
     strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<Option<(ImageData, Option<crate::loader::PsdOsdInfo>)>, crate::loader::DecodeError> {
-    match crate::psb_hdr_tiled_layers::open_hdr_tiled_layers_source(
+    match crate::psb_hdr_tiled_layers::open_hdr_tiled_layers_source_from_mmap(
         path,
+        mmap,
         strategy,
         Some(cancel.as_atomic()),
     ) {

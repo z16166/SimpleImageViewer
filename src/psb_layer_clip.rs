@@ -237,7 +237,7 @@ impl OpenClipGroup {
             let base_rgba = self
                 .base_rgba
                 .as_deref()
-                .expect("base_rgba is present until temp is initialized");
+                .ok_or_else(|| "PSD/PSB clip group base pixels are missing".to_string())?;
             // Build group content: base first (Normal into empty), then clips with their modes.
             blend_onto(
                 &mut temp,
@@ -266,8 +266,12 @@ impl OpenClipGroup {
             self.base_rgba = None;
             self.temp = Some(temp);
         }
+        let temp = self
+            .temp
+            .as_mut()
+            .ok_or_else(|| "PSD/PSB clip group buffer is missing".to_string())?;
         blend_onto(
-            self.temp.as_mut().expect("temp initialized above"),
+            temp,
             canvas_w,
             canvas_h,
             clip.rgba,
@@ -280,7 +284,12 @@ impl OpenClipGroup {
         Ok(())
     }
 
-    fn finalize(self, canvas: &mut [u8], canvas_w: u32, canvas_h: u32) {
+    fn finalize(
+        self,
+        canvas: &mut [u8],
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> Result<(), crate::loader::DecodeError> {
         let OpenClipGroup {
             base_left,
             base_top,
@@ -293,13 +302,14 @@ impl OpenClipGroup {
         } = self;
         match temp {
             None => {
+                let base_rgba = base_rgba
+                    .as_deref()
+                    .ok_or_else(|| "PSD/PSB clip group base pixels are missing".to_string())?;
                 blend_onto(
                     canvas,
                     canvas_w,
                     canvas_h,
-                    base_rgba
-                        .as_deref()
-                        .expect("base_rgba is present until temp is initialized"),
+                    base_rgba,
                     base_left,
                     base_top,
                     base_width,
@@ -308,7 +318,8 @@ impl OpenClipGroup {
                 );
             }
             Some(mut temp) => {
-                let base_alpha = base_alpha.expect("base_alpha is set whenever temp is set");
+                let base_alpha = base_alpha
+                    .ok_or_else(|| "PSD/PSB clip group base alpha is missing".to_string())?;
                 apply_base_alpha_mask(&mut temp, &base_alpha);
                 blend_onto(
                     canvas,
@@ -323,6 +334,7 @@ impl OpenClipGroup {
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -376,7 +388,7 @@ impl ClipBlendState {
     ) -> Result<(), crate::loader::DecodeError> {
         crate::psb_reader::check_decode_cancel(cancel)?;
         if let Some(open) = self.open.take() {
-            open.finalize(canvas, self.canvas_w, self.canvas_h);
+            open.finalize(canvas, self.canvas_w, self.canvas_h)?;
         }
         Ok(())
     }

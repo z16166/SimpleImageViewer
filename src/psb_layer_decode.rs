@@ -21,6 +21,9 @@
 //! including mask-channel handling and the reference blend-onto helpers used
 //! by unit tests. Full-stack composite orchestration stays in
 //! `psb_layer_composite`.
+//!
+//! Checklist #12 approaching-split: watch if new work pushes this past ~1800
+//! lines.
 
 use crate::psb_layer_composite::{
     CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, accumulate_decoded_layer_bytes,
@@ -91,6 +94,9 @@ pub(crate) fn decode_channel_image(
                 }
                 row_counts.push(count);
             }
+
+            let remaining = (data.len() as u64).saturating_sub(r.position());
+            crate::psb_reader::validate_rle_total_bytes(&row_counts, remaining)?;
 
             let mut out = vec![0u8; total_raw_bytes];
             let mut row_buf = Vec::with_capacity(row_raw_bytes);
@@ -847,6 +853,12 @@ pub(crate) fn layer_channel_byte_ranges(
         }
         ranges.push((start, cursor));
     }
+    if cursor != channel_data_len {
+        return Err(format!(
+            "PSD/PSB layer channel data length mismatch: declared {cursor} bytes, actual {channel_data_len} bytes"
+        )
+        .into());
+    }
     Ok(ranges)
 }
 
@@ -1281,7 +1293,7 @@ mod tests {
     use super::{
         DecodedLayer, LayerDecodeParams, LayerRgbaArgs, blend_layer_onto, blend_normal_onto,
         blend_separable_onto, build_layer_sized_mask, channel_samples_to_f32, decode_channel_image,
-        decode_one_layer, layer_to_rgba8,
+        decode_one_layer, layer_channel_byte_ranges, layer_to_rgba8,
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use crate::psb_layer_composite::{LayerChannel, LayerMaskInfo, LayerRecord};
@@ -1341,6 +1353,30 @@ mod tests {
         let out = decode_channel_image(&[0, 0, 0x11, 0x22], 2, 1, 8, false, None)
             .expect("exact raw payload");
         assert_eq!(out, vec![0x11, 0x22]);
+    }
+
+    #[test]
+    fn decode_channel_image_rle_rejects_total_compressed_over_remaining() {
+        // compression=1, one row claiming 2 compressed bytes (within per-row cap
+        // for width=1) while only 1 byte remains after the row-count table.
+        let data = vec![0u8, 1u8, 0u8, 2u8, 0x00];
+        let err = decode_channel_image(&data, 1, 1, 8, false, None)
+            .expect_err("RLE total must not exceed remaining channel bytes");
+        assert!(
+            err.as_str().contains("exceeds remaining"),
+            "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn layer_channel_byte_ranges_rejects_unclaimed_trailing_bytes() {
+        let mut record = mk_layer(false, false, None);
+        record.channels = vec![LayerChannel { id: 0, data_len: 3 }];
+
+        let err = layer_channel_byte_ranges(&[record], 5)
+            .expect_err("channel ranges must consume the complete data block");
+        assert!(err.as_str().contains("3"), "unexpected err: {err}");
+        assert!(err.as_str().contains("5"), "unexpected err: {err}");
     }
 
     #[test]

@@ -185,6 +185,7 @@ osd.psd.detail.strict: "strict layers"
 osd.psd.detail.layer_comp: "layer-comp"
 osd.psd.detail.max_bbox: "max-bbox"
 osd.psd.detail.max_bbox_force_open: "max-bbox force-open"
+osd.psd.detail.show_all_layers: "show all layers"
 osd.psd.detail.ir_thumb: "thumbnail"
 
 # Scale mode

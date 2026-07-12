@@ -740,7 +740,7 @@ fn decode_psd_sdr_main_p25b_show_all(
                 log::debug!("PSD SDR main: P2.5b force-open-all composite");
                 Ok(Some(PsdMainDecode {
                     composite,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(None, true),
+                    osd: crate::loader::PsdOsdInfo::p25b_show_all(),
                 }))
             }
         }
@@ -1061,10 +1061,7 @@ mod tests {
         assert_eq!((main.composite.width, main.composite.height), (2, 2));
         assert_eq!(&main.composite.pixels[0..4], &[200, 30, 10, 255]);
         assert_eq!(&main.composite.pixels[4..8], &[200, 80, 10, 255]);
-        assert_eq!(
-            main.osd,
-            crate::loader::PsdOsdInfo::p25b_max_bbox(None, true)
-        );
+        assert_eq!(main.osd, crate::loader::PsdOsdInfo::p25b_show_all());
     }
 
     /// Two hidden layers: large solid-black (zero-info alone) + smaller variegated content.
@@ -1190,10 +1187,7 @@ mod tests {
             PsdHiddenLayerStrategy::ShowAllLayers,
         )
         .expect("show-all should composite both hidden layers");
-        assert_eq!(
-            main.osd,
-            crate::loader::PsdOsdInfo::p25b_max_bbox(None, true)
-        );
+        assert_eq!(main.osd, crate::loader::PsdOsdInfo::p25b_show_all());
         assert_ne!(
             main.composite.pixels[0..3],
             main.composite.pixels[4..7],

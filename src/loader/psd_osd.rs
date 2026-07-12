@@ -48,6 +48,7 @@ pub enum PsdStageDetail {
     LayerComp,
     MaxBbox,
     MaxBboxForceOpen,
+    ShowAllLayers,
     IrThumb,
 }
 
@@ -59,6 +60,7 @@ impl PsdStageDetail {
             Self::LayerComp => t!("osd.psd.detail.layer_comp").to_string(),
             Self::MaxBbox => t!("osd.psd.detail.max_bbox").to_string(),
             Self::MaxBboxForceOpen => t!("osd.psd.detail.max_bbox_force_open").to_string(),
+            Self::ShowAllLayers => t!("osd.psd.detail.show_all_layers").to_string(),
             Self::IrThumb => t!("osd.psd.detail.ir_thumb").to_string(),
         }
     }
@@ -105,6 +107,8 @@ impl PsdOsdInfo {
         }
     }
 
+    /// P2.5b max-bbox reveal OSD. `root` is the selected top-level name;
+    /// `force_open` forces that subtree open (distinct from [`Self::p25b_show_all`]).
     pub fn p25b_max_bbox(root: Option<String>, force_open: bool) -> Self {
         Self {
             stage: PsdDecodeStage::P25b,
@@ -116,6 +120,17 @@ impl PsdOsdInfo {
             compat_reveal: true,
             comp_name: None,
             reveal_root: root,
+        }
+    }
+
+    /// P2.5b force-open-all drawable leaves (not max-bbox with a null root).
+    pub fn p25b_show_all() -> Self {
+        Self {
+            stage: PsdDecodeStage::P25b,
+            stage_detail: PsdStageDetail::ShowAllLayers,
+            compat_reveal: true,
+            comp_name: None,
+            reveal_root: None,
         }
     }
 
@@ -169,5 +184,14 @@ mod tests {
         let info = PsdOsdInfo::p1_flattened();
         assert!(!info.compat_reveal);
         assert_eq!(info.stage, PsdDecodeStage::P1);
+    }
+
+    #[test]
+    fn show_all_layers_uses_distinct_p25b_detail() {
+        let info = PsdOsdInfo::p25b_show_all();
+        assert_eq!(info.stage, PsdDecodeStage::P25b);
+        assert_eq!(info.stage_detail, PsdStageDetail::ShowAllLayers);
+        assert!(info.compat_reveal);
+        assert_eq!(info.reveal_root, None);
     }
 }

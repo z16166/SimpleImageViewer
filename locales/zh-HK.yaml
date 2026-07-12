@@ -183,6 +183,7 @@ osd.psd.detail.strict: "嚴格圖層合成"
 osd.psd.detail.layer_comp: "圖層複合"
 osd.psd.detail.max_bbox: "最大包圍盒"
 osd.psd.detail.max_bbox_force_open: "最大包圍盒強制顯示"
+osd.psd.detail.show_all_layers: "顯示全部圖層"
 osd.psd.detail.ir_thumb: "縮圖"
 
 # Scale mode

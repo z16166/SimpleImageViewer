@@ -14,10 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Shared exact `a * b / 255` SIMD helpers for planar / interleaved u8 paths.
+//! Shared exact `a * b / 255` helpers for planar / interleaved u8 paths.
 //!
 //! Uses `(prod * 0x8081) >> 23` so results match scalar truncated integer divides
 //! for products in `0..=65025`.
+//! Pixel buffers may be unaligned, so callers use unaligned loads and stores
+//! (`loadu` / `storeu` on x86 and `vld1` / `vld1q` on NEON).
+
+/// Exact `x / 255` for `x` in 0..=65025 via `(x * 0x8081) >> 23`.
+#[inline]
+pub(crate) fn div255_u16_exact(x: u16) -> u8 {
+    (((x as u32) * 0x8081) >> 23) as u8
+}
 
 /// Exact `c * k / 255` for 8 low lanes of `c` and `k` (SSE2).
 ///
@@ -77,6 +85,45 @@ pub(crate) unsafe fn mul_div255_u8x16(
         _mm256_castsi256_si128(q16),
         _mm256_extracti128_si256::<1>(q16),
     )
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn mul_div255_u16x8_neon(
+    prod: core::arch::aarch64::uint16x8_t,
+) -> core::arch::aarch64::uint16x8_t {
+    use core::arch::aarch64::*;
+    let lo = vmovl_u16(vget_low_u16(prod));
+    let hi = vmovl_u16(vget_high_u16(prod));
+    let magic = vdupq_n_u32(0x8081);
+    let q_lo = vshrq_n_u32(vmulq_u32(lo, magic), 23);
+    let q_hi = vshrq_n_u32(vmulq_u32(hi, magic), 23);
+    vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn mul_div255_u8x16_neon(
+    c: core::arch::aarch64::uint8x16_t,
+    k: core::arch::aarch64::uint8x16_t,
+) -> core::arch::aarch64::uint8x16_t {
+    use core::arch::aarch64::*;
+    let prod_lo = vmull_u8(vget_low_u8(c), vget_low_u8(k));
+    let prod_hi = vmull_u8(vget_high_u8(c), vget_high_u8(k));
+    let q_lo = unsafe { mul_div255_u16x8_neon(prod_lo) };
+    let q_hi = unsafe { mul_div255_u16x8_neon(prod_hi) };
+    vcombine_u8(vmovn_u16(q_lo), vmovn_u16(q_hi))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn mul_div255_u8x8_neon(
+    c: core::arch::aarch64::uint8x8_t,
+    k: core::arch::aarch64::uint8x8_t,
+) -> core::arch::aarch64::uint8x8_t {
+    use core::arch::aarch64::*;
+    let prod = vmull_u8(c, k);
+    vmovn_u16(unsafe { mul_div255_u16x8_neon(prod) })
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]

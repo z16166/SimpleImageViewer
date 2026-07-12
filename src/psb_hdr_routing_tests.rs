@@ -16,8 +16,9 @@
 
 //! Optional routing tests against `scripts/gen_psd_hdr_routing_fixtures.py` output.
 //!
-//! When `tests/data/psd_hdr_routing/manifest.json` is missing, tests no-op so CI
-//! stays green without generated fixtures.
+//! When `tests/data/psd_hdr_routing/manifest.json` is missing, tests no-op unless
+//! `SIV_REQUIRE_PSD_HDR_FIXTURES=1` requires generated fixtures. In that strict
+//! mode every manifest entry must exist on disk and at least one fixture must run.
 
 #[cfg(test)]
 mod tests {
@@ -57,7 +58,13 @@ mod tests {
 
     #[test]
     fn hdr_routing_fixtures_match_manifest_branches() {
+        let require = std::env::var("SIV_REQUIRE_PSD_HDR_FIXTURES").as_deref() == Ok("1");
         let Some(dir) = fixture_dir() else {
+            if require {
+                panic!(
+                    "PSD HDR routing fixtures are required; run scripts/gen_psd_hdr_routing_fixtures.py"
+                );
+            }
             eprintln!("skipping hdr_routing_fixtures; run scripts/gen_psd_hdr_routing_fixtures.py");
             return;
         };
@@ -66,12 +73,19 @@ mod tests {
         assert!(!entries.is_empty(), "manifest produced no entries");
         let tone = HdrToneMapSettings::default();
 
+        let mut executed = 0usize;
         for (file, expected) in entries {
             let path = dir.join(&file);
             if !path.is_file() {
+                if require {
+                    panic!(
+                        "missing PSD HDR routing fixture {file}; run scripts/gen_psd_hdr_routing_fixtures.py"
+                    );
+                }
                 eprintln!("skip missing fixture {file}");
                 continue;
             }
+            executed += 1;
             let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
             let index = PsdSectionIndex::parse(&bytes).unwrap_or_else(|e| panic!("{file}: {e}"));
             let icc = crate::psb_reader::extract_icc_profile_from_ir(
@@ -157,6 +171,12 @@ mod tests {
                 }
                 other => panic!("{file}: unknown expected_branch {other}"),
             }
+        }
+        if require {
+            assert!(
+                executed > 0,
+                "SIV_REQUIRE_PSD_HDR_FIXTURES=1 but no fixture entries were executed"
+            );
         }
     }
 }

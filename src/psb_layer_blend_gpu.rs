@@ -19,6 +19,9 @@
 //! Handles Normal, Screen, Linear Dodge, and Multiply for the existing SDR RGBA8
 //! display path. PackBits / ICC stay on CPU.
 //!
+//! Checklist #12 approaching-split: large module near the line limit. Natural
+//! future cut is shader/pipeline setup vs orchestration.
+//!
 //! # Current GPU shader limitations (as of separable + clip path)
 //!
 //! 1. **Blend modes:** only the four separable keys (`norm` / `scrn` / `lddg` /
@@ -44,8 +47,8 @@
 //!    gate, OOM, cancel, or readback failure.
 //!
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -386,6 +389,7 @@ impl PsdBlendPipeline {
 }
 
 static PIPELINE_CACHE: Mutex<Option<Arc<PsdBlendPipeline>>> = Mutex::new(None);
+static OPENGL_PREWARM_LOG: Once = Once::new();
 
 fn tight_rgba8_bytes_per_row(width: u32) -> Result<u32, String> {
     width
@@ -452,6 +456,12 @@ pub fn prewarm_psd_separable_blend_pipeline(
     is_opengl: bool,
     pipeline_cache: Option<&wgpu::PipelineCache>,
 ) {
+    if is_opengl {
+        OPENGL_PREWARM_LOG.call_once(|| {
+            log::info!("[PSD] GPU separable blend disabled on OpenGL backend; using CPU");
+        });
+        return;
+    }
     if !psd_separable_blend_compute_supported(device, is_opengl) {
         return;
     }
@@ -1605,6 +1615,8 @@ mod tests {
         })
     }
 
+    // GPU accuracy tests are default-on. When `try_test_psd_gpu_context()` is
+    // None they soft-skip (still pass). See docs/psd-psb-known-limits.md.
     #[test]
     fn gpu_separable_modes_match_cpu_within_one() {
         let Some(ctx) = try_test_psd_gpu_context() else {

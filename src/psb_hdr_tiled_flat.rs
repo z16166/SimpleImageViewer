@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Disk-backed tiled HDR source for PSD/PSB flattened Image Data.
+//!
+//! Supports RGB depth 16/32 with raw, RLE, or budgeted ZIP planar inflate.
+//! Gray/CMYK and over-budget ZIP fall through to other paths -- see
+//! `docs/psd-psb-known-limits.md`.
 
 use memmap2::Mmap;
 use parking_lot::Mutex;
@@ -78,8 +82,10 @@ impl PsbHdrTiledFlatSource {
     }
 
     #[inline]
-    fn raw_row_bytes(&self) -> usize {
-        self.width as usize * self.bytes_per_sample()
+    fn raw_row_bytes(&self) -> Result<usize, String> {
+        (self.width as usize)
+            .checked_mul(self.bytes_per_sample())
+            .ok_or_else(|| "PSD/PSB HDR tiled raw row byte count overflow".to_string())
     }
 
     #[inline]
@@ -87,40 +93,60 @@ impl PsbHdrTiledFlatSource {
         usize::try_from(*self.row_offsets.get(idx)?).ok()
     }
 
-    fn decode_row_into(&self, buf: &mut Vec<u8>, ch_idx: u32, global_row: u32) {
-        let raw_len = self.raw_row_bytes();
+    fn decode_row_into(
+        &self,
+        buf: &mut Vec<u8>,
+        ch_idx: u32,
+        global_row: u32,
+    ) -> Result<(), String> {
+        let raw_len = self.raw_row_bytes().inspect_err(|_| buf.fill(0))?;
         if buf.len() != raw_len {
-            return;
+            return Err(format!(
+                "PSD/PSB HDR tiled row destination length mismatch: got {}, expected {raw_len}",
+                buf.len()
+            ));
         }
 
-        let idx = ch_idx as usize * self.height as usize + global_row as usize;
+        let idx = (ch_idx as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|base| base.checked_add(global_row as usize))
+            .ok_or_else(|| {
+                buf.fill(0);
+                "PSD/PSB HDR tiled row index overflow".to_string()
+            })?;
         match self.compression {
             0 => {
                 let Some(offset) = self.row_file_offset(idx) else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled raw row offset is missing".to_string());
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled raw row end overflow".to_string());
                 };
                 if end <= self.mmap.len() {
                     buf.copy_from_slice(&self.mmap[offset..end]);
                 } else {
                     buf.fill(0);
+                    return Err("PSD/PSB HDR tiled raw row is out of bounds".to_string());
                 }
             }
             1 => {
                 let Some(offset) = self.row_file_offset(idx) else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled RLE row offset is missing".to_string());
                 };
-                let next_offset = if idx + 1 < self.row_offsets.len() {
-                    match usize::try_from(self.row_offsets[idx + 1]) {
+                let next_offset = if let Some(next_idx) = idx
+                    .checked_add(1)
+                    .filter(|&next| next < self.row_offsets.len())
+                {
+                    match usize::try_from(self.row_offsets[next_idx]) {
                         Ok(next) => next,
                         Err(_) => {
                             buf.fill(0);
-                            return;
+                            return Err(
+                                "PSD/PSB HDR tiled RLE next row offset overflow".to_string()
+                            );
                         }
                     }
                 } else {
@@ -131,38 +157,55 @@ impl PsbHdrTiledFlatSource {
                     && next_offset > offset
                 {
                     let compressed = &self.mmap[offset..next_offset];
-                    if unpack_bits_into(buf, compressed, raw_len).is_err() {
+                    if let Err(e) = unpack_bits_into(buf, compressed, raw_len) {
                         buf.fill(0);
+                        return Err(format!("PSD/PSB HDR tiled RLE row decode failed: {e}"));
                     }
                 } else {
                     buf.fill(0);
+                    return Err("PSD/PSB HDR tiled RLE row range is invalid".to_string());
                 }
             }
             2 | 3 => {
                 let Some(planar) = self.ensure_zip_planar() else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled ZIP planar data is unavailable".to_string());
                 };
-                let channel_bytes = raw_len.saturating_mul(self.height as usize);
+                let channel_bytes = raw_len.checked_mul(self.height as usize).ok_or_else(|| {
+                    buf.fill(0);
+                    "PSD/PSB HDR tiled ZIP channel byte count overflow".to_string()
+                })?;
                 let Some(offset) = (ch_idx as usize)
                     .checked_mul(channel_bytes)
-                    .and_then(|base| base.checked_add(global_row as usize * raw_len))
+                    .and_then(|base| {
+                        (global_row as usize)
+                            .checked_mul(raw_len)
+                            .and_then(|row| base.checked_add(row))
+                    })
                 else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled ZIP row offset overflow".to_string());
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
                     buf.fill(0);
-                    return;
+                    return Err("PSD/PSB HDR tiled ZIP row end overflow".to_string());
                 };
                 if end <= planar.len() {
                     buf.copy_from_slice(&planar[offset..end]);
                 } else {
                     buf.fill(0);
+                    return Err("PSD/PSB HDR tiled ZIP row is out of bounds".to_string());
                 }
             }
-            _ => buf.fill(0),
+            _ => {
+                buf.fill(0);
+                return Err(format!(
+                    "PSD/PSB HDR tiled row has unsupported compression {}",
+                    self.compression
+                ));
+            }
         }
+        Ok(())
     }
 
     /// Inflate the ZIP flattened Image Data once, applying prediction undo for
@@ -175,6 +218,7 @@ impl PsbHdrTiledFlatSource {
         let compression = self.compression;
         let expected = self
             .raw_row_bytes()
+            .ok()?
             .checked_mul(self.height as usize)
             .and_then(|channel_bytes| channel_bytes.checked_mul(self.channels as usize))?;
         let cached = self.zip_planar.get_or_init(|| {
@@ -198,12 +242,25 @@ impl PsbHdrTiledFlatSource {
     }
 
     fn decode_row_uncached(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
-        let raw_len = self.raw_row_bytes();
+        let raw_len = match self.raw_row_bytes() {
+            Ok(len) => len,
+            Err(e) => {
+                log::debug!(
+                    "PSD/PSB HDR tiled row decode failed for channel {ch_idx}, row {global_row}: {e}"
+                );
+                return Vec::new();
+            }
+        };
         HDR_PSB_ROW_SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
             scratch.clear();
             scratch.resize(raw_len, 0);
-            self.decode_row_into(&mut scratch, ch_idx, global_row);
+            if let Err(e) = self.decode_row_into(&mut scratch, ch_idx, global_row) {
+                log::debug!(
+                    "PSD/PSB HDR tiled row decode failed for channel {ch_idx}, row {global_row}: {e}"
+                );
+                scratch.fill(0);
+            }
             std::mem::replace(&mut *scratch, Vec::with_capacity(raw_len))
         })
     }
@@ -309,6 +366,14 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
             .map_err(|e| format!("Cannot open PSD/PSB HDR tiled file: {e}"))?
     };
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
+    open_hdr_tiled_flat_source_from_mmap(path, Arc::new(mmap))
+}
+
+/// Build an HDR flat tiled source from an already-mapped file (checklist #29).
+pub fn open_hdr_tiled_flat_source_from_mmap(
+    path: &Path,
+    mmap: Arc<Mmap>,
+) -> Result<PsbHdrTiledFlatSource, String> {
     let mut cursor = std::io::Cursor::new(&mmap[..]);
 
     let mut sig = [0u8; 4];
@@ -513,7 +578,7 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
 
     Ok(PsbHdrTiledFlatSource {
         path: path.to_path_buf(),
-        mmap: Arc::new(mmap),
+        mmap,
         width,
         height,
         channels,

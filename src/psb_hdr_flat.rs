@@ -322,15 +322,28 @@ pub fn read_composite_hdr_from_index(
 ///
 /// Uses epsilon 1e-8 for float comparisons. O(N) with early exit when both
 /// a nonzero alpha and a nonzero RGB sample are found (not blank).
+#[allow(dead_code)]
 pub fn rgba_f32_is_absolutely_blank(pixels: &[f32]) -> bool {
+    rgba_f32_is_absolutely_blank_with_cancel(pixels, None).unwrap()
+}
+
+/// Cancellation-aware variant of [`rgba_f32_is_absolutely_blank`].
+pub fn rgba_f32_is_absolutely_blank_with_cancel(
+    pixels: &[f32],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<bool, crate::loader::DecodeError> {
     if pixels.is_empty() || !pixels.len().is_multiple_of(4) {
-        return true;
+        return Ok(true);
     }
     const EPS: f32 = 1e-8;
+    const CANCEL_POLL_PIXELS: usize = 64 * 1024;
     let mut any_rgb = false;
     let mut any_alpha = false;
     let mut i = 0;
     while i + 4 <= pixels.len() {
+        if (i / 4).is_multiple_of(CANCEL_POLL_PIXELS) {
+            crate::psb_reader::check_decode_cancel(cancel)?;
+        }
         if pixels[i].abs() > EPS || pixels[i + 1].abs() > EPS || pixels[i + 2].abs() > EPS {
             any_rgb = true;
         }
@@ -338,11 +351,11 @@ pub fn rgba_f32_is_absolutely_blank(pixels: &[f32]) -> bool {
             any_alpha = true;
         }
         if any_rgb && any_alpha {
-            return false;
+            return Ok(false);
         }
         i += 4;
     }
-    true
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -733,5 +746,13 @@ mod tests {
 
         let pixels2 = vec![eps * 2.0, 0.0, 0.0, 1.0]; // RGB above epsilon
         assert!(!rgba_f32_is_absolutely_blank(&pixels2));
+    }
+
+    #[test]
+    fn rgba_f32_is_absolutely_blank_honors_cancel() {
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let err = rgba_f32_is_absolutely_blank_with_cancel(&[0.0; 4], Some(&cancel))
+            .expect_err("cancelled blank scan");
+        assert!(err.is_cancelled());
     }
 }

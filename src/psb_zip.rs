@@ -19,10 +19,15 @@
 //! Uses `miniz_oxide` (zlib-compatible inflate). Prediction undo follows Adobe's
 //! horizontal differencing: 8/16-bit per sample; 32-bit uses byte-plane packing.
 //!
+//! Inflate output is length-capped, and compressed input is size-capped relative
+//! to expected output to limit CPU exposure to ZIP bombs.
+//!
 //! 8-bit prediction undo uses a SIMD inclusive prefix-sum (doubling shifts) per
 //! scanline chunk, with a scalar carry across chunks.
 
 use miniz_oxide::inflate::{DecompressError, decompress_to_vec_zlib_with_limit};
+
+const MAX_ZIP_COMPRESSED_OVER_EXPECTED: usize = 64;
 
 #[cfg(target_arch = "x86_64")]
 const PREFIX_SUM_SSE_BYTES: usize = 16;
@@ -44,6 +49,13 @@ pub(crate) fn inflate_zlib_exact(
 ) -> Result<Vec<u8>, String> {
     if expected_len == 0 {
         return Ok(Vec::new());
+    }
+    let compressed_cap = expected_len.saturating_mul(MAX_ZIP_COMPRESSED_OVER_EXPECTED);
+    if compressed.len() > compressed_cap {
+        return Err(format!(
+            "PSD/PSB ZIP compressed size {} bytes exceeds cap {compressed_cap} bytes",
+            compressed.len()
+        ));
     }
     let out = decompress_to_vec_zlib_with_limit(compressed, expected_len).map_err(inflate_err)?;
     if out.len() != expected_len {
@@ -631,10 +643,17 @@ pub(crate) fn decode_zip_channel_bytes(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_zip_channel_bytes, interleave_byte_planes_scalar, prefix_sum_u8_inplace,
-        prefix_sum_u8_scalar, undo_zip_prediction,
+        decode_zip_channel_bytes, inflate_zlib_exact, interleave_byte_planes_scalar,
+        prefix_sum_u8_inplace, prefix_sum_u8_scalar, undo_zip_prediction,
     };
     use miniz_oxide::deflate::compress_to_vec_zlib;
+
+    #[test]
+    fn zip_rejects_compressed_input_over_expected_size_cap() {
+        let compressed = vec![0u8; 65];
+        let err = inflate_zlib_exact(&compressed, 1).unwrap_err();
+        assert!(err.contains("compressed size 65 bytes exceeds cap 64 bytes"));
+    }
 
     #[test]
     fn zip_roundtrip_8bit_without_prediction() {

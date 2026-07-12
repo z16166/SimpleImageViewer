@@ -20,10 +20,17 @@
 //! reveal -> P2.5b hidden-layer strategy (heuristic top-N or force-open-all).
 //! P3 stays on the SDR path (IR JPEG is 8-bit). On hard failure the caller
 //! falls back to [`crate::psb_sdr_main`].
+//!
+//! P1 and P2 intentionally use different blank barriers. P1 rejects only an
+//! absolute blank, while P2 rejects any zero-information solid composite.
+//! Therefore, a solid white or gray flattened Image Data preview may remain at
+//! P1 by design even when it looks like a placeholder and layers differ.
 
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::psb_hdr_composite::composite_layers_hdr_with_visibility_from_info;
-use crate::psb_hdr_flat::{read_composite_hdr_from_index, rgba_f32_is_absolutely_blank};
+use crate::psb_hdr_flat::{
+    read_composite_hdr_from_index, rgba_f32_is_absolutely_blank_with_cancel,
+};
 use crate::psb_icc_hdr::{psd_content_wants_hdr, psd_env_wants_hdr};
 use crate::psb_reader::extract_icc_profile_from_ir;
 use crate::psb_section_index::PsdSectionIndex;
@@ -44,6 +51,17 @@ pub fn psd_should_try_hdr(
 }
 
 /// HDR main-image: P1 flattened -> P2 layer composite -> P2.5a/b. No P3 HDR.
+///
+/// P1 accepts a structurally valid flattened buffer only when it is not an
+/// absolute blank (all-alpha-0, or for Gray/RGB also all-RGB-0). P2 accepts a
+/// strict-visibility composite only when it is not zero-information (all-alpha-0
+/// or solid RGB with variance 0). Solid white or gray flats may therefore stay
+/// at P1 by design when flattened Image Data is a placeholder-looking solid
+/// that is not absolute blank. P2.5a applies IR 1065 Layer Comp visibility when
+/// present. P2.5b follows [`crate::settings::PsdHiddenLayerStrategy`]:
+/// heuristic top-N max-bbox reveal, or force-open-all drawable leaves. Neither
+/// P2.5 path uses fuzzy pixel heuristics. All barriers are full-buffer SIMD
+/// scans.
 ///
 /// `skip_flattened`: when an oversized PSB disk-tiled probe already rejected a
 /// blank flat, skip P1 and go straight to P2 HDR.
@@ -109,7 +127,7 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
         crate::psb_reader::check_decode_cancel(cancel)?;
         match read_composite_hdr_from_index(index, bytes, cancel, sdr_white) {
             Ok(hdr) => {
-                if rgba_f32_is_absolutely_blank(&hdr.rgba_f32) {
+                if rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)? {
                     crate::preload_debug!(
                         "[PreloadDebug][PsdHdrMain] stage=P1_absolute_blank {}x{} -> degrade_P2",
                         hdr.width,
@@ -166,8 +184,8 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
             layer_info, bytes, index, &visible, cancel, sdr_white,
         ) {
             Ok(hdr) => {
-                if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                    || rgba_f32_is_zero_information(&hdr.rgba_f32)
+                if rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)?
+                    || rgba_f32_is_zero_information_with_cancel(&hdr.rgba_f32, cancel)?
                 {
                     crate::preload_debug!(
                         "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25a",
@@ -257,8 +275,8 @@ fn decode_psd_hdr_main_p25a(
         layer_info, bytes, index, &visible, cancel, sdr_white,
     ) {
         Ok(hdr) => {
-            if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                || rgba_f32_is_zero_information(&hdr.rgba_f32)
+            if rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)?
+                || rgba_f32_is_zero_information_with_cancel(&hdr.rgba_f32, cancel)?
             {
                 crate::preload_debug!(
                     "[PreloadDebug][PsdHdrMain] stage=P25a_zero_information -> degrade_P25b"
@@ -326,22 +344,21 @@ fn decode_psd_hdr_main_p25b_heuristic(
         match composite_layers_hdr_with_visibility_from_info(
             layer_info, bytes, index, &visible, cancel, sdr_white,
         ) {
-            Ok(hdr)
-                if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                    && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>
-            {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P25b_max_bbox cand={} {}x{}",
-                    cand_i,
-                    hdr.width,
-                    hdr.height
-                );
-                return Ok(Some(PsdHdrMainDecode {
-                    hdr,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name.clone(), false),
-                }));
-            }
-            Ok(_) => {
+            Ok(hdr) => {
+                if !rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)?
+                    && !rgba_f32_is_zero_information_with_cancel(&hdr.rgba_f32, cancel)?
+                {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdHdrMain] stage=P25b_max_bbox cand={} {}x{}",
+                        cand_i,
+                        hdr.width,
+                        hdr.height
+                    );
+                    return Ok(Some(PsdHdrMainDecode {
+                        hdr,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name.clone(), false),
+                    }));
+                }
                 crate::preload_debug!(
                     "[PreloadDebug][PsdHdrMain] stage=P25b_zero_information cand={} -> force_open",
                     cand_i
@@ -365,8 +382,8 @@ fn decode_psd_hdr_main_p25b_heuristic(
             layer_info, bytes, index, &visible, cancel, sdr_white,
         ) {
             Ok(hdr) => {
-                if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                    || rgba_f32_is_zero_information(&hdr.rgba_f32)
+                if rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)?
+                    || rgba_f32_is_zero_information_with_cancel(&hdr.rgba_f32, cancel)?
                 {
                     crate::preload_debug!(
                         "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_zero_information cand={}",
@@ -421,21 +438,20 @@ fn decode_psd_hdr_main_p25b_show_all(
     match composite_layers_hdr_with_visibility_from_info(
         layer_info, bytes, index, &visible, cancel, sdr_white,
     ) {
-        Ok(hdr)
-            if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>
-        {
-            crate::preload_debug!(
-                "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all {}x{}",
-                hdr.width,
-                hdr.height
-            );
-            Ok(Some(PsdHdrMainDecode {
-                hdr,
-                osd: crate::loader::PsdOsdInfo::p25b_max_bbox(None, true),
-            }))
-        }
-        Ok(_) => {
+        Ok(hdr) => {
+            if !rgba_f32_is_absolutely_blank_with_cancel(&hdr.rgba_f32, cancel)?
+                && !rgba_f32_is_zero_information_with_cancel(&hdr.rgba_f32, cancel)?
+            {
+                crate::preload_debug!(
+                    "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all {}x{}",
+                    hdr.width,
+                    hdr.height
+                );
+                return Ok(Some(PsdHdrMainDecode {
+                    hdr,
+                    osd: crate::loader::PsdOsdInfo::p25b_show_all(),
+                }));
+            }
             crate::preload_debug!(
                 "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all_zero_information"
             );
@@ -557,7 +573,7 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
             if strict_visibility_has_drawable_output(w, h, records, &visible) {
                 return Ok(HdrDiskVisibilityPlan {
                     visible,
-                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(None, true),
+                    osd: crate::loader::PsdOsdInfo::p25b_show_all(),
                 });
             }
         }
@@ -567,10 +583,14 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
 }
 
 /// Zero-information for HDR: all alpha 0, or solid RGB (no variance) with any alpha.
-fn rgba_f32_is_zero_information(pixels: &[f32]) -> bool {
+fn rgba_f32_is_zero_information_with_cancel(
+    pixels: &[f32],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<bool, crate::loader::DecodeError> {
     const EPS: f32 = 1e-8;
+    const CANCEL_POLL_PIXELS: usize = 64 * 1024;
     if pixels.is_empty() || !pixels.len().is_multiple_of(4) {
-        return true;
+        return Ok(true);
     }
     let mut any_a = false;
     let mut ref_r = 0.0f32;
@@ -578,7 +598,13 @@ fn rgba_f32_is_zero_information(pixels: &[f32]) -> bool {
     let mut ref_b = 0.0f32;
     let mut have_ref = false;
     let mut rgb_varies = false;
-    for px in pixels.chunks_exact(4) {
+    let mut pixel_index = 0usize;
+    while pixel_index < pixels.len() / 4 {
+        if pixel_index.is_multiple_of(CANCEL_POLL_PIXELS) {
+            crate::psb_reader::check_decode_cancel(cancel)?;
+        }
+        let offset = pixel_index * 4;
+        let px = &pixels[offset..offset + 4];
         if px[3].abs() > EPS {
             any_a = true;
         }
@@ -594,10 +620,11 @@ fn rgba_f32_is_zero_information(pixels: &[f32]) -> bool {
             rgb_varies = true;
         }
         if any_a && rgb_varies {
-            return false;
+            return Ok(false);
         }
+        pixel_index += 1;
     }
-    !any_a || !rgb_varies
+    Ok(!any_a || !rgb_varies)
 }
 
 #[cfg(test)]
@@ -616,9 +643,17 @@ mod tests {
     #[test]
     fn zero_information_solid() {
         let solid = vec![0.5f32, 0.5, 0.5, 1.0, 0.5, 0.5, 0.5, 1.0];
-        assert!(rgba_f32_is_zero_information(&solid));
+        assert!(rgba_f32_is_zero_information_with_cancel(&solid, None).unwrap());
         let varied = vec![0.5f32, 0.5, 0.5, 1.0, 0.6, 0.5, 0.5, 1.0];
-        assert!(!rgba_f32_is_zero_information(&varied));
+        assert!(!rgba_f32_is_zero_information_with_cancel(&varied, None).unwrap());
         let _ = DEFAULT_SDR_WHITE_NITS;
+    }
+
+    #[test]
+    fn zero_information_honors_cancel() {
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let err = rgba_f32_is_zero_information_with_cancel(&[0.0; 4], Some(&cancel))
+            .expect_err("cancelled zero-information scan");
+        assert!(err.is_cancelled());
     }
 }

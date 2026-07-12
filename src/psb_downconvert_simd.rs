@@ -425,7 +425,7 @@ mod tests {
             0.5 / 255.0,                 // exact 0.5 tie -> 1
             1.5 / 255.0,                 // exact 1.5 tie -> 2
             254.5 / 255.0,               // tie near top
-            255.0 / 255.0,               // 1.0
+            1.0,                         // 255/255
             f32::from_bits(0x3F7F_FFFF), // just below 1.0
             1.0,
             1.0 + f32::EPSILON,

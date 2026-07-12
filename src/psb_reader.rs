@@ -25,6 +25,9 @@
 //! PSB differs from PSD mainly in: version = 2, some lengths are u64, and RLE
 //! row byte counts are u32 instead of u16.
 //!
+//! Checklist #12 approaching-split: near the ~2000-line limit. If growing,
+//! prefer extracting IR walker or composite helpers next.
+//!
 //! Reference: Adobe Photoshop File Formats Specification (March 2013)
 
 use memmap2::Mmap;
@@ -903,7 +906,7 @@ pub(crate) fn extract_photoshop_thumbnail_from_ir(
     })
 }
 
-/// Walk Photoshop Image Resources (8BIM/8B64), invoking `on_resource` for each.
+/// Walk Photoshop Image Resources (8BIM), invoking `on_resource` for each.
 /// Returns the first `Some` from the callback.
 fn for_each_image_resource<T>(
     bytes: &[u8],
@@ -915,7 +918,12 @@ fn for_each_image_resource<T>(
     let end = (ir_end as usize).min(bytes.len());
     while pos + 12 <= end {
         let sig = &bytes[pos..pos + 4];
-        if sig != b"8BIM" && sig != b"8B64" {
+        // 8B64 with a u64 length belongs to Additional Layer Information
+        // (`tagged_block_uses_u64_len`), not Adobe Image Resource Blocks.
+        if sig == b"8B64" {
+            break;
+        }
+        if sig != b"8BIM" {
             break;
         }
         pos += 4;
@@ -1471,9 +1479,9 @@ mod tests {
     use super::{
         HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, PACKBITS_MAX_NOOPS_PER_ROW,
         PACKBITS_TOO_MANY_NOOPS, PSD_MAX_DIMENSION, RGBA_BYTES_PER_PIXEL, cmyk_to_rgb,
-        downconvert_samples_to_u8, estimate_memory_from_bytes, max_rle_compressed_row_bytes,
-        read_composite_from_bytes_with_cancel, seek_rle_channel_skip, unpack_bits_into,
-        validate_psd_dimensions, validate_rle_row_counts,
+        downconvert_samples_to_u8, estimate_memory_from_bytes, for_each_image_resource,
+        max_rle_compressed_row_bytes, read_composite_from_bytes_with_cancel, seek_rle_channel_skip,
+        unpack_bits_into, validate_psd_dimensions, validate_rle_row_counts,
     };
     use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1522,6 +1530,32 @@ mod tests {
         let header = minimal_psd_header(10, 20, 4, 8);
         let (_, _, _, estimated) = estimate_memory_from_bytes(&header).unwrap();
         assert_eq!(estimated, 10 * 20 * 4 + 10 * 20 * 4);
+    }
+
+    #[test]
+    fn image_resource_walk_accepts_8bim_and_stops_at_8b64() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BIM");
+        bytes.extend_from_slice(&1039u16.to_be_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(&[1, 2, 3, 0]);
+        bytes.extend_from_slice(b"8B64");
+        bytes.extend_from_slice(&1040u16.to_be_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+
+        let found = for_each_image_resource(&bytes, 0, bytes.len() as u64, |rid, data| {
+            (rid == 1039).then(|| data.to_vec())
+        });
+        assert_eq!(found, Some(vec![1, 2, 3]));
+
+        let mut visited = Vec::new();
+        let _: Option<()> = for_each_image_resource(&bytes, 0, bytes.len() as u64, |rid, _| {
+            visited.push(rid);
+            None
+        });
+        assert_eq!(visited, vec![1039]);
     }
 
     #[test]

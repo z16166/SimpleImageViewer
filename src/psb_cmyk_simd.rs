@@ -120,13 +120,6 @@ fn cmyk_planes_to_rgba8_scalar(
     }
 }
 
-/// Exact `x / 255` for `x` in 0..=65025 via `(x * 0x8081) >> 23`.
-#[cfg(test)]
-#[inline]
-fn div255_u16_exact(x: u16) -> u8 {
-    (((x as u32) * 0x8081) >> 23) as u8
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn cmyk_planes_to_rgba8_sse2(
@@ -242,22 +235,6 @@ unsafe fn cmyk_planes_to_rgba8_avx2(
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn mul_div255_u8x8_neon(
-    c: core::arch::aarch64::uint8x8_t,
-    k: core::arch::aarch64::uint8x8_t,
-) -> core::arch::aarch64::uint8x8_t {
-    use core::arch::aarch64::*;
-    let prod = vmull_u8(c, k);
-    let lo = vmovl_u16(vget_low_u16(prod));
-    let hi = vmovl_u16(vget_high_u16(prod));
-    let magic = vdupq_n_u32(0x8081);
-    let q_lo = vshrq_n_u32(vmulq_u32(lo, magic), 23);
-    let q_hi = vshrq_n_u32(vmulq_u32(hi, magic), 23);
-    let q16 = vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi));
-    vmovn_u16(q16)
-}
-
-#[cfg(target_arch = "aarch64")]
 unsafe fn cmyk_planes_to_rgba8_neon(
     c: &[u8],
     m: &[u8],
@@ -266,6 +243,7 @@ unsafe fn cmyk_planes_to_rgba8_neon(
     alpha: Option<&[u8]>,
     dst: &mut [u8],
 ) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x8_neon;
     use core::arch::aarch64::*;
     let n = c.len();
     let mut i = 0usize;
@@ -549,10 +527,11 @@ unsafe fn write_alpha_plane_into_rgba8_neon(alpha: &[u8], dst_rgba: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        cmyk_planes_to_rgba8, div255_u16_exact, pack_adobe_cmyk_inverted,
-        write_alpha_plane_into_rgba8, write_alpha_plane_into_rgba8_scalar,
+        cmyk_planes_to_rgba8, pack_adobe_cmyk_inverted, write_alpha_plane_into_rgba8,
+        write_alpha_plane_into_rgba8_scalar,
     };
     use crate::psb_reader::cmyk_to_rgb;
+    use crate::psb_simd_mul_div255::div255_u16_exact;
 
     #[test]
     fn div255_magic_matches_integer_div() {

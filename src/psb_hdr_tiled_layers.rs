@@ -26,6 +26,8 @@
 //! reveal) is resolved once at open time by
 //! [`crate::psb_hdr_main::resolve_hdr_disk_visibility_plan`] using a geometric
 //! drawable-output check (no full composite).
+//!
+//! Current scope is RGB 16/32 only; see `docs/psd-psb-known-limits.md`.
 
 use memmap2::Mmap;
 use parking_lot::Mutex;
@@ -173,6 +175,16 @@ pub fn open_hdr_tiled_layers_source(
             .map_err(|e| format!("Cannot open PSD/PSB HDR layer tiled file: {e}"))?
     };
     let mmap = Arc::new(unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? });
+    open_hdr_tiled_layers_source_from_mmap(path, mmap, strategy, cancel)
+}
+
+/// Build an HDR layer tiled source from an already-mapped file (checklist #29).
+pub fn open_hdr_tiled_layers_source_from_mmap(
+    path: &Path,
+    mmap: Arc<Mmap>,
+    strategy: crate::settings::PsdHiddenLayerStrategy,
+    cancel: Option<&AtomicBool>,
+) -> Result<PsbHdrTiledLayerSource, String> {
     let bytes: &[u8] = &mmap[..];
 
     let index = PsdSectionIndex::parse(bytes).map_err(|e| e.to_string())?;

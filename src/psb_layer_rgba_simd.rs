@@ -27,11 +27,7 @@ const AVX2_PIXELS: usize = 16;
 #[cfg(target_arch = "aarch64")]
 const NEON_PIXELS: usize = 16;
 
-/// Exact `x / 255` for `x` in 0..=65025 via `(x * 0x8081) >> 23`.
-#[inline]
-fn div255_u16_exact(x: u16) -> u8 {
-    (((x as u32) * 0x8081) >> 23) as u8
-}
+use crate::psb_simd_mul_div255::div255_u16_exact;
 
 /// Fold layer opacity and optional mask into the alpha channel of `rgba`.
 ///
@@ -60,6 +56,12 @@ pub fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u8, mask: Option<&
             }
             return;
         }
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                fold_opacity_mask_into_alpha_sse2(rgba, opacity, mask);
+            }
+            return;
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -84,6 +86,47 @@ fn fold_opacity_mask_into_alpha_scalar(rgba: &mut [u8], opacity: u8, mask: Optio
             a = div255_u16_exact(a as u16 * mv);
         }
         rgba[off] = a;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn fold_opacity_mask_into_alpha_sse2(rgba: &mut [u8], opacity: u8, mask: Option<&[u8]>) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x8;
+    use core::arch::x86_64::*;
+    let n = rgba.len() / 4;
+    let mut i = 0usize;
+    while i + SSE_PIXELS <= n {
+        let mut alpha = [0u8; SSE_PIXELS];
+        let mut mask_values = [255u8; SSE_PIXELS];
+        for lane in 0..SSE_PIXELS {
+            alpha[lane] = rgba[(i + lane) * 4 + 3];
+            if let Some(m) = mask {
+                mask_values[lane] = m.get(i + lane).copied().unwrap_or(255);
+            }
+        }
+
+        unsafe {
+            let mut av = _mm_loadl_epi64(alpha.as_ptr().cast());
+            if opacity != 255 {
+                av = mul_div255_u8x8(av, _mm_set1_epi8(opacity as i8));
+            }
+            if mask.is_some() {
+                let mv = _mm_loadl_epi64(mask_values.as_ptr().cast());
+                av = mul_div255_u8x8(av, mv);
+            }
+            _mm_storel_epi64(alpha.as_mut_ptr().cast(), av);
+        }
+
+        for lane in 0..SSE_PIXELS {
+            rgba[(i + lane) * 4 + 3] = alpha[lane];
+        }
+        i += SSE_PIXELS;
+    }
+
+    if i < n {
+        let mask = mask.map(|m| if i < m.len() { &m[i..] } else { &[] });
+        fold_opacity_mask_into_alpha_scalar(&mut rgba[i * 4..], opacity, mask);
     }
 }
 
@@ -170,33 +213,8 @@ unsafe fn fold_opacity_mask_into_alpha_avx2(rgba: &mut [u8], opacity: u8, mask: 
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn mul_div255_u16x8_neon(
-    prod: core::arch::aarch64::uint16x8_t,
-) -> core::arch::aarch64::uint16x8_t {
-    use core::arch::aarch64::*;
-    let lo = vmovl_u16(vget_low_u16(prod));
-    let hi = vmovl_u16(vget_high_u16(prod));
-    let magic = vdupq_n_u32(0x8081);
-    let q_lo = vshrq_n_u32(vmulq_u32(lo, magic), 23);
-    let q_hi = vshrq_n_u32(vmulq_u32(hi, magic), 23);
-    vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi))
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn mul_div255_u8x16_neon(
-    c: core::arch::aarch64::uint8x16_t,
-    k: core::arch::aarch64::uint8x16_t,
-) -> core::arch::aarch64::uint8x16_t {
-    use core::arch::aarch64::*;
-    let prod_lo = vmull_u8(vget_low_u8(c), vget_low_u8(k));
-    let prod_hi = vmull_u8(vget_high_u8(c), vget_high_u8(k));
-    let q_lo = unsafe { mul_div255_u16x8_neon(prod_lo) };
-    let q_hi = unsafe { mul_div255_u16x8_neon(prod_hi) };
-    vcombine_u8(vmovn_u16(q_lo), vmovn_u16(q_hi))
-}
-
-#[cfg(target_arch = "aarch64")]
 unsafe fn fold_opacity_mask_into_alpha_neon(rgba: &mut [u8], opacity: u8, mask: Option<&[u8]>) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x16_neon;
     use core::arch::aarch64::*;
     let n = rgba.len() / 4;
     let mut i = 0usize;
@@ -235,9 +253,8 @@ unsafe fn fold_opacity_mask_into_alpha_neon(rgba: &mut [u8], opacity: u8, mask: 
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        div255_u16_exact, fold_opacity_mask_into_alpha, fold_opacity_mask_into_alpha_scalar,
-    };
+    use super::{fold_opacity_mask_into_alpha, fold_opacity_mask_into_alpha_scalar};
+    use crate::psb_simd_mul_div255::div255_u16_exact;
 
     fn make_rgba_ramp(n: usize) -> Vec<u8> {
         let mut v = vec![0u8; n * 4];
@@ -318,6 +335,30 @@ mod tests {
         let mut rgba = vec![10u8, 20, 30, a];
         fold_opacity_mask_into_alpha(&mut rgba, opacity, Some(&[mask]));
         assert_eq!(rgba[3], 1);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn fold_sse2_backend_matches_scalar_long_rows() {
+        if !std::is_x86_feature_detected!("sse2") {
+            return;
+        }
+
+        let n = 127usize;
+        for mask_len in [0usize, 5, n] {
+            for opacity in [0u8, 1, 77, 171, 255] {
+                let mask: Vec<u8> = (0..mask_len).map(|i| ((i * 13 + 7) % 256) as u8).collect();
+                let mask = (mask_len != 0).then_some(mask);
+                let mask_ref = mask.as_deref();
+                let mut simd = make_rgba_ramp(n);
+                let mut scalar = simd.clone();
+                unsafe {
+                    super::fold_opacity_mask_into_alpha_sse2(&mut simd, opacity, mask_ref);
+                }
+                fold_opacity_mask_into_alpha_scalar(&mut scalar, opacity, mask_ref);
+                assert_eq!(simd, scalar, "sse2 opacity={opacity} mask_len={mask_len}");
+            }
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

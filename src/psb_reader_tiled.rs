@@ -26,7 +26,7 @@ use memmap2::Mmap;
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use simple_image_viewer::simd_swizzle;
 
@@ -36,6 +36,8 @@ use crate::psb_reader::{
     seek_forward_within, tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
     validate_rle_row_counts,
 };
+
+type TiledRowBatch = Vec<(u32, Arc<Vec<u8>>)>;
 
 /// Tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 /// Row cache is a moka LRU keyed by (channel, row); cached rows are already converted to 8-bit.
@@ -59,7 +61,11 @@ pub struct PsbTiledSource {
     /// those modes before source construction.
     zip_planar: Option<Arc<Vec<u8>>>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
+    /// Only successful rows are inserted; failed rows are never cached as zeros.
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
+    /// First row-decode failure for this source (sticky). Tile/preview paths
+    /// fail closed to empty output instead of caching white/black placeholders.
+    row_decode_error: OnceLock<String>,
     /// Resolved CMYK ICC bytes (embedded IR 1039 or bundled default). Empty when not CMYK.
     cmyk_icc: Arc<[u8]>,
 }
@@ -76,8 +82,10 @@ impl PsbTiledSource {
     }
 
     #[inline]
-    fn raw_row_bytes(&self) -> usize {
-        self.width as usize * self.bytes_per_sample()
+    fn raw_row_bytes(&self) -> Result<usize, String> {
+        (self.width as usize)
+            .checked_mul(self.bytes_per_sample())
+            .ok_or_else(|| "PSD/PSB tiled raw row byte count overflow".to_string())
     }
 
     /// Resolve a stored file offset to a `usize` index, rejecting values that
@@ -90,117 +98,300 @@ impl PsbTiledSource {
     }
 
     /// Write one decompressed 8-bit row into `buf` (length must be `self.width`).
-    fn decode_row_into(&self, buf: &mut Vec<u8>, ch_idx: u32, global_row: u32) {
+    fn decode_row_into(
+        &self,
+        buf: &mut Vec<u8>,
+        ch_idx: u32,
+        global_row: u32,
+    ) -> Result<(), String> {
         let out_len = self.width as usize;
         // Release builds must keep this check: a short `buf` would OOB in downconvert.
         if buf.len() != out_len {
-            return;
+            return Err(format!(
+                "PSD/PSB tiled row destination length mismatch: got {}, expected {out_len}",
+                buf.len()
+            ));
         }
-        let raw_len = self.raw_row_bytes();
+        let raw_len = self.raw_row_bytes().inspect_err(|_| buf.fill(0))?;
         let bps = self.bytes_per_sample();
 
-        let idx = ch_idx as usize * self.height as usize + global_row as usize;
+        let idx = (ch_idx as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|base| base.checked_add(global_row as usize))
+            .ok_or_else(|| {
+                buf.fill(0);
+                "PSD/PSB tiled row index overflow".to_string()
+            })?;
         match self.compression {
             0 => {
                 // Raw mode must have a populated offset table (ZIP leaves it empty
                 // and is refused at open; still guard against a hollow table).
                 if self.row_offsets.is_empty() {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled raw row offset table is empty".to_string());
                 }
                 let Some(offset) = self.row_file_offset(idx) else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled raw row offset is missing".to_string());
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled raw row end overflow".to_string());
                 };
-                if end <= self.mmap.len() {
-                    downconvert_samples_to_u8(buf, &self.mmap[offset..end], bps);
+                if end > self.mmap.len() {
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled raw row is out of bounds".to_string());
                 }
+                downconvert_samples_to_u8(buf, &self.mmap[offset..end], bps);
             }
             1 => {
                 let Some(offset) = self.row_file_offset(idx) else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled RLE row offset is missing".to_string());
                 };
-                let next_offset = if (idx + 1) < self.row_offsets.len() {
-                    match usize::try_from(self.row_offsets[idx + 1]) {
+                let next_offset = if let Some(next_idx) = idx
+                    .checked_add(1)
+                    .filter(|&next| next < self.row_offsets.len())
+                {
+                    match usize::try_from(self.row_offsets[next_idx]) {
                         Ok(v) => v,
-                        Err(_) => return,
+                        Err(_) => {
+                            buf.fill(0);
+                            return Err("PSD/PSB tiled RLE next row offset overflow".to_string());
+                        }
                     }
                 } else {
                     self.mmap.len()
                 };
-                if offset < self.mmap.len()
-                    && next_offset <= self.mmap.len()
-                    && next_offset > offset
+                if offset >= self.mmap.len()
+                    || next_offset > self.mmap.len()
+                    || next_offset <= offset
                 {
-                    let compressed = &self.mmap[offset..next_offset];
-                    if bps == 1 {
-                        // Fail-closed unpacker zeros the buffer on Err; keep a blank row.
-                        if unpack_bits_into(buf, compressed, out_len).is_err() {
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled RLE row range is invalid".to_string());
+                }
+                let compressed = &self.mmap[offset..next_offset];
+                if bps == 1 {
+                    unpack_bits_into(buf, compressed, out_len).map_err(|e| {
+                        buf.fill(0);
+                        format!("PSD/PSB tiled RLE row decode failed: {e}")
+                    })?;
+                } else {
+                    // Separate TLS from PSB_ROW_SCRATCH (already borrowed by caller).
+                    with_psb_raw_row_scratch(raw_len, |raw| {
+                        unpack_bits_into(raw, compressed, raw_len).map_err(|e| {
                             buf.fill(0);
-                        }
-                    } else {
-                        // Separate TLS from PSB_ROW_SCRATCH (already borrowed by caller).
-                        with_psb_raw_row_scratch(raw_len, |raw| {
-                            if unpack_bits_into(raw, compressed, raw_len).is_ok() {
-                                downconvert_samples_to_u8(buf, raw, bps);
-                            } else {
-                                buf.fill(0);
-                            }
-                        });
-                    }
+                            format!("PSD/PSB tiled RLE row decode failed: {e}")
+                        })?;
+                        downconvert_samples_to_u8(buf, raw, bps);
+                        Ok::<(), String>(())
+                    })?;
                 }
             }
             2 | 3 => {
                 let Some(planar) = self.zip_planar.as_ref() else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled ZIP planar data is unavailable".to_string());
                 };
                 let Some(offset) = self.row_file_offset(idx) else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled ZIP row offset is missing".to_string());
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
-                    return;
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled ZIP row end overflow".to_string());
                 };
-                if end <= planar.len() {
-                    downconvert_samples_to_u8(buf, &planar[offset..end], bps);
+                if end > planar.len() {
+                    buf.fill(0);
+                    return Err("PSD/PSB tiled ZIP row is out of bounds".to_string());
                 }
+                downconvert_samples_to_u8(buf, &planar[offset..end], bps);
             }
-            _ => {}
+            _ => {
+                buf.fill(0);
+                return Err(format!(
+                    "PSD/PSB tiled row has unsupported compression {}",
+                    self.compression
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record the first row-decode failure and log it once at warn.
+    fn note_row_decode_error(&self, ch_idx: u32, global_row: u32, err: &str) {
+        let msg = format!(
+            "PSD/PSB tiled row decode failed for channel {ch_idx}, row {global_row}: {err}"
+        );
+        if self.row_decode_error.set(msg.clone()).is_ok() {
+            log::warn!("{msg}");
         }
     }
 
     /// Decode a single row without touching the cache. Pure computation.
-    fn decode_row_unlocked(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
+    fn decode_row_unlocked(&self, ch_idx: u32, global_row: u32) -> Result<Vec<u8>, String> {
         let row_len = self.width as usize;
-        with_psb_row_scratch(row_len, |buf| self.decode_row_into(buf, ch_idx, global_row))
+        PSB_ROW_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            prepare_psb_row_buf(&mut scratch, row_len);
+            self.decode_row_into(&mut scratch, ch_idx, global_row)?;
+            Ok(std::mem::replace(
+                &mut *scratch,
+                Vec::with_capacity(row_len),
+            ))
+        })
     }
 
     /// Get a decompressed row for a given channel and global row index.
-    /// moka's get_with automatically coalesces concurrent requests: if two
-    /// workers request the same row, only one decode runs.
-    fn get_row(&self, ch_idx: u32, global_row: u32) -> Arc<Vec<u8>> {
+    /// Successful rows are cached (moka coalesces concurrent inserts). Failures
+    /// are sticky and never cached as zero-filled placeholders.
+    fn get_row(&self, ch_idx: u32, global_row: u32) -> Result<Arc<Vec<u8>>, String> {
+        if let Some(err) = self.row_decode_error.get() {
+            return Err(err.clone());
+        }
         let key = (ch_idx, global_row);
-        self.row_cache.get_with(key, || {
-            Arc::new(self.decode_row_unlocked(ch_idx, global_row))
-        })
+        if let Some(hit) = self.row_cache.get(&key) {
+            return Ok(hit);
+        }
+        match self.decode_row_unlocked(ch_idx, global_row) {
+            Ok(row) => {
+                let arc = Arc::new(row);
+                self.row_cache.insert(key, Arc::clone(&arc));
+                Ok(arc)
+            }
+            Err(e) => {
+                self.note_row_decode_error(ch_idx, global_row, &e);
+                Err(e)
+            }
+        }
     }
 
     /// Batch-fetch rows for a tile. Each row is fetched through the moka cache
     /// which handles concurrent access, LRU eviction, and request coalescing.
-    fn get_rows_batch(&self, ch_idx: u32, y: u32, h: u32) -> Vec<(u32, Arc<Vec<u8>>)> {
-        let mut result: Vec<(u32, Arc<Vec<u8>>)> = Vec::with_capacity(h as usize);
+    fn get_rows_batch(&self, ch_idx: u32, y: u32, h: u32) -> Result<TiledRowBatch, String> {
+        let mut result = TiledRowBatch::with_capacity(h as usize);
         for row_in_tile in 0..h {
             let global_row = y + row_in_tile;
             if global_row >= self.height {
                 continue;
             }
-            let data = self.get_row(ch_idx, global_row);
+            let data = self.get_row(ch_idx, global_row)?;
             result.push((row_in_tile, data));
         }
-        result
+        Ok(result)
+    }
+
+    fn extract_tile_inner(&self, x: u32, y: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let rgba_len = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "PSD/PSB tiled RGBA length overflow".to_string())?;
+        let mut rgba = vec![0u8; rgba_len];
+
+        let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
+        for ch in 0..self.channels {
+            if !channel_is_used(self.color_mode, ch, self.channels) {
+                continue;
+            }
+            let rows = self.get_rows_batch(ch, y, h)?;
+            for (rel_y, data) in rows {
+                if (rel_y as usize) < h as usize {
+                    row_grid[rel_y as usize][ch as usize] = Some(data);
+                }
+            }
+        }
+
+        let start = x as usize;
+        let end = (x + w) as usize;
+
+        for (rel_y, src_channels) in row_grid.iter().enumerate().take(h as usize) {
+            let Some(dst_start) = (rel_y as u64)
+                .checked_mul(w as u64)
+                .and_then(|n| n.checked_mul(4))
+                .and_then(|n| usize::try_from(n).ok())
+            else {
+                continue;
+            };
+            let Some(dst_end) = dst_start.checked_add((w as usize).saturating_mul(4)) else {
+                continue;
+            };
+            let Some(dst_row) = rgba.get_mut(dst_start..dst_end) else {
+                continue;
+            };
+            interleave_tile_row_rgba8(
+                dst_row,
+                src_channels,
+                self.color_mode,
+                self.channels,
+                start,
+                end,
+                self.cmyk_icc.as_ref(),
+            );
+        }
+        Ok(rgba)
+    }
+
+    fn generate_preview_inner(
+        &self,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        let scale = (max_w as f64 / self.width as f64)
+            .min(max_h as f64 / self.height as f64)
+            .min(1.0);
+        let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
+        let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
+
+        let pixel_len = out_w
+            .checked_mul(out_h)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|len| len as usize)
+            .ok_or_else(|| "PSD/PSB tiled preview length overflow".to_string())?;
+        let mut pixels = vec![0u8; pixel_len];
+
+        let x_map: Vec<usize> = (0..out_w)
+            .map(|out_x| ((out_x as f64 / scale) as usize).min(self.width as usize - 1))
+            .collect();
+
+        // Reuse across preview rows; used slots are overwritten each iteration.
+        let mut channel_rows: Vec<Option<Arc<Vec<u8>>>> = vec![None; self.channels as usize];
+        for out_y in 0..out_h {
+            let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
+            let Some(row_start_idx) = (out_y as usize).checked_mul(out_w as usize) else {
+                continue;
+            };
+
+            // Fetch one full-width row of each used channel, then sample columns.
+            for ch_idx in 0..self.channels {
+                if channel_is_used(self.color_mode, ch_idx, self.channels) {
+                    channel_rows[ch_idx as usize] = Some(self.get_row(ch_idx, src_y)?);
+                }
+            }
+
+            for (out_x, &src_x) in x_map.iter().enumerate().take(out_w as usize) {
+                let Some(dst_off) = row_start_idx
+                    .checked_add(out_x)
+                    .and_then(|idx| idx.checked_mul(4))
+                else {
+                    continue;
+                };
+                if dst_off + 3 >= pixels.len() {
+                    continue;
+                }
+                let rgba = sample_pixel_rgba8(&channel_rows, self.color_mode, self.channels, src_x);
+                pixels[dst_off..dst_off + 4].copy_from_slice(&rgba);
+            }
+        }
+
+        Ok((out_w, out_h, pixels))
     }
 }
 
+/// Standalone path-based opener (maps the file itself). Prefer
+/// [`open_tiled_source_from_mmap`] when the caller already holds an `Arc<Mmap>`
+/// (checklist #29 / `load_psd`). Kept for tests and direct callers; production
+/// `load_psd` uses the mmap-reusing entry.
+#[allow(dead_code)]
 pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     // On Windows, use FILE_FLAG_RANDOM_ACCESS to disable aggressive sequential
     // prefetching. Tile workers access scattered regions of a 6GB+ file -- the
@@ -219,6 +410,12 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             .map_err(|e| format!("Cannot open file: {e}"))?
     };
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
+    open_tiled_source_from_mmap(path, Arc::new(mmap))
+}
+
+/// Build a tiled source from an already-mapped file (checklist #29: avoid a
+/// second open/mmap when `load_psd` already mapped the path).
+pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTiledSource, String> {
     let mut cursor = std::io::Cursor::new(&mmap[..]);
 
     let mut sig = [0u8; 4];
@@ -343,7 +540,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
 
     Ok(PsbTiledSource {
         path: path.to_path_buf(),
-        mmap: Arc::new(mmap),
+        mmap,
         width,
         height,
         channels,
@@ -354,6 +551,7 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         row_offsets,
         zip_planar,
         row_cache,
+        row_decode_error: OnceLock::new(),
         cmyk_icc,
     })
 }
@@ -367,109 +565,12 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let Some(rgba_len) = (w as usize)
-            .checked_mul(h as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-        else {
-            return std::sync::Arc::new(Vec::new());
-        };
-        let mut rgba = vec![255u8; rgba_len];
-
-        let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
-        for ch in 0..self.channels {
-            if !channel_is_used(self.color_mode, ch, self.channels) {
-                continue;
-            }
-            let rows = self.get_rows_batch(ch, y, h);
-            for (rel_y, data) in rows {
-                if (rel_y as usize) < h as usize {
-                    row_grid[rel_y as usize][ch as usize] = Some(data);
-                }
-            }
-        }
-
-        let start = x as usize;
-        let end = (x + w) as usize;
-
-        for rel_y in 0..h as usize {
-            let Some(dst_start) = (rel_y as u64)
-                .checked_mul(w as u64)
-                .and_then(|n| n.checked_mul(4))
-                .and_then(|n| usize::try_from(n).ok())
-            else {
-                continue;
-            };
-            let Some(dst_end) = dst_start.checked_add((w as usize).saturating_mul(4)) else {
-                continue;
-            };
-            let Some(dst_row) = rgba.get_mut(dst_start..dst_end) else {
-                continue;
-            };
-            let src_channels = &row_grid[rel_y];
-            interleave_tile_row_rgba8(
-                dst_row,
-                src_channels,
-                self.color_mode,
-                self.channels,
-                start,
-                end,
-                self.cmyk_icc.as_ref(),
-            );
-        }
-        std::sync::Arc::new(rgba)
+        std::sync::Arc::new(self.extract_tile_inner(x, y, w, h).unwrap_or_default())
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.width as f64)
-            .min(max_h as f64 / self.height as f64)
-            .min(1.0);
-        let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
-        let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
-
-        let Some(pixel_len) = out_w
-            .checked_mul(out_h)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .map(|len| len as usize)
-        else {
-            return (0, 0, Vec::new());
-        };
-        let mut pixels = vec![255u8; pixel_len];
-
-        let x_map: Vec<usize> = (0..out_w)
-            .map(|out_x| ((out_x as f64 / scale) as usize).min(self.width as usize - 1))
-            .collect();
-
-        // Reuse across preview rows; used slots are overwritten each iteration.
-        let mut channel_rows: Vec<Option<Arc<Vec<u8>>>> = vec![None; self.channels as usize];
-        for out_y in 0..out_h {
-            let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
-            let Some(row_start_idx) = (out_y as usize).checked_mul(out_w as usize) else {
-                continue;
-            };
-
-            // Fetch one full-width row of each used channel, then sample columns.
-            for ch_idx in 0..self.channels {
-                if channel_is_used(self.color_mode, ch_idx, self.channels) {
-                    channel_rows[ch_idx as usize] = Some(self.get_row(ch_idx, src_y));
-                }
-            }
-
-            for (out_x, &src_x) in x_map.iter().enumerate().take(out_w as usize) {
-                let Some(dst_off) = row_start_idx
-                    .checked_add(out_x)
-                    .and_then(|idx| idx.checked_mul(4))
-                else {
-                    continue;
-                };
-                if dst_off + 3 >= pixels.len() {
-                    continue;
-                }
-                let rgba = sample_pixel_rgba8(&channel_rows, self.color_mode, self.channels, src_x);
-                pixels[dst_off..dst_off + 4].copy_from_slice(&rgba);
-            }
-        }
-
-        (out_w, out_h, pixels)
+        self.generate_preview_inner(max_w, max_h)
+            .unwrap_or_default()
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
@@ -490,26 +591,16 @@ fn prepare_psb_row_buf(buf: &mut Vec<u8>, row_len: usize) {
     buf.resize(row_len, 0);
 }
 
-/// Decode one row into reusable thread-local storage, then move the bytes out for caching.
-fn with_psb_row_scratch(row_len: usize, f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
-    PSB_ROW_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
-        prepare_psb_row_buf(&mut scratch, row_len);
-        f(&mut scratch);
-        std::mem::replace(&mut *scratch, Vec::with_capacity(row_len))
-    })
-}
-
 /// Scratch for PackBits expand before 16/32-bit down-convert (separate TLS key).
-fn with_psb_raw_row_scratch(raw_len: usize, f: impl FnOnce(&mut Vec<u8>)) {
+fn with_psb_raw_row_scratch<R>(raw_len: usize, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
     PSB_RAW_ROW_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
         let cap = scratch.capacity();
         if cap < raw_len {
             scratch.reserve(raw_len - cap);
         }
-        f(&mut scratch);
-    });
+        f(&mut scratch)
+    })
 }
 
 fn interleave_tile_row_rgba8(
@@ -618,5 +709,66 @@ fn sample_pixel_rgba8(
             let a = if channels >= 4 { get(3) } else { 255 };
             [get(0), get(1), get(2), a]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::TiledImageSource;
+    use std::io::Write;
+
+    fn write_temp_psd(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "{name}-{}-{}.psd",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let mut file = std::fs::File::create(&path).expect("create temp psd");
+        file.write_all(bytes).expect("write temp psd");
+        path
+    }
+
+    /// 1x1 RGB RLE PSD whose PackBits payloads are truncated (open succeeds;
+    /// row decode must fail closed).
+    fn tiny_rle_rgb_corrupt_packbits() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // RLE
+        for _ in 0..3 {
+            bytes.extend_from_slice(&2u16.to_be_bytes());
+        }
+        // n=3 literal needs 4 payload bytes; only 1 follows -> decode Err.
+        for _ in 0..3 {
+            bytes.extend_from_slice(&[3u8, 1u8]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn tiled_row_decode_failure_returns_empty_tile() {
+        let path = write_temp_psd("psb_tiled_corrupt_rle", &tiny_rle_rgb_corrupt_packbits());
+        let source = open_tiled_source(&path).expect("open should accept counts-only validation");
+        let tile = source.extract_tile(0, 0, 1, 1);
+        assert!(
+            tile.is_empty(),
+            "row decode failure must fail closed (empty tile), not a zero/white placeholder"
+        );
+        let preview = source.generate_preview(64, 64);
+        assert_eq!(preview, (0, 0, Vec::new()));
+        let _ = std::fs::remove_file(path);
     }
 }
