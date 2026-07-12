@@ -744,20 +744,21 @@ fn scan_extra_tagged_blocks(
         let payload = bytes.get(data_start_usize..data_end_usize).unwrap_or(&[]);
 
         if &key == SECTION_DIVIDER_KEY && data_len >= 4 {
-            let data_start = data_start as usize;
-            // Defensive: checked_end already bounds data_end, but saturating_add
-            // on overflow could leave data_start past the buffer.
-            if let Some(section_bytes) = bytes.get(data_start..data_start.saturating_add(4))
-                && section_bytes.len() == 4
-            {
-                section_type = Some(u32::from_be_bytes([
-                    section_bytes[0],
-                    section_bytes[1],
-                    section_bytes[2],
-                    section_bytes[3],
-                ]));
-                is_section_divider = true;
-            }
+            let data_start = usize::try_from(data_start)
+                .map_err(|_| "PSD/PSB lsct data_start overflows usize".to_string())?;
+            let section_end = data_start
+                .checked_add(4)
+                .ok_or_else(|| "PSD/PSB lsct section_type end overflows".to_string())?;
+            let section_bytes = bytes.get(data_start..section_end).ok_or_else(|| {
+                "PSD/PSB lsct section_type truncated (expected 4 bytes)".to_string()
+            })?;
+            section_type = Some(u32::from_be_bytes([
+                section_bytes[0],
+                section_bytes[1],
+                section_bytes[2],
+                section_bytes[3],
+            ]));
+            is_section_divider = true;
         } else if &key == b"lyid" && payload.len() >= 4 {
             layer_id = Some(u32::from_be_bytes([
                 payload[0], payload[1], payload[2], payload[3],
@@ -833,9 +834,7 @@ fn parse_shmd_cmls_payload(payload: &[u8]) -> Option<Vec<u8>> {
 fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
     let mut cursor = start.min(limit);
     while cursor.saturating_add(4) <= limit {
-        let offset = bytes[cursor..limit]
-            .iter()
-            .position(|&byte| byte == PSD_BLEND_SIGNATURE[0])?;
+        let offset = memchr::memchr(PSD_BLEND_SIGNATURE[0], &bytes[cursor..limit])?;
         let candidate = cursor + offset;
         if candidate.saturating_add(4) > limit {
             return None;
@@ -982,11 +981,26 @@ fn read_i32(r: &mut impl Read) -> Result<i32, String> {
 /// the group's own hidden flag, which is only known at that point), and the
 /// bounding divider is seen last and pops it.
 pub(crate) fn compute_effective_visibility(records: &[LayerRecord]) -> Vec<bool> {
+    compute_effective_visibility_with_flags(records, None)
+}
+
+/// Same as [`compute_effective_visibility`], but optionally overrides each
+/// layer's `flags` byte (used by Layer Comp `cmls` without cloning records).
+pub(crate) fn compute_effective_visibility_with_flags(
+    records: &[LayerRecord],
+    flags_override: Option<&[u8]>,
+) -> Vec<bool> {
+    if let Some(flags) = flags_override {
+        debug_assert_eq!(records.len(), flags.len());
+    }
     let mut visible = vec![false; records.len()];
     let mut stack: Vec<bool> = vec![true];
 
     for (i, layer) in records.iter().enumerate().rev() {
-        let self_visible = !layer.is_hidden();
+        let self_visible = match flags_override {
+            Some(flags) => flags.get(i).is_some_and(|f| f & 2 == 0),
+            None => !layer.is_hidden(),
+        };
         let current = *stack.last().unwrap_or(&true) && self_visible;
         visible[i] = current;
 

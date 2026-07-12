@@ -45,8 +45,8 @@ use wgpu::util::DeviceExt;
 
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
-/// Short Wait slice so cancel can be polled during readback (checklist #37 tradeoff).
-const READBACK_CANCEL_POLL_SLICE: Duration = Duration::from_millis(50);
+/// Short Wait slice so cancel and `device_id_live` can be polled during readback.
+const READBACK_POLL_SLICE: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 static COMPUTE_PASS_BEGINS: AtomicU64 = AtomicU64::new(0);
@@ -1120,7 +1120,7 @@ fn blend_layers_gpu_inner(
         .map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-    wait_for_readback(device, &rx, cancel)?;
+    wait_for_readback(ctx, device, &rx, cancel)?;
 
     let mapped = readback.slice(..).get_mapped_range();
     let mut pixels = Vec::with_capacity(initial_canvas.len());
@@ -1133,6 +1133,7 @@ fn blend_layers_gpu_inner(
 }
 
 fn wait_for_readback(
+    ctx: &PsdGpuContext,
     device: &wgpu::Device,
     rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -1140,6 +1141,9 @@ fn wait_for_readback(
     let deadline = Instant::now() + READBACK_MAX_WAIT;
     loop {
         crate::psb_reader::check_decode_cancel(cancel)?;
+        if !ctx.is_device_current() {
+            return Err("wgpu device replaced during PSD blend readback".into());
+        }
         match rx.try_recv() {
             Ok(result) => {
                 return result
@@ -1154,15 +1158,10 @@ fn wait_for_readback(
         if now >= deadline {
             return Err("PSD blend readback timed out".into());
         }
-        // When cancel is armed, Wait in short slices so navigation/ESC can abort
-        // before READBACK_MAX_WAIT. Without cancel, Wait until the overall deadline
-        // (checklist #37 -- no fixed wakeups).
+        // Wake periodically so cancel and device replacement can abort before
+        // READBACK_MAX_WAIT instead of blocking in a single long Wait.
         let remaining = deadline.saturating_duration_since(now);
-        let timeout = if cancel.is_some() {
-            remaining.min(READBACK_CANCEL_POLL_SLICE)
-        } else {
-            remaining
-        };
+        let timeout = remaining.min(READBACK_POLL_SLICE);
         match device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(timeout),

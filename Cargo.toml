@@ -80,6 +80,7 @@ libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
 half = { version = "2.6", default-features = false }
 miniz_oxide = "0.8.9"
+memchr = "2.8"
 
 [features]
 # OpenEXR + AVIF/HEIF/JPEG XL native HDR paths are on by default so CI and release

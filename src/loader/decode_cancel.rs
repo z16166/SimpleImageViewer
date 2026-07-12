@@ -80,6 +80,12 @@ impl From<&str> for DecodeError {
     }
 }
 
+impl From<crate::psb_section_index::SectionParseError> for DecodeError {
+    fn from(err: crate::psb_section_index::SectionParseError) -> Self {
+        Self::Message(err.into())
+    }
+}
+
 /// Shared one-shot cancel flag for an in-flight load / decode request.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeCancelFlag {

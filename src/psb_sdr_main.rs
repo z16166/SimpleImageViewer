@@ -29,7 +29,7 @@
 //! is handled by P1 after the shared index has been built, so P2 can still try
 //! the verified layer/mask section.
 
-use crate::psb_section_index::PsdSectionIndex;
+use crate::psb_section_index::{PsdSectionIndex, is_structural_kind};
 
 #[derive(Debug)]
 pub struct PsdMainDecode {
@@ -81,7 +81,7 @@ fn decode_psd_sdr_main_inner(
     // and P3 (ir_start/ir_end); every stage below reuses this same index.
     let index = match PsdSectionIndex::parse(bytes) {
         Ok(index) => index,
-        Err(e) if PsdSectionIndex::is_structural_error(&e) => {
+        Err(e) if is_structural_kind(e.kind) => {
             crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
             log::debug!("PSD SDR main P1 flattened decode failed: {e}");
             // Header/structural failures cannot be recovered by P2; go straight to P3.
@@ -375,13 +375,7 @@ fn decode_psd_sdr_main_p25a(
         }
     };
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
-    let Some(visible) =
-        crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id)
-    else {
-        crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25a_visibility_fail");
-        log::debug!("PSD SDR main P2.5a: could not build Layer Comp visibility");
-        return Ok(None);
-    };
+    let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
     match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {

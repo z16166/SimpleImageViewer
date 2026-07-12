@@ -103,6 +103,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     }
 
     crate::psb_reader::check_decode_cancel(cancel)?;
+    let mut p2_no_drawable_visible = false;
     match composite_layers_hdr_from_index(&index, bytes, cancel, sdr_white) {
         Ok(hdr) => {
             if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
@@ -127,6 +128,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
         }
         Err(e) if e.is_cancelled() => return Err(e),
         Err(e) => {
+            p2_no_drawable_visible = e.is_no_drawable_visible_layers();
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P2_fail err={e}");
             log::debug!("PSD HDR main P2 layer composite unavailable: {e}");
         }
@@ -151,7 +153,14 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
         }
     }
 
-    Err("PSD HDR main: P2/P2.5 unavailable; falling back to SDR".into())
+    if p2_no_drawable_visible {
+        return Err(rust_i18n::t!("error.psd_all_layers_hidden")
+            .to_string()
+            .into());
+    }
+    Err(rust_i18n::t!("error.psd_no_displayable_image")
+        .to_string()
+        .into())
 }
 
 fn decode_psd_hdr_main_p25a(
@@ -188,12 +197,7 @@ fn decode_psd_hdr_main_p25a(
             return Ok(None);
         }
     };
-    let Some(visible) =
-        crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id)
-    else {
-        crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_visibility_fail");
-        return Ok(None);
-    };
+    let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
     match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
     {

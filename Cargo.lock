@@ -5022,6 +5022,7 @@ dependencies = [
  "libtiff-viewer",
  "lofty",
  "log",
+ "memchr",
  "memmap2",
  "mimalloc",
  "miniz_oxide",

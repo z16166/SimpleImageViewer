@@ -17,7 +17,9 @@
 #![allow(dead_code)]
 
 use crate::psb_descriptor::{DescriptorObject, DescriptorValue, parse_versioned_descriptor};
-use crate::psb_layer_composite::{LayerRecord, compute_effective_visibility};
+use crate::psb_layer_composite::{
+    LayerRecord, compute_effective_visibility, compute_effective_visibility_with_flags,
+};
 
 const IR_LAYER_COMPS: u16 = 1065;
 const HIDDEN_FLAG: u8 = 0x02;
@@ -64,22 +66,26 @@ pub fn select_layer_comp(
 
 /// Build visibility from records' cmls: if a layer has a setting whose compList
 /// contains selected id, use that setting's `enab`; else keep file flag.
-pub fn visibility_from_layer_comp(records: &[LayerRecord], comp_id: i32) -> Option<Vec<bool>> {
-    let mut adjusted = records.to_vec();
-    for record in &mut adjusted {
+pub fn visibility_from_layer_comp(records: &[LayerRecord], comp_id: i32) -> Vec<bool> {
+    let mut adjusted_flags: Option<Vec<u8>> = None;
+    for (i, record) in records.iter().enumerate() {
         let Some(payload) = record.cmls_payload.as_deref() else {
             continue;
         };
         let Some(enabled) = cmls_enabled_for_comp(payload, comp_id) else {
             continue;
         };
+        let flags = adjusted_flags.get_or_insert_with(|| records.iter().map(|r| r.flags).collect());
         if enabled {
-            record.flags &= !HIDDEN_FLAG;
+            flags[i] &= !HIDDEN_FLAG;
         } else {
-            record.flags |= HIDDEN_FLAG;
+            flags[i] |= HIDDEN_FLAG;
         }
     }
-    Some(compute_effective_visibility(&adjusted))
+    match adjusted_flags.as_deref() {
+        Some(flags) => compute_effective_visibility_with_flags(records, Some(flags)),
+        None => compute_effective_visibility(records),
+    }
 }
 
 fn parse_comp_list(descriptor: &DescriptorObject) -> Option<Vec<LayerCompInfo>> {
@@ -338,7 +344,7 @@ mod tests {
             test_record(true, Some(1), Some(cmls_payload(7, true))),
         ];
 
-        let visible = visibility_from_layer_comp(&records, 7).expect("visibility");
+        let visible = visibility_from_layer_comp(&records, 7);
 
         assert_eq!(visible, vec![true, true, true]);
     }
@@ -347,7 +353,7 @@ mod tests {
     fn visibility_from_cmls_keeps_file_flag_without_matching_comp() {
         let records = vec![test_record(true, None, Some(cmls_payload(3, true)))];
 
-        let visible = visibility_from_layer_comp(&records, 7).expect("visibility");
+        let visible = visibility_from_layer_comp(&records, 7);
 
         assert_eq!(visible, vec![false]);
     }
@@ -356,7 +362,7 @@ mod tests {
     fn malformed_cmls_payload_is_skipped() {
         let records = vec![test_record(false, None, Some(vec![0, 0, 0, 16, b'b']))];
 
-        let visible = visibility_from_layer_comp(&records, 7).expect("visibility");
+        let visible = visibility_from_layer_comp(&records, 7);
 
         assert_eq!(visible, vec![true]);
     }
