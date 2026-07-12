@@ -767,7 +767,22 @@ impl ImageViewerApp {
                     }
                 }
                 self.flush_deferred_sdr_upload_for_index(idx, ctx);
-            } else if !self.main_loader_failed_indices.contains(&idx) {
+            } else if self.main_loader_failed_indices.contains(&idx) {
+                // Re-navigation clears a prior failure so transient OOM / I/O
+                // errors can be retried. Preload stays gated on the set so
+                // background work does not storm a permanently broken file.
+                self.main_loader_failed_indices.remove(&idx);
+                self.main_loader_failed_errors.remove(&idx);
+                self.error_message = None;
+                self.is_font_error = false;
+                self.loader.request_load(
+                    idx,
+                    self.image_files[idx].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(idx),
+                    self.settings.psd_hidden_layer_strategy,
+                );
+            } else {
                 #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
                 let missing_hdr = raw_hq_navigate_missing_hdr_plane(
                     &self.image_files,

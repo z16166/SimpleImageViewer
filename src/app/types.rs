@@ -469,7 +469,9 @@ pub struct ImageViewerApp {
     /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
     pub(crate) hdr_register_prewarm_repush_counts: HashMap<usize, u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
-    /// Main-window loader gave up on these indices until a successful install or rescan.
+    /// Main-window loader failed these indices. Cleared on successful install, rescan,
+    /// PSD strategy reload, or when the user navigates back to the index (retry).
+    /// Preload stays gated so background work does not storm a broken file.
     pub(crate) main_loader_failed_indices: HashSet<usize>,
     /// Last main-loader error text per index (survives async fail while not current).
     pub(crate) main_loader_failed_errors: HashMap<usize, String>,

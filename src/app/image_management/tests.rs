@@ -1105,6 +1105,33 @@ fn psd_hidden_layer_strategy_change_reloads_failed_current_psd() {
 }
 
 #[test]
+fn navigate_back_to_failed_index_retries_load() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg"]);
+    app.current_index = 0;
+    app.main_loader_failed_indices.insert(1);
+    app.main_loader_failed_errors
+        .insert(1, "transient oom".into());
+
+    let ctx = egui::Context::default();
+    app.navigate_to(1, &ctx);
+
+    assert_eq!(app.current_index, 1);
+    assert!(
+        !app.main_loader_failed_indices.contains(&1),
+        "re-navigation must clear the permanent gate so transient failures can retry"
+    );
+    assert!(
+        app.loader.is_loading(1),
+        "re-navigation to a failed index must request_load again"
+    );
+    assert!(
+        app.error_message.is_none(),
+        "retry clears the stale error until a new failure arrives"
+    );
+}
+
+#[test]
 fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;

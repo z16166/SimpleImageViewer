@@ -612,12 +612,18 @@ fn downconvert_channel_to_u8(
     })
 }
 
-/// Overflow-safe pixel count from dimensions.
+/// Overflow-safe pixel count from dimensions, enforcing the document pixel cap.
 fn hdr_checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
-    (width as u64)
+    let pixels = (width as u64)
         .checked_mul(height as u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| "PSD/PSB HDR pixel count overflow".into())
+        .ok_or_else(|| "PSD/PSB HDR pixel count overflow".to_string())?;
+    if pixels > crate::psb_reader::MAX_DOCUMENT_PIXELS {
+        return Err(format!(
+            "PSD/PSB HDR dimensions {width}x{height} exceed maximum {} pixels",
+            crate::psb_reader::MAX_DOCUMENT_PIXELS
+        ));
+    }
+    usize::try_from(pixels).map_err(|_| "PSD/PSB HDR pixel count overflow".into())
 }
 
 // ---------------------------------------------------------------------------

@@ -806,4 +806,28 @@ mod tests {
         undo_zip_prediction(&mut encoded, width, 32).unwrap();
         assert_eq!(encoded, expected);
     }
+
+    #[test]
+    fn zip_prediction_32bit_undo_wide_row_reuses_heap_scratch() {
+        // STACK_CAP is 8192 bytes => width > 2048 takes the heap path.
+        let width = 2049usize;
+        let mut encoded = Vec::with_capacity(width * 4);
+        for plane in 0..4u8 {
+            for i in 0..width {
+                encoded.push(plane.wrapping_add((i % 17) as u8).wrapping_mul(3));
+            }
+        }
+        let mut expected = encoded.clone();
+        for plane in 0..4 {
+            let start = plane * width;
+            let end = start + width;
+            prefix_sum_u8_scalar(&mut expected[start..end]);
+        }
+        let mut scratch = vec![0u8; width * 4];
+        interleave_byte_planes_scalar(&mut scratch, &expected, width);
+        expected.copy_from_slice(&scratch);
+
+        undo_zip_prediction(&mut encoded, width, 32).unwrap();
+        assert_eq!(encoded, expected);
+    }
 }

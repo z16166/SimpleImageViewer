@@ -183,7 +183,8 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             k,
             alpha: args.alpha,
         };
-        if let Some(mut rgba) = crate::psb_cmyk_cms::planar_cmyk_adobe_to_rgba8(&span, icc) {
+        let mut rgba = vec![0u8; rgba_len];
+        if crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(&span, icc, &mut rgba) {
             crate::psb_layer_rgba_simd::fold_opacity_mask_into_alpha(
                 &mut rgba,
                 args.opacity,
@@ -833,20 +834,27 @@ pub(crate) fn layer_channel_byte_ranges(
     Ok(ranges)
 }
 
-/// Whether the GPU all-at-once batch path is eligible: every layer that will
-/// actually be composited must use a GPU-separable blend mode (Normal, Screen,
-/// Linear Dodge, Multiply), and the batch's total decoded
-/// RGBA footprint must fit
-/// [`crate::psb_layer_composite::MAX_COMPOSITE_DECODED_BYTES`]. Metadata-only
-/// (no channel decode), so the GPU-vs-CPU-streaming choice is made before
-/// paying for any pixel work. Returns the total decoded-byte footprint on
-/// success (currently unused by callers beyond the eligibility signal, but
-/// kept for logging/diagnostics).
+/// Whether the GPU all-at-once batch path is eligible.
+///
+/// Checks, in order (metadata-only -- no channel decode):
+/// 1. [`gpu_blend_worthwhile`] -- skip upload/sync overhead on tiny canvases
+/// 2. Every composited layer uses a GPU-separable blend mode
+/// 3. Peak VRAM estimate fits [`MAX_COMPOSITE_DECODED_BYTES`]:
+///    all layer textures + canvas + padded readback + (when any clip layer
+///    will decode) one reusable pair of full-canvas clip scratch textures
+///
+/// Returns the estimated peak VRAM footprint on success.
 pub(crate) fn gpu_batch_eligible_decoded_bytes(
     info: &LayerInfo<'_>,
     visible: &[bool],
+    canvas_w: u32,
+    canvas_h: u32,
 ) -> Option<u64> {
+    if !crate::psb_layer_blend_gpu::gpu_blend_worthwhile(canvas_w, canvas_h) {
+        return None;
+    }
     let mut decoded_bytes = 0u64;
+    let mut needs_clip_scratch = false;
     for (i, record) in info.records.iter().enumerate() {
         let visible_i = visible.get(i).copied().unwrap_or(false);
         if !layer_will_decode(record, visible_i) {
@@ -855,10 +863,44 @@ pub(crate) fn gpu_batch_eligible_decoded_bytes(
         if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend) {
             return None;
         }
+        if record.clipping != 0 {
+            needs_clip_scratch = true;
+        }
         decoded_bytes =
             accumulate_decoded_layer_bytes(decoded_bytes, record.width(), record.height()).ok()?;
     }
-    Some(decoded_bytes)
+    let peak = gpu_batch_peak_vram_bytes(decoded_bytes, canvas_w, canvas_h, needs_clip_scratch)?;
+    if peak > crate::psb_layer_composite::MAX_COMPOSITE_DECODED_BYTES {
+        return None;
+    }
+    Some(peak)
+}
+
+/// Estimate peak VRAM for one GPU composite submit (checked arithmetic).
+///
+/// Clip groups reuse a single pair of full-canvas textures for the whole pass
+/// (`ClipGroupScratch`), so clip cost is O(1) canvases, not O(groups).
+pub(crate) fn gpu_batch_peak_vram_bytes(
+    layer_texture_bytes: u64,
+    canvas_w: u32,
+    canvas_h: u32,
+    needs_clip_scratch: bool,
+) -> Option<u64> {
+    let canvas_rgba = (canvas_w as u64)
+        .checked_mul(canvas_h as u64)?
+        .checked_mul(4)?;
+    let unpadded_bpr = (canvas_w as u64).checked_mul(4)?;
+    // wgpu::COPY_BYTES_PER_ROW_ALIGNMENT == 256
+    let padded_bpr = unpadded_bpr.checked_add(255)? / 256 * 256;
+    let readback = padded_bpr.checked_mul(canvas_h as u64)?;
+    let mut peak = layer_texture_bytes
+        .checked_add(canvas_rgba)?
+        .checked_add(readback)?;
+    if needs_clip_scratch {
+        // group texture + base-alpha texture (both full-canvas RGBA8)
+        peak = peak.checked_add(canvas_rgba)?.checked_add(canvas_rgba)?;
+    }
+    Some(peak)
 }
 
 /// Decode every eligible visible layer (optionally in parallel). Blend order

@@ -51,13 +51,14 @@ const MAX_LAYER_RECORDS: usize = 8192;
 /// 8-bit channel). This pixel budget keeps malicious/malformed layer bounds
 /// from OOM-killing the process while still allowing large legitimate layers
 /// (e.g. 32k x 32k, or a long strip up to `PSD_MAX_DIMENSION` on one side).
-pub(crate) const MAX_LAYER_PIXELS: u64 = 1024 * 1024 * 1024;
-/// Cap on the sum of decoded layer RGBA8 buffers held for one composite pass.
+pub(crate) const MAX_LAYER_PIXELS: u64 = crate::psb_reader::MAX_DOCUMENT_PIXELS;
+/// Cap on decoded layer RGBA8 bytes (CPU batch) and estimated GPU peak VRAM
+/// (layer textures + canvas + readback + clip scratch) for one composite pass.
 ///
 /// Per-layer pixel caps alone still allow many large layers to be decoded in
 /// parallel and retained until blending finishes. 8 GiB bounds that without
 /// rejecting typical multi-layer comps on a desktop viewer.
-const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(crate) const MAX_COMPOSITE_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Max [`DecodedLayer`]s resident at once on the CPU streaming composite
 /// path: the layer currently being blended, plus the next one prefetched in
 /// parallel on [`crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL`].
@@ -1154,6 +1155,12 @@ pub(crate) fn composite_layers_with_visibility_from_info(
 
     let canvas_w = info.width;
     let canvas_h = info.height;
+    if !dimensions_within_limit(canvas_w, canvas_h) {
+        return Err(format!(
+            "PSD/PSB composite canvas {canvas_w}x{canvas_h} exceeds document limits"
+        )
+        .into());
+    }
     if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, visible) {
         return Err(crate::loader::DecodeError::NoDrawableVisibleLayers);
     }
@@ -1261,9 +1268,9 @@ pub(crate) fn layer_will_decode(record: &LayerRecord, visible: bool) -> bool {
 ///
 /// Dispatches to one of two strategies:
 /// - GPU all-at-once batch ([`run_composite_pass_gpu_batch`]): only when a GPU
-///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds every
-///   composited layer GPU-separable and within budget, including clipping
-///   groups made only from separable blend modes.
+///   context is available AND [`gpu_batch_eligible_decoded_bytes`] finds the
+///   canvas worthwhile, every composited layer GPU-separable, and peak VRAM
+///   (layers + canvas + readback + optional clip scratch) within budget.
 /// - CPU streaming ([`run_composite_pass_cpu_streaming`]): the default, and
 ///   the fallback whenever the GPU batch is not eligible.
 #[allow(clippy::too_many_arguments)]
@@ -1277,7 +1284,9 @@ fn run_composite_pass(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     timing: &mut CompositeTiming,
 ) -> Result<usize, crate::loader::DecodeError> {
-    let gpu_batch_ctx = gpu.filter(|_| gpu_batch_eligible_decoded_bytes(info, visible).is_some());
+    let gpu_batch_ctx = gpu.filter(|_| {
+        gpu_batch_eligible_decoded_bytes(info, visible, canvas_w, canvas_h).is_some()
+    });
     if let Some(gpu_ctx) = gpu_batch_ctx {
         return run_composite_pass_gpu_batch(
             info, visible, canvas, canvas_w, canvas_h, cancel, gpu_ctx, timing,
@@ -2122,7 +2131,8 @@ mod tests {
 
     #[test]
     fn gpu_batch_eligible_allows_clipping_with_separable_modes() {
-        let (width, height) = (4u32, 4u32);
+        // Canvas must clear gpu_blend_worthwhile; layer rects stay tiny.
+        let (width, height) = (512u32, 512u32);
         let channel_data_owned = Vec::new();
         let base_spec = |blend: [u8; 4], clipping: u8| TestLayerSpec {
             top: 0,
@@ -2139,7 +2149,7 @@ mod tests {
         let visible = vec![true; records.len()];
         let info = mk_layer_info(width, height, records, &channel_data_owned);
         assert!(
-            gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+            gpu_batch_eligible_decoded_bytes(&info, &visible, width, height).is_some(),
             "Screen without clipping should be GPU batch eligible after P0"
         );
 
@@ -2148,7 +2158,7 @@ mod tests {
             let visible = vec![true; records.len()];
             let info = mk_layer_info(width, height, records, &channel_data_owned);
             assert!(
-                gpu_batch_eligible_decoded_bytes(&info, &visible).is_some(),
+                gpu_batch_eligible_decoded_bytes(&info, &visible, width, height).is_some(),
                 "separable mode {:?} should be eligible",
                 key
             );
@@ -2159,8 +2169,69 @@ mod tests {
         let visible3 = vec![true; clipped_records.len()];
         let clipped_info = mk_layer_info(width, height, clipped_records, &channel_data_owned);
         assert!(
-            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3).is_some(),
+            gpu_batch_eligible_decoded_bytes(&clipped_info, &visible3, width, height).is_some(),
             "clipping with separable modes should be GPU batch eligible"
+        );
+    }
+
+    #[test]
+    fn gpu_batch_eligible_rejects_small_canvas_before_decode() {
+        let channel_data_owned = Vec::new();
+        let (records, _) = build_test_layers(&[TestLayerSpec {
+            top: 0,
+            left: 0,
+            bottom: 64,
+            right: 64,
+            rgb: (1, 2, 3),
+            blend: *b"norm",
+            clipping: 0,
+            opacity: 255,
+        }]);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(64, 64, records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&info, &visible, 64, 64).is_none(),
+            "tiny canvas must not enter GPU batch admission"
+        );
+    }
+
+    #[test]
+    fn gpu_batch_peak_vram_counts_clip_scratch_and_rejects_huge_canvas() {
+        use crate::psb_layer_decode::gpu_batch_peak_vram_bytes;
+        let w = 32_768u32;
+        let h = 32_768u32;
+        // Canvas + readback alone are 8 GiB; clip scratch pushes over the budget.
+        let peak = gpu_batch_peak_vram_bytes(0, w, h, true).expect("peak");
+        assert!(peak > super::MAX_COMPOSITE_DECODED_BYTES);
+
+        let channel_data_owned = Vec::new();
+        let (records, _) = build_test_layers(&[
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (1, 1, 1),
+                blend: *b"norm",
+                clipping: 0,
+                opacity: 255,
+            },
+            TestLayerSpec {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 4,
+                rgb: (2, 2, 2),
+                blend: *b"scrn",
+                clipping: 1,
+                opacity: 255,
+            },
+        ]);
+        let visible = vec![true; records.len()];
+        let info = mk_layer_info(w, h, records, &channel_data_owned);
+        assert!(
+            gpu_batch_eligible_decoded_bytes(&info, &visible, w, h).is_none(),
+            "max canvas with clip scratch must fall back to CPU streaming"
         );
     }
 

@@ -38,10 +38,18 @@ use simple_image_viewer::simd_swizzle;
 
 /// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
+/// Hard cap on document canvas total pixels for P1 / P2 / HDR paths.
+///
+/// `PSD_MAX_DIMENSION` alone still allows `300_000 x 300_000`. This matches the
+/// per-layer pixel budget so a single canvas allocation cannot reserve tens of
+/// GB before any pixel data is read.
+pub(crate) const MAX_DOCUMENT_PIXELS: u64 = 1024 * 1024 * 1024;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
 /// Bytes per RGBA pixel when assembling the composite image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
+/// Bytes per display-linear HDR RGBA f32 pixel.
+const HDR_RGBA_F32_BYTES_PER_PIXEL: u64 = 16;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
 const IR_THUMBNAIL_PS4: u16 = 1033;
 const IR_THUMBNAIL_PS5: u16 = 1036;
@@ -1213,6 +1221,14 @@ pub(crate) fn validate_psd_dimensions(
             "PSD/PSB dimensions {width}x{height} exceed maximum {PSD_MAX_DIMENSION}"
         ));
     }
+    let pixels = (width as u64)
+        .checked_mul(height as u64)
+        .ok_or_else(|| "PSD/PSB pixel count overflow".to_string())?;
+    if pixels > MAX_DOCUMENT_PIXELS {
+        return Err(format!(
+            "PSD/PSB dimensions {width}x{height} exceed maximum {MAX_DOCUMENT_PIXELS} pixels"
+        ));
+    }
     if channels == 0 || channels > PSD_MAX_CHANNELS {
         return Err(format!(
             "PSD/PSB channel count {channels} is out of range (1..={PSD_MAX_CHANNELS})"
@@ -1221,16 +1237,21 @@ pub(crate) fn validate_psd_dimensions(
     Ok(())
 }
 
-/// Returns `width * height` as `usize`, or an error on overflow.
+/// Returns `width * height` as `usize`, or an error on overflow / document cap.
 ///
 /// On success, any `row * width` with `row < height` also fits in `usize`
 /// (including on 32-bit targets). Callers may rely on that instead of
 /// repeating `checked_mul` in row loops.
 fn checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
-    (width as u64)
+    let pixels = (width as u64)
         .checked_mul(height as u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| "PSD/PSB pixel count overflow".into())
+        .ok_or_else(|| "PSD/PSB pixel count overflow".to_string())?;
+    if pixels > MAX_DOCUMENT_PIXELS {
+        return Err(format!(
+            "PSD/PSB dimensions {width}x{height} exceed maximum {MAX_DOCUMENT_PIXELS} pixels"
+        ));
+    }
+    usize::try_from(pixels).map_err(|_| "PSD/PSB pixel count overflow".into())
 }
 
 fn checked_rgba_len(pixel_count: usize) -> Result<usize, String> {
@@ -1375,11 +1396,16 @@ pub(crate) fn read_u64(r: &mut impl Read) -> Result<u64, String> {
     Ok(u64::from_be_bytes(buf))
 }
 
-/// Estimate the memory required to decode a PSD/PSB composite (in bytes) from header bytes.
-/// Returns (width, height, channels, estimated_bytes) or an error.
+/// Estimate peak resident decode buffers from header bytes.
 ///
-/// Estimate covers the final RGBA8 display buffer plus temporary planar decode
-/// storage scaled by bit depth (worst-case all channels kept as raw samples).
+/// Returns `(width, height, channels, estimated_bytes)`.
+///
+/// - 8-bit SDR: RGBA8 canvas + native-depth planar working set.
+/// - 16/32-bit HDR flat: rgba_f32 canvas plus up to two planar copies (ZIP
+///   inflate buffer coexists with per-channel `to_vec` copies before the
+///   inflate buffer is dropped). Layer composite / clip scratch are not
+///   known from the header alone; the RAM precheck must not under-count the
+///   flat HDR peak.
 pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), String> {
     if bytes.len() < 26 {
         return Err("PSD/PSB header is too short".into());
@@ -1402,29 +1428,91 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
     let pixels = (width as u64)
         .checked_mul(height as u64)
         .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
-    let rgba = pixels
-        .checked_mul(RGBA_BYTES_PER_PIXEL as u64)
-        .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
     let planar = pixels
         .checked_mul(channels as u64)
         .and_then(|n| n.checked_mul(bps))
         .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
-    let estimated = rgba
-        .checked_add(planar)
-        .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
+    let estimated = if depth >= 16 {
+        let rgba_f32 = pixels
+            .checked_mul(HDR_RGBA_F32_BYTES_PER_PIXEL)
+            .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
+        // ZIP path may keep inflate output and per-channel copies together.
+        let planar_peak = planar
+            .checked_mul(2)
+            .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
+        planar_peak
+            .checked_add(rgba_f32)
+            .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?
+    } else {
+        let rgba = pixels
+            .checked_mul(RGBA_BYTES_PER_PIXEL as u64)
+            .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?;
+        rgba.checked_add(planar)
+            .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?
+    };
     Ok((width, height, channels, estimated))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, cmyk_to_rgb,
-        downconvert_samples_to_u8, max_rle_compressed_row_bytes,
+        HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, PACKBITS_MAX_NOOPS_PER_ROW,
+        PACKBITS_TOO_MANY_NOOPS, PSD_MAX_DIMENSION, RGBA_BYTES_PER_PIXEL, cmyk_to_rgb,
+        downconvert_samples_to_u8, estimate_memory_from_bytes, max_rle_compressed_row_bytes,
         read_composite_from_bytes_with_cancel, seek_rle_channel_skip, unpack_bits_into,
-        validate_rle_row_counts,
+        validate_psd_dimensions, validate_rle_row_counts,
     };
     use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn minimal_psd_header(width: u32, height: u32, channels: u16, depth: u16) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(26);
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&channels.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&depth.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // RGB
+        bytes
+    }
+
+    #[test]
+    fn validate_psd_dimensions_rejects_over_document_pixel_cap() {
+        assert!(validate_psd_dimensions(32_768, 32_768, 3).is_ok());
+        let err = validate_psd_dimensions(32_769, 32_769, 3).unwrap_err();
+        assert!(
+            err.contains(&MAX_DOCUMENT_PIXELS.to_string()),
+            "err={err}"
+        );
+        let err = validate_psd_dimensions(PSD_MAX_DIMENSION, PSD_MAX_DIMENSION, 3).unwrap_err();
+        assert!(err.contains("exceed maximum"), "err={err}");
+    }
+
+    #[test]
+    fn estimate_memory_hdr32_counts_planar_peak_and_rgba_f32() {
+        let width = 64u32;
+        let height = 32u32;
+        let channels = 3u16;
+        let header = minimal_psd_header(width, height, channels, 32);
+        let (w, h, ch, estimated) = estimate_memory_from_bytes(&header).unwrap();
+        assert_eq!((w, h, ch), (width, height, channels as u32));
+        let pixels = u64::from(width) * u64::from(height);
+        let planar = pixels * u64::from(channels) * 4;
+        let expected = planar * 2 + pixels * HDR_RGBA_F32_BYTES_PER_PIXEL;
+        assert_eq!(estimated, expected);
+        // Must be strictly above the old RGBA8+planar underestimate (16 B/px for RGB32).
+        let old_underestimate = pixels * RGBA_BYTES_PER_PIXEL as u64 + planar;
+        assert!(estimated > old_underestimate);
+    }
+
+    #[test]
+    fn estimate_memory_sdr8_is_rgba_plus_planar() {
+        let header = minimal_psd_header(10, 20, 4, 8);
+        let (_, _, _, estimated) = estimate_memory_from_bytes(&header).unwrap();
+        assert_eq!(estimated, 10 * 20 * 4 + 10 * 20 * 4);
+    }
 
     #[test]
     fn unpack_bits_rejects_excessive_packbits_noops() {

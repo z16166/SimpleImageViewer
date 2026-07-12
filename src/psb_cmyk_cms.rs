@@ -41,32 +41,6 @@ pub fn resolve_cmyk_icc(embedded: Option<&[u8]>) -> &[u8] {
     }
 }
 
-/// Convert Adobe-polarity planar CMYK (+ optional alpha) to straight-alpha RGBA8.
-///
-/// Returns `None` when the `jpegxl` feature is off (no lcms link) or when lcms
-/// rejects the profile / transform -- callers should fall back to naive
-/// [`crate::psb_reader::cmyk_to_rgb`].
-pub fn planar_cmyk_adobe_to_rgba8(span: &AdobeCmykSpan<'_>, icc: &[u8]) -> Option<Vec<u8>> {
-    let n = span
-        .c
-        .len()
-        .min(span.m.len())
-        .min(span.y.len())
-        .min(span.k.len());
-    if n == 0 {
-        return Some(Vec::new());
-    }
-    #[cfg(feature = "jpegxl")]
-    {
-        planar_cmyk_adobe_to_rgba8_lcms(span, icc, n)
-    }
-    #[cfg(not(feature = "jpegxl"))]
-    {
-        let _ = (span, icc);
-        None
-    }
-}
-
 /// Convert a CMYK span (Adobe polarity) into `dst_rgba` via lcms.
 /// Returns `false` to signal naive fallback.
 pub fn cmyk_span_adobe_to_rgba8(span: &AdobeCmykSpan<'_>, icc: &[u8], dst_rgba: &mut [u8]) -> bool {
@@ -88,20 +62,6 @@ pub fn cmyk_span_adobe_to_rgba8(span: &AdobeCmykSpan<'_>, icc: &[u8], dst_rgba: 
     {
         let _ = (span, icc, dst_rgba);
         false
-    }
-}
-
-#[cfg(feature = "jpegxl")]
-fn planar_cmyk_adobe_to_rgba8_lcms(
-    span: &AdobeCmykSpan<'_>,
-    icc: &[u8],
-    n: usize,
-) -> Option<Vec<u8>> {
-    let mut rgba = vec![0u8; n.checked_mul(4)?];
-    if cmyk_span_adobe_to_rgba8_lcms(span, icc, &mut rgba, n) {
-        Some(rgba)
-    } else {
-        None
     }
 }
 
@@ -216,8 +176,8 @@ mod tests {
             k: &[255],
             alpha: None,
         };
-        let rgba = planar_cmyk_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC).expect("lcms");
-        assert_eq!(rgba.len(), 4);
+        let mut rgba = [0u8; 4];
+        assert!(cmyk_span_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC, &mut rgba));
         assert!(rgba[0] > 240 && rgba[1] > 240 && rgba[2] > 240, "{rgba:?}");
         assert_eq!(rgba[3], 255);
     }
@@ -232,7 +192,8 @@ mod tests {
             k: &[0],
             alpha: Some(&[200]),
         };
-        let rgba = planar_cmyk_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC).expect("lcms");
+        let mut rgba = [0u8; 4];
+        assert!(cmyk_span_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC, &mut rgba));
         assert!(rgba[0] < 40 && rgba[1] < 40 && rgba[2] < 40, "{rgba:?}");
         assert_eq!(rgba[3], 200);
     }

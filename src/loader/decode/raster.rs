@@ -347,7 +347,17 @@ pub(crate) fn load_psd(
     );
 
     let mut skip_flattened_for_disk_tiled_degrade = false;
-    if version == 2 && psd_header_requires_disk_tiled(width, height) && !try_hdr {
+    let oversized_psb = version == 2 && psd_header_requires_disk_tiled(width, height);
+    // Oversized PSB HDR has no row/tile decode yet; refuse full HDR decode and
+    // use the SDR disk-tiled / P2/P3 path instead of forcing a multi-GB peak.
+    if try_hdr && oversized_psb {
+        log::debug!(
+            "PSB header {}x{} exceeds tiled threshold; HDR full decode is unsupported -- using SDR path",
+            width,
+            height
+        );
+    }
+    if oversized_psb {
         log::debug!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
             width,
@@ -414,15 +424,8 @@ pub(crate) fn load_psd(
     }
 
     // HDR path (Approach A): try P1/P2 HDR, fall back to SDR on failure.
-    if try_hdr {
-        if version == 2 && psd_header_requires_disk_tiled(width, height) {
-            // Intentionally log-only: HDR gate wins over disk-tiled SDR open.
-            log::debug!(
-                "PSB header {}x{} would use disk tiled SDR, but HDR content gate is active; full HDR decode",
-                width,
-                height
-            );
-        }
+    // Oversized PSB is excluded until HDR row/tile decode exists.
+    if try_hdr && !oversized_psb {
         let hdr_result = match section_index.as_ref() {
             Ok(index) => crate::psb_hdr_main::decode_psd_hdr_main_from_index_with_cancel(
                 index,

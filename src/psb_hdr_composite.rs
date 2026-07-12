@@ -803,6 +803,11 @@ fn composite_layers_hdr_with_visibility(
     if !strict_visibility_has_drawable_output(canvas_w, canvas_h, &info.records, visible) {
         return Err(DecodeError::NoDrawableVisibleLayers);
     }
+    if !dimensions_within_limit(canvas_w, canvas_h) {
+        return Err(DecodeError::Message(format!(
+            "PSD/PSB HDR composite canvas {canvas_w}x{canvas_h} exceeds document limits"
+        )));
+    }
 
     let pixel_count = (canvas_w as usize)
         .checked_mul(canvas_h as usize)
