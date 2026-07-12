@@ -93,7 +93,7 @@ pub(crate) fn decode_channel_image(
                 let compressed = data
                     .get(start..end)
                     .ok_or_else(|| "PSD/PSB layer channel RLE row out of bounds".to_string())?;
-                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, row_raw_bytes);
+                crate::psb_reader::unpack_bits_into(&mut row_buf, compressed, row_raw_bytes)?;
                 let dst_start = row
                     .checked_mul(row_raw_bytes)
                     .ok_or_else(|| "PSD/PSB layer channel row offset overflow".to_string())?;
@@ -1004,6 +1004,8 @@ pub(crate) fn run_composite_pass_gpu_batch(
     };
 
     if !used_gpu {
+        // GPU path may return None on cancel; do not start CPU blend.
+        crate::psb_reader::check_decode_cancel(cancel)?;
         crate::psb_layer_clip::blend_layers_with_clipping(
             canvas, canvas_w, canvas_h, &clip_refs, cancel,
         )?;

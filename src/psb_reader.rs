@@ -224,7 +224,7 @@ pub fn read_composite_from_index(
                             compressed.resize(compressed_len, 0);
                             r.read_exact(&mut compressed)
                                 .map_err(|e| format!("Read RLE: {e}"))?;
-                            unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes);
+                            unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes)?;
                             let dst_start = row * width as usize;
                             let dst_end = dst_start + width as usize;
                             downconvert_samples_to_u8(
@@ -921,14 +921,28 @@ fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
     })
 }
 
+/// Cap PackBits `n == -128` no-ops per row. Spec allows unlimited no-ops, but each
+/// consumes one input byte without advancing output -- unbounded runs are a DoS vector.
+pub(crate) const PACKBITS_MAX_NOOPS_PER_ROW: usize = 4096;
+
+pub(crate) const PACKBITS_TOO_MANY_NOOPS: &str = "PSD/PSB PackBits RLE exceeds no-op limit";
+
 /// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
-pub(crate) fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: usize) {
+///
+/// Returns an error when a single row contains more than [`PACKBITS_MAX_NOOPS_PER_ROW`]
+/// PackBits no-op bytes (`n == -128`). On error, `result` is zero-filled to `expected_len`.
+pub(crate) fn unpack_bits_into(
+    result: &mut Vec<u8>,
+    data: &[u8],
+    expected_len: usize,
+) -> Result<(), String> {
     result.clear();
     if result.capacity() < expected_len {
         result.reserve(expected_len - result.capacity());
     }
 
     let mut i = 0;
+    let mut noop_count = 0usize;
     while i < data.len() && result.len() < expected_len {
         let n = data[i] as i8;
         i += 1;
@@ -952,10 +966,18 @@ pub(crate) fn unpack_bits_into(result: &mut Vec<u8>, data: &[u8], expected_len: 
                     crate::psb_packbits_simd::fill_bytes(&mut result[start..], val);
                 }
             }
+        } else {
+            // n == -128: PackBits no-op (consumes the control byte only).
+            noop_count += 1;
+            if noop_count > PACKBITS_MAX_NOOPS_PER_ROW {
+                result.clear();
+                result.resize(expected_len, 0);
+                return Err(PACKBITS_TOO_MANY_NOOPS.to_string());
+            }
         }
-        // n == -128: no-op
     }
     result.resize(expected_len, 0);
+    Ok(())
 }
 
 // -- Helpers ---------------------------------------------------------
@@ -1244,8 +1266,32 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
 
 #[cfg(test)]
 mod tests {
-    use super::{cmyk_to_rgb, downconvert_samples_to_u8, read_composite_from_bytes_with_cancel};
+    use super::{
+        PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, cmyk_to_rgb,
+        downconvert_samples_to_u8, read_composite_from_bytes_with_cancel, unpack_bits_into,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn unpack_bits_rejects_excessive_packbits_noops() {
+        let data = vec![0x80u8; PACKBITS_MAX_NOOPS_PER_ROW + 1];
+        let mut out = Vec::new();
+        let err = unpack_bits_into(&mut out, &data, 16).unwrap_err();
+        assert_eq!(err, PACKBITS_TOO_MANY_NOOPS);
+        assert_eq!(out.len(), 16);
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn unpack_bits_allows_noop_count_at_limit() {
+        let mut data = vec![0x80u8; PACKBITS_MAX_NOOPS_PER_ROW];
+        // Literal run: n=3 copies next 4 bytes.
+        data.push(3);
+        data.extend_from_slice(&[1, 2, 3, 4]);
+        let mut out = Vec::new();
+        unpack_bits_into(&mut out, &data, 4).unwrap();
+        assert_eq!(out, [1, 2, 3, 4]);
+    }
 
     #[test]
     fn downconvert_16bit_uses_high_byte() {

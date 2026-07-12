@@ -45,6 +45,8 @@ use wgpu::util::DeviceExt;
 
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
+/// Short Wait slice so cancel can be polled during readback (checklist #37 tradeoff).
+const READBACK_CANCEL_POLL_SLICE: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 static COMPUTE_PASS_BEGINS: AtomicU64 = AtomicU64::new(0);
@@ -473,6 +475,7 @@ pub(crate) fn try_blend_layers_gpu(
         cancel,
     ) {
         Ok(pixels) => Some(pixels),
+        Err(e) if e.is_cancelled() => None,
         Err(e) => {
             log::debug!("[PSD] GPU separable blend fell back to CPU: {e}");
             None
@@ -1117,7 +1120,7 @@ fn blend_layers_gpu_inner(
         .map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-    wait_for_readback(device, &rx)?;
+    wait_for_readback(device, &rx, cancel)?;
 
     let mapped = readback.slice(..).get_mapped_range();
     let mut pixels = Vec::with_capacity(initial_canvas.len());
@@ -1132,33 +1135,42 @@ fn blend_layers_gpu_inner(
 fn wait_for_readback(
     device: &wgpu::Device,
     rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
-) -> Result<(), String> {
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), crate::loader::DecodeError> {
     let deadline = Instant::now() + READBACK_MAX_WAIT;
     loop {
+        crate::psb_reader::check_decode_cancel(cancel)?;
         match rx.try_recv() {
             Ok(result) => {
-                return result.map_err(|err| format!("PSD blend readback map failed: {err}"));
+                return result
+                    .map_err(|err| format!("PSD blend readback map failed: {err}").into());
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err("PSD blend readback channel closed".to_string());
+                return Err("PSD blend readback channel closed".into());
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err("PSD blend readback timed out".to_string());
+            return Err("PSD blend readback timed out".into());
         }
-        // Block until the device signals progress or the overall deadline.
-        // map_async completion is delivered on `rx`; Wait avoids a fixed
-        // short poll slice (checklist #37).
+        // When cancel is armed, Wait in short slices so navigation/ESC can abort
+        // before READBACK_MAX_WAIT. Without cancel, Wait until the overall deadline
+        // (checklist #37 -- no fixed wakeups).
+        let remaining = deadline.saturating_duration_since(now);
+        let timeout = if cancel.is_some() {
+            remaining.min(READBACK_CANCEL_POLL_SLICE)
+        } else {
+            remaining
+        };
         match device.poll(wgpu::PollType::Wait {
             submission_index: None,
-            timeout: Some(deadline.saturating_duration_since(now)),
+            timeout: Some(timeout),
         }) {
             Ok(_) => {}
             Err(wgpu::PollError::Timeout) => {}
             Err(err) => {
-                return Err(format!("PSD blend device poll failed: {err:?}"));
+                return Err(format!("PSD blend device poll failed: {err:?}").into());
             }
         }
     }

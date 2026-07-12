@@ -23,6 +23,10 @@ use crate::psb_reader::{
     validate_psd_dimensions,
 };
 
+const IMAGE_DATA_POS_OVERFLOW: &str = "PSD/PSB image_data_pos overflows usize";
+const IMAGE_DATA_POS_END_OVERFLOW: &str = "PSD/PSB image_data_pos end overflows usize";
+const IMAGE_DATA_COMPRESSION_TRUNCATED: &str = "PSD/PSB Image Data compression truncated";
+
 #[derive(Debug, Clone)]
 pub struct PsdSectionIndex {
     pub is_psb: bool,
@@ -114,10 +118,14 @@ impl PsdSectionIndex {
     }
 
     pub fn image_data_compression(&self, bytes: &[u8]) -> Result<u16, String> {
-        let pos = self.image_data_pos as usize;
+        let pos = usize::try_from(self.image_data_pos)
+            .map_err(|_| IMAGE_DATA_POS_OVERFLOW.to_string())?;
+        let end = pos
+            .checked_add(2)
+            .ok_or_else(|| IMAGE_DATA_POS_END_OVERFLOW.to_string())?;
         let slice = bytes
-            .get(pos..pos + 2)
-            .ok_or_else(|| "PSD/PSB Image Data compression truncated".to_string())?;
+            .get(pos..end)
+            .ok_or_else(|| IMAGE_DATA_COMPRESSION_TRUNCATED.to_string())?;
         Ok(u16::from_be_bytes([slice[0], slice[1]]))
     }
 
@@ -187,8 +195,35 @@ mod tests {
 
     #[test]
     fn parse_rejects_bad_signature() {
-        let err = PsdSectionIndex::parse(b"XXXX").unwrap_err();
-        assert!(err.contains("invalid signature") || err.contains("Not a PSD"));
+        let mut bytes = vec![0u8; 26];
+        bytes[..4].copy_from_slice(b"XXXX");
+        let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert!(
+            err.contains("invalid signature") || err.contains("Not a PSD"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn image_data_compression_rejects_pos_overflowing_usize() {
+        let index = PsdSectionIndex {
+            is_psb: false,
+            width: 1,
+            height: 1,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+            ir_start: 0,
+            ir_end: 0,
+            lm_start: 0,
+            lm_end: 0,
+            image_data_pos: u64::MAX,
+        };
+        let err = index.image_data_compression(&[]).unwrap_err();
+        assert!(
+            err.contains("image_data_pos") && err.contains("overflow"),
+            "{err}"
+        );
     }
 
     #[test]

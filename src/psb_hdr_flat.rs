@@ -185,7 +185,7 @@ pub fn read_composite_hdr_from_index(
                             compressed_buf.resize(clen, 0);
                             r.read_exact(&mut compressed_buf)
                                 .map_err(|e| format!("Read HDR RLE ch {ch_idx}: {e}"))?;
-                            unpack_bits_into(&mut row_raw, &compressed_buf, row_raw_bytes);
+                            unpack_bits_into(&mut row_raw, &compressed_buf, row_raw_bytes)?;
                             let dst = row * row_raw_bytes;
                             raw[dst..dst + row_raw_bytes].copy_from_slice(&row_raw);
                         }
