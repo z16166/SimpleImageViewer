@@ -5040,6 +5040,7 @@ dependencies = [
  "rodio",
  "rust-i18n",
  "serde",
+ "serde_json",
  "serde_yaml",
  "symphonia",
  "sysinfo",

@@ -54,10 +54,16 @@ pub fn select_layer_comp(
     comps: &[LayerCompInfo],
     last_applied: Option<i32>,
 ) -> Option<&LayerCompInfo> {
-    if let Some(id) = last_applied
-        && let Some(comp) = comps.iter().find(|comp| comp.id == id)
-    {
-        return Some(comp);
+    if let Some(id) = last_applied {
+        if let Some(comp) = comps.iter().find(|comp| comp.id == id) {
+            return Some(comp);
+        }
+        // External IR may name a missing / stale lastAppliedCompId; fall back to
+        // the last listed comp (Adobe often appends the document's current state).
+        log::debug!(
+            "PSD/PSB layer comp lastApplied={id} not found among {} comps; falling back to last entry",
+            comps.len()
+        );
     }
     comps.last()
 }

@@ -257,6 +257,12 @@ fn read_icc_description(icc: &[u8], tag: &IccTag) -> Option<String> {
 
 fn description_marks_hdr(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
+    // Heuristic only: Adobe `desc`/`mluc` strings are not a substitute for
+    // `cicp` transfer codes. Prefer cicp (and high `lumi`) above; these needles
+    // exist for profiles that mark HDR only in the human-readable name.
+    // Limitations: substring false positives (e.g. short "pq"), false negatives
+    // for unnamed PQ/HLG profiles, and no guarantee of the actual EOTF --
+    // [`transfer_from_description`] may still fall back to Linear.
     const NEEDLES: &[&str] = &[
         "pq",
         "hlg",
@@ -288,8 +294,52 @@ fn transfer_from_description(text: &str) -> HdrTransferFunction {
     {
         HdrTransferFunction::Pq
     } else {
+        // desc marked HDR (e.g. "high luminance") without an explicit EOTF token.
         HdrTransferFunction::Linear
     }
+}
+
+/// Log when 16-bit HDR decode assumes Linear because ICC did not name PQ/HLG.
+/// Call from decode paths so undetermined transfer is not silent (checklist #15/#25).
+pub(crate) fn log_16bit_transfer_assumption(probe: &IccHdrProbe, depth: u16) {
+    if depth != 16 {
+        return;
+    }
+    match probe.transfer {
+        HdrTransferFunction::Pq | HdrTransferFunction::Hlg => {}
+        HdrTransferFunction::Linear if probe.marks_hdr => {
+            log::info!(
+                "PSD/PSB 16-bit HDR: ICC marks HDR but transfer is assumed Linear (no cicp PQ/HLG); colors may be wrong if the file is PQ/HLG-encoded"
+            );
+        }
+        HdrTransferFunction::Unknown => {
+            log::debug!(
+                "PSD/PSB 16-bit: ICC transfer Unknown (marks_hdr={}); decoding as Linear",
+                probe.marks_hdr
+            );
+        }
+        HdrTransferFunction::Linear
+        | HdrTransferFunction::Srgb
+        | HdrTransferFunction::Gamma
+        | HdrTransferFunction::Bt709 => {
+            log::debug!(
+                "PSD/PSB 16-bit: using ICC transfer hint {:?} (marks_hdr={})",
+                probe.transfer,
+                probe.marks_hdr
+            );
+        }
+    }
+}
+
+/// True when 16-bit HDR should surface an OSD note that transfer was not
+/// confirmed via cicp PQ/HLG (heuristic / Linear assumption).
+pub(crate) fn transfer_assumption_uncertain(probe: &IccHdrProbe, depth: u16) -> bool {
+    depth == 16
+        && probe.marks_hdr
+        && !matches!(
+            probe.transfer,
+            HdrTransferFunction::Pq | HdrTransferFunction::Hlg
+        )
 }
 
 /// Build a minimal synthetic ICC with a `cicp` tag (for tests / fixtures).

@@ -187,6 +187,7 @@ osd.psd.detail.max_bbox: "max-bbox"
 osd.psd.detail.max_bbox_force_open: "max-bbox force-open"
 osd.psd.detail.show_all_layers: "show all layers"
 osd.psd.detail.ir_thumb: "thumbnail"
+osd.psd.transfer_uncertain: "transfer assumed"
 
 # Scale mode
 scale.fit: "Fit to Window"

@@ -36,7 +36,7 @@ use crate::hdr::types::{
     DEFAULT_SDR_WHITE_NITS, HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrLuminanceMetadata,
     HdrReference, HdrTransferFunction,
 };
-use crate::psb_icc_hdr::probe_icc_hdr;
+use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_reader::{
     bytes_per_sample, checked_section_end, extract_icc_profile_from_ir,
     max_rle_compressed_row_bytes, read_u16, read_u32, read_u64, seek_forward_within,
@@ -543,6 +543,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
         .as_deref()
         .map(probe_icc_hdr)
         .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, depth);
     let input_transfer = if depth == 32 {
         HdrTransferFunction::Linear
     } else {
@@ -741,8 +742,9 @@ fn interleave_rgb_row_rgba32f(
 fn native_sample_f32(row: &[u8], sample_idx: usize, bps: usize) -> f32 {
     let off = sample_idx.saturating_mul(bps);
     match bps {
-        2 if off + 1 < row.len() => u16::from_be_bytes([row[off], row[off + 1]]) as f32 / 65535.0,
-        4 if off + 3 < row.len() => {
+        // `off + bps <= len` includes the last sample (equivalent to off+bps-1 < len).
+        2 if off + 2 <= row.len() => u16::from_be_bytes([row[off], row[off + 1]]) as f32 / 65535.0,
+        4 if off + 4 <= row.len() => {
             f32::from_be_bytes([row[off], row[off + 1], row[off + 2], row[off + 3]])
         }
         _ => 0.0,

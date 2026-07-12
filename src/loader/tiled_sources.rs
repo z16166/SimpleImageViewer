@@ -231,6 +231,8 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
         true
     }
 
+    /// Solid black tiles only -- never decode SDR rows/tiles from the HDR
+    /// source (checklist #26: HDR display must not pay for SDR tile work).
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         solid_rgba8_tile(self.width(), self.height(), x, y, w, h, [0, 0, 0, 255])
     }

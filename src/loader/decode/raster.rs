@@ -539,6 +539,10 @@ pub(crate) fn load_psd(
         };
         match hdr_result {
             Ok(hdr) => {
+                // Cheap black SDR placeholder only -- no SDR tile decode.
+                // On HDR displays the UI uses the HDR plane; the fallback
+                // [`HdrSdrTiledFallbackSource`] returns solid black tiles
+                // (checklist #26), not a second Image Data decode.
                 let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr.hdr)
                     .map_err(|e| format!("PSD HDR SDR fallback failed: {e}"))?;
                 let fallback = DecodedImage::from_hdr_sdr_fallback(

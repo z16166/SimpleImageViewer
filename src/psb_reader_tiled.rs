@@ -57,8 +57,12 @@ pub struct PsbTiledSource {
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
     row_offsets: Vec<u64>,
-    /// Defensive placeholder for ZIP / ZIP+prediction rows; tiled open refuses
-    /// those modes before source construction.
+    /// Always `None` on this SDR disk-tiled path. ZIP / ZIP+prediction Image
+    /// Data is a single zlib stream without per-row offsets, so
+    /// [`crate::psb_reader::tiled_compression_supported`] rejects compression
+    /// 2|3 before construction. The `2 | 3` arm in [`Self::decode_row`] is a
+    /// defensive dead path that fails closed if a caller ever bypasses that
+    /// gate -- it must not silently zero-fill.
     zip_planar: Option<Arc<Vec<u8>>>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
     /// Only successful rows are inserted; failed rows are never cached as zeros.
@@ -461,6 +465,8 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
     let row_counts_start = cursor.position();
 
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
+    // ZIP (2|3) never reaches here: `tiled_compression_supported` rejected it.
+    // Keep the field as `None` so the defensive decode_row arm stays fail-closed.
     let zip_planar: Option<Arc<Vec<u8>>> = None;
 
     match compression {

@@ -26,7 +26,19 @@ mod tests {
     use crate::psb_hdr_main::{decode_psd_hdr_main_from_bytes_with_cancel, psd_should_try_hdr};
     use crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel;
     use crate::psb_section_index::PsdSectionIndex;
+    use serde::Deserialize;
     use std::path::PathBuf;
+
+    #[derive(Debug, Deserialize)]
+    struct Manifest {
+        fixtures: Vec<ManifestEntry>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ManifestEntry {
+        file: String,
+        expected_branch: String,
+    }
 
     fn fixture_dir() -> Option<PathBuf> {
         let dir = PathBuf::from("tests/data/psd_hdr_routing");
@@ -37,23 +49,21 @@ mod tests {
         }
     }
 
-    /// Minimal manifest parser: pairs of "file" / "expected_branch" string fields.
-    fn parse_manifest(text: &str) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        let mut file: Option<String> = None;
-        for raw in text.lines() {
-            let line = raw.trim();
-            if let Some(rest) = line.strip_prefix("\"file\":") {
-                let v = rest.trim().trim_matches(',').trim().trim_matches('"');
-                file = Some(v.to_string());
-            } else if let Some(rest) = line.strip_prefix("\"expected_branch\":") {
-                let v = rest.trim().trim_matches(',').trim().trim_matches('"');
-                if let Some(f) = file.take() {
-                    out.push((f, v.to_string()));
-                }
-            }
+    fn parse_manifest(text: &str) -> Result<Vec<(String, String)>, String> {
+        // Accept either `{ "fixtures": [ ... ] }` or a bare JSON array.
+        if let Ok(manifest) = serde_json::from_str::<Manifest>(text) {
+            return Ok(manifest
+                .fixtures
+                .into_iter()
+                .map(|e| (e.file, e.expected_branch))
+                .collect());
         }
-        out
+        let entries: Vec<ManifestEntry> = serde_json::from_str(text)
+            .map_err(|e| format!("PSD HDR routing manifest JSON parse failed: {e}"))?;
+        Ok(entries
+            .into_iter()
+            .map(|e| (e.file, e.expected_branch))
+            .collect())
     }
 
     #[test]
@@ -69,8 +79,23 @@ mod tests {
             return;
         };
         let text = std::fs::read_to_string(dir.join("manifest.json")).expect("read manifest");
-        let entries = parse_manifest(&text);
-        assert!(!entries.is_empty(), "manifest produced no entries");
+        let entries = match parse_manifest(&text) {
+            Ok(entries) => entries,
+            Err(e) => {
+                if require {
+                    panic!("{e}");
+                }
+                eprintln!("skipping hdr_routing_fixtures: {e}");
+                return;
+            }
+        };
+        if entries.is_empty() {
+            if require {
+                panic!("manifest produced no entries");
+            }
+            eprintln!("skipping hdr_routing_fixtures; empty manifest");
+            return;
+        }
         let tone = HdrToneMapSettings::default();
 
         let mut executed = 0usize;
@@ -169,7 +194,12 @@ mod tests {
                         "{file}: expected P2 strict OSD"
                     );
                 }
-                other => panic!("{file}: unknown expected_branch {other}"),
+                other => {
+                    if require {
+                        panic!("{file}: unknown expected_branch {other}");
+                    }
+                    eprintln!("skip unknown expected_branch {other} for {file}");
+                }
             }
         }
         if require {

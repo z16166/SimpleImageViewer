@@ -34,7 +34,7 @@ use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata,
     HdrPixelFormat, HdrReference, HdrTransferFunction,
 };
-use crate::psb_icc_hdr::probe_icc_hdr;
+use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_reader::{
     MAX_ZIP_PLANAR_INFLATE_BYTES, bytes_per_sample, channel_is_used, check_decode_cancel,
     downconvert_samples_to_u8, ensure_supported_color_mode, extract_icc_profile_from_ir,
@@ -242,6 +242,7 @@ pub fn read_composite_hdr_from_index(
         .as_deref()
         .map(probe_icc_hdr)
         .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, depth);
     let transfer = if depth == 32 {
         HdrTransferFunction::Linear
     } else {
@@ -584,14 +585,15 @@ fn apply_transfer_chunk(rgba: &mut [f32], pixel_count: usize, ctx: &SampleDecode
 ///
 /// 32-bit: IEEE 754 big-endian float (Photoshop linear light).
 /// 16-bit: big-endian u16 / 65535.0 (normalized [0,1]).
+/// Bounds use `off + bps <= len` so the last in-range sample is included.
 #[inline]
 fn native_sample_f32(channel: &[u8], sample_idx: usize, bps: usize) -> f32 {
     let off = sample_idx * bps;
     match bps {
-        2 if off + 1 < channel.len() => {
+        2 if off + 2 <= channel.len() => {
             u16::from_be_bytes([channel[off], channel[off + 1]]) as f32 / 65535.0
         }
-        4 if off + 3 < channel.len() => f32::from_be_bytes([
+        4 if off + 4 <= channel.len() => f32::from_be_bytes([
             channel[off],
             channel[off + 1],
             channel[off + 2],
@@ -676,6 +678,14 @@ mod tests {
         let bytes = [0xFF_u8, 0xFF];
         let result = native_sample_f32(&bytes, 0, 2);
         assert!((result - 1.0).abs() < 1e-7, "got {result}");
+    }
+
+    #[test]
+    fn native_sample_f32_includes_last_u16_sample() {
+        // Two samples, exactly 4 bytes -- last index must not be dropped.
+        let bytes = [0x00, 0x00, 0xFF, 0xFF];
+        assert_eq!(native_sample_f32(&bytes, 0, 2), 0.0);
+        assert!((native_sample_f32(&bytes, 1, 2) - 1.0).abs() < 1e-7);
     }
 
     #[test]

@@ -46,7 +46,7 @@ use crate::hdr::types::{
 };
 use crate::loader::PsdOsdInfo;
 use crate::psb_hdr_tile_composite::composite_hdr_tile_with_visibility;
-use crate::psb_icc_hdr::probe_icc_hdr;
+use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_layer_composite::{LayerInfo, parse_layer_records_from_index};
 use crate::psb_reader::extract_icc_profile_from_ir;
 use crate::psb_section_index::PsdSectionIndex;
@@ -218,6 +218,7 @@ pub fn open_hdr_tiled_layers_source_from_mmap(
         .as_deref()
         .map(probe_icc_hdr)
         .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, index.depth);
     let transfer = if index.depth == 32 || !icc_probe.marks_hdr {
         HdrTransferFunction::Linear
     } else {

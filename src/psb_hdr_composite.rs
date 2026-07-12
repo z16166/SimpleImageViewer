@@ -36,7 +36,7 @@ use crate::hdr::types::{
 };
 use crate::loader::DecodeError;
 use crate::psb_hdr_blend::blend_separable_span_f32;
-use crate::psb_icc_hdr::probe_icc_hdr;
+use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_layer_blend_simd::SeparableBlendKind;
 use crate::psb_layer_composite::dimensions_within_limit;
 use crate::psb_layer_composite::{LayerRecord, strict_visibility_has_drawable_output};
@@ -803,6 +803,7 @@ fn composite_layers_hdr_with_visibility(
         .as_deref()
         .map(probe_icc_hdr)
         .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, depth);
     // 32-bit float PSD is scene-linear by spec; for 16-bit use probed transfer.
     let transfer = if depth == 32 || !icc_probe.marks_hdr {
         HdrTransferFunction::Linear

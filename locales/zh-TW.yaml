@@ -185,6 +185,7 @@ osd.psd.detail.max_bbox: "最大包圍盒"
 osd.psd.detail.max_bbox_force_open: "最大包圍盒強制顯示"
 osd.psd.detail.show_all_layers: "顯示全部圖層"
 osd.psd.detail.ir_thumb: "縮圖"
+osd.psd.transfer_uncertain: "傳遞函數未確認"
 
 # Scale mode
 scale.fit: "適應視窗"

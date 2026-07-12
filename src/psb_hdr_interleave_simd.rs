@@ -55,7 +55,8 @@ pub fn interleave_planar_u16be_rgba_f32(
             }
             return;
         }
-        if is_x86_feature_detected!("sse4.1") {
+        // `_mm_shuffle_epi8` needs SSSE3; `_mm_cvtepu16_epi32` needs SSE4.1.
+        if is_x86_feature_detected!("sse4.1") && is_x86_feature_detected!("ssse3") {
             unsafe {
                 interleave_u16be_sse41(r, g, b, a, dst, pixel_count);
             }
@@ -96,7 +97,8 @@ pub fn interleave_planar_f32be_rgba_f32(
             }
             return;
         }
-        if is_x86_feature_detected!("sse4.1") {
+        // `_mm_shuffle_epi8` (BE->LE) requires SSSE3 in addition to SSE4.1.
+        if is_x86_feature_detected!("sse4.1") && is_x86_feature_detected!("ssse3") {
             unsafe {
                 interleave_f32be_sse41(r, g, b, a, dst, pixel_count);
             }
@@ -141,7 +143,7 @@ fn sample_u16be(channel: Option<&[u8]>, i: usize) -> f32 {
         return 0.0;
     };
     let off = i * U16_BYTES;
-    if off + 1 >= ch.len() {
+    if off + U16_BYTES > ch.len() {
         return 0.0;
     }
     u16::from_be_bytes([ch[off], ch[off + 1]]) as f32 * INV_U16
@@ -153,7 +155,7 @@ fn sample_f32be(channel: Option<&[u8]>, i: usize) -> f32 {
         return 0.0;
     };
     let off = i * F32_BYTES;
-    if off + 3 >= ch.len() {
+    if off + F32_BYTES > ch.len() {
         return 0.0;
     }
     f32::from_be_bytes([ch[off], ch[off + 1], ch[off + 2], ch[off + 3]])
@@ -277,7 +279,7 @@ unsafe fn store_rgba_f32x4(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
+#[target_feature(enable = "sse4.1,ssse3")]
 unsafe fn interleave_u16be_sse41(
     r: Option<&[u8]>,
     g: Option<&[u8]>,
@@ -318,7 +320,7 @@ unsafe fn interleave_u16be_sse41(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
+#[target_feature(enable = "sse4.1,ssse3")]
 unsafe fn interleave_f32be_sse41(
     r: Option<&[u8]>,
     g: Option<&[u8]>,
@@ -358,7 +360,7 @@ unsafe fn interleave_f32be_sse41(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,sse4.1,ssse3")]
 unsafe fn interleave_u16be_avx2(
     r: Option<&[u8]>,
     g: Option<&[u8]>,
@@ -413,7 +415,7 @@ unsafe fn interleave_u16be_avx2(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,sse4.1,ssse3")]
 unsafe fn interleave_f32be_avx2(
     r: Option<&[u8]>,
     g: Option<&[u8]>,

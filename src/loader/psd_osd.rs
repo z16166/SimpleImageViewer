@@ -74,6 +74,8 @@ pub struct PsdOsdInfo {
     pub compat_reveal: bool,
     pub comp_name: Option<String>,
     pub reveal_root: Option<String>,
+    /// 16-bit HDR used a Linear/heuristic transfer (no cicp PQ/HLG).
+    pub transfer_uncertain: bool,
 }
 
 impl PsdOsdInfo {
@@ -84,6 +86,7 @@ impl PsdOsdInfo {
             compat_reveal: false,
             comp_name: None,
             reveal_root: None,
+            transfer_uncertain: false,
         }
     }
 
@@ -94,6 +97,7 @@ impl PsdOsdInfo {
             compat_reveal: false,
             comp_name: None,
             reveal_root: None,
+            transfer_uncertain: false,
         }
     }
 
@@ -104,6 +108,7 @@ impl PsdOsdInfo {
             compat_reveal: true,
             comp_name: name,
             reveal_root: None,
+            transfer_uncertain: false,
         }
     }
 
@@ -120,6 +125,7 @@ impl PsdOsdInfo {
             compat_reveal: true,
             comp_name: None,
             reveal_root: root,
+            transfer_uncertain: false,
         }
     }
 
@@ -131,6 +137,7 @@ impl PsdOsdInfo {
             compat_reveal: true,
             comp_name: None,
             reveal_root: None,
+            transfer_uncertain: false,
         }
     }
 
@@ -141,7 +148,14 @@ impl PsdOsdInfo {
             compat_reveal: false,
             comp_name: None,
             reveal_root: None,
+            transfer_uncertain: false,
         }
+    }
+
+    /// Mark that 16-bit HDR transfer was assumed (not cicp PQ/HLG).
+    pub fn with_transfer_uncertain(mut self) -> Self {
+        self.transfer_uncertain = true;
+        self
     }
 
     pub fn compose_osd_line(&self) -> String {
@@ -156,6 +170,9 @@ impl PsdOsdInfo {
         }
         if let Some(root) = &self.reveal_root {
             parts.push(root.clone());
+        }
+        if self.transfer_uncertain {
+            parts.push(t!("osd.psd.transfer_uncertain").to_string());
         }
         parts.join(" · ")
     }
@@ -173,6 +190,7 @@ mod tests {
             compat_reveal: true,
             comp_name: None,
             reveal_root: Some("封面".into()),
+            transfer_uncertain: false,
         };
         let line = info.compose_osd_line();
         assert!(line.contains("P2.5b") || line.contains("p2.5b"), "{line}");

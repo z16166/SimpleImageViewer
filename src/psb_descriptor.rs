@@ -46,6 +46,12 @@ pub(crate) fn parse_versioned_descriptor(bytes: &[u8]) -> Option<DescriptorObjec
     };
     let version = parser.read_u32()?;
     if version != DESCRIPTOR_VERSION_V16 {
+        // Layer Comp / cmls IR only documents version 16; other versions are
+        // unsupported (not silently treated as empty). Callers map None to
+        // "no comps" -- surface the rejection so checklist #15 is not silent.
+        log::debug!(
+            "PSD/PSB descriptor version {version} unsupported (expected {DESCRIPTOR_VERSION_V16})"
+        );
         return None;
     }
     parser.parse_descriptor()
@@ -150,7 +156,15 @@ impl DescriptorParser<'_> {
         // Adobe descriptor: zero length means a 4-byte ASCII class/key ID.
         let byte_len = if len == 0 { 4 } else { len };
         let bytes = self.read_bytes(byte_len)?;
-        std::str::from_utf8(bytes).ok().map(ToOwned::to_owned)
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Some(s.to_owned()),
+            Err(e) => {
+                log::debug!(
+                    "PSD/PSB descriptor id string is not valid UTF-8 (len={byte_len}): {e}"
+                );
+                None
+            }
+        }
     }
 
     fn read_i32(&mut self) -> Option<i32> {
@@ -251,6 +265,14 @@ mod tests {
         push_key(&mut bytes, b"bad ");
         bytes.extend_from_slice(b"????");
 
+        assert!(parse_versioned_descriptor(&bytes).is_none());
+    }
+
+    #[test]
+    fn unsupported_descriptor_version_returns_none() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&15u32.to_be_bytes());
+        push_descriptor_header(&mut bytes, 0);
         assert!(parse_versioned_descriptor(&bytes).is_none());
     }
 }

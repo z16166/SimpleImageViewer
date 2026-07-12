@@ -983,7 +983,10 @@ fn for_each_image_resource<T>(
         pos += 4;
         let data_end = pos.checked_add(size)?;
         if data_end > end {
-            log::debug!(
+            // Truncated IR: stop walking rather than reading past the section.
+            // Remaining resources are unavailable; callers that needed a specific
+            // rid simply observe None (ICC / thumbnail missing).
+            log::warn!(
                 "PSD/PSB image resource {rid} size {size} exceeds remaining IR bytes (pos={pos}, end={end}); stopping walk"
             );
             break;
@@ -1127,6 +1130,12 @@ pub(crate) fn bytes_per_sample(depth: u16) -> Result<usize, String> {
     }
 }
 
+/// Raw (0) and PackBits RLE (1) expose per-row extents, so disk-tiled open can
+/// seek/decode one row at a time. ZIP / ZIP+prediction (2|3) store Image Data
+/// as a single zlib stream of all planar channels -- there is no independent
+/// row offset table, so true row-at-a-time tiling would require a full inflate
+/// first (defeating the disk-tiled memory goal). Those modes must use the
+/// static full-canvas decode path (or the budgeted HDR ZIP flat helper).
 pub(crate) fn tiled_compression_supported(compression: u16) -> Result<(), String> {
     match compression {
         0 | 1 => Ok(()),

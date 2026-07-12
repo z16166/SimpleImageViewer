@@ -18,8 +18,10 @@
 //!
 //! P1 flattened HDR -> P2 linear-light layer composite -> P2.5a Layer Comp
 //! reveal -> P2.5b hidden-layer strategy (heuristic top-N or force-open-all).
-//! P3 stays on the SDR path (IR JPEG is 8-bit). On hard failure the caller
-//! falls back to [`crate::psb_sdr_main`].
+//! Hard failure falls through to [`crate::psb_sdr_main`] (full SDR P1/P2/P3).
+//! Note: PSD/PSB do not embed an IR JPEG suitable as an HDR recovery preview;
+//! P3 on the SDR path may use the 8-bit IR thumbnail, but the HDR state machine
+//! itself never synthesizes an IR JPEG fallback.
 //!
 //! P1 and P2 intentionally use different blank barriers. P1 rejects only an
 //! absolute blank, while P2 rejects any zero-information solid composite.
@@ -31,7 +33,10 @@ use crate::psb_hdr_composite::composite_layers_hdr_with_visibility_from_info;
 use crate::psb_hdr_flat::{
     read_composite_hdr_from_index, rgba_f32_is_absolutely_blank_with_cancel,
 };
-use crate::psb_icc_hdr::{psd_content_wants_hdr, psd_env_wants_hdr};
+use crate::psb_icc_hdr::{
+    log_16bit_transfer_assumption, probe_icc_hdr, psd_content_wants_hdr, psd_env_wants_hdr,
+    transfer_assumption_uncertain,
+};
 use crate::psb_reader::extract_icc_profile_from_ir;
 use crate::psb_section_index::PsdSectionIndex;
 
@@ -121,6 +126,19 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
         return Err(crate::loader::DecodeError::PsdHdrNotWanted);
     }
 
+    let icc_probe = embedded_icc
+        .as_deref()
+        .map(probe_icc_hdr)
+        .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, index.depth);
+    let mark_transfer = |osd: crate::loader::PsdOsdInfo| {
+        if transfer_assumption_uncertain(&icc_probe, index.depth) {
+            osd.with_transfer_uncertain()
+        } else {
+            osd
+        }
+    };
+
     let sdr_white = tone.sdr_white_nits.max(1.0);
 
     if !skip_flattened {
@@ -146,7 +164,7 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
                     );
                     return Ok(PsdHdrMainDecode {
                         hdr,
-                        osd: crate::loader::PsdOsdInfo::p1_flattened(),
+                        osd: mark_transfer(crate::loader::PsdOsdInfo::p1_flattened()),
                     });
                 }
             }
@@ -200,7 +218,7 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
                     );
                     return Ok(PsdHdrMainDecode {
                         hdr,
-                        osd: crate::loader::PsdOsdInfo::p2_strict(),
+                        osd: mark_transfer(crate::loader::PsdOsdInfo::p2_strict()),
                     });
                 }
             }
@@ -213,21 +231,30 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
         }
 
         if let Some(main) = decode_psd_hdr_main_p25a(index, bytes, layer_info, cancel, sdr_white)? {
-            return Ok(main);
+            return Ok(PsdHdrMainDecode {
+                hdr: main.hdr,
+                osd: mark_transfer(main.osd),
+            });
         }
         match psd_hidden_layer_strategy {
             crate::settings::PsdHiddenLayerStrategy::Heuristic => {
                 if let Some(main) =
                     decode_psd_hdr_main_p25b_heuristic(index, bytes, layer_info, cancel, sdr_white)?
                 {
-                    return Ok(main);
+                    return Ok(PsdHdrMainDecode {
+                        hdr: main.hdr,
+                        osd: mark_transfer(main.osd),
+                    });
                 }
             }
             crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
                 if let Some(main) =
                     decode_psd_hdr_main_p25b_show_all(index, bytes, layer_info, cancel, sdr_white)?
                 {
-                    return Ok(main);
+                    return Ok(PsdHdrMainDecode {
+                        hdr: main.hdr,
+                        osd: mark_transfer(main.osd),
+                    });
                 }
             }
         }
@@ -502,12 +529,26 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
     let w = layer_info.width;
     let h = layer_info.height;
 
+    let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
+    let icc_probe = embedded_icc
+        .as_deref()
+        .map(probe_icc_hdr)
+        .unwrap_or_default();
+    log_16bit_transfer_assumption(&icc_probe, index.depth);
+    let mark_transfer = |osd: crate::loader::PsdOsdInfo| {
+        if transfer_assumption_uncertain(&icc_probe, index.depth) {
+            osd.with_transfer_uncertain()
+        } else {
+            osd
+        }
+    };
+
     // P2: strict Photoshop layer/group visibility.
     let strict = compute_effective_visibility(records);
     if strict_visibility_has_drawable_output(w, h, records, &strict) {
         return Ok(HdrDiskVisibilityPlan {
             visible: strict,
-            osd: crate::loader::PsdOsdInfo::p2_strict(),
+            osd: mark_transfer(crate::loader::PsdOsdInfo::p2_strict()),
         });
     }
 
@@ -527,7 +568,7 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
         if strict_visibility_has_drawable_output(w, h, records, &visible) {
             return Ok(HdrDiskVisibilityPlan {
                 visible,
-                osd: crate::loader::PsdOsdInfo::p25a_layer_comp(comp_name),
+                osd: mark_transfer(crate::loader::PsdOsdInfo::p25a_layer_comp(comp_name)),
             });
         }
     }
@@ -553,7 +594,9 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
                 if strict_visibility_has_drawable_output(w, h, records, &respect) {
                     return Ok(HdrDiskVisibilityPlan {
                         visible: respect,
-                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, false),
+                        osd: mark_transfer(crate::loader::PsdOsdInfo::p25b_max_bbox(
+                            root_name, false,
+                        )),
                     });
                 }
                 let forced = crate::psb_p25_reveal::visibility_force_open_subtree(
@@ -563,7 +606,9 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
                 if strict_visibility_has_drawable_output(w, h, records, &forced) {
                     return Ok(HdrDiskVisibilityPlan {
                         visible: forced,
-                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
+                        osd: mark_transfer(crate::loader::PsdOsdInfo::p25b_max_bbox(
+                            root_name, true,
+                        )),
                     });
                 }
             }
@@ -573,7 +618,7 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
             if strict_visibility_has_drawable_output(w, h, records, &visible) {
                 return Ok(HdrDiskVisibilityPlan {
                     visible,
-                    osd: crate::loader::PsdOsdInfo::p25b_show_all(),
+                    osd: mark_transfer(crate::loader::PsdOsdInfo::p25b_show_all()),
                 });
             }
         }
