@@ -245,6 +245,12 @@ pub fn read_composite_from_index(
                 let mut ch_u8 = vec![0u8; samples_per_channel];
                 match compression {
                     0 => {
+                        ensure_readable_within(
+                            &mut r,
+                            raw_channel_bytes as u64,
+                            file_size,
+                            "raw channel data",
+                        )?;
                         let mut raw = vec![0u8; raw_channel_bytes];
                         r.read_exact(&mut raw)
                             .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
@@ -260,7 +266,22 @@ pub fn read_composite_from_index(
                             let compressed_len = *row_counts
                                 .get(idx)
                                 .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                            compressed.resize(compressed_len, 0);
+                            ensure_readable_within(
+                                &mut r,
+                                compressed_len as u64,
+                                file_size,
+                                "RLE row data",
+                            )?;
+                            // Reuse capacity across rows; read_exact overwrites every byte.
+                            compressed.clear();
+                            if compressed.capacity() < compressed_len {
+                                compressed.reserve(compressed_len);
+                            }
+                            // SAFETY: capacity >= compressed_len; read_exact fills all bytes
+                            // or we return Err without reading `compressed`.
+                            unsafe {
+                                compressed.set_len(compressed_len);
+                            }
                             r.read_exact(&mut compressed)
                                 .map_err(|e| format!("Read RLE: {e}"))?;
                             unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes)?;
@@ -962,6 +983,9 @@ fn for_each_image_resource<T>(
         pos += 4;
         let data_end = pos.checked_add(size)?;
         if data_end > end {
+            log::debug!(
+                "PSD/PSB image resource {rid} size {size} exceeds remaining IR bytes (pos={pos}, end={end}); stopping walk"
+            );
             break;
         }
         if let Some(found) = on_resource(rid, &bytes[pos..data_end]) {
@@ -997,7 +1021,12 @@ fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
         return None;
     }
     let jpeg_start = IR_JPEG_THUMBNAIL_HEADER_LEN;
-    let jpeg_end = jpeg_start.saturating_add(compressed).min(data.len());
+    // Declared size past the resource payload is truncated/malformed -- do not
+    // feed a partial JPEG into the decoder.
+    let jpeg_end = jpeg_start.checked_add(compressed)?;
+    if jpeg_end > data.len() {
+        return None;
+    }
     if jpeg_end <= jpeg_start {
         return None;
     }
@@ -1320,10 +1349,9 @@ pub(crate) fn seek_forward(r: &mut impl Seek, len: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Seek forward `len` bytes only when the resulting position stays within
-/// `file_size`. `Cursor` allows seeking past EOF, which would otherwise defer
-/// failure to a later `read_exact`.
-pub(crate) fn seek_forward_within(
+/// Ensure the next `len` bytes from the current position stay within `file_size`
+/// before a subsequent `read_exact`, so OOB errors match [`seek_forward_within`].
+pub(crate) fn ensure_readable_within(
     r: &mut impl Seek,
     len: u64,
     file_size: u64,
@@ -1333,7 +1361,20 @@ pub(crate) fn seek_forward_within(
         .stream_position()
         .map_err(|e| format!("Stream position error: {e}"))?;
     let _ = checked_section_end(pos, len, file_size, label)?;
-    // checked_section_end already guarantees end <= file_size.
+    Ok(())
+}
+
+/// Seek forward `len` bytes only when the resulting position stays within
+/// `file_size`. `Cursor` allows seeking past EOF, which would otherwise defer
+/// failure to a later `read_exact`.
+pub(crate) fn seek_forward_within(
+    r: &mut impl Seek,
+    len: u64,
+    file_size: u64,
+    label: &str,
+) -> Result<(), String> {
+    // Bounds come from checked_section_end (always on, not debug_assert).
+    ensure_readable_within(r, len, file_size, label)?;
     seek_forward(r, len)
 }
 
@@ -1756,6 +1797,7 @@ mod tests {
     fn read_composite_rejects_color_mode_section_past_eof() {
         // Cursor::seek past EOF succeeds; without a file_size check the failure
         // is deferred to a later read_exact with a less specific error.
+        // Pad to PSD_MIN_STRUCTURAL_LEN (38) so Truncated does not fire first.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"8BPS");
         bytes.extend_from_slice(&1u16.to_be_bytes());
@@ -1767,12 +1809,52 @@ mod tests {
         bytes.extend_from_slice(&3u16.to_be_bytes());
         // Color Mode Data length claims far more bytes than remain.
         bytes.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 8]); // ir_len + lm_len placeholders
+        assert_eq!(bytes.len(), 38);
         let err = super::read_composite_from_bytes(&bytes).expect_err("past eof");
         let msg = err.as_str();
         assert!(
             msg.contains("color mode") && msg.contains("exceeds"),
             "expected early section-bound error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn read_composite_rejects_truncated_raw_channel_with_section_bound_error() {
+        // 2x2 RGB8 raw needs 12 planar bytes after the compression field; omit them.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // color mode data
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // image resources
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // layer/mask
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // raw compression
+        // Only 3 of 12 needed planar bytes.
+        bytes.extend_from_slice(&[1, 2, 3]);
+        let err = super::read_composite_from_bytes(&bytes).expect_err("truncated raw");
+        let msg = err.as_str();
+        assert!(
+            msg.contains("raw channel data") && msg.contains("exceeds"),
+            "expected section-bound error matching seek_forward_within, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn photoshop_thumbnail_returns_none_when_jpeg_size_truncated() {
+        let mut data = vec![0u8; super::IR_JPEG_THUMBNAIL_HEADER_LEN + 4];
+        data[0..4].copy_from_slice(&1u32.to_be_bytes()); // JPEG format
+        data[4..8].copy_from_slice(&8u32.to_be_bytes()); // width
+        data[8..12].copy_from_slice(&8u32.to_be_bytes()); // height
+        let compressed_off = super::IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET;
+        // Claim far more JPEG bytes than the resource actually holds.
+        data[compressed_off..compressed_off + 4].copy_from_slice(&1024u32.to_be_bytes());
+        assert!(super::decode_photoshop_thumbnail_resource(&data).is_none());
     }
 
     #[test]
