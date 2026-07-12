@@ -86,11 +86,12 @@ pub fn blend_separable_span(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind
 }
 
 fn blend_separable_span_scalar(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind) {
-    let n = dst.len() / 4;
     let is_normal = kind == SeparableBlendKind::Normal;
-    for i in 0..n {
-        let off = i * 4;
-        blend_one_pixel(&mut dst[off..off + 4], &src[off..off + 4], kind, is_normal);
+    // as_chunks avoids per-pixel slice bounds checks on dst[off..off+4].
+    let (dst_px, _) = dst.as_chunks_mut::<4>();
+    let (src_px, _) = src.as_chunks::<4>();
+    for (d, s) in dst_px.iter_mut().zip(src_px.iter()) {
+        blend_one_pixel(d, s, kind, is_normal);
     }
 }
 

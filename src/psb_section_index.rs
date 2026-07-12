@@ -97,10 +97,19 @@ pub struct PsdSectionIndex {
     pub image_data_pos: u64,
 }
 
+/// Bytes needed for signature + version before PSD vs PSB minima diverge.
+const PSD_SIG_VERSION_LEN: usize = 6;
+/// Empty-section minimum: fixed header (26) + cm_len(4) + ir_len(4) + lm_len(4).
+const PSD_MIN_STRUCTURAL_LEN: usize = 38;
+/// Empty-section minimum: fixed header (26) + cm_len(4) + ir_len(4) + lm_len(8).
+const PSB_MIN_STRUCTURAL_LEN: usize = 42;
+
 impl PsdSectionIndex {
     pub fn parse(bytes: &[u8]) -> Result<Self, SectionParseError> {
-        // Full fixed header is 26 bytes (signature through color mode).
-        if bytes.len() < 26 {
+        // Need signature + version first so we can apply the PSD/PSB-specific
+        // minimum that covers cm_len + ir_len + lm_len (not just the 26-byte
+        // fixed header through color mode).
+        if bytes.len() < PSD_SIG_VERSION_LEN {
             return Err(SectionParseError::structural("PSD/PSB header is too short"));
         }
 
@@ -123,6 +132,14 @@ impl PsdSectionIndex {
             )));
         }
         let is_psb = version == 2;
+        let min_len = if is_psb {
+            PSB_MIN_STRUCTURAL_LEN
+        } else {
+            PSD_MIN_STRUCTURAL_LEN
+        };
+        if bytes.len() < min_len {
+            return Err(SectionParseError::structural("PSD/PSB header is too short"));
+        }
 
         seek_forward_within(&mut r, 6, file_size, "reserved header bytes")
             .map_err(SectionParseError::structural)?;
@@ -249,6 +266,31 @@ mod tests {
         assert!(
             err.as_str().contains("invalid signature") || err.as_str().contains("Not a PSD"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_truncated_before_section_lengths() {
+        // Valid sig+version+fixed fields (26 bytes) but missing cm_len/ir_len/lm_len.
+        let mut bytes = vec![0u8; 26];
+        bytes[..4].copy_from_slice(b"8BPS");
+        bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
+        let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert!(err.is_structural());
+        assert!(
+            err.as_str().contains("too short"),
+            "expected precise too-short error, got: {err}"
+        );
+
+        let mut psb = bytes;
+        psb[4..6].copy_from_slice(&2u16.to_be_bytes());
+        // 38 bytes is enough for PSD but not PSB (needs 42).
+        psb.resize(38, 0);
+        let err = PsdSectionIndex::parse(&psb).unwrap_err();
+        assert!(err.is_structural());
+        assert!(
+            err.as_str().contains("too short"),
+            "expected PSB too-short at 38 bytes, got: {err}"
         );
     }
 

@@ -1013,6 +1013,11 @@ pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bo
 
 /// Convert planar samples (8/16/32-bit BE) into 8-bit display samples.
 /// `dst.len()` is the sample count; `src` must hold `dst.len() * bps` bytes (or be truncated).
+///
+/// 16-bit uses the high byte of each BE u16 (`v >> 8`) with no gamma remapping --
+/// matching Photoshop's composite storage, not a display-referred tone curve.
+/// 8-bit and 16-bit sources therefore stay bit-faithful to the file even when
+/// mixed depths appear across layers.
 pub(crate) fn downconvert_samples_to_u8(dst: &mut [u8], src: &[u8], bps: usize) {
     let n = dst.len();
     match bps {

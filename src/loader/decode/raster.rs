@@ -406,12 +406,6 @@ pub(crate) fn load_psd(
                 skip_flattened_for_disk_tiled_degrade = true;
             }
         }
-    } else if try_hdr && version == 2 && psd_header_requires_disk_tiled(width, height) {
-        log::debug!(
-            "PSB header {}x{} would use disk tiled SDR, but HDR content gate is active; full HDR decode",
-            width,
-            height
-        );
     }
 
     if cancel.is_cancelled() {
@@ -420,6 +414,14 @@ pub(crate) fn load_psd(
 
     // HDR path (Approach A): try P1/P2 HDR, fall back to SDR on failure.
     if try_hdr {
+        if version == 2 && psd_header_requires_disk_tiled(width, height) {
+            // Intentionally log-only: HDR gate wins over disk-tiled SDR open.
+            log::debug!(
+                "PSB header {}x{} would use disk tiled SDR, but HDR content gate is active; full HDR decode",
+                width,
+                height
+            );
+        }
         match crate::psb_hdr_main::decode_psd_hdr_main_from_bytes_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),

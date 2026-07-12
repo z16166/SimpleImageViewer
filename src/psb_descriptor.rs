@@ -147,6 +147,7 @@ impl DescriptorParser<'_> {
 
     fn read_id_string(&mut self) -> Option<String> {
         let len = self.read_u32()? as usize;
+        // Adobe descriptor: zero length means a 4-byte ASCII class/key ID.
         let byte_len = if len == 0 { 4 } else { len };
         let bytes = self.read_bytes(byte_len)?;
         std::str::from_utf8(bytes).ok().map(ToOwned::to_owned)

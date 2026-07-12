@@ -104,24 +104,139 @@ fn undo_zip_prediction_32(buf: &mut [u8], width: usize) -> Result<(), String> {
     if !buf.len().is_multiple_of(row_bytes) {
         return Err("PSD/PSB ZIP prediction 32-bit buffer length mismatch".into());
     }
-    let mut scratch = vec![0u8; row_bytes];
-    for row in buf.chunks_exact_mut(row_bytes) {
-        // Undo delta on each of the 4 packed planes.
-        for plane in 0..4 {
-            let start = plane * width;
-            let end = start + width;
-            prefix_sum_u8_inplace(&mut row[start..end]);
+
+    // Stack for typical layer widths; heap only for extremely wide scanlines.
+    // Full-row scratch is still required: planar->pixel write-back would clobber
+    // unread plane bytes if done in-place.
+    const STACK_CAP: usize = 8192;
+    if row_bytes <= STACK_CAP {
+        let mut scratch = [0u8; STACK_CAP];
+        for row in buf.chunks_exact_mut(row_bytes) {
+            undo_zip_prediction_32_row(row, &mut scratch[..row_bytes], width);
         }
-        // Re-interleave: plane p sample x -> sample bytes [x*4 + p]
-        for x in 0..width {
-            scratch[x * 4] = row[x];
-            scratch[x * 4 + 1] = row[width + x];
-            scratch[x * 4 + 2] = row[width * 2 + x];
-            scratch[x * 4 + 3] = row[width * 3 + x];
+    } else {
+        let mut scratch = vec![0u8; row_bytes];
+        for row in buf.chunks_exact_mut(row_bytes) {
+            undo_zip_prediction_32_row(row, &mut scratch, width);
         }
-        row.copy_from_slice(&scratch);
     }
     Ok(())
+}
+
+fn undo_zip_prediction_32_row(row: &mut [u8], scratch: &mut [u8], width: usize) {
+    for plane in 0..4 {
+        let start = plane * width;
+        let end = start + width;
+        prefix_sum_u8_inplace(&mut row[start..end]);
+    }
+    interleave_byte_planes(scratch, row, width);
+    row.copy_from_slice(scratch);
+}
+
+/// Re-interleave 4 packed byte planes into sample-major BE float bytes.
+fn interleave_byte_planes(dst: &mut [u8], planar: &[u8], width: usize) {
+    debug_assert_eq!(dst.len(), width * 4);
+    debug_assert_eq!(planar.len(), width * 4);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                interleave_byte_planes_sse2(dst, planar, width);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            interleave_byte_planes_neon(dst, planar, width);
+        }
+        return;
+    }
+
+    interleave_byte_planes_scalar(dst, planar, width);
+}
+
+fn interleave_byte_planes_scalar(dst: &mut [u8], planar: &[u8], width: usize) {
+    for x in 0..width {
+        dst[x * 4] = planar[x];
+        dst[x * 4 + 1] = planar[width + x];
+        dst[x * 4 + 2] = planar[width * 2 + x];
+        dst[x * 4 + 3] = planar[width * 3 + x];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn interleave_byte_planes_sse2(dst: &mut [u8], planar: &[u8], width: usize) {
+    use core::arch::x86_64::*;
+    const LANES: usize = 16;
+    let p0 = planar.as_ptr();
+    let mut x = 0usize;
+    while x + LANES <= width {
+        unsafe {
+            let a = _mm_loadu_si128(p0.add(x).cast());
+            let b = _mm_loadu_si128(p0.add(width + x).cast());
+            let c = _mm_loadu_si128(p0.add(width * 2 + x).cast());
+            let d = _mm_loadu_si128(p0.add(width * 3 + x).cast());
+            let ab_lo = _mm_unpacklo_epi8(a, b);
+            let ab_hi = _mm_unpackhi_epi8(a, b);
+            let cd_lo = _mm_unpacklo_epi8(c, d);
+            let cd_hi = _mm_unpackhi_epi8(c, d);
+            let abcd0 = _mm_unpacklo_epi16(ab_lo, cd_lo);
+            let abcd1 = _mm_unpackhi_epi16(ab_lo, cd_lo);
+            let abcd2 = _mm_unpacklo_epi16(ab_hi, cd_hi);
+            let abcd3 = _mm_unpackhi_epi16(ab_hi, cd_hi);
+            let out = dst.as_mut_ptr().add(x * 4);
+            _mm_storeu_si128(out.cast(), abcd0);
+            _mm_storeu_si128(out.add(16).cast(), abcd1);
+            _mm_storeu_si128(out.add(32).cast(), abcd2);
+            _mm_storeu_si128(out.add(48).cast(), abcd3);
+        }
+        x += LANES;
+    }
+    while x < width {
+        dst[x * 4] = planar[x];
+        dst[x * 4 + 1] = planar[width + x];
+        dst[x * 4 + 2] = planar[width * 2 + x];
+        dst[x * 4 + 3] = planar[width * 3 + x];
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn interleave_byte_planes_neon(dst: &mut [u8], planar: &[u8], width: usize) {
+    use core::arch::aarch64::*;
+    const LANES: usize = 16;
+    let p0 = planar.as_ptr();
+    let mut x = 0usize;
+    while x + LANES <= width {
+        unsafe {
+            let a = vld1q_u8(p0.add(x));
+            let b = vld1q_u8(p0.add(width + x));
+            let c = vld1q_u8(p0.add(width * 2 + x));
+            let d = vld1q_u8(p0.add(width * 3 + x));
+            let ab = vzipq_u8(a, b);
+            let cd = vzipq_u8(c, d);
+            let abcd_lo = vzipq_u16(vreinterpretq_u16_u8(ab.0), vreinterpretq_u16_u8(cd.0));
+            let abcd_hi = vzipq_u16(vreinterpretq_u16_u8(ab.1), vreinterpretq_u16_u8(cd.1));
+            let out = dst.as_mut_ptr().add(x * 4);
+            vst1q_u8(out, vreinterpretq_u8_u16(abcd_lo.0));
+            vst1q_u8(out.add(16), vreinterpretq_u8_u16(abcd_lo.1));
+            vst1q_u8(out.add(32), vreinterpretq_u8_u16(abcd_hi.0));
+            vst1q_u8(out.add(48), vreinterpretq_u8_u16(abcd_hi.1));
+        }
+        x += LANES;
+    }
+    while x < width {
+        dst[x * 4] = planar[x];
+        dst[x * 4 + 1] = planar[width + x];
+        dst[x * 4 + 2] = planar[width * 2 + x];
+        dst[x * 4 + 3] = planar[width * 3 + x];
+        x += 1;
+    }
 }
 
 /// Inclusive wrapping prefix-sum on a big-endian u16 scanline (Adobe 16-bit ZIP prediction).
@@ -468,7 +583,8 @@ pub(crate) fn decode_zip_channel_bytes(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_zip_channel_bytes, prefix_sum_u8_inplace, prefix_sum_u8_scalar, undo_zip_prediction,
+        decode_zip_channel_bytes, interleave_byte_planes_scalar, prefix_sum_u8_inplace,
+        prefix_sum_u8_scalar, undo_zip_prediction,
     };
     use miniz_oxide::deflate::compress_to_vec_zlib;
 
@@ -602,5 +718,44 @@ mod tests {
         let compressed = compress_to_vec_zlib(&predicted, 6);
         let out = decode_zip_channel_bytes(&compressed, width, height, 16, true).unwrap();
         assert_eq!(out, original);
+    }
+
+    #[test]
+    fn zip_prediction_32bit_undo_interleaves_planes() {
+        // One scanline, width=3. After prefix-sum on each plane, bytes are:
+        // plane0=[1,2,3], plane1=[4,5,6], plane2=[7,8,9], plane3=[10,11,12]
+        // Encoded as deltas so prefix-sum yields those values.
+        let width = 3usize;
+        let mut encoded = vec![
+            1, 1, 1, // plane0 deltas -> 1,2,3
+            4, 1, 1, // plane1 -> 4,5,6
+            7, 1, 1, // plane2 -> 7,8,9
+            10, 1, 1, // plane3 -> 10,11,12
+        ];
+        undo_zip_prediction(&mut encoded, width, 32).unwrap();
+        assert_eq!(encoded, vec![1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12]);
+    }
+
+    #[test]
+    fn zip_prediction_32bit_undo_long_row_matches_scalar() {
+        let width = 257usize;
+        let mut encoded = Vec::with_capacity(width * 4);
+        for plane in 0..4u8 {
+            for i in 0..width {
+                encoded.push(plane.wrapping_add((i % 17) as u8).wrapping_mul(3));
+            }
+        }
+        let mut expected = encoded.clone();
+        for plane in 0..4 {
+            let start = plane * width;
+            let end = start + width;
+            prefix_sum_u8_scalar(&mut expected[start..end]);
+        }
+        let mut scratch = vec![0u8; width * 4];
+        interleave_byte_planes_scalar(&mut scratch, &expected, width);
+        expected.copy_from_slice(&scratch);
+
+        undo_zip_prediction(&mut encoded, width, 32).unwrap();
+        assert_eq!(encoded, expected);
     }
 }

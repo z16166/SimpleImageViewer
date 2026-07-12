@@ -362,10 +362,13 @@ fn parse_layer_record(
     is_psb: bool,
 ) -> Result<LayerRecord, String> {
     read_at(r, 16, layer_info_end, "layer rect")?;
-    let top = read_i32(r)?;
-    let left = read_i32(r)?;
-    let bottom = read_i32(r)?;
-    let right = read_i32(r)?;
+    let mut rect = [0u8; 16];
+    r.read_exact(&mut rect)
+        .map_err(|e| format!("Read layer rect: {e}"))?;
+    let top = i32::from_be_bytes([rect[0], rect[1], rect[2], rect[3]]);
+    let left = i32::from_be_bytes([rect[4], rect[5], rect[6], rect[7]]);
+    let bottom = i32::from_be_bytes([rect[8], rect[9], rect[10], rect[11]]);
+    let right = i32::from_be_bytes([rect[12], rect[13], rect[14], rect[15]]);
 
     read_at(r, 2, layer_info_end, "layer channel count")?;
     let channel_count = crate::psb_reader::read_u16(r)? as usize;
