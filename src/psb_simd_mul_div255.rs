@@ -19,24 +19,39 @@
 //! Uses `(prod * 0x8081) >> 23` so results match scalar truncated integer divides
 //! for products in `0..=65025`.
 
-/// Exact `c * k / 255` for 8 low lanes of `c` and `k` (SSE4.1).
+/// Exact `c * k / 255` for 8 low lanes of `c` and `k` (SSE2).
+///
+/// Uses unpack + `_mm_mul_epu32` instead of SSE4.1 `cvtepu*` / `mullo_epi32` /
+/// `packus_epi32`, so pre-Nehalem / pre-Bulldozer x86_64 CPUs still hit SIMD.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
+#[target_feature(enable = "sse2")]
 pub(crate) unsafe fn mul_div255_u8x8(
     c: core::arch::x86_64::__m128i,
     k: core::arch::x86_64::__m128i,
 ) -> core::arch::x86_64::__m128i {
     use core::arch::x86_64::*;
-    let c16 = _mm_cvtepu8_epi16(c);
-    let k16 = _mm_cvtepu8_epi16(k);
+    let zero = _mm_setzero_si128();
+    let c16 = _mm_unpacklo_epi8(c, zero);
+    let k16 = _mm_unpacklo_epi8(k, zero);
     let prod = _mm_mullo_epi16(c16, k16);
-    let prod_lo = _mm_cvtepu16_epi32(prod);
-    let prod_hi = _mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
     let magic = _mm_set1_epi32(0x8081);
-    let q_lo = _mm_srli_epi32(_mm_mullo_epi32(prod_lo, magic), 23);
-    let q_hi = _mm_srli_epi32(_mm_mullo_epi32(prod_hi, magic), 23);
-    let q16 = _mm_packus_epi32(q_lo, q_hi);
-    _mm_packus_epi16(q16, _mm_setzero_si128())
+
+    // `(prod * 0x8081) >> 23` via 64-bit `mul_epu32` on even/odd dwords.
+    // For products in 0..=65025 the 64-bit product fits in 32 bits, so the
+    // high dword after `>> 23` is zero and interleaving with OR is safe.
+    let p32_lo = _mm_unpacklo_epi16(prod, zero);
+    let q_even_lo = _mm_srli_epi64(_mm_mul_epu32(p32_lo, magic), 23);
+    let q_odd_lo = _mm_srli_epi64(_mm_mul_epu32(_mm_srli_si128(p32_lo, 4), magic), 23);
+    let q_lo = _mm_or_si128(q_even_lo, _mm_slli_si128(q_odd_lo, 4));
+
+    let p32_hi = _mm_unpackhi_epi16(prod, zero);
+    let q_even_hi = _mm_srli_epi64(_mm_mul_epu32(p32_hi, magic), 23);
+    let q_odd_hi = _mm_srli_epi64(_mm_mul_epu32(_mm_srli_si128(p32_hi, 4), magic), 23);
+    let q_hi = _mm_or_si128(q_even_hi, _mm_slli_si128(q_odd_hi, 4));
+
+    // Values are 0..=255; signed packs_epi32 is fine in that range.
+    let q16 = _mm_packs_epi32(q_lo, q_hi);
+    _mm_packus_epi16(q16, zero)
 }
 
 /// Exact `c * k / 255` for 16 lanes of `c` and `k` (AVX2).
@@ -62,4 +77,49 @@ pub(crate) unsafe fn mul_div255_u8x16(
         _mm256_castsi256_si128(q16),
         _mm256_extracti128_si256::<1>(q16),
     )
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::mul_div255_u8x8;
+    use core::arch::x86_64::*;
+
+    #[test]
+    fn mul_div255_u8x8_matches_scalar() {
+        if !is_x86_feature_detected!("sse2") {
+            return;
+        }
+        // Spot-check corners and a dense grid of (c,k) pairs.
+        let mut pairs = Vec::new();
+        for c in [0u8, 1, 2, 127, 128, 254, 255] {
+            for k in [0u8, 1, 2, 127, 128, 254, 255] {
+                pairs.push((c, k));
+            }
+        }
+        for c in (0u8..=255).step_by(17) {
+            for k in (0u8..=255).step_by(19) {
+                pairs.push((c, k));
+            }
+        }
+
+        for chunk in pairs.chunks(8) {
+            let mut c = [0u8; 8];
+            let mut k = [0u8; 8];
+            let mut expect = [0u8; 8];
+            for (i, &(ci, ki)) in chunk.iter().enumerate() {
+                c[i] = ci;
+                k[i] = ki;
+                expect[i] = ((ci as u16 * ki as u16) / 255) as u8;
+            }
+            let got = unsafe {
+                let cv = _mm_loadl_epi64(c.as_ptr().cast());
+                let kv = _mm_loadl_epi64(k.as_ptr().cast());
+                let out = mul_div255_u8x8(cv, kv);
+                let mut buf = [0u8; 8];
+                _mm_storel_epi64(buf.as_mut_ptr().cast(), out);
+                buf
+            };
+            assert_eq!(&got[..chunk.len()], &expect[..chunk.len()]);
+        }
+    }
 }

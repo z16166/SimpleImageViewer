@@ -42,9 +42,10 @@ pub struct PsdMainDecode {
 /// -> P2.5a layer-comp reveal -> P2.5b hidden-layer strategy -> IR thumbnail -> fail.
 ///
 /// P1 accepts a structurally valid flattened buffer only when it is not an
-/// absolute blank (all-alpha-0 or all-RGB-0). P2 accepts a strict-visibility
-/// composite only when it is not zero-information (all-alpha-0 or solid RGB
-/// with variance 0). P2.5a applies IR 1065 Layer Comp visibility when present.
+/// absolute blank (all-alpha-0, or for Gray/RGB also all-RGB-0). P2 accepts a
+/// strict-visibility composite only when it is not zero-information (all-alpha-0
+/// or solid RGB with variance 0). P2.5a applies IR 1065 Layer Comp visibility
+/// when present.
 /// P2.5b follows [`crate::settings::PsdHiddenLayerStrategy`]: heuristic top-N
 /// max-bbox reveal, or force-open-all drawable leaves. Neither P2.5 path uses
 /// fuzzy pixel heuristics.
@@ -150,6 +151,7 @@ fn decode_psd_sdr_main_with_index(
                 let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
                     &composite.pixels,
                     cancel,
+                    index.color_mode,
                 )?;
                 if absolutely_blank {
                     crate::preload_debug!(
@@ -161,7 +163,7 @@ fn decode_psd_sdr_main_with_index(
                     );
                     log::debug!(
                         "PSD SDR main: P1 flattened {}x{} is absolute blank \
-                         (all-transparent or all-RGB-0); degrading to P2",
+                         (all-transparent, or Gray/RGB all-RGB-0); degrading to P2",
                         composite.width,
                         composite.height
                     );

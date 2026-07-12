@@ -19,6 +19,10 @@
 //! Processes 4 (SSE2/NEON) or 8 (AVX2) pixels per iteration. Final u8 conversion
 //! uses the same `round()` path as the scalar reference so results stay
 //! bit-identical to the previous per-pixel f32 loop.
+//!
+//! Note: Normal-mode integer SIMD (avoiding u8<->f32) is a possible follow-up,
+//! but must stay bit-identical to the f32 `round()` reference for partial alpha;
+//! opaque Normal already uses a memcpy fast path.
 
 /// Photoshop / PDF separable blend mode for a horizontal RGBA8 span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

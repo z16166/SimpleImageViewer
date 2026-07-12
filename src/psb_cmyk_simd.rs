@@ -62,9 +62,9 @@ pub fn cmyk_planes_to_rgba8(
             }
             return;
         }
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("sse2") {
             unsafe {
-                cmyk_planes_to_rgba8_sse41(
+                cmyk_planes_to_rgba8_sse2(
                     &c[..width],
                     &m[..width],
                     &y[..width],
@@ -128,8 +128,8 @@ fn div255_u16_exact(x: u16) -> u8 {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn cmyk_planes_to_rgba8_sse41(
+#[target_feature(enable = "sse2")]
+unsafe fn cmyk_planes_to_rgba8_sse2(
     c: &[u8],
     m: &[u8],
     y: &[u8],
@@ -220,7 +220,7 @@ unsafe fn cmyk_planes_to_rgba8_avx2(
     }
     if i + SSE_PIXELS <= n {
         unsafe {
-            cmyk_planes_to_rgba8_sse41(
+            cmyk_planes_to_rgba8_sse2(
                 &c[i..],
                 &m[i..],
                 &y[i..],

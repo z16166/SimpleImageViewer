@@ -66,6 +66,11 @@ pub struct PsbTiledSource {
 
 impl PsbTiledSource {
     #[inline]
+    pub fn color_mode(&self) -> u16 {
+        self.color_mode
+    }
+
+    #[inline]
     fn bytes_per_sample(&self) -> usize {
         (self.depth / 8) as usize
     }

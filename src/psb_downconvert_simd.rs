@@ -88,9 +88,9 @@ pub fn f32be_to_u8(dst: &mut [u8], src: &[u8]) {
             tail.fill(0);
             return;
         }
-        if is_x86_feature_detected!("sse4.1") {
+        if is_x86_feature_detected!("sse2") {
             unsafe {
-                f32be_to_u8_sse41(head, src_head);
+                f32be_to_u8_sse2(head, src_head);
             }
             tail.fill(0);
             return;
@@ -181,14 +181,22 @@ unsafe fn u16be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+/// Swap bytes within each u32 lane: BE [b0 b1 b2 b3] -> LE [b3 b2 b1 b0] (SSE2).
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn f32be_to_u8_sse41(dst: &mut [u8], src: &[u8]) {
+#[inline]
+unsafe fn bswap_u32x4_sse2(v: core::arch::x86_64::__m128i) -> core::arch::x86_64::__m128i {
+    use core::arch::x86_64::*;
+    // 0123 -> 1032 (swap adjacent bytes), then 1032 -> 3210 (swap 16-bit halves).
+    let swap8 = unsafe { _mm_or_si128(_mm_slli_epi16(v, 8), _mm_srli_epi16(v, 8)) };
+    unsafe { _mm_or_si128(_mm_slli_epi32(swap8, 16), _mm_srli_epi32(swap8, 16)) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn f32be_to_u8_sse2(dst: &mut [u8], src: &[u8]) {
     use core::arch::x86_64::*;
     let mut i = 0usize;
     let n = dst.len();
-    // Byte-swap each f32: 0123 -> 3210 within each 4-byte group (SSSE3 via SSE4.1).
-    let swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
     let zero = _mm_setzero_ps();
     let one = _mm_set1_ps(1.0);
     let scale = _mm_set1_ps(255.0);
@@ -197,12 +205,14 @@ unsafe fn f32be_to_u8_sse41(dst: &mut [u8], src: &[u8]) {
     while i + SSE_F32_SAMPLES <= n {
         unsafe {
             let be = _mm_loadu_si128(src.as_ptr().add(i * F32_BYTES).cast());
-            let le = _mm_shuffle_epi8(be, swap);
+            let le = bswap_u32x4_sse2(be);
             let f = _mm_castsi128_ps(le);
+            // Same order as scalar: clamp to [0,1], then *255, then round.
             let clamped = _mm_min_ps(_mm_max_ps(f, zero), one);
             let scaled = _mm_mul_ps(clamped, scale);
             let i32s = _mm_cvttps_epi32(_mm_add_ps(scaled, half));
-            let u16s = _mm_packus_epi32(i32s, _mm_setzero_si128());
+            // Values are 0..=255; signed packs_epi32 is fine (SSE2, no packus_epi32).
+            let u16s = _mm_packs_epi32(i32s, _mm_setzero_si128());
             let u8s = _mm_packus_epi16(u16s, _mm_setzero_si128());
             let bits = _mm_cvtsi128_si32(u8s) as u32;
             dst[i..i + SSE_F32_SAMPLES].copy_from_slice(&bits.to_le_bytes());
@@ -234,6 +244,7 @@ unsafe fn f32be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
             let be = _mm256_loadu_si256(src.as_ptr().add(i * F32_BYTES).cast());
             let le = _mm256_shuffle_epi8(be, swap);
             let f = _mm256_castsi256_ps(le);
+            // Same order as scalar: clamp to [0,1], then *255, then round.
             let clamped = _mm256_min_ps(_mm256_max_ps(f, zero), one);
             let scaled = _mm256_mul_ps(clamped, scale);
             let i32s = _mm256_cvttps_epi32(_mm256_add_ps(scaled, half));
@@ -245,10 +256,10 @@ unsafe fn f32be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
         }
         i += AVX2_F32_SAMPLES;
     }
-    // AVX2 implies SSE4.1 on all supported CPUs; call the SSE kernel directly.
+    // Remainder: reuse SSE2 kernel (AVX2 implies SSE2).
     if i + SSE_F32_SAMPLES <= n {
         unsafe {
-            f32be_to_u8_sse41(&mut dst[i..], &src[i * F32_BYTES..]);
+            f32be_to_u8_sse2(&mut dst[i..], &src[i * F32_BYTES..]);
         }
     } else if i < n {
         f32be_to_u8_scalar(&mut dst[i..], &src[i * F32_BYTES..]);
@@ -288,6 +299,7 @@ unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
             // Rev 4-byte groups: 0123->3210, 4567->7654, ...
             let le_bytes = vrev32q_u8(be_bytes);
             let f = vreinterpretq_f32_u8(le_bytes);
+            // Same order as scalar: clamp to [0,1], then *255, then round.
             let clamped = vminq_f32(vmaxq_f32(f, zero), one);
             let scaled = vmulq_f32(clamped, scale);
             // Ties away from zero: matches scalar `.round()` (not ties-to-even).
@@ -307,7 +319,13 @@ unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{f32be_to_u8, u16be_to_u8};
+    use super::{f32be_to_u8, f32be_to_u8_scalar, u16be_to_u8};
+
+    #[cfg(target_arch = "x86_64")]
+    use super::{f32be_to_u8_avx2, f32be_to_u8_sse2};
+
+    #[cfg(target_arch = "aarch64")]
+    use super::f32be_to_u8_neon;
 
     #[test]
     fn u16be_matches_high_byte() {
@@ -392,5 +410,106 @@ mod tests {
         }
         assert_eq!(simd, scalar);
         assert_eq!(simd, [3, 5, 127, 129, 255]);
+    }
+
+    /// Boundary / out-of-range floats where clamp-then-scale vs scale-then-clamp
+    /// (or round-then-clamp) would diverge by +/-1 if the SIMD order were wrong.
+    fn f32be_boundary_inputs() -> Vec<f32> {
+        let mut vals = vec![
+            -100.0,
+            -1.0,
+            -0.0,
+            0.0,
+            f32::from_bits(1),           // tiniest +subnormal
+            1.0 / 255.0,                 // ~1 after scale+round
+            0.5 / 255.0,                 // exact 0.5 tie -> 1
+            1.5 / 255.0,                 // exact 1.5 tie -> 2
+            254.5 / 255.0,               // tie near top
+            255.0 / 255.0,               // 1.0
+            f32::from_bits(0x3F7F_FFFF), // just below 1.0
+            1.0,
+            1.0 + f32::EPSILON,
+            1.002,
+            2.0,
+            100.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        // Dense sweep around 0 and 1 where float mul rounding is sensitive.
+        for i in 0..32 {
+            vals.push((i as f32) / 255.0);
+            vals.push(1.0 - (i as f32) / 255.0);
+            vals.push((i as f32 + 0.5) / 255.0);
+        }
+        vals
+    }
+
+    fn encode_f32be(vals: &[f32]) -> Vec<u8> {
+        let mut src = Vec::with_capacity(vals.len() * 4);
+        for &f in vals {
+            src.extend_from_slice(&f.to_be_bytes());
+        }
+        src
+    }
+
+    #[test]
+    fn f32be_boundary_public_path_matches_scalar() {
+        let vals = f32be_boundary_inputs();
+        let src = encode_f32be(&vals);
+        let mut got = vec![0u8; vals.len()];
+        let mut expect = vec![0u8; vals.len()];
+        f32be_to_u8(&mut got, &src);
+        f32be_to_u8_scalar(&mut expect, &src);
+        assert_eq!(
+            got, expect,
+            "public f32be_to_u8 diverged from scalar at boundaries"
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f32be_sse2_and_avx2_match_scalar_at_boundaries() {
+        let vals = f32be_boundary_inputs();
+        // Pad to a full AVX2 chunk so the SIMD main loop is exercised.
+        let mut padded = vals.clone();
+        while padded.len() % 8 != 0 {
+            padded.push(0.5);
+        }
+        let src = encode_f32be(&padded);
+        let mut expect = vec![0u8; padded.len()];
+        f32be_to_u8_scalar(&mut expect, &src);
+
+        if is_x86_feature_detected!("sse2") {
+            let mut sse = vec![0u8; padded.len()];
+            unsafe {
+                f32be_to_u8_sse2(&mut sse, &src);
+            }
+            assert_eq!(sse, expect, "SSE2 path diverged from scalar");
+        }
+        if is_x86_feature_detected!("avx2") {
+            let mut avx = vec![0u8; padded.len()];
+            unsafe {
+                f32be_to_u8_avx2(&mut avx, &src);
+            }
+            assert_eq!(avx, expect, "AVX2 path diverged from scalar");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn f32be_neon_matches_scalar_at_boundaries() {
+        let vals = f32be_boundary_inputs();
+        let mut padded = vals;
+        while padded.len() % 4 != 0 {
+            padded.push(0.5);
+        }
+        let src = encode_f32be(&padded);
+        let mut expect = vec![0u8; padded.len()];
+        let mut neon = vec![0u8; padded.len()];
+        f32be_to_u8_scalar(&mut expect, &src);
+        unsafe {
+            f32be_to_u8_neon(&mut neon, &src);
+        }
+        assert_eq!(neon, expect, "NEON path diverged from scalar");
     }
 }

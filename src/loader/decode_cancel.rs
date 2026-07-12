@@ -36,6 +36,8 @@ pub enum DecodeError {
     Cancelled,
     /// Strict PSD/PSB layer composite found no drawable visible layers.
     NoDrawableVisibleLayers,
+    /// PSD/PSB header / section-boundary failure from [`crate::psb_section_index::SectionParseError`].
+    PsdStructural(String),
     Message(String),
 }
 
@@ -51,11 +53,16 @@ impl DecodeError {
     }
 
     #[inline]
+    pub fn is_psd_structural(&self) -> bool {
+        matches!(self, Self::PsdStructural(_))
+    }
+
+    #[inline]
     pub fn as_str(&self) -> &str {
         match self {
             Self::Cancelled => DECODE_CANCELLED,
             Self::NoDrawableVisibleLayers => STRICT_LAYER_COMPOSITE_BLANK,
-            Self::Message(msg) => msg.as_str(),
+            Self::PsdStructural(msg) | Self::Message(msg) => msg.as_str(),
         }
     }
 }
@@ -82,7 +89,13 @@ impl From<&str> for DecodeError {
 
 impl From<crate::psb_section_index::SectionParseError> for DecodeError {
     fn from(err: crate::psb_section_index::SectionParseError) -> Self {
-        Self::Message(err.into())
+        // Preserve structural classification via the typed variant (checklist #30).
+        // Today every SectionParseError is Structural; match on kind if more are added.
+        if err.is_structural() {
+            Self::PsdStructural(err.into())
+        } else {
+            Self::Message(err.into())
+        }
     }
 }
 
@@ -150,5 +163,21 @@ mod tests {
             !DecodeError::Message(STRICT_LAYER_COMPOSITE_BLANK.into())
                 .is_no_drawable_visible_layers()
         );
+    }
+
+    #[test]
+    fn psd_structural_is_typed_variant() {
+        let err = DecodeError::PsdStructural("PSD/PSB header is too short".into());
+        assert!(err.is_psd_structural());
+        assert!(!err.is_cancelled());
+        assert!(!err.is_no_drawable_visible_layers());
+        assert_eq!(err.as_str(), "PSD/PSB header is too short");
+        assert!(!DecodeError::Message("PSD/PSB header is too short".into()).is_psd_structural());
+
+        let from_section = DecodeError::from(
+            crate::psb_section_index::SectionParseError::structural("invalid signature"),
+        );
+        assert!(from_section.is_psd_structural());
+        assert_eq!(from_section.as_str(), "invalid signature");
     }
 }

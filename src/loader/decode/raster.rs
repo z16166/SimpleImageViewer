@@ -529,6 +529,8 @@ pub(crate) fn load_psd(
 ///
 /// Accumulates nonzero-RGB / nonzero-alpha across row strips (independent strip checks are
 /// incorrect when one strip is all-RGB-0 and another is all-alpha-0).
+/// Gray/RGB use both RGB-0 and alpha-0; other color modes only use alpha-0 (see
+/// [`crate::psb_reader::color_mode_uses_rgb0_blank`]).
 fn psb_tiled_flat_is_absolutely_blank(
     source: &crate::psb_reader_tiled::PsbTiledSource,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -541,6 +543,7 @@ fn psb_tiled_flat_is_absolutely_blank(
         return Ok(true);
     }
 
+    let use_rgb0 = crate::psb_reader::color_mode_uses_rgb0_blank(source.color_mode());
     let mut any_rgb = false;
     let mut any_a = false;
     let strip_rows = crate::constants::PSB_DISK_TILED_BLANK_PROBE_STRIP_ROWS;
@@ -549,25 +552,30 @@ fn psb_tiled_flat_is_absolutely_blank(
         crate::psb_reader::check_decode_cancel(cancel)?;
         let h = (height - y).min(strip_rows);
         let tile = source.extract_tile(0, y, width, h);
-        feed_rgba8_absolute_blank_flags(&tile, &mut any_rgb, &mut any_a);
-        if any_rgb && any_a {
+        feed_rgba8_absolute_blank_flags(&tile, &mut any_rgb, &mut any_a, use_rgb0);
+        if any_a && (!use_rgb0 || any_rgb) {
             return Ok(false);
         }
         y = y.saturating_add(h);
     }
-    Ok(!any_rgb || !any_a)
+    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
-fn feed_rgba8_absolute_blank_flags(pixels: &[u8], any_rgb: &mut bool, any_a: &mut bool) {
+fn feed_rgba8_absolute_blank_flags(
+    pixels: &[u8],
+    any_rgb: &mut bool,
+    any_a: &mut bool,
+    use_rgb0: bool,
+) {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
-        if (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
+        if use_rgb0 && (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
             *any_rgb = true;
         }
         if pixels[i + 3] != 0 {
             *any_a = true;
         }
-        if *any_rgb && *any_a {
+        if *any_a && (!use_rgb0 || *any_rgb) {
             return;
         }
         i += 4;

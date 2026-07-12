@@ -414,7 +414,11 @@ unsafe fn prefix_sum_u16be_neon(row: &mut [u8]) {
             // BE [hi,lo] -> LE lane value via rev16.
             let mut v = vreinterpretq_u16_u8(vrev16q_u8(be_bytes));
             v = vaddq_u16(v, vsetq_lane_u16::<0>(carry, vdupq_n_u16(0)));
-            // Hillis-Steele: shift left by 1/2/4 u16 lanes via vext on bytes.
+            // Hillis-Steele inclusive scan over 8 u16 lanes.
+            // NEON has no `_mm_slli_si128`-style whole-register shift for u16
+            // lanes, so shift left by 1/2/4 lanes in the byte domain with
+            // `vextq_u8(zero, v, 16 - 2*lanes)` (pad low bytes with 0), then
+            // reinterpret back as u16 before adding.
             v = vaddq_u16(
                 v,
                 vreinterpretq_u16_u8(vextq_u8(vdupq_n_u8(0), vreinterpretq_u8_u16(v), 14)),
@@ -492,22 +496,12 @@ fn prefix_sum_u8_scalar(row: &mut [u8]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn prefix_sum_u8_sse2(row: &mut [u8]) {
-    use core::arch::x86_64::*;
     let mut i = 0usize;
     let n = row.len();
     let mut carry = 0u8;
     while i + PREFIX_SUM_SSE_BYTES <= n {
         unsafe {
-            let mut v = _mm_loadu_si128(row.as_ptr().add(i).cast());
-            // Fold previous chunk's last prefix into this chunk's first delta.
-            v = _mm_add_epi8(v, _mm_cvtsi32_si128(carry as i32));
-            // Hillis-Steele inclusive scan via doubling byte shifts.
-            v = _mm_add_epi8(v, _mm_slli_si128(v, 1));
-            v = _mm_add_epi8(v, _mm_slli_si128(v, 2));
-            v = _mm_add_epi8(v, _mm_slli_si128(v, 4));
-            v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
-            _mm_storeu_si128(row.as_mut_ptr().add(i).cast(), v);
-            carry = _mm_cvtsi128_si32(_mm_srli_si128(v, 15)) as u8;
+            carry = prefix_sum_u8_sse2_chunk(row.as_mut_ptr().add(i), carry);
         }
         i += PREFIX_SUM_SSE_BYTES;
     }
@@ -515,6 +509,24 @@ unsafe fn prefix_sum_u8_sse2(row: &mut [u8]) {
         carry = carry.wrapping_add(row[i]);
         row[i] = carry;
         i += 1;
+    }
+}
+
+/// One Hillis-Steele inclusive scan over 16 bytes, folding `carry` into byte 0.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[inline]
+unsafe fn prefix_sum_u8_sse2_chunk(ptr: *mut u8, carry: u8) -> u8 {
+    use core::arch::x86_64::*;
+    unsafe {
+        let mut v = _mm_loadu_si128(ptr.cast());
+        v = _mm_add_epi8(v, _mm_cvtsi32_si128(carry as i32));
+        v = _mm_add_epi8(v, _mm_slli_si128(v, 1));
+        v = _mm_add_epi8(v, _mm_slli_si128(v, 2));
+        v = _mm_add_epi8(v, _mm_slli_si128(v, 4));
+        v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
+        _mm_storeu_si128(ptr.cast(), v);
+        _mm_cvtsi128_si32(_mm_srli_si128(v, 15)) as u8
     }
 }
 
@@ -550,6 +562,13 @@ unsafe fn prefix_sum_u8_avx2(row: &mut [u8]) {
             _mm256_storeu_si256(row.as_mut_ptr().add(i).cast(), out);
         }
         i += PREFIX_SUM_AVX2_BYTES;
+    }
+    // Reuse SSE2 for a 16-byte remainder (keeps the running carry).
+    if i + PREFIX_SUM_SSE_BYTES <= n {
+        unsafe {
+            carry = prefix_sum_u8_sse2_chunk(row.as_mut_ptr().add(i), carry);
+        }
+        i += PREFIX_SUM_SSE_BYTES;
     }
     while i < n {
         carry = carry.wrapping_add(row[i]);
@@ -652,7 +671,7 @@ mod tests {
     /// Odd length, non-multiple of SIMD chunk, and wrapping deltas across chunk boundaries.
     #[test]
     fn prefix_sum_u8_inplace_odd_and_cross_chunk() {
-        // 37 = AVX2(32) + 5 remainder; also covers SSE(16) multi-chunk carry.
+        // 37 = AVX2(32) + 5 scalar; 48 = AVX2(32) + SSE(16) remainder.
         let lens = [1usize, 3, 15, 17, 31, 33, 37, 48, 65];
         for &n in &lens {
             let mut encoded: Vec<u8> = (0..n)

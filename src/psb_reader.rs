@@ -354,14 +354,20 @@ pub(crate) fn check_decode_cancel(
 ///
 /// Returns true when the buffer is semantically empty:
 /// - every alpha byte is 0 (fully transparent), or
-/// - every RGB triple is (0,0,0) (absolute pure black).
+/// - (Gray / RGB only) every RGB triple is (0,0,0) (absolute pure black).
+///
+/// For other color modes (CMYK, Lab, Indexed, ...), only the all-alpha-0
+/// rule applies. Those modes can yield RGB-0 after conversion (or incomplete
+/// channel mapping) for non-empty content, so treating RGB-0 as blank would
+/// false-positive and skip a valid P1 flat.
 ///
 /// Structural decode success alone is not enough; this is an O(N) SIMD scan
-/// with early exit once both a nonzero alpha and a nonzero RGB sample exist.
+/// with early exit once a nonzero sample that disproves blank is found.
 /// Polls `cancel` on large buffers when provided.
 pub fn rgba8_is_absolutely_blank_with_cancel(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
+    color_mode: u16,
 ) -> Result<bool, crate::loader::DecodeError> {
     if pixels.len() < 4 {
         return Ok(true);
@@ -371,26 +377,33 @@ pub fn rgba8_is_absolutely_blank_with_cancel(
         return Ok(true);
     }
     let pixels = &pixels[..n];
+    let use_rgb0 = color_mode_uses_rgb0_blank(color_mode);
 
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            return unsafe { rgba8_absolutely_blank_avx2(pixels, cancel) };
+            return unsafe { rgba8_absolutely_blank_avx2(pixels, cancel, use_rgb0) };
         }
         if is_x86_feature_detected!("sse2") {
-            return unsafe { rgba8_absolutely_blank_sse2(pixels, cancel) };
+            return unsafe { rgba8_absolutely_blank_sse2(pixels, cancel, use_rgb0) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        return unsafe { rgba8_absolutely_blank_neon(pixels, cancel) };
+        return unsafe { rgba8_absolutely_blank_neon(pixels, cancel, use_rgb0) };
     }
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        rgba8_absolutely_blank_scalar(pixels, cancel)
+        rgba8_absolutely_blank_scalar(pixels, cancel, use_rgb0)
     }
+}
+
+/// Gray (1) and RGB (3): all-RGB-0 is a reliable empty-flat signal.
+#[inline]
+pub(crate) fn color_mode_uses_rgb0_blank(color_mode: u16) -> bool {
+    matches!(color_mode, 1 | 3)
 }
 
 /// Scan RGBA8; returns `(any_nonzero_rgb, any_nonzero_alpha)`.
@@ -399,20 +412,21 @@ fn rgba8_any_rgb_alpha_scalar(
     cancel: Option<&AtomicBool>,
     mut any_rgb: bool,
     mut any_a: bool,
+    use_rgb0: bool,
 ) -> Result<(bool, bool), crate::loader::DecodeError> {
     let mut i = 0usize;
     while i + 4 <= pixels.len() {
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
-        if (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
+        if use_rgb0 && (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0 {
             any_rgb = true;
         }
         if pixels[i + 3] != 0 {
             any_a = true;
         }
-        if any_rgb && any_a {
-            return Ok((true, true));
+        if any_a && (!use_rgb0 || any_rgb) {
+            return Ok((any_rgb, true));
         }
         i += 4;
     }
@@ -422,9 +436,10 @@ fn rgba8_any_rgb_alpha_scalar(
 fn rgba8_absolutely_blank_scalar(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
+    use_rgb0: bool,
 ) -> Result<bool, crate::loader::DecodeError> {
-    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(pixels, cancel, false, false)?;
-    Ok(!any_rgb || !any_a)
+    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(pixels, cancel, false, false, use_rgb0)?;
+    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -432,6 +447,7 @@ fn rgba8_absolutely_blank_scalar(
 unsafe fn rgba8_absolutely_blank_sse2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
+    use_rgb0: bool,
 ) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let mut any_rgb = false;
@@ -446,21 +462,24 @@ unsafe fn rgba8_absolutely_blank_sse2(
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm_loadu_si128(pixels.as_ptr().add(i).cast()) };
-        let rgb = _mm_and_si128(v, rgb_mask);
-        let alpha = _mm_and_si128(v, a_mask);
-        if _mm_movemask_epi8(_mm_cmpeq_epi8(rgb, zero)) != 0xFFFF {
-            any_rgb = true;
+        if use_rgb0 {
+            let rgb = _mm_and_si128(v, rgb_mask);
+            if _mm_movemask_epi8(_mm_cmpeq_epi8(rgb, zero)) != 0xFFFF {
+                any_rgb = true;
+            }
         }
+        let alpha = _mm_and_si128(v, a_mask);
         if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha, zero)) != 0xFFFF {
             any_a = true;
         }
-        if any_rgb && any_a {
+        if any_a && (!use_rgb0 || any_rgb) {
             return Ok(false);
         }
         i += 16;
     }
-    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
-    Ok(!any_rgb || !any_a)
+    let (any_rgb, any_a) =
+        rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
+    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -468,6 +487,7 @@ unsafe fn rgba8_absolutely_blank_sse2(
 unsafe fn rgba8_absolutely_blank_avx2(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
+    use_rgb0: bool,
 ) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::x86_64::*;
     let mut any_rgb = false;
@@ -482,27 +502,31 @@ unsafe fn rgba8_absolutely_blank_avx2(
             check_decode_cancel(cancel)?;
         }
         let v = unsafe { _mm256_loadu_si256(pixels.as_ptr().add(i).cast()) };
-        let rgb = _mm256_and_si256(v, rgb_mask);
-        let alpha = _mm256_and_si256(v, a_mask);
-        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(rgb, zero)) != -1 {
-            any_rgb = true;
+        if use_rgb0 {
+            let rgb = _mm256_and_si256(v, rgb_mask);
+            if _mm256_movemask_epi8(_mm256_cmpeq_epi8(rgb, zero)) != -1 {
+                any_rgb = true;
+            }
         }
+        let alpha = _mm256_and_si256(v, a_mask);
         if _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha, zero)) != -1 {
             any_a = true;
         }
-        if any_rgb && any_a {
+        if any_a && (!use_rgb0 || any_rgb) {
             return Ok(false);
         }
         i += 32;
     }
-    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
-    Ok(!any_rgb || !any_a)
+    let (any_rgb, any_a) =
+        rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
+    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn rgba8_absolutely_blank_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
+    use_rgb0: bool,
 ) -> Result<bool, crate::loader::DecodeError> {
     use core::arch::aarch64::*;
     let mut any_rgb = false;
@@ -517,21 +541,24 @@ unsafe fn rgba8_absolutely_blank_neon(
         }
         let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
         let vu = vreinterpretq_u32_u8(v);
-        let rgb = vandq_u32(vu, rgb_mask);
-        let alpha = vandq_u32(vu, a_mask);
-        if vmaxvq_u32(rgb) != 0 {
-            any_rgb = true;
+        if use_rgb0 {
+            let rgb = vandq_u32(vu, rgb_mask);
+            if vmaxvq_u32(rgb) != 0 {
+                any_rgb = true;
+            }
         }
+        let alpha = vandq_u32(vu, a_mask);
         if vmaxvq_u32(alpha) != 0 {
             any_a = true;
         }
-        if any_rgb && any_a {
+        if any_a && (!use_rgb0 || any_rgb) {
             return Ok(false);
         }
         i += 16;
     }
-    let (any_rgb, any_a) = rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a)?;
-    Ok(!any_rgb || !any_a)
+    let (any_rgb, any_a) =
+        rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
+    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
 /// Zero-information barrier for P2 strict layer composites (RGBA8).
@@ -1587,24 +1614,25 @@ mod tests {
 
     #[test]
     fn rgba8_absolute_blank_detects_all_transparent_and_all_black() {
-        assert!(super::rgba8_is_absolutely_blank_with_cancel(&[], None).unwrap());
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&[], None, 3).unwrap());
         assert!(
-            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 0, 0, 0, 0, 0], None).unwrap()
-        );
-        assert!(
-            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 0, 0, 0, 255], None)
+            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 0, 0, 0, 0, 0], None, 3)
                 .unwrap()
         );
         assert!(
-            super::rgba8_is_absolutely_blank_with_cancel(&[10, 20, 30, 0, 40, 50, 60, 0], None)
+            super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 0, 0, 0, 255], None, 3)
                 .unwrap()
         );
         assert!(
-            !super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 1, 0, 0, 255], None)
+            super::rgba8_is_absolutely_blank_with_cancel(&[10, 20, 30, 0, 40, 50, 60, 0], None, 3)
                 .unwrap()
         );
         assert!(
-            !super::rgba8_is_absolutely_blank_with_cancel(&[255, 255, 255, 255], None).unwrap()
+            !super::rgba8_is_absolutely_blank_with_cancel(&[0, 0, 0, 255, 1, 0, 0, 255], None, 3)
+                .unwrap()
+        );
+        assert!(
+            !super::rgba8_is_absolutely_blank_with_cancel(&[255, 255, 255, 255], None, 3).unwrap()
         );
     }
 
@@ -1614,10 +1642,22 @@ mod tests {
         for px in pixels.chunks_exact_mut(4) {
             px[3] = 255;
         }
-        assert!(super::rgba8_is_absolutely_blank_with_cancel(&pixels, None).unwrap());
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&pixels, None, 3).unwrap());
         let off = 1234 * 4;
         pixels[off] = 7;
-        assert!(!super::rgba8_is_absolutely_blank_with_cancel(&pixels, None).unwrap());
+        assert!(!super::rgba8_is_absolutely_blank_with_cancel(&pixels, None, 3).unwrap());
+    }
+
+    #[test]
+    fn rgba8_absolute_blank_cmyk_ignores_rgb0() {
+        // Opaque pure-black RGBA is blank for RGB mode, but not for CMYK (mode 4):
+        // RGB-0 after conversion must not discard a non-transparent flat.
+        let black = [0u8, 0, 0, 255, 0, 0, 0, 255];
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&black, None, 3).unwrap());
+        assert!(!super::rgba8_is_absolutely_blank_with_cancel(&black, None, 4).unwrap());
+        // Fully transparent is blank in every mode.
+        let clear = [0u8, 0, 0, 0, 10, 20, 30, 0];
+        assert!(super::rgba8_is_absolutely_blank_with_cancel(&clear, None, 4).unwrap());
     }
 
     #[test]
