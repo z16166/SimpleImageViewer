@@ -452,6 +452,120 @@ fn decode_psd_hdr_main_p25b_show_all(
     }
 }
 
+/// Per-record visibility mask plus the OSD stage that produced it, resolved
+/// for the disk-backed HDR layer tiler without any full-canvas composite.
+///
+/// The disk tiler cannot afford a full pixel composite to decide P2 vs
+/// P2.5a/P2.5b, so plan selection is geometric only (via
+/// [`strict_visibility_has_drawable_output`]): the first stage whose
+/// visibility yields at least one on-canvas drawable layer wins.
+#[derive(Debug)]
+pub(crate) struct HdrDiskVisibilityPlan {
+    pub visible: Vec<bool>,
+    pub osd: crate::loader::PsdOsdInfo,
+}
+
+/// Resolve the visibility mask for the disk-backed HDR layer tiler.
+///
+/// Mirrors the P2 -> P2.5a -> P2.5b order of
+/// [`decode_psd_hdr_main_from_index_with_layer_info`] but decides each stage
+/// with a geometric drawable-output check instead of compositing pixels.
+pub(crate) fn resolve_hdr_disk_visibility_plan(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<HdrDiskVisibilityPlan, crate::loader::DecodeError> {
+    use crate::psb_layer_composite::{
+        compute_effective_visibility, strict_visibility_has_drawable_output,
+    };
+
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let records = &layer_info.records;
+    let w = layer_info.width;
+    let h = layer_info.height;
+
+    // P2: strict Photoshop layer/group visibility.
+    let strict = compute_effective_visibility(records);
+    if strict_visibility_has_drawable_output(w, h, records, &strict) {
+        return Ok(HdrDiskVisibilityPlan {
+            visible: strict,
+            osd: crate::loader::PsdOsdInfo::p2_strict(),
+        });
+    }
+
+    // P2.5a: selected Layer Comp reveal.
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    if let Some(comps) =
+        crate::psb_layer_comps::parse_layer_comps_from_ir(bytes, index.ir_start, index.ir_end)
+        && let Some(comp) =
+            crate::psb_layer_comps::select_layer_comp(&comps.comps, comps.last_applied)
+    {
+        let comp_name = if comp.name.is_empty() {
+            None
+        } else {
+            Some(comp.name.clone())
+        };
+        let visible = crate::psb_layer_comps::visibility_from_layer_comp(records, comp.id);
+        if strict_visibility_has_drawable_output(w, h, records, &visible) {
+            return Ok(HdrDiskVisibilityPlan {
+                visible,
+                osd: crate::loader::PsdOsdInfo::p25a_layer_comp(comp_name),
+            });
+        }
+    }
+
+    // P2.5b: hidden-layer reveal heuristic / force-open-all.
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    match strategy {
+        crate::settings::PsdHiddenLayerStrategy::Heuristic => {
+            let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
+                records,
+                crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
+            );
+            for selection in &candidates {
+                let root_name = if selection.root_name.is_empty() {
+                    None
+                } else {
+                    Some(selection.root_name.clone())
+                };
+                let respect = crate::psb_p25_reveal::visibility_respect_subtree(
+                    records,
+                    &selection.member_indices,
+                );
+                if strict_visibility_has_drawable_output(w, h, records, &respect) {
+                    return Ok(HdrDiskVisibilityPlan {
+                        visible: respect,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, false),
+                    });
+                }
+                let forced = crate::psb_p25_reveal::visibility_force_open_subtree(
+                    records,
+                    &selection.member_indices,
+                );
+                if strict_visibility_has_drawable_output(w, h, records, &forced) {
+                    return Ok(HdrDiskVisibilityPlan {
+                        visible: forced,
+                        osd: crate::loader::PsdOsdInfo::p25b_max_bbox(root_name, true),
+                    });
+                }
+            }
+        }
+        crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
+            let visible = crate::psb_p25_reveal::visibility_force_open_all(records);
+            if strict_visibility_has_drawable_output(w, h, records, &visible) {
+                return Ok(HdrDiskVisibilityPlan {
+                    visible,
+                    osd: crate::loader::PsdOsdInfo::p25b_max_bbox(None, true),
+                });
+            }
+        }
+    }
+
+    Err(crate::loader::DecodeError::NoDrawableVisibleLayers)
+}
+
 /// Zero-information for HDR: all alpha 0, or solid RGB (no variance) with any alpha.
 fn rgba_f32_is_zero_information(pixels: &[f32]) -> bool {
     const EPS: f32 = 1e-8;

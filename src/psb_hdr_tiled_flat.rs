@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -42,6 +42,11 @@ use crate::psb_reader::{
 
 const ROW_CACHE_BUDGET: u64 = 512 * 1024 * 1024;
 
+/// Phase 3 budget for lazily inflating a ZIP (compression 2|3) flattened Image
+/// Data section into an in-memory planar buffer. Larger sections refuse flat
+/// ZIP HDR tiling at open so the caller can fall through to layers / SDR.
+const ZIP_PLANAR_MAX_BYTES: usize = 256 * 1024 * 1024;
+
 /// Disk-backed HDR source for flattened PSD/PSB RGB Image Data.
 #[derive(Debug)]
 pub struct PsbHdrTiledFlatSource {
@@ -53,6 +58,12 @@ pub struct PsbHdrTiledFlatSource {
     depth: u16,
     compression: u16,
     row_offsets: Vec<u64>,
+    /// Byte range of the zlib payload in `mmap` for compression 2|3; `None`
+    /// for raw / RLE.
+    zip_compressed_range: Option<(usize, usize)>,
+    /// Lazily inflated ZIP planar buffer (all channels, channel-major). `None`
+    /// inner value means inflate failed; the row decode then yields blanks.
+    zip_planar: OnceLock<Option<Arc<Vec<u8>>>>,
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
     tile_cache: Mutex<HdrTileCache>,
     metadata: HdrImageMetadata,
@@ -127,8 +138,63 @@ impl PsbHdrTiledFlatSource {
                     buf.fill(0);
                 }
             }
+            2 | 3 => {
+                let Some(planar) = self.ensure_zip_planar() else {
+                    buf.fill(0);
+                    return;
+                };
+                let channel_bytes = raw_len.saturating_mul(self.height as usize);
+                let Some(offset) = (ch_idx as usize)
+                    .checked_mul(channel_bytes)
+                    .and_then(|base| base.checked_add(global_row as usize * raw_len))
+                else {
+                    buf.fill(0);
+                    return;
+                };
+                let Some(end) = offset.checked_add(raw_len) else {
+                    buf.fill(0);
+                    return;
+                };
+                if end <= planar.len() {
+                    buf.copy_from_slice(&planar[offset..end]);
+                } else {
+                    buf.fill(0);
+                }
+            }
             _ => buf.fill(0),
         }
+    }
+
+    /// Inflate the ZIP flattened Image Data once, applying prediction undo for
+    /// compression 3. Returns `None` when this source is not ZIP-backed or the
+    /// inflate fails (the caller then produces a blank row).
+    fn ensure_zip_planar(&self) -> Option<Arc<Vec<u8>>> {
+        let (start, end) = self.zip_compressed_range?;
+        let width = self.width as usize;
+        let depth = self.depth;
+        let compression = self.compression;
+        let expected = self
+            .raw_row_bytes()
+            .checked_mul(self.height as usize)
+            .and_then(|channel_bytes| channel_bytes.checked_mul(self.channels as usize))?;
+        let cached = self.zip_planar.get_or_init(|| {
+            let compressed = self.mmap.get(start..end)?;
+            let mut planar = match crate::psb_zip::inflate_zlib_exact(compressed, expected) {
+                Ok(planar) => planar,
+                Err(e) => {
+                    log::debug!("PSD/PSB HDR tiled ZIP inflate failed: {e}");
+                    return None;
+                }
+            };
+            if compression == 3
+                && let Err(e) = crate::psb_zip::undo_zip_prediction(&mut planar, width, depth)
+            {
+                log::debug!("PSD/PSB HDR tiled ZIP prediction undo failed: {e}");
+                return None;
+            }
+            Some(Arc::new(planar))
+        });
+        cached.clone()
     }
 
     fn decode_row_uncached(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
@@ -318,15 +384,15 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
         .map_err(|e| e.to_string())?;
 
     let compression = read_u16(&mut cursor)?;
-    tiled_compression_supported(compression)?;
-    if compression == 2 || compression == 3 {
-        return Err(format!(
-            "PSD/PSB HDR tiled flat source does not support ZIP compression {compression}"
-        ));
+    // Phase 3 accepts ZIP (2|3) here; raw/RLE still go through
+    // `tiled_compression_supported`, which rejects ZIP as non-tileable.
+    if compression != 2 && compression != 3 {
+        tiled_compression_supported(compression)?;
     }
 
     let data_start = cursor.position();
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
+    let mut zip_compressed_range: Option<(usize, usize)> = None;
     match compression {
         0 => {
             let channel_bytes = row_raw_bytes
@@ -382,6 +448,25 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
                     .ok_or_else(|| "PSD/PSB HDR tiled RLE row offset overflow".to_string())?;
             }
         }
+        2 | 3 => {
+            // ZIP is a single zlib stream of all channels planar (channel-major).
+            // Refuse when the inflated planar buffer would exceed the budget so
+            // the caller can fall through to the layer tiler / SDR path.
+            let channel_bytes = row_raw_bytes
+                .checked_mul(height as u64)
+                .ok_or_else(|| "PSD/PSB HDR tiled ZIP channel byte count overflow".to_string())?;
+            let expected = channel_bytes
+                .checked_mul(channels as u64)
+                .ok_or_else(|| "PSD/PSB HDR tiled ZIP planar size overflow".to_string())?;
+            if expected > ZIP_PLANAR_MAX_BYTES as u64 {
+                return Err(format!(
+                    "PSD/PSB HDR tiled ZIP planar {expected} bytes exceeds budget {ZIP_PLANAR_MAX_BYTES}"
+                ));
+            }
+            let start = usize::try_from(data_start)
+                .map_err(|_| "PSD/PSB HDR tiled ZIP data offset overflow".to_string())?;
+            zip_compressed_range = Some((start, mmap.len()));
+        }
         _ => {
             return Err(format!(
                 "Unsupported PSD/PSB HDR tiled compression: {compression}"
@@ -435,6 +520,8 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
         depth,
         compression,
         row_offsets,
+        zip_compressed_range,
+        zip_planar: OnceLock::new(),
         row_cache,
         tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
         metadata,
@@ -721,6 +808,60 @@ mod tests {
         }
         std::fs::write(&path, bytes).expect("write temp PSD");
         path
+    }
+
+    #[test]
+    fn psb_hdr_tiled_zip_flat_32_bit_rgb_tile() {
+        // Flattened RGB planar (channel-major), each channel 2x2 f32 BE, then
+        // zlib-compressed as a single stream (compression 2, no prediction).
+        let width = 2usize;
+        let height = 2usize;
+        let px = width * height;
+        let rgb = [1.0f32, 0.25, 0.1];
+        let mut planar = Vec::new();
+        for &v in &rgb {
+            for _ in 0..px {
+                planar.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&planar, 6);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // channels
+        bytes.extend_from_slice(&(height as u32).to_be_bytes());
+        bytes.extend_from_slice(&(width as u32).to_be_bytes());
+        bytes.extend_from_slice(&32u16.to_be_bytes()); // depth
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // RGB
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // color mode data
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // image resources
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // empty layer/mask
+        bytes.extend_from_slice(&2u16.to_be_bytes()); // ZIP without prediction
+        bytes.extend_from_slice(&compressed);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "psb_hdr_tiled_zip32_{}_{}.psd",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, bytes).expect("write temp ZIP PSD");
+
+        let source = open_hdr_tiled_flat_source(&path).expect("open ZIP flat 32-bit");
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, 2, 2)
+            .expect("extract ZIP tile");
+        assert_eq!((tile.width, tile.height), (2, 2));
+        let out = &tile.rgba_f32[0..4];
+        assert!((out[0] - 1.0).abs() < 1e-5, "R: {out:?}");
+        assert!((out[1] - 0.25).abs() < 1e-5, "G: {out:?}");
+        assert!((out[2] - 0.1).abs() < 1e-5, "B: {out:?}");
+        let _ = std::fs::remove_file(path);
     }
 
     fn append_sample(bytes: &mut Vec<u8>, depth: u16, value: f32) {

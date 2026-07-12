@@ -361,6 +361,38 @@ pub(crate) fn load_psd(
         };
         match disk_tiled_compression {
             Ok(2 | 3) => {
+                // Phase 3: ZIP Image Data. Try flat HDR (planar inflate within
+                // budget), then the HDR layer compositor, before routing SDR.
+                if try_hdr {
+                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source(path) {
+                        Ok(source) => {
+                            let blank = source.is_absolute_blank(Some(cancel.as_atomic()))?;
+                            if !blank {
+                                return Ok(hdr_tiled_image_data(
+                                    source,
+                                    crate::loader::PsdOsdInfo::p1_flattened(),
+                                ));
+                            }
+                            log::debug!(
+                                "PSB HDR disk tiled ZIP flat {}x{} is absolute blank; trying HDR layers",
+                                width,
+                                height
+                            );
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "PSB HDR disk tiled ZIP flat open failed for header {}x{} ({e}); trying HDR layers",
+                                width,
+                                height
+                            );
+                        }
+                    }
+                    if let Some(ret) =
+                        try_hdr_tiled_layers(path, &cancel, psd_hidden_layer_strategy)?
+                    {
+                        return Ok(ret);
+                    }
+                }
                 log::debug!(
                     "PSB disk tiled open skipped for ZIP Image Data; routing through P1/P2/P3"
                 );
@@ -371,18 +403,13 @@ pub(crate) fn load_psd(
                         Ok(source) => {
                             let blank = source.is_absolute_blank(Some(cancel.as_atomic()))?;
                             if !blank {
-                                let hdr: std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource> =
-                                    std::sync::Arc::new(source);
-                                let fallback = std::sync::Arc::new(HdrSdrTiledFallbackSource::new(
-                                    std::sync::Arc::clone(&hdr),
-                                ));
-                                return Ok((
-                                    ImageData::HdrTiled { hdr, fallback },
-                                    Some(crate::loader::PsdOsdInfo::p1_flattened()),
+                                return Ok(hdr_tiled_image_data(
+                                    source,
+                                    crate::loader::PsdOsdInfo::p1_flattened(),
                                 ));
                             }
                             log::debug!(
-                                "PSB HDR disk tiled flat {}x{} is absolute blank; degrading to SDR P2/P3",
+                                "PSB HDR disk tiled flat {}x{} is absolute blank; trying HDR layers then SDR",
                                 width,
                                 height
                             );
@@ -390,11 +417,18 @@ pub(crate) fn load_psd(
                         }
                         Err(e) => {
                             log::debug!(
-                                "PSB HDR disk tiled open failed for header {}x{} ({e}); trying SDR disk tiled path",
+                                "PSB HDR disk tiled open failed for header {}x{} ({e}); trying HDR layers / SDR disk tiled path",
                                 width,
                                 height
                             );
                         }
+                    }
+                    // Blank / unparseable flat HDR but drawable layers: composite
+                    // tiles from the layer stack instead of a full-canvas HDR.
+                    if let Some(ret) =
+                        try_hdr_tiled_layers(path, &cancel, psd_hidden_layer_strategy)?
+                    {
+                        return Ok(ret);
                     }
                 }
                 if !skip_flattened_for_disk_tiled_degrade {
@@ -572,6 +606,49 @@ pub(crate) fn load_psd(
             std::mem::discriminant(&other)
         )
         .into()),
+    }
+}
+
+/// Wrap a disk-backed HDR tiled source into an [`ImageData::HdrTiled`] pair
+/// (HDR source + SDR fallback view) with the given OSD stage.
+fn hdr_tiled_image_data(
+    source: impl crate::hdr::tiled::HdrTiledSource + 'static,
+    osd: crate::loader::PsdOsdInfo,
+) -> (ImageData, Option<crate::loader::PsdOsdInfo>) {
+    let hdr: std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource> = std::sync::Arc::new(source);
+    let fallback = std::sync::Arc::new(HdrSdrTiledFallbackSource::new(std::sync::Arc::clone(&hdr)));
+    (ImageData::HdrTiled { hdr, fallback }, Some(osd))
+}
+
+/// Attempt the disk-backed HDR *layer* compositor for an oversized PSB whose
+/// flattened Image Data is blank/absent but that has drawable layers. Returns
+/// `Ok(Some(..))` only when a source opens and a strip probe finds drawable
+/// output; otherwise `Ok(None)` so the caller degrades to the SDR path.
+fn try_hdr_tiled_layers(
+    path: &Path,
+    cancel: &crate::loader::DecodeCancelFlag,
+    strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<Option<(ImageData, Option<crate::loader::PsdOsdInfo>)>, crate::loader::DecodeError> {
+    match crate::psb_hdr_tiled_layers::open_hdr_tiled_layers_source(
+        path,
+        strategy,
+        Some(cancel.as_atomic()),
+    ) {
+        Ok(source) => {
+            if source.probe_has_drawable_output(Some(cancel.as_atomic()))? {
+                let osd = source.osd();
+                Ok(Some(hdr_tiled_image_data(source, osd)))
+            } else {
+                log::debug!(
+                    "PSB HDR disk tiled layers produced no drawable output; degrading to SDR"
+                );
+                Ok(None)
+            }
+        }
+        Err(e) => {
+            log::debug!("PSB HDR disk tiled layers open failed ({e}); degrading to SDR");
+            Ok(None)
+        }
     }
 }
 

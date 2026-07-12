@@ -51,7 +51,7 @@ use crate::psb_section_index::PsdSectionIndex;
 /// Blend a decoded layer's straight-alpha RGBA f32 rect onto the f32 canvas.
 /// Clips the layer rect to the canvas bounds; out-of-bounds pixels are skipped.
 #[allow(clippy::too_many_arguments)]
-fn blend_f32_layer_onto(
+pub(crate) fn blend_f32_layer_onto(
     canvas: &mut [f32],
     canvas_w: u32,
     canvas_h: u32,
@@ -99,15 +99,15 @@ fn blend_f32_layer_onto(
 // -- f32 clipping groups (mirrors psb_layer_clip) -----------------------------
 
 /// Decoded layer view for clip-aware f32 blending (bottom-to-top order).
-struct ClipLayerRefF32<'a> {
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-    blend: [u8; 4],
+pub(crate) struct ClipLayerRefF32<'a> {
+    pub(crate) left: i32,
+    pub(crate) top: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) blend: [u8; 4],
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
-    clipping: u8,
-    rgba: &'a [f32],
+    pub(crate) clipping: u8,
+    pub(crate) rgba: &'a [f32],
 }
 
 /// Snapshot base-layer alpha into a full-canvas plane (0 outside the base rect).
@@ -534,14 +534,14 @@ impl OpenClipGroupF32 {
 /// Streaming f32 counterpart of the u8 [`crate::psb_layer_clip::ClipBlendState`].
 ///
 /// Orphan clip layers (no base below) are skipped. Lone bases blend as usual.
-struct ClipBlendStateF32 {
+pub(crate) struct ClipBlendStateF32 {
     canvas_w: u32,
     canvas_h: u32,
     open: Option<OpenClipGroupF32>,
 }
 
 impl ClipBlendStateF32 {
-    fn new(canvas_w: u32, canvas_h: u32) -> Self {
+    pub(crate) fn new(canvas_w: u32, canvas_h: u32) -> Self {
         Self {
             canvas_w,
             canvas_h,
@@ -551,7 +551,7 @@ impl ClipBlendStateF32 {
 
     /// Feed the next layer (bottom-to-top). May flush the previous group
     /// onto `canvas` if `layer` starts a new one.
-    fn push_layer(
+    pub(crate) fn push_layer(
         &mut self,
         canvas: &mut [f32],
         layer: &ClipLayerRefF32<'_>,
@@ -572,7 +572,7 @@ impl ClipBlendStateF32 {
     }
 
     /// Flush any open group onto `canvas`. Safe to call multiple times.
-    fn finish(
+    pub(crate) fn finish(
         &mut self,
         canvas: &mut [f32],
         cancel: Option<&AtomicBool>,
@@ -605,18 +605,20 @@ fn blend_layers_with_clipping_f32(
 
 /// Decode one layer's channels to a straight-alpha RGBA f32 rect, or `None`
 /// when the layer should not contribute (hidden, empty, zero-opacity, oversized).
-struct LayerF32DecodeArgs<'a> {
-    channel_data: &'a [u8],
-    record: &'a LayerRecord,
-    color_mode: u16,
-    depth: u16,
-    is_psb: bool,
-    transfer: HdrTransferFunction,
-    sdr_white_nits: f32,
-    cancel: Option<&'a AtomicBool>,
+pub(crate) struct LayerF32DecodeArgs<'a> {
+    pub(crate) channel_data: &'a [u8],
+    pub(crate) record: &'a LayerRecord,
+    pub(crate) color_mode: u16,
+    pub(crate) depth: u16,
+    pub(crate) is_psb: bool,
+    pub(crate) transfer: HdrTransferFunction,
+    pub(crate) sdr_white_nits: f32,
+    pub(crate) cancel: Option<&'a AtomicBool>,
 }
 
-fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>, DecodeError> {
+pub(crate) fn decode_layer_to_f32(
+    args: LayerF32DecodeArgs<'_>,
+) -> Result<Option<Vec<f32>>, DecodeError> {
     let LayerF32DecodeArgs {
         channel_data,
         record,
@@ -716,7 +718,15 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
                     }
                     Err(e) if e.is_cancelled() => return Err(e),
                     Err(e) => {
-                        log::debug!("PSD/PSB HDR layer color ch {idx} decode failed: {e}");
+                        // A structural color-channel failure means this layer's
+                        // pixels cannot be trusted; skip the whole layer instead
+                        // of compositing a partially decoded (garbled) rect. The
+                        // per-layer channel slice already bounds the cursor, so
+                        // returning here does not desync any shared reader.
+                        log::debug!(
+                            "PSD/PSB HDR layer color ch {idx} decode failed; skipping layer: {e}"
+                        );
+                        return Ok(None);
                     }
                 }
             }

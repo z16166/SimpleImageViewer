@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **More reliable PSD/PSB decoding**: Damaged or truncated channel data no longer opens as a silent black/transparent image; corrupt layers are skipped so the rest of the file can still display.
 - **Large HDR PSB files**: Oversized high bit-depth PSB files with a usable flattened preview can open in HDR without loading the entire image into memory at once.
+- **Large HDR layers-only PSB files**: Oversized high bit-depth documents with an empty flattened preview can still open in HDR by compositing visible tiles on demand.
 - **16/32-bit layers-only PSD/PSB on SDR displays**: High bit-depth documents that only store pixels in layers (empty flattened preview) now still open on standard displays, including common 16-bit RGB/CMYK print files.
 - **Large layers-only PSB files**: Oversized PSB documents with an empty flattened preview no longer stay blank; the viewer falls back to layer composite or the embedded thumbnail when available.
 - **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
