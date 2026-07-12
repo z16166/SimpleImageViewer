@@ -16,7 +16,8 @@
 
 //! HDR layer compositor for 16-bit and 32-bit PSD/PSB documents.
 //!
-//! Entry point: [`composite_layers_hdr_from_index`].  Unlike the SDR path in
+//! Shared-[`crate::psb_layer_composite::LayerInfo`] entry point:
+//! [`composite_layers_hdr_with_visibility_from_info`].  Unlike the SDR path in
 //! `psb_layer_composite`, this does NOT fail on depth != 8 and works entirely
 //! in linear-light f32 (no u8 quantisation until the caller tone-maps).
 //!
@@ -38,10 +39,7 @@ use crate::psb_hdr_blend::blend_separable_span_f32;
 use crate::psb_icc_hdr::probe_icc_hdr;
 use crate::psb_layer_blend_simd::SeparableBlendKind;
 use crate::psb_layer_composite::dimensions_within_limit;
-use crate::psb_layer_composite::{
-    LayerRecord, compute_effective_visibility, parse_layer_records_from_index,
-    strict_visibility_has_drawable_output,
-};
+use crate::psb_layer_composite::{LayerRecord, strict_visibility_has_drawable_output};
 use crate::psb_layer_decode::{
     channel_samples_to_f32, decode_channel_image, decode_mask_channel_to_layer,
     layer_channel_byte_ranges, layer_planes_to_rgba_f32,
@@ -530,8 +528,8 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
 
 // -- public entry point -------------------------------------------------------
 
-/// Decode a PSD/PSB layer stack and composite it into a linear-light RGBA f32
-/// buffer suitable for HDR display.
+/// Composite an already-parsed layer stack into a linear-light RGBA f32 buffer
+/// suitable for HDR display.
 ///
 /// Does NOT fail on depth != 8: this is the HDR entry point for 16-bit
 /// (PQ/HLG ICC-marked) and 32-bit documents.  The SDR path in
@@ -542,34 +540,9 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
 ///
 /// Returns [`DecodeError::NoDrawableVisibleLayers`] when no visible layer
 /// intersects the canvas (no pixel work is performed).
-pub fn composite_layers_hdr_from_index(
-    index: &PsdSectionIndex,
-    bytes: &[u8],
-    cancel: Option<&AtomicBool>,
-    sdr_white_nits: f32,
-) -> Result<HdrImageBuffer, DecodeError> {
-    crate::psb_reader::check_decode_cancel(cancel)?;
-    let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
-    let visible = compute_effective_visibility(&info.records);
-    composite_layers_hdr_with_visibility(&info, bytes, index, &visible, cancel, sdr_white_nits)
-}
-
-/// Same as [`composite_layers_hdr_from_index`], but uses an explicit visibility mask
-/// (for P2.5 Layer Comp / max-bbox reveal paths).
-pub fn composite_layers_hdr_with_visibility_from_index(
-    index: &PsdSectionIndex,
-    bytes: &[u8],
-    visible: &[bool],
-    cancel: Option<&AtomicBool>,
-    sdr_white_nits: f32,
-) -> Result<HdrImageBuffer, DecodeError> {
-    crate::psb_reader::check_decode_cancel(cancel)?;
-    let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
-    composite_layers_hdr_with_visibility(&info, bytes, index, visible, cancel, sdr_white_nits)
-}
-
-/// Same as [`composite_layers_hdr_with_visibility_from_index`], but reuses an
-/// already-parsed [`crate::psb_layer_composite::LayerInfo`].
+///
+/// Callers that drive P2/P2.5 from a shared [`crate::psb_layer_composite::LayerInfo`]
+/// should use this entry (not re-parse layer records per stage).
 pub fn composite_layers_hdr_with_visibility_from_info(
     info: &crate::psb_layer_composite::LayerInfo<'_>,
     bytes: &[u8],

@@ -21,7 +21,8 @@
 //! IR-thumbnail fallback (see `decode_psd_sdr_main_from_bytes_with_cancel`) from
 //! a single `PsdSectionIndex` structural walk, shared by P1/P2/P3, instead of
 //! each stage re-parsing the header/color-mode/image-resources/layer-mask
-//! sections on its own.
+//! sections on its own. Layer-record parsing is likewise done once and shared
+//! by P2/P2.5a/P2.5b.
 //!
 //! A structural index-parse failure skips P1 and P2 (there is no verified
 //! `image_data_pos`/`lm_start`/`lm_end` to use) and falls back to P3 only via
@@ -70,6 +71,31 @@ pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
     decode_psd_sdr_main_inner(bytes, cancel, gpu, true, psd_hidden_layer_strategy)
 }
 
+/// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but reuses an
+/// already-parsed [`PsdSectionIndex`] (e.g. from the raster entry path that
+/// probed ICC / disk-tiled compression) instead of walking the file again.
+pub fn decode_psd_sdr_main_from_index_with_cancel(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<PsdMainDecode, crate::loader::DecodeError> {
+    decode_psd_sdr_main_with_index(index, bytes, cancel, gpu, false, psd_hidden_layer_strategy)
+}
+
+/// Same as [`decode_psd_sdr_main_skip_flattened_with_cancel`], but reuses an
+/// already-parsed [`PsdSectionIndex`].
+pub fn decode_psd_sdr_main_skip_flattened_from_index_with_cancel(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<PsdMainDecode, crate::loader::DecodeError> {
+    decode_psd_sdr_main_with_index(index, bytes, cancel, gpu, true, psd_hidden_layer_strategy)
+}
+
 fn decode_psd_sdr_main_inner(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -94,7 +120,24 @@ fn decode_psd_sdr_main_inner(
         // file through the legacy self-contained paths.
         Err(e) => return Err(e.into()),
     };
+    decode_psd_sdr_main_with_index(
+        &index,
+        bytes,
+        cancel,
+        gpu,
+        skip_flattened,
+        psd_hidden_layer_strategy,
+    )
+}
 
+fn decode_psd_sdr_main_with_index(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    skip_flattened: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<PsdMainDecode, crate::loader::DecodeError> {
     // P1: structurally valid flattened Image Data, then absolute blank barrier.
     if skip_flattened {
         crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_skipped -> degrade_P2");
@@ -102,7 +145,7 @@ fn decode_psd_sdr_main_inner(
             "PSD SDR main: skipping P1 flattened (caller already rejected blank/unreadable flat)"
         );
     } else {
-        match crate::psb_reader::read_composite_from_index(&index, bytes, cancel) {
+        match crate::psb_reader::read_composite_from_index(index, bytes, cancel) {
             Ok(composite) => {
                 let absolutely_blank = crate::psb_reader::rgba8_is_absolutely_blank_with_cancel(
                     &composite.pixels,
@@ -151,68 +194,94 @@ fn decode_psd_sdr_main_inner(
     // P1 -> P2: poll cancel after absolute-blank degrade (or P1 fail) before P2 work.
     crate::psb_reader::check_decode_cancel(cancel)?;
 
-    // P2: strict visibility layer composite, then zero-information barrier.
-    // Only reachable with a structurally valid `index` -- never falls back to
-    // the legacy self-contained `composite_layers_from_bytes_with_cancel`.
-    let mut p2_no_drawable_visible = false;
-    match crate::psb_layer_composite::composite_layers_from_index(&index, bytes, cancel, gpu) {
-        Ok(composite) => {
-            let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
-                &composite.pixels,
-                cancel,
-            )?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
-                     pixels={} -> degrade_P25a",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P2 strict composite {}x{} is zero-information \
-                     (all-transparent or solid RGB); degrading to P2.5a",
-                    composite.width,
-                    composite.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
-                    composite.width,
-                    composite.height,
-                    composite.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P2 strict layer composite {}x{}",
-                    composite.width,
-                    composite.height
-                );
-                return Ok(PsdMainDecode {
-                    composite,
-                    osd: crate::loader::PsdOsdInfo::p2_strict(),
-                });
-            }
-        }
-        Err(e) if e.is_cancelled() => return Err(e),
+    // One layer-record walk shared by P2 / P2.5a / P2.5b. Parse failure skips
+    // all three (same outcome as each stage failing its own parse independently).
+    let parse_t0 = std::time::Instant::now();
+    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
+    {
+        Ok(info) => Some(info),
         Err(e) => {
-            p2_no_drawable_visible = e.is_no_drawable_visible_layers();
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
-            log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
+            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=layer_parse_fail err={e}");
+            log::debug!("PSD SDR main layer parse unavailable: {e}");
+            None
         }
-    }
+    };
+    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
 
-    if let Some(main) = decode_psd_sdr_main_p25a(&index, bytes, cancel, gpu)? {
-        return Ok(main);
-    }
-    match psd_hidden_layer_strategy {
-        crate::settings::PsdHiddenLayerStrategy::Heuristic => {
-            if let Some(main) = decode_psd_sdr_main_p25b_heuristic(&index, bytes, cancel, gpu)? {
-                return Ok(main);
+    // P2: strict visibility layer composite, then zero-information barrier.
+    let mut p2_no_drawable_visible = false;
+    if let Some(ref layer_info) = layer_info {
+        match crate::psb_layer_composite::composite_layers_from_info(
+            layer_info,
+            parse_ms,
+            std::time::Instant::now(),
+            cancel,
+            gpu,
+        ) {
+            Ok(composite) => {
+                let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
+                    &composite.pixels,
+                    cancel,
+                )?;
+                if zero_info {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
+                         pixels={} -> degrade_P25a",
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::debug!(
+                        "PSD SDR main: P2 strict composite {}x{} is zero-information \
+                         (all-transparent or solid RGB); degrading to P2.5a",
+                        composite.width,
+                        composite.height
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdSdrMain] stage=P2_strict_layers {}x{} pixels={}",
+                        composite.width,
+                        composite.height,
+                        composite.pixels.len()
+                    );
+                    log::debug!(
+                        "PSD SDR main: P2 strict layer composite {}x{}",
+                        composite.width,
+                        composite.height
+                    );
+                    return Ok(PsdMainDecode {
+                        composite,
+                        osd: crate::loader::PsdOsdInfo::p2_strict(),
+                    });
+                }
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                p2_no_drawable_visible = e.is_no_drawable_visible_layers();
+                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P2_fail err={e}");
+                log::debug!("PSD SDR main P2 layer composite unavailable: {e}");
             }
         }
-        crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
-            if let Some(main) = decode_psd_sdr_main_p25b_show_all(&index, bytes, cancel, gpu)? {
-                return Ok(main);
+
+        if let Some(main) =
+            decode_psd_sdr_main_p25a(index, bytes, layer_info, parse_ms, cancel, gpu)?
+        {
+            return Ok(main);
+        }
+        match psd_hidden_layer_strategy {
+            crate::settings::PsdHiddenLayerStrategy::Heuristic => {
+                if let Some(main) =
+                    decode_psd_sdr_main_p25b_heuristic(layer_info, parse_ms, cancel, gpu)?
+                {
+                    return Ok(main);
+                }
+            }
+            crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
+                if let Some(main) =
+                    decode_psd_sdr_main_p25b_show_all(layer_info, parse_ms, cancel, gpu)?
+                {
+                    return Ok(main);
+                }
             }
         }
     }
@@ -340,6 +409,8 @@ fn decode_psd_sdr_main_p3_only(
 fn decode_psd_sdr_main_p25a(
     index: &PsdSectionIndex,
     bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    parse_ms: f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
@@ -364,20 +435,9 @@ fn decode_psd_sdr_main_p25a(
         Some(comp.name.clone())
     };
 
-    let parse_t0 = std::time::Instant::now();
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25a_parse_fail err={e}");
-            log::debug!("PSD SDR main P2.5a layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
-    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
     let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
-    match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -423,23 +483,12 @@ fn decode_psd_sdr_main_p25a(
 }
 
 fn decode_psd_sdr_main_p25b_heuristic(
-    index: &PsdSectionIndex,
-    bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    parse_ms: f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
-    let parse_t0 = std::time::Instant::now();
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_parse_fail err={e}");
-            log::debug!("PSD SDR main P2.5b layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
-    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
     let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
         &layer_info.records,
         crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
@@ -471,7 +520,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -513,7 +562,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -561,23 +610,12 @@ fn decode_psd_sdr_main_p25b_heuristic(
 }
 
 fn decode_psd_sdr_main_p25b_show_all(
-    index: &PsdSectionIndex,
-    bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    parse_ms: f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
-    let parse_t0 = std::time::Instant::now();
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_parse_fail err={e}");
-            log::debug!("PSD SDR main P2.5b layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
-    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
     let visible = crate::psb_p25_reveal::visibility_force_open_all(&layer_info.records);
     crate::preload_debug!(
         "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all drawable={}",
@@ -588,7 +626,7 @@ fn decode_psd_sdr_main_p25b_show_all(
         visible.iter().filter(|v| **v).count()
     );
 
-    match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,

@@ -1087,7 +1087,7 @@ pub fn composite_layers_from_bytes_with_cancel(
     let parse_t0 = std::time::Instant::now();
     let info = parse_layer_records(bytes)?;
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
-    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+    composite_layers_from_info(&info, parse_ms, total_t0, cancel, gpu)
 }
 
 /// Same as [`composite_layers_from_bytes_with_cancel`], but reuses an
@@ -1104,18 +1104,22 @@ pub fn composite_layers_from_index(
     let parse_t0 = std::time::Instant::now();
     let info = parse_layer_records_from_index(index, bytes)?;
     let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
-    composite_layers_from_info(info, parse_ms, total_t0, cancel, gpu)
+    composite_layers_from_info(&info, parse_ms, total_t0, cancel, gpu)
 }
 
-fn composite_layers_from_info(
-    info: LayerInfo<'_>,
+/// Strict-visibility composite from an already-parsed [`LayerInfo`].
+///
+/// Used by the SDR main state machine so P2/P2.5a/P2.5b share one layer-record
+/// walk instead of each stage calling [`parse_layer_records_from_index`].
+pub(crate) fn composite_layers_from_info(
+    info: &LayerInfo<'_>,
     parse_ms: f64,
     total_t0: std::time::Instant,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     let visible = compute_effective_visibility(&info.records);
-    composite_layers_with_visibility_from_info(&info, &visible, parse_ms, total_t0, cancel, gpu)
+    composite_layers_with_visibility_from_info(info, &visible, parse_ms, total_t0, cancel, gpu)
 }
 
 /// Same as [`composite_layers_from_info`], but takes an explicit per-record

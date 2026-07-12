@@ -22,10 +22,7 @@
 //! falls back to [`crate::psb_sdr_main`].
 
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
-use crate::psb_hdr_composite::{
-    composite_layers_hdr_from_index, composite_layers_hdr_with_visibility_from_index,
-    composite_layers_hdr_with_visibility_from_info,
-};
+use crate::psb_hdr_composite::composite_layers_hdr_with_visibility_from_info;
 use crate::psb_hdr_flat::{read_composite_hdr_from_index, rgba_f32_is_absolutely_blank};
 use crate::psb_icc_hdr::{psd_content_wants_hdr, psd_env_wants_hdr};
 use crate::psb_reader::extract_icc_profile_from_ir;
@@ -58,6 +55,26 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdHdrMainDecode, crate::loader::DecodeError> {
     let index = PsdSectionIndex::parse(bytes)?;
+    decode_psd_hdr_main_from_index_with_cancel(
+        &index,
+        bytes,
+        cancel,
+        tone,
+        skip_flattened,
+        psd_hidden_layer_strategy,
+    )
+}
+
+/// Same as [`decode_psd_hdr_main_from_bytes_with_cancel`], but reuses an
+/// already-parsed [`PsdSectionIndex`].
+pub fn decode_psd_hdr_main_from_index_with_cancel(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    tone: &HdrToneMapSettings,
+    skip_flattened: bool,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+) -> Result<PsdHdrMainDecode, crate::loader::DecodeError> {
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     if !psd_content_wants_hdr(index.depth, embedded_icc.as_deref()) {
         return Err("PSD HDR main: content gate does not want HDR".into());
@@ -67,7 +84,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
 
     if !skip_flattened {
         crate::psb_reader::check_decode_cancel(cancel)?;
-        match read_composite_hdr_from_index(&index, bytes, cancel, sdr_white) {
+        match read_composite_hdr_from_index(index, bytes, cancel, sdr_white) {
             Ok(hdr) => {
                 if rgba_f32_is_absolutely_blank(&hdr.rgba_f32) {
                     crate::preload_debug!(
@@ -103,52 +120,70 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
     }
 
     crate::psb_reader::check_decode_cancel(cancel)?;
-    let mut p2_no_drawable_visible = false;
-    match composite_layers_hdr_from_index(&index, bytes, cancel, sdr_white) {
-        Ok(hdr) => {
-            if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
-                || rgba_f32_is_zero_information(&hdr.rgba_f32)
-            {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25a",
-                    hdr.width,
-                    hdr.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P2_strict_layers {}x{}",
-                    hdr.width,
-                    hdr.height
-                );
-                return Ok(PsdHdrMainDecode {
-                    hdr,
-                    osd: crate::loader::PsdOsdInfo::p2_strict(),
-                });
-            }
-        }
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            p2_no_drawable_visible = e.is_no_drawable_visible_layers();
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P2_fail err={e}");
-            log::debug!("PSD HDR main P2 layer composite unavailable: {e}");
-        }
-    }
 
-    if let Some(main) = decode_psd_hdr_main_p25a(&index, bytes, cancel, sdr_white)? {
-        return Ok(main);
-    }
-    match psd_hidden_layer_strategy {
-        crate::settings::PsdHiddenLayerStrategy::Heuristic => {
-            if let Some(main) =
-                decode_psd_hdr_main_p25b_heuristic(&index, bytes, cancel, sdr_white)?
-            {
-                return Ok(main);
+    // One layer-record walk shared by P2 / P2.5a / P2.5b.
+    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
+    {
+        Ok(info) => Some(info),
+        Err(e) => {
+            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=layer_parse_fail err={e}");
+            log::debug!("PSD HDR main layer parse unavailable: {e}");
+            None
+        }
+    };
+
+    let mut p2_no_drawable_visible = false;
+    if let Some(ref layer_info) = layer_info {
+        let visible = crate::psb_layer_composite::compute_effective_visibility(&layer_info.records);
+        match composite_layers_hdr_with_visibility_from_info(
+            layer_info, bytes, index, &visible, cancel, sdr_white,
+        ) {
+            Ok(hdr) => {
+                if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
+                    || rgba_f32_is_zero_information(&hdr.rgba_f32)
+                {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25a",
+                        hdr.width,
+                        hdr.height
+                    );
+                } else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][PsdHdrMain] stage=P2_strict_layers {}x{}",
+                        hdr.width,
+                        hdr.height
+                    );
+                    return Ok(PsdHdrMainDecode {
+                        hdr,
+                        osd: crate::loader::PsdOsdInfo::p2_strict(),
+                    });
+                }
+            }
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                p2_no_drawable_visible = e.is_no_drawable_visible_layers();
+                crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P2_fail err={e}");
+                log::debug!("PSD HDR main P2 layer composite unavailable: {e}");
             }
         }
-        crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
-            if let Some(main) = decode_psd_hdr_main_p25b_show_all(&index, bytes, cancel, sdr_white)?
-            {
-                return Ok(main);
+
+        if let Some(main) = decode_psd_hdr_main_p25a(index, bytes, layer_info, cancel, sdr_white)? {
+            return Ok(main);
+        }
+        match psd_hidden_layer_strategy {
+            crate::settings::PsdHiddenLayerStrategy::Heuristic => {
+                if let Some(main) =
+                    decode_psd_hdr_main_p25b_heuristic(index, bytes, layer_info, cancel, sdr_white)?
+                {
+                    return Ok(main);
+                }
+            }
+            crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
+                if let Some(main) =
+                    decode_psd_hdr_main_p25b_show_all(index, bytes, layer_info, cancel, sdr_white)?
+                {
+                    return Ok(main);
+                }
             }
         }
     }
@@ -166,6 +201,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
 fn decode_psd_hdr_main_p25a(
     index: &PsdSectionIndex,
     bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     sdr_white: f32,
 ) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
@@ -188,19 +224,11 @@ fn decode_psd_hdr_main_p25a(
         Some(comp.name.clone())
     };
 
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_parse_fail err={e}");
-            log::debug!("PSD HDR main P2.5a layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
     let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
-    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
-    {
+    match composite_layers_hdr_with_visibility_from_info(
+        layer_info, bytes, index, &visible, cancel, sdr_white,
+    ) {
         Ok(hdr) => {
             if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
                 || rgba_f32_is_zero_information(&hdr.rgba_f32)
@@ -233,19 +261,11 @@ fn decode_psd_hdr_main_p25a(
 fn decode_psd_hdr_main_p25b_heuristic(
     index: &PsdSectionIndex,
     bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     sdr_white: f32,
 ) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_parse_fail err={e}");
-            log::debug!("PSD HDR main P2.5b layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
     let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
         &layer_info.records,
         crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
@@ -277,12 +297,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
             &selection.member_indices,
         );
         match composite_layers_hdr_with_visibility_from_info(
-            &layer_info,
-            bytes,
-            index,
-            &visible,
-            cancel,
-            sdr_white,
+            layer_info, bytes, index, &visible, cancel, sdr_white,
         ) {
             Ok(hdr)
                 if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
@@ -320,12 +335,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
             &selection.member_indices,
         );
         match composite_layers_hdr_with_visibility_from_info(
-            &layer_info,
-            bytes,
-            index,
-            &visible,
-            cancel,
-            sdr_white,
+            layer_info, bytes, index, &visible, cancel, sdr_white,
         ) {
             Ok(hdr) => {
                 if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
@@ -366,19 +376,11 @@ fn decode_psd_hdr_main_p25b_heuristic(
 fn decode_psd_hdr_main_p25b_show_all(
     index: &PsdSectionIndex,
     bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     sdr_white: f32,
 ) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => info,
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_parse_fail err={e}");
-            log::debug!("PSD HDR main P2.5b layer parse unavailable: {e}");
-            return Ok(None);
-        }
-    };
     let visible = crate::psb_p25_reveal::visibility_force_open_all(&layer_info.records);
     crate::preload_debug!(
         "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all drawable={}",
@@ -390,12 +392,7 @@ fn decode_psd_hdr_main_p25b_show_all(
     );
 
     match composite_layers_hdr_with_visibility_from_info(
-        &layer_info,
-        bytes,
-        index,
-        &visible,
-        cancel,
-        sdr_white,
+        layer_info, bytes, index, &visible, cancel, sdr_white,
     ) {
         Ok(hdr)
             if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)

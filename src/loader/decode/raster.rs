@@ -335,8 +335,9 @@ pub(crate) fn load_psd(
     // When the HDR content gate is active, skip the SDR disk-tiled shortcut.
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
     let depth = u16::from_be_bytes([mmap[22], mmap[23]]);
-    let section_index = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..]).ok();
-    let embedded_icc = section_index.as_ref().and_then(|idx| {
+    // Parse once here; HDR/SDR decode reuses this index instead of walking again.
+    let section_index = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..]);
+    let embedded_icc = section_index.as_ref().ok().and_then(|idx| {
         crate::psb_reader::extract_icc_profile_from_ir(&mmap[..], idx.ir_start, idx.ir_end)
     });
     let try_hdr = crate::psb_hdr_main::psd_should_try_hdr(
@@ -352,10 +353,10 @@ pub(crate) fn load_psd(
             width,
             height
         );
-        let disk_tiled_compression = section_index
-            .as_ref()
-            .ok_or_else(|| "PSD/PSB section index unavailable".to_string())
-            .and_then(|index| index.image_data_compression(&mmap[..]));
+        let disk_tiled_compression = match section_index.as_ref() {
+            Ok(index) => index.image_data_compression(&mmap[..]),
+            Err(_) => Err("PSD/PSB section index unavailable".to_string()),
+        };
         match disk_tiled_compression {
             Ok(2 | 3) => {
                 log::debug!(
@@ -422,13 +423,24 @@ pub(crate) fn load_psd(
                 height
             );
         }
-        match crate::psb_hdr_main::decode_psd_hdr_main_from_bytes_with_cancel(
-            &mmap[..],
-            Some(cancel.as_atomic()),
-            &hdr_tone_map,
-            skip_flattened_for_disk_tiled_degrade,
-            psd_hidden_layer_strategy,
-        ) {
+        let hdr_result = match section_index.as_ref() {
+            Ok(index) => crate::psb_hdr_main::decode_psd_hdr_main_from_index_with_cancel(
+                index,
+                &mmap[..],
+                Some(cancel.as_atomic()),
+                &hdr_tone_map,
+                skip_flattened_for_disk_tiled_degrade,
+                psd_hidden_layer_strategy,
+            ),
+            Err(_) => crate::psb_hdr_main::decode_psd_hdr_main_from_bytes_with_cancel(
+                &mmap[..],
+                Some(cancel.as_atomic()),
+                &hdr_tone_map,
+                skip_flattened_for_disk_tiled_degrade,
+                psd_hidden_layer_strategy,
+            ),
+        };
+        match hdr_result {
             Ok(hdr) => {
                 let fallback_pixels = hdr_sdr_fallback_rgba8_or_placeholder(&hdr.hdr)
                     .map_err(|e| format!("PSD HDR SDR fallback failed: {e}"))?;
@@ -455,20 +467,38 @@ pub(crate) fn load_psd(
         }
     }
 
-    let main = if skip_flattened_for_disk_tiled_degrade {
-        crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
+    let main = match (
+        section_index.as_ref(),
+        skip_flattened_for_disk_tiled_degrade,
+    ) {
+        (Ok(index), true) => {
+            crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_from_index_with_cancel(
+                index,
+                &mmap[..],
+                Some(cancel.as_atomic()),
+                gpu.as_ref(),
+                psd_hidden_layer_strategy,
+            )?
+        }
+        (Ok(index), false) => crate::psb_sdr_main::decode_psd_sdr_main_from_index_with_cancel(
+            index,
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
             psd_hidden_layer_strategy,
-        )?
-    } else {
-        crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
+        )?,
+        (Err(_), true) => crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
             psd_hidden_layer_strategy,
-        )?
+        )?,
+        (Err(_), false) => crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel(
+            &mmap[..],
+            Some(cancel.as_atomic()),
+            gpu.as_ref(),
+            psd_hidden_layer_strategy,
+        )?,
     };
     let composite = main.composite;
     let psd_osd = Some(main.osd);
