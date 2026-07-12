@@ -75,6 +75,15 @@ impl PsbTiledSource {
         self.width as usize * self.bytes_per_sample()
     }
 
+    /// Resolve a stored file offset to a `usize` index, rejecting values that
+    /// cannot address this process's address space (truncating `as usize` would
+    /// be unsafe on 32-bit and for absurd u64 values).
+    #[inline]
+    fn row_file_offset(&self, idx: usize) -> Option<usize> {
+        let &o = self.row_offsets.get(idx)?;
+        usize::try_from(o).ok()
+    }
+
     /// Write one decompressed 8-bit row into `buf` (length must be `self.width`).
     fn decode_row_into(&self, buf: &mut Vec<u8>, ch_idx: u32, global_row: u32) {
         let out_len = self.width as usize;
@@ -88,9 +97,13 @@ impl PsbTiledSource {
         let idx = ch_idx as usize * self.height as usize + global_row as usize;
         match self.compression {
             0 => {
-                let offset = match self.row_offsets.get(idx) {
-                    Some(&o) => o as usize,
-                    None => return,
+                // Raw mode must have a populated offset table (ZIP leaves it empty
+                // and is refused at open; still guard against a hollow table).
+                if self.row_offsets.is_empty() {
+                    return;
+                }
+                let Some(offset) = self.row_file_offset(idx) else {
+                    return;
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
                     return;
@@ -100,12 +113,14 @@ impl PsbTiledSource {
                 }
             }
             1 => {
-                let offset = match self.row_offsets.get(idx) {
-                    Some(&o) => o as usize,
-                    None => return,
+                let Some(offset) = self.row_file_offset(idx) else {
+                    return;
                 };
                 let next_offset = if (idx + 1) < self.row_offsets.len() {
-                    self.row_offsets[idx + 1] as usize
+                    match usize::try_from(self.row_offsets[idx + 1]) {
+                        Ok(v) => v,
+                        Err(_) => return,
+                    }
                 } else {
                     self.mmap.len()
                 };
@@ -131,9 +146,8 @@ impl PsbTiledSource {
                 let Some(planar) = self.zip_planar.as_ref() else {
                     return;
                 };
-                let offset = match self.row_offsets.get(idx) {
-                    Some(&o) => o as usize,
-                    None => return,
+                let Some(offset) = self.row_file_offset(idx) else {
+                    return;
                 };
                 let Some(end) = offset.checked_add(raw_len) else {
                     return;

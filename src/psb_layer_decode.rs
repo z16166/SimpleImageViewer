@@ -60,9 +60,14 @@ pub(crate) fn decode_channel_image(
     match compression {
         0 => {
             // Avoid zero-filling the copied prefix: grow from the raw slice.
+            // `read_u16` already requires a 2-byte header; `get` still guards the
+            // payload slice so a shorter buffer cannot panic here.
             let avail = data.len().saturating_sub(2);
             let copy = avail.min(total_raw_bytes);
-            let mut out = data[2..2 + copy].to_vec();
+            let raw = data
+                .get(2..2 + copy)
+                .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
+            let mut out = raw.to_vec();
             out.resize(total_raw_bytes, 0);
             Ok(out)
         }
@@ -1257,6 +1262,16 @@ mod tests {
             err.as_str().contains("exceeds limit"),
             "unexpected err: {err}"
         );
+    }
+
+    #[test]
+    fn decode_channel_image_raw_short_input_no_panic() {
+        // Shorter than the compression header: fail at read_u16, never slice.
+        assert!(decode_channel_image(&[], 1, 1, 8, false, None).is_err());
+        assert!(decode_channel_image(&[0], 1, 1, 8, false, None).is_err());
+        // Header only: empty payload is padded to the declared size.
+        let out = decode_channel_image(&[0, 0], 1, 1, 8, false, None).expect("raw header");
+        assert_eq!(out, vec![0u8]);
     }
 
     #[test]
