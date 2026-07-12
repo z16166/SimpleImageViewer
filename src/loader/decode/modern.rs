@@ -69,6 +69,7 @@ pub(crate) struct AvifSequenceRemainderJob {
     pub path: PathBuf,
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
+    pub cancel: crate::loader::DecodeCancelFlag,
 }
 
 #[allow(dead_code)]
@@ -77,6 +78,7 @@ pub(crate) fn load_avif_with_target_capacity(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
     let mmap = Arc::new(
         crate::mmap_util::map_file(path)
@@ -89,6 +91,7 @@ pub(crate) fn load_avif_with_target_capacity(
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
+        cancel,
     )
 }
 
@@ -98,6 +101,7 @@ pub(crate) fn load_avif_with_target_capacity_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
     load_avif_with_target_capacity_outcome_from_mmap(
         path,
@@ -106,6 +110,7 @@ pub(crate) fn load_avif_with_target_capacity_from_mmap(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         false,
+        cancel,
     )
     .map(|outcome| outcome.image)
 }
@@ -117,6 +122,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<AvifLoadOutcome, String> {
     let mmap = Arc::new(
         crate::mmap_util::map_file(path)
@@ -130,6 +136,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -140,6 +147,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome_from_mmap(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<AvifLoadOutcome, String> {
     load_avif_with_target_capacity_outcome_impl(
         path,
@@ -148,6 +156,7 @@ pub(crate) fn load_avif_with_target_capacity_outcome_from_mmap(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -162,6 +171,9 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
     use crate::loader::{LoaderOutput, PreviewBundle};
 
     REFINEMENT_POOL.spawn(move || {
+        if job.cancel.is_cancelled() {
+            return;
+        }
         #[cfg(target_os = "windows")]
         let _com = crate::wic::ComGuard::new();
 
@@ -171,6 +183,7 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
             job.mmap.as_ref(),
             decode_capacity,
             None,
+            Some(job.cancel.as_atomic()),
         ) {
             Ok(Some(decode)) => decode,
             Ok(None) => return,
@@ -182,6 +195,9 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
                 return;
             }
         };
+        if job.cancel.is_cancelled() {
+            return;
+        }
         let frames: Result<Vec<HdrAnimationFrame>, String> = decode
             .frames
             .into_iter()
@@ -202,8 +218,11 @@ pub(crate) fn spawn_avif_sequence_remainder_decode(
             ImageData::HdrAnimated(frames),
             Some(job.mmap.as_ref()),
         );
+        if job.cancel.is_cancelled() {
+            return;
+        }
         log::info!(
-            "[Loader] AVIF image sequence remainder: {} frames — {}",
+            "[Loader] AVIF image sequence remainder: {} frames -- {}",
             decode.total_frame_count,
             job.path.display()
         );
@@ -271,10 +290,12 @@ fn load_avif_with_target_capacity_outcome_impl(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<AvifLoadOutcome, String> {
     let bytes = mmap.as_ref();
     #[cfg(feature = "avif-native")]
     {
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         let gain_map_probe = crate::hdr::avif::avif_probe_gain_map_strip_kind(bytes);
         let skip_embedded_sdr = crate::hdr::avif::path_is_avif_image_sequence(path)
             || matches!(
@@ -296,12 +317,13 @@ fn load_avif_with_target_capacity_outcome_impl(
             bytes,
             decode_capacity,
             max_frames,
+            Some(cancel.as_atomic()),
         ) {
             Ok(Some(decode)) if decode.total_frame_count > 1 => {
                 let remainder =
                     if bootstrap_animation && decode.frames.len() < decode.total_frame_count {
                         log::info!(
-                            "[Loader] AVIF sequence bootstrap: {} / {} frames — {}",
+                            "[Loader] AVIF sequence bootstrap: {} / {} frames -- {}",
                             decode.frames.len(),
                             decode.total_frame_count,
                             path.display()
@@ -311,6 +333,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                             path: path.to_path_buf(),
                             hdr_target_capacity,
                             hdr_tone_map,
+                            cancel: cancel.clone(),
                         })
                     } else {
                         None
@@ -330,6 +353,7 @@ fn load_avif_with_target_capacity_outcome_impl(
             }
         }
 
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         let try_embedded = !skip_embedded_sdr
             && crate::loader::should_use_embedded_sdr_master_load(
                 prefer_embedded_sdr_master,
@@ -358,7 +382,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                         || lower.contains("file type box")
                     {
                         log::info!(
-                            "[Loader] libavif rejected container/brands — trying libheif for {}",
+                            "[Loader] libavif rejected container/brands -- trying libheif for {}",
                             path.display()
                         );
                         return load_heif_hdr_aware_from_bytes(
@@ -368,6 +392,7 @@ fn load_avif_with_target_capacity_outcome_impl(
                             hdr_tone_map,
                             crate::hdr::heif::HeifHdrDecodeDiag::default(),
                             false,
+                            Some(cancel.as_atomic()),
                         )
                         .map(|image| AvifLoadOutcome {
                             image,
@@ -394,6 +419,7 @@ fn load_avif_with_target_capacity_outcome_impl(
             hdr_tone_map,
             prefer_embedded_sdr_master,
             bootstrap_animation,
+            cancel,
         );
         Err("AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats).".to_string())
     }
@@ -405,6 +431,7 @@ pub(crate) fn load_jxl_with_target_capacity(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
     load_jxl_with_target_capacity_outcome(
         path,
@@ -412,6 +439,7 @@ pub(crate) fn load_jxl_with_target_capacity(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         false,
+        cancel,
     )
     .map(|outcome| outcome.image)
 }
@@ -422,6 +450,7 @@ pub(crate) fn load_jxl_with_target_capacity_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<ImageData, String> {
     load_jxl_with_target_capacity_outcome_from_mmap(
         path,
@@ -430,6 +459,7 @@ pub(crate) fn load_jxl_with_target_capacity_from_mmap(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         false,
+        cancel,
     )
     .map(|outcome| outcome.image)
 }
@@ -440,6 +470,7 @@ pub(crate) struct JxlAnimationRemainderJob {
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
     pub prefer_embedded_sdr_master: bool,
+    pub cancel: crate::loader::DecodeCancelFlag,
 }
 
 pub(crate) struct JxlLoadOutcome {
@@ -454,6 +485,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<JxlLoadOutcome, String> {
     let mmap = Arc::new(
         crate::mmap_util::map_file(path)
@@ -467,6 +499,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome(
         hdr_tone_map,
         prefer_embedded_sdr_master,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -477,6 +510,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<JxlLoadOutcome, String> {
     #[cfg(feature = "jpegxl")]
     {
@@ -486,13 +520,16 @@ pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
         );
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         let output = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity_from_bytes(
-            path,
-            &mmap[..],
-            decode_capacity,
-            hdr_target_capacity,
-            hdr_tone_map,
-            bootstrap_animation,
-            try_embedded_sdr_master,
+            crate::hdr::jpegxl::JxlHdrLoadFromBytesInput {
+                path,
+                bytes: &mmap[..],
+                decode_target_hdr_capacity: decode_capacity,
+                display_hdr_target_capacity: hdr_target_capacity,
+                tone_map: hdr_tone_map,
+                bootstrap_animation,
+                try_embedded_sdr_master,
+                cancel: Some(cancel.as_atomic()),
+            },
         )?;
         let remainder_job = if output.animation_remainder {
             Some(JxlAnimationRemainderJob {
@@ -501,6 +538,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
                 hdr_target_capacity,
                 hdr_tone_map,
                 prefer_embedded_sdr_master,
+                cancel: cancel.clone(),
             })
         } else {
             None
@@ -520,6 +558,7 @@ pub(crate) fn load_jxl_with_target_capacity_outcome_from_mmap(
             hdr_tone_map,
             prefer_embedded_sdr_master,
             bootstrap_animation,
+            cancel,
         );
         Err("JPEG XL support requires the jpegxl feature".to_string())
     }
@@ -535,15 +574,22 @@ pub(crate) fn spawn_jxl_animation_remainder_decode(
     use crate::loader::{LoaderOutput, PreviewBundle};
 
     REFINEMENT_POOL.spawn(move || {
+        if job.cancel.is_cancelled() {
+            return;
+        }
         let Ok(image) = load_jxl_with_target_capacity_from_mmap(
             &job.path,
             &job.mmap,
             job.hdr_target_capacity,
             job.hdr_tone_map,
             job.prefer_embedded_sdr_master,
+            job.cancel.clone(),
         ) else {
             return;
         };
+        if job.cancel.is_cancelled() {
+            return;
+        }
         log::info!(
             "[Loader] JPEG XL animation remainder: {}",
             job.path.display()
@@ -574,6 +620,7 @@ pub(crate) fn load_heif_hdr_aware(
     hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
@@ -586,6 +633,7 @@ pub(crate) fn load_heif_hdr_aware(
             hdr_tone_map,
             diag,
             prefer_embedded_sdr_master,
+            cancel,
         )
     }
 
@@ -597,6 +645,7 @@ pub(crate) fn load_heif_hdr_aware(
             hdr_tone_map,
             diag,
             prefer_embedded_sdr_master,
+            cancel,
         );
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
@@ -612,6 +661,7 @@ pub(crate) fn load_heif_hdr_aware_from_mmap(
     hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ImageData, String> {
     load_heif_hdr_aware_from_bytes(
         path,
@@ -620,6 +670,7 @@ pub(crate) fn load_heif_hdr_aware_from_mmap(
         hdr_tone_map,
         diag,
         prefer_embedded_sdr_master,
+        cancel,
     )
 }
 
@@ -630,9 +681,11 @@ pub(crate) fn load_heif_hdr_aware_from_bytes(
     _hdr_tone_map: HdrToneMapSettings,
     diag: crate::hdr::heif::HeifHdrDecodeDiag<'_>,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
+        crate::loader::check_decode_cancel_str(cancel)?;
         let try_embedded = crate::hdr::heif::heif_should_use_embedded_sdr_primary_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
@@ -643,6 +696,7 @@ pub(crate) fn load_heif_hdr_aware_from_bytes(
             hdr_target_capacity,
             diag,
             try_embedded,
+            cancel,
         ) {
             Ok(image) => Ok(apply_exif_orientation_to_image_data(
                 path,
@@ -668,6 +722,7 @@ pub(crate) fn load_heif_hdr_aware_from_bytes(
             hdr_tone_map,
             diag,
             prefer_embedded_sdr_master,
+            cancel,
         );
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."

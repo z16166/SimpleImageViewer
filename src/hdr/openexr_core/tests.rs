@@ -480,7 +480,7 @@ fn luminance_chroma_exr_decodes_via_imf_rgba_input_when_corpus_present() {
         )
         .expect("1x1 tile");
         let core_tile = ctx
-            .extract_scanline_rgba32f_tile(0, cx, cy, 1, 1)
+            .extract_scanline_rgba32f_tile(0, cx, cy, 1, 1, None)
             .expect("openexr core tile");
         eprintln!(
             "{} center ({cx},{cy}) imf=({:.4},{:.4},{:.4}) core=({:.4},{:.4},{:.4})",

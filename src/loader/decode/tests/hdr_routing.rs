@@ -86,7 +86,8 @@ fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
     std::fs::write(&path, bytes).expect("write test HDR");
     let _threshold_override = TiledThresholdOverride::set(1);
 
-    let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load tiny HDR");
+    let image_data =
+        load_hdr(&path, 1.0, HdrToneMapSettings::default(), None).expect("load tiny HDR");
 
     let ImageData::HdrTiled { hdr, fallback } = image_data else {
         panic!("expected Radiance HDR to route to HDR tiled image data");
@@ -117,7 +118,7 @@ fn load_radiance_hdr_routes_small_images_to_float_image_data() {
     let _threshold_override = TiledThresholdOverride::set(u64::MAX);
 
     let image_data =
-        load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load tiny Radiance HDR");
+        load_hdr(&path, 1.0, HdrToneMapSettings::default(), None).expect("load tiny Radiance HDR");
 
     let ImageData::Hdr { hdr, fallback } = image_data else {
         panic!("expected small Radiance HDR to route to static HDR image data");

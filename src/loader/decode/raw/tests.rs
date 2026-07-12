@@ -150,6 +150,7 @@ fn epson_rd1_erf_hq_load_uses_static_hdr_when_file_present() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         file_bytes: None,
+        cancel: crate::loader::DecodeCancelFlag::new(),
     })
     .expect("load_raw hq");
 
@@ -196,6 +197,7 @@ fn large_hq_raw_load_uses_hdr_tiled_bootstrap_when_file_present() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         file_bytes: None,
+        cancel: crate::loader::DecodeCancelFlag::new(),
     })
     .expect("load large RAW hq");
 
@@ -238,6 +240,7 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         file_bytes: None,
+        cancel: crate::loader::DecodeCancelFlag::new(),
     })
     .expect("load_raw perf");
 
@@ -277,6 +280,7 @@ fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         file_bytes: None,
+        cancel: crate::loader::DecodeCancelFlag::new(),
     })
     .expect("load_raw hq sdr tone map");
 
@@ -363,6 +367,7 @@ fn probe_epson_and_fuji_on_local_samples() {
                 hdr_tone_map: HdrToneMapSettings::default(),
                 raw_open_prefetch: None,
                 file_bytes: None,
+                cancel: crate::loader::DecodeCancelFlag::new(),
             })
             .expect("load_raw");
             match result.image {
@@ -482,6 +487,7 @@ fn canon_s90_hq_load_routes_static_hdr_when_below_tiled_threshold() {
         hdr_tone_map: HdrToneMapSettings::default(),
         raw_open_prefetch: None,
         file_bytes: None,
+        cancel: crate::loader::DecodeCancelFlag::new(),
     })
     .expect("load_raw hq hdr");
 

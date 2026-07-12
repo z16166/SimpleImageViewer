@@ -134,6 +134,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_for_test(
         1,
         false,
         None,
+        None,
     )
 }
 

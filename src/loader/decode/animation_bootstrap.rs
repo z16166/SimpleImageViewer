@@ -41,6 +41,7 @@ pub(crate) struct RasterAnimationRemainderJob {
     pub format: RasterAnimationFormat,
     pub hdr_target_capacity: f32,
     pub hdr_tone_map: HdrToneMapSettings,
+    pub cancel: crate::loader::DecodeCancelFlag,
 }
 
 pub(crate) struct RasterAnimationBootstrapOutcome {
@@ -74,6 +75,7 @@ fn raster_animation_remainder_job(
     format: RasterAnimationFormat,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> RasterAnimationRemainderJob {
     RasterAnimationRemainderJob {
         path: path.to_path_buf(),
@@ -81,6 +83,7 @@ fn raster_animation_remainder_job(
         format,
         hdr_target_capacity,
         hdr_tone_map,
+        cancel,
     }
 }
 
@@ -91,9 +94,11 @@ fn load_raster_animation_bootstrap_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<RasterAnimationBootstrapOutcome, String> {
     use image::AnimationDecoder;
 
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     let reader = Cursor::new(mmap.as_ref().as_ref());
 
     match format {
@@ -101,8 +106,13 @@ fn load_raster_animation_bootstrap_from_mmap(
             use image::codecs::gif::GifDecoder;
             let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image =
-                    load_gif_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image = load_gif_from_mmap(
+                    path,
+                    mmap.as_ref(),
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    Some(cancel.as_atomic()),
+                )?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -144,6 +154,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
+                    cancel.clone(),
                 )),
             })
         }
@@ -151,16 +162,26 @@ fn load_raster_animation_bootstrap_from_mmap(
             use image::codecs::png::PngDecoder;
             let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
             if !decoder.is_apng().map_err(|e| e.to_string())? {
-                let image =
-                    load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image = load_png_from_mmap(
+                    path,
+                    mmap.as_ref(),
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    Some(cancel.as_atomic()),
+                )?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
             if !bootstrap_animation {
-                let image =
-                    load_png_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image = load_png_from_mmap(
+                    path,
+                    mmap.as_ref(),
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    Some(cancel.as_atomic()),
+                )?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -202,6 +223,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
+                    cancel.clone(),
                 )),
             })
         }
@@ -209,8 +231,13 @@ fn load_raster_animation_bootstrap_from_mmap(
             use image::codecs::webp::WebPDecoder;
             let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
             if !bootstrap_animation {
-                let image =
-                    load_webp_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)?;
+                let image = load_webp_from_mmap(
+                    path,
+                    mmap.as_ref(),
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    Some(cancel.as_atomic()),
+                )?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -252,6 +279,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     format,
                     hdr_target_capacity,
                     hdr_tone_map,
+                    cancel.clone(),
                 )),
             })
         }
@@ -264,6 +292,7 @@ pub(crate) fn load_gif_with_bootstrap_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<RasterAnimationBootstrapOutcome, String> {
     load_raster_animation_bootstrap_from_mmap(
         path,
@@ -272,6 +301,7 @@ pub(crate) fn load_gif_with_bootstrap_from_mmap(
         hdr_target_capacity,
         hdr_tone_map,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -281,6 +311,7 @@ pub(crate) fn load_png_with_bootstrap_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<RasterAnimationBootstrapOutcome, String> {
     load_raster_animation_bootstrap_from_mmap(
         path,
@@ -289,6 +320,7 @@ pub(crate) fn load_png_with_bootstrap_from_mmap(
         hdr_target_capacity,
         hdr_tone_map,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -298,6 +330,7 @@ pub(crate) fn load_webp_with_bootstrap_from_mmap(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     bootstrap_animation: bool,
+    cancel: crate::loader::DecodeCancelFlag,
 ) -> Result<RasterAnimationBootstrapOutcome, String> {
     load_raster_animation_bootstrap_from_mmap(
         path,
@@ -306,6 +339,7 @@ pub(crate) fn load_webp_with_bootstrap_from_mmap(
         hdr_target_capacity,
         hdr_tone_map,
         bootstrap_animation,
+        cancel,
     )
 }
 
@@ -319,25 +353,44 @@ pub(crate) fn spawn_raster_animation_remainder_decode(
     use crate::loader::{LoaderOutput, PreviewBundle};
 
     REFINEMENT_POOL.spawn(move || {
+        if job.cancel.is_cancelled() {
+            return;
+        }
         let RasterAnimationRemainderJob {
             path,
             mmap,
             format,
             hdr_target_capacity,
             hdr_tone_map,
+            cancel,
         } = job;
         let image = match format {
-            RasterAnimationFormat::Gif => {
-                load_gif_from_mmap(&path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
-            }
-            RasterAnimationFormat::Apng => {
-                load_png_from_mmap(&path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
-            }
-            RasterAnimationFormat::Webp => {
-                load_webp_from_mmap(&path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
-            }
+            RasterAnimationFormat::Gif => load_gif_from_mmap(
+                &path,
+                mmap.as_ref(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                Some(cancel.as_atomic()),
+            ),
+            RasterAnimationFormat::Apng => load_png_from_mmap(
+                &path,
+                mmap.as_ref(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                Some(cancel.as_atomic()),
+            ),
+            RasterAnimationFormat::Webp => load_webp_from_mmap(
+                &path,
+                mmap.as_ref(),
+                hdr_target_capacity,
+                hdr_tone_map,
+                Some(cancel.as_atomic()),
+            ),
         };
         drop(mmap);
+        if cancel.is_cancelled() {
+            return;
+        }
         let Ok(image) = image else {
             return;
         };

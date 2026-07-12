@@ -33,7 +33,7 @@
 use memmap2::Mmap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 // SIMD architecture-specific imports are handled within submodules
 
@@ -414,11 +414,7 @@ pub fn read_composite_from_index(
 pub(crate) fn check_decode_cancel(
     cancel: Option<&AtomicBool>,
 ) -> Result<(), crate::loader::DecodeError> {
-    if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
-        Err(crate::loader::DecodeError::Cancelled)
-    } else {
-        Ok(())
-    }
+    crate::loader::check_decode_cancel(cancel)
 }
 
 /// Absolute blank barrier for P1 flattened composites (RGBA8).

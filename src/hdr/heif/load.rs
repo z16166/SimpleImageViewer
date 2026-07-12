@@ -166,7 +166,9 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
     hdr_target_capacity: f32,
     diag: HeifHdrDecodeDiag<'_>,
     try_embedded_sdr_master: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<crate::loader::ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let (ctx, primary) = open_heif_primary_from_bytes(bytes)?;
     let (_decode_geo_holder, decode_opts_ptr) = heif_manual_geometry_decode_options(bytes);
     let handle = primary.as_ptr();
@@ -197,6 +199,7 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
         }
     }
 
+    crate::loader::check_decode_cancel_str(cancel)?;
     let _ctx = ctx;
     if crate::loader::should_use_embedded_sdr_master_load(
         try_embedded_sdr_master,
@@ -220,6 +223,7 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
         });
     }
 
+    crate::loader::check_decode_cancel_str(cancel)?;
     let label = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -232,6 +236,7 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
         decode_opts_ptr,
         primary_metadata,
     )?;
+    crate::loader::check_decode_cancel_str(cancel)?;
     let fallback = heif_image_data_fallback(&hdr, recovered_sdr)?;
 
     Ok(crate::loader::ImageData::Hdr {
@@ -283,7 +288,14 @@ pub(crate) fn load_heif_hdr_from_bytes(
     _tone_map: HdrToneMapSettings,
     diag: HeifHdrDecodeDiag<'_>,
 ) -> Result<crate::loader::ImageData, String> {
-    load_heif_with_optional_embedded_sdr_from_bytes(bytes, path, hdr_target_capacity, diag, false)
+    load_heif_with_optional_embedded_sdr_from_bytes(
+        bytes,
+        path,
+        hdr_target_capacity,
+        diag,
+        false,
+        None,
+    )
 }
 
 #[cfg(feature = "heif-native")]

@@ -572,7 +572,14 @@ fn open_image_data_for_directory_tree_thumb(
             hdr_target_capacity,
             hdr_tone_map,
             high_quality,
-            || PrimaryDecodeAttempt::from_result(load_hdr(path, hdr_target_capacity, hdr_tone_map)),
+            || {
+                PrimaryDecodeAttempt::from_result(load_hdr(
+                    path,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    None,
+                ))
+            },
         )
         .result;
     }
@@ -581,9 +588,13 @@ fn open_image_data_for_directory_tree_thumb(
         // Sniff Radiance magic before a full HDR decode; reuse mmap when it matches.
         match crate::mmap_util::map_file(path) {
             Ok((mmap, _)) if crate::hdr::decode::looks_like_radiance_hdr_bytes(mmap.as_ref()) => {
-                if let Ok(img) =
-                    load_hdr_from_mmap(path, Arc::new(mmap), hdr_target_capacity, hdr_tone_map)
-                {
+                if let Ok(img) = load_hdr_from_mmap(
+                    path,
+                    Arc::new(mmap),
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    None,
+                ) {
                     return Ok(img);
                 }
             }
@@ -617,6 +628,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
+                        None,
                     );
                     PrimaryDecodeAttempt::with_mmap(result, Some(mmap))
                 } else {
@@ -625,6 +637,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
+                        None,
                     )
                 }
             },
@@ -658,6 +671,7 @@ fn open_image_data_for_directory_tree_thumb(
                         mmap,
                         hdr_target_capacity,
                         hdr_tone_map,
+                        None,
                     )
                 })
             },
@@ -680,6 +694,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
+                        crate::loader::DecodeCancelFlag::new(),
                     )
                 })
             },
@@ -702,6 +717,7 @@ fn open_image_data_for_directory_tree_thumb(
                         hdr_target_capacity,
                         hdr_tone_map,
                         false,
+                        crate::loader::DecodeCancelFlag::new(),
                     )
                 })
             },
@@ -731,6 +747,7 @@ fn open_image_data_for_directory_tree_thumb(
                             path: Some(path),
                         },
                         false,
+                        None,
                     )
                 })
             },
@@ -741,11 +758,11 @@ fn open_image_data_for_directory_tree_thumb(
     let reg = crate::formats::get_registry().read();
     if reg.extensions.contains(ext.as_ref()) && !is_maybe_animated(ext.as_ref()) {
         #[cfg(target_os = "windows")]
-        if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
+        if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None, None) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
         #[cfg(target_os = "macos")]
-        if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
+        if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None, None) {
             return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
         }
     }
@@ -761,7 +778,7 @@ fn open_image_data_for_directory_tree_thumb(
                 "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
                 "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
                 "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
-                _ => load_static(path, hdr_target_capacity, hdr_tone_map),
+                _ => load_static(path, hdr_target_capacity, hdr_tone_map, None),
             })
         },
     )
@@ -829,7 +846,7 @@ fn platform_still_image_fallback(
     let file_bytes = file_mmap.map(|m| m.as_ref());
     #[cfg(target_os = "windows")]
     {
-        match crate::wic::load_via_wic(path, false, None) {
+        match crate::wic::load_via_wic(path, false, None, None) {
             Ok(img) => {
                 return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }
@@ -844,7 +861,7 @@ fn platform_still_image_fallback(
     }
     #[cfg(target_os = "macos")]
     {
-        match crate::macos_image_io::load_via_image_io(path, false, None) {
+        match crate::macos_image_io::load_via_image_io(path, false, None, None) {
             Ok(img) => {
                 return Ok(apply_exif_orientation_to_image_data(path, img, file_bytes));
             }

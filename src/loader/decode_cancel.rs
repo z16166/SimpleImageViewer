@@ -16,8 +16,9 @@
 
 //! Cooperative cancel flag for long-running decode work.
 //!
-//! Shared across loader orchestration and format decoders (PSD composite today;
-//! other slow paths can poll the same flag later). Not a generation counter.
+//! Shared across loader orchestration and format decoders (PSD/PSB, TIFF,
+//! RAW stage boundaries, JXL event loops, animation remainders, and other
+//! slow paths). Not a generation counter.
 
 use std::fmt;
 use std::sync::Arc;
@@ -106,14 +107,38 @@ impl std::error::Error for DecodeError {}
 
 impl From<String> for DecodeError {
     fn from(msg: String) -> Self {
-        Self::Message(msg)
+        if msg == DECODE_CANCELLED {
+            Self::Cancelled
+        } else {
+            Self::Message(msg)
+        }
     }
 }
 
 impl From<&str> for DecodeError {
     fn from(msg: &str) -> Self {
-        Self::Message(msg.to_string())
+        if msg == DECODE_CANCELLED {
+            Self::Cancelled
+        } else {
+            Self::Message(msg.to_string())
+        }
     }
+}
+
+/// Poll a cooperative cancel flag; returns [`DecodeError::Cancelled`] when set.
+#[inline]
+pub fn check_decode_cancel(cancel: Option<&AtomicBool>) -> Result<(), DecodeError> {
+    if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
+        Err(DecodeError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Convenience for `Result<_, String>` decode paths that cannot return [`DecodeError`] directly.
+#[inline]
+pub fn check_decode_cancel_str(cancel: Option<&AtomicBool>) -> Result<(), String> {
+    check_decode_cancel(cancel).map_err(|e| e.to_string())
 }
 
 impl From<crate::psb_section_index::SectionParseError> for DecodeError {
@@ -161,7 +186,7 @@ impl DecodeCancelFlag {
 mod tests {
     use super::{
         DECODE_CANCELLED, DecodeCancelFlag, DecodeError, PSD_HDR_NOT_WANTED,
-        STRICT_LAYER_COMPOSITE_BLANK,
+        STRICT_LAYER_COMPOSITE_BLANK, check_decode_cancel, check_decode_cancel_str,
     };
 
     #[test]
@@ -181,6 +206,33 @@ mod tests {
         assert_eq!(err.as_str(), DECODE_CANCELLED);
         assert_eq!(err.to_string(), DECODE_CANCELLED);
         assert!(!DecodeError::Message("unsupported compression".into()).is_cancelled());
+    }
+
+    #[test]
+    fn from_string_maps_decode_cancelled() {
+        let err = DecodeError::from(DECODE_CANCELLED.to_string());
+        assert!(err.is_cancelled());
+        assert_eq!(err, DecodeError::Cancelled);
+        let err_ref = DecodeError::from(DECODE_CANCELLED);
+        assert!(err_ref.is_cancelled());
+        assert!(!DecodeError::from("other error".to_string()).is_cancelled());
+    }
+
+    #[test]
+    fn check_decode_cancel_polls_flag() {
+        assert!(check_decode_cancel(None).is_ok());
+        let flag = DecodeCancelFlag::new();
+        assert!(check_decode_cancel(Some(flag.as_atomic())).is_ok());
+        flag.cancel();
+        assert!(
+            check_decode_cancel(Some(flag.as_atomic()))
+                .unwrap_err()
+                .is_cancelled()
+        );
+        assert_eq!(
+            check_decode_cancel_str(Some(flag.as_atomic())).unwrap_err(),
+            DECODE_CANCELLED
+        );
     }
 
     #[test]

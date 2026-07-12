@@ -71,25 +71,32 @@ pub(crate) struct JxlHdrLoadOutput {
 }
 
 #[cfg(feature = "jpegxl")]
+pub(crate) struct JxlHdrLoadFromBytesInput<'a> {
+    pub path: &'a std::path::Path,
+    pub bytes: &'a [u8],
+    pub decode_target_hdr_capacity: f32,
+    pub display_hdr_target_capacity: f32,
+    pub tone_map: HdrToneMapSettings,
+    pub bootstrap_animation: bool,
+    pub try_embedded_sdr_master: bool,
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "jpegxl")]
 pub(crate) fn load_jxl_hdr_with_target_capacity_from_bytes(
-    path: &std::path::Path,
-    bytes: &[u8],
-    decode_target_hdr_capacity: f32,
-    display_hdr_target_capacity: f32,
-    tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-    try_embedded_sdr_master: bool,
+    input: JxlHdrLoadFromBytesInput<'_>,
 ) -> Result<JxlHdrLoadOutput, String> {
     decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
-        bytes,
-        decode_target_hdr_capacity,
-        display_hdr_target_capacity,
-        tone_map,
+        bytes: input.bytes,
+        decode_target_hdr_capacity: input.decode_target_hdr_capacity,
+        display_hdr_target_capacity: input.display_hdr_target_capacity,
+        tone_map: input.tone_map,
         strip_baseline_only: false,
         embedded_sdr_master_load: false,
-        bootstrap_animation,
-        try_embedded_sdr_master,
-        source_path: Some(path),
+        bootstrap_animation: input.bootstrap_animation,
+        try_embedded_sdr_master: input.try_embedded_sdr_master,
+        source_path: Some(input.path),
+        cancel: input.cancel,
     })
     .map(|output| JxlHdrLoadOutput {
         image: output.image,
@@ -716,6 +723,7 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     })
     .map(|output| output.image)
 }
@@ -738,6 +746,7 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     }) {
         Ok(output) => match output.image {
             ImageData::Static(mut decoded) => {
@@ -773,6 +782,7 @@ pub(crate) fn decode_jxl_embedded_sdr_master_bytes(bytes: &[u8]) -> Result<Image
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     })
     .map(|output| output.image)
 }
@@ -864,6 +874,7 @@ struct JxlDecodeImplInput<'a> {
     bootstrap_animation: bool,
     try_embedded_sdr_master: bool,
     source_path: Option<&'a std::path::Path>,
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "jpegxl")]
@@ -880,6 +891,7 @@ fn decode_jxl_bytes_to_image_data_impl(
         bootstrap_animation,
         try_embedded_sdr_master,
         source_path,
+        cancel,
     } = input;
     let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
@@ -992,6 +1004,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
     let mut cmyk_source_icc: Vec<u8> = Vec::new();
 
     loop {
+        crate::loader::check_decode_cancel_str(cancel)?;
         match unsafe { libjxl_sys::JxlDecoderProcessInput(decoder.0) } {
             libjxl_sys::JXL_DEC_SUCCESS => {
                 // libjxl: keep calling ProcessInput after each FULL_IMAGE until SUCCESS

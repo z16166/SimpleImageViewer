@@ -227,6 +227,7 @@ fn heic0601a_then_heic0604a_preview_smoke() {
             mmap,
             1.0,
             crate::hdr::types::HdrToneMapSettings::default(),
+            None,
         )
         .expect("load");
         let ImageData::Tiled(source) = image else {
@@ -273,6 +274,7 @@ fn top100_strip_preview_parallel_smoke() {
             mmap,
             1.0,
             crate::hdr::types::HdrToneMapSettings::default(),
+            None,
         )
         .expect("load");
         let ImageData::Tiled(source) = image else {

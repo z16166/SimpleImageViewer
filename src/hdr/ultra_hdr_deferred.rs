@@ -17,6 +17,7 @@
 //! Ultra HDR JPEG decode without eager CPU gain-map composition.
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use crate::hdr::gain_map::gain_map_metadata_diagnostic;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
@@ -37,8 +38,11 @@ struct UltraHdrPrimaryRgba {
 fn decode_ultra_hdr_primary_rgba(
     bytes: &[u8],
     orientation: u16,
+    cancel: Option<&AtomicBool>,
 ) -> Result<UltraHdrPrimaryRgba, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let (mut width, mut height, mut sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
+    crate::loader::check_decode_cancel_str(cancel)?;
     if orientation > 1 {
         let oriented =
             crate::libtiff_loader::apply_orientation_buffer(sdr_rgba, width, height, orientation);
@@ -57,12 +61,14 @@ fn finish_ultra_hdr_from_primary_rgba(
     bytes: &[u8],
     primary: UltraHdrPrimaryRgba,
     target_hdr_capacity: f32,
+    cancel: Option<&AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
     let UltraHdrPrimaryRgba {
         width,
         height,
         sdr_rgba,
     } = primary;
+    crate::loader::check_decode_cancel_str(cancel)?;
     let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
     log::debug!(
@@ -75,23 +81,32 @@ fn finish_ultra_hdr_from_primary_rgba(
             "[HDR] Ultra HDR JPEG_R HDR base (backward/precomposed); skipping forward compose: {}",
             gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
         );
+        crate::loader::check_decode_cancel_str(cancel)?;
         return attach_iso_gain_map_hdr_base_from_primary_rgba8(
             "JPEG_R", width, height, sdr_rgba, metadata,
         );
     }
 
+    // Stage boundary before gain-map JPEG decode.
+    crate::loader::check_decode_cancel_str(cancel)?;
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
+    // Stage boundary before compose / GPU-deferred attach (tone-map happens later on GPU).
+    crate::loader::check_decode_cancel_str(cancel)?;
 
-    attach_jpeg_gain_map_gpu_deferred(crate::hdr::jpeg_gain_map_gpu::JpegGainMapDeferredInput {
-        width,
-        height,
-        sdr_rgba,
-        gain_width,
-        gain_height,
-        gain_rgba,
-        metadata,
-        hdr_target_capacity: target_hdr_capacity,
-    })
+    let out = attach_jpeg_gain_map_gpu_deferred(
+        crate::hdr::jpeg_gain_map_gpu::JpegGainMapDeferredInput {
+            width,
+            height,
+            sdr_rgba,
+            gain_width,
+            gain_height,
+            gain_rgba,
+            metadata,
+            hdr_target_capacity: target_hdr_capacity,
+        },
+    )?;
+    crate::loader::check_decode_cancel_str(cancel)?;
+    Ok(out)
 }
 
 /// One primary baseline decode; optionally try embedded-SDR attach before gain-map decode.
@@ -101,14 +116,17 @@ pub(crate) fn decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
     orientation: u16,
     try_embedded_sdr_master: bool,
     path: Option<&Path>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
     if !info.is_ultra_hdr {
         return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
     }
 
-    let primary = decode_ultra_hdr_primary_rgba(bytes, orientation)?;
+    let primary = decode_ultra_hdr_primary_rgba(bytes, orientation, cancel)?;
     if try_embedded_sdr_master {
+        crate::loader::check_decode_cancel_str(cancel)?;
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
         let metadata = gain_map_metadata(&gain_map_jpeg)?;
         if iso_gain_map_skips_forward_compose(metadata) {
@@ -148,7 +166,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
         }
     }
 
-    finish_ultra_hdr_from_primary_rgba(bytes, primary, target_hdr_capacity)
+    finish_ultra_hdr_from_primary_rgba(bytes, primary, target_hdr_capacity, cancel)
 }
 
 /// Ultra HDR JPEG loaded as embedded SDR master only (primary baseline, no gain-map decode).
@@ -157,5 +175,12 @@ pub(crate) fn load_ultra_hdr_embedded_sdr_master_bytes(
     bytes: &[u8],
     orientation: u16,
 ) -> Result<HdrImageBuffer, String> {
-    decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(bytes, 1.0, orientation, true, None)
+    decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
+        bytes,
+        1.0,
+        orientation,
+        true,
+        None,
+        None,
+    )
 }

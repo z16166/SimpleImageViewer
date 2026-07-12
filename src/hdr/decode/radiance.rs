@@ -23,14 +23,15 @@ use crate::hdr::types::HdrImageBuffer;
 
 pub(crate) fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let (mmap, _) = crate::mmap_util::map_file(path)?;
-    decode_radiance_hdr_image_from_mmap(&mmap, Some(path))
+    decode_radiance_hdr_image_from_mmap(&mmap, Some(path), None)
 }
 
 pub(crate) fn decode_radiance_hdr_image_from_mmap(
     mmap: &memmap2::Mmap,
     path: Option<&Path>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
-    let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(mmap, None)?;
+    let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(mmap, None, cancel)?;
     if let Some(path) = path {
         log::debug!(
             "[HDR] {}: Radiance decode {}x{} (resolution-line orientation unfolded)",

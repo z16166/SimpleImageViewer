@@ -2039,16 +2039,18 @@ fn conformance_cmyk_layers_bootstrap_path_applies_cms_when_sample_present() {
     }
     let bytes = std::fs::read(jxl_path).expect("read cmyk_layers/input.jxl");
     let tone = HdrToneMapSettings::default();
-    let out = super::load_jxl_hdr_with_target_capacity_from_bytes(
-        jxl_path,
-        &bytes,
-        tone.target_hdr_capacity(),
-        tone.target_hdr_capacity(),
-        tone,
-        true, // matches app primary `.jxl` load
-        false,
-    )
-    .expect("bootstrap decode cmyk_layers");
+    let out =
+        super::load_jxl_hdr_with_target_capacity_from_bytes(super::JxlHdrLoadFromBytesInput {
+            path: jxl_path,
+            bytes: &bytes,
+            decode_target_hdr_capacity: tone.target_hdr_capacity(),
+            display_hdr_target_capacity: tone.target_hdr_capacity(),
+            tone_map: tone,
+            bootstrap_animation: true, // matches app primary `.jxl` load
+            try_embedded_sdr_master: false,
+            cancel: None,
+        })
+        .expect("bootstrap decode cmyk_layers");
     assert!(
         !out.animation_remainder,
         "cmyk_layers is a still image; bootstrap must not schedule remainder"

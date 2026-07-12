@@ -14,10 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::{
-    CameraTiffHdrUpgrade, LogLuvDecodeParams, decode_ieee_scene_linear_rgba32f,
-    decode_logl_logluv_scene_linear_rgba32f, decode_uint16_rgb_scene_linear_rgba32f,
-    tiff_ieee_scene_linear_eligible, tiff_logl_logluv_hdr_eligible,
-    tiff_uint16_rgb_scene_linear_eligible, try_camera_tiff_rgb8_hdr_upgrade,
+    CameraTiffHdrUpgrade, IeeeSceneLinearDecodeArgs, LogLuvDecodeParams,
+    decode_ieee_scene_linear_rgba32f, decode_logl_logluv_scene_linear_rgba32f,
+    decode_uint16_rgb_scene_linear_rgba32f, tiff_ieee_scene_linear_eligible,
+    tiff_logl_logluv_hdr_eligible, tiff_uint16_rgb_scene_linear_eligible,
+    try_camera_tiff_rgb8_hdr_upgrade,
 };
 use super::scanline::{LibTiffScanlineSource, manual_decode_scanline};
 use super::tiled::LibTiffTiledSource;
@@ -94,7 +95,7 @@ pub fn load_via_libtiff(
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
-    load_via_libtiff_from_mmap(path, mmap, hdr_target_capacity, tone_map)
+    load_via_libtiff_from_mmap(path, mmap, hdr_target_capacity, tone_map, None)
 }
 
 pub(crate) fn load_via_libtiff_from_mmap(
@@ -102,7 +103,9 @@ pub(crate) fn load_via_libtiff_from_mmap(
     mmap: Arc<memmap2::Mmap>,
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let mut ctx = Box::new(TiffMmapContext::new(mmap.clone()));
 
     unsafe {
@@ -173,15 +176,16 @@ pub(crate) fn load_via_libtiff_from_mmap(
             && pixel_count_pre <= MAX_STATIC_HDR_DECODE_PIXELS
         {
             let spp_use = if spp == 0 { 1 } else { spp };
-            match decode_ieee_scene_linear_rgba32f(
-                handle.as_ptr(),
+            match decode_ieee_scene_linear_rgba32f(IeeeSceneLinearDecodeArgs {
+                tif: handle.as_ptr(),
                 width,
                 height,
                 bps,
-                spp_use,
+                spp: spp_use,
                 photo,
-                planar_config,
-            ) {
+                config: planar_config,
+                cancel,
+            }) {
                 Ok(mut rgba_f32) => {
                     let mut w = width;
                     let mut h = height;
@@ -233,7 +237,13 @@ pub(crate) fn load_via_libtiff_from_mmap(
             && !crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
         {
             let spp_use = if spp == 0 { 3 } else { spp };
-            match decode_uint16_rgb_scene_linear_rgba32f(handle.as_ptr(), width, height, spp_use) {
+            match decode_uint16_rgb_scene_linear_rgba32f(
+                handle.as_ptr(),
+                width,
+                height,
+                spp_use,
+                cancel,
+            ) {
                 Ok(mut rgba_f32) => {
                     let mut w = width;
                     let mut h = height;
@@ -279,16 +289,19 @@ pub(crate) fn load_via_libtiff_from_mmap(
         if tiff_logl_logluv_hdr_eligible(photo, planar_config)
             && pixel_count_pre <= MAX_STATIC_HDR_DECODE_PIXELS
         {
-            match decode_logl_logluv_scene_linear_rgba32f(LogLuvDecodeParams {
-                tif: handle.as_ptr(),
-                width,
-                height,
-                photo,
-                compression,
-                bps,
-                spp,
-                sample_format,
-            }) {
+            match decode_logl_logluv_scene_linear_rgba32f(
+                LogLuvDecodeParams {
+                    tif: handle.as_ptr(),
+                    width,
+                    height,
+                    photo,
+                    compression,
+                    bps,
+                    spp,
+                    sample_format,
+                },
+                cancel,
+            ) {
                 Ok(mut rgba_f32) => {
                     let mut w = width;
                     let mut h = height;
@@ -444,6 +457,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
 
         // Try RGBA interface first ONLY if not forced static
         if !force_static {
+            crate::loader::check_decode_cancel_str(cancel)?;
             pixels = vec![0u8; rgba_byte_len];
             // SAFETY: libtiff RGBA raster is native-endian u32 pixels; layout matches `Vec<u8>`.
             if lib::TIFFReadRGBAImageOriented(
@@ -455,6 +469,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 0,
             ) != 0
             {
+                crate::loader::check_decode_cancel_str(cancel)?;
                 success = true;
             } else {
                 pixels.clear();
@@ -463,7 +478,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
 
         if !success {
             // Fallback to manual scanline decode
-            pixels = manual_decode_scanline(handle.as_ptr(), width, height)?;
+            pixels = manual_decode_scanline(handle.as_ptr(), width, height, cancel)?;
         }
 
         if orientation > 1 {

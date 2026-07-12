@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 
@@ -1118,9 +1119,11 @@ pub fn load_via_image_io(
     path: &Path,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
-    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override, cancel)
 }
 
 /// Decode from an already-mapped file buffer (avoids reopening the file on recovery paths).
@@ -1129,8 +1132,9 @@ pub fn load_via_image_io_from_mmap(
     mmap: Arc<memmap2::Mmap>,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
-    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override)
+    load_via_image_io_with_mmap(path, mmap, high_quality, orientation_override, cancel)
 }
 
 fn load_via_image_io_with_mmap(
@@ -1138,7 +1142,9 @@ fn load_via_image_io_with_mmap(
     mmap: Arc<memmap2::Mmap>,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -1220,6 +1226,8 @@ fn load_via_image_io_with_mmap(
 
         let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         if (logical_width as u64 * logical_height as u64) < tiled_threshold {
+            // Stage boundary before OS ImageIO decode.
+            crate::loader::check_decode_cancel_str(cancel)?;
             let options_decode = CFDictionary::from_CFType_pairs(&[(
                 CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
                 CFBoolean::false_value().as_CFType(),
@@ -1238,9 +1246,11 @@ fn load_via_image_io_with_mmap(
                 logical_width,
                 logical_height,
             );
+            crate::loader::check_decode_cancel_str(cancel)?;
             return Ok(ImageData::Static(decoded));
         }
 
+        crate::loader::check_decode_cancel_str(cancel)?;
         // --- Tiled Path Selection ---
         // Optimization: For giant STRIPPED TIFFs, use our custom caching loader to avoid CoreGraphics re-decoding overhead.
         let is_tiff = ext == "tif" || ext == "tiff";
