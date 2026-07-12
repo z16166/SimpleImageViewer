@@ -210,16 +210,17 @@ pub fn read_composite_hdr_from_index(
                         )?;
                     }
                     1 => {
-                        for row in 0..height as usize {
-                            if row & 0x3F == 0 {
-                                check_decode_cancel(cancel)?;
-                            }
-                            let idx = ch_idx as usize * height as usize + row;
-                            let len = *row_counts
-                                .get(idx)
-                                .ok_or_else(|| format!("Row count {idx} out of range"))?;
-                            seek_forward_within(&mut r, len as u64, file_size, "HDR RLE row skip")?;
-                        }
+                        // Sum precomputed row counts and skip the whole unused
+                        // channel in one seek (avoids height sequential seeks).
+                        crate::psb_reader::seek_rle_channel_skip(
+                            &mut r,
+                            &row_counts,
+                            ch_idx as usize,
+                            height as usize,
+                            file_size,
+                            "HDR RLE unused channel",
+                            cancel,
+                        )?;
                     }
                     _ => {}
                 }

@@ -265,16 +265,17 @@ pub fn read_composite_from_index(
                         )?;
                     }
                     1 => {
-                        for row in 0..height as usize {
-                            if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
-                                check_decode_cancel(cancel)?;
-                            }
-                            let idx = ch_idx as usize * height as usize + row;
-                            let len = *row_counts
-                                .get(idx)
-                                .ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                            seek_forward_within(&mut r, len as u64, file_size, "RLE row data")?;
-                        }
+                        // Sum precomputed row counts and skip the whole unused
+                        // channel in one seek (avoids height sequential seeks).
+                        seek_rle_channel_skip(
+                            &mut r,
+                            &row_counts,
+                            ch_idx as usize,
+                            height as usize,
+                            file_size,
+                            "RLE unused channel",
+                            cancel,
+                        )?;
                     }
                     _ => {}
                 }
@@ -1266,6 +1267,40 @@ pub(crate) fn seek_forward_within(
     seek_forward(r, len)
 }
 
+/// Skip one unused RLE channel by summing its precomputed row counts and
+/// performing a single bounded seek (instead of `height` per-row seeks).
+pub(crate) fn seek_rle_channel_skip(
+    r: &mut impl Seek,
+    row_counts: &[usize],
+    channel_idx: usize,
+    height: usize,
+    file_size: u64,
+    label: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), crate::loader::DecodeError> {
+    let start = channel_idx
+        .checked_mul(height)
+        .ok_or_else(|| format!("PSD/PSB {label}: channel row index overflow"))?;
+    let end = start
+        .checked_add(height)
+        .ok_or_else(|| format!("PSD/PSB {label}: channel row range overflow"))?;
+    let counts = row_counts
+        .get(start..end)
+        .ok_or_else(|| format!("PSD/PSB {label}: row counts out of range ({start}..{end})"))?;
+
+    let mut total = 0u64;
+    for (i, &len) in counts.iter().enumerate() {
+        if i & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
+            check_decode_cancel(cancel)?;
+        }
+        total = total
+            .checked_add(len as u64)
+            .ok_or_else(|| format!("PSD/PSB {label}: compressed length overflow"))?;
+    }
+    seek_forward_within(r, total, file_size, label)?;
+    Ok(())
+}
+
 pub(crate) fn checked_section_end(
     start: u64,
     len: u64,
@@ -1385,8 +1420,10 @@ mod tests {
     use super::{
         PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, cmyk_to_rgb,
         downconvert_samples_to_u8, max_rle_compressed_row_bytes,
-        read_composite_from_bytes_with_cancel, unpack_bits_into, validate_rle_row_counts,
+        read_composite_from_bytes_with_cancel, seek_rle_channel_skip, unpack_bits_into,
+        validate_rle_row_counts,
     };
+    use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -1416,6 +1453,17 @@ mod tests {
         let max_row = max_rle_compressed_row_bytes(row_raw).unwrap();
         let err = validate_rle_row_counts(&[max_row + 1], 1_000_000, max_row).unwrap_err();
         assert!(err.contains("exceeds limit"), "{err}");
+    }
+
+    #[test]
+    fn seek_rle_channel_skip_jumps_whole_channel_in_one_seek() {
+        // Two channels x 3 rows: skip channel 1 (counts 10+20+30 = 60).
+        let counts = [1usize, 2, 3, 10, 20, 30];
+        let mut buf = [0u8; 100];
+        let mut cur = Cursor::new(&mut buf[..]);
+        cur.set_position(1 + 2 + 3); // after channel 0
+        seek_rle_channel_skip(&mut cur, &counts, 1, 3, 100, "test skip", None).unwrap();
+        assert_eq!(cur.position(), 1 + 2 + 3 + 60);
     }
 
     #[test]

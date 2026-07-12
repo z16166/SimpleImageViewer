@@ -462,6 +462,8 @@ pub(crate) fn load_psd(
             }
             Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
+                // HDR was selected by content+env gates; keep falling back to the
+                // SDR P1/P2/P3 state machine so the user still gets a viewable image.
                 log::debug!("PSD/PSB HDR path failed ({e}); falling back to SDR P1/P2/P3");
             }
         }

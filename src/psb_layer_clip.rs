@@ -401,7 +401,7 @@ pub(crate) fn blend_layers_with_clipping(
 
 #[cfg(test)]
 mod tests {
-    use super::{ClipBlendState, ClipLayerRef, blend_layers_with_clipping};
+    use super::{ClipBlendState, ClipLayerRef, apply_base_alpha_mask, blend_layers_with_clipping};
 
     fn solid_rgba(w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
         let mut v = Vec::with_capacity((w * h * 4) as usize);
@@ -414,6 +414,29 @@ mod tests {
     fn px(canvas: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
         let o = ((y * w + x) * 4) as usize;
         [canvas[o], canvas[o + 1], canvas[o + 2], canvas[o + 3]]
+    }
+
+    /// Boundary alphas (incl. .5 after /255 round-trip) must keep RGB and match
+    /// the GPU shader's `floor(a*255+0.5)` quantization path.
+    #[test]
+    fn apply_base_alpha_mask_preserves_rgb_at_half_boundaries() {
+        // a=128, mask=128 -> (128*128)/255 = 64; RGB unchanged.
+        let mut group = [10u8, 20, 30, 128, 40, 50, 60, 255, 70, 80, 90, 1];
+        let mask = [128u8, 128, 1];
+        apply_base_alpha_mask(&mut group, &mask);
+        assert_eq!(&group[0..4], &[10, 20, 30, 64]);
+        assert_eq!(&group[4..8], &[40, 50, 60, 128]);
+        // a=1 * mask=1 / 255 = 0 -> RGB cleared.
+        assert_eq!(&group[8..12], &[0, 0, 0, 0]);
+
+        // f32 round-trip of every u8 matches CPU (v*255).round() and WGSL floor+0.5.
+        for v in 0u16..=255 {
+            let f = v as f32 / 255.0;
+            let cpu = (f.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let gpu_like = (f * 255.0 + 0.5).floor() as u8;
+            assert_eq!(cpu, v as u8, "cpu round trip for {v}");
+            assert_eq!(gpu_like, v as u8, "gpu-like round trip for {v}");
+        }
     }
 
     #[test]

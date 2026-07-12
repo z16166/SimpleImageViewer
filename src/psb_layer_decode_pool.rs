@@ -26,20 +26,25 @@ use std::sync::LazyLock;
 /// thread-per-core spike while a large PSB is open.
 const PSD_LAYER_DECODE_POOL_MIN_THREADS: usize = 2;
 /// Hard cap on concurrent layer-decode workers (and thus peak decode RSS).
-const PSD_LAYER_DECODE_POOL_MAX_THREADS: usize = 4;
+/// Scales with machine size via `available_parallelism()/4`, but never above
+/// this ceiling so multi-file preload cannot stampede memory.
+const PSD_LAYER_DECODE_POOL_MAX_THREADS: usize = 8;
 
 /// Use this pool when the layer stack has at least this many records.
 pub(crate) const PARALLEL_LAYER_DECODE_MIN: usize = 2;
 
+/// Choose layer-decode pool size from reported logical CPU count.
+pub(crate) fn psd_layer_decode_pool_threads(available: usize) -> usize {
+    available.div_ceil(4).clamp(
+        PSD_LAYER_DECODE_POOL_MIN_THREADS,
+        PSD_LAYER_DECODE_POOL_MAX_THREADS,
+    )
+}
+
 /// Bounded pool for `decode_one_layer` parallelism during composite.
 pub(crate) static PSD_LAYER_DECODE_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     let n = std::thread::available_parallelism()
-        .map(|cores| {
-            cores.get().div_ceil(4).clamp(
-                PSD_LAYER_DECODE_POOL_MIN_THREADS,
-                PSD_LAYER_DECODE_POOL_MAX_THREADS,
-            )
-        })
+        .map(|cores| psd_layer_decode_pool_threads(cores.get()))
         .unwrap_or(PSD_LAYER_DECODE_POOL_MIN_THREADS);
     match rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -69,3 +74,26 @@ pub(crate) static PSD_LAYER_DECODE_POOL: LazyLock<rayon::ThreadPool> = LazyLock:
         }
     }
 });
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PSD_LAYER_DECODE_POOL_MAX_THREADS, PSD_LAYER_DECODE_POOL_MIN_THREADS,
+        psd_layer_decode_pool_threads,
+    };
+
+    #[test]
+    fn layer_decode_pool_threads_scales_with_cores_and_caps() {
+        assert_eq!(
+            psd_layer_decode_pool_threads(1),
+            PSD_LAYER_DECODE_POOL_MIN_THREADS
+        );
+        assert_eq!(psd_layer_decode_pool_threads(8), 2);
+        assert_eq!(psd_layer_decode_pool_threads(16), 4);
+        assert_eq!(
+            psd_layer_decode_pool_threads(64),
+            PSD_LAYER_DECODE_POOL_MAX_THREADS
+        );
+        assert_eq!(PSD_LAYER_DECODE_POOL_MAX_THREADS, 8);
+    }
+}

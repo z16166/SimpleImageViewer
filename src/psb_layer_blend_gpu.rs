@@ -138,6 +138,7 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let dst_coord = vec2<i32>(dx, dy);
+    // Opaque source replaces destination (out_a = 1 when sa = 1).
     if (sa >= 1.0) {
         textureStore(target, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;
@@ -146,6 +147,10 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
+    if (out_a <= 0.0) {
+        textureStore(target, dst_coord, vec4<f32>(0.0));
+        return;
+    }
     let blended = src.rgb;
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
@@ -175,6 +180,10 @@ fn cs_blend_screen(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
+    if (out_a <= 0.0) {
+        textureStore(target, dst_coord, vec4<f32>(0.0));
+        return;
+    }
     let blended = dst.rgb + src.rgb - dst.rgb * src.rgb;
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
@@ -204,6 +213,10 @@ fn cs_blend_linear_dodge(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
+    if (out_a <= 0.0) {
+        textureStore(target, dst_coord, vec4<f32>(0.0));
+        return;
+    }
     let blended = min(dst.rgb + src.rgb, vec3<f32>(1.0));
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
@@ -233,6 +246,10 @@ fn cs_blend_multiply(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
+    if (out_a <= 0.0) {
+        textureStore(target, dst_coord, vec4<f32>(0.0));
+        return;
+    }
     let blended = dst.rgb * src.rgb;
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
@@ -1496,6 +1513,7 @@ mod tests {
 
     #[test]
     fn separable_shader_guards_div_by_tiny_out_a() {
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("if (out_a <= 0.0)"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("co / max(out_a, 1e-20)"));
     }
 
