@@ -95,6 +95,7 @@ impl ImageViewerApp {
         self.raw_demosaic_baked_notify.lock().clear();
         // Clears all per-index RAW OSD rows (directory switch / full list reorder).
         self.raw_metadata.clear();
+        self.psd_osd.clear();
         self.cpu_raw_refinement_pending_indices.clear();
         self.hq_tiled_preview_pending_indices.clear();
         self.deferred_sdr_uploads.clear();

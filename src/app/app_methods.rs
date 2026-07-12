@@ -118,6 +118,7 @@ impl ImageViewerApp {
         self.current_index = current_index;
         self.image_status.set_current_index(current_index);
         self.raw_metadata.set_current_index(current_index);
+        self.psd_osd.set_current_index(current_index);
     }
 
     pub(crate) fn set_current_image_resolution(&mut self, resolution: Option<(u32, u32)>) {

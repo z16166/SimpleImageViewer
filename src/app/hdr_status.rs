@@ -268,6 +268,7 @@ impl ImageViewerApp {
     pub(crate) fn update_view_status_for_paint(&mut self, image: &ImageOsdFrame) {
         let file_name = self.current_file_name.as_str();
         self.raw_metadata.set_current_index(self.current_index);
+        self.psd_osd.set_current_index(self.current_index);
         let effective_selection = self
             .frame_effective_hdr_monitor_selection
             .clone()

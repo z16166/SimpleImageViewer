@@ -313,13 +313,13 @@ impl ImageViewerApp {
 
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
-        self.image_status.set_psd_osd_line(None);
 
         let current = self.current_index;
         for idx in psd_indices {
             self.texture_cache.remove(idx);
             self.clear_installed_display_mode(idx);
             self.remove_hdr_image_resources(idx);
+            self.psd_osd.remove(idx);
             self.prefetched_tiles.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
             self.animation_cache.remove(&idx);

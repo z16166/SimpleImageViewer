@@ -649,6 +649,8 @@ pub struct ImageViewerApp {
     pub(crate) canvas_display_timing: crate::preload_debug::CanvasDisplayTiming,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
+    /// Per-index PSD/PSB decode-stage OSD (restored on cache-hit navigation).
+    pub(crate) psd_osd: crate::app::view_status::PsdOsdStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,
     /// File name shown in the image OSD for [`Self::current_index`].
     pub(crate) current_file_name: String,

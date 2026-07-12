@@ -2543,6 +2543,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         current_image_res: None,
         canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
+        psd_osd: crate::app::view_status::PsdOsdStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
         current_file_name: String::new(),
         cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
@@ -2757,6 +2758,62 @@ fn relocate_index_keyed_cache_moves_raw_osd_info() {
 
     assert!(!app.raw_metadata.contains_key(2));
     assert!(app.raw_metadata.contains_key(0));
+}
+
+#[test]
+fn relocate_index_keyed_cache_moves_psd_osd_info() {
+    let mut app = make_test_app();
+    app.psd_osd
+        .set_for_index(2, Some(crate::loader::PsdOsdInfo::p2_strict()));
+
+    app.relocate_index_keyed_cache(2, 0, true);
+
+    assert!(!app.psd_osd.contains_key(2));
+    assert!(app.psd_osd.contains_key(0));
+}
+
+#[test]
+fn psd_osd_survives_cache_hit_navigation_away_and_back() {
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("a.psd"),
+        PathBuf::from("b.jpg"),
+        PathBuf::from("c.psd"),
+    ];
+    app.current_index = 0;
+    app.psd_osd.set_current_index(0);
+    app.psd_osd
+        .set_for_index(0, Some(crate::loader::PsdOsdInfo::p1_flattened()));
+    app.psd_osd
+        .set_for_index(2, Some(crate::loader::PsdOsdInfo::p2_strict()));
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "current PSD must show OSD after install"
+    );
+
+    // Simulate navigating to a non-PSD cache hit: only index sync, no reinstall.
+    app.set_current_index(1);
+    app.osd.sync_events();
+    assert!(
+        !app.osd.has_psd_line(),
+        "non-PSD current image must clear PSD OSD line"
+    );
+
+    // Navigate back to the already-decoded PSD without reinstalling.
+    app.set_current_index(0);
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "cache-hit return to PSD must restore OSD line"
+    );
+
+    app.set_current_index(2);
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "navigating to another prefetched PSD must show its OSD"
+    );
 }
 
 #[test]

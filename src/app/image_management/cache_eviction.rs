@@ -59,6 +59,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
+        self.psd_osd.clear();
         self.prev_texture = None;
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
@@ -138,6 +139,7 @@ impl ImageViewerApp {
             self.deferred_sdr_uploads.insert(to, upload);
         }
         self.raw_metadata.relocate_index(from, to);
+        self.psd_osd.relocate_index(from, to);
 
         if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to)
             && let Some(hdr) = self.hdr_image_cache.get(&to)
@@ -267,6 +269,7 @@ impl ImageViewerApp {
             .retain(|&idx, _| idx == except_idx);
         self.raw_metadata
             .retain_only_indices(|idx| idx == except_idx);
+        self.psd_osd.retain_only_indices(|idx| idx == except_idx);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == except_idx);
 
@@ -501,6 +504,7 @@ impl ImageViewerApp {
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 
         self.raw_metadata.permute_indices(old_to_new);
+        self.psd_osd.permute_indices(old_to_new);
         permute_usize_set(&mut self.prefetch_resource_indices, old_to_new);
 
         for value in self.hdr_raw_gpu_demosaic_pending_key_index.values_mut() {

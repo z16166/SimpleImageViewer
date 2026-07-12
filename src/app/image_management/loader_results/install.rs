@@ -141,15 +141,11 @@ impl ImageViewerApp {
             self.set_raw_metadata_for_index(idx, None, ctx);
         }
 
-        // `psd_osd_line` is a single current-image shadow (not a per-index store like
-        // `raw_metadata`), so only the currently displayed index may update it -- otherwise a
-        // background neighbor-prefetch install could clobber the OSD for the visible image.
+        // Store PSD OSD per index (like RAW). Neighbor prefetch must not overwrite the
+        // visible line; `PsdOsdStore` only pushes the composed string for `current_index`.
+        // Cache-hit navigation restores the line via `set_current_index` / paint sync.
+        self.psd_osd.set_for_index(idx, load_result.psd_osd.clone());
         if idx == self.current_index {
-            let line = load_result
-                .psd_osd
-                .as_ref()
-                .map(crate::loader::PsdOsdInfo::compose_osd_line);
-            self.image_status.set_psd_osd_line(line);
             self.osd.sync_events();
             ctx.request_repaint();
         }

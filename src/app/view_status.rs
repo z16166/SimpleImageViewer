@@ -35,7 +35,6 @@ pub(crate) struct ImageViewStatus {
     ultra_hdr_decode_capacity: TrackedParam<Option<f32>, OsdEvent>,
     hdr_monitor_label: TrackedParam<Option<String>, OsdEvent>,
     hdr_exposure_ev: TrackedParam<f32, OsdEvent>,
-    psd_osd_line: TrackedParam<Option<String>, OsdEvent>,
 }
 
 impl ImageViewStatus {
@@ -68,8 +67,7 @@ impl ImageViewStatus {
                 OsdEvent::ultra_hdr_decode_capacity,
             ),
             hdr_monitor_label: TrackedParam::new(None, tx.clone(), OsdEvent::hdr_monitor_label),
-            hdr_exposure_ev: TrackedParam::new(0.0, tx.clone(), OsdEvent::hdr_exposure_ev),
-            psd_osd_line: TrackedParam::new(None, tx, OsdEvent::psd_line),
+            hdr_exposure_ev: TrackedParam::new(0.0, tx, OsdEvent::hdr_exposure_ev),
         }
     }
 
@@ -112,9 +110,95 @@ impl ImageViewStatus {
         }
         self.hdr_exposure_ev.set(hdr.exposure_ev);
     }
+}
 
-    pub(crate) fn set_psd_osd_line(&mut self, line: Option<String>) {
-        self.psd_osd_line.set(line);
+/// Per-index PSD/PSB decode-stage OSD, mirrored to a single current-image line.
+///
+/// Neighbor prefetch installs must not clobber the visible OSD: store by index and only
+/// push the composed line when [`Self::current_index`] matches (same pattern as RAW).
+pub(crate) struct PsdOsdStore {
+    by_index: HashMap<usize, crate::loader::PsdOsdInfo>,
+    current_index: usize,
+    line: TrackedParam<Option<String>, OsdEvent>,
+}
+
+impl PsdOsdStore {
+    pub(crate) fn new(tx: crossbeam_channel::Sender<OsdEvent>) -> Self {
+        Self {
+            by_index: HashMap::new(),
+            current_index: 0,
+            line: TrackedParam::new(None, tx, OsdEvent::psd_line),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.by_index.clear();
+        self.sync_tracked_params_for_current();
+    }
+
+    pub(crate) fn set_current_index(&mut self, current_index: usize) {
+        if self.current_index == current_index {
+            return;
+        }
+        self.current_index = current_index;
+        self.sync_tracked_params_for_current();
+    }
+
+    pub(crate) fn set_for_index(&mut self, index: usize, info: Option<crate::loader::PsdOsdInfo>) {
+        match info {
+            Some(info) => {
+                self.by_index.insert(index, info);
+            }
+            None => {
+                self.by_index.remove(&index);
+            }
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+    }
+
+    pub(crate) fn remove(&mut self, index: usize) {
+        if self.by_index.remove(&index).is_some() && index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+    }
+
+    pub(crate) fn relocate_index(&mut self, from: usize, to: usize) {
+        if let Some(info) = self.by_index.remove(&from) {
+            self.by_index.insert(to, info);
+        }
+        if from == self.current_index || to == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+    }
+
+    pub(crate) fn permute_indices(&mut self, old_to_new: &[usize]) {
+        let taken = std::mem::take(&mut self.by_index);
+        for (old_idx, info) in taken {
+            if old_idx < old_to_new.len() {
+                self.by_index.insert(old_to_new[old_idx], info);
+            }
+        }
+        self.sync_tracked_params_for_current();
+    }
+
+    pub(crate) fn retain_only_indices(&mut self, keep: impl Fn(usize) -> bool) {
+        self.by_index.retain(|&idx, _| keep(idx));
+        self.sync_tracked_params_for_current();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, index: usize) -> bool {
+        self.by_index.contains_key(&index)
+    }
+
+    fn sync_tracked_params_for_current(&mut self) {
+        let line = self
+            .by_index
+            .get(&self.current_index)
+            .map(crate::loader::PsdOsdInfo::compose_osd_line);
+        self.line.set(line);
     }
 }
 
