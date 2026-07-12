@@ -59,6 +59,7 @@ mod psb_hdr_flat;
 mod psb_hdr_interleave_simd;
 mod psb_hdr_main;
 mod psb_hdr_routing_tests;
+mod psb_hdr_tiled_flat;
 mod psb_icc_hdr;
 mod psb_layer_blend_gpu;
 mod psb_layer_blend_simd;

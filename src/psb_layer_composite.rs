@@ -1284,9 +1284,8 @@ fn run_composite_pass(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     timing: &mut CompositeTiming,
 ) -> Result<usize, crate::loader::DecodeError> {
-    let gpu_batch_ctx = gpu.filter(|_| {
-        gpu_batch_eligible_decoded_bytes(info, visible, canvas_w, canvas_h).is_some()
-    });
+    let gpu_batch_ctx = gpu
+        .filter(|_| gpu_batch_eligible_decoded_bytes(info, visible, canvas_w, canvas_h).is_some());
     if let Some(gpu_ctx) = gpu_batch_ctx {
         return run_composite_pass_gpu_batch(
             info, visible, canvas, canvas_w, canvas_h, cancel, gpu_ctx, timing,

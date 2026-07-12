@@ -1000,8 +1000,10 @@ pub(crate) const PACKBITS_TOO_MANY_NOOPS: &str = "PSD/PSB PackBits RLE exceeds n
 
 /// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
 ///
-/// Returns an error when a single row contains more than [`PACKBITS_MAX_NOOPS_PER_ROW`]
-/// PackBits no-op bytes (`n == -128`). On error, `result` is zero-filled to `expected_len`.
+/// Fail-closed: truncated literals/runs or early EOF before `expected_len` return
+/// [`Err`]. Exceeding [`PACKBITS_MAX_NOOPS_PER_ROW`] also returns [`Err`].
+/// On error, `result` is zero-filled to `expected_len`. Trailing bytes after a
+/// successful fill are ignored (Photoshop row payloads may be padded).
 pub(crate) fn unpack_bits_into(
     result: &mut Vec<u8>,
     data: &[u8],
@@ -1012,6 +1014,12 @@ pub(crate) fn unpack_bits_into(
         result.reserve(expected_len - result.capacity());
     }
 
+    let fail = |result: &mut Vec<u8>, msg: &str| -> Result<(), String> {
+        result.clear();
+        result.resize(expected_len, 0);
+        Err(msg.to_string())
+    };
+
     let mut i = 0;
     let mut noop_count = 0usize;
     while i < data.len() && result.len() < expected_len {
@@ -1020,34 +1028,39 @@ pub(crate) fn unpack_bits_into(
         if n >= 0 {
             // Copy next (n+1) bytes literally
             let count = n as usize + 1;
-            let end = (i + count).min(data.len());
-            result.extend_from_slice(&data[i..end]);
-            i = end;
+            if i + count > data.len() {
+                return fail(result, "PSD/PSB PackBits truncated literal run");
+            }
+            let remaining = expected_len - result.len();
+            let take = count.min(remaining);
+            result.extend_from_slice(&data[i..i + take]);
+            i += count;
         } else if n > -128 {
             // Repeat next byte (1-n) times
             let count = (1 - n as i16) as usize;
-            if i < data.len() {
-                let val = data[i];
-                i += 1;
-                let remaining = expected_len.saturating_sub(result.len());
-                let actual_count = count.min(remaining);
-                if actual_count > 0 {
-                    let start = result.len();
-                    result.resize(start + actual_count, 0);
-                    crate::psb_packbits_simd::fill_bytes(&mut result[start..], val);
-                }
+            if i >= data.len() {
+                return fail(result, "PSD/PSB PackBits repeat run missing value byte");
+            }
+            let val = data[i];
+            i += 1;
+            let remaining = expected_len - result.len();
+            let actual_count = count.min(remaining);
+            if actual_count > 0 {
+                let start = result.len();
+                result.resize(start + actual_count, 0);
+                crate::psb_packbits_simd::fill_bytes(&mut result[start..], val);
             }
         } else {
             // n == -128: PackBits no-op (consumes the control byte only).
             noop_count += 1;
             if noop_count > PACKBITS_MAX_NOOPS_PER_ROW {
-                result.clear();
-                result.resize(expected_len, 0);
-                return Err(PACKBITS_TOO_MANY_NOOPS.to_string());
+                return fail(result, PACKBITS_TOO_MANY_NOOPS);
             }
         }
     }
-    result.resize(expected_len, 0);
+    if result.len() < expected_len {
+        return fail(result, "PSD/PSB PackBits output shorter than expected");
+    }
     Ok(())
 }
 
@@ -1482,10 +1495,7 @@ mod tests {
     fn validate_psd_dimensions_rejects_over_document_pixel_cap() {
         assert!(validate_psd_dimensions(32_768, 32_768, 3).is_ok());
         let err = validate_psd_dimensions(32_769, 32_769, 3).unwrap_err();
-        assert!(
-            err.contains(&MAX_DOCUMENT_PIXELS.to_string()),
-            "err={err}"
-        );
+        assert!(err.contains(&MAX_DOCUMENT_PIXELS.to_string()), "err={err}");
         let err = validate_psd_dimensions(PSD_MAX_DIMENSION, PSD_MAX_DIMENSION, 3).unwrap_err();
         assert!(err.contains("exceed maximum"), "err={err}");
     }
@@ -1530,6 +1540,48 @@ mod tests {
         // Literal run: n=3 copies next 4 bytes.
         data.push(3);
         data.extend_from_slice(&[1, 2, 3, 4]);
+        let mut out = Vec::new();
+        unpack_bits_into(&mut out, &data, 4).unwrap();
+        assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn unpack_bits_rejects_truncated_literal() {
+        // n=3 requires 4 payload bytes; only 2 follow.
+        let data = [3u8, 1, 2];
+        let mut out = Vec::new();
+        let err = unpack_bits_into(&mut out, &data, 4).unwrap_err();
+        assert!(err.contains("PackBits"), "{err}");
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn unpack_bits_rejects_repeat_missing_value() {
+        // n=-1 (0xFF) repeats the next byte twice; value byte absent.
+        let data = [0xFFu8];
+        let mut out = Vec::new();
+        let err = unpack_bits_into(&mut out, &data, 2).unwrap_err();
+        assert!(err.contains("PackBits"), "{err}");
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn unpack_bits_rejects_early_eof_before_expected_len() {
+        // Literal of 2 bytes, but expected_len is 4.
+        let data = [1u8, 10, 20];
+        let mut out = Vec::new();
+        let err = unpack_bits_into(&mut out, &data, 4).unwrap_err();
+        assert!(err.contains("PackBits"), "{err}");
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn unpack_bits_allows_trailing_padding_after_exact_fill() {
+        let mut data = vec![3u8, 1, 2, 3, 4];
+        data.extend_from_slice(&[0x80, 0x80]); // trailing no-ops / padding
         let mut out = Vec::new();
         unpack_bits_into(&mut out, &data, 4).unwrap();
         assert_eq!(out, [1, 2, 3, 4]);

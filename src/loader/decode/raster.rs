@@ -20,6 +20,7 @@ use crate::constants::{
     BYTES_PER_GB, BYTES_PER_MB, DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS,
 };
 use crate::hdr::types::HdrToneMapSettings;
+use crate::loader::tiled_sources::HdrSdrTiledFallbackSource;
 use crate::loader::{
     AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair,
     apply_exif_orientation_to_image_data, hdr_sdr_fallback_rgba8_or_placeholder,
@@ -348,15 +349,6 @@ pub(crate) fn load_psd(
 
     let mut skip_flattened_for_disk_tiled_degrade = false;
     let oversized_psb = version == 2 && psd_header_requires_disk_tiled(width, height);
-    // Oversized PSB HDR has no row/tile decode yet; refuse full HDR decode and
-    // use the SDR disk-tiled / P2/P3 path instead of forcing a multi-GB peak.
-    if try_hdr && oversized_psb {
-        log::debug!(
-            "PSB header {}x{} exceeds tiled threshold; HDR full decode is unsupported -- using SDR path",
-            width,
-            height
-        );
-    }
     if oversized_psb {
         log::debug!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
@@ -373,32 +365,69 @@ pub(crate) fn load_psd(
                     "PSB disk tiled open skipped for ZIP Image Data; routing through P1/P2/P3"
                 );
             }
-            Ok(0 | 1) => match crate::psb_reader_tiled::open_tiled_source(path) {
-                Ok(source) => {
-                    let blank =
-                        psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
-                    if !blank {
-                        return Ok((
-                            ImageData::Tiled(std::sync::Arc::new(source)),
-                            Some(crate::loader::PsdOsdInfo::p1_flattened()),
-                        ));
+            Ok(0 | 1) => {
+                if try_hdr {
+                    match crate::psb_hdr_tiled_flat::open_hdr_tiled_flat_source(path) {
+                        Ok(source) => {
+                            let blank = source.is_absolute_blank(Some(cancel.as_atomic()))?;
+                            if !blank {
+                                let hdr: std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource> =
+                                    std::sync::Arc::new(source);
+                                let fallback = std::sync::Arc::new(HdrSdrTiledFallbackSource::new(
+                                    std::sync::Arc::clone(&hdr),
+                                ));
+                                return Ok((
+                                    ImageData::HdrTiled { hdr, fallback },
+                                    Some(crate::loader::PsdOsdInfo::p1_flattened()),
+                                ));
+                            }
+                            log::debug!(
+                                "PSB HDR disk tiled flat {}x{} is absolute blank; degrading to SDR P2/P3",
+                                width,
+                                height
+                            );
+                            skip_flattened_for_disk_tiled_degrade = true;
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "PSB HDR disk tiled open failed for header {}x{} ({e}); trying SDR disk tiled path",
+                                width,
+                                height
+                            );
+                        }
                     }
-                    log::debug!(
-                        "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
-                        width,
-                        height
-                    );
-                    skip_flattened_for_disk_tiled_degrade = true;
                 }
-                Err(e) => {
-                    log::debug!(
-                        "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
-                        width,
-                        height
-                    );
-                    skip_flattened_for_disk_tiled_degrade = true;
+                if !skip_flattened_for_disk_tiled_degrade {
+                    match crate::psb_reader_tiled::open_tiled_source(path) {
+                        Ok(source) => {
+                            let blank = psb_tiled_flat_is_absolutely_blank(
+                                &source,
+                                Some(cancel.as_atomic()),
+                            )?;
+                            if !blank {
+                                return Ok((
+                                    ImageData::Tiled(std::sync::Arc::new(source)),
+                                    Some(crate::loader::PsdOsdInfo::p1_flattened()),
+                                ));
+                            }
+                            log::debug!(
+                                "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",
+                                width,
+                                height
+                            );
+                            skip_flattened_for_disk_tiled_degrade = true;
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "PSB disk tiled open failed for header {}x{} ({e}); degrading to P2/P3",
+                                width,
+                                height
+                            );
+                            skip_flattened_for_disk_tiled_degrade = true;
+                        }
+                    }
                 }
-            },
+            }
             Ok(other) => {
                 log::debug!(
                     "PSB disk tiled compression {} is unsupported for header {}x{}; degrading to P2/P3",
@@ -423,17 +452,32 @@ pub(crate) fn load_psd(
         return Err(crate::loader::DecodeError::Cancelled);
     }
 
+    // One layer-record walk shared by HDR P2/P2.5 and SDR fallback when both may run.
+    let shared_layer_info = match section_index.as_ref() {
+        Ok(index) if try_hdr && !oversized_psb => {
+            match crate::psb_layer_composite::parse_layer_records_from_index(index, &mmap[..]) {
+                Ok(info) => Some(info),
+                Err(e) => {
+                    log::debug!("PSD/PSB shared layer parse unavailable: {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     // HDR path (Approach A): try P1/P2 HDR, fall back to SDR on failure.
-    // Oversized PSB is excluded until HDR row/tile decode exists.
+    // Oversized PSB uses disk-backed HDR tiles (or SDR) instead of full-canvas HDR.
     if try_hdr && !oversized_psb {
         let hdr_result = match section_index.as_ref() {
-            Ok(index) => crate::psb_hdr_main::decode_psd_hdr_main_from_index_with_cancel(
+            Ok(index) => crate::psb_hdr_main::decode_psd_hdr_main_from_index_with_layer_info(
                 index,
                 &mmap[..],
                 Some(cancel.as_atomic()),
                 &hdr_tone_map,
                 skip_flattened_for_disk_tiled_degrade,
                 psd_hidden_layer_strategy,
+                shared_layer_info.as_ref(),
             ),
             Err(_) => crate::psb_hdr_main::decode_psd_hdr_main_from_bytes_with_cancel(
                 &mmap[..],
@@ -477,20 +521,22 @@ pub(crate) fn load_psd(
         skip_flattened_for_disk_tiled_degrade,
     ) {
         (Ok(index), true) => {
-            crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_from_index_with_cancel(
+            crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_from_index_with_layer_info(
                 index,
                 &mmap[..],
                 Some(cancel.as_atomic()),
                 gpu.as_ref(),
                 psd_hidden_layer_strategy,
+                shared_layer_info.as_ref(),
             )?
         }
-        (Ok(index), false) => crate::psb_sdr_main::decode_psd_sdr_main_from_index_with_cancel(
+        (Ok(index), false) => crate::psb_sdr_main::decode_psd_sdr_main_from_index_with_layer_info(
             index,
             &mmap[..],
             Some(cancel.as_atomic()),
             gpu.as_ref(),
             psd_hidden_layer_strategy,
+            shared_layer_info.as_ref(),
         )?,
         (Err(_), true) => crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
             &mmap[..],

@@ -1606,7 +1606,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn gpu_separable_modes_match_cpu_within_one() {
         let Some(ctx) = try_test_psd_gpu_context() else {
             eprintln!("Skipping GPU separable blend accuracy test: no wgpu device available");
@@ -1673,7 +1672,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn gpu_screen_clipping_matches_cpu_within_one() {
         let Some(ctx) = try_test_psd_gpu_context() else {
             eprintln!("Skipping GPU clipping accuracy test: no wgpu device available");
@@ -1780,7 +1778,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn gpu_batch_uses_single_compute_pass() {
         let Some(ctx) = try_test_psd_gpu_context() else {
             eprintln!("Skipping single-pass batch test: no wgpu device available");

@@ -81,6 +81,7 @@ pub fn decode_psd_sdr_main_skip_flattened_with_cancel(
 /// Same as [`decode_psd_sdr_main_from_bytes_with_cancel`], but reuses an
 /// already-parsed [`PsdSectionIndex`] (e.g. from the raster entry path that
 /// probed ICC / disk-tiled compression) instead of walking the file again.
+#[allow(dead_code)]
 pub fn decode_psd_sdr_main_from_index_with_cancel(
     index: &PsdSectionIndex,
     bytes: &[u8],
@@ -88,11 +89,42 @@ pub fn decode_psd_sdr_main_from_index_with_cancel(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_with_index(index, bytes, cancel, gpu, false, psd_hidden_layer_strategy)
+    decode_psd_sdr_main_with_index(
+        index,
+        bytes,
+        cancel,
+        gpu,
+        false,
+        psd_hidden_layer_strategy,
+        None,
+    )
+}
+
+/// Same as [`decode_psd_sdr_main_from_index_with_cancel`], but reuses a
+/// pre-parsed [`crate::psb_layer_composite::LayerInfo`] (e.g. after an HDR
+/// attempt already walked layer records, or a shared raster parse).
+pub fn decode_psd_sdr_main_from_index_with_layer_info(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+    layer_info: Option<&crate::psb_layer_composite::LayerInfo<'_>>,
+) -> Result<PsdMainDecode, crate::loader::DecodeError> {
+    decode_psd_sdr_main_with_index(
+        index,
+        bytes,
+        cancel,
+        gpu,
+        false,
+        psd_hidden_layer_strategy,
+        layer_info,
+    )
 }
 
 /// Same as [`decode_psd_sdr_main_skip_flattened_with_cancel`], but reuses an
 /// already-parsed [`PsdSectionIndex`].
+#[allow(dead_code)]
 pub fn decode_psd_sdr_main_skip_flattened_from_index_with_cancel(
     index: &PsdSectionIndex,
     bytes: &[u8],
@@ -100,7 +132,35 @@ pub fn decode_psd_sdr_main_skip_flattened_from_index_with_cancel(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
-    decode_psd_sdr_main_with_index(index, bytes, cancel, gpu, true, psd_hidden_layer_strategy)
+    decode_psd_sdr_main_with_index(
+        index,
+        bytes,
+        cancel,
+        gpu,
+        true,
+        psd_hidden_layer_strategy,
+        None,
+    )
+}
+
+/// Skip-flattened SDR decode with a shared [`crate::psb_layer_composite::LayerInfo`].
+pub fn decode_psd_sdr_main_skip_flattened_from_index_with_layer_info(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+    layer_info: Option<&crate::psb_layer_composite::LayerInfo<'_>>,
+) -> Result<PsdMainDecode, crate::loader::DecodeError> {
+    decode_psd_sdr_main_with_index(
+        index,
+        bytes,
+        cancel,
+        gpu,
+        true,
+        psd_hidden_layer_strategy,
+        layer_info,
+    )
 }
 
 fn decode_psd_sdr_main_inner(
@@ -134,6 +194,7 @@ fn decode_psd_sdr_main_inner(
         gpu,
         skip_flattened,
         psd_hidden_layer_strategy,
+        None,
     )
 }
 
@@ -144,6 +205,7 @@ fn decode_psd_sdr_main_with_index(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
     skip_flattened: bool,
     psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+    preparsed_layers: Option<&crate::psb_layer_composite::LayerInfo<'_>>,
 ) -> Result<PsdMainDecode, crate::loader::DecodeError> {
     // P1: structurally valid flattened Image Data, then absolute blank barrier.
     if skip_flattened {
@@ -202,25 +264,33 @@ fn decode_psd_sdr_main_with_index(
     // P1 -> P2: poll cancel after absolute-blank degrade (or P1 fail) before P2 work.
     crate::psb_reader::check_decode_cancel(cancel)?;
 
-    // One layer-record walk shared by P2 / P2.5a / P2.5b. Parse failure skips
-    // all three (same outcome as each stage failing its own parse independently).
+    // One layer-record walk shared by P2 / P2.5a / P2.5b. Callers may pass a
+    // pre-parsed LayerInfo (HDR->SDR fallback) to skip a second structure walk.
     // `parse_ms` is attributed once to the first composite pass that logs timing
     // (Ok path); later P2.5a/P2.5b attempts pass 0 so preload_debug stays accurate.
     let parse_t0 = std::time::Instant::now();
-    let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
-    {
-        Ok(info) => Some(info),
-        Err(e) => {
-            crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=layer_parse_fail err={e}");
-            log::debug!("PSD SDR main layer parse unavailable: {e}");
-            None
+    let owned_layers = if preparsed_layers.is_some() {
+        None
+    } else {
+        match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=layer_parse_fail err={e}");
+                log::debug!("PSD SDR main layer parse unavailable: {e}");
+                None
+            }
         }
     };
-    let mut parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    let layer_info = preparsed_layers.or(owned_layers.as_ref());
+    let mut parse_ms = if preparsed_layers.is_some() {
+        0.0
+    } else {
+        parse_t0.elapsed().as_secs_f64() * 1000.0
+    };
 
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
-    if let Some(ref layer_info) = layer_info {
+    if let Some(layer_info) = layer_info {
         match composite_sdr_layers_from_info(index, bytes, layer_info, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 // Timing log includes parse_ms; do not re-attribute on later stages.

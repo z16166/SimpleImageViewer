@@ -135,13 +135,17 @@ impl PsbTiledSource {
                 {
                     let compressed = &self.mmap[offset..next_offset];
                     if bps == 1 {
-                        // On PackBits DoS / malformed RLE, buffer is zero-filled.
-                        let _ = unpack_bits_into(buf, compressed, out_len);
+                        // Fail-closed unpacker zeros the buffer on Err; keep a blank row.
+                        if unpack_bits_into(buf, compressed, out_len).is_err() {
+                            buf.fill(0);
+                        }
                     } else {
                         // Separate TLS from PSB_ROW_SCRATCH (already borrowed by caller).
                         with_psb_raw_row_scratch(raw_len, |raw| {
                             if unpack_bits_into(raw, compressed, raw_len).is_ok() {
                                 downconvert_samples_to_u8(buf, raw, bps);
+                            } else {
+                                buf.fill(0);
                             }
                         });
                     }

@@ -59,17 +59,17 @@ pub(crate) fn decode_channel_image(
 
     match compression {
         0 => {
-            // Avoid zero-filling the copied prefix: grow from the raw slice.
-            // `read_u16` already requires a 2-byte header; `get` still guards the
-            // payload slice so a shorter buffer cannot panic here.
             let avail = data.len().saturating_sub(2);
-            let copy = avail.min(total_raw_bytes);
+            if avail < total_raw_bytes {
+                return Err(format!(
+                    "PSD/PSB layer channel raw payload truncated ({avail} < {total_raw_bytes})"
+                )
+                .into());
+            }
             let raw = data
-                .get(2..2 + copy)
+                .get(2..2 + total_raw_bytes)
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
-            let mut out = raw.to_vec();
-            out.resize(total_raw_bytes, 0);
-            Ok(out)
+            Ok(raw.to_vec())
         }
         1 => {
             let mut row_counts = Vec::with_capacity(height as usize);
@@ -669,6 +669,9 @@ pub(crate) struct LayerDecodeParams<'a> {
 
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
 /// past every channel regardless of `should_decode` so later layers stay aligned.
+///
+/// Structural channel decode failures (truncated/malformed compression) skip this
+/// layer (`Ok(None)`) after still advancing the cursor; cancel errors propagate.
 pub(crate) fn decode_one_layer(
     channel_data: &[u8],
     cursor: &mut usize,
@@ -695,6 +698,7 @@ pub(crate) fn decode_one_layer(
     let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
     let mut alpha: Option<Vec<u8>> = None;
     let mut mask: Option<Vec<u8>> = None;
+    let mut layer_failed = false;
 
     for ch in &record.channels {
         let data_len = ch.data_len as usize;
@@ -707,7 +711,7 @@ pub(crate) fn decode_one_layer(
             .ok_or_else(|| "PSD/PSB layer channel data out of bounds".to_string())?;
         *cursor = end;
 
-        if !can_decode {
+        if !can_decode || layer_failed {
             continue;
         }
 
@@ -722,7 +726,10 @@ pub(crate) fn decode_one_layer(
             ) {
                 Ok(data) => alpha = Some(data),
                 Err(e) if e.is_cancelled() => return Err(e),
-                Err(e) => log::debug!("PSD/PSB layer alpha channel decode failed: {e}"),
+                Err(e) => {
+                    log::debug!("PSD/PSB layer alpha channel decode failed: {e}; skipping layer");
+                    layer_failed = true;
+                }
             },
             -2 | -3 => {
                 // Channel -2 = user mask; -3 = real user mask (combined
@@ -754,7 +761,11 @@ pub(crate) fn decode_one_layer(
                         Ok(None) => {}
                         Err(e) if e.is_cancelled() => return Err(e),
                         Err(e) => {
-                            log::debug!("PSD/PSB layer mask channel {} decode failed: {e}", ch.id);
+                            log::debug!(
+                                "PSD/PSB layer mask channel {} decode failed: {e}; skipping layer",
+                                ch.id
+                            );
+                            layer_failed = true;
                         }
                     }
                 }
@@ -771,14 +782,19 @@ pub(crate) fn decode_one_layer(
                 ) {
                     Ok(data) => color[idx] = Some(data),
                     Err(e) if e.is_cancelled() => return Err(e),
-                    Err(e) => log::debug!("PSD/PSB layer color channel {idx} decode failed: {e}"),
+                    Err(e) => {
+                        log::debug!(
+                            "PSD/PSB layer color channel {idx} decode failed: {e}; skipping layer"
+                        );
+                        layer_failed = true;
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    if !can_decode {
+    if !can_decode || layer_failed {
         return Ok(None);
     }
 
@@ -1311,9 +1327,20 @@ mod tests {
         // Shorter than the compression header: fail at read_u16, never slice.
         assert!(decode_channel_image(&[], 1, 1, 8, false, None).is_err());
         assert!(decode_channel_image(&[0], 1, 1, 8, false, None).is_err());
-        // Header only: empty payload is padded to the declared size.
-        let out = decode_channel_image(&[0, 0], 1, 1, 8, false, None).expect("raw header");
-        assert_eq!(out, vec![0u8]);
+        // Header only / truncated payload must fail closed (no silent zero-fill).
+        let err = decode_channel_image(&[0, 0], 1, 1, 8, false, None).expect_err("truncated raw");
+        assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
+        // Partial payload shorter than width*height*bps.
+        let err = decode_channel_image(&[0, 0, 0xAB], 2, 1, 8, false, None)
+            .expect_err("partial raw plane");
+        assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn decode_channel_image_raw_exact_length_ok() {
+        let out = decode_channel_image(&[0, 0, 0x11, 0x22], 2, 1, 8, false, None)
+            .expect("exact raw payload");
+        assert_eq!(out, vec![0x11, 0x22]);
     }
 
     #[test]
@@ -1412,6 +1439,60 @@ mod tests {
         // No mask could be decoded, so alpha defaults to fully opaque (255)
         // via `layer_to_rgba8`'s `unwrap_or(255)` fallback for a missing mask.
         assert!(layer.rgba.chunks_exact(4).all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn decode_one_layer_truncated_raw_channel_skips_layer() {
+        // 1x1 RGB layer: R truncated (header only), G/B valid. Structural
+        // failure must skip the whole layer while still advancing the cursor.
+        let mut record = mk_layer(false, false, None);
+        record.top = 0;
+        record.left = 0;
+        record.bottom = 1;
+        record.right = 1;
+        record.channels = vec![
+            LayerChannel {
+                id: 0,
+                data_len: 2, // compression header only -- truncated for 1 byte sample
+            },
+            LayerChannel {
+                id: 1,
+                data_len: 3, // header + 1 sample
+            },
+            LayerChannel { id: 2, data_len: 3 },
+        ];
+        let mut channel_data = Vec::new();
+        channel_data.extend_from_slice(&[0, 0]); // R truncated
+        channel_data.extend_from_slice(&[0, 0, 40]); // G
+        channel_data.extend_from_slice(&[0, 0, 50]); // B
+
+        let mut cursor = 0usize;
+        let result = decode_one_layer(
+            &channel_data,
+            &mut cursor,
+            &record,
+            &LayerDecodeParams {
+                color_mode: 3,
+                depth: 8,
+                is_psb: false,
+                should_decode: true,
+                cancel: None,
+                cmyk_icc: &[],
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "structural channel fail must not abort composite"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "truncated channel must skip the whole layer"
+        );
+        assert_eq!(
+            cursor,
+            channel_data.len(),
+            "cursor must advance past all channels"
+        );
     }
 
     #[test]
