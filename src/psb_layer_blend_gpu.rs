@@ -32,8 +32,11 @@
 //!    groups *are* on GPU (`cs_capture_base_alpha` /
 //!    `cs_apply_base_alpha_mask` + CPU-side group orchestration mirroring
 //!    `OpenClipGroup`). Sequential clip groups reuse one document-scoped
-//!    scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM).
-//!    Vector masks / knockout / clip-to-folder remain out of scope.
+//!    scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM; no
+//!    CPU `vec![0]` full-canvas upload). Peak VRAM is gated by
+//!    [`crate::psb_layer_decode::gpu_batch_eligible_decoded_bytes`] before
+//!    this path runs. Vector masks / knockout / clip-to-folder remain out
+//!    of scope.
 //! 3. **Clip base-alpha mask is alpha-only (intentional):**
 //!    `cs_apply_base_alpha_mask` scales group alpha (and clears RGB only when
 //!    the quantized alpha becomes 0), matching CPU `apply_base_alpha_mask` /
@@ -47,17 +50,23 @@
 //!    gate, OOM, cancel, or readback failure.
 //!
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use wgpu::util::DeviceExt;
 
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
 /// Short Wait slice so cancel and `device_id_live` can be polled during readback.
 const READBACK_POLL_SLICE: Duration = Duration::from_millis(50);
+/// `BlendParamsUniform` bytes (must match WGSL `BlendParams`).
+const BLEND_PARAMS_BYTES: u64 = 32;
+/// Upper bound on uniform dispatches per layer (clip clear/capture/apply/flush).
+const UNIFORM_SLOTS_PER_LAYER: u32 = 8;
+/// Floor on ring slots so tiny stacks still have headroom for clip clears.
+const UNIFORM_RING_MIN_SLOTS: u32 = 16;
 
 #[cfg(test)]
 static COMPUTE_PASS_BEGINS: AtomicU64 = AtomicU64::new(0);
@@ -336,7 +345,72 @@ struct BlendParamsUniform {
     _pad0: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<BlendParamsUniform>() == 32);
+const _: () = assert!(std::mem::size_of::<BlendParamsUniform>() as u64 == BLEND_PARAMS_BYTES);
+
+/// Single UNIFORM+COPY_DST ring; each dispatch writes one aligned slot and
+/// binds it via a dynamic offset (avoids per-op `create_buffer_init`).
+struct UniformRing {
+    buffer: wgpu::Buffer,
+    stride: u64,
+    slot_count: u32,
+    next_slot: u32,
+}
+
+impl UniformRing {
+    fn with_slots(device: &wgpu::Device, slot_count: u32) -> Self {
+        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment.max(1));
+        let stride = BLEND_PARAMS_BYTES
+            .div_ceil(align)
+            .saturating_mul(align)
+            .max(align);
+        let slot_count = slot_count.max(UNIFORM_RING_MIN_SLOTS);
+        let size = stride.saturating_mul(u64::from(slot_count)).max(stride);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("psd-blend-uniform-ring"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            buffer,
+            stride,
+            slot_count,
+            next_slot: 0,
+        }
+    }
+
+    fn push(
+        &mut self,
+        queue: &wgpu::Queue,
+        params: &BlendParamsUniform,
+    ) -> Result<u32, crate::loader::DecodeError> {
+        if self.next_slot >= self.slot_count {
+            return Err("PSD/PSB GPU uniform ring exhausted".to_string().into());
+        }
+        let offset = u64::from(self.next_slot).saturating_mul(self.stride);
+        queue.write_buffer(&self.buffer, offset, bytemuck::bytes_of(params));
+        let dyn_offset = u32::try_from(offset)
+            .map_err(|_| "PSD/PSB GPU uniform ring offset exceeds u32".to_string())?;
+        self.next_slot += 1;
+        Ok(dyn_offset)
+    }
+
+    fn binding(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.buffer,
+            offset: 0,
+            size: NonZeroU64::new(BLEND_PARAMS_BYTES),
+        })
+    }
+}
+
+fn uniform_ring_slots_for_layers(layer_count: usize) -> u32 {
+    u32::try_from(layer_count)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(UNIFORM_SLOTS_PER_LAYER)
+        .saturating_add(UNIFORM_RING_MIN_SLOTS)
+        .max(UNIFORM_RING_MIN_SLOTS)
+}
 
 /// GPU handles available to PSD composite workers (cloned from the image loader).
 #[derive(Clone)]
@@ -517,8 +591,8 @@ fn create_pipeline(
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(BLEND_PARAMS_BYTES),
                 },
                 count: None,
             },
@@ -656,7 +730,6 @@ pub(crate) fn try_blend_layers_gpu(
 
 struct GpuBlendResources {
     textures: Vec<wgpu::Texture>,
-    uniform_buffers: Vec<wgpu::Buffer>,
     bind_groups: Vec<wgpu::BindGroup>,
 }
 
@@ -664,7 +737,6 @@ impl GpuBlendResources {
     fn with_capacity(layer_count: usize) -> Self {
         Self {
             textures: Vec::with_capacity(layer_count.saturating_mul(2)),
-            uniform_buffers: Vec::with_capacity(layer_count.saturating_mul(2)),
             bind_groups: Vec::with_capacity(layer_count.saturating_mul(2)),
         }
     }
@@ -840,16 +912,67 @@ fn ensure_clip_group_scratch<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn encode_clear_storage(
+fn encode_params_dispatch(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
+    pipeline: &wgpu::ComputePipeline,
+    label: &str,
+    target_view: &wgpu::TextureView,
+    source_view: &wgpu::TextureView,
+    params: BlendParamsUniform,
+    dispatch_w: u32,
+    dispatch_h: u32,
+) -> Result<(), crate::loader::DecodeError> {
+    if dispatch_w == 0 || dispatch_h == 0 {
+        return Ok(());
+    }
+    let dyn_offset = ring.push(queue, &params)?;
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &pipe.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(target_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(source_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: ring.binding(),
+            },
+        ],
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, &bind_group, &[dyn_offset]);
+    pass.dispatch_workgroups(
+        dispatch_w.div_ceil(WORKGROUP),
+        dispatch_h.div_ceil(WORKGROUP),
+        1,
+    );
+    resources.bind_groups.push(bind_group);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_clear_storage(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::ComputePass<'_>,
+    pipe: &PsdBlendPipeline,
+    resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     target_view: &wgpu::TextureView,
     dummy_layer_view: &wgpu::TextureView,
     canvas_w: u32,
     canvas_h: u32,
-) {
+) -> Result<(), crate::loader::DecodeError> {
     let params = BlendParamsUniform {
         canvas_w,
         canvas_h,
@@ -860,46 +983,31 @@ fn encode_clear_storage(
         mode: BLEND_MODE_NORMAL,
         _pad0: 0,
     };
-    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("psd-clear-storage-params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("psd-clear-storage-bg"),
-        layout: &pipe.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(target_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(dummy_layer_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform.as_entire_binding(),
-            },
-        ],
-    });
-    pass.set_pipeline(&pipe.clear_storage_pipeline);
-    pass.set_bind_group(0, &bind_group, &[]);
-    pass.dispatch_workgroups(
-        canvas_w.div_ceil(WORKGROUP),
-        canvas_h.div_ceil(WORKGROUP),
-        1,
-    );
-    resources.uniform_buffers.push(uniform);
-    resources.bind_groups.push(bind_group);
+    encode_params_dispatch(
+        device,
+        queue,
+        pass,
+        pipe,
+        resources,
+        ring,
+        &pipe.clear_storage_pipeline,
+        "psd-clear-storage-bg",
+        target_view,
+        dummy_layer_view,
+        params,
+        canvas_w,
+        canvas_h,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn encode_blend_texture(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     target_view: &wgpu::TextureView,
     source_view: &wgpu::TextureView,
     canvas_w: u32,
@@ -923,35 +1031,21 @@ fn encode_blend_texture(
         mode,
         _pad0: 0,
     };
-    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("psd-separable-blend-params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("psd-separable-blend-bg"),
-        layout: &pipe.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(target_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(source_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform.as_entire_binding(),
-            },
-        ],
-    });
-    pass.set_pipeline(pipe.blend_pipeline_for(mode));
-    pass.set_bind_group(0, &bind_group, &[]);
-    pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
-    resources.uniform_buffers.push(uniform);
-    resources.bind_groups.push(bind_group);
-    Ok(())
+    encode_params_dispatch(
+        device,
+        queue,
+        pass,
+        pipe,
+        resources,
+        ring,
+        pipe.blend_pipeline_for(mode),
+        "psd-separable-blend-bg",
+        target_view,
+        source_view,
+        params,
+        layer_w,
+        layer_h,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -961,6 +1055,7 @@ fn encode_blend_decoded_layer(
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     target_view: &wgpu::TextureView,
     canvas_w: u32,
     canvas_h: u32,
@@ -974,9 +1069,11 @@ fn encode_blend_decoded_layer(
     let (layer_tex, layer_view) = create_uploaded_layer_texture(device, queue, layer)?;
     encode_blend_texture(
         device,
+        queue,
         pass,
         pipe,
         resources,
+        ring,
         target_view,
         &layer_view,
         canvas_w,
@@ -994,9 +1091,11 @@ fn encode_blend_decoded_layer(
 #[allow(clippy::too_many_arguments)]
 fn encode_capture_base_alpha(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     base_alpha_view: &wgpu::TextureView,
     base_view: &wgpu::TextureView,
     canvas_w: u32,
@@ -1016,52 +1115,36 @@ fn encode_capture_base_alpha(
         mode: BLEND_MODE_NORMAL,
         _pad0: 0,
     };
-    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("psd-capture-base-alpha-params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("psd-capture-base-alpha-bg"),
-        layout: &pipe.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(base_alpha_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(base_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform.as_entire_binding(),
-            },
-        ],
-    });
-    pass.set_pipeline(&pipe.capture_base_alpha_pipeline);
-    pass.set_bind_group(0, &bind_group, &[]);
-    pass.dispatch_workgroups(
-        base.width.div_ceil(WORKGROUP),
-        base.height.div_ceil(WORKGROUP),
-        1,
-    );
-    resources.uniform_buffers.push(uniform);
-    resources.bind_groups.push(bind_group);
-    Ok(())
+    encode_params_dispatch(
+        device,
+        queue,
+        pass,
+        pipe,
+        resources,
+        ring,
+        &pipe.capture_base_alpha_pipeline,
+        "psd-capture-base-alpha-bg",
+        base_alpha_view,
+        base_view,
+        params,
+        base.width,
+        base.height,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn encode_apply_base_alpha_mask(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     group_view: &wgpu::TextureView,
     base_alpha_view: &wgpu::TextureView,
     canvas_w: u32,
     canvas_h: u32,
-) {
+) -> Result<(), crate::loader::DecodeError> {
     let params = BlendParamsUniform {
         canvas_w,
         canvas_h,
@@ -1072,38 +1155,21 @@ fn encode_apply_base_alpha_mask(
         mode: BLEND_MODE_NORMAL,
         _pad0: 0,
     };
-    let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("psd-apply-base-alpha-mask-params"),
-        contents: bytemuck::bytes_of(&params),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("psd-apply-base-alpha-mask-bg"),
-        layout: &pipe.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(group_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(base_alpha_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform.as_entire_binding(),
-            },
-        ],
-    });
-    pass.set_pipeline(&pipe.apply_base_alpha_mask_pipeline);
-    pass.set_bind_group(0, &bind_group, &[]);
-    pass.dispatch_workgroups(
-        canvas_w.div_ceil(WORKGROUP),
-        canvas_h.div_ceil(WORKGROUP),
-        1,
-    );
-    resources.uniform_buffers.push(uniform);
-    resources.bind_groups.push(bind_group);
+    encode_params_dispatch(
+        device,
+        queue,
+        pass,
+        pipe,
+        resources,
+        ring,
+        &pipe.apply_base_alpha_mask_pipeline,
+        "psd-apply-base-alpha-mask-bg",
+        group_view,
+        base_alpha_view,
+        params,
+        canvas_w,
+        canvas_h,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1113,6 +1179,7 @@ fn materialize_clip_group(
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     scratch: &mut ClipGroupScratch,
     dummy_layer_view: &wgpu::TextureView,
     canvas_w: u32,
@@ -1123,32 +1190,38 @@ fn materialize_clip_group(
     if scratch.dirty {
         encode_clear_storage(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             &scratch.group_view,
             dummy_layer_view,
             canvas_w,
             canvas_h,
-        );
+        )?;
         encode_clear_storage(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             &scratch.base_alpha_view,
             dummy_layer_view,
             canvas_w,
             canvas_h,
-        );
+        )?;
     }
     if base.width != 0 && base.height != 0 {
         let (base_texture, base_view) = create_uploaded_layer_texture(device, queue, base)?;
         encode_blend_texture(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             &scratch.group_view,
             &base_view,
             canvas_w,
@@ -1161,9 +1234,11 @@ fn materialize_clip_group(
         )?;
         encode_capture_base_alpha(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             &scratch.base_alpha_view,
             &base_view,
             canvas_w,
@@ -1186,6 +1261,7 @@ fn flush_open_clip_group(
     pass: &mut wgpu::ComputePass<'_>,
     pipe: &PsdBlendPipeline,
     resources: &mut GpuBlendResources,
+    ring: &mut UniformRing,
     main_canvas_view: &wgpu::TextureView,
     canvas_w: u32,
     canvas_h: u32,
@@ -1199,19 +1275,23 @@ fn flush_open_clip_group(
         validate_gpu_layer(base)?;
         encode_apply_base_alpha_mask(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             &group.group_view,
             &group.base_alpha_view,
             canvas_w,
             canvas_h,
-        );
+        )?;
         encode_blend_texture(
             device,
+            queue,
             pass,
             pipe,
             resources,
+            ring,
             main_canvas_view,
             &group.group_view,
             canvas_w,
@@ -1230,6 +1310,7 @@ fn flush_open_clip_group(
         pass,
         pipe,
         resources,
+        ring,
         main_canvas_view,
         canvas_w,
         canvas_h,
@@ -1292,8 +1373,10 @@ fn blend_layers_gpu_inner(
     });
 
     let mut resources = GpuBlendResources::with_capacity(layers.len());
-    // Kept until after submit so bind groups referencing scratch/dummy stay valid.
+    // Kept until after submit so bind groups referencing scratch/dummy/ring stay valid.
     let mut clip_scratch: Option<ClipGroupScratch> = None;
+    let mut uniform_ring =
+        UniformRing::with_slots(device, uniform_ring_slots_for_layers(layers.len()));
     let (dummy_layer_tex, dummy_layer_view) = create_dummy_layer_texture(device, queue);
 
     {
@@ -1316,6 +1399,7 @@ fn blend_layers_gpu_inner(
                         &mut pass,
                         pipe,
                         &mut resources,
+                        &mut uniform_ring,
                         scratch,
                         &dummy_layer_view,
                         canvas_w,
@@ -1335,6 +1419,7 @@ fn blend_layers_gpu_inner(
                     &mut pass,
                     pipe,
                     &mut resources,
+                    &mut uniform_ring,
                     group_view,
                     canvas_w,
                     canvas_h,
@@ -1350,6 +1435,7 @@ fn blend_layers_gpu_inner(
                 &mut pass,
                 pipe,
                 &mut resources,
+                &mut uniform_ring,
                 &canvas_view,
                 canvas_w,
                 canvas_h,
@@ -1365,6 +1451,7 @@ fn blend_layers_gpu_inner(
             &mut pass,
             pipe,
             &mut resources,
+            &mut uniform_ring,
             &canvas_view,
             canvas_w,
             canvas_h,

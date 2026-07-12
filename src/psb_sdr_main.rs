@@ -381,39 +381,8 @@ fn decode_psd_sdr_main_with_index(
         index.ir_end,
     ) {
         Some(thumb) => {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-            let zero_info =
-                crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
-                     pixels={} -> fail",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
-                     (all-transparent or solid RGB); no displayable image",
-                    thumb.width,
-                    thumb.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{}",
-                    thumb.width,
-                    thumb.height
-                );
-                return Ok(PsdMainDecode {
-                    composite: thumb,
-                    osd: crate::loader::PsdOsdInfo::p3_ir_thumb(),
-                });
+            if let Some(main) = try_accept_p3_thumbnail(thumb, cancel)? {
+                return Ok(main);
             }
         }
         None => {
@@ -433,6 +402,50 @@ fn decode_psd_sdr_main_with_index(
         .into())
 }
 
+/// Apply the P3 zero-information barrier to an IR thumbnail.
+///
+/// Returns `Some` when the thumb is displayable, `Ok(None)` when it is
+/// zero-information (caller continues / fails), or `Err` on cancel.
+fn try_accept_p3_thumbnail(
+    thumb: crate::psb_reader::PsbComposite,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
+    let zero_info =
+        crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
+    if zero_info {
+        crate::preload_debug!(
+            "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
+             pixels={} -> fail",
+            thumb.width,
+            thumb.height,
+            thumb.pixels.len()
+        );
+        log::debug!(
+            "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
+             (all-transparent or solid RGB); no displayable image",
+            thumb.width,
+            thumb.height
+        );
+        return Ok(None);
+    }
+    crate::preload_debug!(
+        "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
+        thumb.width,
+        thumb.height,
+        thumb.pixels.len()
+    );
+    log::debug!(
+        "PSD SDR main: P3 IR thumbnail {}x{}",
+        thumb.width,
+        thumb.height
+    );
+    Ok(Some(PsdMainDecode {
+        composite: thumb,
+        osd: crate::loader::PsdOsdInfo::p3_ir_thumb(),
+    }))
+}
+
 /// P3-only path used when [`PsdSectionIndex::parse`] fails structurally: there
 /// is no valid index to resolve P1's Image Data or P2's layer/mask sections,
 /// so both are skipped entirely. P3 falls back to the self-contained
@@ -445,39 +458,8 @@ fn decode_psd_sdr_main_p3_only(
     crate::psb_reader::check_decode_cancel(cancel)?;
     match crate::psb_reader::try_extract_photoshop_thumbnail(bytes) {
         Some(thumb) => {
-            crate::psb_reader::check_decode_cancel(cancel)?;
-            let zero_info =
-                crate::psb_reader::rgba8_is_zero_information_with_cancel(&thumb.pixels, cancel)?;
-            if zero_info {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_zero_information {}x{} \
-                     pixels={} -> fail",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{} is zero-information \
-                     (all-transparent or solid RGB); no displayable image",
-                    thumb.width,
-                    thumb.height
-                );
-            } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][PsdSdrMain] stage=P3_ir_thumbnail {}x{} pixels={}",
-                    thumb.width,
-                    thumb.height,
-                    thumb.pixels.len()
-                );
-                log::debug!(
-                    "PSD SDR main: P3 IR thumbnail {}x{}",
-                    thumb.width,
-                    thumb.height
-                );
-                return Ok(PsdMainDecode {
-                    composite: thumb,
-                    osd: crate::loader::PsdOsdInfo::p3_ir_thumb(),
-                });
+            if let Some(main) = try_accept_p3_thumbnail(thumb, cancel)? {
+                return Ok(main);
             }
         }
         None => {

@@ -28,6 +28,11 @@ pub struct MaxBboxSelection {
 }
 
 /// Max top-level bbox candidates tried by P2.5b heuristic strategy.
+///
+/// Capped at 3: trying every top-level group would re-composite large stacks
+/// repeatedly; the largest few bboxes catch the usual "hero art hidden in a
+/// group" cases without a full combinatorial search. Raise only with a measured
+/// cost/benefit trade-off on huge layer trees.
 pub const P25B_MAX_CANDIDATES: usize = 3;
 
 /// Convenience wrapper: largest top-level bbox only (limit 1).
@@ -45,22 +50,24 @@ pub fn rank_max_bbox_top_level(records: &[LayerRecord], limit: usize) -> Vec<Max
     let mut open_group_starts = Vec::new();
 
     for (index, record) in records.iter().enumerate() {
-        match record.section_type.filter(|_| record.is_section_divider) {
-            Some(3) => open_group_starts.push(index),
-            Some(1) | Some(2) => {
-                let Some(start) = open_group_starts.pop() else {
-                    continue;
-                };
-                if open_group_starts.is_empty() {
-                    let members: Vec<usize> = (start..=index).collect();
-                    push_candidate(records, index, members, &mut ranked);
-                }
-            }
-            _ if open_group_starts.is_empty() => {
-                let members = vec![index];
+        let section = record.section_type.filter(|_| record.is_section_divider);
+        if section == Some(3) {
+            open_group_starts.push(index);
+            continue;
+        }
+        if matches!(section, Some(1) | Some(2)) {
+            let Some(start) = open_group_starts.pop() else {
+                continue;
+            };
+            if open_group_starts.is_empty() {
+                let members: Vec<usize> = (start..=index).collect();
                 push_candidate(records, index, members, &mut ranked);
             }
-            _ => {}
+            continue;
+        }
+        if open_group_starts.is_empty() {
+            let members = vec![index];
+            push_candidate(records, index, members, &mut ranked);
         }
     }
 

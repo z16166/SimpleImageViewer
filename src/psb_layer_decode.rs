@@ -81,11 +81,7 @@ pub(crate) fn decode_channel_image(
                 if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
                     crate::psb_reader::check_decode_cancel(cancel)?;
                 }
-                let count = if is_psb {
-                    crate::psb_reader::read_u32(&mut r)? as usize
-                } else {
-                    crate::psb_reader::read_u16(&mut r)? as usize
-                };
+                let count = crate::psb_reader::read_rle_row_count(&mut r, is_psb)?;
                 if count > max_row {
                     return Err(format!(
                         "PSD/PSB layer channel RLE row {row} compressed length ({count}) exceeds limit ({max_row})"
@@ -1259,11 +1255,13 @@ pub(crate) fn run_composite_pass_cpu_streaming(
     Ok(composited)
 }
 
-/// Tracks how many [`DecodedLayer`]s are resident at once during one CPU
-/// streaming composite pass, and the peak seen. Every call site owns its own
-/// instance (no shared/global state), so concurrent composites -- including
-/// concurrent unit tests exercising this path -- can never interfere with
-/// each other's counts.
+/// Diagnostic-only counter of how many [`DecodedLayer`]s are resident at once
+/// during one CPU streaming composite pass, and the peak seen.
+///
+/// Does **not** control release, eviction, or memory budgets -- layers are
+/// still dropped via normal RAII. Every call site owns its own instance (no
+/// shared/global state), so concurrent composites -- including concurrent unit
+/// tests -- cannot interfere with each other's counts.
 #[derive(Default)]
 pub(crate) struct StreamingPeakTracker {
     live: std::sync::atomic::AtomicUsize,

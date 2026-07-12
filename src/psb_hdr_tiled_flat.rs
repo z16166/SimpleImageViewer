@@ -359,8 +359,8 @@ pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, 
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::fs::OpenOptionsExt;
-            const FILE_FLAG_RANDOM_ACCESS: u32 = 0x10000000;
-            opts.custom_flags(FILE_FLAG_RANDOM_ACCESS);
+            use windows::Win32::Storage::FileSystem::FILE_FLAG_RANDOM_ACCESS;
+            opts.custom_flags(FILE_FLAG_RANDOM_ACCESS.0);
         }
         opts.open(path)
             .map_err(|e| format!("Cannot open PSD/PSB HDR tiled file: {e}"))?

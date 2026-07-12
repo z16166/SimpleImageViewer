@@ -39,6 +39,13 @@ use crate::psb_reader::{
 
 type TiledRowBatch = Vec<(u32, Arc<Vec<u8>>)>;
 
+/// Total decompressed row-byte budget for the tiled moka row cache (weigher uses
+/// each entry's `Vec` length). Named so the 512 MiB cap is not a magic literal.
+const TILED_ROW_CACHE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+/// After each raw-row TLS use, shrink capacity above this retain size so extreme
+/// wide 16/32-bit rows do not pin huge buffers for the thread lifetime.
+const PSB_RAW_ROW_SCRATCH_RETAIN_BYTES: usize = 256 * 1024;
+
 /// Tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 /// Row cache is a moka LRU keyed by (channel, row); cached rows are already converted to 8-bit.
 pub struct PsbTiledSource {
@@ -407,8 +414,8 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::fs::OpenOptionsExt;
-            const FILE_FLAG_RANDOM_ACCESS: u32 = 0x10000000;
-            opts.custom_flags(FILE_FLAG_RANDOM_ACCESS);
+            use windows::Win32::Storage::FileSystem::FILE_FLAG_RANDOM_ACCESS;
+            opts.custom_flags(FILE_FLAG_RANDOM_ACCESS.0);
         }
         opts.open(path)
             .map_err(|e| format!("Cannot open file: {e}"))?
@@ -496,11 +503,7 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
                 .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
             let mut counts = Vec::with_capacity(total_rows);
             for _ in 0..total_rows {
-                let cnt = if is_psb {
-                    read_u32(&mut cursor)? as u64
-                } else {
-                    read_u16(&mut cursor)? as u64
-                };
+                let cnt = crate::psb_reader::read_rle_row_count(&mut cursor, is_psb)? as u64;
                 counts.push(cnt);
             }
             let remaining = mmap.len().saturating_sub(cursor.position() as usize) as u64;
@@ -527,12 +530,11 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
         }
     }
 
-    // Row cache: bounded by total decompressed bytes (`ROW_CACHE_BUDGET`), not entry count, so
-    // ultra-wide rows cannot inflate the eviction budget (each entry weighs `decode_row.len()`).
-    const ROW_CACHE_BUDGET: u64 = 512 * 1024 * 1024; // total decompressed row bytes
-
+    // Row cache: bounded by total decompressed bytes (`TILED_ROW_CACHE_BUDGET_BYTES`),
+    // not entry count, so ultra-wide rows cannot inflate the eviction budget
+    // (each entry weighs `decode_row.len()`).
     let row_cache = moka::sync::Cache::builder()
-        .max_capacity(ROW_CACHE_BUDGET)
+        .max_capacity(TILED_ROW_CACHE_BUDGET_BYTES)
         .weigher(|_key: &(u32, u32), value: &Arc<Vec<u8>>| {
             u32::try_from(value.len()).unwrap_or(u32::MAX)
         })
@@ -605,7 +607,13 @@ fn with_psb_raw_row_scratch<R>(raw_len: usize, f: impl FnOnce(&mut Vec<u8>) -> R
         if cap < raw_len {
             scratch.reserve(raw_len - cap);
         }
-        f(&mut scratch)
+        let result = f(&mut scratch);
+        // Extreme-wide rows can inflate capacity; shrink after use (checklist 7).
+        if scratch.capacity() > PSB_RAW_ROW_SCRATCH_RETAIN_BYTES {
+            scratch.clear();
+            scratch.shrink_to(PSB_RAW_ROW_SCRATCH_RETAIN_BYTES);
+        }
+        result
     })
 }
 

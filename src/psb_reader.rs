@@ -617,6 +617,11 @@ unsafe fn rgba8_absolutely_blank_neon(
 /// (white, gray, etc.). Early-exits once a nonzero alpha and an RGB that
 /// differs from the first pixel are both observed. Polls `cancel` on large
 /// buffers when provided.
+///
+/// SDR compares u8 lanes exactly. HDR's matching barrier
+/// (`psb_hdr_main::rgba_f32_is_zero_information_with_cancel`) uses a small
+/// f32 EPS for the same transparent-or-solid-RGB rule, because float
+/// composites accumulate blend/ICC noise that exact equality would mis-reject.
 pub fn rgba8_is_zero_information_with_cancel(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
@@ -1486,6 +1491,16 @@ pub(crate) fn read_u32(r: &mut impl Read) -> Result<u32, String> {
     r.read_exact(&mut buf)
         .map_err(|e| format!("Read u32: {e}"))?;
     Ok(u32::from_be_bytes(buf))
+}
+
+/// PSD uses u16 RLE row byte counts; PSB uses u32 (Photoshop file format).
+#[inline]
+pub(crate) fn read_rle_row_count(r: &mut impl Read, is_psb: bool) -> Result<usize, String> {
+    if is_psb {
+        Ok(read_u32(r)? as usize)
+    } else {
+        Ok(read_u16(r)? as usize)
+    }
 }
 
 pub(crate) fn read_u64(r: &mut impl Read) -> Result<u64, String> {

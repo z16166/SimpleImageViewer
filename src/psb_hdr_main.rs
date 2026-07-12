@@ -627,11 +627,17 @@ pub(crate) fn resolve_hdr_disk_visibility_plan(
     Err(crate::loader::DecodeError::NoDrawableVisibleLayers)
 }
 
-/// Zero-information for HDR: all alpha 0, or solid RGB (no variance) with any alpha.
+/// Zero-information for HDR f32 RGBA: all alpha ~0, or solid RGB (no variance).
+///
+/// Same barrier semantics as SDR [`crate::psb_reader::rgba8_is_zero_information_with_cancel`]
+/// (fully transparent OR constant RGB). HDR uses a small f32 EPS because layer
+/// blend / ICC / tone-map leave float noise; SDR compares u8 lanes exactly
+/// (quantized pixels have no fractional drift).
 fn rgba_f32_is_zero_information_with_cancel(
     pixels: &[f32],
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<bool, crate::loader::DecodeError> {
+    // Below typical float blend/ICC noise; not a display-visible threshold.
     const EPS: f32 = 1e-8;
     const CANCEL_POLL_PIXELS: usize = 64 * 1024;
     if pixels.is_empty() || !pixels.len().is_multiple_of(4) {
