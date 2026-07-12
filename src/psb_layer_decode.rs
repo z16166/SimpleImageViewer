@@ -1175,17 +1175,18 @@ pub(crate) struct StreamingPeakTracker {
 impl StreamingPeakTracker {
     pub(crate) fn acquire(&self) {
         use std::sync::atomic::Ordering;
-        let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
-        self.peak.fetch_max(live, Ordering::SeqCst);
+        // Relaxed is enough: this is a best-effort peak counter, not a lock.
+        let live = self.live.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak.fetch_max(live, Ordering::Relaxed);
     }
 
     pub(crate) fn release(&self) {
-        self.live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.live.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn peak(&self) -> usize {
-        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+        self.peak.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 

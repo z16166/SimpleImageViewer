@@ -202,6 +202,9 @@ pub fn read_composite_from_index(
             planar_channels[ch_idx as usize] = Some(ch_u8);
         }
     } else {
+        // Reuse across channels: RLE row scratch + compressed row buffer.
+        let mut row_raw = Vec::with_capacity(row_raw_bytes);
+        let mut compressed = Vec::new();
         for ch_idx in 0..channels {
             check_decode_cancel(cancel)?;
             let is_used = channel_is_used(color_mode, ch_idx, channels);
@@ -217,8 +220,6 @@ pub fn read_composite_from_index(
                         downconvert_samples_to_u8(&mut ch_u8, &raw, bps);
                     }
                     1 => {
-                        let mut row_raw = Vec::with_capacity(row_raw_bytes);
-                        let mut compressed = Vec::new();
                         for row in 0..height as usize {
                             if row & 0x3F == 0 {
                                 check_decode_cancel(cancel)?;

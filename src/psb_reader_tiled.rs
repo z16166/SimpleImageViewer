@@ -394,12 +394,13 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
             .map(|out_x| ((out_x as f64 / scale) as usize).min(self.width as usize - 1))
             .collect();
 
+        // Reuse across preview rows; used slots are overwritten each iteration.
+        let mut channel_rows: Vec<Option<Arc<Vec<u8>>>> = vec![None; self.channels as usize];
         for out_y in 0..out_h {
             let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
             let row_start_idx = out_y as usize * out_w as usize;
 
             // Fetch one full-width row of each used channel, then sample columns.
-            let mut channel_rows: Vec<Option<Arc<Vec<u8>>>> = vec![None; self.channels as usize];
             for ch_idx in 0..self.channels {
                 if channel_is_used(self.color_mode, ch_idx, self.channels) {
                     channel_rows[ch_idx as usize] = Some(self.get_row(ch_idx, src_y));
