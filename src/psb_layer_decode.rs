@@ -919,7 +919,7 @@ pub(crate) fn decode_layers_for_composite(
         // refinement / strip pools via bare `par_iter`.
         use rayon::prelude::*;
         let results: Vec<Result<Option<DecodedLayer>, crate::loader::DecodeError>> =
-            crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL.install(|| {
+            crate::psb_layer_decode_pool::install_layer_decode(|| {
                 info.records
                     .par_iter()
                     .enumerate()
@@ -1143,7 +1143,7 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 }
                 result
             };
-            crate::psb_layer_decode_pool::PSD_LAYER_DECODE_POOL.install(|| {
+            crate::psb_layer_decode_pool::install_layer_decode(|| {
                 rayon::join(prefetch_next, || {
                     clip_state.push_layer(canvas, &clip_ref, cancel)
                 })

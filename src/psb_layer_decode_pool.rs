@@ -42,38 +42,68 @@ pub(crate) fn psd_layer_decode_pool_threads(available: usize) -> usize {
 }
 
 /// Bounded pool for `decode_one_layer` parallelism during composite.
-pub(crate) static PSD_LAYER_DECODE_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-    let n = std::thread::available_parallelism()
-        .map(|cores| psd_layer_decode_pool_threads(cores.get()))
-        .unwrap_or(PSD_LAYER_DECODE_POOL_MIN_THREADS);
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
-        .thread_name(|i| format!("psd-layer-decode-{i}"))
-        .build()
-    {
-        Ok(pool) => pool,
-        Err(e) => {
-            log::error!(
-                "[PsdLayerDecode] Failed to create pool ({n} threads): {e}. \
-                 Falling back to 1-thread pool."
-            );
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
-                .thread_name(|i| format!("psd-layer-decode-fallback-{i}"))
-                .build()
-                .unwrap_or_else(|final_err| {
-                    log::error!(
-                        "[PsdLayerDecode] Fallback 1-thread pool failed: {final_err}; \
-                         using default builder"
-                    );
-                    rayon::ThreadPoolBuilder::new()
-                        .num_threads(1)
-                        .build()
-                        .expect("rayon single-thread pool")
-                })
+///
+/// `None` only when every rayon builder attempt failed; callers then run on
+/// the current thread (checklist #15 -- no `expect` panic).
+pub(crate) static PSD_LAYER_DECODE_POOL: LazyLock<Option<rayon::ThreadPool>> =
+    LazyLock::new(|| {
+        let n = std::thread::available_parallelism()
+            .map(|cores| psd_layer_decode_pool_threads(cores.get()))
+            .unwrap_or(PSD_LAYER_DECODE_POOL_MIN_THREADS);
+        match rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("psd-layer-decode-{i}"))
+            .build()
+        {
+            Ok(pool) => Some(pool),
+            Err(e) => {
+                log::error!(
+                    "[PsdLayerDecode] Failed to create pool ({n} threads): {e}. \
+                     Falling back to 1-thread pool."
+                );
+                match rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .thread_name(|i| format!("psd-layer-decode-fallback-{i}"))
+                    .build()
+                {
+                    Ok(pool) => Some(pool),
+                    Err(fallback_err) => {
+                        log::error!(
+                            "[PsdLayerDecode] Fallback 1-thread pool failed: {fallback_err}; \
+                             trying minimal default builder"
+                        );
+                        match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
+                            Ok(pool) => Some(pool),
+                            Err(final_err) => {
+                                log::error!(
+                                    "[PsdLayerDecode] All pool creation attempts failed \
+                                     ({final_err}); layer decode will run serially on the \
+                                     calling thread"
+                                );
+                                None
+                            }
+                        }
+                    }
+                }
+            }
         }
+    });
+
+/// Run `op` on the dedicated layer-decode pool when available.
+///
+/// If pool creation failed entirely, runs `op` on the calling thread so nested
+/// `par_iter` / `join` fall back to rayon's global pool (or serial behaviour)
+/// instead of panicking.
+#[inline]
+pub(crate) fn install_layer_decode<R>(op: impl FnOnce() -> R + Send) -> R
+where
+    R: Send,
+{
+    match PSD_LAYER_DECODE_POOL.as_ref() {
+        Some(pool) => pool.install(op),
+        None => op(),
     }
-});
+}
 
 #[cfg(test)]
 mod tests {

@@ -220,8 +220,8 @@ unsafe fn load_rgba8x8_f32_planes(
 
 /// Load 4 RGBA8 pixels via NEON deinterleave + u32 widen + `/255`.
 ///
-/// `vld4_u8` reads 8 pixels (32 bytes); pad the 16-byte span so the load is
-/// in-bounds (high 4 lanes are ignored).
+/// Uses `vld4_lane_u8` four times so only the 16-byte span is read (no 32-byte
+/// `vld4_u8` over-read / pad copy).
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn load_rgba8x4_f32_planes(
@@ -234,9 +234,12 @@ unsafe fn load_rgba8x4_f32_planes(
 ) {
     use core::arch::aarch64::*;
     unsafe {
-        let mut pad = [0u8; 32];
-        core::ptr::copy_nonoverlapping(ptr, pad.as_mut_ptr(), 16);
-        let pix = vld4_u8(pad.as_ptr());
+        let zero = vdup_n_u8(0);
+        let mut pix = uint8x8x4_t(zero, zero, zero, zero);
+        pix = vld4_lane_u8::<0>(ptr, pix);
+        pix = vld4_lane_u8::<1>(ptr.add(4), pix);
+        pix = vld4_lane_u8::<2>(ptr.add(8), pix);
+        pix = vld4_lane_u8::<3>(ptr.add(12), pix);
         let scale = vdupq_n_f32(255.0);
         let r = vdivq_f32(
             vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(pix.0)))),

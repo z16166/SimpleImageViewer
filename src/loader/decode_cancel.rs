@@ -90,7 +90,6 @@ impl From<&str> for DecodeError {
 impl From<crate::psb_section_index::SectionParseError> for DecodeError {
     fn from(err: crate::psb_section_index::SectionParseError) -> Self {
         // Preserve structural classification via the typed variant (checklist #30).
-        // Today every SectionParseError is Structural; match on kind if more are added.
         if err.is_structural() {
             Self::PsdStructural(err.into())
         } else {
@@ -174,10 +173,9 @@ mod tests {
         assert_eq!(err.as_str(), "PSD/PSB header is too short");
         assert!(!DecodeError::Message("PSD/PSB header is too short".into()).is_psd_structural());
 
-        let from_section = DecodeError::from(
-            crate::psb_section_index::SectionParseError::structural("invalid signature"),
-        );
+        let from_section =
+            DecodeError::from(crate::psb_section_index::SectionParseError::BadSignature);
         assert!(from_section.is_psd_structural());
-        assert_eq!(from_section.as_str(), "invalid signature");
+        assert!(from_section.as_str().contains("invalid signature"));
     }
 }

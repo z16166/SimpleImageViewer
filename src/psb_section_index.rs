@@ -28,43 +28,62 @@ const IMAGE_DATA_POS_OVERFLOW: &str = "PSD/PSB image_data_pos overflows usize";
 const IMAGE_DATA_POS_END_OVERFLOW: &str = "PSD/PSB image_data_pos end overflows usize";
 const IMAGE_DATA_COMPRESSION_TRUNCATED: &str = "PSD/PSB Image Data compression truncated";
 
-/// Explicit classification for [`PsdSectionIndex::parse`] failures.
+/// Typed failures from [`PsdSectionIndex::parse`].
 ///
-/// Callers must match on [`SectionParseErrorKind`] (or
-/// [`SectionParseError::is_structural`]) instead of substring-matching the
-/// display text -- checklist #30.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SectionParseErrorKind {
-    /// Header / section-boundary failure: P1 and P2 cannot proceed.
-    Structural,
-}
-
+/// Callers must match on variants (or [`Self::is_structural`]) instead of
+/// substring-matching display text -- checklist #30.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SectionParseError {
-    pub kind: SectionParseErrorKind,
-    message: String,
+pub enum SectionParseError {
+    /// File shorter than the required header / section-length fields.
+    Truncated,
+    /// Signature is not `8BPS`.
+    BadSignature,
+    /// Version is neither 1 (PSD) nor 2 (PSB).
+    UnsupportedVersion(u16),
+    /// Width / height / channel count failed validation.
+    Dimensions(String),
+    /// Bit depth is not 8 / 16 / 32.
+    UnsupportedDepth(u16),
+    /// Section length overflows or exceeds the file size.
+    SectionOverflow { label: &'static str, detail: String },
+    /// Cursor read / seek failure while walking the header.
+    Io(String),
 }
 
 impl SectionParseError {
-    pub fn structural(message: impl Into<String>) -> Self {
-        Self {
-            kind: SectionParseErrorKind::Structural,
-            message: message.into(),
-        }
-    }
-
+    /// True when P1/P2 cannot proceed and the caller should fall through to
+    /// P3-only recovery. Every variant from the structural walk qualifies.
     pub fn is_structural(&self) -> bool {
-        matches!(self.kind, SectionParseErrorKind::Structural)
+        matches!(
+            self,
+            Self::Truncated
+                | Self::BadSignature
+                | Self::UnsupportedVersion(_)
+                | Self::Dimensions(_)
+                | Self::UnsupportedDepth(_)
+                | Self::SectionOverflow { .. }
+                | Self::Io(_)
+        )
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.message
+    fn section_overflow(label: &'static str, detail: String) -> Self {
+        Self::SectionOverflow { label, detail }
     }
 }
 
 impl fmt::Display for SectionParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        match self {
+            Self::Truncated => f.write_str("PSD/PSB header is too short"),
+            Self::BadSignature => f.write_str("Not a PSD/PSB file (invalid signature)"),
+            Self::UnsupportedVersion(v) => write!(f, "Unknown PSD/PSB version: {v}"),
+            Self::Dimensions(msg) | Self::Io(msg) => f.write_str(msg),
+            Self::UnsupportedDepth(d) => write!(
+                f,
+                "Unsupported PSD/PSB bit depth {d} (supported: 8, 16, 32)"
+            ),
+            Self::SectionOverflow { detail, .. } => f.write_str(detail),
+        }
     }
 }
 
@@ -72,13 +91,8 @@ impl std::error::Error for SectionParseError {}
 
 impl From<SectionParseError> for String {
     fn from(err: SectionParseError) -> Self {
-        err.message
+        err.to_string()
     }
-}
-
-/// True when `kind` should skip P2 and fall through to P3-only recovery.
-pub fn is_structural_kind(kind: SectionParseErrorKind) -> bool {
-    matches!(kind, SectionParseErrorKind::Structural)
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +124,7 @@ impl PsdSectionIndex {
         // minimum that covers cm_len + ir_len + lm_len (not just the 26-byte
         // fixed header through color mode).
         if bytes.len() < PSD_SIG_VERSION_LEN {
-            return Err(SectionParseError::structural("PSD/PSB header is too short"));
+            return Err(SectionParseError::Truncated);
         }
 
         let file_size = bytes.len() as u64;
@@ -118,18 +132,14 @@ impl PsdSectionIndex {
 
         let mut sig = [0u8; 4];
         r.read_exact(&mut sig)
-            .map_err(|e| SectionParseError::structural(format!("Read error: {e}")))?;
+            .map_err(|e| SectionParseError::Io(format!("Read error: {e}")))?;
         if &sig != b"8BPS" {
-            return Err(SectionParseError::structural(
-                "Not a PSD/PSB file (invalid signature)",
-            ));
+            return Err(SectionParseError::BadSignature);
         }
 
-        let version = read_u16(&mut r).map_err(SectionParseError::structural)?;
+        let version = read_u16(&mut r).map_err(SectionParseError::Io)?;
         if version != 1 && version != 2 {
-            return Err(SectionParseError::structural(format!(
-                "Unknown PSD/PSB version: {version}"
-            )));
+            return Err(SectionParseError::UnsupportedVersion(version));
         }
         let is_psb = version == 2;
         let min_len = if is_psb {
@@ -138,50 +148,54 @@ impl PsdSectionIndex {
             PSD_MIN_STRUCTURAL_LEN
         };
         if bytes.len() < min_len {
-            return Err(SectionParseError::structural("PSD/PSB header is too short"));
+            return Err(SectionParseError::Truncated);
         }
 
-        seek_forward_within(&mut r, 6, file_size, "reserved header bytes")
-            .map_err(SectionParseError::structural)?;
+        seek_forward_within(&mut r, 6, file_size, "reserved header bytes").map_err(|detail| {
+            SectionParseError::section_overflow("reserved header bytes", detail)
+        })?;
 
-        let channels = read_u16(&mut r).map_err(SectionParseError::structural)? as u32;
-        let height = read_u32(&mut r).map_err(SectionParseError::structural)?;
-        let width = read_u32(&mut r).map_err(SectionParseError::structural)?;
-        let depth = read_u16(&mut r).map_err(SectionParseError::structural)?;
-        let color_mode = read_u16(&mut r).map_err(SectionParseError::structural)?;
+        let channels = read_u16(&mut r).map_err(SectionParseError::Io)? as u32;
+        let height = read_u32(&mut r).map_err(SectionParseError::Io)?;
+        let width = read_u32(&mut r).map_err(SectionParseError::Io)?;
+        let depth = read_u16(&mut r).map_err(SectionParseError::Io)?;
+        let color_mode = read_u16(&mut r).map_err(SectionParseError::Io)?;
 
-        validate_psd_dimensions(width, height, channels).map_err(SectionParseError::structural)?;
-        bytes_per_sample(depth).map_err(SectionParseError::structural)?;
+        validate_psd_dimensions(width, height, channels).map_err(SectionParseError::Dimensions)?;
+        match bytes_per_sample(depth) {
+            Ok(_) => {}
+            Err(_) => return Err(SectionParseError::UnsupportedDepth(depth)),
+        }
 
-        let cm_len = read_u32(&mut r).map_err(SectionParseError::structural)? as u64;
+        let cm_len = read_u32(&mut r).map_err(SectionParseError::Io)? as u64;
         seek_forward_within(&mut r, cm_len, file_size, "color mode data")
-            .map_err(SectionParseError::structural)?;
+            .map_err(|detail| SectionParseError::section_overflow("color mode data", detail))?;
 
-        let ir_len = read_u32(&mut r).map_err(SectionParseError::structural)? as u64;
+        let ir_len = read_u32(&mut r).map_err(SectionParseError::Io)? as u64;
         let ir_start = r
             .stream_position()
-            .map_err(|e| SectionParseError::structural(format!("Stream position error: {e}")))?;
+            .map_err(|e| SectionParseError::Io(format!("Stream position error: {e}")))?;
         let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")
-            .map_err(SectionParseError::structural)?;
+            .map_err(|detail| SectionParseError::section_overflow("image resources", detail))?;
         seek_forward_within(&mut r, ir_len, file_size, "image resources")
-            .map_err(SectionParseError::structural)?;
+            .map_err(|detail| SectionParseError::section_overflow("image resources", detail))?;
 
         let lm_len = if is_psb {
-            read_u64(&mut r).map_err(SectionParseError::structural)?
+            read_u64(&mut r).map_err(SectionParseError::Io)?
         } else {
-            read_u32(&mut r).map_err(SectionParseError::structural)? as u64
+            read_u32(&mut r).map_err(SectionParseError::Io)? as u64
         };
         let lm_start = r
             .stream_position()
-            .map_err(|e| SectionParseError::structural(format!("Stream position error: {e}")))?;
+            .map_err(|e| SectionParseError::Io(format!("Stream position error: {e}")))?;
         let lm_end = checked_section_end(lm_start, lm_len, file_size, "layer and mask info")
-            .map_err(SectionParseError::structural)?;
+            .map_err(|detail| SectionParseError::section_overflow("layer and mask info", detail))?;
         seek_forward_within(&mut r, lm_len, file_size, "layer and mask info")
-            .map_err(SectionParseError::structural)?;
+            .map_err(|detail| SectionParseError::section_overflow("layer and mask info", detail))?;
 
         let image_data_pos = r
             .stream_position()
-            .map_err(|e| SectionParseError::structural(format!("Stream position error: {e}")))?;
+            .map_err(|e| SectionParseError::Io(format!("Stream position error: {e}")))?;
 
         Ok(Self {
             is_psb,
@@ -213,7 +227,7 @@ impl PsdSectionIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::{PsdSectionIndex, SectionParseError, SectionParseErrorKind, is_structural_kind};
+    use super::{PsdSectionIndex, SectionParseError};
 
     fn minimal_psd_bytes() -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -262,11 +276,18 @@ mod tests {
         let mut bytes = vec![0u8; 26];
         bytes[..4].copy_from_slice(b"XXXX");
         let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert!(matches!(err, SectionParseError::BadSignature));
         assert!(err.is_structural());
-        assert!(
-            err.as_str().contains("invalid signature") || err.as_str().contains("Not a PSD"),
-            "{err}"
-        );
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_version() {
+        let mut bytes = vec![0u8; 26];
+        bytes[..4].copy_from_slice(b"8BPS");
+        bytes[4..6].copy_from_slice(&99u16.to_be_bytes());
+        let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert_eq!(err, SectionParseError::UnsupportedVersion(99));
+        assert!(err.is_structural());
     }
 
     #[test]
@@ -276,22 +297,16 @@ mod tests {
         bytes[..4].copy_from_slice(b"8BPS");
         bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
         let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert!(matches!(err, SectionParseError::Truncated));
         assert!(err.is_structural());
-        assert!(
-            err.as_str().contains("too short"),
-            "expected precise too-short error, got: {err}"
-        );
 
         let mut psb = bytes;
         psb[4..6].copy_from_slice(&2u16.to_be_bytes());
         // 38 bytes is enough for PSD but not PSB (needs 42).
         psb.resize(38, 0);
         let err = PsdSectionIndex::parse(&psb).unwrap_err();
+        assert!(matches!(err, SectionParseError::Truncated));
         assert!(err.is_structural());
-        assert!(
-            err.as_str().contains("too short"),
-            "expected PSB too-short at 38 bytes, got: {err}"
-        );
     }
 
     #[test]
@@ -353,13 +368,33 @@ mod tests {
     fn parse_truncated_mid_section_is_structural_error() {
         let err = PsdSectionIndex::parse(&psd_with_truncated_layer_mask()).unwrap_err();
 
-        assert!(err.is_structural(), "{err}");
-        assert!(is_structural_kind(err.kind));
+        assert!(
+            matches!(
+                err,
+                SectionParseError::SectionOverflow {
+                    label: "layer and mask info",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(err.is_structural());
     }
 
     #[test]
-    fn structural_kind_is_explicit() {
-        assert!(is_structural_kind(SectionParseErrorKind::Structural));
-        assert!(SectionParseError::structural("any message").is_structural());
+    fn structural_classification_matches_variants() {
+        assert!(SectionParseError::Truncated.is_structural());
+        assert!(SectionParseError::BadSignature.is_structural());
+        assert!(SectionParseError::UnsupportedVersion(3).is_structural());
+        assert!(SectionParseError::Dimensions("x".into()).is_structural());
+        assert!(SectionParseError::UnsupportedDepth(7).is_structural());
+        assert!(
+            SectionParseError::SectionOverflow {
+                label: "image resources",
+                detail: "overflow".into(),
+            }
+            .is_structural()
+        );
+        assert!(SectionParseError::Io("read".into()).is_structural());
     }
 }

@@ -30,7 +30,7 @@
 //! is handled by P1 after the shared index has been built, so P2 can still try
 //! the verified layer/mask section.
 
-use crate::psb_section_index::{PsdSectionIndex, is_structural_kind};
+use crate::psb_section_index::PsdSectionIndex;
 
 #[derive(Debug)]
 pub struct PsdMainDecode {
@@ -108,7 +108,7 @@ fn decode_psd_sdr_main_inner(
     // and P3 (ir_start/ir_end); every stage below reuses this same index.
     let index = match PsdSectionIndex::parse(bytes) {
         Ok(index) => index,
-        Err(e) if is_structural_kind(e.kind) => {
+        Err(e) if e.is_structural() => {
             crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P1_fail err={e}");
             log::debug!("PSD SDR main P1 flattened decode failed: {e}");
             // Header/structural failures cannot be recovered by P2; go straight to P3.
