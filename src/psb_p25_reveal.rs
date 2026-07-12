@@ -104,6 +104,7 @@ pub fn visibility_force_open_subtree(records: &[LayerRecord], members: &[usize])
             visible[index] = true;
         }
     }
+    ensure_clip_bases_force_open(records, &mut visible);
     visible
 }
 
@@ -112,7 +113,64 @@ pub fn visibility_force_open_subtree(records: &[LayerRecord], members: &[usize])
 /// Used by the experimental P2.5b path that composites the full layer stack
 /// instead of top-N max-bbox subtree candidates.
 pub fn visibility_force_open_all(records: &[LayerRecord]) -> Vec<bool> {
-    records.iter().map(is_drawable_leaf).collect()
+    let mut visible: Vec<bool> = records.iter().map(is_drawable_leaf).collect();
+    ensure_clip_bases_force_open(records, &mut visible);
+    visible
+}
+
+/// When a clip leaf is force-opened, also open its nearest preceding base so
+/// the compositor does not attach the clip to an unrelated open base (or drop
+/// it as an orphan). If no drawable base exists, clear the clip and log.
+fn ensure_clip_bases_force_open(records: &[LayerRecord], visible: &mut [bool]) {
+    if visible.len() != records.len() {
+        return;
+    }
+    for i in 0..records.len() {
+        if !visible[i] {
+            continue;
+        }
+        let Some(record) = records.get(i) else {
+            continue;
+        };
+        if record.clipping == 0 || record.is_section_divider {
+            continue;
+        }
+        let Some(base_idx) = find_clip_base_index(records, i) else {
+            log::debug!(
+                "PSD/PSB P2.5b: force-open skipped orphan clip layer {i} (no base)"
+            );
+            visible[i] = false;
+            continue;
+        };
+        let Some(base) = records.get(base_idx) else {
+            visible[i] = false;
+            continue;
+        };
+        if is_drawable_leaf(base) {
+            visible[base_idx] = true;
+        } else {
+            log::debug!(
+                "PSD/PSB P2.5b: force-open skipped clip layer {i}; base {base_idx} is not drawable"
+            );
+            visible[i] = false;
+        }
+    }
+}
+
+/// Nearest preceding non-divider layer with `clipping == 0` (clipping base).
+fn find_clip_base_index(records: &[LayerRecord], clip_index: usize) -> Option<usize> {
+    for j in (0..clip_index).rev() {
+        let cand = records.get(j)?;
+        if cand.is_section_divider {
+            // Section dividers do not break clipping chains in Photoshop's
+            // bottom-to-top stack; keep scanning.
+            continue;
+        }
+        if cand.clipping == 0 {
+            return Some(j);
+        }
+    }
+    None
 }
 
 fn push_candidate(
@@ -209,6 +267,7 @@ mod tests {
             channels: Vec::new(),
             blend: *b"norm",
             opacity: 255,
+            fill_opacity: None,
             clipping: 0,
             flags: if hidden { 2 } else { 0 },
             mask_size: 0,
@@ -322,5 +381,31 @@ mod tests {
             vec![false, true, true, false, true],
             "force-open-all must ignore visibility and include every drawable leaf"
         );
+    }
+
+    #[test]
+    fn force_open_also_opens_clip_base() {
+        // Base at index 0 (hidden), clip at index 1 (hidden). Force-open must
+        // enable both so the compositor does not orphan the clip.
+        let mut base = layer("base", (0, 0, 8, 8), true);
+        base.clipping = 0;
+        let mut clip = layer("clip", (0, 0, 8, 8), true);
+        clip.clipping = 1;
+        let records = vec![base, clip];
+
+        let forced = visibility_force_open_all(&records);
+        assert!(forced[0], "base must be force-opened with its clip");
+        assert!(forced[1], "drawable clip must remain open");
+
+        // Opacity-0 base cannot be opened; clip must be cleared.
+        let mut dead_base = layer("dead base", (0, 0, 8, 8), true);
+        dead_base.opacity = 0;
+        dead_base.clipping = 0;
+        let mut orphan_clip = layer("orphan clip", (0, 0, 8, 8), true);
+        orphan_clip.clipping = 1;
+        let records = vec![dead_base, orphan_clip];
+        let forced = visibility_force_open_all(&records);
+        assert!(!forced[0]);
+        assert!(!forced[1], "clip without drawable base must be skipped");
     }
 }

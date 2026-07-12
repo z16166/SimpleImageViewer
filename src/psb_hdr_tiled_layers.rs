@@ -105,6 +105,7 @@ impl PsbHdrTiledLayerSource {
             height,
             self.transfer,
             self.sdr_white_nits,
+            &self.metadata,
             None,
         )
         .map_err(|e| e.as_str().to_string())
@@ -140,6 +141,7 @@ impl PsbHdrTiledLayerSource {
                 h,
                 self.transfer,
                 self.sdr_white_nits,
+                &self.metadata,
                 cancel,
             )?;
             feed_rgba32f_blank_flags(&tile.rgba_f32, &mut any_rgb, &mut any_alpha);
@@ -312,7 +314,10 @@ impl HdrTiledSource for PsbHdrTiledLayerSource {
     }
 
     fn color_space(&self) -> HdrColorSpace {
-        HdrColorSpace::LinearSrgb
+        match self.metadata.color_space_hint() {
+            HdrColorSpace::Unknown => HdrColorSpace::LinearSrgb,
+            cs => cs,
+        }
     }
 
     fn metadata(&self) -> HdrImageMetadata {

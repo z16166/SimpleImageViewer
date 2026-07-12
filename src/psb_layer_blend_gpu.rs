@@ -98,12 +98,15 @@ pub(crate) fn separable_blend_mode_u32(blend: &[u8; 4]) -> u32 {
         b"scrn" => BLEND_MODE_SCREEN,
         b"lddg" => BLEND_MODE_LINEAR_DODGE,
         b"mul " => BLEND_MODE_MULTIPLY,
-        // Unknown keys already treated as Normal on CPU.
+        // Only GPU-implemented keys reach this helper (`is_gpu_separable_blend`).
+        // Overlay / Soft Light / Hard Light / unknown keys fall back to CPU.
         _ => BLEND_MODE_NORMAL,
     }
 }
 
 pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
+    // Keep GPU admissions aligned with WGSL entry points (four modes).
+    // Overlay / Soft Light / Hard Light are CPU-scalar supported but not GPU yet.
     matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
 }
 

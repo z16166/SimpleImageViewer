@@ -378,6 +378,8 @@ pub(crate) fn layer_planes_to_rgba_f32(
         return Vec::new();
     };
     let mut out = Vec::with_capacity(rgba_len);
+    // Caller should pass `LayerRecord::effective_fill_opacity()` so fill
+    // opacity (`iOpa`) is already folded in when layer effects are absent.
     let opacity_f = opacity as f32 / 255.0;
     let sample = |ch: &Option<Vec<f32>>, i: usize| {
         ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0.0)
@@ -443,9 +445,19 @@ pub(crate) fn decode_mask_channel_to_layer(
 ) -> Result<Option<Vec<u8>>, crate::loader::DecodeError> {
     let mask_w = mask_info.width();
     let mask_h = mask_info.height();
-    let mask_has_bounds = !mask_info.disabled && mask_w > 0 && mask_h > 0;
-    if !mask_has_bounds {
+    if mask_info.disabled {
         return Ok(None);
+    }
+    // Empty mask rect: Photoshop uses default_color for the whole layer
+    // (255 = fully visible / no matte, 0 = fully hidden).
+    if mask_w == 0 || mask_h == 0 {
+        if mask_info.default_color == 255 {
+            return Ok(None);
+        }
+        let Some(pixel_count) = checked_layer_pixel_count(layer_w, layer_h) else {
+            return Ok(None);
+        };
+        return Ok(Some(vec![mask_info.default_color; pixel_count]));
     }
     // Same oversized-rect guard as the layer rect: skip just this mask
     // (fall back to no mask) rather than erroring out the whole composite.
@@ -628,25 +640,13 @@ fn blend_layer_onto(
     let kind = match crate::psb_layer_blend_simd::SeparableBlendKind::from_psd_key(blend) {
         Some(k) => k,
         None => {
-            log_unsupported_blend_once(blend);
+            crate::psb_layer_blend_simd::log_unsupported_blend_once(blend);
             crate::psb_layer_blend_simd::SeparableBlendKind::Normal
         }
     };
     blend_separable_onto(
         canvas, canvas_w, canvas_h, layer_rgba, left, top, lw, lh, kind,
     );
-}
-
-/// Log an unsupported blend-mode key once (unsupported modes fall back to Normal).
-fn log_unsupported_blend_once(blend: &[u8; 4]) {
-    static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<[u8; 4]>>> =
-        std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
-    let mut seen = seen.lock();
-    if seen.insert(*blend) {
-        let key = String::from_utf8_lossy(blend).into_owned();
-        log::debug!("PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal");
-    }
 }
 
 // -- One-layer decode --------------------------------------------------------
@@ -804,7 +804,7 @@ pub(crate) fn decode_one_layer(
     }
 
     if !blend_mode_supported(&record.blend) {
-        log_unsupported_blend_once(&record.blend);
+        crate::psb_layer_blend_simd::log_unsupported_blend_once(&record.blend);
     }
 
     let rgba = layer_to_rgba8(LayerRgbaArgs {
@@ -814,7 +814,7 @@ pub(crate) fn decode_one_layer(
         color: &color,
         alpha: alpha.as_deref(),
         mask: mask.as_deref(),
-        opacity: record.opacity,
+        opacity: record.effective_fill_opacity(),
         cmyk_icc: params.cmyk_icc,
     });
 
@@ -1318,6 +1318,7 @@ mod tests {
             channels: Vec::new(),
             blend: *b"norm",
             opacity: 255,
+            fill_opacity: None,
             clipping: 0,
             flags: if hidden { 2 } else { 0 },
             mask_size: 0,

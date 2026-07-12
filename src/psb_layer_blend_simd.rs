@@ -14,11 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! SIMD straight-alpha separable blend (Normal / Screen / Linear Dodge / Multiply).
+//! SIMD straight-alpha separable blend (Normal / Screen / Linear Dodge /
+//! Multiply, plus Overlay / Soft Light / Hard Light on the scalar path).
 //!
-//! Processes 4 (SSE2/NEON) or 8 (AVX2) pixels per iteration. Final u8 conversion
-//! uses the same `round()` path as the scalar reference so results stay
-//! bit-identical to the previous per-pixel f32 loop.
+//! Processes 4 (SSE2/NEON) or 8 (AVX2) pixels per iteration for the four
+//! SIMD-accelerated modes. Final u8 conversion uses the same `round()` path
+//! as the scalar reference so results stay bit-identical to the previous
+//! per-pixel f32 loop.
 //!
 //! Note: Normal-mode integer SIMD (avoiding u8<->f32) is a possible follow-up,
 //! but must stay bit-identical to the f32 `round()` reference for partial alpha;
@@ -31,6 +33,12 @@ pub enum SeparableBlendKind {
     Screen,
     LinearDodge,
     Multiply,
+    /// Photoshop `over` (Overlay). Scalar path only for now.
+    Overlay,
+    /// Photoshop `sLit` (Soft Light). Scalar path only for now.
+    SoftLight,
+    /// Photoshop `hLit` (Hard Light). Scalar path only for now.
+    HardLight,
 }
 
 impl SeparableBlendKind {
@@ -44,14 +52,47 @@ impl SeparableBlendKind {
             b"scrn" => Some(Self::Screen),
             b"lddg" => Some(Self::LinearDodge),
             b"mul " => Some(Self::Multiply),
+            b"over" => Some(Self::Overlay),
+            b"sLit" => Some(Self::SoftLight),
+            b"hLit" => Some(Self::HardLight),
             _ => None,
         }
     }
 
-    /// Like [`Self::from_psd_key`], falling back to [`Self::Normal`] for unknown keys.
+    /// Like [`Self::from_psd_key`], falling back to [`Self::Normal`] for unknown
+    /// keys after a one-time debug log (never silent).
     #[inline]
     pub fn from_psd_key_or_normal(blend: &[u8; 4]) -> Self {
-        Self::from_psd_key(blend).unwrap_or(Self::Normal)
+        match Self::from_psd_key(blend) {
+            Some(kind) => kind,
+            None => {
+                log_unsupported_blend_once(blend);
+                Self::Normal
+            }
+        }
+    }
+
+    /// True when this kind has a dedicated SIMD kernel (others use scalar).
+    #[inline]
+    pub(crate) fn has_simd_kernel(self) -> bool {
+        matches!(
+            self,
+            Self::Normal | Self::Screen | Self::LinearDodge | Self::Multiply
+        )
+    }
+}
+
+/// Log an unsupported blend-mode key once (unsupported modes fall back to Normal).
+pub(crate) fn log_unsupported_blend_once(blend: &[u8; 4]) {
+    static SEEN: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<[u8; 4]>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+    let mut seen = seen.lock();
+    if seen.insert(*blend) {
+        let key = String::from_utf8_lossy(blend).into_owned();
+        log::debug!(
+            "PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal"
+        );
     }
 }
 
@@ -83,6 +124,33 @@ fn blend_b(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
         SeparableBlendKind::Screen => 1.0 - (1.0 - cb) * (1.0 - cs),
         SeparableBlendKind::LinearDodge => (cb + cs).min(1.0),
         SeparableBlendKind::Multiply => cb * cs,
+        SeparableBlendKind::Overlay => {
+            if cb <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
+        SeparableBlendKind::SoftLight => {
+            // PDF soft-light (Photoshop): uses the D(cb) branch for cs > 0.5.
+            if cs <= 0.5 {
+                cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+            } else {
+                let d = if cb <= 0.25 {
+                    ((16.0 * cb - 12.0) * cb + 4.0) * cb
+                } else {
+                    cb.sqrt()
+                };
+                cb + (2.0 * cs - 1.0) * (d - cb)
+            }
+        }
+        SeparableBlendKind::HardLight => {
+            if cs <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
     }
 }
 
@@ -91,6 +159,13 @@ pub fn blend_separable_span(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind
     debug_assert_eq!(dst.len(), src.len());
     debug_assert!(dst.len().is_multiple_of(4));
     if dst.is_empty() {
+        return;
+    }
+
+    // Overlay / Soft Light / Hard Light: scalar only (SIMD kernels cover the
+    // four historically GPU-matched modes).
+    if !kind.has_simd_kernel() {
+        blend_separable_span_scalar(dst, src, kind);
         return;
     }
 
@@ -297,6 +372,10 @@ unsafe fn blend_plane_sse2(
             _mm_sub_ps(one, _mm_mul_ps(_mm_sub_ps(one, dc), _mm_sub_ps(one, sc)))
         }
         SeparableBlendKind::LinearDodge => _mm_min_ps(_mm_add_ps(dc, sc), one),
+        // Routed to scalar before SIMD entry; keep exhaustive for the type.
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -408,6 +487,9 @@ unsafe fn blend_plane_avx2(
             _mm256_mul_ps(_mm256_sub_ps(one, dc), _mm256_sub_ps(one, sc)),
         ),
         SeparableBlendKind::LinearDodge => _mm256_min_ps(_mm256_add_ps(dc, sc), one),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -519,6 +601,9 @@ unsafe fn blend_plane_neon(
             vsubq_f32(one, vmulq_f32(vsubq_f32(one, dc), vsubq_f32(one, sc)))
         }
         SeparableBlendKind::LinearDodge => vminq_f32(vaddq_f32(dc, sc), one),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);

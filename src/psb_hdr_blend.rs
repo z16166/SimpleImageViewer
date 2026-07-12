@@ -34,6 +34,32 @@ fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
         SeparableBlendKind::Screen => cb + cs - cb * cs,
         SeparableBlendKind::LinearDodge => cb + cs,
         SeparableBlendKind::Multiply => cb * cs,
+        SeparableBlendKind::Overlay => {
+            if cb <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
+        SeparableBlendKind::SoftLight => {
+            if cs <= 0.5 {
+                cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+            } else {
+                let d = if cb <= 0.25 {
+                    ((16.0 * cb - 12.0) * cb + 4.0) * cb
+                } else {
+                    cb.sqrt()
+                };
+                cb + (2.0 * cs - 1.0) * (d - cb)
+            }
+        }
+        SeparableBlendKind::HardLight => {
+            if cs <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
     }
 }
 
@@ -51,6 +77,11 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
     assert_eq!(dst.len(), src.len());
     assert!(dst.len().is_multiple_of(4));
     if dst.is_empty() {
+        return;
+    }
+
+    if !kind.has_simd_kernel() {
+        blend_separable_span_f32_scalar(dst, src, kind);
         return;
     }
 
@@ -189,6 +220,9 @@ unsafe fn blend_plane_f32_sse41(
         SeparableBlendKind::Multiply => _mm_mul_ps(dc, sc),
         SeparableBlendKind::Screen => _mm_sub_ps(_mm_add_ps(dc, sc), _mm_mul_ps(dc, sc)),
         SeparableBlendKind::LinearDodge => _mm_add_ps(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -317,6 +351,9 @@ unsafe fn blend_plane_f32_avx2(
         SeparableBlendKind::Multiply => _mm256_mul_ps(dc, sc),
         SeparableBlendKind::Screen => _mm256_sub_ps(_mm256_add_ps(dc, sc), _mm256_mul_ps(dc, sc)),
         SeparableBlendKind::LinearDodge => _mm256_add_ps(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -428,6 +465,9 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::Multiply => vmulq_f32(dc, sc),
         SeparableBlendKind::Screen => vsubq_f32(vaddq_f32(dc, sc), vmulq_f32(dc, sc)),
         SeparableBlendKind::LinearDodge => vaddq_f32(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);

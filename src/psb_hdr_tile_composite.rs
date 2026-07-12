@@ -74,6 +74,8 @@ pub(crate) fn rect_intersects_tile(
 /// per-record visibility mask (bottom-to-top order).
 ///
 /// Returns a linear-light RGBA f32 [`HdrTileBuffer`] of `tile_w x tile_h`.
+/// `doc_metadata` supplies ICC / primaries for the tile buffer (same profile
+/// as the parent document).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn composite_hdr_tile_with_visibility(
     layer_info: &LayerInfo<'_>,
@@ -84,6 +86,7 @@ pub(crate) fn composite_hdr_tile_with_visibility(
     tile_h: u32,
     transfer: HdrTransferFunction,
     sdr_white_nits: f32,
+    doc_metadata: &HdrImageMetadata,
     cancel: Option<&AtomicBool>,
 ) -> Result<HdrTileBuffer, DecodeError> {
     if visible.len() != layer_info.records.len() {
@@ -190,8 +193,13 @@ pub(crate) fn composite_hdr_tile_with_visibility(
     }
     clip_state.finish(&mut canvas, cancel)?;
 
-    let color_space = HdrColorSpace::LinearSrgb;
-    let mut metadata = HdrImageMetadata::from_color_space(color_space);
+    // Prefer document ICC primaries (Rec.2020 / Display P3 / sRGB) over a
+    // hardcoded LinearSrgb tag so wide-gamut tiles match the parent buffer.
+    let color_space = match doc_metadata.color_space_hint() {
+        HdrColorSpace::Unknown => HdrColorSpace::LinearSrgb,
+        cs => cs,
+    };
+    let mut metadata = doc_metadata.clone();
     metadata.transfer_function = HdrTransferFunction::Linear;
 
     Ok(HdrTileBuffer::new_with_metadata(

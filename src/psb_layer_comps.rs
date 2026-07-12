@@ -250,6 +250,7 @@ mod tests {
             channels: Vec::new(),
             blend: *b"norm",
             opacity: 255,
+            fill_opacity: None,
             clipping: 0,
             flags: if hidden { 2 } else { 0 },
             mask_size: 0,

@@ -134,6 +134,11 @@ pub struct LayerRecord {
     pub channels: Vec<LayerChannel>,
     pub blend: [u8; 4],
     pub opacity: u8,
+    /// Fill opacity from the `iOpa` tagged block (0-255). `None` means the
+    /// block was absent (treat as 255). Distinct from layer `opacity`: fill
+    /// affects pixel fill only; without layer effects the two combine into
+    /// source alpha for this compositor.
+    pub fill_opacity: Option<u8>,
     pub clipping: u8,
     pub flags: u8,
     pub mask_size: u32,
@@ -150,6 +155,19 @@ pub struct LayerRecord {
 impl LayerRecord {
     pub fn is_hidden(&self) -> bool {
         self.flags & 2 != 0
+    }
+
+    /// Fill opacity byte used when assembling pixels (`255` when `iOpa` absent).
+    #[inline]
+    pub fn fill_opacity_or_full(&self) -> u8 {
+        self.fill_opacity.unwrap_or(255)
+    }
+
+    /// Layer opacity combined with fill opacity (no layer-effects path yet).
+    #[inline]
+    pub fn effective_fill_opacity(&self) -> u8 {
+        let fill = u16::from(self.fill_opacity_or_full());
+        ((u16::from(self.opacity) * fill) / 255) as u8
     }
 
     pub fn is_empty_bounds(&self) -> bool {
@@ -436,6 +454,7 @@ fn parse_layer_record(
         name,
         layer_id,
         cmls_payload,
+        fill_opacity,
     } = parse_layer_extra(r, extra_end, is_psb)?;
 
     r.set_position(extra_end);
@@ -451,6 +470,7 @@ fn parse_layer_record(
         channels,
         blend,
         opacity,
+        fill_opacity,
         clipping,
         flags,
         mask_size,
@@ -470,6 +490,7 @@ struct ParsedLayerExtra {
     name: String,
     layer_id: Option<u32>,
     cmls_payload: Option<Vec<u8>>,
+    fill_opacity: Option<u8>,
 }
 
 fn parse_layer_extra(
@@ -487,6 +508,7 @@ fn parse_layer_extra(
             name: String::new(),
             layer_id: None,
             cmls_payload: None,
+            fill_opacity: None,
         });
     }
 
@@ -519,6 +541,7 @@ fn parse_layer_extra(
         layer_id,
         unicode_name,
         cmls_payload,
+        fill_opacity,
     } = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
     let name = unicode_name.unwrap_or(pascal_name);
     Ok(ParsedLayerExtra {
@@ -530,6 +553,7 @@ fn parse_layer_extra(
         name,
         layer_id,
         cmls_payload,
+        fill_opacity,
     })
 }
 
@@ -691,6 +715,7 @@ fn scan_extra_tagged_blocks(
     let mut layer_id = None;
     let mut unicode_name = None;
     let mut cmls_payload = None;
+    let mut fill_opacity = None;
     let mut resyncs = 0u32;
     let extra_end_usize = usize::try_from(extra_end)
         .unwrap_or(usize::MAX)
@@ -779,7 +804,12 @@ fn scan_extra_tagged_blocks(
             && let Some(payload) = parse_shmd_cmls_payload(payload)
         {
             cmls_payload = Some(payload);
+        } else if &key == b"iOpa" && !payload.is_empty() {
+            // Photoshop Fill Opacity (single byte). Present even when 255.
+            fill_opacity = Some(payload[0]);
         }
+        // Vector masks (`vmsk` / `vsms`) are intentionally not parsed yet;
+        // see docs/psd-psb-known-limits.md.
 
         let padded_end = data_end.saturating_add(data_len % 2);
         r.set_position(padded_end.min(extra_end));
@@ -791,6 +821,7 @@ fn scan_extra_tagged_blocks(
         layer_id,
         unicode_name,
         cmls_payload,
+        fill_opacity,
     })
 }
 
@@ -800,6 +831,7 @@ struct TaggedBlockScan {
     layer_id: Option<u32>,
     unicode_name: Option<String>,
     cmls_payload: Option<Vec<u8>>,
+    fill_opacity: Option<u8>,
 }
 
 fn parse_luni_name(payload: &[u8]) -> Option<String> {
@@ -1049,10 +1081,12 @@ pub(crate) fn strict_visibility_has_drawable_output(
         if record.is_empty_bounds() {
             continue;
         }
-        // Present mask with empty bounds produces no output.
+        // Empty-rect mask: default_color 0 hides the whole layer; 255 means
+        // "fully revealed" (Photoshop) and must not count as no output.
         if let Some(mask) = &record.mask
             && !mask.disabled
             && mask.is_empty_bounds()
+            && mask.default_color == 0
         {
             continue;
         }
@@ -1367,6 +1401,7 @@ mod tests {
                 channels,
                 blend: spec.blend,
                 opacity: spec.opacity,
+                fill_opacity: None,
                 clipping: spec.clipping,
                 flags: 0,
                 mask_size: 0,
@@ -1532,6 +1567,7 @@ mod tests {
             channels: Vec::new(),
             blend: *b"norm",
             opacity: 255,
+            fill_opacity: None,
             clipping: 0,
             flags: if hidden { 2 } else { 0 },
             mask_size: 0,
@@ -1829,6 +1865,49 @@ mod tests {
 
         assert!(scan.is_section_divider);
         assert_eq!(scan.section_type, Some(2));
+    }
+
+    #[test]
+    fn scan_extra_parses_iopa_fill_opacity() {
+        let mut block = Vec::new();
+        block.extend_from_slice(b"8BIM");
+        block.extend_from_slice(b"iOpa");
+        block.extend_from_slice(&1u32.to_be_bytes());
+        block.push(128);
+        block.push(0); // even pad
+        let mut cursor = std::io::Cursor::new(block.as_slice());
+
+        let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
+        assert_eq!(scan.fill_opacity, Some(128));
+    }
+
+    #[test]
+    fn strict_visibility_empty_mask_honors_default_color() {
+        let mut layer = mk_layer(false, false, None);
+        layer.bottom = 4;
+        layer.right = 4;
+        layer.mask = Some(super::LayerMaskInfo {
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: 0,
+            default_color: 255,
+            disabled: false,
+            has_parameters_applied: false,
+        });
+        assert!(strict_visibility_has_drawable_output(
+            4,
+            4,
+            &[layer.clone()],
+            &[true]
+        ));
+        layer.mask.as_mut().unwrap().default_color = 0;
+        assert!(!strict_visibility_has_drawable_output(
+            4,
+            4,
+            &[layer],
+            &[true]
+        ));
     }
 
     #[test]

@@ -32,7 +32,8 @@
 use std::sync::atomic::AtomicBool;
 
 use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata,
+    HdrPixelFormat, HdrReference, HdrTransferFunction,
 };
 use crate::loader::DecodeError;
 use crate::psb_hdr_blend::blend_separable_span_f32;
@@ -741,7 +742,7 @@ pub(crate) fn decode_layer_to_f32(
         &color,
         alpha.as_deref(),
         mask.as_deref(),
-        record.opacity,
+        record.effective_fill_opacity(),
     );
 
     Ok(Some(rgba))
@@ -872,20 +873,51 @@ fn composite_layers_hdr_with_visibility(
                 };
                 clip_state.push_layer(&mut canvas, &clip_ref, cancel)?;
             }
-            Ok(None) => {}
+            // A base that failed to decode still delimits the open group
+            // (mirror the tile compositor so orphaned clips are not attached
+            // to a previous open base).
+            Ok(None) => {
+                if record.clipping == 0 {
+                    clip_state.finish(&mut canvas, cancel)?;
+                }
+            }
             Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
                 log::debug!("PSD/PSB HDR layer {i} decode failed (skipped): {e}");
+                if record.clipping == 0 {
+                    clip_state.finish(&mut canvas, cancel)?;
+                }
             }
         }
     }
     clip_state.finish(&mut canvas, cancel)?;
 
-    let color_space = HdrColorSpace::LinearSrgb;
-    let mut metadata = HdrImageMetadata::from_color_space(color_space);
-    metadata.transfer_function = HdrTransferFunction::Linear;
-    if let Some(nits) = icc_probe.peak_nits {
-        metadata.luminance.mastering_max_nits = Some(nits);
+    let color_profile = if let Some(icc) = embedded_icc {
+        HdrColorProfile::Icc(std::sync::Arc::new(icc))
+    } else {
+        HdrColorProfile::LinearSrgb
+    };
+    let mut metadata = HdrImageMetadata {
+        transfer_function: HdrTransferFunction::Linear,
+        reference: HdrReference::DisplayReferred,
+        color_profile,
+        luminance: HdrLuminanceMetadata {
+            mastering_max_nits: icc_probe.peak_nits,
+            sdr_white_nits: Some(sdr_white_nits),
+            ..Default::default()
+        },
+        gain_map: None,
+        raw_gpu_source: None,
+    };
+    let color_space = match metadata.color_space_hint() {
+        HdrColorSpace::Unknown => HdrColorSpace::LinearSrgb,
+        cs => cs,
+    };
+    crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
+    // Keep color_space and color_profile aligned for consumers that only read
+    // the enum tag (hint already prefers ICC primaries when classifiable).
+    if !matches!(metadata.color_profile, HdrColorProfile::Icc(_)) {
+        metadata.color_profile = HdrColorProfile::from_color_space(color_space);
     }
 
     Ok(HdrImageBuffer {

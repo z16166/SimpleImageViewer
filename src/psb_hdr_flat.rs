@@ -23,7 +23,8 @@
 //!
 //! 32-bit: Photoshop stores channels as big-endian IEEE 754 float (linear light).
 //! 16-bit: channels are big-endian u16 [0,65535]; transfer is applied from ICC probe.
-//! CMYK: downconverted to u8 display values, then cmyk_to_rgb, then sRGB-to-linear.
+//! CMYK: downconverted to u8, converted via lcms2 ICC (same as SDR) with a
+//! naive Adobe-invert fallback, then sRGB-to-linear.
 //! All output is display-linear (transfer_function = Linear) in rgba_f32.
 
 use std::io::{Read, Seek, SeekFrom};
@@ -282,6 +283,7 @@ pub fn read_composite_hdr_from_index(
                 channels,
                 bps,
                 pixel_count,
+                embedded_icc.as_deref(),
                 cancel,
             )?;
         }
@@ -316,12 +318,19 @@ pub fn read_composite_hdr_from_index(
         gain_map: None,
         raw_gpu_source: None,
     };
+    // Prefer ICC primaries (Rec.2020 / Display P3 / sRGB) over a hardcoded
+    // LinearSrgb tag so wide-gamut 16/32-bit flats render with the right matrix.
+    let color_space = match metadata.color_space_hint() {
+        HdrColorSpace::Unknown => HdrColorSpace::LinearSrgb,
+        cs => cs,
+    };
+    crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
 
     Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::LinearSrgb,
+        color_space,
         metadata,
         rgba_f32: Arc::new(rgba_f32),
     })
@@ -477,15 +486,16 @@ fn interleave_gray_hdr(
     Ok(())
 }
 
-/// CMYK HDR fallback: downconvert each CMYK channel to u8 display values,
-/// apply cmyk_to_rgb (Adobe inverted encoding), then sRGB-to-linear.
-/// The result is an SDR-grade linear buffer stored in the HDR plane.
+/// CMYK HDR: downconvert planes to u8, convert via lcms2 ICC (same as SDR),
+/// then sRGB8 -> scene-linear f32. Falls back to the naive Adobe invert path
+/// when CMS is unavailable or rejects the profile.
 fn interleave_cmyk_hdr(
     rgba_f32: &mut [f32],
     planar_raw: &[Option<Vec<u8>>],
     channels: u32,
     bps: usize,
     pixel_count: usize,
+    embedded_icc: Option<&[u8]>,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), crate::loader::DecodeError> {
     // Downconvert each CMYK plane to u8 display values (SIMD in psb_downconvert_simd).
@@ -521,6 +531,7 @@ fn interleave_cmyk_hdr(
     let m = m_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
     let y = y_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
     let k = k_u8.unwrap_or_else(|| vec![255u8; pixel_count]);
+    let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc);
 
     let mut rgba8 = vec![0u8; HDR_INTERLEAVE_CHUNK_PIXELS * 4];
     let mut start = 0usize;
@@ -529,16 +540,22 @@ fn interleave_cmyk_hdr(
         let n = (pixel_count - start).min(HDR_INTERLEAVE_CHUNK_PIXELS);
         let end = start + n;
         let alpha = a_u8.as_ref().map(|ch| &ch[start..end]);
-        crate::psb_cmyk_simd::cmyk_planes_to_rgba8(
-            &c[start..end],
-            &m[start..end],
-            &y[start..end],
-            &k[start..end],
+        let dst8 = &mut rgba8[..n * 4];
+        let span = crate::psb_cmyk_cms::AdobeCmykSpan {
+            c: &c[start..end],
+            m: &m[start..end],
+            y: &y[start..end],
+            k: &k[start..end],
             alpha,
-            &mut rgba8[..n * 4],
-        );
+        };
+        if !crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(&span, icc, dst8) {
+            // CMS unavailable / profile rejected: same naive path as before.
+            crate::psb_cmyk_simd::cmyk_planes_to_rgba8(
+                span.c, span.m, span.y, span.k, span.alpha, dst8,
+            );
+        }
         simple_image_viewer::simd_pixel_convert::srgb8_rgba_to_scene_linear_f32(
-            &rgba8[..n * 4],
+            dst8,
             &mut rgba_f32[start * 4..end * 4],
         );
         start = end;
