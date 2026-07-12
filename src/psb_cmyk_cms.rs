@@ -171,8 +171,15 @@ fn cmyk_span_adobe_to_rgba8_lcms(
             dst_chunk,
         );
         if let Some(a) = span.alpha {
-            for i in 0..count {
-                dst_chunk[i * 4 + 3] = a.get(offset + i).copied().unwrap_or(255);
+            let avail = a.len().saturating_sub(offset).min(count);
+            if avail > 0 {
+                crate::psb_cmyk_simd::write_alpha_plane_into_rgba8(
+                    &a[offset..offset + avail],
+                    &mut dst_chunk[..avail * 4],
+                );
+            }
+            for i in avail..count {
+                dst_chunk[i * 4 + 3] = 255;
             }
         }
         offset += count;

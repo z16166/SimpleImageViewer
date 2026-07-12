@@ -454,9 +454,104 @@ unsafe fn pack_adobe_cmyk_inverted_neon(c: &[u8], m: &[u8], y: &[u8], k: &[u8], 
     }
 }
 
+/// Write planar alpha samples into the A channel of interleaved RGBA8 (`dst[i*4+3]`).
+///
+/// RGB bytes are left untouched. Used after lcms2 RGB conversion + interleave.
+pub fn write_alpha_plane_into_rgba8(alpha: &[u8], dst_rgba: &mut [u8]) {
+    let n = alpha.len().min(dst_rgba.len() / 4);
+    if n == 0 {
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("ssse3") {
+            unsafe {
+                write_alpha_plane_into_rgba8_ssse3(&alpha[..n], &mut dst_rgba[..n * 4]);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            write_alpha_plane_into_rgba8_neon(&alpha[..n], &mut dst_rgba[..n * 4]);
+        }
+        return;
+    }
+
+    write_alpha_plane_into_rgba8_scalar(&alpha[..n], &mut dst_rgba[..n * 4]);
+}
+
+fn write_alpha_plane_into_rgba8_scalar(alpha: &[u8], dst_rgba: &mut [u8]) {
+    for (i, &a) in alpha.iter().enumerate() {
+        dst_rgba[i * 4 + 3] = a;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn write_alpha_plane_into_rgba8_ssse3(alpha: &[u8], dst_rgba: &mut [u8]) {
+    use core::arch::x86_64::*;
+    const PIXELS: usize = 4;
+    let n = alpha.len();
+    let mut i = 0usize;
+    // pshufb: place alpha bytes into A slots; -1 -> 0.
+    let a_shuf = _mm_setr_epi8(-1, -1, -1, 0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, 3);
+    let rgb_mask = _mm_setr_epi8(-1, -1, -1, 0, -1, -1, -1, 0, -1, -1, -1, 0, -1, -1, -1, 0);
+
+    while i + PIXELS <= n {
+        unsafe {
+            let dst = dst_rgba.as_mut_ptr().add(i * 4);
+            let px = _mm_loadu_si128(dst.cast());
+            let a4 = _mm_cvtsi32_si128(i32::from_le_bytes([
+                alpha[i],
+                alpha[i + 1],
+                alpha[i + 2],
+                alpha[i + 3],
+            ]));
+            let scattered = _mm_shuffle_epi8(a4, a_shuf);
+            let out = _mm_or_si128(_mm_and_si128(px, rgb_mask), scattered);
+            _mm_storeu_si128(dst.cast(), out);
+        }
+        i += PIXELS;
+    }
+
+    if i < n {
+        write_alpha_plane_into_rgba8_scalar(&alpha[i..], &mut dst_rgba[i * 4..]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn write_alpha_plane_into_rgba8_neon(alpha: &[u8], dst_rgba: &mut [u8]) {
+    use core::arch::aarch64::*;
+    const PIXELS: usize = 8;
+    let n = alpha.len();
+    let mut i = 0usize;
+
+    while i + PIXELS <= n {
+        unsafe {
+            let dst = dst_rgba.as_mut_ptr().add(i * 4);
+            let mut pix = vld4_u8(dst);
+            pix.3 = vld1_u8(alpha.as_ptr().add(i));
+            vst4_u8(dst, pix);
+        }
+        i += PIXELS;
+    }
+
+    if i < n {
+        write_alpha_plane_into_rgba8_scalar(&alpha[i..], &mut dst_rgba[i * 4..]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cmyk_planes_to_rgba8, div255_u16_exact, pack_adobe_cmyk_inverted};
+    use super::{
+        cmyk_planes_to_rgba8, div255_u16_exact, pack_adobe_cmyk_inverted,
+        write_alpha_plane_into_rgba8, write_alpha_plane_into_rgba8_scalar,
+    };
     use crate::psb_reader::cmyk_to_rgb;
 
     #[test]
@@ -506,5 +601,20 @@ mod tests {
         pack_adobe_cmyk_inverted(&c, &m, &y, &k, &mut simd);
         super::pack_adobe_cmyk_inverted_scalar(&c, &m, &y, &k, &mut scalar);
         assert_eq!(simd, scalar);
+    }
+
+    #[test]
+    fn write_alpha_plane_matches_scalar() {
+        let n = 37usize;
+        let alpha: Vec<u8> = (0..n).map(|i| (i * 7) as u8).collect();
+        let mut simd = vec![0xABu8; n * 4];
+        let mut scalar = simd.clone();
+        write_alpha_plane_into_rgba8(&alpha, &mut simd);
+        write_alpha_plane_into_rgba8_scalar(&alpha, &mut scalar);
+        assert_eq!(simd, scalar);
+        for i in 0..n {
+            assert_eq!(simd[i * 4 + 3], alpha[i]);
+            assert_eq!(&simd[i * 4..i * 4 + 3], &[0xAB, 0xAB, 0xAB]);
+        }
     }
 }

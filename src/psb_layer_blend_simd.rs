@@ -263,8 +263,12 @@ unsafe fn blend_plane_sse2(
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
     let term3 = _mm_mul_ps(_mm_mul_ps(da, _mm_sub_ps(one, sa)), dc);
     let co = _mm_add_ps(_mm_add_ps(term1, term2), term3);
+    // rcp + one Newton-Raphson step: inv = rcp * (2 - a * rcp).
+    // out_a is almost never near 0 when sa > 0; u8 round absorbs residual error.
     let oa_safe = _mm_max_ps(out_a, _mm_set1_ps(1e-20));
-    let mut out = _mm_div_ps(co, oa_safe);
+    let rcp = _mm_rcp_ps(oa_safe);
+    let inv = _mm_mul_ps(rcp, _mm_sub_ps(_mm_set1_ps(2.0), _mm_mul_ps(oa_safe, rcp)));
+    let mut out = _mm_mul_ps(co, inv);
     // sa==0: keep original dc (store is skipped by caller, but keep sane).
     let sa_zero = _mm_cmpeq_ps(sa, zero);
     out = _mm_or_ps(_mm_andnot_ps(sa_zero, out), _mm_and_ps(sa_zero, dc));
@@ -370,8 +374,15 @@ unsafe fn blend_plane_avx2(
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
     let term3 = _mm256_mul_ps(_mm256_mul_ps(da, _mm256_sub_ps(one, sa)), dc);
     let co = _mm256_add_ps(_mm256_add_ps(term1, term2), term3);
+    // rcp + one Newton-Raphson step: inv = rcp * (2 - a * rcp).
+    // out_a is almost never near 0 when sa > 0; u8 round absorbs residual error.
     let oa_safe = _mm256_max_ps(out_a, _mm256_set1_ps(1e-20));
-    let mut out = _mm256_div_ps(co, oa_safe);
+    let rcp = _mm256_rcp_ps(oa_safe);
+    let inv = _mm256_mul_ps(
+        rcp,
+        _mm256_sub_ps(_mm256_set1_ps(2.0), _mm256_mul_ps(oa_safe, rcp)),
+    );
+    let mut out = _mm256_mul_ps(co, inv);
     let sa_zero = _mm256_cmp_ps(sa, zero, _CMP_EQ_OQ);
     out = _mm256_blendv_ps(out, dc, sa_zero);
     let oa_le0 = _mm256_cmp_ps(out_a, zero, _CMP_LE_OQ);

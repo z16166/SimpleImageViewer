@@ -106,30 +106,12 @@ struct BlendParams {
 // One compute pass per document batch; each layer op is still its own
 // dispatch_workgroups. Same-pass sequential dispatches preserve
 // bottom-to-top order (each layer reads the previous composite).
-
-fn blend_b(mode: u32, cb: f32, cs: f32) -> f32 {
-    if (mode == 1u) {
-        return cb + cs - cb * cs;
-    }
-    if (mode == 2u) {
-        return min(cb + cs, 1.0);
-    }
-    if (mode == 3u) {
-        return cb * cs;
-    }
-    return cs;
-}
-
-fn blend_rgb(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        blend_b(mode, cb.r, cs.r),
-        blend_b(mode, cb.g, cs.g),
-        blend_b(mode, cb.b, cs.b),
-    );
-}
+//
+// Mode-specific entry points keep blend_b branch-free: `mode` is uniform
+// for a dispatch, so Rust selects the pipeline instead of per-pixel ifs.
 
 @compute @workgroup_size(16, 16, 1)
-fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sx = i32(gid.x);
     let sy = i32(gid.y);
     if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
@@ -148,8 +130,7 @@ fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let dst_coord = vec2<i32>(dx, dy);
-    // rgba8unorm loads are in [0,1]; only Normal can skip destination reads.
-    if (params.mode == 0u && sa >= 1.0) {
+    if (sa >= 1.0) {
         textureStore(target, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;
     }
@@ -157,9 +138,95 @@ fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dst = textureLoad(target, dst_coord);
     let da = dst.a;
     let out_a = sa + da * (1.0 - sa);
-    let blended = blend_rgb(params.mode, dst.rgb, src.rgb);
+    let blended = src.rgb;
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    // Match CPU oa_safe: guard tiny out_a from float error when sa > 0.
+    let out_rgb = co / max(out_a, 1e-20);
+    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_blend_screen(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = i32(gid.x);
+    let sy = i32(gid.y);
+    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
+        return;
+    }
+    let dx = params.layer_left + sx;
+    let dy = params.layer_top + sy;
+    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
+        return;
+    }
+
+    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
+    let sa = src.a;
+    if (sa <= 0.0) {
+        return;
+    }
+
+    let dst_coord = vec2<i32>(dx, dy);
+    let dst = textureLoad(target, dst_coord);
+    let da = dst.a;
+    let out_a = sa + da * (1.0 - sa);
+    let blended = dst.rgb + src.rgb - dst.rgb * src.rgb;
+    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
+    let out_rgb = co / max(out_a, 1e-20);
+    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_blend_linear_dodge(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = i32(gid.x);
+    let sy = i32(gid.y);
+    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
+        return;
+    }
+    let dx = params.layer_left + sx;
+    let dy = params.layer_top + sy;
+    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
+        return;
+    }
+
+    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
+    let sa = src.a;
+    if (sa <= 0.0) {
+        return;
+    }
+
+    let dst_coord = vec2<i32>(dx, dy);
+    let dst = textureLoad(target, dst_coord);
+    let da = dst.a;
+    let out_a = sa + da * (1.0 - sa);
+    let blended = min(dst.rgb + src.rgb, vec3<f32>(1.0));
+    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
+    let out_rgb = co / max(out_a, 1e-20);
+    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_blend_multiply(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let sx = i32(gid.x);
+    let sy = i32(gid.y);
+    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
+        return;
+    }
+    let dx = params.layer_left + sx;
+    let dy = params.layer_top + sy;
+    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
+        return;
+    }
+
+    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
+    let sa = src.a;
+    if (sa <= 0.0) {
+        return;
+    }
+
+    let dst_coord = vec2<i32>(dx, dy);
+    let dst = textureLoad(target, dst_coord);
+    let da = dst.a;
+    let out_a = sa + da * (1.0 - sa);
+    let blended = dst.rgb * src.rgb;
+    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
     textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
 }
@@ -256,10 +323,24 @@ pub(crate) struct DecodedLayerRef<'a> {
 
 struct PsdBlendPipeline {
     device_id: u64,
-    blend_pipeline: wgpu::ComputePipeline,
+    blend_normal_pipeline: wgpu::ComputePipeline,
+    blend_screen_pipeline: wgpu::ComputePipeline,
+    blend_linear_dodge_pipeline: wgpu::ComputePipeline,
+    blend_multiply_pipeline: wgpu::ComputePipeline,
     capture_base_alpha_pipeline: wgpu::ComputePipeline,
     apply_base_alpha_mask_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl PsdBlendPipeline {
+    fn blend_pipeline_for(&self, mode: u32) -> &wgpu::ComputePipeline {
+        match mode {
+            BLEND_MODE_SCREEN => &self.blend_screen_pipeline,
+            BLEND_MODE_LINEAR_DODGE => &self.blend_linear_dodge_pipeline,
+            BLEND_MODE_MULTIPLY => &self.blend_multiply_pipeline,
+            _ => &self.blend_normal_pipeline,
+        }
+    }
 }
 
 static PIPELINE_CACHE: Mutex<Option<Arc<PsdBlendPipeline>>> = Mutex::new(None);
@@ -396,14 +477,40 @@ fn create_pipeline(
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
-    let blend_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("simple-image-viewer-psd-separable-blend-pipeline"),
+    let blend_normal_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("simple-image-viewer-psd-blend-normal-pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
-        entry_point: Some("cs_blend_separable"),
+        entry_point: Some("cs_blend_normal"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: pipeline_cache,
     });
+    let blend_screen_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("simple-image-viewer-psd-blend-screen-pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs_blend_screen"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: pipeline_cache,
+    });
+    let blend_linear_dodge_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("simple-image-viewer-psd-blend-linear-dodge-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_blend_linear_dodge"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: pipeline_cache,
+        });
+    let blend_multiply_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("simple-image-viewer-psd-blend-multiply-pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_blend_multiply"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: pipeline_cache,
+        });
     let capture_base_alpha_pipeline =
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("simple-image-viewer-psd-capture-base-alpha-pipeline"),
@@ -424,7 +531,10 @@ fn create_pipeline(
         });
     Ok(PsdBlendPipeline {
         device_id,
-        blend_pipeline,
+        blend_normal_pipeline,
+        blend_screen_pipeline,
+        blend_linear_dodge_pipeline,
+        blend_multiply_pipeline,
         capture_base_alpha_pipeline,
         apply_base_alpha_mask_pipeline,
         bind_group_layout,
@@ -661,7 +771,7 @@ fn encode_blend_texture(
             },
         ],
     });
-    pass.set_pipeline(&pipe.blend_pipeline);
+    pass.set_pipeline(pipe.blend_pipeline_for(mode));
     pass.set_bind_group(0, &bind_group, &[]);
     pass.dispatch_workgroups(layer_w.div_ceil(WORKGROUP), layer_h.div_ceil(WORKGROUP), 1);
     resources.uniform_buffers.push(uniform);
@@ -1200,10 +1310,12 @@ mod tests {
     }
 
     #[test]
-    fn separable_shader_uses_mode_uniform_entry() {
+    fn separable_shader_uses_mode_specific_entries() {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("mode: u32"));
-        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_separable"));
-        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn blend_b"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_normal"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_screen"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_linear_dodge"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("fn cs_blend_multiply"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("sa * (1.0 - da)"));
     }
 

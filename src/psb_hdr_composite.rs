@@ -166,21 +166,240 @@ fn apply_base_alpha_mask_f32(group: &mut [f32], base_alpha: &[f32]) {
     if group.len() != base_alpha.len().saturating_mul(4) {
         return;
     }
-    for (px, &mask) in group.chunks_exact_mut(4).zip(base_alpha.iter()) {
-        if mask <= 0.0 {
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                apply_base_alpha_mask_f32_avx2(group, base_alpha);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                apply_base_alpha_mask_f32_sse41(group, base_alpha);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            apply_base_alpha_mask_f32_neon(group, base_alpha);
+        }
+        return;
+    }
+
+    apply_base_alpha_mask_f32_scalar(group, base_alpha);
+}
+
+fn apply_base_alpha_mask_f32_scalar(group: &mut [f32], base_alpha: &[f32]) {
+    let (pixels, _) = group.as_chunks_mut::<4>();
+    for (px, &mask) in pixels.iter_mut().zip(base_alpha.iter()) {
+        apply_one_base_alpha_mask(px, mask);
+    }
+}
+
+#[inline]
+fn apply_one_base_alpha_mask(px: &mut [f32], mask: f32) {
+    if mask <= 0.0 {
+        px[0] = 0.0;
+        px[1] = 0.0;
+        px[2] = 0.0;
+        px[3] = 0.0;
+    } else if mask < 1.0 {
+        let a = px[3] * mask;
+        px[3] = a.clamp(0.0, 1.0);
+        if a <= 0.0 {
             px[0] = 0.0;
             px[1] = 0.0;
             px[2] = 0.0;
-            px[3] = 0.0;
-        } else if mask < 1.0 {
-            let a = px[3] * mask;
-            px[3] = a.clamp(0.0, 1.0);
-            if a <= 0.0 {
-                px[0] = 0.0;
-                px[1] = 0.0;
-                px[2] = 0.0;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn apply_base_alpha_mask_f32_sse41(group: &mut [f32], base_alpha: &[f32]) {
+    use core::arch::x86_64::*;
+    const LANES: usize = 4;
+    let n = base_alpha.len();
+    let mut i = 0usize;
+    let zero = _mm_set1_ps(0.0);
+    let one = _mm_set1_ps(1.0);
+
+    while i + LANES <= n {
+        unsafe {
+            let mask = _mm_loadu_ps(base_alpha.as_ptr().add(i));
+            let base = group.as_mut_ptr().add(i * 4);
+            let le0 = _mm_cmple_ps(mask, zero);
+            let lt1 = _mm_cmplt_ps(mask, one);
+            let partial = _mm_andnot_ps(le0, lt1);
+            let le0_bits = _mm_movemask_ps(le0);
+            let partial_bits = _mm_movemask_ps(partial);
+
+            if le0_bits == 0xF {
+                for lane in 0..LANES {
+                    _mm_storeu_ps(base.add(lane * 4), zero);
+                }
+                i += LANES;
+                continue;
+            }
+
+            if partial_bits != 0 {
+                let a = _mm_setr_ps(*base.add(3), *base.add(7), *base.add(11), *base.add(15));
+                let scaled = _mm_mul_ps(a, mask);
+                let new_a = _mm_min_ps(_mm_max_ps(scaled, zero), one);
+                let a_le0 = _mm_cmple_ps(scaled, zero);
+                let clear_rgb = _mm_or_ps(le0, a_le0);
+                let clear_bits = _mm_movemask_ps(clear_rgb);
+
+                let mut a_tmp = [0f32; LANES];
+                _mm_storeu_ps(a_tmp.as_mut_ptr(), new_a);
+                for (lane, &new_alpha) in a_tmp.iter().enumerate() {
+                    let bit = 1 << lane;
+                    let p = base.add(lane * 4);
+                    if (le0_bits & bit) != 0 {
+                        _mm_storeu_ps(p, zero);
+                    } else if (partial_bits & bit) != 0 {
+                        *p.add(3) = new_alpha;
+                        if (clear_bits & bit) != 0 {
+                            *p = 0.0;
+                            *p.add(1) = 0.0;
+                            *p.add(2) = 0.0;
+                        }
+                    }
+                }
+            } else if le0_bits != 0 {
+                for lane in 0..LANES {
+                    if (le0_bits & (1 << lane)) != 0 {
+                        _mm_storeu_ps(base.add(lane * 4), zero);
+                    }
+                }
             }
         }
+        i += LANES;
+    }
+
+    while i < n {
+        apply_one_base_alpha_mask(&mut group[i * 4..i * 4 + 4], base_alpha[i]);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_base_alpha_mask_f32_avx2(group: &mut [f32], base_alpha: &[f32]) {
+    use core::arch::x86_64::*;
+    const LANES: usize = 8;
+    let n = base_alpha.len();
+    let mut i = 0usize;
+    let zero = _mm256_set1_ps(0.0);
+    let one = _mm256_set1_ps(1.0);
+    let alpha_idx = _mm256_setr_epi32(3, 7, 11, 15, 19, 23, 27, 31);
+
+    while i + LANES <= n {
+        unsafe {
+            let mask = _mm256_loadu_ps(base_alpha.as_ptr().add(i));
+            let base = group.as_mut_ptr().add(i * 4);
+            let le0 = _mm256_cmp_ps(mask, zero, _CMP_LE_OQ);
+            let lt1 = _mm256_cmp_ps(mask, one, _CMP_LT_OQ);
+            let partial = _mm256_andnot_ps(le0, lt1);
+
+            if _mm256_movemask_ps(le0) == 0xFF {
+                for lane in 0..LANES {
+                    _mm_storeu_ps(base.add(lane * 4), _mm_setzero_ps());
+                }
+                i += LANES;
+                continue;
+            }
+
+            let le0_bits = _mm256_movemask_ps(le0);
+            let partial_bits = _mm256_movemask_ps(partial);
+            if partial_bits != 0 {
+                let a = _mm256_i32gather_ps::<4>(base, alpha_idx);
+                let scaled = _mm256_mul_ps(a, mask);
+                let new_a = _mm256_min_ps(_mm256_max_ps(scaled, zero), one);
+                let a_le0 = _mm256_cmp_ps(scaled, zero, _CMP_LE_OQ);
+                let clear_rgb = _mm256_or_ps(le0, a_le0);
+                let clear_bits = _mm256_movemask_ps(clear_rgb);
+
+                let mut a_tmp = [0f32; LANES];
+                _mm256_storeu_ps(a_tmp.as_mut_ptr(), new_a);
+                for (lane, &new_alpha) in a_tmp.iter().enumerate() {
+                    let bit = 1 << lane;
+                    let p = base.add(lane * 4);
+                    if (le0_bits & bit) != 0 {
+                        _mm_storeu_ps(p, _mm_setzero_ps());
+                    } else if (partial_bits & bit) != 0 {
+                        *p.add(3) = new_alpha;
+                        if (clear_bits & bit) != 0 {
+                            *p = 0.0;
+                            *p.add(1) = 0.0;
+                            *p.add(2) = 0.0;
+                        }
+                    }
+                }
+            } else if le0_bits != 0 {
+                for lane in 0..LANES {
+                    if (le0_bits & (1 << lane)) != 0 {
+                        _mm_storeu_ps(base.add(lane * 4), _mm_setzero_ps());
+                    }
+                }
+            }
+        }
+        i += LANES;
+    }
+
+    if i < n {
+        apply_base_alpha_mask_f32_scalar(&mut group[i * 4..], &base_alpha[i..]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn apply_base_alpha_mask_f32_neon(group: &mut [f32], base_alpha: &[f32]) {
+    use core::arch::aarch64::*;
+    const LANES: usize = 4;
+    let n = base_alpha.len();
+    let mut i = 0usize;
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+
+    while i + LANES <= n {
+        unsafe {
+            let mask = vld1q_f32(base_alpha.as_ptr().add(i));
+            let base = group.as_mut_ptr().add(i * 4);
+            let pix = vld4q_f32(base);
+            let le0 = vcleq_f32(mask, zero);
+            let lt1 = vcltq_f32(mask, one);
+            let partial = vbicq_u32(lt1, le0);
+
+            let mut r = pix.0;
+            let mut g = pix.1;
+            let mut b = pix.2;
+            let mut a = pix.3;
+
+            let scaled = vmulq_f32(a, mask);
+            let new_a = vminq_f32(vmaxq_f32(scaled, zero), one);
+            let a_le0 = vcleq_f32(scaled, zero);
+            let clear_rgb = vorrq_u32(le0, a_le0);
+
+            a = vbslq_f32(partial, new_a, a);
+            a = vbslq_f32(le0, zero, a);
+            r = vbslq_f32(clear_rgb, zero, r);
+            g = vbslq_f32(clear_rgb, zero, g);
+            b = vbslq_f32(clear_rgb, zero, b);
+
+            vst4q_f32(base, float32x4x4_t(r, g, b, a));
+        }
+        i += LANES;
+    }
+
+    while i < n {
+        apply_one_base_alpha_mask(&mut group[i * 4..i * 4 + 4], base_alpha[i]);
+        i += 1;
     }
 }
 
