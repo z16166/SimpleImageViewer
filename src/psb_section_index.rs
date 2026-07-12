@@ -20,8 +20,8 @@ use std::fmt;
 use std::io::{Read, Seek};
 
 use crate::psb_reader::{
-    bytes_per_sample, checked_section_end, read_u16, read_u32, read_u64, seek_forward_within,
-    validate_psd_dimensions,
+    bytes_per_sample, checked_section_end, ensure_supported_color_mode, read_u16, read_u32,
+    read_u64, seek_forward_within, validate_psd_dimensions,
 };
 
 const IMAGE_DATA_POS_OVERFLOW: &str = "PSD/PSB image_data_pos overflows usize";
@@ -44,6 +44,8 @@ pub enum SectionParseError {
     Dimensions(String),
     /// Bit depth is not 8 / 16 / 32.
     UnsupportedDepth(u16),
+    /// Color mode is not Gray / RGB / CMYK.
+    UnsupportedColorMode(u16),
     /// Section length overflows or exceeds the file size.
     SectionOverflow { label: &'static str, detail: String },
     /// Cursor read / seek failure while walking the header.
@@ -61,6 +63,7 @@ impl SectionParseError {
                 | Self::UnsupportedVersion(_)
                 | Self::Dimensions(_)
                 | Self::UnsupportedDepth(_)
+                | Self::UnsupportedColorMode(_)
                 | Self::SectionOverflow { .. }
                 | Self::Io(_)
         )
@@ -82,6 +85,13 @@ impl fmt::Display for SectionParseError {
                 f,
                 "Unsupported PSD/PSB bit depth {d} (supported: 8, 16, 32)"
             ),
+            Self::UnsupportedColorMode(m) => {
+                write!(
+                    f,
+                    "{}",
+                    rust_i18n::t!("error.psd_unsupported_color_mode", mode = m)
+                )
+            }
             Self::SectionOverflow { detail, .. } => f.write_str(detail),
         }
     }
@@ -166,6 +176,8 @@ impl PsdSectionIndex {
             Ok(_) => {}
             Err(_) => return Err(SectionParseError::UnsupportedDepth(depth)),
         }
+        ensure_supported_color_mode(color_mode)
+            .map_err(|_| SectionParseError::UnsupportedColorMode(color_mode))?;
 
         let cm_len = read_u32(&mut r).map_err(SectionParseError::Io)? as u64;
         seek_forward_within(&mut r, cm_len, file_size, "color mode data")
@@ -388,6 +400,7 @@ mod tests {
         assert!(SectionParseError::UnsupportedVersion(3).is_structural());
         assert!(SectionParseError::Dimensions("x".into()).is_structural());
         assert!(SectionParseError::UnsupportedDepth(7).is_structural());
+        assert!(SectionParseError::UnsupportedColorMode(9).is_structural());
         assert!(
             SectionParseError::SectionOverflow {
                 label: "image resources",
@@ -396,5 +409,21 @@ mod tests {
             .is_structural()
         );
         assert!(SectionParseError::Io("read".into()).is_structural());
+    }
+
+    #[test]
+    fn unsupported_color_mode_is_rejected_at_parse() {
+        let mut bytes = vec![0u8; 50];
+        bytes[0..4].copy_from_slice(b"8BPS");
+        bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
+        bytes[12..14].copy_from_slice(&3u16.to_be_bytes()); // channels
+        bytes[14..18].copy_from_slice(&8u32.to_be_bytes()); // height
+        bytes[18..22].copy_from_slice(&8u32.to_be_bytes()); // width
+        bytes[22..24].copy_from_slice(&8u16.to_be_bytes()); // depth
+        bytes[24..26].copy_from_slice(&9u16.to_be_bytes()); // Lab -- unsupported
+        // color mode data len + ir len + layer len = 0
+        let err = PsdSectionIndex::parse(&bytes).unwrap_err();
+        assert_eq!(err, SectionParseError::UnsupportedColorMode(9));
+        assert!(err.is_structural());
     }
 }

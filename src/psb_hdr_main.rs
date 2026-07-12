@@ -118,7 +118,7 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
 ) -> Result<PsdHdrMainDecode, crate::loader::DecodeError> {
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
     if !psd_content_wants_hdr(index.depth, embedded_icc.as_deref()) {
-        return Err("PSD HDR main: content gate does not want HDR".into());
+        return Err(crate::loader::DecodeError::PsdHdrNotWanted);
     }
 
     let sdr_white = tone.sdr_white_nits.max(1.0);
@@ -655,5 +655,31 @@ mod tests {
         let err = rgba_f32_is_zero_information_with_cancel(&[0.0; 4], Some(&cancel))
             .expect_err("cancelled zero-information scan");
         assert!(err.is_cancelled());
+    }
+
+    #[test]
+    fn content_gate_decline_is_typed_enum() {
+        // Minimal 8-bit RGB PSD header: content gate must decline HDR.
+        let mut bytes = vec![0u8; 50];
+        bytes[0..4].copy_from_slice(b"8BPS");
+        bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
+        bytes[12..14].copy_from_slice(&3u16.to_be_bytes());
+        bytes[14..18].copy_from_slice(&1u32.to_be_bytes());
+        bytes[18..22].copy_from_slice(&1u32.to_be_bytes());
+        bytes[22..24].copy_from_slice(&8u16.to_be_bytes());
+        bytes[24..26].copy_from_slice(&3u16.to_be_bytes());
+        let index = crate::psb_section_index::PsdSectionIndex::parse(&bytes).unwrap();
+        let tone = HdrToneMapSettings::default();
+        let err = decode_psd_hdr_main_from_index_with_cancel(
+            &index,
+            &bytes,
+            None,
+            &tone,
+            false,
+            crate::settings::PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect_err("8-bit must decline HDR");
+        assert!(err.is_psd_hdr_not_wanted());
+        assert_eq!(err.as_str(), crate::loader::PSD_HDR_NOT_WANTED);
     }
 }

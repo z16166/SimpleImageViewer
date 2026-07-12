@@ -29,6 +29,12 @@ pub const DECODE_CANCELLED: &str = "decode cancelled";
 /// Display text for [`DecodeError::NoDrawableVisibleLayers`] (logging / UI).
 pub const STRICT_LAYER_COMPOSITE_BLANK: &str = "PSD layer composite has no drawable visible layers";
 
+/// Stable (non-i18n) log text for [`DecodeError::PsdHdrNotWanted`].
+///
+/// User-facing copy uses `error.psd_hdr_not_wanted` when the error is shown;
+/// HDR callers normally treat this as a soft decline and fall back to SDR.
+pub const PSD_HDR_NOT_WANTED: &str = "PSD HDR main: content gate does not want HDR";
+
 /// Typed decode failure. Semantic cases are distinct variants so callers match
 /// by enum (checklist #30) instead of comparing error strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +42,8 @@ pub enum DecodeError {
     Cancelled,
     /// Strict PSD/PSB layer composite found no drawable visible layers.
     NoDrawableVisibleLayers,
+    /// HDR path declined because depth/ICC content gate does not want HDR.
+    PsdHdrNotWanted,
     /// PSD/PSB header / section-boundary failure from [`crate::psb_section_index::SectionParseError`].
     PsdStructural(String),
     Message(String),
@@ -53,6 +61,11 @@ impl DecodeError {
     }
 
     #[inline]
+    pub fn is_psd_hdr_not_wanted(&self) -> bool {
+        matches!(self, Self::PsdHdrNotWanted)
+    }
+
+    #[inline]
     pub fn is_psd_structural(&self) -> bool {
         matches!(self, Self::PsdStructural(_))
     }
@@ -62,14 +75,30 @@ impl DecodeError {
         match self {
             Self::Cancelled => DECODE_CANCELLED,
             Self::NoDrawableVisibleLayers => STRICT_LAYER_COMPOSITE_BLANK,
+            // Prefer i18n when this soft-decline is shown in the UI; keep the
+            // English constant available via `PSD_HDR_NOT_WANTED` for logs/tests.
+            Self::PsdHdrNotWanted => PSD_HDR_NOT_WANTED,
             Self::PsdStructural(msg) | Self::Message(msg) => msg.as_str(),
+        }
+    }
+
+    /// Localized display text for UI (checklist #4). Typed variants map to i18n keys.
+    pub fn to_user_string(&self) -> String {
+        match self {
+            Self::PsdHdrNotWanted => rust_i18n::t!("error.psd_hdr_not_wanted").to_string(),
+            other => other.to_string(),
         }
     }
 }
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        match self {
+            Self::PsdHdrNotWanted => {
+                write!(f, "{}", rust_i18n::t!("error.psd_hdr_not_wanted"))
+            }
+            other => f.write_str(other.as_str()),
+        }
     }
 }
 
@@ -130,7 +159,10 @@ impl DecodeCancelFlag {
 
 #[cfg(test)]
 mod tests {
-    use super::{DECODE_CANCELLED, DecodeCancelFlag, DecodeError, STRICT_LAYER_COMPOSITE_BLANK};
+    use super::{
+        DECODE_CANCELLED, DecodeCancelFlag, DecodeError, PSD_HDR_NOT_WANTED,
+        STRICT_LAYER_COMPOSITE_BLANK,
+    };
 
     #[test]
     fn cancel_is_visible_to_clones() {
@@ -162,6 +194,17 @@ mod tests {
             !DecodeError::Message(STRICT_LAYER_COMPOSITE_BLANK.into())
                 .is_no_drawable_visible_layers()
         );
+    }
+
+    #[test]
+    fn psd_hdr_not_wanted_is_typed_variant() {
+        let err = DecodeError::PsdHdrNotWanted;
+        assert!(err.is_psd_hdr_not_wanted());
+        assert!(!err.is_cancelled());
+        assert!(!err.is_no_drawable_visible_layers());
+        assert!(!err.is_psd_structural());
+        assert_eq!(err.as_str(), PSD_HDR_NOT_WANTED);
+        assert!(!DecodeError::Message(PSD_HDR_NOT_WANTED.into()).is_psd_hdr_not_wanted());
     }
 
     #[test]

@@ -49,6 +49,12 @@ pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 pub(crate) const MAX_DOCUMENT_PIXELS: u64 = 1024 * 1024 * 1024;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
+/// Absolute cap on a single ZIP Image Data inflate (all planar channels).
+///
+/// Matches [`crate::psb_layer_composite::MAX_COMPOSITE_DECODED_BYTES`] so a
+/// 32-bit multi-channel document cannot allocate unbounded zlib output when a
+/// caller skips the RAM precheck that uses [`estimate_memory_from_bytes`].
+pub(crate) const MAX_ZIP_PLANAR_INFLATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Bytes per RGBA pixel when assembling the composite image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
 /// Bytes per display-linear HDR RGBA f32 pixel.
@@ -124,6 +130,7 @@ pub fn read_composite_from_index(
     let depth = index.depth;
     let color_mode = index.color_mode;
     let is_psb = index.is_psb;
+    ensure_supported_color_mode(color_mode)?;
     let bps = bytes_per_sample(depth)?;
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
 
@@ -201,6 +208,12 @@ pub fn read_composite_from_index(
         let expected = (channels as usize)
             .checked_mul(raw_channel_bytes)
             .ok_or_else(|| "PSD/PSB ZIP planar size overflow".to_string())?;
+        if (expected as u64) > MAX_ZIP_PLANAR_INFLATE_BYTES {
+            return Err(format!(
+                "PSD/PSB ZIP planar {expected} bytes exceeds budget {MAX_ZIP_PLANAR_INFLATE_BYTES}"
+            )
+            .into());
+        }
         check_decode_cancel(cancel)?;
         let mut planar = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
         if compression == 3 {
@@ -1099,7 +1112,19 @@ pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bo
         1 => ch_idx <= 1,                                  // Gray, Alpha
         3 => ch_idx <= 3,                                  // R, G, B, Alpha
         4 => ch_idx < 4 || (channels >= 5 && ch_idx == 4), // C,M,Y,K[,A]
-        _ => ch_idx <= 2,
+        // Unsupported modes are rejected by [`ensure_supported_color_mode`]
+        // before decode; never silently treat them as RGB.
+        _ => false,
+    }
+}
+
+/// Reject Bitmap / Indexed / Lab / Duotone / Multichannel etc. (checklist #15).
+///
+/// Only Gray (1), RGB (3), and CMYK (4) have color conversion paths.
+pub(crate) fn ensure_supported_color_mode(color_mode: u16) -> Result<(), String> {
+    match color_mode {
+        1 | 3 | 4 => Ok(()),
+        _ => Err(rust_i18n::t!("error.psd_unsupported_color_mode", mode = color_mode).to_string()),
     }
 }
 
@@ -1199,8 +1224,8 @@ fn interleave_row_rgba8(
                 }
             }
         }
-        _ => {
-            // RGB (mode 3) and generic 3/4-channel fallback
+        3 => {
+            // RGB
             let r = planar
                 .first()
                 .and_then(|ch| ch.as_ref())
@@ -1225,6 +1250,9 @@ fn interleave_row_rgba8(
                     simd_swizzle::interleave_rgb_with_alpha(r, g, b, 255, dst_row);
                 }
             }
+        }
+        _ => {
+            // Unsupported modes are rejected before decode; leave the row blank.
         }
     }
 }
@@ -1477,9 +1505,10 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
 #[cfg(test)]
 mod tests {
     use super::{
-        HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, PACKBITS_MAX_NOOPS_PER_ROW,
-        PACKBITS_TOO_MANY_NOOPS, PSD_MAX_DIMENSION, RGBA_BYTES_PER_PIXEL, cmyk_to_rgb,
-        downconvert_samples_to_u8, estimate_memory_from_bytes, for_each_image_resource,
+        HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, MAX_ZIP_PLANAR_INFLATE_BYTES,
+        PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, PSD_MAX_DIMENSION,
+        RGBA_BYTES_PER_PIXEL, channel_is_used, cmyk_to_rgb, downconvert_samples_to_u8,
+        ensure_supported_color_mode, estimate_memory_from_bytes, for_each_image_resource,
         max_rle_compressed_row_bytes, read_composite_from_bytes_with_cancel, seek_rle_channel_skip,
         unpack_bits_into, validate_psd_dimensions, validate_rle_row_counts,
     };
@@ -1942,5 +1971,31 @@ mod tests {
         assert!(err.is_cancelled());
         assert_eq!(err.as_str(), crate::loader::DECODE_CANCELLED);
         assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn unsupported_color_modes_are_rejected() {
+        for mode in [0u16, 2, 7, 8, 9] {
+            let err = ensure_supported_color_mode(mode).unwrap_err();
+            assert!(
+                err.contains(&mode.to_string()) || err.contains("color"),
+                "mode={mode} err={err}"
+            );
+            assert!(!channel_is_used(mode, 0, 3));
+            assert!(!channel_is_used(mode, 1, 3));
+            assert!(!channel_is_used(mode, 2, 3));
+        }
+        assert!(ensure_supported_color_mode(1).is_ok());
+        assert!(ensure_supported_color_mode(3).is_ok());
+        assert!(ensure_supported_color_mode(4).is_ok());
+        assert!(channel_is_used(3, 0, 3));
+        assert!(channel_is_used(3, 2, 3));
+    }
+
+    #[test]
+    fn zip_planar_inflate_budget_is_named_and_finite() {
+        // Guardrail: budget must stay aligned with the 8 GiB composite decode cap.
+        assert_eq!(MAX_ZIP_PLANAR_INFLATE_BYTES, 8 * 1024 * 1024 * 1024);
+        assert!(MAX_ZIP_PLANAR_INFLATE_BYTES > 0);
     }
 }

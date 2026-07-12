@@ -63,6 +63,10 @@ pub(crate) unsafe fn mul_div255_u8x8(
 }
 
 /// Exact `c * k / 255` for 16 lanes of `c` and `k` (AVX2).
+///
+/// Inputs are `__m128i` holding 16 `u8` lanes (not `__m256i`): AVX2
+/// `_mm256_cvtepu8_epi16` zero-extends those 16 bytes into a `__m256i` of
+/// u16, then the result is packed back to 16 `u8` in a `__m128i`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn mul_div255_u8x16(
@@ -128,7 +132,7 @@ pub(crate) unsafe fn mul_div255_u8x8_neon(
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
-    use super::mul_div255_u8x8;
+    use super::{mul_div255_u8x8, mul_div255_u8x16};
     use core::arch::x86_64::*;
 
     #[test]
@@ -164,6 +168,44 @@ mod tests {
                 let out = mul_div255_u8x8(cv, kv);
                 let mut buf = [0u8; 8];
                 _mm_storel_epi64(buf.as_mut_ptr().cast(), out);
+                buf
+            };
+            assert_eq!(&got[..chunk.len()], &expect[..chunk.len()]);
+        }
+    }
+
+    #[test]
+    fn mul_div255_u8x16_avx2_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut pairs = Vec::new();
+        for c in [0u8, 1, 2, 127, 128, 254, 255] {
+            for k in [0u8, 1, 2, 127, 128, 254, 255] {
+                pairs.push((c, k));
+            }
+        }
+        for c in (0u8..=255).step_by(17) {
+            for k in (0u8..=255).step_by(19) {
+                pairs.push((c, k));
+            }
+        }
+
+        for chunk in pairs.chunks(16) {
+            let mut c = [0u8; 16];
+            let mut k = [0u8; 16];
+            let mut expect = [0u8; 16];
+            for (i, &(ci, ki)) in chunk.iter().enumerate() {
+                c[i] = ci;
+                k[i] = ki;
+                expect[i] = ((ci as u16 * ki as u16) / 255) as u8;
+            }
+            let got = unsafe {
+                let cv = _mm_loadu_si128(c.as_ptr().cast());
+                let kv = _mm_loadu_si128(k.as_ptr().cast());
+                let out = mul_div255_u8x16(cv, kv);
+                let mut buf = [0u8; 16];
+                _mm_storeu_si128(buf.as_mut_ptr().cast(), out);
                 buf
             };
             assert_eq!(&got[..chunk.len()], &expect[..chunk.len()]);

@@ -260,23 +260,11 @@ unsafe fn cmyk_planes_to_rgba8_neon(
                 Some(a) => vld1_u8(a.as_ptr().add(i)),
                 None => vdup_n_u8(255),
             };
-            let rg = vzip_u8(r, g);
-            let ba = vzip_u8(b, a);
-            let rgba_lo = vzip_u16(vreinterpret_u16_u8(rg.0), vreinterpret_u16_u8(ba.0));
-            let rgba_hi = vzip_u16(vreinterpret_u16_u8(rg.1), vreinterpret_u16_u8(ba.1));
-            vst1_u8(dst.as_mut_ptr().add(i * 4), vreinterpret_u8_u16(rgba_lo.0));
-            vst1_u8(
-                dst.as_mut_ptr().add(i * 4 + 8),
-                vreinterpret_u8_u16(rgba_lo.1),
-            );
-            vst1_u8(
-                dst.as_mut_ptr().add(i * 4 + 16),
-                vreinterpret_u8_u16(rgba_hi.0),
-            );
-            vst1_u8(
-                dst.as_mut_ptr().add(i * 4 + 24),
-                vreinterpret_u8_u16(rgba_hi.1),
-            );
+            // vst4 stores R,G,B,A interleaved for 8 pixels (same layout as
+            // scalar / SSE unpacklo). Avoid hand-rolled vzip which is easy to
+            // get wrong across lane halves.
+            let lanes = uint8x8x4_t(r, g, b, a);
+            vst4_u8(dst.as_mut_ptr().add(i * 4), lanes);
         }
         i += NEON_PIXELS;
     }
@@ -566,6 +554,41 @@ mod tests {
         cmyk_planes_to_rgba8(&c, &m, &y, &k, None, &mut dst);
         assert_eq!(&dst[0..4], &[255, 255, 255, 255]);
         assert_eq!(&dst[4..8], &[0, 255, 255, 255]);
+    }
+
+    /// Host-agnostic RGBA byte-layout golden values.
+    ///
+    /// Uses asymmetric C/Y so an R/B swap in any SIMD pack path fails on every
+    /// architecture (including x64 CI that never runs the aarch64 NEON path).
+    #[test]
+    fn cmyk_rgba_byte_layout_matches_scalar_golden() {
+        let n = 24usize; // covers AVX2(16) + SSE/NEON(8) + scalar tail
+        // Adobe polarity: 0 = full ink. Distinct C vs Y => distinct R vs B.
+        let c: Vec<u8> = (0..n).map(|i| (i * 11) as u8).collect();
+        let m: Vec<u8> = (0..n).map(|i| (i * 13) as u8).collect();
+        let y: Vec<u8> = (0..n).map(|i| 200u8.wrapping_sub((i * 17) as u8)).collect();
+        let k: Vec<u8> = (0..n).map(|i| 255u8.wrapping_sub((i * 3) as u8)).collect();
+        let a: Vec<u8> = (0..n).map(|i| (40 + i) as u8).collect();
+
+        let mut simd = vec![0u8; n * 4];
+        let mut scalar = vec![0u8; n * 4];
+        cmyk_planes_to_rgba8(&c, &m, &y, &k, Some(&a), &mut simd);
+        super::cmyk_planes_to_rgba8_scalar(&c, &m, &y, &k, Some(&a), &mut scalar);
+        assert_eq!(simd, scalar, "SIMD vs scalar RGBA layout mismatch");
+
+        // Spot-check first/last pixel against the closed-form formula.
+        for i in [0usize, n / 2, n - 1] {
+            let (r, g, b) = cmyk_to_rgb(c[i], m[i], y[i], k[i]);
+            assert_eq!(&simd[i * 4..i * 4 + 4], &[r, g, b, a[i]], "i={i}");
+            // R and B must differ for at least one sample so a swap is detectable.
+            if r != b {
+                assert_ne!(
+                    simd[i * 4],
+                    simd[i * 4 + 2],
+                    "R/B swap would hide here i={i}"
+                );
+            }
+        }
     }
 
     #[test]

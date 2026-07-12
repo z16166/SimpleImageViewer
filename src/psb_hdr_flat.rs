@@ -36,9 +36,10 @@ use crate::hdr::types::{
 };
 use crate::psb_icc_hdr::probe_icc_hdr;
 use crate::psb_reader::{
-    bytes_per_sample, channel_is_used, check_decode_cancel, downconvert_samples_to_u8,
-    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16, read_u32,
-    seek_forward_within, unpack_bits_into, validate_rle_row_counts,
+    MAX_ZIP_PLANAR_INFLATE_BYTES, bytes_per_sample, channel_is_used, check_decode_cancel,
+    downconvert_samples_to_u8, ensure_supported_color_mode, extract_icc_profile_from_ir,
+    max_rle_compressed_row_bytes, read_u16, read_u32, seek_forward_within, unpack_bits_into,
+    validate_rle_row_counts,
 };
 use crate::psb_section_index::PsdSectionIndex;
 
@@ -74,6 +75,7 @@ pub fn read_composite_hdr_from_index(
     let channels = index.channels;
     let color_mode = index.color_mode;
     let is_psb = index.is_psb;
+    ensure_supported_color_mode(color_mode)?;
 
     let embedded_icc = extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
 
@@ -147,6 +149,12 @@ pub fn read_composite_hdr_from_index(
         let expected = (channels as usize)
             .checked_mul(raw_channel_bytes)
             .ok_or_else(|| "PSD/PSB HDR ZIP planar size overflow".to_string())?;
+        if (expected as u64) > MAX_ZIP_PLANAR_INFLATE_BYTES {
+            return Err(format!(
+                "PSD/PSB HDR ZIP planar {expected} bytes exceeds budget {MAX_ZIP_PLANAR_INFLATE_BYTES}"
+            )
+            .into());
+        }
         check_decode_cancel(cancel)?;
         let mut planar = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
         if compression == 3 {
