@@ -33,6 +33,7 @@ use crate::psb_layer_decode::{
     StreamingPeakTracker, gpu_batch_eligible_decoded_bytes, run_composite_pass_cpu_streaming,
     run_composite_pass_gpu_batch,
 };
+use crate::psb_reader::PSD_COLOR_MODE_CMYK;
 
 const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
@@ -302,7 +303,7 @@ pub fn parse_layer_records_from_index<'a>(
 
     let embedded_icc =
         crate::psb_reader::extract_icc_profile_from_ir(bytes, index.ir_start, index.ir_end);
-    let cmyk_icc = if color_mode == 4 {
+    let cmyk_icc = if color_mode == PSD_COLOR_MODE_CMYK {
         crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec()
     } else {
         Vec::new()
@@ -1278,7 +1279,7 @@ fn allocate_composite_canvas(len: usize, color_mode: u16) -> Vec<u8> {
 }
 
 fn clear_composite_canvas(canvas: &mut [u8], color_mode: u16) {
-    if color_mode == 4 {
+    if color_mode == PSD_COLOR_MODE_CMYK {
         // CMYK paper white is 255 per channel; SIMD fill beats per-pixel scalar stores.
         crate::psb_packbits_simd::fill_bytes(canvas, 255);
     } else {

@@ -347,6 +347,7 @@ fn decode_psd_sdr_main_with_index(
         {
             return Ok(main);
         }
+        crate::psb_reader::check_decode_cancel(cancel)?;
         match psd_hidden_layer_strategy {
             crate::settings::PsdHiddenLayerStrategy::Heuristic => {
                 if let Some(main) = decode_psd_sdr_main_p25b_heuristic(

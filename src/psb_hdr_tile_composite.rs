@@ -37,6 +37,7 @@ use crate::psb_hdr_composite::{
 };
 use crate::psb_layer_composite::LayerInfo;
 use crate::psb_layer_decode::layer_channel_byte_ranges;
+use crate::psb_reader::PSD_COLOR_MODE_CMYK;
 
 /// Whether a layer rect `[left, right) x [top, bottom)` overlaps the tile
 /// `[tile_x, tile_x + tile_w) x [tile_y, tile_y + tile_h)`.
@@ -108,7 +109,7 @@ pub(crate) fn composite_hdr_tile_with_visibility(
         .ok_or_else(|| DecodeError::Message("PSD/PSB HDR tile RGBA f32 length overflow".into()))?;
 
     // CMYK composites over paper white; every other mode starts transparent black.
-    let mut canvas = if layer_info.color_mode == 4 {
+    let mut canvas = if layer_info.color_mode == PSD_COLOR_MODE_CMYK {
         vec![1.0f32; canvas_len]
     } else {
         vec![0.0f32; canvas_len]

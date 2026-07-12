@@ -24,18 +24,19 @@
 
 use memmap2::Mmap;
 use std::cell::RefCell;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use simple_image_viewer::simd_swizzle;
 
 use crate::psb_reader::{
-    bytes_per_sample, channel_is_used, checked_section_end, cmyk_to_rgb, downconvert_samples_to_u8,
-    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16, read_u32, read_u64,
-    seek_forward_within, tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
-    validate_rle_row_counts,
+    PSD_COLOR_MODE_CMYK, PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP,
+    PSD_COMPRESSION_ZIP_PREDICTION, bytes_per_sample, channel_is_used, cmyk_to_rgb,
+    downconvert_samples_to_u8, extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16,
+    tiled_compression_supported, unpack_bits_into, validate_rle_row_counts,
 };
+use crate::psb_section_index::PsdSectionIndex;
 
 type TiledRowBatch = Vec<(u32, Arc<Vec<u8>>)>;
 
@@ -59,8 +60,11 @@ pub struct PsbTiledSource {
     height: u32,
     channels: u32,
     color_mode: u16,
-    /// Bits per channel: 8, 16, or 32.
+    /// Bits per channel: 8, 16, or 32 (retained for diagnostics; decode uses `bps`).
+    #[allow(dead_code)]
     depth: u16,
+    /// Cached [`bytes_per_sample`] result; validated once at open.
+    bps: usize,
     #[allow(dead_code)]
     is_psb: bool,
     compression: u16,
@@ -85,7 +89,7 @@ impl PsbTiledSource {
 
     #[inline]
     fn bytes_per_sample(&self) -> usize {
-        (self.depth / 8) as usize
+        self.bps
     }
 
     #[inline]
@@ -130,7 +134,7 @@ impl PsbTiledSource {
                 "PSD/PSB tiled row index overflow".to_string()
             })?;
         match self.compression {
-            0 => {
+            PSD_COMPRESSION_RAW => {
                 // Raw mode must have a populated offset table (ZIP leaves it empty
                 // and is refused at open; still guard against a hollow table).
                 if self.row_offsets.is_empty() {
@@ -151,7 +155,7 @@ impl PsbTiledSource {
                 }
                 downconvert_samples_to_u8(buf, &self.mmap[offset..end], bps);
             }
-            1 => {
+            PSD_COMPRESSION_RLE => {
                 let Some(offset) = self.row_file_offset(idx) else {
                     buf.fill(0);
                     return Err("PSD/PSB tiled RLE row offset is missing".to_string());
@@ -197,8 +201,8 @@ impl PsbTiledSource {
             }
             // ZIP / ZIP+prediction is a single zlib stream without per-row
             // offsets, so [`crate::psb_reader::tiled_compression_supported`]
-            // rejects 2|3 before construction. This arm is fail-closed only.
-            2 | 3 => {
+            // rejects them before construction. This arm is fail-closed only.
+            PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
                 buf.fill(0);
                 return Err(
                     "PSD/PSB tiled ZIP is unsupported (no per-row offsets in Image Data)"
@@ -425,44 +429,23 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
 /// Build a tiled source from an already-mapped file (checklist #29: avoid a
 /// second open/mmap when `load_psd` already mapped the path).
 pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTiledSource, String> {
-    let mut cursor = std::io::Cursor::new(&mmap[..]);
-
-    let mut sig = [0u8; 4];
-    cursor.read_exact(&mut sig).map_err(|e| e.to_string())?;
-    let version = read_u16(&mut cursor)?;
-    let is_psb = version == 2;
-    cursor
-        .seek(SeekFrom::Current(6))
-        .map_err(|e| e.to_string())?;
-    let channels = read_u16(&mut cursor)? as u32;
-    let height = read_u32(&mut cursor)?;
-    let width = read_u32(&mut cursor)?;
-    let depth = read_u16(&mut cursor)?;
-    let color_mode = read_u16(&mut cursor)?;
-
-    validate_psd_dimensions(width, height, channels)?;
+    let index = PsdSectionIndex::parse(&mmap[..]).map_err(|e| e.to_string())?;
+    let width = index.width;
+    let height = index.height;
+    let channels = index.channels;
+    let depth = index.depth;
+    let color_mode = index.color_mode;
+    let is_psb = index.is_psb;
     let bps = bytes_per_sample(depth)?;
     let row_raw_bytes = (width as u64)
         .checked_mul(bps as u64)
         .ok_or_else(|| "PSD/PSB row byte count overflow".to_string())?;
 
-    // Skip Sections 2, 3, 4 (capture ICC from IR when present).
-    let file_size = mmap.len() as u64;
-    let cm_len = read_u32(&mut cursor)?;
-    seek_forward_within(&mut cursor, cm_len as u64, file_size, "color mode data")
-        .map_err(|e| e.to_string())?;
-    let ir_len = read_u32(&mut cursor)? as u64;
-    let ir_start = cursor.position();
-    let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")?;
-    let embedded_icc = extract_icc_profile_from_ir(&mmap[..], ir_start, ir_end);
-    seek_forward_within(&mut cursor, ir_len, file_size, "image resources")
-        .map_err(|e| e.to_string())?;
-    let lm_len = if is_psb {
-        read_u64(&mut cursor)?
-    } else {
-        read_u32(&mut cursor)? as u64
-    };
-    seek_forward_within(&mut cursor, lm_len, file_size, "layer and mask info")
+    let embedded_icc = extract_icc_profile_from_ir(&mmap[..], index.ir_start, index.ir_end);
+
+    let mut cursor = std::io::Cursor::new(&mmap[..]);
+    cursor
+        .seek(SeekFrom::Start(index.image_data_pos))
         .map_err(|e| e.to_string())?;
 
     let compression = read_u16(&mut cursor)?;
@@ -472,7 +455,7 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
 
     match compression {
-        0 => {
+        PSD_COMPRESSION_RAW => {
             let channel_bytes = row_raw_bytes
                 .checked_mul(height as u64)
                 .ok_or_else(|| "PSD/PSB channel byte count overflow".to_string())?;
@@ -492,7 +475,7 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
                 }
             }
         }
-        1 => {
+        PSD_COMPRESSION_RLE => {
             let total_rows = (channels as usize)
                 .checked_mul(height as usize)
                 .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
@@ -535,7 +518,7 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
         })
         .build();
 
-    let cmyk_icc: Arc<[u8]> = if color_mode == 4 {
+    let cmyk_icc: Arc<[u8]> = if color_mode == PSD_COLOR_MODE_CMYK {
         Arc::<[u8]>::from(crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref()).to_vec())
     } else {
         Arc::from([])
@@ -549,6 +532,7 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
         channels,
         color_mode,
         depth,
+        bps,
         is_psb,
         compression,
         row_offsets,

@@ -45,6 +45,10 @@ use crate::psb_layer_decode::{
     channel_samples_to_f32, decode_channel_image, decode_mask_channel_to_layer,
     layer_channel_byte_ranges, layer_planes_to_rgba_f32,
 };
+use crate::psb_reader::{
+    PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_REAL_USER_MASK, PSD_CHANNEL_ID_USER_MASK,
+    PSD_COLOR_MODE_CMYK,
+};
 use crate::psb_section_index::PsdSectionIndex;
 
 // -- f32 canvas blend ---------------------------------------------------------
@@ -656,7 +660,7 @@ pub(crate) fn decode_layer_to_f32(
         cursor = end;
 
         match ch.id {
-            -1 => {
+            PSD_CHANNEL_ID_ALPHA => {
                 // Alpha channel: linear, no transfer decode.
                 match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
@@ -666,10 +670,15 @@ pub(crate) fn decode_layer_to_f32(
                     Err(e) => log::debug!("PSD/PSB HDR layer alpha decode failed: {e}"),
                 }
             }
-            -2 | -3 => {
-                let mask_info = if ch.id == -3 {
+            PSD_CHANNEL_ID_USER_MASK | PSD_CHANNEL_ID_REAL_USER_MASK => {
+                let mask_info = if ch.id == PSD_CHANNEL_ID_REAL_USER_MASK {
                     record.real_mask.as_ref().or(record.mask.as_ref())
-                } else if record.real_mask.is_some() && record.channels.iter().any(|c| c.id == -3) {
+                } else if record.real_mask.is_some()
+                    && record
+                        .channels
+                        .iter()
+                        .any(|c| c.id == PSD_CHANNEL_ID_REAL_USER_MASK)
+                {
                     None
                 } else {
                     record.mask.as_ref()
@@ -829,7 +838,7 @@ fn composite_layers_hdr_with_visibility(
         .ok_or_else(|| DecodeError::Message("HDR canvas RGBA f32 length overflow".into()))?;
 
     // CMYK: paper white (all channels 1.0); others: transparent black.
-    let mut canvas = if color_mode == 4 {
+    let mut canvas = if color_mode == PSD_COLOR_MODE_CMYK {
         vec![1.0f32; canvas_f32_len]
     } else {
         vec![0.0f32; canvas_f32_len]

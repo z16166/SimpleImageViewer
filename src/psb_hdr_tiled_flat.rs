@@ -23,7 +23,7 @@
 use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::cell::RefCell;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -38,13 +38,15 @@ use crate::hdr::types::{
 };
 use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_reader::{
-    bytes_per_sample, checked_section_end, extract_icc_profile_from_ir,
-    max_rle_compressed_row_bytes, read_u16, read_u32, read_u64, seek_forward_within,
-    tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
-    validate_rle_row_counts,
+    PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_RGB, PSD_COMPRESSION_RAW,
+    PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION, bytes_per_sample,
+    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16, read_u32,
+    tiled_compression_supported, unpack_bits_into, validate_rle_row_counts,
 };
+use crate::psb_section_index::PsdSectionIndex;
 
-const ROW_CACHE_BUDGET: u64 = 512 * 1024 * 1024;
+/// Total decompressed row-byte budget for the HDR tiled moka row cache (512 MiB).
+const PSB_HDR_TILED_ROW_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Phase 3 budget for lazily inflating a ZIP (compression 2|3) flattened Image
 /// Data section into an in-memory planar buffer. Larger sections refuse flat
@@ -60,6 +62,8 @@ pub struct PsbHdrTiledFlatSource {
     height: u32,
     channels: u32,
     depth: u16,
+    /// Cached [`bytes_per_sample`] result; validated once at open.
+    bps: usize,
     compression: u16,
     row_offsets: Vec<u64>,
     /// Byte range of the zlib payload in `mmap` for compression 2|3; `None`
@@ -78,7 +82,7 @@ pub struct PsbHdrTiledFlatSource {
 impl PsbHdrTiledFlatSource {
     #[inline]
     fn bytes_per_sample(&self) -> usize {
-        (self.depth / 8) as usize
+        self.bps
     }
 
     #[inline]
@@ -115,7 +119,7 @@ impl PsbHdrTiledFlatSource {
                 "PSD/PSB HDR tiled row index overflow".to_string()
             })?;
         match self.compression {
-            0 => {
+            PSD_COMPRESSION_RAW => {
                 let Some(offset) = self.row_file_offset(idx) else {
                     buf.fill(0);
                     return Err("PSD/PSB HDR tiled raw row offset is missing".to_string());
@@ -131,7 +135,7 @@ impl PsbHdrTiledFlatSource {
                     return Err("PSD/PSB HDR tiled raw row is out of bounds".to_string());
                 }
             }
-            1 => {
+            PSD_COMPRESSION_RLE => {
                 let Some(offset) = self.row_file_offset(idx) else {
                     buf.fill(0);
                     return Err("PSD/PSB HDR tiled RLE row offset is missing".to_string());
@@ -166,7 +170,7 @@ impl PsbHdrTiledFlatSource {
                     return Err("PSD/PSB HDR tiled RLE row range is invalid".to_string());
                 }
             }
-            2 | 3 => {
+            PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
                 let Some(planar) = self.ensure_zip_planar() else {
                     buf.fill(0);
                     return Err("PSD/PSB HDR tiled ZIP planar data is unavailable".to_string());
@@ -230,7 +234,7 @@ impl PsbHdrTiledFlatSource {
                     return None;
                 }
             };
-            if compression == 3
+            if compression == PSD_COMPRESSION_ZIP_PREDICTION
                 && let Err(e) = crate::psb_zip::undo_zip_prediction(&mut planar, width, depth)
             {
                 log::debug!("PSD/PSB HDR tiled ZIP prediction undo failed: {e}");
@@ -374,30 +378,14 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
     path: &Path,
     mmap: Arc<Mmap>,
 ) -> Result<PsbHdrTiledFlatSource, String> {
-    let mut cursor = std::io::Cursor::new(&mmap[..]);
+    let index = PsdSectionIndex::parse(&mmap[..]).map_err(|e| e.to_string())?;
+    let width = index.width;
+    let height = index.height;
+    let channels = index.channels;
+    let depth = index.depth;
+    let color_mode = index.color_mode;
+    let is_psb = index.is_psb;
 
-    let mut sig = [0u8; 4];
-    cursor.read_exact(&mut sig).map_err(|e| e.to_string())?;
-    if sig != *b"8BPS" {
-        return Err("PSD/PSB HDR tiled source requires 8BPS signature".to_string());
-    }
-    let version = read_u16(&mut cursor)?;
-    if version != 1 && version != 2 {
-        return Err(format!(
-            "Unsupported PSD/PSB version for HDR tiled source: {version}"
-        ));
-    }
-    let is_psb = version == 2;
-    cursor
-        .seek(SeekFrom::Current(6))
-        .map_err(|e| e.to_string())?;
-    let channels = read_u16(&mut cursor)? as u32;
-    let height = read_u32(&mut cursor)?;
-    let width = read_u32(&mut cursor)?;
-    let depth = read_u16(&mut cursor)?;
-    let color_mode = read_u16(&mut cursor)?;
-
-    validate_psd_dimensions(width, height, channels)?;
     if depth == 8 {
         return Err(
             "PSD/PSB HDR tiled flat source requires 16 or 32-bit depth; got 8-bit".to_string(),
@@ -408,13 +396,13 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
             "PSD/PSB HDR tiled flat source supports only 16 or 32-bit depth; got {depth}"
         ));
     }
-    if color_mode == 1 {
+    if color_mode == PSD_COLOR_MODE_GRAYSCALE {
         return Err("PSD/PSB HDR tiled flat source does not support Gray mode yet".to_string());
     }
-    if color_mode == 4 {
+    if color_mode == PSD_COLOR_MODE_CMYK {
         return Err("PSD/PSB HDR tiled flat source does not support CMYK mode yet".to_string());
     }
-    if color_mode != 3 {
+    if color_mode != PSD_COLOR_MODE_RGB {
         return Err(format!(
             "PSD/PSB HDR tiled flat source supports RGB color mode only; got {color_mode}"
         ));
@@ -430,28 +418,17 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
         .checked_mul(bps as u64)
         .ok_or_else(|| "PSD/PSB HDR tiled row byte count overflow".to_string())?;
 
-    let file_size = mmap.len() as u64;
-    let cm_len = read_u32(&mut cursor)?;
-    seek_forward_within(&mut cursor, cm_len as u64, file_size, "color mode data")
-        .map_err(|e| e.to_string())?;
-    let ir_len = read_u32(&mut cursor)? as u64;
-    let ir_start = cursor.position();
-    let ir_end = checked_section_end(ir_start, ir_len, file_size, "image resources")?;
-    let embedded_icc = extract_icc_profile_from_ir(&mmap[..], ir_start, ir_end);
-    seek_forward_within(&mut cursor, ir_len, file_size, "image resources")
-        .map_err(|e| e.to_string())?;
-    let lm_len = if is_psb {
-        read_u64(&mut cursor)?
-    } else {
-        read_u32(&mut cursor)? as u64
-    };
-    seek_forward_within(&mut cursor, lm_len, file_size, "layer and mask info")
+    let embedded_icc = extract_icc_profile_from_ir(&mmap[..], index.ir_start, index.ir_end);
+
+    let mut cursor = std::io::Cursor::new(&mmap[..]);
+    cursor
+        .seek(SeekFrom::Start(index.image_data_pos))
         .map_err(|e| e.to_string())?;
 
     let compression = read_u16(&mut cursor)?;
-    // Phase 3 accepts ZIP (2|3) here; raw/RLE still go through
+    // Phase 3 accepts ZIP here; raw/RLE still go through
     // `tiled_compression_supported`, which rejects ZIP as non-tileable.
-    if compression != 2 && compression != 3 {
+    if compression != PSD_COMPRESSION_ZIP && compression != PSD_COMPRESSION_ZIP_PREDICTION {
         tiled_compression_supported(compression)?;
     }
 
@@ -459,7 +436,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
     let mut zip_compressed_range: Option<(usize, usize)> = None;
     match compression {
-        0 => {
+        PSD_COMPRESSION_RAW => {
             let channel_bytes = row_raw_bytes
                 .checked_mul(height as u64)
                 .ok_or_else(|| "PSD/PSB HDR tiled channel byte count overflow".to_string())?;
@@ -482,7 +459,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
                 }
             }
         }
-        1 => {
+        PSD_COMPRESSION_RLE => {
             let total_rows = (channels as usize)
                 .checked_mul(height as usize)
                 .ok_or_else(|| "PSD/PSB HDR tiled row count overflow".to_string())?;
@@ -513,7 +490,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
                     .ok_or_else(|| "PSD/PSB HDR tiled RLE row offset overflow".to_string())?;
             }
         }
-        2 | 3 => {
+        PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
             // ZIP is a single zlib stream of all channels planar (channel-major).
             // Refuse when the inflated planar buffer would exceed the budget so
             // the caller can fall through to the layer tiler / SDR path.
@@ -571,7 +548,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
     };
 
     let row_cache = moka::sync::Cache::builder()
-        .max_capacity(ROW_CACHE_BUDGET)
+        .max_capacity(PSB_HDR_TILED_ROW_CACHE_BYTES)
         .weigher(|_key: &(u32, u32), value: &Arc<Vec<u8>>| {
             u32::try_from(value.len()).unwrap_or(u32::MAX)
         })
@@ -584,6 +561,7 @@ pub fn open_hdr_tiled_flat_source_from_mmap(
         height,
         channels,
         depth,
+        bps,
         compression,
         row_offsets,
         zip_compressed_range,

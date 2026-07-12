@@ -127,18 +127,92 @@ const PSD_SIG_VERSION_LEN: usize = 6;
 const PSD_MIN_STRUCTURAL_LEN: usize = 38;
 /// Empty-section minimum: fixed header (26) + cm_len(4) + ir_len(4) + lm_len(8).
 const PSB_MIN_STRUCTURAL_LEN: usize = 42;
+/// Minimum bytes to locate Image Resources: fixed header (26) + cm_len(4) + ir_len(4).
+const PSD_MIN_IR_LOCATE_LEN: usize = 34;
 
 impl PsdSectionIndex {
+    /// Locate Image Resource bounds only (stop before layer/mask).
+    ///
+    /// More lenient than [`Self::parse`]: does not gate color mode / depth and
+    /// does not require a valid layer/mask section. Used by P3 thumbnail
+    /// recovery when the structural walk fails mid-file but IR 1033/1036 may
+    /// still be readable.
+    pub(crate) fn locate_image_resources(bytes: &[u8]) -> Result<(u64, u64), SectionParseError> {
+        let file_size = bytes.len() as u64;
+        let mut r = std::io::Cursor::new(bytes);
+        Self::read_header_to_ir(&mut r, bytes.len(), file_size)
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, SectionParseError> {
-        // Need signature + version first so we can apply the PSD/PSB-specific
-        // minimum that covers cm_len + ir_len + lm_len (not just the 26-byte
-        // fixed header through color mode).
-        if bytes.len() < PSD_SIG_VERSION_LEN {
+        let index = Self::walk_sections(bytes)?;
+        match bytes_per_sample(index.depth) {
+            Ok(_) => {}
+            Err(_) => return Err(SectionParseError::UnsupportedDepth(index.depth)),
+        }
+        ensure_supported_color_mode(index.color_mode)
+            .map_err(|_| SectionParseError::UnsupportedColorMode(index.color_mode))?;
+        Ok(index)
+    }
+
+    /// Shared header walk through color-mode data; returns `(ir_start, ir_end)`
+    /// with the cursor positioned at the first byte of the IR payload.
+    fn read_header_to_ir(
+        r: &mut std::io::Cursor<&[u8]>,
+        byte_len: usize,
+        file_size: u64,
+    ) -> Result<(u64, u64), SectionParseError> {
+        if byte_len < PSD_MIN_IR_LOCATE_LEN {
             return Err(SectionParseError::Truncated);
         }
 
+        let mut sig = [0u8; 4];
+        r.read_exact(&mut sig)
+            .map_err(|e| SectionParseError::Io(format!("Read error: {e}")))?;
+        if &sig != b"8BPS" {
+            return Err(SectionParseError::BadSignature);
+        }
+
+        let version = read_u16(r).map_err(SectionParseError::Io)?;
+        if version != 1 && version != 2 {
+            return Err(SectionParseError::UnsupportedVersion(version));
+        }
+
+        seek_forward_within(r, 6, file_size, "reserved header bytes").map_err(|detail| {
+            SectionParseError::section_overflow("reserved header bytes", detail)
+        })?;
+
+        let channels = read_u16(r).map_err(SectionParseError::Io)? as u32;
+        let height = read_u32(r).map_err(SectionParseError::Io)?;
+        let width = read_u32(r).map_err(SectionParseError::Io)?;
+        let _depth = read_u16(r).map_err(SectionParseError::Io)?;
+        let _color_mode = read_u16(r).map_err(SectionParseError::Io)?;
+
+        validate_psd_dimensions(width, height, channels).map_err(SectionParseError::Dimensions)?;
+
+        let cm_len = read_u32(r).map_err(SectionParseError::Io)? as u64;
+        seek_forward_within(r, cm_len, file_size, "color mode data")
+            .map_err(|detail| SectionParseError::section_overflow("color mode data", detail))?;
+
+        let ir_len = read_u32(r).map_err(SectionParseError::Io)? as u64;
+        let ir_start = r
+            .stream_position()
+            .map_err(|e| SectionParseError::Io(format!("Stream position error: {e}")))?;
+        // Thumbnail recovery clamps a truncated IR length to EOF rather than
+        // failing the whole locate -- IR may still hold a JPEG thumb.
+        let ir_end = ir_start.saturating_add(ir_len).min(file_size);
+        Ok((ir_start, ir_end))
+    }
+
+    fn walk_sections(bytes: &[u8]) -> Result<Self, SectionParseError> {
+        // Need signature + version first so we can apply the PSD/PSB-specific
+        // minimum that covers cm_len + ir_len + lm_len (not just the 26-byte
+        // fixed header through color mode).
         let file_size = bytes.len() as u64;
         let mut r = std::io::Cursor::new(bytes);
+
+        if bytes.len() < PSD_SIG_VERSION_LEN {
+            return Err(SectionParseError::Truncated);
+        }
 
         let mut sig = [0u8; 4];
         r.read_exact(&mut sig)
@@ -172,12 +246,6 @@ impl PsdSectionIndex {
         let color_mode = read_u16(&mut r).map_err(SectionParseError::Io)?;
 
         validate_psd_dimensions(width, height, channels).map_err(SectionParseError::Dimensions)?;
-        match bytes_per_sample(depth) {
-            Ok(_) => {}
-            Err(_) => return Err(SectionParseError::UnsupportedDepth(depth)),
-        }
-        ensure_supported_color_mode(color_mode)
-            .map_err(|_| SectionParseError::UnsupportedColorMode(color_mode))?;
 
         let cm_len = read_u32(&mut r).map_err(SectionParseError::Io)? as u64;
         seek_forward_within(&mut r, cm_len, file_size, "color mode data")

@@ -29,6 +29,11 @@ use crate::psb_layer_composite::{
     CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, accumulate_decoded_layer_bytes,
     checked_layer_pixel_count, dimensions_within_limit, layer_will_decode,
 };
+use crate::psb_reader::{
+    PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
+    PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_RGB,
+    PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
+};
 
 // -- Layer channel decode ---------------------------------------------
 
@@ -61,7 +66,7 @@ pub(crate) fn decode_channel_image(
         .ok_or_else(|| "PSD/PSB layer channel byte count overflow".to_string())?;
 
     match compression {
-        0 => {
+        PSD_COMPRESSION_RAW => {
             let avail = data.len().saturating_sub(2);
             if avail < total_raw_bytes {
                 return Err(format!(
@@ -74,7 +79,7 @@ pub(crate) fn decode_channel_image(
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
             Ok(raw.to_vec())
         }
-        1 => {
+        PSD_COMPRESSION_RLE => {
             let mut row_counts = Vec::with_capacity(height as usize);
             let max_row = crate::psb_reader::max_rle_compressed_row_bytes(row_raw_bytes)?;
             for row in 0..height as usize {
@@ -121,7 +126,7 @@ pub(crate) fn decode_channel_image(
             }
             Ok(out)
         }
-        2 | 3 => {
+        PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
             crate::psb_reader::check_decode_cancel(cancel)?;
             let compressed = data
                 .get(2..)
@@ -131,7 +136,7 @@ pub(crate) fn decode_channel_image(
                 width as usize,
                 height as usize,
                 depth,
-                compression == 3,
+                compression == PSD_COMPRESSION_ZIP_PREDICTION,
             )
             .map_err(Into::into)
         }
@@ -165,7 +170,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     };
     let opacity = args.opacity as u32;
 
-    if args.color_mode == 4
+    if args.color_mode == PSD_COLOR_MODE_CMYK
         && let (Some(c), Some(m), Some(y), Some(k)) = (
             args.color[0].as_deref(),
             args.color[1].as_deref(),
@@ -197,7 +202,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     }
 
     // Gray fast path: broadcast G->RGB via SIMD, then fold opacity/mask into alpha.
-    if args.color_mode == 1
+    if args.color_mode == PSD_COLOR_MODE_GRAYSCALE
         && let Some(gray) = args.color[0].as_deref()
         && gray.len() >= pixel_count
     {
@@ -223,7 +228,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     }
 
     // RGB fast path: planar R/G/B -> interleaved via SIMD, then fold opacity/mask.
-    if args.color_mode == 3
+    if args.color_mode == PSD_COLOR_MODE_RGB
         && let (Some(r), Some(g), Some(b)) = (
             args.color[0].as_deref(),
             args.color[1].as_deref(),
@@ -262,13 +267,13 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
 
     for i in 0..pixel_count {
         let (r, g, b) = match args.color_mode {
-            4 => crate::psb_reader::cmyk_to_rgb(
+            PSD_COLOR_MODE_CMYK => crate::psb_reader::cmyk_to_rgb(
                 sample(&args.color[0], i),
                 sample(&args.color[1], i),
                 sample(&args.color[2], i),
                 sample(&args.color[3], i),
             ),
-            1 => {
+            PSD_COLOR_MODE_GRAYSCALE => {
                 let v = sample(&args.color[0], i);
                 (v, v, v)
             }
@@ -387,7 +392,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
 
     for i in 0..pixel_count {
         let (r, g, b) = match color_mode {
-            4 => {
+            PSD_COLOR_MODE_CMYK => {
                 // Adobe CMYK polarity: 0.0 = full ink, 1.0 = no ink.
                 // R_device = C_sample * K_sample per channel.
                 let c = sample(&color[0], i);
@@ -400,7 +405,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
                 // Approximate gamma linearisation (device sRGB-like).
                 (r_dev.powf(2.2), g_dev.powf(2.2), b_dev.powf(2.2))
             }
-            1 => {
+            PSD_COLOR_MODE_GRAYSCALE => {
                 let v = sample(&color[0], i);
                 (v, v, v)
             }
@@ -721,7 +726,7 @@ pub(crate) fn decode_one_layer(
         }
 
         match ch.id {
-            -1 => match decode_channel_image(
+            PSD_CHANNEL_ID_ALPHA => match decode_channel_image(
                 slice,
                 width,
                 height,
@@ -736,15 +741,20 @@ pub(crate) fn decode_one_layer(
                     layer_failed = true;
                 }
             },
-            -2 | -3 => {
+            PSD_CHANNEL_ID_USER_MASK | PSD_CHANNEL_ID_REAL_USER_MASK => {
                 // Channel -2 = user mask; -3 = real user mask (combined
                 // vector+user). Prefer -3 when both are present: it is the
                 // authoritative rendered mask. Geometry comes from
                 // `real_mask` for -3 when parsed, otherwise the user-mask
                 // rect. Missing/disabled/oversized rects skip that channel.
-                let mask_info = if ch.id == -3 {
+                let mask_info = if ch.id == PSD_CHANNEL_ID_REAL_USER_MASK {
                     record.real_mask.as_ref().or(record.mask.as_ref())
-                } else if record.real_mask.is_some() && record.channels.iter().any(|c| c.id == -3) {
+                } else if record.real_mask.is_some()
+                    && record
+                        .channels
+                        .iter()
+                        .any(|c| c.id == PSD_CHANNEL_ID_REAL_USER_MASK)
+                {
                     // User mask is superseded by a real user mask channel.
                     None
                 } else {
@@ -775,7 +785,7 @@ pub(crate) fn decode_one_layer(
                     }
                 }
             }
-            0..=3 => {
+            0..=PSD_CHANNEL_ID_COLOR_MAX => {
                 let idx = ch.id as usize;
                 match decode_channel_image(
                     slice,

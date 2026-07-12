@@ -90,9 +90,7 @@ pub(crate) fn log_unsupported_blend_once(blend: &[u8; 4]) {
     let mut seen = seen.lock();
     if seen.insert(*blend) {
         let key = String::from_utf8_lossy(blend).into_owned();
-        log::debug!(
-            "PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal"
-        );
+        log::debug!("PSD/PSB layer composite: unsupported blend mode '{key}', treating as Normal");
     }
 }
 

@@ -37,10 +37,11 @@ use crate::hdr::types::{
 };
 use crate::psb_icc_hdr::{log_16bit_transfer_assumption, probe_icc_hdr};
 use crate::psb_reader::{
-    MAX_ZIP_PLANAR_INFLATE_BYTES, bytes_per_sample, channel_is_used, check_decode_cancel,
-    downconvert_samples_to_u8, ensure_supported_color_mode, extract_icc_profile_from_ir,
-    max_rle_compressed_row_bytes, read_u16, read_u32, seek_forward_within, unpack_bits_into,
-    validate_rle_row_counts,
+    MAX_ZIP_PLANAR_INFLATE_BYTES, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_GRAYSCALE,
+    PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
+    bytes_per_sample, channel_is_used, check_decode_cancel, downconvert_samples_to_u8,
+    ensure_supported_color_mode, extract_icc_profile_from_ir, max_rle_compressed_row_bytes,
+    read_u16, read_u32, seek_forward_within, unpack_bits_into, validate_rle_row_counts,
 };
 use crate::psb_section_index::PsdSectionIndex;
 
@@ -93,7 +94,7 @@ pub fn read_composite_hdr_from_index(
     check_decode_cancel(cancel)?;
 
     let compression = index.image_data_compression(bytes)?;
-    if compression > 3 {
+    if compression > PSD_COMPRESSION_ZIP_PREDICTION {
         return Err(format!("Invalid PSD/PSB HDR compression: {compression}").into());
     }
 
@@ -113,7 +114,7 @@ pub fn read_composite_hdr_from_index(
         .checked_mul(channels as usize)
         .ok_or_else(|| "PSD/PSB HDR row count overflow".to_string())?;
     let mut row_counts: Vec<usize> = Vec::new();
-    if compression == 1 {
+    if compression == PSD_COMPRESSION_RLE {
         row_counts.reserve(total_rows);
         for i in 0..total_rows {
             if i & 0x3FF == 0 {
@@ -140,7 +141,7 @@ pub fn read_composite_hdr_from_index(
     // Read planar channels, keeping raw native-depth bytes (no downconversion here).
     let mut planar_raw: Vec<Option<Vec<u8>>> = vec![None; channels as usize];
 
-    if compression == 2 || compression == 3 {
+    if compression == PSD_COMPRESSION_ZIP || compression == PSD_COMPRESSION_ZIP_PREDICTION {
         let data_start = r
             .stream_position()
             .map_err(|e| format!("Stream position error: {e}"))? as usize;
@@ -158,7 +159,7 @@ pub fn read_composite_hdr_from_index(
         }
         check_decode_cancel(cancel)?;
         let mut planar = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
-        if compression == 3 {
+        if compression == PSD_COMPRESSION_ZIP_PREDICTION {
             crate::psb_zip::undo_zip_prediction(&mut planar, width as usize, depth)?;
         }
         check_decode_cancel(cancel)?;
@@ -180,11 +181,11 @@ pub fn read_composite_hdr_from_index(
             if is_used {
                 let mut raw = vec![0u8; raw_channel_bytes];
                 match compression {
-                    0 => {
+                    PSD_COMPRESSION_RAW => {
                         r.read_exact(&mut raw)
                             .map_err(|e| format!("Read HDR raw ch {ch_idx}: {e}"))?;
                     }
-                    1 => {
+                    PSD_COMPRESSION_RLE => {
                         let mut row_raw = Vec::with_capacity(row_raw_bytes);
                         let mut compressed_buf = Vec::new();
                         for row in 0..height as usize {
@@ -210,7 +211,7 @@ pub fn read_composite_hdr_from_index(
                 planar_raw[ch_idx as usize] = Some(raw);
             } else {
                 match compression {
-                    0 => {
+                    PSD_COMPRESSION_RAW => {
                         seek_forward_within(
                             &mut r,
                             raw_channel_bytes as u64,
@@ -218,7 +219,7 @@ pub fn read_composite_hdr_from_index(
                             "HDR raw channel data",
                         )?;
                     }
-                    1 => {
+                    PSD_COMPRESSION_RLE => {
                         // Sum precomputed row counts and skip the whole unused
                         // channel in one seek (avoids height sequential seeks).
                         crate::psb_reader::seek_rle_channel_skip(
@@ -266,7 +267,7 @@ pub fn read_composite_hdr_from_index(
         sdr_white_nits,
     };
     match color_mode {
-        1 => {
+        PSD_COLOR_MODE_GRAYSCALE => {
             interleave_gray_hdr(
                 &mut rgba_f32,
                 &planar_raw,
@@ -276,7 +277,7 @@ pub fn read_composite_hdr_from_index(
                 cancel,
             )?;
         }
-        4 if channels >= 4 => {
+        PSD_COLOR_MODE_CMYK if channels >= 4 => {
             interleave_cmyk_hdr(
                 &mut rgba_f32,
                 &planar_raw,

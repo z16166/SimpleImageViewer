@@ -39,6 +39,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use simple_image_viewer::simd_swizzle;
 
+/// Photoshop Image Data / channel compression: raw (uncompressed).
+pub(crate) const PSD_COMPRESSION_RAW: u16 = 0;
+/// Photoshop PackBits RLE compression.
+pub(crate) const PSD_COMPRESSION_RLE: u16 = 1;
+/// Photoshop ZIP (zlib) compression without prediction.
+pub(crate) const PSD_COMPRESSION_ZIP: u16 = 2;
+/// Photoshop ZIP with horizontal difference prediction.
+pub(crate) const PSD_COMPRESSION_ZIP_PREDICTION: u16 = 3;
+
+/// Photoshop color mode: Grayscale.
+pub(crate) const PSD_COLOR_MODE_GRAYSCALE: u16 = 1;
+/// Photoshop color mode: RGB.
+pub(crate) const PSD_COLOR_MODE_RGB: u16 = 3;
+/// Photoshop color mode: CMYK.
+pub(crate) const PSD_COLOR_MODE_CMYK: u16 = 4;
+
+/// Layer channel ID: transparency mask (alpha).
+pub(crate) const PSD_CHANNEL_ID_ALPHA: i16 = -1;
+/// Layer channel ID: user-supplied layer mask.
+pub(crate) const PSD_CHANNEL_ID_USER_MASK: i16 = -2;
+/// Layer channel ID: real user mask (vector + raster combined).
+pub(crate) const PSD_CHANNEL_ID_REAL_USER_MASK: i16 = -3;
+/// Inclusive upper bound for color-channel IDs (0=R/C/Gray, 1=G/M, 2=B/Y, 3=K).
+pub(crate) const PSD_CHANNEL_ID_COLOR_MAX: i16 = 3;
+
 /// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
 /// Hard cap on document canvas total pixels for P1 / P2 / HDR paths.
@@ -170,7 +195,7 @@ pub fn read_composite_from_index(
         .checked_mul(channels as usize)
         .ok_or_else(|| "PSD/PSB row count overflow".to_string())?;
     let mut row_counts = Vec::new();
-    if compression == 1 {
+    if compression == PSD_COMPRESSION_RLE {
         row_counts.reserve(total_rows);
         for i in 0..total_rows {
             if i & RLE_ROW_COUNT_CANCEL_POLL_INTERVAL == 0 {
@@ -197,7 +222,7 @@ pub fn read_composite_from_index(
     // Step 1: Read planar channels and down-convert to 8-bit samples.
     let mut planar_channels: Vec<Option<Vec<u8>>> = vec![None; channels as usize];
 
-    if compression == 2 || compression == 3 {
+    if compression == PSD_COMPRESSION_ZIP || compression == PSD_COMPRESSION_ZIP_PREDICTION {
         // ZIP / ZIP+prediction: one zlib stream for all planar channels.
         let data_start = r
             .stream_position()
@@ -216,7 +241,7 @@ pub fn read_composite_from_index(
         }
         check_decode_cancel(cancel)?;
         let mut planar = crate::psb_zip::inflate_zlib_exact(compressed, expected)?;
-        if compression == 3 {
+        if compression == PSD_COMPRESSION_ZIP_PREDICTION {
             crate::psb_zip::undo_zip_prediction(&mut planar, width as usize, depth)?;
         }
         check_decode_cancel(cancel)?;
@@ -244,7 +269,7 @@ pub fn read_composite_from_index(
             if is_used {
                 let mut ch_u8 = vec![0u8; samples_per_channel];
                 match compression {
-                    0 => {
+                    PSD_COMPRESSION_RAW => {
                         ensure_readable_within(
                             &mut r,
                             raw_channel_bytes as u64,
@@ -257,7 +282,7 @@ pub fn read_composite_from_index(
                         check_decode_cancel(cancel)?;
                         downconvert_samples_to_u8(&mut ch_u8, &raw, bps);
                     }
-                    1 => {
+                    PSD_COMPRESSION_RLE => {
                         for row in 0..height as usize {
                             if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                                 check_decode_cancel(cancel)?;
@@ -301,7 +326,7 @@ pub fn read_composite_from_index(
                 planar_channels[ch_idx as usize] = Some(ch_u8);
             } else {
                 match compression {
-                    0 => {
+                    PSD_COMPRESSION_RAW => {
                         seek_forward_within(
                             &mut r,
                             raw_channel_bytes as u64,
@@ -309,7 +334,7 @@ pub fn read_composite_from_index(
                             "raw channel data",
                         )?;
                     }
-                    1 => {
+                    PSD_COMPRESSION_RLE => {
                         // Sum precomputed row counts and skip the whole unused
                         // channel in one seek (avoids height sequential seeks).
                         seek_rle_channel_skip(
@@ -330,7 +355,7 @@ pub fn read_composite_from_index(
 
     // Step 2: Interleave into RGBA8 (CMYK goes through lcms2 when possible).
     let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
-    let cmyk_cms_ok = color_mode == 4
+    let cmyk_cms_ok = color_mode == PSD_COLOR_MODE_CMYK
         && channels >= 4
         && match (
             planar_channels[0].as_deref(),
@@ -446,10 +471,10 @@ pub fn rgba8_is_absolutely_blank_with_cancel(
     }
 }
 
-/// Gray (1) and RGB (3): all-RGB-0 is a reliable empty-flat signal.
+/// Gray and RGB: all-RGB-0 is a reliable empty-flat signal.
 #[inline]
 pub(crate) fn color_mode_uses_rgb0_blank(color_mode: u16) -> bool {
-    matches!(color_mode, 1 | 3)
+    matches!(color_mode, PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_RGB)
 }
 
 /// Scan RGBA8; returns `(any_nonzero_rgb, any_nonzero_alpha)`.
@@ -902,29 +927,17 @@ pub fn extract_embedded_icc_from_psd(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Try to extract Photoshop Image Resource 1033/1036 JPEG thumbnail as RGBA8.
+///
+/// Prefers [`PsdSectionIndex::parse`] IR bounds when the structural walk
+/// succeeds. On structural failure (unsupported color mode, truncated
+/// layer/mask, etc.) falls back to an IR-only locate so P3 recovery still
+/// works when Image Resources remain readable.
 pub fn try_extract_photoshop_thumbnail(bytes: &[u8]) -> Option<PsbComposite> {
-    let file_size = bytes.len() as u64;
-    let mut r = std::io::Cursor::new(bytes);
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig).ok()?;
-    if &sig != b"8BPS" {
-        return None;
+    if let Ok(index) = crate::psb_section_index::PsdSectionIndex::parse(bytes) {
+        return extract_photoshop_thumbnail_from_ir(bytes, index.ir_start, index.ir_end);
     }
-    let version = read_u16(&mut r).ok()?;
-    if version != 1 && version != 2 {
-        return None;
-    }
-    r.seek(SeekFrom::Current(6)).ok()?;
-    let _channels = read_u16(&mut r).ok()?;
-    let _height = read_u32(&mut r).ok()?;
-    let _width = read_u32(&mut r).ok()?;
-    let _depth = read_u16(&mut r).ok()?;
-    let _color_mode = read_u16(&mut r).ok()?;
-    let cm_len = read_u32(&mut r).ok()? as u64;
-    seek_forward_within(&mut r, cm_len, file_size, "color mode data").ok()?;
-    let ir_len = read_u32(&mut r).ok()? as u64;
-    let ir_start = r.stream_position().ok()?;
-    let ir_end = ir_start.saturating_add(ir_len).min(file_size);
+    let (ir_start, ir_end) =
+        crate::psb_section_index::PsdSectionIndex::locate_image_resources(bytes).ok()?;
     extract_photoshop_thumbnail_from_ir(bytes, ir_start, ir_end)
 }
 
@@ -1143,8 +1156,10 @@ pub(crate) fn bytes_per_sample(depth: u16) -> Result<usize, String> {
 /// static full-canvas decode path (or the budgeted HDR ZIP flat helper).
 pub(crate) fn tiled_compression_supported(compression: u16) -> Result<(), String> {
     match compression {
-        0 | 1 => Ok(()),
-        2 | 3 => Err("PSD/PSB ZIP Image Data cannot be opened as disk-tiled".into()),
+        PSD_COMPRESSION_RAW | PSD_COMPRESSION_RLE => Ok(()),
+        PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
+            Err("PSD/PSB ZIP Image Data cannot be opened as disk-tiled".into())
+        }
         other => Err(format!("Unsupported compression: {other}")),
     }
 }
@@ -1152,9 +1167,9 @@ pub(crate) fn tiled_compression_supported(compression: u16) -> Result<(), String
 #[inline]
 pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bool {
     match color_mode {
-        1 => ch_idx <= 1,                                  // Gray, Alpha
-        3 => ch_idx <= 3,                                  // R, G, B, Alpha
-        4 => ch_idx < 4 || (channels >= 5 && ch_idx == 4), // C,M,Y,K[,A]
+        PSD_COLOR_MODE_GRAYSCALE => ch_idx <= 1, // Gray, Alpha
+        PSD_COLOR_MODE_RGB => ch_idx <= 3,       // R, G, B, Alpha
+        PSD_COLOR_MODE_CMYK => ch_idx < 4 || (channels >= 5 && ch_idx == 4), // C,M,Y,K[,A]
         // Unsupported modes are rejected by [`ensure_supported_color_mode`]
         // before decode; never silently treat them as RGB.
         _ => false,
@@ -1163,10 +1178,10 @@ pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bo
 
 /// Reject Bitmap / Indexed / Lab / Duotone / Multichannel etc. (checklist #15).
 ///
-/// Only Gray (1), RGB (3), and CMYK (4) have color conversion paths.
+/// Only Gray / RGB / CMYK have color conversion paths.
 pub(crate) fn ensure_supported_color_mode(color_mode: u16) -> Result<(), String> {
     match color_mode {
-        1 | 3 | 4 => Ok(()),
+        PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_RGB | PSD_COLOR_MODE_CMYK => Ok(()),
         _ => Err(rust_i18n::t!("error.psd_unsupported_color_mode", mode = color_mode).to_string()),
     }
 }
@@ -1571,7 +1586,8 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
 mod tests {
     use super::{
         HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, MAX_ZIP_PLANAR_INFLATE_BYTES,
-        PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, PSD_MAX_DIMENSION,
+        PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, PSD_COMPRESSION_RAW,
+        PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION, PSD_MAX_DIMENSION,
         RGBA_BYTES_PER_PIXEL, channel_is_used, cmyk_to_rgb, downconvert_samples_to_u8,
         ensure_supported_color_mode, estimate_memory_from_bytes, for_each_image_resource,
         max_rle_compressed_row_bytes, read_composite_from_bytes_with_cancel, seek_rle_channel_skip,
@@ -1902,10 +1918,10 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.extend_from_slice(&compression.to_be_bytes());
         match compression {
-            0 => bytes.extend_from_slice(planar),
-            2 | 3 => {
+            PSD_COMPRESSION_RAW => bytes.extend_from_slice(planar),
+            PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
                 let mut payload = planar.to_vec();
-                if compression == 3 {
+                if compression == PSD_COMPRESSION_ZIP_PREDICTION {
                     let w = width as usize;
                     let h = height as usize;
                     for ch in 0..3 {
@@ -1921,7 +1937,7 @@ mod tests {
                 }
                 bytes.extend_from_slice(&miniz_oxide::deflate::compress_to_vec_zlib(&payload, 6));
             }
-            _ => panic!("craft helper only supports 0/2/3"),
+            _ => panic!("craft helper only supports raw/zip/zip+prediction"),
         }
         bytes
     }

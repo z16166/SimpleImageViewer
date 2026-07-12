@@ -24,6 +24,7 @@
 mod tests {
     use crate::hdr::types::HdrToneMapSettings;
     use crate::psb_hdr_main::{decode_psd_hdr_main_from_bytes_with_cancel, psd_should_try_hdr};
+    use crate::psb_reader::PSD_COLOR_MODE_CMYK;
     use crate::psb_sdr_main::decode_psd_sdr_main_from_bytes_with_cancel;
     use crate::psb_section_index::PsdSectionIndex;
     use serde::Deserialize;
@@ -167,7 +168,7 @@ mod tests {
                         !psd_should_try_hdr(index.depth, icc.as_deref(), 1.0),
                         "{file}: SDR capacity must not select HDR"
                     );
-                    let sdr = if index.color_mode == 4 {
+                    let sdr = if index.color_mode == PSD_COLOR_MODE_CMYK {
                         crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
                             &bytes,
                             None,

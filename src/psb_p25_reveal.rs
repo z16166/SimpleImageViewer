@@ -136,9 +136,7 @@ fn ensure_clip_bases_force_open(records: &[LayerRecord], visible: &mut [bool]) {
             continue;
         }
         let Some(base_idx) = find_clip_base_index(records, i) else {
-            log::debug!(
-                "PSD/PSB P2.5b: force-open skipped orphan clip layer {i} (no base)"
-            );
+            log::debug!("PSD/PSB P2.5b: force-open skipped orphan clip layer {i} (no base)");
             visible[i] = false;
             continue;
         };
