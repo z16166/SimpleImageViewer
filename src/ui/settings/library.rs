@@ -15,7 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
-use crate::settings::{DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedRawJpegHandling};
+use crate::settings::{
+    DirectoryTreeListPreviewSize, DirectoryTreeNavStyle, PairedJpegHandling, PairedJpegPrimaryKind,
+};
 use crate::ui::utils::{
     path_display_box, settings_card, stable_selectable_value, styled_button, themed_labeled_toggle,
 };
@@ -251,31 +253,76 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 egui::ComboBox::from_id_salt("paired_raw_jpeg_handling_combo")
                     .width(PAIRED_RAW_JPEG_COMBO_WIDTH)
-                    .selected_text(app.settings.paired_raw_jpeg_handling.label())
+                    .selected_text(
+                        app.settings
+                            .paired_raw_jpeg_handling
+                            .label(PairedJpegPrimaryKind::Raw),
+                    )
                     .show_ui(ui, |ui| {
                         ui.set_min_width(PAIRED_RAW_JPEG_COMBO_WIDTH);
                         stable_selectable_value(
                             ui,
                             &mut app.settings.paired_raw_jpeg_handling,
-                            PairedRawJpegHandling::ShowBoth,
-                            PairedRawJpegHandling::ShowBoth.label(),
+                            PairedJpegHandling::ShowBoth,
+                            PairedJpegHandling::ShowBoth.label(PairedJpegPrimaryKind::Raw),
                         );
                         stable_selectable_value(
                             ui,
                             &mut app.settings.paired_raw_jpeg_handling,
-                            PairedRawJpegHandling::SkipRaw,
-                            PairedRawJpegHandling::SkipRaw.label(),
+                            PairedJpegHandling::SkipPrimary,
+                            PairedJpegHandling::SkipPrimary.label(PairedJpegPrimaryKind::Raw),
                         );
                         stable_selectable_value(
                             ui,
                             &mut app.settings.paired_raw_jpeg_handling,
-                            PairedRawJpegHandling::SkipJpeg,
-                            PairedRawJpegHandling::SkipJpeg.label(),
+                            PairedJpegHandling::SkipJpeg,
+                            PairedJpegHandling::SkipJpeg.label(PairedJpegPrimaryKind::Raw),
                         );
                     });
             });
         });
         if old_pair_handling != app.settings.paired_raw_jpeg_handling {
+            if let Some(dir) = app.current_browse_directory() {
+                app.reload_current_browse_directory(dir);
+            }
+            app.queue_save();
+        }
+
+        let old_psd_pair = app.settings.paired_psd_jpeg_handling;
+        ui.horizontal(|ui| {
+            ui.label(t!("label.paired_psd_jpeg_handling"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("paired_psd_jpeg_handling_combo")
+                    .width(PAIRED_RAW_JPEG_COMBO_WIDTH)
+                    .selected_text(
+                        app.settings
+                            .paired_psd_jpeg_handling
+                            .label(PairedJpegPrimaryKind::Psd),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(PAIRED_RAW_JPEG_COMBO_WIDTH);
+                        stable_selectable_value(
+                            ui,
+                            &mut app.settings.paired_psd_jpeg_handling,
+                            PairedJpegHandling::ShowBoth,
+                            PairedJpegHandling::ShowBoth.label(PairedJpegPrimaryKind::Psd),
+                        );
+                        stable_selectable_value(
+                            ui,
+                            &mut app.settings.paired_psd_jpeg_handling,
+                            PairedJpegHandling::SkipPrimary,
+                            PairedJpegHandling::SkipPrimary.label(PairedJpegPrimaryKind::Psd),
+                        );
+                        stable_selectable_value(
+                            ui,
+                            &mut app.settings.paired_psd_jpeg_handling,
+                            PairedJpegHandling::SkipJpeg,
+                            PairedJpegHandling::SkipJpeg.label(PairedJpegPrimaryKind::Psd),
+                        );
+                    });
+            });
+        });
+        if old_psd_pair != app.settings.paired_psd_jpeg_handling {
             if let Some(dir) = app.current_browse_directory() {
                 app.reload_current_browse_directory(dir);
             }

@@ -24,7 +24,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::settings::PairedRawJpegHandling;
+use crate::settings::PairedJpegHandling;
 
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
@@ -197,7 +197,8 @@ static SCAN_THREAD_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
 pub fn scan_directory(
     dir: PathBuf,
     recursive: bool,
-    paired_raw_jpeg_handling: PairedRawJpegHandling,
+    paired_raw_jpeg_handling: PairedJpegHandling,
+    paired_psd_jpeg_handling: PairedJpegHandling,
     generation: u64,
     tx: Sender<ScanMessage>,
     cancel: Arc<AtomicBool>,
@@ -206,12 +207,15 @@ pub fn scan_directory(
     SCAN_THREAD_POOL.spawn(move || {
         #[cfg(feature = "preload-debug")]
         let scan_started = std::time::Instant::now();
+        let needs_pair_index = paired_raw_jpeg_handling.needs_pair_index()
+            || paired_psd_jpeg_handling.needs_pair_index();
         crate::preload_debug!(
-            "[PreloadDebug][Scan] thread start: dir={} recursive={} paired={:?} needs_pair_index={}",
+            "[PreloadDebug][Scan] thread start: dir={} recursive={} raw_paired={:?} psd_paired={:?} needs_pair_index={}",
             dir.display(),
             recursive,
             paired_raw_jpeg_handling,
-            paired_raw_jpeg_handling.needs_pair_index()
+            paired_psd_jpeg_handling,
+            needs_pair_index
         );
         let sorted_files_for_done = Vec::new();
         if recursive {
@@ -299,7 +303,7 @@ pub fn scan_directory(
                         };
                         if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             let entry = (path, len, modified_unix);
-                            if paired_raw_jpeg_handling.needs_pair_index() {
+                            if needs_pair_index {
                                 pair_index_files.push(entry);
                             } else {
                                 pending_batch.push(entry);
@@ -329,13 +333,14 @@ pub fn scan_directory(
                 crate::preload_debug::elapsed_ms(scan_started)
             );
 
-            if paired_raw_jpeg_handling.needs_pair_index() {
-                // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
-                // batches before the scan finishes could expose a file that should be skipped
-                // because its pair appears later.
+            if needs_pair_index {
+                // RAW/JPEG and PSD/JPEG pairing need a complete same-directory stem index.
+                // Sending recursive batches before the scan finishes could expose a file that
+                // should be skipped because its pair appears later.
                 send_scanned_files(
                     pair_index_files,
                     paired_raw_jpeg_handling,
+                    paired_psd_jpeg_handling,
                     generation,
                     &tx,
                     &cancel,
@@ -357,7 +362,7 @@ pub fn scan_directory(
             let mut ext_probes = 0usize;
             #[cfg(feature = "preload-debug")]
             let mut image_candidates = 0usize;
-            if paired_raw_jpeg_handling.needs_pair_index() {
+            if needs_pair_index {
                 let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
                 for e in entries.flatten() {
                     #[cfg(feature = "preload-debug")]
@@ -408,6 +413,7 @@ pub fn scan_directory(
                 send_scanned_files(
                     files,
                     paired_raw_jpeg_handling,
+                    paired_psd_jpeg_handling,
                     generation,
                     &tx,
                     &cancel,
@@ -571,7 +577,8 @@ fn send_scan_batch(
 
 fn send_scanned_files(
     mut files: Vec<(PathBuf, u64, Option<i64>)>,
-    paired_raw_jpeg_handling: PairedRawJpegHandling,
+    paired_raw_jpeg_handling: PairedJpegHandling,
+    paired_psd_jpeg_handling: PairedJpegHandling,
     generation: u64,
     tx: &Sender<ScanMessage>,
     cancel: &AtomicBool,
@@ -580,7 +587,10 @@ fn send_scanned_files(
     #[cfg(feature = "preload-debug")]
     let send_started = std::time::Instant::now();
     if paired_raw_jpeg_handling.needs_pair_index() {
-        filter_raw_jpeg_pairs(&mut files, paired_raw_jpeg_handling);
+        filter_primary_jpeg_pairs(&mut files, paired_raw_jpeg_handling, is_raw_path);
+    }
+    if paired_psd_jpeg_handling.needs_pair_index() {
+        filter_primary_jpeg_pairs(&mut files, paired_psd_jpeg_handling, is_psd_path);
     }
 
     files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -611,21 +621,22 @@ fn send_scanned_files(
     );
 }
 
-fn filter_raw_jpeg_pairs(
+fn filter_primary_jpeg_pairs(
     files: &mut Vec<(PathBuf, u64, Option<i64>)>,
-    handling: PairedRawJpegHandling,
+    handling: PairedJpegHandling,
+    is_primary: fn(&Path) -> bool,
 ) {
     match handling {
-        PairedRawJpegHandling::ShowBoth => {}
-        PairedRawJpegHandling::SkipRaw => {
+        PairedJpegHandling::ShowBoth => {}
+        PairedJpegHandling::SkipPrimary => {
             let jpeg_stems = jpeg_stems_by_parent(files);
-            files
-                .retain(|(path, _, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
+            files.retain(|(path, _, _)| !is_primary(path) || !has_matching_stem(path, &jpeg_stems));
         }
-        PairedRawJpegHandling::SkipJpeg => {
-            let raw_stems = raw_stems_by_parent(files);
-            files
-                .retain(|(path, _, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
+        PairedJpegHandling::SkipJpeg => {
+            let primary_stems = primary_stems_by_parent(files, is_primary);
+            files.retain(|(path, _, _)| {
+                !is_jpeg_path(path) || !has_matching_stem(path, &primary_stems)
+            });
         }
     }
 }
@@ -650,24 +661,23 @@ fn jpeg_stem_key(path: &Path) -> Option<StemKey> {
     owned_stem_key(path)
 }
 
-fn raw_stems_by_parent(
+fn primary_stems_by_parent(
     files: &[(PathBuf, u64, Option<i64>)],
+    is_primary: fn(&Path) -> bool,
 ) -> HashMap<PathBuf, HashSet<OsString>> {
     let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
-    for key in files.iter().filter_map(|(path, _, _)| raw_stem_key(path)) {
-        by_parent
-            .entry(key.parent)
-            .or_default()
-            .insert(key.stem_lower);
+    for (path, _, _) in files {
+        if !is_primary(path) {
+            continue;
+        }
+        if let Some(key) = owned_stem_key(path) {
+            by_parent
+                .entry(key.parent)
+                .or_default()
+                .insert(key.stem_lower);
+        }
     }
     by_parent
-}
-
-fn raw_stem_key(path: &Path) -> Option<StemKey> {
-    if !is_raw_path(path) {
-        return None;
-    }
-    owned_stem_key(path)
 }
 
 fn has_matching_stem(path: &Path, stems: &HashMap<PathBuf, HashSet<OsString>>) -> bool {
@@ -692,6 +702,12 @@ fn is_raw_path(path: &Path) -> bool {
         .is_some_and(crate::raw_processor::is_raw_extension)
 }
 
+fn is_psd_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("psd") || ext.eq_ignore_ascii_case("psb"))
+}
+
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct StemKey {
     parent: PathBuf,
@@ -710,7 +726,7 @@ fn owned_stem_key(path: &Path) -> Option<StemKey> {
 #[cfg(test)]
 mod tests {
     use super::{ScanMessage, scan_directory};
-    use crate::settings::PairedRawJpegHandling;
+    use crate::settings::PairedJpegHandling;
     use crossbeam_channel::unbounded;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -757,12 +773,17 @@ mod tests {
         }
     }
 
-    fn scan_names(dir: &Path, paired_raw_jpeg_handling: PairedRawJpegHandling) -> Vec<String> {
+    fn scan_names(
+        dir: &Path,
+        paired_raw: PairedJpegHandling,
+        paired_psd: PairedJpegHandling,
+    ) -> Vec<String> {
         let (tx, rx) = unbounded();
         scan_directory(
             dir.to_path_buf(),
             false,
-            paired_raw_jpeg_handling,
+            paired_raw,
+            paired_psd,
             1,
             tx,
             Arc::new(AtomicBool::new(false)),
@@ -789,7 +810,11 @@ mod tests {
         dir.touch("img001.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), PairedRawJpegHandling::SkipRaw),
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::SkipPrimary,
+                PairedJpegHandling::ShowBoth
+            ),
             vec!["img001.JPG"]
         );
     }
@@ -805,7 +830,11 @@ mod tests {
         dir.touch("JPEG_ONLY.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), PairedRawJpegHandling::SkipRaw),
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::SkipPrimary,
+                PairedJpegHandling::ShowBoth
+            ),
             vec![
                 "DSC08268.JPG",
                 "DSC08269.JPEG",
@@ -826,7 +855,11 @@ mod tests {
         dir.touch("JPEG_ONLY.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), PairedRawJpegHandling::SkipJpeg),
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::SkipJpeg,
+                PairedJpegHandling::ShowBoth
+            ),
             vec![
                 "DSC08268.ARW",
                 "DSC08269.arw",
@@ -843,8 +876,83 @@ mod tests {
         dir.touch("DSC08268.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), PairedRawJpegHandling::ShowBoth),
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::ShowBoth,
+                PairedJpegHandling::ShowBoth
+            ),
             vec!["DSC08268.ARW", "DSC08268.JPG"]
+        );
+    }
+
+    #[test]
+    fn paired_psd_jpeg_handling_can_skip_psd_files() {
+        let dir = TempScanDir::new();
+        dir.touch("art.psd");
+        dir.touch("art.JPG");
+        dir.touch("big.psb");
+        dir.touch("big.jpeg");
+        dir.touch("PSD_ONLY.psd");
+        dir.touch("JPEG_ONLY.JPG");
+
+        assert_eq!(
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::ShowBoth,
+                PairedJpegHandling::SkipPrimary
+            ),
+            vec!["JPEG_ONLY.JPG", "PSD_ONLY.psd", "art.JPG", "big.jpeg",]
+        );
+    }
+
+    #[test]
+    fn paired_psd_jpeg_handling_can_skip_jpeg_files() {
+        let dir = TempScanDir::new();
+        dir.touch("art.psd");
+        dir.touch("art.JPG");
+        dir.touch("JPEG_ONLY.JPG");
+
+        assert_eq!(
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::ShowBoth,
+                PairedJpegHandling::SkipJpeg
+            ),
+            vec!["JPEG_ONLY.JPG", "art.psd"]
+        );
+    }
+
+    #[test]
+    fn paired_psd_jpeg_skips_psd_when_stem_case_differs() {
+        let dir = TempScanDir::new();
+        dir.touch("Design.PSD");
+        dir.touch("design.jpg");
+
+        assert_eq!(
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::ShowBoth,
+                PairedJpegHandling::SkipPrimary
+            ),
+            vec!["design.jpg"]
+        );
+    }
+
+    #[test]
+    fn paired_raw_and_psd_filters_compose() {
+        let dir = TempScanDir::new();
+        dir.touch("shot.ARW");
+        dir.touch("shot.JPG");
+        dir.touch("layout.psd");
+        dir.touch("layout.JPG");
+
+        assert_eq!(
+            scan_names(
+                dir.path(),
+                PairedJpegHandling::SkipPrimary,
+                PairedJpegHandling::SkipPrimary
+            ),
+            vec!["layout.JPG", "shot.JPG"]
         );
     }
 

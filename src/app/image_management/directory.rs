@@ -198,14 +198,16 @@ impl ImageViewerApp {
         self.scanning = true;
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
         let recursive = self.effective_scan_recursive();
-        let paired = self.settings.paired_raw_jpeg_handling;
+        let paired_raw = self.settings.paired_raw_jpeg_handling;
+        let paired_psd = self.settings.paired_psd_jpeg_handling;
         #[cfg(feature = "preload-debug")]
         {
             crate::preload_debug!(
-                "[PreloadDebug][Scan] load_directory spawn: dir={} recursive={} paired={:?} gen={} cancel_phase_ms={} cleanup_phase_ms={} total_before_spawn_ms={}",
+                "[PreloadDebug][Scan] load_directory spawn: dir={} recursive={} paired_raw={:?} paired_psd={:?} gen={} cancel_phase_ms={} cleanup_phase_ms={} total_before_spawn_ms={}",
                 dir.display(),
                 recursive,
-                paired,
+                paired_raw,
+                paired_psd,
                 scan_generation,
                 after_cancel_ms,
                 after_cleanup_ms,
@@ -215,7 +217,8 @@ impl ImageViewerApp {
         scanner::scan_directory(
             dir,
             recursive,
-            paired,
+            paired_raw,
+            paired_psd,
             scan_generation,
             tx,
             cancel,
@@ -377,6 +380,7 @@ impl ImageViewerApp {
             dir,
             self.effective_scan_recursive(),
             self.settings.paired_raw_jpeg_handling,
+            self.settings.paired_psd_jpeg_handling,
             scan_generation,
             tx,
             cancel,
