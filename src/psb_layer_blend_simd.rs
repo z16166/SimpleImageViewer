@@ -611,7 +611,9 @@ mod tests {
     #[test]
     fn f32_to_u8_round_matches_wgsl_floor_bias() {
         // Half-ties and dense sweep: must match floor(x*255+0.5), not ties-to-even.
-        for scaled in [0.0f32, 0.5, 1.0, 1.5, 2.5, 126.5, 127.5, 128.5, 254.5, 255.0] {
+        for scaled in [
+            0.0f32, 0.5, 1.0, 1.5, 2.5, 126.5, 127.5, 128.5, 254.5, 255.0,
+        ] {
             let unit = scaled / 255.0;
             let cpu = f32_to_u8_round(unit);
             let gpu_like = (unit.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8;

@@ -449,7 +449,8 @@ mod tests {
             assert_eq!(cpu, v as u8, "cpu round trip for {v}");
             assert_eq!(gpu_like, v as u8, "gpu-like round trip for {v}");
             assert_eq!(
-                cpu, gpu_like,
+                cpu,
+                gpu_like,
                 "CPU/GPU quantize diverge at {v} (contract {})",
                 crate::psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS
             );

@@ -615,10 +615,7 @@ fn with_psb_raw_row_scratch<R>(raw_len: usize, f: impl FnOnce(&mut Vec<u8>) -> R
 }
 
 /// Reuse a flat `h * channels` Option grid across `extract_tile` calls on this thread.
-fn with_psb_tile_row_grid<R>(
-    cells: usize,
-    f: impl FnOnce(&mut [Option<Arc<Vec<u8>>>]) -> R,
-) -> R {
+fn with_psb_tile_row_grid<R>(cells: usize, f: impl FnOnce(&mut [Option<Arc<Vec<u8>>>]) -> R) -> R {
     PSB_TILE_ROW_GRID.with(|grid| {
         let mut grid = grid.borrow_mut();
         if grid.len() < cells {
